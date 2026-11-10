@@ -37,6 +37,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include "can_scope.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Layout constants
@@ -595,6 +596,19 @@ static void draw_mask_slot(const theme_t *th)
     font_draw_string(x, y + 1, b, c, th->background, &font_small);
 }
 
+/* CAN readout: the whole of badge row 2 while `can screen on`. Below the live
+ * band like the mask slot, refreshed from main.c at 5 Hz. Green = every frame
+ * acknowledged with a good CRC; warning colour = NAK, CRC failure or bus error. */
+void scope_ui_can_row_refresh(void)
+{
+    const theme_t *th = theme_get();
+    char line[56];
+    int ok = can_scope_screen_line(line, sizeof(line));
+    lcd_fill_rect(0, BADGE_ROW2_Y, LCD_WIDTH, BADGE_H, th->background);
+    font_draw_string(4, (uint16_t)(BADGE_ROW2_Y + 1), line,
+                     ok ? th->success : th->warning, th->background, &font_small);
+}
+
 void scope_ui_mask_slot_refresh(void)
 {
     if (scope_mask_state() == MASK_PF_EMPTY)
@@ -748,7 +762,8 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
 
     if (!ss->prm_hidden) {
         uint8_t sel[5];
-        const unsigned ns = scope_prm_select(ss->prm_mask, sel, 5u);
+        /* The CAN readout owns row 2 when it is on: badges use row 1 only. */
+        const unsigned ns = scope_prm_select(ss->prm_mask, sel, can_scope_screen_on() ? 4u : 5u);
         for (unsigned s = 0; s < ns; s++) {
             const uint16_t bx = (s < 4u) ? (uint16_t)(2u + s * (BADGE_W + 2u)) : 2u;
             const uint16_t by = (s < 4u) ? y1 : y2;
@@ -760,6 +775,12 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
                 draw_one_badge(bx, by, scope_prm_label(sel[s]), buf, th->ch1, th);
             }
         }
+    }
+
+    /* ── Row 2: the CAN analyser's line replaces CH2 and the legend ── */
+    if (can_scope_screen_on()) {
+        scope_ui_can_row_refresh();
+        return;
     }
 
     /* CH2: one slot, as before (Vp-p; hidden together with the rest). */

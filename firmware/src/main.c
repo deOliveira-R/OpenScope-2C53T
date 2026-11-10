@@ -48,6 +48,7 @@ extern void system_clock_config(void);
 #include "fault.h"
 #include "redraw_gate.h"
 #include "scope_mask.h"
+#include "can_scope.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -662,6 +663,9 @@ static void vDisplayTask(void *pvParameters)
                     scope_ui_mask_slot_refresh();
                     g_mask_slot_epoch = me;
                 }
+                /* CAN readout (`can screen on`): 5 Hz, its own row. */
+                if (time_view && can_scope_screen_on() && (frame & 3u) == 0u)
+                    scope_ui_can_row_refresh();
             }
             if (ss_anim->running) {
                 /* ── Scope heartbeat / acquisition re-arm ───────────

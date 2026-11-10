@@ -2,284 +2,299 @@
 #include <string.h>
 
 /*
- * CAN bus decoder: detects frames on a single-ended CAN signal.
- * Handles standard (11-bit) and extended (29-bit) IDs.
- * Implements bit de-stuffing per CAN 2.0 spec.
+ * Classic CAN decoder (see decode_can.h).
+ *
+ * Bit timing: a frame is hard-synchronised on its start-of-frame edge; after
+ * that every edge found within half a bit of an expected bit boundary
+ * re-synchronises the grid (like a controller's resync), so drift from a node
+ * whose clock differs from the assumed rate never accumulates over more than a
+ * few bits (stuffing guarantees an edge at least every 6 bits). Each bit is read
+ * at its centre.
+ *
+ * Start of frame: a recessive-to-dominant edge after at least 6 recessive bits.
+ * Inside a frame, stuffing limits runs to 5 equal bits, so 6 recessive bits can
+ * only be end-of-frame, intermission or idle: a SOF found this way is never a
+ * mid-frame edge.
  */
 
 static const char hex_chars[] = "0123456789ABCDEF";
 
-/* CAN bit values: dominant=0, recessive=1 */
-#define CAN_DOMINANT  0
-#define CAN_RECESSIVE 1
+#define DOM 0
+#define REC 1
 
-/* Context struct for CAN bit reading with de-stuffing */
 typedef struct {
-    const int16_t *samples;
-    uint32_t num_samples;
-    float samples_per_bit;
-    uint32_t frame_start;
-    int16_t threshold;
-    uint32_t raw_bit_idx;
-    uint32_t consecutive;
-    int last_bit;
-} can_ctx_t;
+    const int16_t *s;
+    uint32_t n;
+    int16_t  thr;
+    int      rec_high;        /* 1: recessive is >= thr */
+    float    spb;             /* samples per bit */
+    float    edge;            /* sample index of the last synchronising edge */
+    uint32_t k;               /* bit times since that edge */
+    int      run_v;           /* destuffing: value of the current run, -1 none */
+    uint32_t run_n;           /* destuffing: length of the current run */
+    int      crc_on;
+    uint16_t crc;
+} cctx_t;
 
-static int ctx_read_bit(can_ctx_t *ctx)
+#define R_TRUNC  (-1)
+#define R_STUFF  (-2)
+
+static inline int lvl(const cctx_t *c, uint32_t i)
 {
-    uint32_t pos = ctx->frame_start +
-                   (uint32_t)((ctx->raw_bit_idx + 0.5f) * ctx->samples_per_bit);
-    if (pos >= ctx->num_samples) return -1;
-    int bit = (ctx->samples[pos] >= ctx->threshold) ? CAN_RECESSIVE : CAN_DOMINANT;
-    return bit;
+    int hi = c->s[i] >= c->thr;
+    return (hi == c->rec_high) ? REC : DOM;
 }
 
-/* Read one bit with de-stuffing. Returns bit value or -1 on error. */
-static int ctx_read_destuffed(can_ctx_t *ctx)
+static void crc_bit(uint16_t *crc, int b)
 {
-    int bit = ctx_read_bit(ctx);
-    if (bit < 0) return -1;
-    ctx->raw_bit_idx++;
-
-    if (ctx->last_bit >= 0 && bit == ctx->last_bit) {
-        ctx->consecutive++;
-    } else {
-        ctx->consecutive = 1;
-    }
-    ctx->last_bit = bit;
-
-    if (ctx->consecutive > 5) {
-        return -1; /* Stuff error */
-    }
-
-    /* After 5 consecutive, next must be a stuff bit - consume it */
-    if (ctx->consecutive == 5) {
-        int stuff = ctx_read_bit(ctx);
-        if (stuff < 0) return -1;
-        if (stuff == ctx->last_bit) return -1; /* Stuff error */
-        ctx->raw_bit_idx++;
-        ctx->consecutive = 1;
-        ctx->last_bit = stuff;
-    }
-
-    return bit;
+    int nxt = b ^ ((*crc >> 14) & 1);
+    *crc = (uint16_t)((*crc << 1) & 0x7FFF);
+    if (nxt) *crc ^= 0x4599;
 }
 
-/* Read N bits without de-stuffing (for CRC delimiter, ACK, EOF) */
-static int ctx_read_raw(can_ctx_t *ctx)
+uint16_t can_crc15(const uint8_t *bits, uint32_t nbits)
 {
-    int bit = ctx_read_bit(ctx);
-    if (bit < 0) return -1;
-    ctx->raw_bit_idx++;
-    return bit;
+    uint16_t crc = 0;
+    for (uint32_t i = 0; i < nbits; i++) crc_bit(&crc, bits[i] ? 1 : 0);
+    return crc;
 }
 
-/* Read multiple de-stuffed bits and assemble into a uint32_t (MSB first) */
-static int ctx_read_field(can_ctx_t *ctx, uint32_t nbits, uint32_t *value)
+/* One bus bit (stuff bits included). Resynchronises on an edge near the
+ * expected start of the bit. With at least 4 samples per bit an edge needs two
+ * stable samples on each side, so a one-sample spike cannot move the grid. */
+static int raw_bit(cctx_t *c)
 {
-    uint32_t v = 0;
-    uint32_t i;
-    for (i = 0; i < nbits; i++) {
-        int bit = ctx_read_destuffed(ctx);
-        if (bit < 0) return -1;
-        v = (v << 1) | (uint32_t)bit;
+    float start = c->edge + (float)c->k * c->spb;
+    int32_t lo = (int32_t)(start - 0.5f * c->spb + 0.5f);
+    int32_t hi = (int32_t)(start + 0.5f * c->spb);
+    if (lo < 1) lo = 1;
+    if (hi > (int32_t)c->n - 2) hi = (int32_t)c->n - 2;
+    if (c->k > 0) {   /* k == 0: just synchronised on this very edge */
+        for (int32_t t = lo; t <= hi; t++) {
+            int now = lvl(c, (uint32_t)t), before = lvl(c, (uint32_t)t - 1u);
+            if (now == before) continue;
+            /* With >= 4 samples per bit, a real edge has two stable samples on
+             * each side; a one-sample spike has neither. */
+            if (c->spb >= 4.0f && (t < 2 || lvl(c, (uint32_t)t + 1u) != now ||
+                                   lvl(c, (uint32_t)t - 2u) != before))
+                continue;
+            {
+                c->edge = (float)t;
+                c->k = 0;
+                start = (float)t;
+                break;
+            }
+        }
     }
-    *value = v;
+    float centre = start + 0.5f * c->spb;
+    if (centre >= (float)c->n) return R_TRUNC;
+    c->k++;
+    return lvl(c, (uint32_t)centre);
+}
+
+/* One frame bit with de-stuffing; feeds the CRC while crc_on. */
+static int bit_d(cctx_t *c)
+{
+    int b = raw_bit(c);
+    if (b < 0) return b;
+    if (c->run_n == 5) {                 /* this bus bit must be a stuff bit */
+        if (b == c->run_v) return R_STUFF;
+        c->run_v = b;
+        c->run_n = 1;
+        b = raw_bit(c);
+        if (b < 0) return b;
+    }
+    if (b == c->run_v) c->run_n++;
+    else { c->run_v = b; c->run_n = 1; }
+    if (c->crc_on) crc_bit(&c->crc, b);
+    return b;
+}
+
+static int field(cctx_t *c, uint32_t nbits, uint32_t *v)
+{
+    uint32_t x = 0;
+    for (uint32_t i = 0; i < nbits; i++) {
+        int b = bit_d(c);
+        if (b < 0) return b;
+        x = (x << 1) | (uint32_t)b;
+    }
+    *v = x;
     return 0;
+}
+
+static void make_label(decode_frame_t *f, int have_id)
+{
+    char *p = f->label, *end = f->label + sizeof(f->label) - 1;
+    const char *tag = (f->flags & DECODE_FLAG_ERROR) ? "ERR" :
+                      (f->flags & DECODE_FLAG_TRUNC) ? "..." :
+                      (f->flags & DECODE_FLAG_CRC)   ? "CRC" :
+                      (f->flags & DECODE_FLAG_ACK)   ? "ACK" :
+                      (f->flags & DECODE_FLAG_NAK)   ? "NAK" : "";
+    *p++ = 'I'; *p++ = 'D'; *p++ = ':';
+    if (have_id) {
+        int nd = (f->flags & DECODE_FLAG_EXT) ? 8 : 3;
+        for (int i = nd - 1; i >= 0 && p < end; i--)
+            *p++ = hex_chars[(f->id >> (4 * i)) & 0xF];
+    } else {
+        *p++ = '?';
+    }
+    if (*tag && p + 1 + (int)strlen(tag) <= end) {
+        *p++ = ' ';
+        while (*tag) *p++ = *tag++;
+    }
+    *p = '\0';
+}
+
+/* The level holding the longest run is the idle (recessive) level. */
+static int auto_rec_high(const int16_t *s, uint32_t n, int16_t thr)
+{
+    uint32_t best = 0, run = 0;
+    int best_hi = 1, cur = -1;
+    for (uint32_t i = 0; i < n; i++) {
+        int hi = s[i] >= thr;
+        if (hi == cur) run++;
+        else { cur = hi; run = 1; }
+        if (run > best) { best = run; best_hi = hi; }
+    }
+    return best_hi;
 }
 
 void decode_can(const int16_t *samples, uint32_t num_samples,
                 float sample_rate, const can_config_t *cfg,
                 decode_result_t *result)
 {
-    uint32_t i;
-    float samples_per_bit;
-
     memset(result, 0, sizeof(*result));
     result->type = DECODE_CAN;
+    if (!samples || num_samples < 4 || !cfg || cfg->bit_rate == 0) return;
 
-    if (!samples || num_samples == 0 || !cfg || cfg->bit_rate == 0) {
-        return;
-    }
+    cctx_t c;
+    memset(&c, 0, sizeof(c));
+    c.s = samples;
+    c.n = num_samples;
+    c.thr = cfg->threshold;
+    c.spb = sample_rate / (float)cfg->bit_rate;
+    if (c.spb < 2.0f) return;           /* cannot resolve bits */
+    c.rec_high = (cfg->polarity == CAN_POL_RECESSIVE_HIGH) ? 1 :
+                 (cfg->polarity == CAN_POL_RECESSIVE_LOW)  ? 0 :
+                 auto_rec_high(samples, num_samples, cfg->threshold);
 
-    samples_per_bit = sample_rate / (float)cfg->bit_rate;
+    const uint32_t min_idle = (uint32_t)(6.0f * c.spb);
+    uint32_t i = 1, rec_run = (lvl(&c, 0) == REC) ? 1u : 0u;
 
-    /* Scan for SOF: dominant bit after idle (recessive) */
-    i = 0;
     while (i < num_samples && result->num_frames < DECODE_MAX_FRAMES) {
-        int level = (samples[i] >= cfg->threshold) ? CAN_RECESSIVE : CAN_DOMINANT;
+        int l = lvl(&c, i);
+        if (l == REC) { rec_run++; i++; continue; }
+        if (rec_run < min_idle) { rec_run = 0; i++; continue; }
 
-        if (level == CAN_RECESSIVE) {
-            i++;
-            continue;
-        }
-
-        /* Found a dominant bit - potential SOF */
-        uint32_t frame_start = i;
-
-        can_ctx_t ctx;
-        ctx.samples = samples;
-        ctx.num_samples = num_samples;
-        ctx.samples_per_bit = samples_per_bit;
-        ctx.frame_start = frame_start;
-        ctx.threshold = cfg->threshold;
-        ctx.raw_bit_idx = 0;
-        ctx.consecutive = 0;
-        ctx.last_bit = -1;
-
-        /* SOF bit (already know it's dominant) */
-        int sof = ctx_read_destuffed(&ctx);
-        if (sof < 0 || sof != CAN_DOMINANT) {
-            i++;
-            continue;
-        }
-
-        /* Read 11-bit ID */
-        uint32_t id = 0;
-        if (ctx_read_field(&ctx, 11, &id) < 0) {
-            i++;
-            continue;
-        }
-
-        /* RTR bit */
-        int rtr = ctx_read_destuffed(&ctx);
-        if (rtr < 0) { i++; continue; }
-
-        /* IDE bit */
-        int ide = ctx_read_destuffed(&ctx);
-        if (ide < 0) { i++; continue; }
-
-        uint32_t ext_id = 0;
-        int ext_rtr = 0;
-
-        if (ide == CAN_RECESSIVE) {
-            /* Extended frame: read 18 more ID bits */
-            if (ctx_read_field(&ctx, 18, &ext_id) < 0) {
-                i++;
-                continue;
-            }
-            id = (id << 18) | ext_id;
-
-            /* Extended RTR */
-            ext_rtr = ctx_read_destuffed(&ctx);
-            if (ext_rtr < 0) { i++; continue; }
-
-            /* r1 (reserved) */
-            int r1 = ctx_read_destuffed(&ctx);
-            if (r1 < 0) { i++; continue; }
-            (void)r1;
-        }
-
-        /* r0 (reserved bit) */
-        int r0 = ctx_read_destuffed(&ctx);
-        if (r0 < 0) { i++; continue; }
-        (void)r0;
-
-        /* DLC - 4 bits */
-        uint32_t dlc = 0;
-        if (ctx_read_field(&ctx, 4, &dlc) < 0) {
-            i++;
-            continue;
-        }
-        if (dlc > 8) dlc = 8;
-
-        /* Data bytes */
-        uint8_t data_bytes[8];
-        uint32_t d;
-        int data_ok = 1;
-        for (d = 0; d < dlc; d++) {
-            uint32_t byte_val = 0;
-            if (ctx_read_field(&ctx, 8, &byte_val) < 0) {
-                data_ok = 0;
-                break;
-            }
-            data_bytes[d] = (uint8_t)byte_val;
-        }
-        if (!data_ok) { i++; continue; }
-
-        /* CRC - 15 bits (read but don't verify for now) */
-        uint32_t crc = 0;
-        if (ctx_read_field(&ctx, 15, &crc) < 0) {
-            i++;
-            continue;
-        }
-        (void)crc;
-
-        /* CRC delimiter (1 recessive, no stuffing) */
-        int crc_del = ctx_read_raw(&ctx);
-        if (crc_del < 0) { i++; continue; }
-
-        /* ACK slot (no stuffing) */
-        int ack = ctx_read_raw(&ctx);
-        if (ack < 0) { i++; continue; }
-
-        /* ACK delimiter (no stuffing) */
-        int ack_del = ctx_read_raw(&ctx);
-        if (ack_del < 0) { i++; continue; }
-        (void)ack_del;
-
-        /* EOF: 7 recessive bits (no stuffing) */
-        int eof_ok = 1;
-        uint32_t e;
-        for (e = 0; e < 7; e++) {
-            int eb = ctx_read_raw(&ctx);
-            if (eb < 0 || eb != CAN_RECESSIVE) {
-                eof_ok = 0;
-                break;
-            }
-        }
-
-        /* Build the frame */
+        /* Start of frame at sample i. */
         decode_frame_t *f = &result->frames[result->num_frames];
-        f->start_sample = frame_start;
-        f->end_sample = frame_start +
-            (uint32_t)(ctx.raw_bit_idx * samples_per_bit);
-        if (f->end_sample >= num_samples) {
-            f->end_sample = num_samples - 1;
-        }
+        memset(f, 0, sizeof(*f));
+        f->start_sample = i;
+        c.edge = (float)i;
+        c.k = 0;
+        c.run_v = -1;
+        c.run_n = 0;
+        c.crc_on = 1;
+        c.crc = 0;
 
-        /* Copy data */
-        f->data_len = (uint8_t)dlc;
-        for (d = 0; d < dlc && d < 16; d++) {
-            f->data[d] = data_bytes[d];
-        }
+        int have_id = 0, r = 0;
+        uint32_t id = 0, v = 0, dlc = 0;
 
-        f->flags = 0;
-        if (!eof_ok) f->flags |= DECODE_FLAG_ERROR;
-
-        /* Format label: "ID:0xHHH [D] HH HH..." */
-        {
-            char *p = f->label;
-            char *end = f->label + sizeof(f->label) - 1;
-
-            /* "ID:" prefix */
-            if (p + 3 <= end) { *p++ = 'I'; *p++ = 'D'; *p++ = ':'; }
-
-            /* Hex ID (compact) */
-            if (ide == CAN_RECESSIVE) {
-                /* Extended 29-bit: up to 8 hex digits, but truncate for label */
-                if (p + 5 <= end) {
-                    *p++ = hex_chars[(id >> 16) & 0x0F];
-                    *p++ = hex_chars[(id >> 12) & 0x0F];
-                    *p++ = hex_chars[(id >> 8) & 0x0F];
-                    *p++ = hex_chars[(id >> 4) & 0x0F];
-                    *p++ = hex_chars[id & 0x0F];
+        r = bit_d(&c);                                   /* SOF */
+        if (r == DOM) r = field(&c, 11, &id);
+        else if (r == REC) r = R_STUFF;                  /* not a SOF after all */
+        if (r >= 0) {
+            have_id = 1;
+            int srr = bit_d(&c);                         /* RTR, or SRR */
+            int ide = (srr >= 0) ? bit_d(&c) : srr;
+            if (srr < 0) r = srr;
+            else if (ide < 0) r = ide;
+            else if (ide == REC) {                       /* 29-bit identifier */
+                f->flags |= DECODE_FLAG_EXT;
+                r = field(&c, 18, &v);
+                if (r >= 0) {
+                    id = (id << 18) | v;
+                    int rtr = bit_d(&c);
+                    if (rtr < 0) r = rtr;
+                    else {
+                        if (rtr == REC) f->flags |= DECODE_FLAG_RTR;
+                        int r1 = bit_d(&c);
+                        if (r1 < 0) r = r1;
+                    }
                 }
-            } else {
-                /* Standard 11-bit: 3 hex digits */
-                if (p + 3 <= end) {
-                    *p++ = hex_chars[(id >> 8) & 0x0F];
-                    *p++ = hex_chars[(id >> 4) & 0x0F];
-                    *p++ = hex_chars[id & 0x0F];
-                }
+            } else if (srr == REC) {
+                f->flags |= DECODE_FLAG_RTR;
             }
+            if (r >= 0) {
+                int r0 = bit_d(&c);
+                if (r0 < 0) r = r0;
+                else r = field(&c, 4, &dlc);
+            }
+        }
+        f->id = id;
 
-            *p = '\0';
+        if (r >= 0) {
+            uint32_t nd = (f->flags & DECODE_FLAG_RTR) ? 0 : (dlc > 8 ? 8 : dlc);
+            f->data_len = (uint8_t)nd;
+            for (uint32_t d = 0; d < nd && r >= 0; d++) {
+                r = field(&c, 8, &v);
+                if (r >= 0) f->data[d] = (uint8_t)v;
+            }
+        }
+        if (r >= 0) {
+            uint16_t calc = c.crc;
+            c.crc_on = 0;
+            r = field(&c, 15, &v);
+            if (r >= 0 && (uint16_t)v != calc) f->flags |= DECODE_FLAG_CRC;
+        }
+        if (r >= 0 && c.run_n == 5) {                    /* stuff bit after the CRC */
+            int sb = raw_bit(&c);
+            if (sb < 0) r = sb;
+            else if (sb == c.run_v) r = R_STUFF;
+        }
+        if (r >= 0) {
+            int del = raw_bit(&c);                       /* CRC delimiter */
+            if (del < 0) r = del;
+            else if (del != REC) f->flags |= DECODE_FLAG_ERROR;
+        }
+        if (r >= 0) {
+            int ack = raw_bit(&c);                       /* ACK slot */
+            if (ack < 0) r = ack;
+            else f->flags |= (ack == DOM) ? DECODE_FLAG_ACK : DECODE_FLAG_NAK;
+        }
+        if (r >= 0) {
+            int adel = raw_bit(&c);                      /* ACK delimiter */
+            if (adel < 0) r = adel;
+            else if (adel != REC) f->flags |= DECODE_FLAG_ERROR;
+        }
+        int eof_clean = 0;
+        if (r >= 0) {                                    /* EOF: 7 recessive */
+            eof_clean = 1;
+            for (int e = 0; e < 7; e++) {
+                int eb = raw_bit(&c);
+                if (eb < 0) break;                       /* record ended in EOF: fine */
+                if (eb != REC) { f->flags |= DECODE_FLAG_ERROR; eof_clean = 0; break; }
+            }
         }
 
-        result->num_frames++;
+        if (r == R_TRUNC) f->flags |= DECODE_FLAG_TRUNC;
+        if (r == R_STUFF) f->flags |= DECODE_FLAG_ERROR;
 
-        /* Advance past frame */
-        i = f->end_sample + 1;
+        uint32_t endpos = (uint32_t)(c.edge + (float)c.k * c.spb);
+        if (endpos >= num_samples) endpos = num_samples - 1;
+        if (endpos <= i) endpos = i + 1;
+        f->end_sample = endpos;
+
+        if (have_id) {
+            make_label(f, have_id);
+            result->num_frames++;
+        }
+        if (r == R_TRUNC) break;
+
+        /* Resume after the frame. After a clean EOF the bus is known to be
+         * recessive, and the next SOF may come after the 3-bit intermission;
+         * after an error, idle must be seen again before trusting an edge. */
+        i = endpos;
+        rec_run = eof_clean ? min_idle : 0;
     }
 }

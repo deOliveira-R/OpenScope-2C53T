@@ -22,6 +22,7 @@ typedef struct {
     uint8_t  data[16];       /* Decoded bytes */
     uint8_t  data_len;       /* Number of decoded bytes */
     uint8_t  flags;          /* Protocol-specific flags (error, ACK, etc.) */
+    uint32_t id;             /* Protocol address/identifier where one exists (CAN ID) */
     char     label[16];      /* Human-readable label ("0x48 W", "ACK", etc.) */
 } decode_frame_t;
 
@@ -36,5 +37,9 @@ typedef struct {
 #define DECODE_FLAG_ERROR   0x01
 #define DECODE_FLAG_ACK     0x02
 #define DECODE_FLAG_NAK     0x04
+#define DECODE_FLAG_CRC     0x08  /* checksum mismatch                       */
+#define DECODE_FLAG_TRUNC   0x10  /* the record ended inside the frame       */
+#define DECODE_FLAG_EXT     0x20  /* CAN: 29-bit identifier                  */
+#define DECODE_FLAG_RTR     0x40  /* CAN: remote frame                       */
 
 #endif /* DECODER_H */

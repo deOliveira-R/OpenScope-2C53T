@@ -103,6 +103,8 @@ C_SOURCES += src/decode/decode_i2c.c
 C_SOURCES += src/decode/decode_spi.c
 C_SOURCES += src/decode/decode_can.c
 C_SOURCES += src/decode/decode_kline.c
+C_SOURCES += src/decode/can_bus.c
+C_SOURCES += src/drivers/can_scope.c
 C_SOURCES += src/modules/compression_test.c
 C_SOURCES += src/modules/alternator_test.c
 C_SOURCES += src/fonts/font.c
@@ -552,6 +554,16 @@ $(BUILD_DIR)/test_scope_measure: tests/test_scope_measure.c src/ui/scope_measure
 test-scope-measure: $(BUILD_DIR)/test_scope_measure
 	$<
 
+$(BUILD_DIR)/test_can_bus: tests/test_can_bus.c src/decode/decode_can.c src/decode/can_bus.c src/decode/can_bus.h src/decode/decode_can.h tests/fixtures/can_bench_records.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/decode -Itests $< src/decode/decode_can.c src/decode/can_bus.c -lm -o $@
+
+# CAN bus analyser: real ring-buffer records from a two-node 500 kbit/s bench
+# bus at 10 / 5 / 2.5 samples per bit (CRC-checked payloads, ACK vs cut-off),
+# plus synthetic frames (CRC-15, ACK/NAK, 29-bit, RTR, clock skew, polarity,
+# truncation, spikes, back-to-back frames, every ring rotation).
+test-can-bus: $(BUILD_DIR)/test_can_bus
+	$<
+
 $(BUILD_DIR)/test_scope_cal: tests/test_scope_cal.c src/ui/scope_cal.c src/ui/scope_cal.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< src/ui/scope_cal.c -lm -o $@
 
@@ -733,7 +745,7 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 test-siggen: $(BUILD_DIR)/test_siggen
 	$<
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page
