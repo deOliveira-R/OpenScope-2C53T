@@ -395,7 +395,9 @@ static uint32_t boot_target_address(void)
     return FLASH_APP_ADDRESS;
 }
 
-static void boot_target_now(void)
+/* Also called from iap_loop() after a flash: a direct jump keeps PC9 (power
+ * hold) driven, where NVIC_SystemReset() switched the 2C53T off. */
+void boot_target_now(void)
 {
     uint32_t target = boot_target_address();
 
