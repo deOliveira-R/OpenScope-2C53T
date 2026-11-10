@@ -19,6 +19,7 @@
 #include "flash_fs.h"
 #include "fw_loader.h"
 #include "cal_backup.h"
+#include "can_scope.h"
 #include "rtt.h"
 #include "continuity_buzzer.h"
 
@@ -1788,6 +1789,120 @@ restore:
  *   cal restore [force] CONFIRM   write the W25Q backup back to MCU flash
  * Restore refuses to overwrite a programmed (precious) page unless `force`.
  */
+/* ── CAN bus analyser (CH1 = CAN_H, CH2 = CAN_L) ───────────────────────────
+ *   can decode              decode the current record, frame by frame
+ *   can stats [n]           n fresh records (default 20): per-ID counts, ACK/NAK/CRC
+ *   can screen [on|off]     readout on badge row 2, refreshed 5x per second
+ * Best timebase for decoding a 500 kbit/s bus: 0x0A (whole frame + ACK). */
+static const char *can_flags_str(uint8_t f)
+{
+    if (f & DECODE_FLAG_ERROR) return "ERR";
+    if (f & DECODE_FLAG_TRUNC) return "TRUNC";
+    if (f & DECODE_FLAG_CRC)   return "CRC-FAIL";
+    if (f & DECODE_FLAG_ACK)   return "ACK";
+    if (f & DECODE_FLAG_NAK)   return "NAK";
+    return "?";
+}
+
+static void can_print_report(const can_bus_report_t *r, uint32_t gen)
+{
+    unsigned spb100 = (unsigned)(r->spb * 100.0f + 0.5f);
+    usb_debug_printf("record gen=%lu tb=0x%02X fs=%lu S/s  rot=%ld  spb=%u.%02u  bit rate=%lu  "
+                     "recessive=%d dominant=%d (CH1-CH2 counts)\r\n",
+                     (unsigned long)gen, (unsigned)fpga_acq_rate_idx_get(),
+                     (unsigned long)(can_scope_sample_rate(fpga_acq_rate_idx_get()) + 0.5f),
+                     (long)r->rotation, spb100 / 100u, spb100 % 100u,
+                     (unsigned long)(r->bit_rate + 0.5f), (int)r->level_rec, (int)r->level_dom);
+}
+
+static void cmd_can_decode(void)
+{
+    can_bus_report_t rep;
+    const decode_result_t *res = NULL;
+    uint32_t gen = 0;
+    if (!can_scope_capture(&rep, &res, &gen)) {
+        usb_send_str("can decode: no capture or no memory\r\n");
+        return;
+    }
+    if (!rep.signal) {
+        usb_send_str("can decode: no CAN signal in this record (flat or no two levels)\r\n");
+        return;
+    }
+    can_print_report(&rep, gen);
+    for (uint16_t i = 0; i < res->num_frames; i++) {
+        const decode_frame_t *f = &res->frames[i];
+        usb_debug_printf("  #%u @%lu..%lu  ID %s%0*lX  DLC %u ", (unsigned)i,
+                         (unsigned long)f->start_sample, (unsigned long)f->end_sample,
+                         (f->flags & DECODE_FLAG_EXT) ? "x" : "",
+                         (f->flags & DECODE_FLAG_EXT) ? 8 : 3, (unsigned long)f->id,
+                         (unsigned)f->data_len);
+        for (uint8_t k = 0; k < f->data_len; k++) usb_debug_printf("%02X ", f->data[k]);
+        usb_debug_printf("%s%s\r\n", (f->flags & DECODE_FLAG_RTR) ? "RTR " : "",
+                         can_flags_str(f->flags));
+    }
+    if (res->num_frames == 0) usb_send_str("  no frame start in this record\r\n");
+}
+
+static void cmd_can_stats(const char *args)
+{
+    uint32_t n = 20;
+    while (args && *args == ' ') args++;
+    if (args && *args && (parse_int(args, &n) != 0 || n == 0 || n > 1000)) {
+        usb_send_str("Usage: can stats [records 1-1000]\r\n");
+        return;
+    }
+    can_bus_stats_t *st = can_scope_stats();
+    if (!st) { usb_send_str("can stats: no memory\r\n"); return; }
+    can_bus_stats_reset(st);
+    can_bus_report_t rep, last;
+    memset(&last, 0, sizeof(last));
+    uint32_t last_gen = 0xFFFFFFFFu, got = 0;
+    TickType_t t0 = xTaskGetTickCount();
+    while (got < n && (xTaskGetTickCount() - t0) < pdMS_TO_TICKS(1000u * n + 2000u)) {
+        const decode_result_t *res = NULL;
+        uint32_t gen = 0;
+        if (can_scope_capture(&rep, &res, &gen) && gen != last_gen) {
+            can_bus_stats_add(st, &rep, res);
+            last_gen = gen;
+            if (rep.signal) last = rep;
+            got++;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    }
+    char line[64];
+    can_bus_summary(st, &last, line, sizeof(line));
+    usb_debug_printf("%s\r\n", line);
+    usb_debug_printf("records %lu (idle %lu)  frames %lu  ACK %lu  NAK %lu  CRC-fail %lu  ERR %lu  "
+                     "cut-off %lu\r\n",
+                     (unsigned long)st->records, (unsigned long)st->idle, (unsigned long)st->frames,
+                     (unsigned long)st->ack, (unsigned long)st->nak, (unsigned long)st->crc,
+                     (unsigned long)st->err, (unsigned long)st->trunc);
+    for (uint8_t k = 0; k < st->nids; k++) {
+        const can_bus_id_t *e = &st->ids[k];
+        usb_debug_printf("  ID %s%0*lX  seen %lu  ACK %lu  NAK %lu  last:", e->ext ? "x" : "",
+                         e->ext ? 8 : 3, (unsigned long)e->id, (unsigned long)e->seen,
+                         (unsigned long)e->ack, (unsigned long)e->nak);
+        for (uint8_t b = 0; b < e->dlc; b++) usb_debug_printf(" %02X", e->data[b]);
+        usb_send_str("\r\n");
+    }
+    if (st->ids_dropped)
+        usb_debug_printf("  (%lu frames with IDs beyond the %u-entry table)\r\n",
+                         (unsigned long)st->ids_dropped, (unsigned)CAN_BUS_MAX_IDS);
+    if (last.signal) can_print_report(&last, last_gen);
+}
+
+static void cmd_can_screen(const char *args)
+{
+    while (args && *args == ' ') args++;
+    if (args && *args) {
+        if      (strncmp(args, "on",  2) == 0) can_scope_screen_set(true);
+        else if (strncmp(args, "off", 3) == 0) can_scope_screen_set(false);
+        else { usb_send_str("Usage: can screen [on|off]\r\n"); return; }
+    }
+    usb_debug_printf("can screen %s\r\n", can_scope_screen_on() ? "ON (badge row 2)" : "OFF");
+}
+
 static void cmd_cal_status(void)
 {
     cal_backup_report_t r;
@@ -7882,6 +7997,12 @@ static const shell_cmd_t shell_cmds[] = {
           "flash wtest <addr> CONFIRM      Non-destructive write-primitive self-test (blank 4KB sector)\r\n"),
     CMD_V("flash diag", cmd_flash_diag, SC_EXACT,
           "flash diag                      W25Q SR1/SR2/SR3 + WEL-latch check\r\n"),
+    CMD_V("can decode", cmd_can_decode, SC_EXACT,
+          "can decode                      Decode CAN in the record (CH1=CAN_H, CH2=CAN_L)\r\n"),
+    CMD_A("can stats", cmd_can_stats, 0,
+          "can stats [n]                   CAN over n records: IDs, ACK/NAK, CRC\r\n"),
+    CMD_A("can screen", cmd_can_screen, 0,
+          "can screen [on|off]             CAN readout on the scope screen\r\n"),
     CMD_V("cal status", cmd_cal_status, SC_EXACT,
           "cal status                      Factory-cal page + W25Q backup state\r\n"),
     CMD_V("cal backup", cmd_cal_backup, SC_EXACT,
