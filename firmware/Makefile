@@ -745,7 +745,7 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 test-siggen: $(BUILD_DIR)/test_siggen
 	$<
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page
@@ -1051,6 +1051,14 @@ guest-configB-arm: clean all
 # Writes NOTHING. Links at 0x08007000 so it cannot overlap the region it reads.
 # Runs immediately after LCD bring-up and never returns — no FPGA init, no
 # scheduler. Report the CRC32 it prints. See src/util/cal_dump.h.
+# app-coldtrace — guest-coldtrace's live-capture build in the HID-bootloader
+# layout (vectors 0x08004000, code 0x08007000, 0x08006000 left for the
+# calibration page), so it runs under OpenScope's bootloader and updates over
+# USB without the IAP drive. GUEST_BUILD only moves VTOR and skips the watchdog;
+# NO_WATCHDOG keeps the latter off for long shell experiments.
+app-coldtrace: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG
+app-coldtrace: clean all
+
 guest-caldump: CFLAGS += -DGUEST_BUILD -DCAL_DUMP_MODE=1
 guest-caldump: LDSCRIPT = ld/at32f403a_guest.ld
 guest-caldump: clean all
