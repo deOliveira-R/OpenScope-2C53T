@@ -46,16 +46,23 @@ float can_bus_measure_spb(const int16_t *s, uint32_t n, int16_t thr)
      * by dividing runs into more, smaller bits. At 2.5 samples per bit the run
      * lengths are 2/3, 5, 7/8, 10, 12/13: averaging alone lands on 2.3 or 2.7
      * when one rounding dominates (bench, 2026-11-10); the fit finds 2.50. */
+    /* The runs to fit are fixed BEFORE the search: everything shorter than 7.5
+     * bits at the first estimate (stuffing caps in-frame runs at 5 bits, plus
+     * margin; idle and EOF are longer). If each candidate chose its own runs, a
+     * too-small width could drop the runs it fits worst: at 2.5 samples per bit
+     * the 13-sample runs of five zero bits read as 7.6 bits at 1.71 and were
+     * excluded, and 1.71 won (bench record, 2026-11-10). */
+    const uint32_t lmax = (uint32_t)(7.5f * spb);
     float best_s = spb, best_e = -1.0f;
     const float step = spb * 0.002f;          /* 250 candidates at any width */
     for (float cand = spb * 0.75f; cand <= spb * 1.25f; cand += step) {
         float e = 0.0f;
         uint32_t used = 0;
-        for (uint32_t L = 2; L < CAN_BUS_HIST; L++) {
+        for (uint32_t L = 2; L < CAN_BUS_HIST && L <= lmax; L++) {
             if (!hist[L]) continue;
             float q = (float)L / cand;
             uint32_t k = (uint32_t)(q + 0.5f);
-            if (k < 1 || k > 6) continue;
+            if (k < 1) k = 1;
             float r = q - (float)k;               /* residual in bits */
             e += (float)hist[L] * r * r;
             used += hist[L];
@@ -143,12 +150,20 @@ uint32_t can_bus_analyse(const volatile uint8_t *ch1, const volatile uint8_t *ch
     rep->threshold = thr;
 
     if (rotated) {
-        /* Idle is recessive, and the longest stretch of one level is idle. */
+        /* The 2C53T commits a ring buffer with the trigger 512 samples after
+         * its seam (OpenScope EXP-53/54). On a CAN bus the trigger is the start
+         * of frame that ends the longest idle stretch, so rotating that edge to
+         * n/2 restores time order exactly: the pre-trigger idle before it, the
+         * frame, then the post-frame idle after it. (Starting the record at the
+         * longest idle instead moves the post-frame idle to the front and cuts
+         * the frame's end: bench, 2026-11-10.) */
         uint32_t lh = 0, ll = 0;
         uint32_t sh = longest_cyclic_run(diff, n, thr, 1, &lh);
         uint32_t sl = longest_cyclic_run(diff, n, thr, 0, &ll);
-        uint32_t k = (lh >= ll) ? sh : sl;
-        if (k < n) {
+        uint32_t start = (lh >= ll) ? sh : sl, len = (lh >= ll) ? lh : ll;
+        if (start < n && len < n) {
+            uint32_t sof = (start + len) % n;
+            uint32_t k = (sof + n - n / 2) % n;
             can_bus_rotate(diff, n, k);
             rep->rotation = (int32_t)k;
         }
@@ -258,12 +273,11 @@ int can_bus_summary(const can_bus_stats_t *st, const can_bus_report_t *last,
         p += snprintf(out + p, len - (uint32_t)p, e->ext ? " %lX%s" : " %03lX%s",
                       (unsigned long)e->id, e->nak ? "!" : "");
     }
-    if (p > 0 && (uint32_t)p < len) {
-        if (healthy)
-            snprintf(out + p, len - (uint32_t)p, " ok %lu", (unsigned long)st->frames);
-        else
-            snprintf(out + p, len - (uint32_t)p, " NAK%lu CRC%lu ERR%lu",
-                     (unsigned long)st->nak, (unsigned long)st->crc, (unsigned long)st->err);
-    }
+    if (p > 0 && (uint32_t)p < len)
+        p += snprintf(out + p, len - (uint32_t)p, healthy ? " ok %lu" : " %lufr",
+                      (unsigned long)st->frames);
+    if (!healthy && p > 0 && (uint32_t)p < len)
+        snprintf(out + p, len - (uint32_t)p, " NAK%lu CRC%lu ERR%lu",
+                 (unsigned long)st->nak, (unsigned long)st->crc, (unsigned long)st->err);
     return healthy;
 }
