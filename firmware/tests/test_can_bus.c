@@ -147,6 +147,8 @@ static void test_bench_records(void)
                   b->full[k].id);
             CHECK(f->flags & (DECODE_FLAG_ACK | DECODE_FLAG_TRUNC), "%s: 0x%03X ACK or truncated",
                   b->name, b->full[k].id);
+            if (b->spb < 3.0f)      /* 1.25 MS/s: the whole frame and its ACK are recorded */
+                CHECK(f->flags & DECODE_FLAG_ACK, "%s: 0x%03X ACK seen", b->name, b->full[k].id);
             CHECK(f->data_len == b->full[k].dlc && !memcmp(f->data, b->full[k].data, b->full[k].dlc),
                   "%s: 0x%03X payload", b->name, b->full[k].id);
         }

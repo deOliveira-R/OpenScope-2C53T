@@ -40,19 +40,41 @@ float can_bus_measure_spb(const int16_t *s, uint32_t n, int16_t thr)
     if (!bits) return 0.0f;
     float spb = (float)sum / (float)bits;
 
-    /* Refine over all in-frame runs (1..6 bits): total samples / total bits. */
-    for (int pass = 0; pass < 3; pass++) {
-        sum = 0;
-        bits = 0;
+    /* Fit: the bit width that puts every in-frame run (1..6 bits) closest to a
+     * whole number of bits, searched within +-25 % of the first estimate. The
+     * error is relative (residual / width) so a narrower width cannot win just
+     * by dividing runs into more, smaller bits. At 2.5 samples per bit the run
+     * lengths are 2/3, 5, 7/8, 10, 12/13: averaging alone lands on 2.3 or 2.7
+     * when one rounding dominates (bench, 2026-11-10); the fit finds 2.50. */
+    float best_s = spb, best_e = -1.0f;
+    const float step = spb * 0.002f;          /* 250 candidates at any width */
+    for (float cand = spb * 0.75f; cand <= spb * 1.25f; cand += step) {
+        float e = 0.0f;
+        uint32_t used = 0;
         for (uint32_t L = 2; L < CAN_BUS_HIST; L++) {
             if (!hist[L]) continue;
-            uint32_t kb = (uint32_t)((float)L / spb + 0.5f);
-            if (kb >= 1 && kb <= 6) { sum += L * hist[L]; bits += kb * hist[L]; }
+            float q = (float)L / cand;
+            uint32_t k = (uint32_t)(q + 0.5f);
+            if (k < 1 || k > 6) continue;
+            float r = q - (float)k;               /* residual in bits */
+            e += (float)hist[L] * r * r;
+            used += hist[L];
         }
-        if (!bits) return 0.0f;
-        spb = (float)sum / (float)bits;
+        if (used < 3) continue;
+        e /= (float)used;
+        if (best_e < 0.0f || e < best_e - 1e-6f) { best_e = e; best_s = cand; }
     }
-    return spb;
+    if (best_e < 0.0f) return 0.0f;
+
+    /* Final refine at the fitted width: total samples / total bits. */
+    sum = 0;
+    bits = 0;
+    for (uint32_t L = 2; L < CAN_BUS_HIST; L++) {
+        if (!hist[L]) continue;
+        uint32_t kb = (uint32_t)((float)L / best_s + 0.5f);
+        if (kb >= 1 && kb <= 6) { sum += L * hist[L]; bits += kb * hist[L]; }
+    }
+    return bits ? (float)sum / (float)bits : best_s;
 }
 
 static void reverse(int16_t *s, uint32_t a, uint32_t b)   /* [a, b) */
@@ -134,6 +156,18 @@ uint32_t can_bus_analyse(const volatile uint8_t *ch1, const volatile uint8_t *ch
 
     float spb = can_bus_measure_spb(diff, n, thr);
     if (spb < 2.0f) return 0;
+    /* With a known sample rate, snap to a standard bus rate within 6 %: buses
+     * run at these, and an exact width keeps a 2.5-sample-per-bit decode
+     * aligned to the end of a frame. */
+    if (fs > 0.0f) {
+        static const float std_rates[] = { 10e3f, 20e3f, 33.333e3f, 50e3f, 62.5e3f, 83.333e3f,
+                                           100e3f, 125e3f, 250e3f, 500e3f, 800e3f, 1e6f };
+        float br = fs / spb;
+        for (unsigned i = 0; i < sizeof(std_rates) / sizeof(std_rates[0]); i++) {
+            float d = (br - std_rates[i]) / std_rates[i];
+            if (d < 0.06f && d > -0.06f) { spb = fs / std_rates[i]; break; }
+        }
+    }
     rep->spb = spb;
     rep->signal = 1;
     if (fs > 0.0f) rep->bit_rate = fs / spb;
