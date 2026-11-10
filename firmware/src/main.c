@@ -1221,8 +1221,9 @@ int main(void)
     /* Initialize watchdog LAST — after all tasks and timers are running.
      * Once enabled, the FWDGT cannot be stopped (hardware limitation).
      * Skipped in GUEST_BUILD so interactive SPI3 shell sessions on unit #2
-     * can't trip a watchdog reset mid-experiment. */
-#ifndef GUEST_BUILD
+     * can't trip a watchdog reset mid-experiment, and with NO_WATCHDOG for the
+     * same reason in app-layout bench builds (app-coldtrace). */
+#if !defined(GUEST_BUILD) && !defined(NO_WATCHDOG)
     watchdog_init();
 #endif
 
