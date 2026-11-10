@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <string.h>
+#include "can_scope.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Layout constants
@@ -519,6 +520,19 @@ static void draw_mask_slot(const theme_t *th)
     font_draw_string(x, y + 1, b, c, th->background, &font_small);
 }
 
+/* CAN readout: the whole of badge row 2 while `can screen on`. Below the live
+ * band like the mask slot, refreshed from main.c at 5 Hz. Green = every frame
+ * acknowledged with a good CRC; warning colour = NAK, CRC failure or bus error. */
+void scope_ui_can_row_refresh(void)
+{
+    const theme_t *th = theme_get();
+    char line[56];
+    int ok = can_scope_screen_line(line, sizeof(line));
+    lcd_fill_rect(0, BADGE_ROW2_Y, LCD_WIDTH, BADGE_H, th->background);
+    font_draw_string(4, (uint16_t)(BADGE_ROW2_Y + 1), line,
+                     ok ? th->success : th->warning, th->background, &font_small);
+}
+
 void scope_ui_mask_slot_refresh(void)
 {
     if (scope_mask_state() == MASK_PF_EMPTY)
@@ -678,6 +692,10 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
     }
 
     /* ── Row 2 — period, CH2, and the legend ─────────────────────── */
+    if (can_scope_screen_on()) {            /* the CAN readout owns row 2 */
+        scope_ui_can_row_refresh();
+        return;
+    }
     x = 2;
     uint16_t y2 = BADGE_ROW2_Y;
 
