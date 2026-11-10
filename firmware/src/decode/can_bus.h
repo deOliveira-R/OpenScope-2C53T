@@ -34,10 +34,11 @@ typedef struct {
  * `rotated`: the record is a ring buffer not yet in time order (the 2C53T's
  * strobed records are, unless OpenScope found their seam: see
  * fpga_acq_record_time_ordered()). A CAN record's seam sits in idle, where the
- * generic value-step seam finder sees nothing, so here the record is rotated to
- * start at the longest idle stretch (counted around the ring). That stretch
- * holds the seam, so frames come out whole and in order, and a frame cut by the
- * end of the acquisition is reported truncated rather than as a missing ACK.
+ * generic value-step seam finder sees nothing. Here the start of frame that
+ * ends the longest idle stretch (the trigger) is rotated to n/2, where the
+ * 2C53T puts its trigger, which restores time order: frames come out whole and
+ * in order, and a frame cut by the end of the acquisition is reported truncated
+ * rather than as a missing ACK.
  *
  * Returns the number of frames decoded (0 when there is no CAN signal). */
 uint32_t can_bus_analyse(const volatile uint8_t *ch1, const volatile uint8_t *ch2,

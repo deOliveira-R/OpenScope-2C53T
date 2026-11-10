@@ -32,7 +32,9 @@ bool can_scope_capture(can_bus_report_t *rep, const decode_result_t **res, uint3
 void can_scope_screen_set(bool on);
 bool can_scope_screen_on(void);
 /* Analyse the newest record if it is new, add it to the running statistics,
- * and format the one-line readout. Returns 1 when the bus looks healthy. */
+ * and format the one-line readout (counts cumulative since `can screen on`).
+ * Returns 1 when the last 10 records were clean (no NAK, CRC failure or error),
+ * so the colour shows the bus now, not its history. */
 int  can_scope_screen_line(char *out, uint32_t len);
 
 /* Statistics shared by the screen and `can stats`. */

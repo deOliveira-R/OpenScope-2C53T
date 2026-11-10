@@ -18,6 +18,8 @@ static SemaphoreHandle_t g_lock;
 static volatile bool     g_screen;
 static uint32_t          g_last_gen = 0xFFFFFFFFu;
 static can_bus_report_t  g_last_rep;
+static uint32_t          g_since_bad = 0xFFFFu;   /* records since one with NAK/CRC/ERR */
+#define CAN_SCOPE_RECENT 10u                        /* screen turns green after this many clean records */
 
 float can_scope_sample_rate(uint8_t code)
 {
@@ -91,6 +93,7 @@ void can_scope_screen_set(bool on)
         if (work_get()) {
             can_bus_stats_reset(&g_w->stats);
             g_last_gen = 0xFFFFFFFFu;
+            g_since_bad = 0xFFFFu;
             memset(&g_last_rep, 0, sizeof(g_last_rep));
             g_screen = true;
         }
@@ -125,12 +128,18 @@ int can_scope_screen_line(char *out, uint32_t len)
         can_bus_report_t rep;
         uint32_t g = 0;
         if (capture_locked(&rep, &g) && g != g_last_gen) {
+            uint32_t bad0 = g_w->stats.nak + g_w->stats.crc + g_w->stats.err;
             can_bus_stats_add(&g_w->stats, &rep, &g_w->res);
+            if (g_w->stats.nak + g_w->stats.crc + g_w->stats.err != bad0) g_since_bad = 0;
+            else if (g_since_bad < 0xFFFFu) g_since_bad++;
             g_last_rep = rep;
             g_last_gen = g;
         }
     }
-    int ok = can_bus_summary(&g_w->stats, &g_last_rep, out, len);
+    (void)can_bus_summary(&g_w->stats, &g_last_rep, out, len);
+    /* Colour follows RECENT health: the counts in the text are cumulative since
+     * `can screen on`, but one bad frame must not paint the line red forever. */
+    int ok = g_last_rep.signal && g_since_bad >= CAN_SCOPE_RECENT;
     xSemaphoreGive(g_lock);
     return ok;
 }
