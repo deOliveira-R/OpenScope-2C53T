@@ -12,6 +12,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include "trig_edge.h"
 #include "fixtures/trig_edge_records.h"
 
@@ -281,6 +282,31 @@ int main(void)
         CHECK(found == anch && early == 0,
               "3-point: finds all %d of %d, never before the 2-point touch (%d early); within 4 samples on %d, latest +%d",
               found, anch, early, within4, maxlate);
+    }
+
+    printf("[10] in-place rotation == the old staged three-memcpy rotation\n");
+    {
+        /* The reference is the code fpga_acq_unrotate_staging() ran before
+         * the RAM diet, verbatim apart from the buffer. */
+        static uint8_t ref[1024], got[1024], tmp[1024], orig[1024];
+        int bad = 0;
+        for (unsigned i = 0; i < 1024u; i++) orig[i] = (uint8_t)(urand() * 256.0);
+        for (uint32_t k = 0; k < 1024u; k++) {
+            memcpy(ref, orig, 1024u);
+            memcpy(got, orig, 1024u);
+            if (k != 0u) {
+                memcpy(tmp, ref + k, 1024u - k);
+                memcpy(tmp + (1024u - k), ref, k);
+                memcpy(ref, tmp, 1024u);
+            }
+            trig_edge_rotate_left(got, 1024u, k);
+            if (memcmp(ref, got, 1024u) != 0) bad++;
+        }
+        CHECK(bad == 0, "all 1024 rotations of a 1024-sample record match (%d differ)", bad);
+        uint8_t small[5] = { 0, 1, 2, 3, 4 };
+        trig_edge_rotate_left(small, 5u, 7u);    /* k mod n = 2 */
+        CHECK(small[0] == 2 && small[1] == 3 && small[2] == 4 && small[3] == 0 && small[4] == 1,
+              "odd length, k >= n taken mod n");
     }
 
     printf("\n%s\n", fails ? "FAILED" : "all passed");

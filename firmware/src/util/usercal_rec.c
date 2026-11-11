@@ -17,10 +17,15 @@
 #define OFF_IL_OFF    20u
 #define OFF_VALID     24u
 #define OFF_CORR      32u
-#define OFF_CRC       (OFF_CORR + CALPAGE_CHANNELS * CALPAGE_BANKS * CALPAGE_RANGES * 2u * 2u)
+#define OFF_CRC_V1    (OFF_CORR + CALPAGE_CHANNELS * CALPAGE_BANKS * CALPAGE_RANGES * 2u * 2u)
+#define OFF_NKNOTS    OFF_CRC_V1            /* v2 fields start where v1 had its CRC */
+#define OFF_KNOTS     (OFF_NKNOTS + 4u)
+#define OFF_SKEW      (OFF_KNOTS + IL_KNOTS_MAX * 4u)
+#define OFF_CRC       (OFF_SKEW + 4u)
 
-/* The layout constants above and the header's total must agree. */
+/* The layout constants above and the header's totals must agree. */
 typedef char usercal_len_check[(OFF_CRC + 4u == USERCAL_REC_LEN) ? 1 : -1];
+typedef char usercal_v1_len_check[(OFF_CRC_V1 + 4u == USERCAL_V1_LEN) ? 1 : -1];
 
 static void put16(uint8_t *p, uint16_t v) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
 static void put32(uint8_t *p, uint32_t v)
@@ -76,7 +81,10 @@ size_t usercal_encode(const usercal_t *u, uint8_t *buf, size_t cap)
     put16(buf + OFF_VERSION, USERCAL_VERSION);
     put16(buf + OFF_LEN, USERCAL_REC_LEN);
     put32(buf + OFF_TABLE, u->table_crc);
-    put32(buf + OFF_FLAGS, u->il_present ? USERCAL_F_IL : 0u);
+    const bool kn = u->il_n_knots >= 2u && u->il_n_knots <= IL_KNOTS_MAX;
+    const bool sk = u->il_skew_ppm != 0;
+    put32(buf + OFF_FLAGS, (u->il_present ? USERCAL_F_IL : 0u) |
+                           (kn ? USERCAL_F_IL_KNOTS : 0u) | (sk ? USERCAL_F_IL_SKEW : 0u));
     /* An absent block is stored as identity so two "no interleave" records
      * are byte-identical (and the layer elides the second). */
     put32(buf + OFF_IL_GAIN, (uint32_t)(u->il_present ? u->il_gain_ppm : 1000000));
@@ -93,6 +101,15 @@ size_t usercal_encode(const usercal_t *u, uint8_t *buf, size_t cap)
                 p += 4u;
             }
     }
+    /* Absent knots and skew stay zero (memset), as the line does above. */
+    if (kn) {
+        buf[OFF_NKNOTS] = u->il_n_knots;
+        for (unsigned i = 0; i < u->il_n_knots; i++) {
+            put16(buf + OFF_KNOTS + 4u * i,      (uint16_t)u->il_knot_a[i]);
+            put16(buf + OFF_KNOTS + 4u * i + 2u, (uint16_t)u->il_knot_b[i]);
+        }
+    }
+    put32(buf + OFF_SKEW, (uint32_t)u->il_skew_ppm);
     put32(buf + OFF_CRC, cal_backup_crc32(buf, OFF_CRC));
     return USERCAL_REC_LEN;
 }
@@ -103,22 +120,45 @@ usercal_status_t usercal_decode(const uint8_t *buf, size_t len, usercal_t *out)
     if (get32(buf + OFF_MAGIC) != USERCAL_MAGIC) return USERCAL_ST_MAGIC;
     /* Version before length: a later layout is allowed to change the size,
      * and "unknown version" is the truthful report for it. */
-    if (get16(buf + OFF_VERSION) != USERCAL_VERSION) return USERCAL_ST_VERSION;
-    if (len != USERCAL_REC_LEN || get16(buf + OFF_LEN) != USERCAL_REC_LEN) return USERCAL_ST_SIZE;
-    if (get32(buf + OFF_CRC) != cal_backup_crc32(buf, OFF_CRC)) return USERCAL_ST_CRC;
+    const uint16_t ver = get16(buf + OFF_VERSION);
+    if (ver != USERCAL_VERSION && ver != 1u) return USERCAL_ST_VERSION;
+    const bool v2 = (ver == USERCAL_VERSION);
+    const size_t rec_len = v2 ? USERCAL_REC_LEN : USERCAL_V1_LEN;
+    const size_t off_crc = v2 ? OFF_CRC : OFF_CRC_V1;
+    if (len != rec_len || get16(buf + OFF_LEN) != rec_len) return USERCAL_ST_SIZE;
+    if (get32(buf + off_crc) != cal_backup_crc32(buf, off_crc)) return USERCAL_ST_CRC;
 
     /* Validate everything from the bytes first, then fill *out: a rejected
-     * record never reaches the caller's struct, and no second 280-byte copy
+     * record never reaches the caller's struct, and no second ~310-byte copy
      * sits on the boot stack (main() runs this before the scheduler, on the
      * ~1.2 KB MSP stack). */
     const uint32_t flags = get32(buf + OFF_FLAGS);
-    if (flags & ~USERCAL_F_IL) return USERCAL_ST_RANGE;   /* bits no v1 writer sets */
+    const uint32_t known = v2 ? (USERCAL_F_IL | USERCAL_F_IL_KNOTS | USERCAL_F_IL_SKEW) : USERCAL_F_IL;
+    if (flags & ~known) return USERCAL_ST_RANGE;   /* bits no writer of this version sets */
     const bool il = (flags & USERCAL_F_IL) != 0u;
     const int32_t gain = (int32_t)get32(buf + OFF_IL_GAIN);
     const int32_t off  = (int32_t)get32(buf + OFF_IL_OFF);
     if (il && (gain < USERCAL_IL_GAIN_MIN || gain > USERCAL_IL_GAIN_MAX ||
                off < -USERCAL_IL_OFF_MAX || off > USERCAL_IL_OFF_MAX))
         return USERCAL_ST_RANGE;
+    uint8_t nk = 0;
+    int16_t ka[IL_KNOTS_MAX] = { 0 }, kb[IL_KNOTS_MAX] = { 0 };
+    int32_t skew = 0;
+    if (v2) {
+        if (flags & USERCAL_F_IL_KNOTS) {
+            nk = buf[OFF_NKNOTS];
+            if (nk > IL_KNOTS_MAX) return USERCAL_ST_RANGE;
+            for (unsigned i = 0; i < nk; i++) {
+                ka[i] = (int16_t)get16(buf + OFF_KNOTS + 4u * i);
+                kb[i] = (int16_t)get16(buf + OFF_KNOTS + 4u * i + 2u);
+            }
+            if (!interleave_knots_valid(nk, ka, kb)) return USERCAL_ST_RANGE;
+        }
+        skew = (int32_t)get32(buf + OFF_SKEW);
+        if (!!(flags & USERCAL_F_IL_SKEW) != (skew != 0) ||
+            skew > IL_SKEW_PPM_MAX || skew < -IL_SKEW_PPM_MAX)
+            return USERCAL_ST_RANGE;
+    }
     const uint32_t used = (1u << (CALPAGE_BANKS * CALPAGE_RANGES)) - 1u;
     for (unsigned c = 0; c < CALPAGE_CHANNELS; c++) {
         const uint32_t v = get32(buf + OFF_VALID + 4u * c);
@@ -138,6 +178,9 @@ usercal_status_t usercal_decode(const uint8_t *buf, size_t len, usercal_t *out)
     out->il_present  = il;
     out->il_gain_ppm = gain;
     out->il_off_e4   = off;
+    out->il_n_knots  = nk;
+    for (unsigned i = 0; i < nk; i++) { out->il_knot_a[i] = ka[i]; out->il_knot_b[i] = kb[i]; }
+    out->il_skew_ppm = skew;
     const uint8_t *p = buf + OFF_CORR;
     for (unsigned c = 0; c < CALPAGE_CHANNELS; c++) {
         out->valid[c] = get32(buf + OFF_VALID + 4u * c);
@@ -177,7 +220,7 @@ usercal_status_t usercal_store_load(usercal_t *out)
     if (!flash_regions_ready()) return USERCAL_ST_NO_STORAGE;
     const flash_region_status_t st = flash_region_read_latest(USERCAL_REGION, buf, sizeof(buf), &len);
     if (st == FLASH_REGION_ERR_NOT_FOUND) return USERCAL_ST_EMPTY;
-    if (st == FLASH_REGION_ERR_BOUNDS) return USERCAL_ST_SIZE;   /* longer than a v1 record */
+    if (st == FLASH_REGION_ERR_BOUNDS) return USERCAL_ST_SIZE;   /* longer than a v2 record */
     if (st != FLASH_REGION_OK) return USERCAL_ST_IO;
     return usercal_decode(buf, len, out);
 }

@@ -1114,6 +1114,13 @@ bool    fpga_interleave_get(void);
 bool    fpga_interleave_active(void);          /* enabled, mask 1, timebase <= 3 */
 void    fpga_interleave_corr_set(float gain, float offset);
 void    fpga_interleave_corr_get(float *gain, float *offset);
+/* Piecewise level map (1/100 record unit, ascending; n = 0 clears) and the
+ * timing skew (B's deviation from half a converter period, ppm of a period;
+ * 0 = off). The setters refuse invalid values and change nothing then. */
+bool    fpga_interleave_knots_set(uint8_t n, const int16_t *a, const int16_t *b);
+uint8_t fpga_interleave_knots_get(int16_t *a, int16_t *b);   /* a, b: IL_KNOTS_MAX each */
+bool    fpga_interleave_skew_set(int32_t ppm);
+int32_t fpga_interleave_skew_get(void);
 /* Self-calibration collector (fpga interleave cal). begin() drops `skip`
  * records then starts averaging the acq task's A/B centre windows; collect()
  * waits for `records` of them (false on timeout) and stops. */

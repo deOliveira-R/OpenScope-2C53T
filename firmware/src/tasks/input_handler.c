@@ -98,10 +98,23 @@ static void power_off_now(void)
     while (1) { }
 }
 
+/* A setting changed from the shell (e.g. `mode startup`) has no key press
+ * behind it, so settings_after_button() never captures it and a reflash right
+ * after loses it. The shell only raises this flag; the input task stays the
+ * one writer of the settings record (settings_store.h), and flushes on its
+ * next pass (<= 100 ms). */
+static volatile bool g_settings_flush_req;
+
+void input_request_settings_flush(void) { g_settings_flush_req = true; }
+
 /* Called every pass of the input task (<= 100 ms). */
 void input_autooff_poll(void)
 {
     uint32_t now = settings_now_ms();
+    if (g_settings_flush_req) {
+        g_settings_flush_req = false;
+        (void)settings_store_flush(now);
+    }
     if (!g_autooff_ready) {
         sys_autooff_init(&g_autooff, sys_prefs_autooff_mins(), now);
         g_autooff_ready = true;

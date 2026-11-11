@@ -120,7 +120,27 @@ typedef struct {
     int16_t mid_row;
     uint8_t mid_known;
     float   mid_counts;
+
+    /* DIRECT scale (math trace). The math overlay is drawn on its own scale
+     * about the graticule centre (value = rows from mid / px_per_div x step),
+     * not through an ADC code and a (channel, range) gain, so the renderer
+     * reports the result in its own unit: direct = DIRECT_VOLTS / DIRECT_COUNTS
+     * and the readout is `unit_per_pixel` x rows from mid_row (mid_counts is
+     * the zero, unused). Other math units (V^2, counts^2, A/B) have no unit
+     * this module can format: counts_per_pixel stays 0 and the readout is in
+     * pixels, never a converted number. direct_conf is the worst tier of the
+     * source channels' calibration. Zero = not a direct scale. */
+    uint8_t             direct;
+    scope_cursor_conf_t direct_conf;
+    float               unit_per_pixel;
 } scope_cursor_vmap_t;
+
+#define SCOPE_CURSOR_DIRECT_NONE    0u
+#define SCOPE_CURSOR_DIRECT_VOLTS   1u
+#define SCOPE_CURSOR_DIRECT_COUNTS  2u
+
+/* Confidence of a (channel, range) calibration row, for direct scales. */
+scope_cursor_conf_t scope_cursor_cal_conf(uint8_t channel, uint8_t range_idx);
 
 /*
  * Rate-explicit forms. The record's sample rate is NOT always the table's:

@@ -259,3 +259,25 @@ int trig_edge_search_stock(const volatile uint8_t *rec, int n, int lo, int hi,
     }
     return -1;
 }
+
+static void rev_bytes(volatile uint8_t *a, uint32_t lo, uint32_t hi)
+{
+    /* reverse a[lo..hi) */
+    while (hi > lo + 1u) {
+        hi--;
+        const uint8_t t = a[lo];
+        a[lo] = a[hi];
+        a[hi] = t;
+        lo++;
+    }
+}
+
+void trig_edge_rotate_left(volatile uint8_t *rec, uint32_t n, uint32_t k)
+{
+    if (n == 0u) return;
+    k %= n;
+    if (k == 0u) return;
+    rev_bytes(rec, 0u, k);
+    rev_bytes(rec, k, n);
+    rev_bytes(rec, 0u, n);
+}

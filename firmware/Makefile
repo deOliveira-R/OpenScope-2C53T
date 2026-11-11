@@ -778,15 +778,16 @@ $(BUILD_DIR)/test_trig_policy: tests/test_trig_policy.c src/dsp/trig_policy.c sr
 test-trig-policy: $(BUILD_DIR)/test_trig_policy
 	$<
 
-$(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
+# Merge, level map (line and bench knots) and skew FIR with its image spur (parity ilplus).
+$(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h src/dsp/interleave_skew_taps.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave.c -lm -o $@
 
 test-interleave: $(BUILD_DIR)/test_interleave
 	$<
 
-# 250 MS/s self-calibration fit and refusals (parity C2).
-$(BUILD_DIR)/test_interleave_cal: tests/test_interleave_cal.c src/dsp/interleave_cal.c src/dsp/interleave_cal.h src/dsp/interleave.c | $(BUILD_DIR)
+# 250 MS/s self-calibration fit, knots and refusals (parity C2), skew estimate (ilplus).
+$(BUILD_DIR)/test_interleave_cal: tests/test_interleave_cal.c src/dsp/interleave_cal.c src/dsp/interleave_cal.h src/dsp/interleave.c src/dsp/interleave.h src/dsp/interleave_skew_taps.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave_cal.c src/dsp/interleave.c -lm -o $@
 
@@ -848,6 +849,29 @@ $(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c sr
 .PHONY: test-paused-view
 test-paused-view: $(BUILD_DIR)/test_paused_view
 	$<
+
+# Bode sweep maths (step frequency, gain/phase, -3 dB bandwidth) and
+# bode_init(), which since the 2026-11-11 RAM diet fills a caller-owned result
+# instead of a dead 2.4 KB module copy.
+$(BUILD_DIR)/test_bode: tests/test_bode_mask.c src/dsp/bode.c src/dsp/bode.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DTEST_BUILD -Isrc/dsp $< src/dsp/bode.c -lm -o $@
+
+.PHONY: test-bode
+test-bode: $(BUILD_DIR)/test_bode
+	$<
+
+# Shared pool sizing: built for the host (radix-2) layout AND for the
+# USE_CMSIS_DSP layout every firmware image links, so both pool sizes and the
+# waterfall offset are pinned (RAM diet, 2026-11-11).
+$(BUILD_DIR)/test_shmem_layout: tests/test_shmem_layout.c src/dsp/shared_mem.c src/dsp/shared_mem.h src/dsp/fft.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/shared_mem.c -o $@
+$(BUILD_DIR)/test_shmem_layout_cmsis: tests/test_shmem_layout.c src/dsp/shared_mem.c src/dsp/shared_mem.h src/dsp/fft.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DUSE_CMSIS_DSP -Isrc/dsp $< src/dsp/shared_mem.c -o $@
+
+.PHONY: test-shmem-layout
+test-shmem-layout: $(BUILD_DIR)/test_shmem_layout $(BUILD_DIR)/test_shmem_layout_cmsis
+	$(BUILD_DIR)/test_shmem_layout
+	$(BUILD_DIR)/test_shmem_layout_cmsis
 
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace test-interleave-cal
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
@@ -927,14 +951,17 @@ test-gallery: $(BUILD_DIR)/test_gallery
 
 
 # OpenScope's persisted calibration corrections (baseline deltas + interleave
-# B correction): the v1 record format, its CRC, the version gate, corrupt and
-# foreign records, the page fingerprint, and save/load/compaction through the
-# real region layer on a NOR model with power cuts. See tests/test_usercal.c.
+# B correction): the v2 record format (line, knots, skew), v1 migration, its
+# CRC, the version gate, corrupt and foreign records, the page fingerprint, and
+# save/load/compaction through the real region layer on a NOR model with power
+# cuts. See tests/test_usercal.c.
 $(BUILD_DIR)/test_usercal: tests/test_usercal.c src/util/usercal_rec.c src/util/usercal_rec.h \
                            src/util/cal_backup_core.c src/util/cal_backup_core.h \
-                           src/util/cal_reference.c src/drivers/flash_regions.c src/drivers/flash_regions.h | $(BUILD_DIR)
+                           src/util/cal_reference.c src/drivers/flash_regions.c src/drivers/flash_regions.h \
+                           src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
-		src/util/usercal_rec.c src/util/cal_backup_core.c src/util/cal_reference.c src/drivers/flash_regions.c -o $@
+		src/util/usercal_rec.c src/util/cal_backup_core.c src/util/cal_reference.c src/drivers/flash_regions.c \
+		src/dsp/interleave.c -o $@
 
 .PHONY: test-usercal
 test-usercal: $(BUILD_DIR)/test_usercal
