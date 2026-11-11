@@ -162,7 +162,8 @@ static void test_layout_inside_scratch_only(void)
     /* disjoint from everything we must never touch */
     const flash_region_id_t keep[] = { FLASH_REGION_USER_CAL, FLASH_REGION_SETTINGS,
         FLASH_REGION_FACTORY_CAL_BACKUP, FLASH_REGION_TAIL, FLASH_REGION_SYSVOL,
-        FLASH_REGION_USERVOL, FLASH_REGION_FWCACHE, FLASH_REGION_MODULES };
+        FLASH_REGION_USERVOL, FLASH_REGION_FWCACHE, FLASH_REGION_MODULES,
+        FLASH_REGION_LOGO };
     for (unsigned i = 0; i < sizeof keep / sizeof keep[0]; i++) {
         const flash_region_t *r = flash_region_get(keep[i]);
         CHECK(hi <= r->start || lo >= r->start + r->length, "slots overlap %s", r->name);

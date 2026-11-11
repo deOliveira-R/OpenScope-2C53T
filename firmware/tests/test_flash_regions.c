@@ -410,13 +410,13 @@ static void test_write_crossing_into_readonly_neighbour_fails_closed(void)
 static void test_write_spanning_two_writable_regions_is_refused(void)
 {
     fresh();
-    const flash_region_t *modules = R(FLASH_REGION_MODULES);
+    const flash_region_t *modules = R(FLASH_REGION_LOGO);
     uint8_t *snap = snapshot();
 
-    /* modules ends where scratch begins; both are writable. Crossing is still
+    /* logo ends where scratch begins; both are writable. Crossing is still
      * refused — the boundary is the thing being protected, not the permission. */
     CHECK(modules->start + modules->length == R(FLASH_REGION_SCRATCH)->start,
-          "test assumes modules abuts scratch");
+          "test assumes logo abuts scratch");
 
     uint8_t data[16];
     memset(data, 0x33, sizeof data);
