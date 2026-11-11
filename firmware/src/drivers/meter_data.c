@@ -318,7 +318,7 @@ static uint8_t bcd_nibble_lookup(uint8_t combined)
  *   Capacitance (9): 200nF range, raw 1034 → 103.4 nF, decimal after digit 3
  *   Temperature (10): stock extended family, raw 248 → 24.8 C, decimal after digit 3
  */
-static const uint8_t default_decimal_pos[11] = {
+static const uint8_t default_decimal_pos[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
     1,  /* 0: DCV       — 9.899 V */
     2,  /* 1: ACV       — 98.99 V */
     2,  /* 2: DCA (mA)  — 98.99 mA */
@@ -330,6 +330,8 @@ static const uint8_t default_decimal_pos[11] = {
     1,  /* 8: Diode     — 0.623 V */
     3,  /* 9: Capacitance— 198.9 nF */
     3,  /* 10: Temp     — 24.8 C */
+    1,  /* 11: Auto     — never decoded as itself (the parser switches to the
+         *     function the SoC decided); here so submode 11 stays in bounds */
 };
 
 /* Full-scale values per sub-mode (for bar graph calculation) */

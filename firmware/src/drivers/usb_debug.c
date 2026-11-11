@@ -2384,7 +2384,7 @@ static void cmd_meter_func(const char *args)
 
     while (*args == ' ') args++;
     if (!*args || parse_int(args, &sub) != 0 || sub >= METER_SUBMODE_COUNT) {
-        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp)\r\n",
+        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp 11 Auto)\r\n",
                          (unsigned)(METER_SUBMODE_COUNT - 1));
         return;
     }

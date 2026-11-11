@@ -1156,7 +1156,20 @@ int main(void)
     meter_autoselect_create_task();
 
     if (current_mode == MODE_MULTIMETER) {
+#if FPGA_WARM_HANDOFF_TEST
+        /* A warm-handoff image reaches here only with FPGA_METER_SUBMODES
+         * (startup_policy.h). Its USART2 is parked (ctrl1 = 0, IRQ masked,
+         * FPGA_USART_SILENT_SCOPE) and fpga_meter_reset_transport() re-arms it
+         * only with the scheduler running, so a transition from here would
+         * busy-wait ~3 s for a SoC frame and 5 x 300 ms for a selector echo
+         * that cannot arrive, and the SoC would boot into its own Auto while
+         * meter_submode says otherwise. Hand it to the poll task instead: it
+         * runs the same transition `mode meter N` runs, once the scheduler
+         * is up. */
+        fpga_request_meter_mode(meter_submode);
+#else
         fpga_set_meter_mode(meter_submode);
+#endif
     } else {
         fpga_enter_scope_mode();
     }
