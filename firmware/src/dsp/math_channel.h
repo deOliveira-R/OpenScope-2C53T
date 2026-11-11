@@ -84,6 +84,18 @@ float math_scale_value(int idx);
 #define MATH_KEEP_DIVS_X10  40      /* 4.0: the previous step is kept up to here */
 int math_scale_pick(float peak, int prev);
 
+/* Finest step the result may be drawn at: one division of the channel(s) the
+ * op reads, carried through the op (min of the two for A+B / A-B, the product
+ * for A*B; none for A/B, a ratio). Without it a quiet result (A-B of the same
+ * signal, |A| of a grounded input) is autoscaled until 1-2 counts of ADC noise
+ * fill the screen. `counts_per_div` is the channel graticule in record codes
+ * (SCOPE_CAL_COUNTS_PER_DIV); the gains follow math_compute()'s volts/counts
+ * rule. Returns 0 when there is no floor. */
+float math_step_floor(math_op_t op, const math_in_t *in, float counts_per_div);
+
+/* Smallest ladder index whose step is >= floor_step (0 for no floor). */
+int math_scale_floor_idx(float floor_step);
+
 /* "500mV/d", "2V/d", "0.5V2/d", "20c/d", "0.2/d" ... */
 void math_scale_label(int idx, math_unit_t unit, char *out, uint32_t n);
 

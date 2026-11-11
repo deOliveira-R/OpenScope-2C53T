@@ -111,6 +111,33 @@ int math_scale_pick(float peak, int prev)
     return i;
 }
 
+float math_step_floor(math_op_t op, const math_in_t *in, float counts_per_div)
+{
+    const int cal = calibrated_for(op, in);
+    const float da = (cal ? in->k_a : 1.0f) * counts_per_div;
+    const float db = (cal ? in->k_b : 1.0f) * counts_per_div;
+    switch (op) {
+    case MATH_ADD:
+    case MATH_SUB:   return da < db ? da : db;
+    case MATH_MUL:   return da * db;
+    case MATH_INV_A:
+    case MATH_ABS_A: return da;
+    case MATH_INV_B:
+    case MATH_ABS_B: return db;
+    default:         return 0.0f;           /* MATH_DIV: dimensionless */
+    }
+}
+
+int math_scale_floor_idx(float floor_step)
+{
+    int i = 0;
+    if (!(floor_step > 0.0f)) return 0;
+    /* 0.1 % slack so a floor that IS a ladder value (0.5 V) is not pushed one
+     * step up by float rounding. */
+    while (i < MATH_SCALE_COUNT - 1 && math_scale_value(i) < floor_step * 0.999f) i++;
+    return i;
+}
+
 void math_scale_label(int idx, math_unit_t unit, char *out, uint32_t n)
 {
     static const char *const suffix[] = { "c", "c2", "V", "V2", "" };

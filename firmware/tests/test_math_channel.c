@@ -172,6 +172,31 @@ static void test_scale(void)
     }
 }
 
+/* Scale floor: a quiet result must not be autoscaled into the ADC noise. */
+static void test_scale_floor(void)
+{
+    /* 14 mV/count (range 4 class), 32 counts/div -> 0.448 V/div per channel */
+    math_in_t in = { 100, 100, 0.014f, 0.028f };
+    CHECK(near(math_step_floor(MATH_SUB, &in, 32.0f), 0.448f, 1e-4f), "A-B floor = finer channel div");
+    CHECK(near(math_step_floor(MATH_ABS_B, &in, 32.0f), 0.896f, 1e-4f), "|B| floor = B's div");
+    CHECK(near(math_step_floor(MATH_MUL, &in, 32.0f), 0.448f * 0.896f, 1e-4f), "A*B floor = product");
+    CHECK(math_step_floor(MATH_DIV, &in, 32.0f) == 0.0f, "A/B has no floor");
+    CHECK(math_scale_floor_idx(0.0f) == 0, "no floor -> 0");
+    CHECK(math_scale_value(math_scale_floor_idx(0.448f)) == 0.5f, "0.448 -> 0.5/d");
+    CHECK(math_scale_value(math_scale_floor_idx(0.5f)) == 0.5f, "a ladder value is its own floor");
+    /* A-B of one signal with 2 counts of noise: the pick alone would draw it at
+     * 10 mV/d (2.8 div of noise); with the floor it is under 0.1 div. */
+    const float noise = 2.0f * 0.014f;
+    int idx = math_scale_pick(noise, -1);
+    CHECK(math_scale_value(idx) < 0.05f, "pick alone autoscales the noise: %g", math_scale_value(idx));
+    int f = math_scale_floor_idx(math_step_floor(MATH_SUB, &in, 32.0f));
+    if (idx < f) idx = f;
+    CHECK(noise / math_scale_value(idx) < 0.1f, "floored: noise %g div", noise / math_scale_value(idx));
+    /* uncalibrated: one channel division in counts */
+    math_in_t raw = { 128, 128, 0.0f, 0.0f };
+    CHECK(math_step_floor(MATH_ADD, &raw, 32.0f) == 32.0f, "counts floor = 32 c");
+}
+
 static void test_labels(void)
 {
     char s[24];
@@ -202,6 +227,7 @@ int main(void)
     test_div_by_zero();
     test_clip_and_extremes();
     test_scale();
+    test_scale_floor();
     test_labels();
     printf("math_channel: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

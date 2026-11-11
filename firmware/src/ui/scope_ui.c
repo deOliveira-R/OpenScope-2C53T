@@ -1795,8 +1795,7 @@ static void draw_persistence_overlay(void)
  * Math channel overlay (C12: stock's 8 ops on the real records)
  *
  * Reads the same 320-sample window the traces were drawn from (g_math_toff,
- * the soft-trigger offset), copied first so a record being rewritten by the
- * acquisition task cannot tear a column. Volts where the range is calibrated
+ * the soft-trigger offset). Volts where the range is calibrated
  * (scope_cal gain, 0 V = scope_measure_zero_for), counts where not. Drawn
  * about the graticule centre on its OWN scale (a 1-2-5 step per division
  * chosen from the result, shown in the label): A*B and A/B have no common
@@ -1832,8 +1831,10 @@ static void draw_math_waveform(void)
     in.k_b = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
 
     /* Two passes over 64-sample chunks (peak, then rows) so no 320-sample
-     * scratch has to live in RAM; each chunk is copied from the record first
-     * so the acquisition task rewriting it cannot tear a column. */
+     * scratch has to live in RAM. Byte reads cannot tear a sample, but the
+     * window (and the two passes) can straddle a record commit, exactly as the
+     * trace renderers' own reads can: at worst one frame is scaled from a
+     * slightly different record than it is drawn from, and clips. */
     enum { CH = 64 };
     uint8_t a[CH], b[CH];
     float v[CH];
@@ -1857,6 +1858,11 @@ static void draw_math_waveform(void)
     const uint8_t key = (uint8_t)(op | ((uint8_t)unit << 4));
     if (key != scale_key) { scale_idx = -1; scale_key = key; }
     scale_idx = math_scale_pick(peak, scale_idx);
+    /* Never finer than the source channel's own division, so ADC noise on a
+     * quiet result (A-B of one signal) stays a flat line, not a full screen. */
+    const int floor_idx = math_scale_floor_idx(
+        math_step_floor(op, &in, SCOPE_CAL_COUNTS_PER_DIV));
+    if (scale_idx < floor_idx) scale_idx = floor_idx;
     const float step = math_scale_value(scale_idx);
 
     int16_t prev = -1;
