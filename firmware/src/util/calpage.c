@@ -232,6 +232,26 @@ bool calpage_dac_code_page(const uint8_t *page,
     return true;
 }
 
+bool calpage_pair_page(const uint8_t *page,
+                       const int8_t src_bank[CALPAGE_CHANNELS][CALPAGE_BANKS][CALPAGE_RANGES],
+                       uint8_t ch, uint8_t bank, uint8_t range,
+                       uint16_t *base, uint16_t *upper)
+{
+    if (page == NULL || src_bank == NULL || ch >= CALPAGE_CHANNELS ||
+        bank >= CALPAGE_BANKS || range >= CALPAGE_RANGES || base == NULL || upper == NULL)
+        return false;
+    const int8_t s = src_bank[ch][bank][range];
+    if (s < 0) return false;
+    *base  = calpage_entry(page, ch, 0u, (uint8_t)s, range);
+    *upper = calpage_entry(page, ch, 1u, (uint8_t)s, range);
+    return true;
+}
+
+uint16_t calpage_dac_from_pair(uint16_t base, uint16_t upper, int pos)
+{
+    return dac_from_pair(base, upper, pos);
+}
+
 float calpage_gain(const calpage_t *p, uint8_t ch)
 {
     if (!calpage_usable(p) || ch >= CALPAGE_CHANNELS) return 0.0f;

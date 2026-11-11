@@ -132,7 +132,15 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     case BTN_CH2:
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_CH_ENABLE_TOGGLE, 1) : cmd(KA_NONE, 0);
 
-    case BTN_AUTO: case BTN_OK: case BTN_SAVE:
+    /* Stock's long AUTO (code 0x10 -> handler 15, 0x0800DF58) and long
+     * Run/Stop (code 0x17 -> handler 22, 0x0800D954/0x0800DA3A) act in the
+     * scope only (ms[0xF68] == 2); ours in its time view, the one they
+     * calibrate and frame. */
+    case BTN_AUTO:
+        return c->scope_time_view ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
+    case BTN_OK:
+        return c->scope_time_view ? cmd(KA_CENTER50, 0) : cmd(KA_NONE, 0);
+    case BTN_SAVE:
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
 
     default:

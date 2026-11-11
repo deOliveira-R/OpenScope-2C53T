@@ -33,6 +33,7 @@
 #endif
 #include "fpga.h"
 #include "scope_vpos.h"
+#include "scope_selfcal_run.h"
 #include "meter_autoselect.h"
 #include "at32f403a_407.h"
 #include "button_scan.h"
@@ -413,15 +414,12 @@ static key_ctx_t key_ctx_now(void)
     return c;
 }
 
-/* Long AUTO/OK/SAVE: stock's baseline correction, 50 % centre and screenshot
- * gallery. Other parity items fill these in; until then say so. */
+/* Long SAVE: stock's screenshot gallery. Another parity item fills it in;
+ * until then say so. */
 static const char *long_unused_text(button_id_t b)
 {
-    switch (b) {
-    case BTN_AUTO: return "Long AUTO: not built";
-    case BTN_OK:   return "Long OK: not built";
-    default:       return "Long SAVE: not built";
-    }
+    (void)b;
+    return "Long SAVE: not built";
 }
 
 /* Execute one answer of key_map(). Returns the display command sent. */
@@ -489,6 +487,17 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
 
     case KA_LONG_UNUSED:
         popup_and_redraw(dq, long_unused_text((button_id_t)dir));
+        break;
+
+    /* Long AUTO / long OK (parity C10): queued for the key task's selfcal
+     * service, which runs right after this returns and shows its own
+     * popups. Baseline correction walks banks 0 and 1 (stock's order); bank
+     * 2, the interleaved single-channel regime, is `fpga scope basecal 7`. */
+    case KA_BASECAL:
+        if (!scope_selfcal_request_basecal(0x03u)) popup_and_redraw(dq, "Busy");
+        break;
+    case KA_CENTER50:
+        if (!scope_selfcal_request_center50()) popup_and_redraw(dq, "Busy");
         break;
 
     /* -- short presses -------------------------------------------------- */
@@ -653,6 +662,22 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
     char pb[24];
+
+    /* While autoset or the baseline correction runs the keys are locked, as
+     * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
+     * timebase press would pull the front end out from under the servo.
+     * AUTO and MENU (short or long) cancel and restore; POWER still works. */
+    if (scope_selfcal_busy()) {
+        const button_id_t base = (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG);
+        if (base == BTN_AUTO || base == BTN_MENU) {
+            scope_selfcal_request_cancel();
+            return cmd;
+        }
+        if (base != BTN_POWER) {
+            popup_and_redraw(dq, "Busy: AUTO cancels");
+            return cmd;
+        }
+    }
 
     /* A long press arrives as the id with BTN_LONG_FLAG set. It is handled
      * FIRST, before the meter's softkey catch below: long SELECT/MOVE/TRIGGER
@@ -873,9 +898,17 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 break;
             }
 #endif
-            /* Time view: the mask key (teach / cancel / clear). */
-            mask_auto_key(pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
+            /* Time view: autoset (parity C9; stock 0x0800CB50). While a
+             * mask exists, or the arrows are on its stage, AUTO keeps its
+             * mask meaning (cancel a teach / clear): the mask is ours, and
+             * an autoset would move the picture it was taught on. Teaching
+             * a new one is `mask teach` in the shell. */
+            if (scope_mask_state() != MASK_PF_EMPTY || scope_key_focus == KF_MASK) {
+                mask_auto_key(pb, sizeof(pb));
+                popup_and_redraw(dq, pb);
+            } else if (!scope_selfcal_request_autoset()) {
+                popup_and_redraw(dq, "Busy");
+            }
         }
         break;
 

@@ -278,6 +278,11 @@ static const scope_tb_tier_t tier_by_code[SCOPE_TIMEBASE_CODE_COUNT] = {
     SCOPE_TB_MEASURED,      /* 0x14 EXP-18       */
 };
 
+const float *scope_timebase_rate_table(void)
+{
+    return sample_rate;
+}
+
 float scope_timebase_sample_rate(uint8_t code)
 {
     if (code >= SCOPE_TIMEBASE_CODE_COUNT)

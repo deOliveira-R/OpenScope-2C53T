@@ -27,6 +27,7 @@ extern void system_clock_config(void);
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "scope_vpos.h"
+#include "scope_selfcal_run.h"
 #include "input_handler.h"
 #include "theme.h"
 #include "math_channel.h"
@@ -833,6 +834,12 @@ static void vInputTask(void *pvParameters)
         if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE) {
             input_handle_button(pressed, xDisplayQueue);
         }
+#ifndef EMULATOR_BUILD
+        /* Autoset / baseline correction / 50 % centre (parity C9/C10): one
+         * non-blocking pass, so a run never holds this task (or its health
+         * check-in) and AUTO/MENU can always cancel it. */
+        scope_selfcal_service(xDisplayQueue);
+#endif
 
         /* Check in with health monitor */
         health_checkin(health_slot_input);

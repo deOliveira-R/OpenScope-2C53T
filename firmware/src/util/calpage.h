@@ -170,6 +170,17 @@ bool calpage_dac_code_page(const uint8_t *page,
                            uint8_t ch, uint8_t bank, uint8_t range, int pos,
                            uint16_t *code);
 
+/* The clean pair (after substitution) that calpage_dac_code_page() would use
+ * for (ch, bank, range), for a caller that corrects it first (the baseline
+ * correction's RAM deltas, scope_vpos.c). False when no bank is clean. */
+bool calpage_pair_page(const uint8_t *page,
+                       const int8_t src_bank[CALPAGE_CHANNELS][CALPAGE_BANKS][CALPAGE_RANGES],
+                       uint8_t ch, uint8_t bank, uint8_t range,
+                       uint16_t *base, uint16_t *upper);
+
+/* Stock's interpolation on one pair, clamped to 0..4095. */
+uint16_t calpage_dac_from_pair(uint16_t base, uint16_t upper, int pos);
+
 /* One raw table entry straight from page bytes (ch 0/1, ep 0 base / 1 upper). */
 uint16_t calpage_entry(const uint8_t *page, uint8_t ch, uint8_t ep,
                        uint8_t bank, uint8_t range);
