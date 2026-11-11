@@ -528,7 +528,10 @@ _Static_assert(SCOPE_TIMEBASE_CODE_COUNT == TIMEBASE_COUNT,
 /* The cursor readout converts a pixel delta into a sample delta with this,
  * and it is true only because draw_channel_autofit()/draw_channel_fixed()
  * plot buf[x] at column x. Decimating or interpolating the plot without
- * changing this would silently rescale every cursor dt. */
+ * changing this would silently rescale every cursor dt. The one exception,
+ * the zoomed paused view (C14, pv_col), re-samples the record so that a
+ * column is 1 / fs_now: the cursors read column_rate_for_display(), which
+ * keeps "one column = one sample at the column rate" true there too. */
 _Static_assert(SCOPE_CURSOR_SAMPLES_PER_PIXEL == 1.0f,
                "the plot no longer draws one sample per column — "
                "cursor dt and 1/dt would be wrong");

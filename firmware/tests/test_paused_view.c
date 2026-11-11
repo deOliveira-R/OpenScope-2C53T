@@ -114,6 +114,14 @@ int main(void)
         CHECK(pv_sample(s, 0, 1024, 0, 200, &o), "first sample accepted at ratio < 1000 (taps clamp)");
         CHECK(!pv_sample(s, 0, 1024, -1, 200, &o), "position before sample 0 refused");
     }
+    {   /* The right-hand taps clamp to the LAST sample, never past it: a flat
+         * record followed by a hostile guard byte must interpolate flat. */
+        uint8_t g[64];
+        for (int i = 0; i < 64; i++) g[i] = (i < 32) ? 90u : 255u;
+        uint8_t v = 0;
+        bool ok = pv_sample(g, 0, 32, 31 * 1000 + 500, 200, &v);
+        CHECK(ok && v == 90u, "taps past the record end clamp to rec[hi-1] (got %u)", (unsigned)v);
+    }
 
     printf(fails ? "\n%d FAILED\n" : "\nALL PASS\n", fails);
     return fails ? 1 : 0;

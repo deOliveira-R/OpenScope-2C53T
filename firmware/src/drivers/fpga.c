@@ -4464,6 +4464,20 @@ static void fpga_warmtest_acq_task(void *pv)
             vTaskDelay(pdMS_TO_TICKS(10));     /* hold the one record */
             continue;
         }
+        /* STOP holds the published record (stock: ms[0x2E] = 0 at 0x0800BE5E,
+         * and a stopped timebase/range key re-renders instead of re-arming,
+         * 0x0800B6AA; docs/re/parity2_static.md section 3). Before this the
+         * task never tested `running` (trigger-modes.md D7): AUTO kept
+         * committing free-run reads and NORMAL every handover, so a key press
+         * while STOPPED drew a NEW record, and after a timebase key the next
+         * commit relabelled acq_pub_idx -- the zoom-while-paused view (C14)
+         * collapsed to ratio 1000 within one poll. Read nothing, like the
+         * SINGLE hold above: reg 0x01 may still follow the keys, the held
+         * record and its rate stay. Autoset/baseline set `running` first. */
+        if (ss_acq != NULL && !ss_acq->running) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         /* EXP-53/54 (2026-09-20..22) — PC0 is a HANDOVER strobe, not a
          * completion flag: it pulses 6–9 µs after an opcode-0x04 read that
          * finds a completed record (50 cycles at 0x10/0x12, never more). The

@@ -338,13 +338,16 @@ shell command sets it, and it is saved with the next key press.
 ```
 > CH1 Coupling      [DC / AC / GND]
   CH1 Probe         [1X / 10X]
-
   CH2 Coupling      [DC / AC / GND]
   CH2 Probe         [1X / 10X]
-
   Trigger Mode      [Auto / Normal / Single]
   Trigger Edge      [Rising / Falling]
+  Trigger Source    [CH1 / CH2]
+  Cursors           [Off / Vertical / Horizontal / Both]
 ```
+
+There is no "20M Limit" row: stock V1.2.0 has one in its tables but its menu
+never reaches it and it drives no hardware (docs/re/parity2_static.md, C13).
 
 Press **OK** on any item to cycle its value. **MENU** to go back.
 
