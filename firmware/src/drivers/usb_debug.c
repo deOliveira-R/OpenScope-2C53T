@@ -6008,7 +6008,7 @@ static void cmd_persist(const char *args)
         shell_persist_set(true);
         settings_flush_outcome_t o;
         if (input_settings_flush_sync(500u, &o))
-            usb_debug_printf("persist on (%lu commands were not saved; now %s)\r\n",
+            usb_debug_printf("persist on (%lu save requests were skipped; now %s)\r\n",
                              was_on ? 0ul : (unsigned long)skipped, settings_flush_outcome_text(o));
         else
             usb_debug_printf("persist on (save request timed out; the input task will save within 100 ms)\r\n");
@@ -6016,7 +6016,7 @@ static void cmd_persist(const char *args)
     }
     usb_debug_printf("persist %s", shell_persist_enabled() ? "on" : "off");
     if (!shell_persist_enabled())
-        usb_debug_printf(" (%lu commands not saved)", (unsigned long)shell_persist_skipped());
+        usb_debug_printf(" (%lu save requests skipped)", (unsigned long)shell_persist_skipped());
     usb_debug_printf("\r\n");
 }
 
