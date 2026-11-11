@@ -87,6 +87,17 @@ void health_checkin(int slot)
     }
 }
 
+void health_checkin_self(void)
+{
+    const TaskHandle_t me = xTaskGetCurrentTaskHandle();
+    for (int i = 0; i < HEALTH_MAX_TASKS; i++) {
+        if (health_tasks[i].registered && health_tasks[i].handle == me) {
+            health_tasks[i].last_checkin = xTaskGetTickCount();
+            return;
+        }
+    }
+}
+
 bool health_is_stalled(int slot)
 {
     if (slot < 0 || slot >= HEALTH_MAX_TASKS || !health_tasks[slot].registered)

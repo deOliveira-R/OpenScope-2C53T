@@ -147,7 +147,7 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
         return c->scope_time_view ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
 
     case BTN_SAVE:
-        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
+        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_GALLERY_OPEN, 0) : cmd(KA_NONE, 0);
 
     default:
         return cmd(KA_NONE, 0);

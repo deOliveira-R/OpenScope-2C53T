@@ -111,6 +111,9 @@ C_SOURCES += src/util/usercal.c
 C_SOURCES += src/util/sys_prefs.c
 C_SOURCES += src/drivers/sys_pwm.c
 C_SOURCES += src/util/screenshot.c
+C_SOURCES += src/util/gallery_store.c
+C_SOURCES += src/ui/gallery_nav.c
+C_SOURCES += src/ui/gallery_ui.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
 C_SOURCES += src/decode/decode_spi.c
@@ -864,6 +867,22 @@ $(BUILD_DIR)/test_scope_selfcal: tests/test_scope_selfcal.c src/ui/scope_selfcal
 
 .PHONY: test-scope-selfcal
 test-scope-selfcal: $(BUILD_DIR)/test_scope_selfcal
+	$<
+
+# On-device screenshots and gallery (parity C16): slot layout inside the
+# scratch region, 4-bpp BMP format, <seq>.bmp naming, save/delete/reuse and
+# the 3x3 grid keys, against the real region layer on a NOR model. Asserts
+# byte for byte that saving never touches flash outside scratch (the cal
+# backup at 0xFFD000, the user-cal log at 0xF00000). See tests/test_gallery.c.
+$(BUILD_DIR)/test_gallery: tests/test_gallery.c src/util/gallery_store.c src/util/gallery_store.h \
+                           src/ui/gallery_nav.c src/ui/gallery_nav.h src/drivers/flash_regions.c \
+                           src/drivers/flash_regions.h src/util/cal_backup_core.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/ui -Isrc/drivers $< \
+		src/util/gallery_store.c src/ui/gallery_nav.c src/drivers/flash_regions.c \
+		src/util/cal_backup_core.c -o $@
+
+.PHONY: test-gallery
+test-gallery: $(BUILD_DIR)/test_gallery
 	$<
 
 

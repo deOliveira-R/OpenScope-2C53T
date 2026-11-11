@@ -45,6 +45,7 @@
 #include "settings_store.h"
 #include "sys_prefs.h"
 #include "sys_pwm.h"
+#include "../ui/gallery_ui.h"
 #include "task.h"
 #include <stdio.h>
 #include <string.h>
@@ -628,14 +629,6 @@ static key_ctx_t key_ctx_now(void)
     return c;
 }
 
-/* Long SAVE: stock's screenshot gallery. Another parity item fills it in;
- * until then say so. */
-static const char *long_unused_text(button_id_t b)
-{
-    (void)b;
-    return "Long SAVE: not built";
-}
-
 /* Execute one answer of key_map(). Returns the display command sent. */
 static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
 {
@@ -716,8 +709,11 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
     }
 
-    case KA_LONG_UNUSED:
-        popup_and_redraw(dq, long_unused_text((button_id_t)dir));
+    /* Long SAVE (parity C16): stock's 3x3 screenshot gallery. It owns the
+     * screen (ui_modal_active) and every key until it closes itself. */
+    case KA_GALLERY_OPEN:
+        gallery_ui_open(dq);
+        cmd = DCMD_NONE_MODAL_DROP;
         break;
 
     /* Long AUTO / long OK (parity C10): queued for the key task's selfcal
@@ -935,6 +931,11 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     autooff_touch();
     sys_pwm_click();
 
+    /* The screenshot gallery (long SAVE) takes every key while it is open;
+     * it hands POWER back after closing itself so power-off always works. */
+    if (gallery_ui_is_open() && gallery_ui_key((uint8_t)button, dq))
+        return DCMD_NONE_MODAL_DROP;
+
     /* While autoset or the baseline correction runs the keys are locked, as
      * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
      * timebase press would pull the front end out from under the servo.
@@ -1107,13 +1108,19 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             meter_toggle_debug_overlay();
             send_cmd(dq, cmd);
         } else {
-            /* There is no on-device screenshot store: src/util/screenshot.c has
-             * no caller, and writing the stock FAT volume is not implemented.
-             * Until 2026-10-03 this printed "SAVED #n" and wrote nothing
-             * (audit P3, dev plan 2.6) -- a confirmation of something that
-             * never happened. Say so instead. Screenshots work over USB:
-             * scripts/screenshot.py (CRC-verified, needs a held screen). */
-            scope_show_popup("SAVE: not in this build");
+            /* Screenshot (parity C16): stock writes 2:/Screenshot file/%d.bmp
+             * and pops "Saved"/"Save failed" (ms[0xE10] 2/3). Ours writes
+             * <n>.bmp into our own W25Q scratch slots (gallery_store.h), never
+             * stock's FAT. The capture freezes rendering for the ~0.5 s write,
+             * so the popup comes after it and is not in the picture. The
+             * result is only reported once the region layer has read every
+             * page back (until 2026-10-03 this said "SAVED #n" and wrote
+             * nothing). */
+            uint32_t seq = 0;
+            const gallery_status_t gst = gallery_ui_capture(&seq);
+            char msg[28];
+            gallery_ui_result_text(gst, seq, msg, sizeof msg);
+            scope_show_popup(msg);
             send_cmd(dq, cmd);
         }
         break;

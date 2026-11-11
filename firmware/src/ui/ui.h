@@ -123,6 +123,10 @@ extern volatile float         fuse_scan_threshold_mv; /* Pass/fail threshold in 
  * renders nothing, so an overlay drawn from another task survives. Owner
  * must clear it and send DCMD_REDRAW_ALL to hand the screen back. */
 extern volatile bool          ui_modal_active;
+/* Counted by the display task each time round its loop while it is idling
+ * for ui_modal_active, so a claimant can wait until no frame is in flight
+ * (gallery_ui.c). */
+extern volatile uint32_t      ui_modal_idle_count;
 
 /* Scope feature toggles (defined in main.c) */
 extern volatile bool          math_enabled;

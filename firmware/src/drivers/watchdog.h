@@ -52,6 +52,11 @@ int health_register(const char *name, TaskHandle_t handle);
 /* Task check-in: call this periodically from each task's main loop */
 void health_checkin(int slot);
 
+/* Check in for whichever registered task is calling (no-op for an
+ * unregistered one). For long operations in shared code that does not know
+ * its caller's slot, e.g. a screenshot save from the key task or the shell. */
+void health_checkin_self(void);
+
 /* Run one health check cycle: update HWMs, check deadlines, feed or starve WDT.
  * Called from a timer callback or dedicated low-priority task. */
 void health_check(void);
