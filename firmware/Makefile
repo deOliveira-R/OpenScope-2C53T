@@ -1059,6 +1059,13 @@ guest-configB-arm: clean all
 app-coldtrace: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG
 app-coldtrace: clean all
 
+# app-coldtrace-meter: the same image with meter submodes (FPGA_METER_SUBMODES),
+# as guest-coldtrace-meter does for the guest layout. Without it the warm-handoff
+# build returns from fpga_set_meter_mode() at once: meter frames still stream, but
+# no function change is ever sent. The daily bench image on unit #2.
+app-coldtrace-meter: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
+app-coldtrace-meter: clean all
+
 guest-caldump: CFLAGS += -DGUEST_BUILD -DCAL_DUMP_MODE=1
 guest-caldump: LDSCRIPT = ld/at32f403a_guest.ld
 guest-caldump: clean all
