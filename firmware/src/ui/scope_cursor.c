@@ -33,7 +33,9 @@ static scope_cursor_reading_t make(scope_cursor_unit_t u,
  * become MEASURED. */
 static scope_cursor_conf_t conf_from_cal(scope_cal_tier_t t)
 {
-    if (t == SCOPE_CAL_MEASURED)    return SCOPE_CURSOR_MEASURED;
+    /* FACTORY = this unit's own stock calibration (scope_cal.h): the same
+     * scale stock's own cursors use, so it reads as a measured quantity. */
+    if (t == SCOPE_CAL_MEASURED || t == SCOPE_CAL_FACTORY) return SCOPE_CURSOR_MEASURED;
     if (t == SCOPE_CAL_PROVISIONAL) return SCOPE_CURSOR_PROVISIONAL;
     return SCOPE_CURSOR_RAW;
 }

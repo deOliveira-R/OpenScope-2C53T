@@ -82,12 +82,37 @@ static int channel_row(uint8_t ch)
     return -1;
 }
 
+/* Stock's nominal ladder, mV per count at the BNC (table 0x0804BFB8). Not a
+ * calibration by itself: it is only used divided by a unit's own g. */
+static const float stock_nominal_mv[SCOPE_CAL_RANGE_COUNT] = {
+    0.4f, 0.8f, 2.0f, 4.0f, 8.0f, 20.0f, 40.0f, 80.0f, 200.0f, 400.0f,
+};
+
+/* Per-channel g from the unit's page; 0 = not in use (see scope_cal.h). */
+static float stock_gain[2];
+
+void scope_cal_set_stock_gain(uint8_t ch, float g)
+{
+    const int row = channel_row(ch);
+    if (row < 0) return;
+    stock_gain[row] = (g > 0.0f) ? g : 0.0f;
+}
+
+float scope_cal_stock_gain(uint8_t ch)
+{
+    const int row = channel_row(ch);
+    return (row < 0) ? 0.0f : stock_gain[row];
+}
+
 float scope_cal_mv_per_count(uint8_t ch, uint8_t range_idx)
 {
     const int row = channel_row(ch);
 
     if (row < 0 || range_idx >= SCOPE_CAL_RANGE_COUNT)
         return 0.0f;
+
+    if (stock_gain[row] > 0.0f)
+        return stock_nominal_mv[range_idx] / stock_gain[row];
 
     return mv_per_count[row][range_idx] * SCOPE_CAL_SOURCE_SCALE;
 }
@@ -116,6 +141,9 @@ scope_cal_tier_t scope_cal_get_tier(uint8_t ch, uint8_t range_idx)
 {
     if (channel_row(ch) < 0 || range_idx >= SCOPE_CAL_RANGE_COUNT)
         return SCOPE_CAL_NONE;
+
+    if (stock_gain[channel_row(ch)] > 0.0f)
+        return SCOPE_CAL_FACTORY;
 
     /* An entry with no gain cannot be anything but NONE, whatever the tier
      * table says. Keeping the two in sync is a maintenance hazard, so derive

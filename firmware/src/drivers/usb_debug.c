@@ -38,6 +38,8 @@
 #define DEBUG_SHELL_RTT_ONLY 0
 #endif
 #include "scope_trigger.h"
+#include "scope_vpos.h"
+#include "../util/calpage.h"
 #include "fpga.h"
 #include "lcd.h"
 #include "meter_auto.h"
@@ -3356,7 +3358,18 @@ static void cmd_fpga_scope_measure(const char *args)
  */
 static void cmd_fpga_scope_cal(void)
 {
-    usb_send_str("vertical cal (bench unit #1, EXP-08 2026-08-17)\r\n");
+    /* Per channel: this unit's stock page (nominal ladder / g, scope_cal.h)
+     * when `cal page` found a valid amplitude mean, else the compiled table. */
+    for (uint8_t ch = 1u; ch <= 2u; ch++) {
+        const float g = scope_cal_stock_gain(ch);
+        if (g > 0.0f)
+            usb_debug_printf("CH%u: this unit's cal page, nominal / g, g=%lu.%04lu\r\n",
+                             (unsigned)ch, (unsigned long)g,
+                             (unsigned long)((g - (float)(unsigned long)g) * 10000.0f + 0.5f));
+        else
+            usb_debug_printf("CH%u: compiled table (bench unit #1, EXP-08 2026-08-17)\r\n",
+                             (unsigned)ch);
+    }
     usb_debug_printf("source scale %d.%03d  counts/div %d\r\n",
                      (int)SCOPE_CAL_SOURCE_SCALE,
                      (int)((SCOPE_CAL_SOURCE_SCALE - (int)SCOPE_CAL_SOURCE_SCALE)
@@ -3370,7 +3383,8 @@ static void cmd_fpga_scope_cal(void)
         scope_cal_range_label_bnc(2u, r, l2, sizeof(l2));   /* cal table        */
 
         const scope_cal_tier_t t = scope_cal_get_tier(1u, r);
-        const char *tn = (t == SCOPE_CAL_MEASURED)    ? "measured"
+        const char *tn = (t == SCOPE_CAL_FACTORY)     ? "factory (CH1)"
+                       : (t == SCOPE_CAL_MEASURED)    ? "measured"
                        : (t == SCOPE_CAL_PROVISIONAL) ? "provisional"
                                                       : "none (rails)";
 
@@ -3491,6 +3505,170 @@ static void cmd_fpga_scope_center(const char *args)
                              : "");
     }
     /* acq was never paused (see the note above) — nothing to resume. */
+}
+
+/*
+ * Stock calibration page in use (parity C4; src/util/calpage.h, scope_vpos.h).
+ *   cal page [on|off|reload]     decoded table, bank in force, substitutions
+ *   cal page calc <1|2> <bank> <range> <pos>   one code, ours vs stock's
+ *   cal pos <1|2> [-100..100]    vertical position (stock units)
+ * The page is only READ here; `cal restore` is still the one writer.
+ */
+static void fmt_g(char *out, size_t n, float g)
+{
+    if (g <= 0.0f) { snprintf(out, n, "-- (compiled table)"); return; }
+    const unsigned long x = (unsigned long)(g * 10000.0f + 0.5f);
+    snprintf(out, n, "%lu.%04lu", x / 10000ul, x % 10000ul);
+}
+
+static void print_vpos_channel(uint8_t ch)
+{
+    uint8_t bank = 0, range = 0;
+    uint16_t code = 0;
+    /* The record median is post FPGA_ADC_OFFSET (raw - 28, clamped at 0), so
+     * raw ~= median + 28; a quiet input at pos p should sit at raw ~128 + p. */
+    const uint32_t med = scope_center_buf_median(ch);
+    const uint16_t hw = (ch == 2u) ? scope_trigger_ch2_last() : scope_trigger_dac_last();
+    if (scope_vpos_last(ch, &bank, &range, &code))
+        usb_debug_printf("CH%u: range %u pos %d -> %s %u (bank %u)  ref now %u  "
+                         "rec median %lu (raw ~%lu)\r\n",
+                         (unsigned)ch, (unsigned)range, scope_vpos_get(ch),
+                         ch == 2u ? "TMR13_C1DT" : "DAC1", (unsigned)code, (unsigned)bank,
+                         (unsigned)hw, (unsigned long)med, (unsigned long)(med + 28u));
+    else
+        usb_debug_printf("CH%u: pos %d, not written from the page  ref now %u  "
+                         "rec median %lu (raw ~%lu)\r\n",
+                         (unsigned)ch, scope_vpos_get(ch), (unsigned)hw,
+                         (unsigned long)med, (unsigned long)(med + 28u));
+}
+
+static void cmd_cal_page_calc(const char *args)
+{
+    char *end;
+    long v[4];
+    for (int i = 0; i < 4; i++) {
+        while (*args == ' ') args++;
+        v[i] = strtol(args, &end, 10);
+        if (end == args) {
+            usb_send_str("Usage: cal page calc <1|2> <bank 0-2> <range 0-9> <pos -100..100>\r\n");
+            return;
+        }
+        args = end;
+    }
+    if ((v[0] != 1 && v[0] != 2) || v[1] < 0 || v[1] > 2 || v[2] < 0 || v[2] > 9) {
+        usb_send_str("Usage: cal page calc <1|2> <bank 0-2> <range 0-9> <pos -100..100>\r\n");
+        return;
+    }
+    calpage_t p;
+    calpage_parse((const uint8_t *)CAL_BACKUP_SRC_ADDR, CALPAGE_LEN, &p);
+    const uint8_t c = (uint8_t)(v[0] - 1), b = (uint8_t)v[1], r = (uint8_t)v[2];
+    const int pos = calpage_clamp_pos((int)v[3]);
+    /* What stock writes for the entry AS STORED: CH1 low 12 bits (bfi at
+     * 0x08008A44), CH2 the full value into TMR13 C1DT. */
+    const uint32_t st = calpage_stock_formula(p.raw[c][0][b][r], p.raw[c][1][b][r], pos);
+    uint16_t ours = 0;
+    const bool ok = calpage_dac_code(&p, c, b, r, pos, &ours);
+    usb_debug_printf("CH%ld b%ld r%ld pos %d: stock %lu%s  ours ", v[0], v[1], v[2], pos,
+                     (unsigned long)(c == 0u ? (st & 0x0FFFu) : st),
+                     c == 0u ? " (12-bit cut)" : " (unmasked)");
+    if (ok)
+        usb_debug_printf("%u (pair from bank %d)\r\n", (unsigned)ours, (int)p.src_bank[c][b][r]);
+    else
+        usb_debug_printf("none (%s)\r\n", calpage_usable(&p) ? "no clean bank" : calpage_status_str(p.status));
+}
+
+static void cmd_cal_page(const char *args)
+{
+    while (args && *args == ' ') args++;
+    if (args && strncmp(args, "calc", 4) == 0) { cmd_cal_page_calc(args + 4); return; }
+    if (args && *args) {
+        if (strcmp(args, "on") == 0) {
+            if (!scope_vpos_enable(true)) usb_send_str("refused: page not usable\r\n");
+        } else if (strcmp(args, "off") == 0) {
+            (void)scope_vpos_enable(false);
+        } else if (strcmp(args, "reload") == 0) {
+            scope_vpos_init();
+        } else {
+            usb_send_str("Usage: cal page [on|off|reload] | cal page calc <1|2> <bank> <range> <pos>\r\n");
+            return;
+        }
+    }
+
+    calpage_t p;   /* ~440 B on this task's 3 KB stack */
+    calpage_parse((const uint8_t *)CAL_BACKUP_SRC_ADDR, CALPAGE_LEN, &p);
+    usb_debug_printf("cal page @0x%08lX: %s, %s  sig 0x%02X  sentinel 0x%04X\r\n",
+                     (unsigned long)CAL_BACKUP_SRC_ADDR, calpage_status_str(p.status),
+                     scope_vpos_active() ? "IN USE" : "not in use",
+                     (unsigned)p.signature, (unsigned)p.sentinel);
+    char g1[24], g2[24];
+    fmt_g(g1, sizeof(g1), scope_cal_stock_gain(1u));
+    fmt_g(g2, sizeof(g2), scope_cal_stock_gain(2u));
+    usb_debug_printf("gain g=(m-28)/150: CH1 m=%u g=%s  CH2 m=%u g=%s\r\n",
+                     (unsigned)p.m[0], g1, (unsigned)p.m[1], g2);
+    usb_debug_printf("page header (stock UI state, not used): pos %d/%d mask %u tb 0x%02X\r\n",
+                     (int)p.hdr_pos[0], (int)p.hdr_pos[1], (unsigned)p.hdr_mask, (unsigned)p.hdr_tb);
+    const uint8_t tb = fpga_acq_rate_idx_get(), mask = fpga.channel_mask;
+    usb_debug_printf("in force: tb 0x%02X mask %u -> bank %u (tb>=5: 0; tb==4 or mask 3: 1; else 2)\r\n",
+                     (unsigned)tb, (unsigned)mask, (unsigned)calpage_bank_select(tb, mask));
+    print_vpos_channel(1u);
+    print_vpos_channel(2u);
+    if (p.status == CALPAGE_ST_SIGNATURE || p.status == CALPAGE_ST_SHORT ||
+        p.status == CALPAGE_ST_NONE)
+        return;
+
+    usb_debug_printf("clean pairs %u/60, substituted %u, unusable %u\r\n",
+                     (unsigned)p.n_clean_pairs, (unsigned)p.n_substituted, (unsigned)p.n_unusable);
+    for (uint8_t c = 0; c < CALPAGE_CHANNELS; c++)
+        for (uint8_t b = 0; b < CALPAGE_BANKS; b++)
+            for (uint8_t r = 0; r < CALPAGE_RANGES; r++) {
+                const int8_t sb = p.src_bank[c][b][r];
+                if (sb == (int8_t)b) continue;
+                const uint8_t f = p.flags[c][0][b][r] | p.flags[c][1][b][r];
+                usb_debug_printf("  CH%u b%u r%u: base %u upper %u [%s%s%s] -> ",
+                                 (unsigned)(c + 1u), (unsigned)b, (unsigned)r,
+                                 (unsigned)p.raw[c][0][b][r], (unsigned)p.raw[c][1][b][r],
+                                 (f & CALPAGE_F_RANGE) ? " >4095/blank" : "",
+                                 (f & CALPAGE_F_SPAN)  ? " span" : "",
+                                 (f & CALPAGE_F_XBANK) ? " cross-bank" : "");
+                if (sb < 0) usb_send_str("NO clean bank: page not used for this range\r\n");
+                else        usb_debug_printf("bank %d used\r\n", (int)sb);
+            }
+    usb_send_str("table ('!' >4095/blank, '?' span or cross-bank outlier):\r\n");
+    for (uint8_t c = 0; c < CALPAGE_CHANNELS; c++)
+        for (uint8_t e = 0; e < CALPAGE_ENDPOINTS; e++)
+            for (uint8_t b = 0; b < CALPAGE_BANKS; b++) {
+                char line[96];
+                int n = snprintf(line, sizeof(line), "CH%u %-5s b%u:", (unsigned)(c + 1u),
+                                 e ? "upper" : "base", (unsigned)b);
+                for (uint8_t r = 0; r < CALPAGE_RANGES && n > 0 && n < (int)sizeof(line); r++) {
+                    const uint8_t f = p.flags[c][e][b][r];
+                    n += snprintf(line + n, sizeof(line) - (size_t)n, "%6u%c",
+                                  (unsigned)p.raw[c][e][b][r],
+                                  (f & CALPAGE_F_RANGE) ? '!' : (f ? '?' : ' '));
+                }
+                usb_debug_printf("%s\r\n", line);
+            }
+}
+
+static void cmd_cal_pos(const char *args)
+{
+    while (*args == ' ') args++;
+    char *end;
+    const long ch = strtol(args, &end, 10);
+    if (end == args || (ch != 1 && ch != 2)) {
+        usb_send_str("Usage: cal pos <1|2> [-100..100]\r\n");
+        return;
+    }
+    args = end;
+    while (*args == ' ') args++;
+    if (*args) {
+        const long pos = strtol(args, &end, 10);
+        if (end == args) { usb_send_str("Usage: cal pos <1|2> [-100..100]\r\n"); return; }
+        (void)scope_vpos_set((uint8_t)ch, (int)pos);
+    }
+    if (!scope_vpos_active())
+        usb_send_str("(cal page not in use: position stored, offset reference unchanged)\r\n");
+    print_vpos_channel((uint8_t)ch);
 }
 
 static void cmd_fpga_diag_clear(void)
@@ -7961,6 +8139,11 @@ static const shell_cmd_t shell_cmds[] = {
           "cal backup                      Copy MCU factory-cal page to W25Q (safe)\r\n"),
     CMD_A("cal restore", cmd_cal_restore, SC_NEEDARGS,
           "cal restore [force] CONFIRM     Write W25Q backup back to MCU flash 0x08006000\r\n"),
+    CMD_A("cal page", cmd_cal_page, 0,
+          "cal page [on|off|reload]        Stock cal page in use: table, bank, substitutions, DAC codes\r\n"
+          "cal page calc <1|2> <b> <r> <p> One offset code from the page: stock's vs ours\r\n"),
+    CMD_A("cal pos", cmd_cal_pos, SC_NEEDARGS,
+          "cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n"),
     CMD_A("screen dump", cmd_screen_dump, 0,
           "screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n"),
     CMD_A("screen dumpbin", cmd_screen_dumpbin, 0,

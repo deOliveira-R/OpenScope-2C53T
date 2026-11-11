@@ -26,6 +26,7 @@ extern void system_clock_config(void);
 #include "watchdog.h"
 #include "scope_state.h"
 #include "scope_cal.h"
+#include "scope_vpos.h"
 #include "input_handler.h"
 #include "theme.h"
 #include "math_channel.h"
@@ -1155,6 +1156,12 @@ int main(void)
     /* And the trigger level: the arm burst's 0xAD sits above any mid-scale
      * signal, so PC0 never completes a capture (EXP-41, 2026-09-14). */
     fpga_reconcile_trigger_after_arm();
+    /* This unit's stock calibration page (0x08006000, read-only): per-bank
+     * offset-DAC tables and per-channel gain (parity C4, scope_vpos.h).
+     * After the restores above, because bank and range come from the
+     * restored timebase and vdiv; a unit without a usable page keeps the
+     * fixed arm fpga_init() just made. */
+    scope_vpos_init();
 #endif
 
     /* Create queues */

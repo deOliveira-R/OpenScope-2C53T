@@ -26,6 +26,7 @@
 #include "fpga_meter_plan.h"
 #include "meter_data.h"
 #include "scope_trigger.h"
+#include "scope_vpos.h"
 #include "../dsp/trig_edge.h"
 #include "../dsp/interleave.h"
 #include "../ui/ui.h"
@@ -3805,6 +3806,10 @@ bool fpga_apply_channel_enables(void)
     if (ss->trigger.source == TRIG_SRC_CH1 && !ss->ch1.enabled)
         ss->trigger.source = TRIG_SRC_CH2;
     fpga_set_channel_mask((ss->ch1.enabled && ss->ch2.enabled) ? 3u : (ss->ch2.enabled ? 2u : 1u));
+    /* The mask is an input of stock's bank rule (both on -> bank 1 at
+     * tb <= 3, one channel -> bank 2), so the offset references move with it
+     * (stock re-runs 0x080089C2 / 0x08008BD4 after a channel change). */
+    scope_vpos_apply();
     acq_reprime_req = true;
     return true;
 }
@@ -3845,6 +3850,10 @@ bool fpga_apply_timebase(uint8_t code)
         return false;
     fpga_scope_write_reg(0x01, code);
     acq_rate_idx = code;
+    /* The timebase picks the calibration bank (>= 5 -> 0, 4 -> 1, <= 3 ->
+     * 1 or 2 by mask): crossing 4/5 moves the offset references. DAC/TMR13
+     * writes only, no SPI3, so inside or outside the park is equivalent. */
+    scope_vpos_apply();
     acq_reprime_req = true;
     fpga_acq_resume();
     return true;
@@ -3885,6 +3894,10 @@ bool fpga_apply_vdiv(uint8_t ch, uint8_t idx)
     if ((ch != 1u && ch != 2u) || idx >= VDIV_COUNT)
         return false;
     fpga_scope_set_range_diag_ch((uint8_t)(ch - 1u), idx);
+    /* With a usable stock cal page the new range's offset operating point
+     * comes from it (scope_vpos.c), so the NOTE above no longer applies on
+     * such units. `idx`, not vdiv_idx: callers store it after this returns. */
+    scope_vpos_apply_ch(ch, idx);
     return true;
 }
 
@@ -4231,7 +4244,10 @@ static void fpga_warmtest_acq_task(void *pv)
              * capture. Rare by construction, so it does not fight the UI
              * vertical-position control the way a per-poll re-arm would. */
             if (++fpga.spi3_timeout_count >= 32) {
-                scope_trigger_dac_raw(2048);
+                /* Mid-scale without a usable cal page (as before); with one,
+                 * the calibrated codes, so recovery does not silently undo
+                 * the vertical position. */
+                scope_vpos_recover();
                 fpga.spi3_timeout_count = 0;
             }
         }
@@ -6676,6 +6692,9 @@ void fpga_enter_scope_mode(void)
 
     fpga_stock_diag_seed_base2();
     fpga_scope_reinit();
+    /* Siggen owned DAC1/PA4 until dac_output_stop() above; give CH1 its
+     * offset reference back (no-op without a usable cal page). */
+    scope_vpos_apply();
 
     /* NOTE: Do NOT fire acquisition triggers here. The scope USART commands
      * take a few hundred milliseconds, and the display task already waits

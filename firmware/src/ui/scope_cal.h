@@ -70,12 +70,14 @@
  * WHAT THIS TABLE IS NOT
  * ----------------------
  * - Not per-unit. These are bench unit #1's numbers compiled into the image.
- *   Factory per-device cal exists in MCU flash at 0x08006000 (see
- *   docs/experiments and the factory-cal memory note) and our app overwrites
- *   it. Wiring that up is a separate job.
+ *   Factory per-device cal exists in MCU flash at 0x08006000 (the app links
+ *   at 0x08007000 and leaves it alone). When that page is valid it replaces
+ *   this table per channel — see "THIS UNIT'S STOCK CALIBRATION" below and
+ *   src/drivers/scope_vpos.c; this table is the fallback for units without.
  * - Not offset. This is gain only. The zero point is set by the per-channel
- *   vertical-offset reference (DAC1/PA4 for CH1, TMR13/PA6 for CH2) and is
- *   re-centered per range by `fpga scope center`.
+ *   vertical-offset reference (DAC1/PA4 for CH1, TMR13/PA6 for CH2): from the
+ *   page's per-bank tables when there is one (scope_vpos.c), otherwise a
+ *   fixed arm re-centered per range by `fpga scope center`.
  * - Not horizontal. There is no sample-rate table here yet. (The claim that
  *   "the capture does not resolve frequency at all" was WITHDRAWN by EXP-10 on
  *   2026-08-18 — it was a double FFT in the measuring script, not a hardware
@@ -147,7 +149,35 @@ typedef enum {
     SCOPE_CAL_NONE = 0,     /* unusable range — caller must show ADC counts */
     SCOPE_CAL_PROVISIONAL,  /* right order of magnitude, channels disagree   */
     SCOPE_CAL_MEASURED,     /* cross-validated three ways on two units       */
+    SCOPE_CAL_FACTORY,      /* this unit's own stock cal page: nominal / g   */
 } scope_cal_tier_t;
+
+/*
+ * THIS UNIT'S STOCK CALIBRATION (parity item C4, 2026-11-11)
+ * ----------------------------------------------------------
+ * When the device's own calibration page (0x08006000, src/util/calpage.h)
+ * carries a valid amplitude-cal mean m for a channel, that channel's scale
+ * becomes stock's: the nominal ladder 0.4/0.8/2/4/8/20/40/80/200/400
+ * mV/count for r0..r9 (stock table 0x0804BFB8, k_r = {400,800,2000}[r%3] x
+ * 10^(r/3) uV) divided by g = (m - 28)/150. Stock applies 1/g to every sample
+ * (acquisition task 0x0803ED9C/0x0803F06C) and then reads volts off the
+ * nominal ladder (measurements 0x080266F8.., cursors 0x08025FC0..), so
+ * V = raw counts x k_r / g; nothing else enters (ADDENDUM_A S7).
+ *
+ * On bench unit #1's ranges 5-7 this agrees with the compiled table below to
+ * ~3% (r6: 40/1.04 = 38.5 vs 42.95 x 0.92 = 39.5), which is the check that
+ * the range index here is stock's range index.
+ *
+ * SCOPE_CAL_SOURCE_SCALE does NOT apply to these values: it corrects the
+ * ESP32 generator used to build the compiled table, and the page was never
+ * near that generator. g <= 0 for a channel (the default; no page, or an
+ * invalid m) leaves that channel on the compiled table, bit-identical to the
+ * behaviour before this existed. Tier FACTORY: provenance is the unit's own
+ * calibration, measured at r7 only and applied to all ranges exactly as stock
+ * does — so it is as good as stock's own readout, and no better.
+ */
+void  scope_cal_set_stock_gain(uint8_t ch, float g);
+float scope_cal_stock_gain(uint8_t ch);   /* 0.0f = not in use */
 
 /*
  * Millivolts per ADC count for one channel on one range, source-scale

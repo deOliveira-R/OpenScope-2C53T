@@ -64,6 +64,7 @@ C_SOURCES += src/drivers/fpga_meter_plan.c
 C_SOURCES += src/drivers/fpga_scanner.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
+C_SOURCES += src/drivers/scope_vpos.c
 C_SOURCES += src/dsp/trig_edge.c
 C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/drivers/meter_data.c
@@ -89,6 +90,7 @@ C_SOURCES += src/ui/scope_mask.c
 C_SOURCES += src/util/config.c
 C_SOURCES += src/util/cal_dump.c
 C_SOURCES += src/util/cal_backup_core.c
+C_SOURCES += src/util/calpage.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
 C_SOURCES += src/util/settings_store.c
@@ -699,6 +701,21 @@ $(BUILD_DIR)/test_mask_pf: tests/test_mask_pf.c src/dsp/mask_pf.c src/dsp/mask_p
 		$< src/dsp/mask_pf.c src/dsp/trig_edge.c -lm -o $@
 
 test-mask-pf: $(BUILD_DIR)/test_mask_pf
+	$<
+
+# Stock calibration page (parity C4): decode, the S12 validation rules, bank
+# substitution and the offset-DAC formula against stock's live SWD readings
+# on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page
+# (src/util/cal_reference.c) as the control, and the gain hand-off to
+# scope_cal. See tests/test_calpage.c.
+$(BUILD_DIR)/test_calpage: tests/test_calpage.c src/util/calpage.c src/util/calpage.h \
+                           src/util/cal_reference.c src/ui/scope_cal.c src/ui/scope_cal.h \
+                           tests/fixtures/calpage_unit2.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/ui -Itests \
+		$< src/util/calpage.c src/util/cal_reference.c src/ui/scope_cal.c -lm -o $@
+
+.PHONY: test-calpage
+test-calpage: $(BUILD_DIR)/test_calpage
 	$<
 
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter
