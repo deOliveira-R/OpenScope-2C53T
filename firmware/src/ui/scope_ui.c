@@ -18,6 +18,7 @@
 #include "scope_measure.h"
 #include "scope_cal.h"
 #include "scope_timebase.h"
+#include "scope_roll.h"
 #include "scope_cursor.h"
 #include "scope_freq.h"
 #include "scope_record.h"
@@ -2627,6 +2628,138 @@ void draw_scope_live_frame(void)
     /* Keep the counters moving; opaque fixed-width lines, no strip refill. */
     draw_scope_debug(th);
 #endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Roll view (parity C11, scope_roll.h)
+ *
+ * Stock draws its 301-point roll FIFO right-to-left, newest at the right
+ * edge (0x0801B6D2, Update Log V1.1.0). This is the same column compositor
+ * as draw_scope_live_frame (each pixel's final colour streamed once per
+ * column, so a point arriving every 2 ms never blanks the band), fed from
+ * a snapshot of the FIFO instead of the 1024-sample record:
+ *  - column x shows the point of age scope_roll_age_at_column(x): 25 points
+ *    per 32 px division, so the stock label (50 ms..20 s) is what one grid
+ *    division means;
+ *  - the vertical transform is the Y-T one: true volts/div about mid-scale
+ *    when `fpga scope graticule true` and the range is calibrated, else the
+ *    visible points' own min..max. Codes are drawn raw, as the Y-T record
+ *    is; the unit's g = (m-28)/150 sits in the volts/div label;
+ *  - no badges, cursors or trigger line: they describe the record, not the
+ *    roll (stock's roll trigger is not implemented, see fpga_apply_roll).
+ * `full` adds the decorations the compositor cannot recompute per pixel
+ * (labels, STOP, popup); the band itself is identical either way.
+ * ═══════════════════════════════════════════════════════════════════ */
+int scope_display_mode(void)
+{
+#ifdef FEATURE_FFT
+    if (scope_view == SCOPE_VIEW_XY)
+        return (int)SCOPE_DISP_XY;
+#endif
+    return scope_state_get()->roll ? (int)SCOPE_DISP_ROLL : (int)SCOPE_DISP_YT;
+}
+
+static scope_roll_fifo_t roll_snap;   /* display-task copy, ~610 B */
+#define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
+#define ROLL_LABEL_H 16u
+
+void draw_roll_screen(bool full)
+{
+    const theme_t *th = theme_get();
+    const scope_state_t *ss = scope_state_get();
+    (void)scope_roll_fifo_snapshot(fpga_roll_fifo(), &roll_snap);
+    const uint16_t nvis = scope_roll_visible(&roll_snap, LCD_WIDTH);
+
+    const bool en1 = ss->ch1.enabled, en2 = ss->ch2.enabled;
+    scope_roll_vmap_t m1 = { false, 0, 255, 128, SCOPE_TOP, SCOPE_BOT, SCOPE_H };
+    scope_roll_vmap_t m2 = m1;
+    if (en1 && en2) {
+        m1.y_bot = SCOPE_MID_Y - 1;
+        m2.y_top = SCOPE_MID_Y + 1;
+    }
+    bool on1 = en1, on2 = en2;
+    if (ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx)) m1.fixed = true;
+    else on1 = on1 && scope_roll_fit(&roll_snap, 0u, nvis, &m1);
+    if (ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx)) m2.fixed = true;
+    else on2 = on2 && scope_roll_fit(&roll_snap, 1u, nvis, &m2);
+
+    /* Popup hole: as the live compositor, never paint over the box. */
+    bool     hole     = (popup_frames > 0);
+    uint16_t hole_top = POPUP_Y;
+    uint16_t hole_bot = POPUP_Y + POPUP_H;
+    if (hole_top < SCOPE_TOP) hole_top = SCOPE_TOP;
+    if (hole_bot > SCOPE_BOT) hole_bot = SCOPE_BOT;
+    if (hole_top >= hole_bot) hole = false;
+
+    int16_t p1 = -1, p2 = -1;
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        const uint16_t age = scope_roll_age_at_column(x, LCD_WIDTH);
+        uint8_t v;
+        int16_t lo1 = -1, hi1 = -2, lo2 = -1, hi2 = -2;
+        if (on1 && scope_roll_fifo_get(&roll_snap, 0u, age, &v)) {
+            int16_t y = scope_roll_y(&m1, v);
+            lo1 = y; hi1 = (int16_t)(y + 1);
+            if (p1 >= 0) { if (p1 < lo1) lo1 = p1; if (p1 > hi1) hi1 = p1; }
+            p1 = y;
+        } else {
+            p1 = -1;
+        }
+        if (on2 && scope_roll_fifo_get(&roll_snap, 1u, age, &v)) {
+            int16_t y = scope_roll_y(&m2, v);
+            lo2 = y; hi2 = (int16_t)(y + 1);
+            if (p2 >= 0) { if (p2 < lo2) lo2 = p2; if (p2 > hi2) hi2 = p2; }
+            p2 = y;
+        } else {
+            p2 = -1;
+        }
+
+        uint16_t seg_top[2], seg_bot[2];
+        uint8_t  nseg = 1;
+        /* The fill label (top left) and the STOP badge (top centre) are
+         * holes too, repainted opaque below, so they never strobe. */
+        const bool in_label = (x < ROLL_LABEL_W) ||
+                              (!ss->running && x >= (LCD_WIDTH - 40) / 2 &&
+                               x < (LCD_WIDTH + 40) / 2);
+        seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) : (uint16_t)SCOPE_TOP;
+        seg_bot[0] = SCOPE_BOT;
+        if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
+            seg_bot[0] = hole_top;
+            seg_top[1] = hole_bot;
+            seg_bot[1] = SCOPE_BOT;
+            nseg = 2;
+        }
+        for (uint8_t sg = 0; sg < nseg; sg++) {
+            if (seg_bot[sg] <= seg_top[sg]) continue;
+            lcd_set_window(x, seg_top[sg], 1, (uint16_t)(seg_bot[sg] - seg_top[sg]));
+            for (uint16_t y = seg_top[sg]; y < seg_bot[sg]; y++) {
+                uint16_t c;
+                if ((int16_t)y >= lo2 && (int16_t)y <= hi2)
+                    c = th->ch2;
+                else if ((int16_t)y >= lo1 && (int16_t)y <= hi1)
+                    c = th->ch1;
+                else if (y == SCOPE_MID_Y || x == LCD_WIDTH / 2)
+                    c = th->grid_center;
+                else if (((x & 31u) == 0 && (y & 1u) == 0) ||
+                         (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0))
+                    c = th->grid;
+                else
+                    c = th->background;
+                lcd_write_data(c);
+            }
+        }
+    }
+
+    /* Fill counter, top left: how much of the 301-point history is in. */
+    char buf[24];
+    snprintf(buf, sizeof(buf), "ROLL %3u/%u", (unsigned)roll_snap.count,
+             (unsigned)SCOPE_ROLL_POINTS);
+    if (full)
+        lcd_fill_rect(0, SCOPE_TOP, ROLL_LABEL_W, ROLL_LABEL_H, th->background);
+    font_draw_string(4, SCOPE_TOP + 2, buf, th->highlight, th->background, &font_small);
+    if (!full)
+        return;
+    draw_run_stop(ss, th);
+    draw_popup(th);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

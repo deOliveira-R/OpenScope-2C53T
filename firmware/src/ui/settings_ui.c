@@ -13,6 +13,7 @@
 #include "theme.h"
 #include "watchdog.h"
 #include "scope_state.h"
+#include "scope_roll.h"
 #include "math_channel.h"
 #include "component_test.h"
 #include "shared_mem.h"
@@ -32,6 +33,7 @@ static const char *settings_items[SETTINGS_ITEM_COUNT] = {
     "FPGA SPI Scanner",
     "Firmware Update",
     "Factory Reset",
+    "Theme",
 };
 
 /* Math / Persistence sub-menu items */
@@ -136,13 +138,14 @@ static void draw_settings_top(void)
 
         /* Dynamic values for certain items */
         if (i == 0) value = ">";        /* Has sub-menu */
-        if (i == 3) value = th->name;   /* Display Mode: theme name */
+        if (i == 3) value = scope_disp_mode_label((scope_disp_mode_t)scope_display_mode()); /* Y-T/Roll/X-Y */
         if (i == 4) value = ">";        /* Math/Persist: sub-menu */
         if (i == 5) value = ">";        /* Component Tester */
         if (i == 6) value = ">";        /* Bode Plot */
         if (i == 7) value = startup_mode_name(startup_mode);
         if (i == 8) value = ">";        /* About: has detail screen */
         if (i == 10) value = "DFU";     /* Firmware Update: reboot to bootloader */
+        if (i == 12) value = th->name;  /* Theme (was the Display Mode value) */
 
         draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
     }

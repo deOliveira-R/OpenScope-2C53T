@@ -22,6 +22,7 @@
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "../ui/scope_timebase.h"
+#include "../ui/scope_roll.h"
 #include "signal_gen.h"
 #include "theme.h"
 #include "math_channel.h"
@@ -65,6 +66,37 @@ static uint32_t settings_now_ms(void)
 
 static void channel_cycle_coupling(uint8_t ch, channel_state_t *c, const char *name,
                                    char *pb, size_t n);
+
+/* Stock's "Display Mode" item (menu table 0x0804C824: Y-T / Rolling / X-Y).
+ * This item used to cycle the colour theme, which now has its own row.
+ * Roll is the C11 MCU-paced mode (re-applied to the FPGA here, so the menu
+ * and the timebase keys reach the same state); X-Y is the existing Lissajous
+ * view, so it needs the FEATURE_FFT build that carries it and is skipped
+ * otherwise. Leaving X-Y releases the FFT pool exactly as the PRM cycle does
+ * on its way back to the time view (fft_deinit is a no-op if unclaimed). */
+static void display_mode_step(int dir)
+{
+    scope_state_t *ss = scope_state_get();
+    const scope_disp_mode_t cur = (scope_disp_mode_t)scope_display_mode();
+    scope_disp_mode_t next = scope_disp_mode_cycle(cur, dir);
+#ifndef FEATURE_FFT
+    if (next == SCOPE_DISP_XY)
+        next = scope_disp_mode_cycle(next, dir);
+#else
+    if (next == SCOPE_DISP_XY) {
+        scope_view = SCOPE_VIEW_XY;
+    } else if (scope_view != SCOPE_VIEW_TIME) {
+        scope_view = SCOPE_VIEW_TIME;
+        fft_deinit();
+    }
+#endif
+    const bool want_roll = (next == SCOPE_DISP_ROLL);
+    if (want_roll != ss->roll) {
+        ss->roll = want_roll;
+        if (!fpga_apply_roll())
+            ss->roll = !want_roll;  /* nothing was written: keep the old mode */
+    }
+}
 
 static void osc_settings_adjust(int dir)
 {
@@ -111,7 +143,10 @@ void input_handle_settings_ok(void)
             settings_depth = 1;
             settings_sub_selected = 0;
             break;
-        case 3: /* Display Mode -- cycle theme */
+        case 3: /* Display Mode: Y-T / Roll / X-Y (stock menu 0x0804C824) */
+            display_mode_step(+1);
+            break;
+        case 12: /* Theme -- moved off Display Mode, which is stock's Y-T/Roll/X-Y */
             theme_cycle();
             break;
         case 4: /* Math Channel -- enter math sub-menu */
@@ -522,16 +557,24 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
 
     case KA_TB_STEP: {
-        scope_adjust_timebase(ss, dir);
+        /* Past the last FPGA code the ladder continues into roll (C11,
+         * stock 0x14..0x1C): a roll change re-applies roll, anything else
+         * the Y-T code. Holding at the slowest roll step changes nothing. */
+        const bool was_roll = ss->roll;
+        const bool roll_changed = scope_adjust_timebase(ss, dir);
         /* Push it to the FPGA. Before 2026-08-19 this line did not exist
          * and the button only relabelled the axis while the hardware kept
          * sampling at whatever the arm block left in reg 0x01 — so the
          * derived s/div below was a confident, wrong number. If the write
          * fails the rate did NOT change, so say so rather than print a
          * label for a rate that is not in force. */
-        const bool tb_ok = fpga_apply_timebase(ss->timebase_idx);
+        const bool tb_ok = roll_changed ? fpga_apply_roll()
+                         : (was_roll ? true : fpga_apply_timebase(ss->timebase_idx));
         char tb[12];
-        scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
+        if (ss->roll)
+            scope_roll_label(ss->roll_step, tb, sizeof(tb));
+        else
+            scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
         /* Short on purpose: pb is 24 bytes and a truncated warning is
          * worse than a terse one. */
         snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
@@ -1047,8 +1090,10 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_LEFT:
         if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 3 || settings_selected == 7)) {
+            (settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
             if (settings_selected == 3)
+                display_mode_step(-1);
+            else if (settings_selected == 12)
                 theme_cycle_reverse();
             else
                 startup_mode_adjust(-1);
@@ -1090,8 +1135,10 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_RIGHT:
         if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 3 || settings_selected == 7)) {
+            (settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
             if (settings_selected == 3)
+                display_mode_step(+1);
+            else if (settings_selected == 12)
                 theme_cycle();
             else
                 startup_mode_adjust(1);

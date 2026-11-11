@@ -129,7 +129,7 @@ extern volatile bool          math_enabled;
 extern volatile uint8_t       math_op;        /* math_op_t cast */
 extern volatile bool          persist_enabled;
 
-#define SETTINGS_ITEM_COUNT     12
+#define SETTINGS_ITEM_COUNT     13
 #define SETTINGS_OSC_ITEM_COUNT 8
 #define SETTINGS_ABOUT_LINES    5
 #define METER_SUBMODE_COUNT     11
@@ -156,6 +156,10 @@ extern volatile bool          persist_enabled;
 #include "fft_test_signals.h"
 #include "shared_mem.h"   /* waterfall history is a sub-tenant of the FFT pool region */
 extern volatile scope_view_t scope_view;
+/* Stock's "Display Mode" (Y-T / Roll / X-Y, scope_roll.h) as the scope is
+ * now: X-Y when the X-Y view is up, else Roll when scope_state.roll, else
+ * Y-T. Defined in scope_ui.c. Returns a scope_disp_mode_t. */
+int scope_display_mode(void);
 
 /* Scope time view: what the arrow keys adjust, cycled by MOVE (key_model.h:
  * zoom -> channel move -> trigger move -> [cursor] -> [mask]). The three bools
@@ -230,6 +234,8 @@ void draw_split_screen(uint32_t frame);
 void draw_waterfall_screen(void);
 void draw_xy_screen(void);
 #endif
+/* Roll view (C11): the roll FIFO right-to-left; full = with labels/STOP/popup. */
+void draw_roll_screen(bool full);
 
 /* meter_ui.c */
 void draw_meter_screen(void);

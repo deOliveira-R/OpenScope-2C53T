@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "fpga_meter_plan.h"
+#include "../ui/scope_roll.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 
@@ -1218,5 +1219,31 @@ uint8_t fpga_trigger_reconcile_code(void);
 
 void    fpga_acq_rate_idx_set(uint8_t v);
 uint8_t fpga_acq_rate_idx_get(void);
+
+/* ── Roll mode (parity C11; ui/scope_roll.h has the stock evidence) ──────
+ * Apply scope_state's roll / roll_step to the hardware: park the acquisition
+ * task, write reg 0x01 (roll: stock's byte 0x14 + step, or the shell
+ * override; leaving roll: the Y-T timebase_idx), clear the FIFO and switch
+ * the acquisition task between the 04/05 record poll and the paced op-0x03
+ * point read. Same contract as fpga_apply_timebase(): false = the task would
+ * not park and NOTHING was written. The point reader exists only in the
+ * live-capture (FPGA_WARM_HANDOFF_TEST) builds; elsewhere the FIFO stays
+ * empty. */
+bool    fpga_apply_roll(void);
+bool    fpga_roll_active(void);                  /* the acq task is on the op03 path */
+const scope_roll_fifo_t *fpga_roll_fifo(void);   /* written by the acq task only */
+/* Force the reg-0x01 byte written on entering roll (e.g. 0x14, the only
+ * code with a measured rate) instead of stock's 0x14 + step; -1 = stock. */
+void    fpga_roll_code_override_set(int code);
+int     fpga_roll_code_override_get(void);
+typedef struct {
+    uint32_t reads;        /* op03 frames that pushed a point */
+    uint32_t rejects;      /* op03 frames refused (SPI3 timeout inside) */
+    uint32_t late;         /* ticks resynchronised after falling a period behind */
+    uint8_t  code;         /* reg-0x01 byte written by the last fpga_apply_roll() */
+    uint8_t  step;         /* roll step in force */
+    uint8_t  rx[5];        /* last op03 frame as received: [op, b1, CH1, b3, CH2] */
+} fpga_roll_stats_t;
+void    fpga_roll_stats_get(fpga_roll_stats_t *out);
 
 #endif /* FPGA_H */
