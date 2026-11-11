@@ -817,7 +817,7 @@ $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/ke
                              src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c \
                              src/ui/trig_menu.c src/ui/trig_menu.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
-		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@
+		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/trig_menu.c -o $@
 
 .PHONY: test-key-model
 test-key-model: $(BUILD_DIR)/test_key_model
