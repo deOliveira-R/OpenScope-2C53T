@@ -46,6 +46,7 @@ extern void system_clock_config(void);
 #include "settings_store.h"
 #include "startup_policy.h"
 #include "cal_backup.h"
+#include "usercal.h"
 #include "usb_debug.h"
 #include "rtt.h"
 #include "fault.h"
@@ -1173,6 +1174,12 @@ int main(void)
      * restored timebase and vdiv; a unit without a usable page keeps the
      * fixed arm fpga_init() just made. */
     scope_vpos_init();
+    /* OpenScope's own saved corrections (usercal.h): baseline deltas on top
+     * of the page just parsed, and the 250 MS/s B correction. After
+     * scope_vpos_init() because corr_set needs the page's pairs; deltas
+     * measured against a different page table are refused, not applied.
+     * Read-only on flash — saving is `cal user save` only. */
+    usercal_boot_load();
 #endif
 
     /* Create queues */

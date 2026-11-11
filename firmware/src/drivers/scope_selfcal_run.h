@@ -11,7 +11,8 @@
  * and no heap goes to another stack (RAM is within ~3 KB of the ceiling).
  *
  * Requests may come from any task (keys, shell); only the service acts.
- * Nothing here writes flash: corrections live in scope_vpos' RAM table.
+ * Nothing here writes flash: corrections live in scope_vpos' RAM table
+ * until `cal user save` (src/util/usercal.c) stores them.
  */
 #ifndef SCOPE_SELFCAL_RUN_H
 #define SCOPE_SELFCAL_RUN_H

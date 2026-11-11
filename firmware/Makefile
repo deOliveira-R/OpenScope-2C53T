@@ -104,6 +104,8 @@ C_SOURCES += src/util/calpage.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
 C_SOURCES += src/util/settings_store.c
+C_SOURCES += src/util/usercal_rec.c
+C_SOURCES += src/util/usercal.c
 C_SOURCES += src/util/screenshot.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
@@ -836,6 +838,20 @@ $(BUILD_DIR)/test_scope_selfcal: tests/test_scope_selfcal.c src/ui/scope_selfcal
 test-scope-selfcal: $(BUILD_DIR)/test_scope_selfcal
 	$<
 
+
+# OpenScope's persisted calibration corrections (baseline deltas + interleave
+# B correction): the v1 record format, its CRC, the version gate, corrupt and
+# foreign records, the page fingerprint, and save/load/compaction through the
+# real region layer on a NOR model with power cuts. See tests/test_usercal.c.
+$(BUILD_DIR)/test_usercal: tests/test_usercal.c src/util/usercal_rec.c src/util/usercal_rec.h \
+                           src/util/cal_backup_core.c src/util/cal_backup_core.h \
+                           src/util/cal_reference.c src/drivers/flash_regions.c src/drivers/flash_regions.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
+		src/util/usercal_rec.c src/util/cal_backup_core.c src/util/cal_reference.c src/drivers/flash_regions.c -o $@
+
+.PHONY: test-usercal
+test-usercal: $(BUILD_DIR)/test_usercal
+	$<
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BENCH / EXPERIMENT IMAGE INDEX                          (index added 2026-08-13)

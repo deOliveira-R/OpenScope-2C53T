@@ -19,6 +19,7 @@
 #include "flash_fs.h"
 #include "fw_loader.h"
 #include "cal_backup.h"
+#include "usercal.h"
 #include "rtt.h"
 #include "continuity_buzzer.h"
 
@@ -2911,7 +2912,7 @@ static void cmd_fpga_interleave_cal(void)
         return;
     }
     fpga_interleave_corr_set(fit.gain, fit.offset);
-    usb_send_str("interleave cal: applied (RAM only, lost at reset). Skew is not estimated here.\r\n");
+    usb_send_str("interleave cal: applied (RAM; `cal user save` keeps it). Skew is not estimated here.\r\n");
 }
 
 /* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
@@ -4333,7 +4334,7 @@ static void cmd_cal_base(const char *args)
         return;
     }
     if (*args) { usb_send_str("usage: cal base [clear]\r\n"); return; }
-    usb_debug_printf("baseline corrections (RAM only, not persisted): %u\r\n",
+    usb_debug_printf("baseline corrections in RAM: %u (`cal user save` keeps them across power-off)\r\n",
                      scope_vpos_corr_count());
     for (uint8_t ch = 1; ch <= 2u; ch++)
         for (uint8_t b = 0; b < CALPAGE_BANKS; b++)
@@ -4349,6 +4350,58 @@ static void cmd_cal_base(const char *args)
                                      (unsigned)(pu + du), (unsigned)pb, (unsigned)pu);
                 usb_send_str("\r\n");
             }
+}
+
+/* `cal user [show|save|clear]` — OpenScope's own corrections in the W25Q
+ * (usercal.h, FLASH_REGION_USER_CAL 0xF00000): the baseline deltas (long
+ * AUTO / `fpga scope basecal`) and the interleave B correction (`fpga
+ * interleave cal`). Owner policy: nothing is saved unless asked here (or by
+ * a UI confirm); the stock page is never written. `clear` appends an empty
+ * record (no erase) and drops the RAM corrections too, so the live state and
+ * the next boot agree; `cal base clear` is RAM only. */
+static void cmd_cal_user(const char *args)
+{
+    while (*args == ' ') args++;
+    const usercal_report_t *r = usercal_report();
+    if (strcmp(args, "save") == 0 || strcmp(args, "clear") == 0) {
+        if (scope_selfcal_busy()) { usb_send_str("busy\r\n"); return; }
+        const bool clr = (args[0] == 'c');
+        const flash_region_status_t st = clr ? usercal_clear_saved() : usercal_save();
+        if (st != FLASH_REGION_OK) {
+            usb_debug_printf("cal user %s: FAILED, %s; nothing changed\r\n", args, flash_region_strerror(st));
+            return;
+        }
+        if (clr) usb_send_str("cal user clear: empty record saved; RAM corrections dropped (page values in force)\r\n");
+        else usb_debug_printf("cal user save: saved %u baseline deltas\r\n", scope_vpos_corr_count());
+        /* fall through to the status below */
+    } else if (*args && strcmp(args, "show") != 0) {
+        usb_send_str("usage: cal user [show|save|clear]\r\n");
+        return;
+    }
+    usercal_t u;   /* 280 B on this task's 3 KB stack */
+    const usercal_status_t st = usercal_store_load(&u);
+    const uint32_t live = usercal_live_table_crc();
+    uint32_t used = 0, nrec = 0;
+    (void)flash_region_log_info(USERCAL_REGION, &used, NULL, &nrec);
+    usb_debug_printf("user cal @0x%06lX: %s; log %lu B, %lu records\r\n",
+                     (unsigned long)flash_region_get(USERCAL_REGION)->start, usercal_status_str(st),
+                     (unsigned long)used, (unsigned long)nrec);
+    if (st == USERCAL_ST_OK) {
+        usb_debug_printf("  saved: %u baseline deltas, table %08lX (%s live %08lX); interleave %s",
+                         usercal_count(&u), (unsigned long)u.table_crc,
+                         u.table_crc == live ? "matches" : "STALE vs", (unsigned long)live,
+                         u.il_present ? "gain " : "none");
+        if (u.il_present)
+            usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_ppm, (long)u.il_off_e4);
+        usb_send_str("\r\n");
+    }
+    usb_debug_printf("  boot: %s", usercal_status_str(r->load_st));
+    if (r->loaded)
+        usb_debug_printf(", %u applied, %u not applied%s, interleave %s",
+                         (unsigned)r->applied, (unsigned)r->refused,
+                         r->table_match ? "" : " (page table changed since the save)",
+                         r->il_applied ? "applied" : "none");
+    usb_debug_printf("\r\n  live: %u baseline deltas in RAM\r\n", scope_vpos_corr_count());
 }
 
 static void cmd_fpga_diag_clear(void)
@@ -8984,6 +9037,8 @@ static const shell_cmd_t shell_cmds[] = {
           "cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n"),
     CMD_A("cal base", cmd_cal_base, 0,
           "cal base [clear]                Baseline-correction deltas held in RAM (long AUTO)\r\n"),
+    CMD_A("cal user", cmd_cal_user, 0,
+          "cal user [show|save|clear]      Save/clear OpenScope's own corrections (baseline + interleave) in W25Q\r\n"),
     CMD_V("fpga scope autoset", cmd_fpga_scope_autoset, SC_EXACT,
           "fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n"),
     CMD_A("fpga scope basecal", cmd_fpga_scope_basecal, 0,
