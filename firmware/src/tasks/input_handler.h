@@ -13,6 +13,8 @@
 #include "key_model.h"
 #include "FreeRTOS.h"
 #include "queue.h"
+#include <stdbool.h>
+#include "settings_store.h"
 
 /*
  * Handle a debounced button press.
@@ -27,8 +29,13 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t display_queue);
 
 /* Auto power-off timer (parity C15): call every pass of the input task. */
 void input_autooff_poll(void);
-/* Ask the input task to write pending settings now (shell-side changes). */
+/* Ask the input task to write pending settings now (shell-side changes).
+ * Asynchronous; the shell dispatcher calls it after every command, so a
+ * persisted setting changed by ANY command is captured without a key press. */
 void input_request_settings_flush(void);
+/* Same, but wait (<= timeout_ms) for the input task to act and return what the
+ * write really did. Returns false if the input task did not answer in time. */
+bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *out);
 
 /* What the scope time view's arrow keys adjust (MOVE cycles it). */
 extern volatile key_focus_t scope_key_focus;

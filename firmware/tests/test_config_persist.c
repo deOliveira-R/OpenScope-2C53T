@@ -1394,6 +1394,39 @@ static void test_corrupt_record_cannot_produce_an_out_of_range_index(void)
  * wrong — the store must not re-attempt the save on every press. Each attempt
  * scans the whole log in short SPI reads, so an unwritable device would spend
  * ~100 ms of SPI2 traffic per keypress achieving nothing. */
+static void test_flush_outcome_tells_saved_from_clean_from_failed(void)
+{
+    /* The shell prints this to the operator ("startup=Meter (saved)"): a
+     * refused write must never read as a save, and "nothing to write" must not
+     * read as a failure. */
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+
+    CHECK(settings_store_flush_ex(10) == SETTINGS_FLUSH_CLEAN, "untouched device is clean");
+    scope_state_get()->timebase_idx = 4;
+    CHECK(settings_store_flush_ex(20) == SETTINGS_FLUSH_SAVED, "a changed setting is saved");
+    CHECK(settings_store_flush_ex(30) == SETTINGS_FLUSH_CLEAN, "a second flush has nothing to do");
+
+    /* Unwritable settings region: first attempt FAILED, then BLOCKED. */
+    model_blank();
+    CHECK(flash_regions_init_table(&model_backend, hostile_settings_readonly(),
+                                   FLASH_REGION_COUNT) == FLASH_REGION_OK, "hostile table");
+    theme_init(THEME_DARK_BLUE);
+    scope_state_init(scope_state_get());
+    (void)settings_store_load_and_apply();
+    scope_state_get()->timebase_idx = 7;
+    CHECK(settings_store_flush_ex(100) == SETTINGS_FLUSH_FAILED, "refused write is FAILED");
+    CHECK(settings_store_flush_ex(200) == SETTINGS_FLUSH_BLOCKED, "retry is BLOCKED");
+    CHECK(!settings_store_flush(300), "bool flush agrees: not written");
+
+    CHECK(strstr(settings_flush_outcome_text(SETTINGS_FLUSH_SAVED), "NOT") == NULL, "saved text");
+    CHECK(strstr(settings_flush_outcome_text(SETTINGS_FLUSH_CLEAN), "NOT") == NULL, "clean text");
+    CHECK(strstr(settings_flush_outcome_text(SETTINGS_FLUSH_FAILED), "NOT saved") != NULL, "failed text");
+    CHECK(strstr(settings_flush_outcome_text(SETTINGS_FLUSH_BLOCKED), "NOT saved") != NULL, "blocked text");
+    fresh_device();
+}
+
 static void test_a_failing_write_is_not_retried_on_every_press(void)
 {
     model_blank();
@@ -2523,6 +2556,8 @@ int main(void)
         run("flush ignores the settle window", test_flush_ignores_the_settle_window);
         run("a corrupt record cannot produce an out-of-range index",
             test_corrupt_record_cannot_produce_an_out_of_range_index);
+        run("flush outcome: saved / clean / failed / blocked",
+            test_flush_outcome_tells_saved_from_clean_from_failed);
         run("a failing write is not retried on every press",
             test_a_failing_write_is_not_retried_on_every_press);
         run("capture/apply round trip is symmetric", test_capture_apply_round_trip_is_symmetric);

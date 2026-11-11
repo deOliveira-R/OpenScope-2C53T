@@ -5388,6 +5388,18 @@ _Static_assert(sizeof(meter_voltage_wave_snapshot_t) <= sizeof(shell_bus_scratch
 #define MODE_USAGE_LINE \
     "Usage: mode [scope|0 | meter|1 [submode] [layout] | startup [scope|meter]]\r\n"
 
+/* Ask the input task (the one writer of the settings record) to flush and
+ * print what REALLY happened; it used to promise "saved within 100 ms" whether
+ * or not the write took place. */
+static void report_startup_save(const char *name)
+{
+    settings_flush_outcome_t o;
+    if (input_settings_flush_sync(500u, &o))
+        usb_debug_printf("startup=%s (%s)\r\n", name, settings_flush_outcome_text(o));
+    else
+        usb_debug_printf("startup=%s (save pending: input task did not answer in 500 ms)\r\n", name);
+}
+
 static void cmd_mode(const char *args)
 {
     /* Numeric aliases for the mode keywords.
@@ -5456,12 +5468,10 @@ static void cmd_mode(const char *args)
             usb_debug_printf("startup=%s\r\n", startup_mode_name(startup_mode));
         } else if (strcmp(value, "scope") == 0) {
             startup_mode_set(STARTUP_SCOPE);
-            input_request_settings_flush();
-            usb_send_str("startup=Scope (saved within 100 ms)\r\n");
+            report_startup_save("Scope");
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
-            input_request_settings_flush();
-            usb_send_str("startup=Meter (saved within 100 ms)\r\n");
+            report_startup_save("Meter");
         } else {
             usb_send_str("Usage: mode startup [scope|meter]\r\n");
         }
@@ -9697,10 +9707,17 @@ static void dispatch_command(char *line)
             return;
         if (best->fn_args) best->fn_args(args); else best->fn_void();
         fpga_acq_resume();
+        input_request_settings_flush();
         return;
     }
 
     if (best->fn_args) best->fn_args(args); else best->fn_void();
+    /* Any command may have changed a persisted setting (timebase, vdiv,
+     * coupling, probe, trigger, siggen, meter mode, prefs, ...) and none of
+     * them has a key press behind it, so settings_after_button() never sees
+     * it. One request per command, served by the input task within 100 ms: a
+     * no-op (no flash access) when nothing differs from the saved image. */
+    input_request_settings_flush();
 }
 
 /* ═══════════════════════════════════════════════════════════════════

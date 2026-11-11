@@ -50,6 +50,7 @@ C_SOURCES += src/ui/scope_cal.c
 C_SOURCES += src/ui/scope_timebase.c
 C_SOURCES += src/ui/scope_cursor.c
 C_SOURCES += src/ui/scope_freq.c
+C_SOURCES += src/ui/scope_freq_lock.c
 C_SOURCES += src/ui/key_model.c
 C_SOURCES += src/ui/scope_selfcal.c
 C_SOURCES += src/tasks/input_handler.c
@@ -652,6 +653,14 @@ $(BUILD_DIR)/test_scope_freq: tests/test_scope_freq.c src/ui/scope_freq.c src/ui
 # With no argument it runs BOTH fixture sets: the tuned one, and the held-out
 # one whose drive frequencies were chosen after the thresholds were fixed.
 test-scope-freq: $(BUILD_DIR)/test_scope_freq
+	./$<
+
+# Lock hooks around the shared FFT scratch (shell task vs display task).
+.PHONY: test-scope-freq-lock
+$(BUILD_DIR)/test_scope_freq_lock: tests/test_scope_freq_lock.c src/ui/scope_freq.c src/ui/scope_freq.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui $< src/ui/scope_freq.c -lm -o $@
+
+test-scope-freq-lock: $(BUILD_DIR)/test_scope_freq_lock
 	./$<
 
 # Settings persistence: config.c + settings_store.c against a NOR flash model

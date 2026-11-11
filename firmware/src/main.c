@@ -24,6 +24,7 @@ extern void system_clock_config(void);
 #include "ui.h"
 #include "signal_gen.h"
 #include "ui/siggen_edit.h"
+#include "ui/scope_freq.h"
 #include "watchdog.h"
 #include "scope_state.h"
 #include "scope_cal.h"
@@ -1149,6 +1150,7 @@ int main(void)
      * And BEFORE the fpga_set_meter_mode(meter_submode) call below, which
      * consumes the restored meter submode, and before the display task exists. */
     settings_store_init();
+    scope_freq_lock_init();     /* shell + display share the estimator's FFT scratch */
     /* Startup-on-Boot, now restored (M6): the mode the display and FPGA tasks
      * and the mode entry below start in. */
     current_mode = startup_target_mode();

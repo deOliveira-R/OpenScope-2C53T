@@ -100,7 +100,7 @@ FatFs R0.14b, so this needs no new stack. Two things block it today:
    buffer, and a virtual FAT needs one 4 KB sector staged at a time. The default
    image has ~2.5 KB of RAM left and the warm-handoff images ~0.5 KB. The way
    out is the shared pool: stock stops the scope in USB Sharing (state 4 gates
-   acquisition at `0x08020EAC`), so in that mode the 116 KB pool is free. Patch
+   acquisition at `0x08020EAC`), so in that mode the 100 KB pool is free. Patch
    the BOT layer to take its buffer from `shared_mem_acquire()` (a new owner
    `SHMEM_OWNER_USBMSC`) on entering the mode and release it on eject.
 2. **Which bytes to expose.** Not stock's volume `2:` as is: its FAT spans

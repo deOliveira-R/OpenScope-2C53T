@@ -101,6 +101,13 @@ typedef struct {
     uint16_t window;     /* samples actually used: the full n, or n/2        */
 } scope_freq_t;
 
+/* Register a lock/unlock pair that serialises use of the shared FFT scratch.
+ * Call once before the scheduler starts; (NULL, NULL) removes it. */
+void scope_freq_set_lock(void (*lock)(void), void (*unlock)(void));
+
+/* Firmware only (scope_freq_lock.c): create the mutex and register it. */
+void scope_freq_lock_init(void);
+
 /*
  * Estimate the dominant frequency in a capture record.
  *

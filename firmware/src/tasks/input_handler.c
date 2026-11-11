@@ -104,16 +104,46 @@ static void power_off_now(void)
  * one writer of the settings record (settings_store.h), and flushes on its
  * next pass (<= 100 ms). */
 static volatile bool g_settings_flush_req;
+/* Outcome hand-back for input_settings_flush_sync(): the input task bumps
+ * g_flush_done_seq AFTER storing the outcome, the shell waits for the bump. */
+static volatile uint32_t g_flush_req_seq;
+static volatile uint32_t g_flush_done_seq;
+static volatile settings_flush_outcome_t g_flush_outcome;
 
-void input_request_settings_flush(void) { g_settings_flush_req = true; }
+void input_request_settings_flush(void)
+{
+    g_flush_req_seq++;
+    g_settings_flush_req = true;
+}
+
+bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *out)
+{
+    const uint32_t want = ++g_flush_req_seq;
+    g_settings_flush_req = true;
+    for (uint32_t waited = 0; waited <= timeout_ms; waited += 10u) {
+        /* >= in modular arithmetic: a later async request may be served first
+         * and cover this one (the flush captures everything pending). */
+        if ((int32_t)(g_flush_done_seq - want) >= 0) {
+            if (out != NULL) *out = g_flush_outcome;
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return false;
+}
 
 /* Called every pass of the input task (<= 100 ms). */
 void input_autooff_poll(void)
 {
     uint32_t now = settings_now_ms();
     if (g_settings_flush_req) {
+        /* Clear the flag BEFORE reading the sequence: a request landing in
+         * between is then either covered by `seq` (its change precedes the
+         * flush below) or re-raises the flag for the next pass. */
         g_settings_flush_req = false;
-        (void)settings_store_flush(now);
+        const uint32_t seq = g_flush_req_seq;
+        g_flush_outcome = settings_store_flush_ex(now);
+        g_flush_done_seq = seq;
     }
     if (!g_autooff_ready) {
         sys_autooff_init(&g_autooff, sys_prefs_autooff_mins(), now);
