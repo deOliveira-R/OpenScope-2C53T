@@ -184,6 +184,22 @@ C_SOURCES += $(AT32_USBD)/src/usbd_sdr.c
 C_SOURCES += $(AT32_CDC)/cdc_class.c
 C_SOURCES += $(AT32_CDC)/cdc_desc.c
 
+# USB Sharing (parity C16): the device enumerates as CDC (the shell, same
+# endpoints, VID:PID 2E3C:5740) + a read-only mass-storage LUN synthesised from
+# the screenshot gallery (src/util/gallery_vfat.c). The CDC half stays the
+# library's cdc_class.c above. USB_MSC=0 builds the CDC-only device of before,
+# e.g. to rule the composite descriptor out on a host that misbehaves.
+USB_MSC ?= 1
+ifeq ($(USB_MSC),1)
+C_SOURCES += src/drivers/usb_composite.c
+C_SOURCES += src/drivers/usb_msc.c
+C_SOURCES += src/util/gallery_vfat.c
+C_SOURCES += src/util/msc_scsi.c
+USB_MSC_DEFS = -DUSB_MSC=1
+else
+USB_MSC_DEFS = -DUSB_MSC=0
+endif
+
 # FreeRTOS kernel
 C_SOURCES += $(FREERTOS)/tasks.c
 C_SOURCES += $(FREERTOS)/queue.c
@@ -238,6 +254,7 @@ C_DEFS  = -DAT32F403AVGT7
 # trace — disabled for a clean display. Re-add `-DSCOPE_DEBUG_OVERLAY` to bring
 # the strip back.
 C_DEFS += $(FFT_DEFS)
+C_DEFS += $(USB_MSC_DEFS)
 C_INCLUDES += $(FFT_INCLUDES)
 
 # Compiler flags
@@ -960,6 +977,23 @@ $(BUILD_DIR)/test_logo: tests/test_logo.c src/util/logo_store.c src/util/logo_st
 
 .PHONY: test-logo
 test-logo: $(BUILD_DIR)/test_logo
+
+# USB Sharing (parity C16): the read-only FAT12 volume synthesised from the
+# gallery (boot sector, FAT12 packing and chains, directory entries, file
+# read-through at arbitrary LBAs checked by an independent FAT reader against
+# shots saved through the real gallery_store on the NOR model) and the SCSI /
+# bulk-only layer (CBW validation, medium states, write refusal, the 13 BOT
+# cases). VFAT_IMAGE_OUT=<file> also dumps the image. See tests/test_msc.c.
+$(BUILD_DIR)/test_msc: tests/test_msc.c src/util/gallery_vfat.c src/util/gallery_vfat.h \
+                       src/util/msc_scsi.c src/util/msc_scsi.h src/util/gallery_store.c \
+                       src/util/gallery_store.h src/drivers/flash_regions.c \
+                       src/drivers/flash_regions.h src/util/cal_backup_core.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
+		src/util/gallery_vfat.c src/util/msc_scsi.c src/util/gallery_store.c \
+		src/drivers/flash_regions.c src/util/cal_backup_core.c -o $@
+
+.PHONY: test-msc
+test-msc: $(BUILD_DIR)/test_msc
 	$<
 
 

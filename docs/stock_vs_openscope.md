@@ -85,7 +85,7 @@ Legend: ✅ works · ⚠️ partial / caveated · 🔬 code exists but is not re
 | **Storage & files** | | | |
 | BMP screenshot to flash | ✅ | ❌ | SAVE shows a "SAVED #N" popup and writes nothing |
 | On-device file browser | ✅ | ❌ | |
-| USB Mass Storage | ✅ | ❌ | Our USB is CDC serial only |
+| USB Mass Storage | ✅ | ✅ | Read-only gallery drive next to the CDC shell (docs/gallery.md, USB Sharing) |
 | Filesystem on the 16 MB SPI flash | ✅ FatFs, 2 volumes | ❌ | Raw read/erase/program primitives work; the filesystem layer is TODO stubs |
 | Settings persist across power cycles | ✅ | ❌ | `config_save()` writes to a **RAM buffer**, and nothing calls it |
 | Waveform export | ❌ | ❌ | On both roadmaps, built in neither |
