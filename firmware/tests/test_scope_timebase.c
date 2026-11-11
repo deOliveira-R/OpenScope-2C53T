@@ -301,7 +301,7 @@ static void test_labels(void)
     CHECK(strcmp(buf, "128ns") == 0, "0x00 interleaved label should be 128ns, got \"%s\"", buf);
     scope_timebase_label_scaled(0x00, 0u, buf, sizeof(buf));
     CHECK(strcmp(buf, "256ns") == 0, "factor 0 must act as 1, got \"%s\"", buf);
-    scope_timebase_label_scaled(0x05, 2u, buf, sizeof(buf));
+    scope_timebase_label_scaled(0x0B, 2u, buf, sizeof(buf));
     CHECK(strcmp(buf, "--") == 0, "no rate stays \"--\" when scaled, got \"%s\"", buf);
 
     /* Truncation must be safe. */
