@@ -59,6 +59,7 @@
 #include "../ui/scope_measure.h"
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
+#include "../ui/scope_geom.h"
 #include "../ui/scope_mask.h"
 #include "../ui/trig_menu.h"
 #include "../dsp/trig_policy.h"
@@ -2782,15 +2783,16 @@ static void cmd_fpga_holdlog(const char *args)
         usb_debug_printf("hl %u %u %u\r\n", (unsigned)e.dt_ms, (unsigned)e.polls, (unsigned)e.edges);
 }
 
-/* `fpga scope hpos [8..312]` — the screen column for the trigger point (the
- * same field MOVE -> Position -> LEFT/RIGHT sets). */
+/* `fpga scope hpos [0..300]` — the screen column for the trigger point (the
+ * same field MOVE -> Position -> LEFT/RIGHT sets): stock's 150 + hpos, hpos
+ * +-150 (parity C5, scope_geom.h). */
 static void cmd_fpga_scope_hpos(const char *args)
 {
     while (*args == ' ') args++;
     scope_state_t *ss = scope_state_get();
     if (*args) {
         uint32_t v = 0;
-        if (parse_int(args, &v) != 0 || v < 8u || v > 312u) { usb_send_str("usage: fpga scope hpos [8..312]\r\n"); return; }
+        if (parse_int(args, &v) != 0 || v > (uint32_t)SCOPE_GEOM_TRIG_COL_MAX) { usb_send_str("usage: fpga scope hpos [0..300]\r\n"); return; }
         ss->trig_x = (int16_t)v;
     }
     usb_debug_printf("trigger position: asked column %d; last window landed at %d (anchor %s)\r\n",
@@ -3605,7 +3607,9 @@ static void cmd_fpga_scope_timebase(const char *args)
     usb_debug_printf("boot reconcile: %s\r\n", recon[ra < 3u ? ra : 0u]);
 
     char lbl[12];
-    scope_timebase_label(ss->timebase_idx, lbl, sizeof(lbl));
+    /* What the status bar shows: x2 merged, times the fast-code zoom (C5). */
+    scope_timebase_view_label(ss->timebase_idx, scope_ui_view_merged(),
+                              lbl, sizeof(lbl));
     usb_debug_printf("timebase 0x%02X (reg 0x01 = 0x%02X)  %lu S/s  %s/div\r\n",
                      (unsigned)ss->timebase_idx,
                      (unsigned)fpga_acq_rate_idx_get(),
@@ -4043,8 +4047,12 @@ static void cmd_fpga_scope_cursor(const char *args)
     char x1[16], x2[16], dx[16], ix[16], y1[16], y2[16], dy[16];
     float fs = 0.0f;
     scope_ui_cursor_report(x1, x2, dx, ix, y1, y2, dy, &fs);
-    usb_debug_printf("cursor fs=%lu X1=%s X2=%s X1-X2=%s Y1=%s Y2=%s Y1-Y2=%s 1/dX=%s\r\n",
-                     (unsigned long)(fs + 0.5f), x1, x2, dx, y1, y2, dy, ix);
+    /* fs is the COLUMN rate, 1000 x record rate / R: record rate x zoom L
+     * (parity C5), or the selected code's on a re-sampled held record (L=0,
+     * C14). */
+    usb_debug_printf("cursor fs=%lu L=%u R=%lu X1=%s X2=%s X1-X2=%s Y1=%s Y2=%s Y1-Y2=%s 1/dX=%s\r\n",
+                     (unsigned long)(fs + 0.5f), (unsigned)scope_ui_view_factor(),
+                     (unsigned long)scope_ui_view_ratio(), x1, x2, dx, y1, y2, dy, ix);
 }
 
 /* `fpga scope cal` — print what the firmware believes about vertical scale.
@@ -5127,13 +5135,20 @@ static void cmd_spi3_frame(void)
     uint8_t src_ch = (ss && ss->trigger.source == TRIG_SRC_CH2) ? 2u : 1u;
     uint16_t off = scope_ui_soft_trigger_offset((src_ch == 2u) ? s2 : s1);
 
-    usb_debug_printf("FRAME gen=%lu coherent=%u src=CH%u off=%u soft=%u tx=%d anchor=%u ord=%u\r\n",
+    /* L: columns per sample of the window (fast-code zoom, parity C5); the
+     * window shows record positions off + x / L, x = 0..300. R: record
+     * samples per column x 1000 (1000 / L). L=0: a held record re-sampled at
+     * R about column tx (zoom while paused, C14); off is then the
+     * one-sample-per-column window the pivot sample (off + tx) comes from. */
+    usb_debug_printf("FRAME gen=%lu coherent=%u src=CH%u off=%u soft=%u tx=%d anchor=%u ord=%u L=%u R=%lu\r\n",
                      (unsigned long)g1,
                      (unsigned)(g1 == g0 && !(g0 & 1u)),
                      (unsigned)src_ch, (unsigned)off,
                      (unsigned)(ss ? (ss->soft_trigger ? 1 : 0) : 0),
                      (int)scope_ui_trig_x_actual(), (unsigned)scope_ui_trig_anchor(),
-                     (unsigned)fpga_acq_record_time_ordered());
+                     (unsigned)fpga_acq_record_time_ordered(),
+                     (unsigned)scope_ui_view_factor(),
+                     (unsigned long)scope_ui_view_ratio());
     spi3_frame_dump("CH1", s1);
     spi3_frame_dump("CH2", s2);
 }

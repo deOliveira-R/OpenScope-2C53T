@@ -1,8 +1,6 @@
 /* Zoom while paused: pure arithmetic, see paused_view.h. */
 #include "paused_view.h"
-#include <math.h>
-
-#define PV_PI 3.14159265358979f
+#include "sinc_interp.h"
 
 uint32_t pv_ratio_x1000(float fs_cap, float fs_now)
 {
@@ -27,39 +25,14 @@ uint32_t pv_stock_ratio_x1000(uint8_t tb_now, uint32_t record_period_0p4ns,
     return (uint32_t)(((uint64_t)disp * 1000u + rec / 2u) / rec);
 }
 
-/* Hamming-windowed sinc, half-width 8 (the 16 taps span d = -7-f .. 8-f).
- * sin(pi d) for d = k - 7 - f is -(-1)^(k-7) sin(pi f) ... one sinf per call;
- * the window cosine runs by the Chebyshev recurrence, so a column costs two
- * trig calls, not 32. */
+/* One kernel for both zooms (C5 x C14): the fast-code table of sinc_interp.c
+ * (sinc x Kaiser beta 5), blended between its 20 rows for an arbitrary phase.
+ * Until the C5 merge this file generated its own Hamming-windowed sinc; the
+ * two agreed to ~1 % of a tap, and keeping one means the paused view and the
+ * running fast-code zoom cannot draw the same record two ways. */
 void pv_taps(float frac, float taps[PV_TAPS])
 {
-    if (frac < 0.0f) frac = 0.0f;
-    if (frac >= 1.0f) frac = 0.999999f;
-    if (frac < 1e-6f) {                       /* exact: phase 0 is identity */
-        for (uint32_t k = 0; k < PV_TAPS; k++)
-            taps[k] = (k == 7u) ? 1.0f : 0.0f;
-        return;
-    }
-    const float sf = sinf(PV_PI * frac);
-    const float step = PV_PI / 8.0f;
-    const float c1 = 2.0f * cosf(step);
-    /* window argument u = d / 8 -> cos(pi d / 8); d(k) = k - 7 - frac */
-    float cm2 = cosf(step * (-7.0f - frac - 1.0f));   /* k = -1 */
-    float cm1 = cosf(step * (-7.0f - frac));          /* k = 0  */
-    float sum = 0.0f;
-    for (uint32_t k = 0; k < PV_TAPS; k++) {
-        const float d = (float)(int32_t)k - 7.0f - frac;
-        const float c = (k == 0u) ? cm1 : (c1 * cm1 - cm2);
-        if (k != 0u) { cm2 = cm1; cm1 = c; }
-        const float w = 0.54f + 0.46f * c;
-        const float sgn = (((int32_t)k - 7) & 1) ? 1.0f : -1.0f; /* -(-1)^(k-7) */
-        const float s = sgn * sf / (PV_PI * d);       /* sinc(d) */
-        taps[k] = s * w;
-        sum += taps[k];
-    }
-    const float inv = 1.0f / sum;
-    for (uint32_t k = 0; k < PV_TAPS; k++)
-        taps[k] *= inv;
+    sinc_interp_taps(frac, taps);
 }
 
 int32_t pv_src_pos_x1000(int32_t col, int32_t pivot_col, int32_t pivot_idx,
@@ -89,22 +62,55 @@ bool pv_sample(const volatile uint8_t *rec, int32_t lo, int32_t hi,
     int32_t n = floordiv1000(pos_x1000);                /* in[n] <= pos */
     if (n < lo || n >= hi)
         return false;
-    const float frac = (float)(pos_x1000 - n * 1000) * 0.001f;
-    float taps[PV_TAPS];
-    pv_taps(frac, taps);
-    float acc = 0.0f;
+    /* The 16 taps' samples, clamped to the record's own ends (never a guard
+     * byte past it), copied once so the kernel reads plain memory. */
+    uint8_t w[PV_TAPS];
     for (int32_t k = 0; k < (int32_t)PV_TAPS; k++) {
-        int32_t i = n - 7 + k;
+        int32_t i = n - SINC_INTERP_CENTER + k;
         if (i < lo) i = lo;
         if (i >= hi) i = hi - 1;
-        acc += taps[k] * (float)rec[i];
+        w[k] = rec[i];
     }
-    int v = (int)(acc + 0.5f);
-    if (acc < 0.0f) v = 0;
-    if (v < 0) v = 0;
-    if (v > 255) v = 255;
-    *out = (uint8_t)v;
+    *out = sinc_interp_frac(w, (int32_t)PV_TAPS, SINC_INTERP_CENTER,
+                            pos_x1000 - n * 1000);
     return true;
+}
+
+void pv_fill(const volatile uint8_t *rec, int32_t lo, int32_t hi,
+             int32_t pos0_x1000, uint32_t ratio_x1000,
+             uint8_t *out, uint16_t ncols, uint16_t *first, uint16_t *end)
+{
+    uint16_t f = ncols, e = 0;
+    for (uint16_t x = 0; x < ncols; x++) {
+        const int32_t pos = pos0_x1000 + (int32_t)x * (int32_t)ratio_x1000;
+        if (pv_sample(rec, lo, hi, pos, ratio_x1000, &out[x])) {
+            if (f == ncols) f = x;
+            e = (uint16_t)(x + 1u);
+        }
+    }
+    if (f == ncols) f = e = 0;               /* nothing of the record in view */
+    if (first) *first = f;
+    if (end)   *end = e;
+}
+
+uint8_t pv_view_plan(bool held, float fs_rec, float fs_col, uint8_t L_code,
+                     uint32_t *ratio_x1000)
+{
+    if (L_code == 0u || L_code > PV_PLAN_MAX_L || (PV_PLAN_MAX_L % L_code) != 0u)
+        L_code = 1u;
+    uint32_t r = (uint32_t)PV_RATIO_ONE / L_code;
+    uint8_t L = L_code;
+    if (held && fs_rec > 0.0f && fs_col > 0.0f) {
+        r = pv_ratio_x1000(fs_rec, fs_col);
+        L = 0u;
+        if (r <= PV_RATIO_ONE && (PV_RATIO_ONE % r) == 0u) {
+            const uint32_t l = PV_RATIO_ONE / r;
+            if (l <= PV_PLAN_MAX_L && (PV_PLAN_MAX_L % l) == 0u)
+                L = (uint8_t)l;
+        }
+    }
+    if (ratio_x1000) *ratio_x1000 = r;
+    return L;
 }
 
 int pv_y_map(int raw, int centre, int pos_cap, int pos_now,

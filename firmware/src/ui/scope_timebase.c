@@ -325,6 +325,25 @@ float scope_timebase_hz_from_period(uint8_t code, float period_samples)
     return fs / period_samples;
 }
 
+uint8_t scope_timebase_interp_factor(uint8_t code, bool interleaved)
+{
+    /* Stock's display ratio is 1000 x (div_ns / 25) / record_ns, with
+     * div_ns = 10/20/50/100 and record_ns = 4 (merged) or 8 (0x08030A70);
+     * these rows are 1000 / ratio. */
+    static const uint8_t merged[4]  = { 10u, 5u, 2u, 1u };
+    static const uint8_t per_adc[4] = { 20u, 10u, 4u, 2u };
+    if (code >= 4u)
+        return 1u;
+    return interleaved ? merged[code] : per_adc[code];
+}
+
+void scope_timebase_view_label(uint8_t code, bool interleaved, char *out, uint32_t n)
+{
+    const uint8_t f = (uint8_t)((interleaved ? 2u : 1u) *
+                                scope_timebase_interp_factor(code, interleaved));
+    scope_timebase_label_scaled(code, f, out, n);
+}
+
 void scope_timebase_label(uint8_t code, char *out, uint32_t n)
 {
     scope_timebase_label_scaled(code, 1u, out, n);
