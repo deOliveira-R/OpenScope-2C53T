@@ -199,8 +199,18 @@ data on host-to-device; phase error where the spec asks for one).
 **Medium.** While the composite device is up the LUN has a medium (sharing on
 inserts it). Off at boot like stock, and because a host warns "not ejected
 properly" every time a shared unit is unplugged or reflashed. Not persisted
-(stock's is not either). A host eject (START STOP UNIT) removes the medium
-(the device stays CDC + MSC until `usb share off`). Inserting it, and every gallery save or
+(stock's is not either). A **host eject** (START STOP UNIT, LoEj=1 Start=0, with
+a zero POWER CONDITION field) only takes the medium out: the device stays
+CDC + MSC (no re-enumeration, so the shell's port does not flap), `usb` says
+`medium=out (host ejected ...)`, Settings shows "Ejected". The medium comes back
+with `usb share on`, the Settings row's OK (on "Ejected" it re-inserts rather
+than turning sharing off), or a host LOAD (START STOP UNIT LoEj=1 Start=1).
+`usb share off` returns to CDC-only. Chosen over "eject turns sharing off":
+that would re-enumerate under the user's terminal on a click in Finder.
+Before attaching, the gallery is indexed (`usb_msc_prepare`), so the host's
+first probe sees the final volume. `usb trace` lists, after the enumeration,
+the first 64 SCSI commands of the attach (CDB, CSW status, sense; identical
+repeats such as an absent-medium TUR poll fold into one line). Inserting it, and every gallery save or
 delete while shared (`gallery_generation()`), raises UNIT ATTENTION / MEDIUM
 MAY HAVE CHANGED once, so the host drops its cached FAT and re-reads: a shot
 saved while the drive is mounted appears on the PC within the host's polling

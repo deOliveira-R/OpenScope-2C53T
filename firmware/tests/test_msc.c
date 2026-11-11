@@ -131,6 +131,7 @@ static void read_image(const gallery_vfat_t *v)
 }
 
 static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t rd32be(const uint8_t *p) { return ((uint32_t)p[0] << 24) | (p[1] << 16) | (p[2] << 8) | p[3]; }
 static uint32_t rd32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | ((uint32_t)p[3] << 24); }
 
 /* ── An independent FAT12 reader ──────────────────────────────────────── */
@@ -537,6 +538,134 @@ static void test_scsi_medium_states(void)
     CHECK(!r.ok, "gone after eject");
     msc_lun_changed(&lun);
     CHECK(!lun.unit_attention, "no UA queued without a medium");
+
+    /* load after a host eject brings the medium back, with one UA */
+    const uint8_t load[6] = { 0x1B, 0, 0, 0, 0x03, 0 };
+    cmd(load, 6, 0, false, &r, &p);
+    CHECK(r.ok && lun.present && !lun.eject_request && lun.unit_attention, "load after eject");
+    cmd(tur, 6, 0, false, &r, &p);
+    CHECK(!r.ok, "UA after load");
+    cmd(tur, 6, 0, false, &r, &p);
+    CHECK(r.ok, "ready after load");
+
+    /* power-condition START STOP (sleep) and plain start/stop: no eject */
+    const uint8_t pc[6] = { 0x1B, 0, 0, 0, 0x32, 0 };    /* POWER CONDITION 3, LoEj set */
+    cmd(pc, 6, 0, false, &r, &p);
+    CHECK(r.ok && lun.present, "power condition must not eject");
+    const uint8_t stop[6] = { 0x1B, 0, 0, 0, 0x00, 0 };
+    cmd(stop, 6, 0, false, &r, &p);
+    CHECK(r.ok && lun.present, "stop without LoEj must not eject");
+
+    /* load when the medium is out because sharing is off: stays out */
+    msc_lun_set_present(&lun, false);
+    cmd(load, 6, 0, false, &r, &p);
+    CHECK(!lun.present, "load must not insert a medium sharing removed");
+
+    /* re-insert by the device after a host eject (`usb share on`) */
+    msc_lun_set_present(&lun, true);
+    cmd(tur, 6, 0, false, &r, &p);   /* UA */
+    cmd(ss, 6, 0, false, &r, &p);
+    CHECK(!lun.present && lun.eject_request, "eject 2");
+    msc_lun_set_present(&lun, true);
+    CHECK(lun.present && !lun.eject_request && lun.unit_attention, "device re-insert");
+}
+
+/* The probe macOS's IOSCSIBlockCommandsDevice + IOUSBMassStorageDriver send
+ * (INQUIRY, TUR polling with REQUEST SENSE after each failure, READ
+ * CAPACITY(10), PREVENT, MODE SENSE(6)/(10) for pages 3F and 1C with large
+ * allocation lengths, READ FORMAT CAPACITIES, unsupported service actions,
+ * READ(10) of block 0 / partition-scheme blocks / last block / FAT and root,
+ * SYNCHRONIZE CACHE) must leave the medium present, every reply well formed,
+ * and the data a valid FAT12 volume. */
+static void test_macos_probe(void)
+{
+    fresh();
+    save_shot(1); save_shot(2);
+    gallery_vfat_t v;
+    build(&v);
+    read_image(&v);
+
+    msc_lun_init(&lun, VFAT_TOTAL_SECTORS, VFAT_SECTOR_SIZE);
+    msc_lun_set_present(&lun, true);
+    msc_result_t r; msc_plan_t p;
+    uint8_t k, a;
+
+    const uint8_t inq[6] = { 0x12, 0, 0, 0, 36, 0 };
+    cmd(inq, 6, 36, true, &r, &p);
+    CHECK(r.ok && p.send == 36 && (r.buf[1] & 0x80) && r.buf[0] == 0, "inquiry");
+    const uint8_t inq_vpd[6] = { 0x12, 1, 0x80, 0, 0xFF, 0 };
+    cmd(inq_vpd, 6, 255, true, &r, &p);
+    CHECK(!r.ok && p.status == MSC_CSW_FAIL && p.pad == 255, "VPD refused cleanly");
+    sense(&k, &a);
+    CHECK(k == SCSI_SK_ILLEGAL_REQUEST, "VPD sense");
+
+    const uint8_t tur[6] = { 0 };
+    cmd(tur, 6, 0, false, &r, &p);
+    CHECK(!r.ok, "first TUR: UA");
+    sense(&k, &a);
+    CHECK(k == SCSI_SK_UNIT_ATTENTION && a == SCSI_ASC_MEDIUM_CHANGED, "UA");
+    cmd(tur, 6, 0, false, &r, &p);
+    CHECK(r.ok, "ready");
+
+    const uint8_t rc10[10] = { 0x25 };
+    cmd(rc10, 10, 8, true, &r, &p);
+    CHECK(r.ok && rd32be(r.buf) == VFAT_TOTAL_SECTORS - 1 && rd32be(r.buf + 4) == 512, "READ CAPACITY(10)");
+    const uint8_t rc16[16] = { 0x9E, 0x10, 0,0,0,0,0,0,0,0, 0,0,0,32, 0,0 };
+    cmd(rc16, 16, 32, true, &r, &p);
+    CHECK(!r.ok && p.pad == 32 && lun.present, "READ CAPACITY(16) refused, medium stays");
+    sense(&k, &a);
+
+    const uint8_t prevent[6] = { 0x1E, 0, 0, 0, 1, 0 };
+    cmd(prevent, 6, 0, false, &r, &p);
+    CHECK(r.ok, "prevent");
+    const uint8_t ms6[6] = { 0x1A, 0, 0x3F, 0, 0xC0, 0 };
+    cmd(ms6, 6, 0xC0, true, &r, &p);
+    CHECK(r.ok && p.send == 4 && r.buf[0] == 3 && (r.buf[2] & 0x80) && r.buf[3] == 0, "MODE SENSE(6) 3F: WP, no block descriptors");
+    const uint8_t ms6_1c[6] = { 0x1A, 0x08, 0x1C, 0, 0xFF, 0 };
+    cmd(ms6_1c, 6, 0xFF, true, &r, &p);
+    CHECK(r.ok && p.send == 4 && p.residue == 0xFF - 4, "MODE SENSE(6) 1C");
+    const uint8_t ms10[10] = { 0x5A, 0, 0x3F, 0, 0, 0, 0, 0x01, 0x00, 0 };
+    cmd(ms10, 10, 256, true, &r, &p);
+    CHECK(r.ok && p.send == 8 && r.buf[1] == 6 && (r.buf[3] & 0x80), "MODE SENSE(10) 3F");
+    const uint8_t rfc[10] = { 0x23, 0, 0, 0, 0, 0, 0, 0, 0xFC, 0 };
+    cmd(rfc, 10, 0xFC, true, &r, &p);
+    CHECK(r.ok && p.send == 12 && r.buf[8] == 0x02, "READ FORMAT CAPACITIES");
+
+    /* partition schemes and filesystem probes */
+    const uint32_t lbas[] = { 0, 1, 2, 3, 4, VFAT_TOTAL_SECTORS - 1, VFAT_TOTAL_SECTORS - 2, 0, 3 };
+    for (unsigned i = 0; i < sizeof lbas / sizeof lbas[0]; i++) {
+        uint8_t rd[10] = { 0x28, 0, 0, 0, (uint8_t)(lbas[i] >> 8), (uint8_t)lbas[i], 0, 0, 1, 0 };
+        cmd(rd, 10, 512, true, &r, &p);
+        CHECK(r.ok && r.xfer == MSC_XFER_IN_READ && r.lba == lbas[i] && r.blocks == 1 && p.send == 512 &&
+              p.residue == 0 && p.status == MSC_CSW_PASS, "READ(10) lba %u", (unsigned)lbas[i]);
+        uint8_t sec[512];
+        CHECK(gallery_vfat_read_sector(&v, lbas[i], sec, read_slot, NULL) == VFAT_OK &&
+              memcmp(sec, image + lbas[i] * 512u, 512) == 0, "sector %u content", (unsigned)lbas[i]);
+    }
+    const uint8_t rd_multi[10] = { 0x28, 0, 0, 0, 0, 0, 0, 0, 5, 0 };
+    cmd(rd_multi, 10, 5 * 512, true, &r, &p);
+    CHECK(r.ok && r.blocks == 5 && p.send == 2560, "READ(10) 0..4");
+    const uint8_t rd_past[10] = { 0x28, 0, 0, 0, 0x04, 0x00, 0, 0, 1, 0 };
+    cmd(rd_past, 10, 512, true, &r, &p);
+    CHECK(!r.ok && p.pad == 512 && lun.present, "READ past the end refused, medium stays");
+    sense(&k, &a);
+    CHECK(k == SCSI_SK_ILLEGAL_REQUEST && a == SCSI_ASC_LBA_OUT_OF_RANGE, "range sense");
+
+    const uint8_t sync[10] = { 0x35 };
+    cmd(sync, 10, 0, false, &r, &p);
+    CHECK(r.ok, "synchronize cache");
+    const uint8_t gesn[10] = { 0x4A, 1, 0, 0, 0x10, 0, 0, 0, 8, 0 };   /* GET EVENT STATUS NOTIFICATION */
+    cmd(gesn, 10, 8, true, &r, &p);
+    CHECK(!r.ok && lun.present, "unsupported opcode leaves the medium");
+    sense(&k, &a);
+    CHECK(k == SCSI_SK_ILLEGAL_REQUEST && a == SCSI_ASC_INVALID_OPCODE, "invalid opcode sense");
+    cmd(tur, 6, 0, false, &r, &p);
+    CHECK(r.ok && lun.present, "still present at the end of the probe");
+
+    /* the served volume: valid FAT12 that lists exactly the two shots */
+    bpb_t b;
+    parse_bpb(image, &b);
+    CHECK(b.total == VFAT_TOTAL_SECTORS, "BPB total sectors %u", (unsigned)b.total);
 }
 
 static void test_scsi_commands(void)
@@ -685,6 +814,7 @@ int main(void)
     run("CBW validation", test_cbw_parse);
     run("medium states: no medium, UA, eject", test_scsi_medium_states);
     run("SCSI commands, read-only refusals", test_scsi_commands);
+    run("macOS probe sequence (removable, write-protected)", test_macos_probe);
     run("BOT 13-case plan, CSW", test_plan_cases);
     printf("%d/%d passed\n", tests_run - tests_failed, tests_run);
     free(mem);

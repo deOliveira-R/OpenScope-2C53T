@@ -61,5 +61,9 @@ bool usb_debug_connected(void);
  * to CDC-only: off). See usb_mode_sm.h. */
 void usb_share_request(bool on);
 bool usb_share_wanted(void);
+/* Settings row: re-insert a drive the host ejected, else toggle sharing;
+ * and its label: "Off", "On" or "Ejected". */
+void usb_share_toggle(void);
+const char *usb_share_label(void);
 
 #endif /* USB_DEBUG_H */

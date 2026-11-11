@@ -55,6 +55,7 @@ bool usb_msc_shared(void);
 
 typedef struct {
     bool     shared;
+    bool     host_ejected;   /* medium out because the host ejected it         */
     bool     configured;     /* the host selected the configuration         */
     uint8_t  state;          /* BOT state (usb_msc.c)                         */
     uint8_t  files;          /* shots listed on the volume                    */
@@ -72,5 +73,27 @@ typedef struct {
 } usb_msc_stats_t;
 
 void usb_msc_get_stats(usb_msc_stats_t *out);
+
+/* Build the volume index now (task context), so the host's first look at a
+ * freshly attached drive sees the final volume and no UNIT ATTENTION follows
+ * mid-probe. Called before the composite device is attached. */
+void usb_msc_prepare(void);
+
+/* SCSI trace: one entry per command since usb_msc_trace_reset() (the
+ * composite attach), USB_MSC_TRACE_N at most; a command identical to the
+ * previous one (CDB, status, sense) only bumps that entry's repeat count, so
+ * a host polling an absent medium costs one line. */
+#define USB_MSC_TRACE_N 64u
+typedef struct {
+    uint32_t t_ms;          /* since the attach                              */
+    uint8_t  cdb[9];        /* enough for every 6/10-byte CDB's fields       */
+    uint8_t  cdb_len;
+    uint8_t  status;        /* CSW status 0 pass, 1 fail, 2 phase error     */
+    uint8_t  sk, asc, ascq; /* sense the command set (REQUEST SENSE: what it reported) */
+    uint16_t repeat;        /* further identical commands                    */
+} usb_msc_trace_t;
+void     usb_msc_trace_reset(void);
+uint32_t usb_msc_trace_count(uint32_t *not_recorded);
+bool     usb_msc_trace_get(uint32_t i, usb_msc_trace_t *out);
 
 #endif /* USB_MSC_H */

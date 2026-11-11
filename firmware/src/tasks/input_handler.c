@@ -369,7 +369,7 @@ void input_handle_settings_ok(void)
                   * the scope, and falls back to CDC-only by itself if the
                   * host does not configure the composite device (usb_mode_sm.h). */
 #if defined(USB_MSC) && USB_MSC
-            usb_share_request(!usb_share_wanted());
+            usb_share_toggle();
 #endif
             break;
         case 10: /* Firmware Update -- reboot into DFU bootloader */

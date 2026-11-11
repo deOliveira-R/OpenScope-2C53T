@@ -12,8 +12,9 @@
  * pushes anyway is received and dropped by the transport.
  *
  * Medium state: the LUN is a removable drive whose "card" is the gallery.
- * Sharing off = no medium (NOT READY, MEDIUM NOT PRESENT), so enabling or
- * disabling sharing never re-enumerates USB and never disturbs the CDC shell.
+ * No medium = NOT READY / MEDIUM NOT PRESENT: before the device inserts it,
+ * and after a host eject (START STOP UNIT LoEj=1 Start=0) until the device
+ * re-inserts it or the host loads it (LoEj=1 Start=1).
  * A gallery change, or the medium coming back, is reported once as UNIT
  * ATTENTION / MEDIUM MAY HAVE CHANGED so the host drops its cached FAT.
  */
