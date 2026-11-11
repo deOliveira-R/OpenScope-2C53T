@@ -1088,6 +1088,7 @@ bool    fpga_interleave_active(void);          /* enabled, mask 1, timebase <= 3
 void    fpga_interleave_corr_set(float gain, float offset);
 void    fpga_interleave_corr_get(float *gain, float *offset);
 bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge */
+uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while interleaving */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);
 extern volatile bool fpga_meter_needs_activation;

@@ -3511,6 +3511,7 @@ static volatile bool acq_reprime_req = false;
  * switch, default ON. Converter-B correction defaults to identity; a unit's
  * own numbers are set with `fpga interleave corr`. */
 static volatile bool acq_il_enable = true;
+static volatile uint32_t acq_il_roll_holds = 0;   /* untriggered reads held, not merged */
 static interleave_corr_t acq_il_corr = { 1.0f, 0.0f };
 /* EXP-45 (2026-09-14): gap between the 0x04 and 0x05 reads of a pair. Shell
  * reads 50 ms apart each produce a PC0 edge; the task's back-to-back pair
@@ -3781,6 +3782,7 @@ void fpga_interleave_corr_get(float *gain, float *offset)
     if (offset) *offset = acq_il_corr.offset;
 }
 bool fpga_acq_record_interleaved(void) { return acq_pub_il; }
+uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
 /* Rate of the PUBLISHED record: the timebase table's per-converter rate,
  * doubled when the record is the two-converter merge. 0 = no rate. */
 float fpga_record_sample_rate(void)
@@ -4139,6 +4141,15 @@ static void fpga_warmtest_acq_task(void *pv)
                 acq_gate_skips++;                /* GATE ON: never show the roll */
                 continue;
             }
+            /* Interleave needs one moment in BOTH converters. A roll read is
+             * not that: op04 and op05 are read ~140 us apart while the FPGA
+             * keeps writing (same-wire test, 2026-11-10), so merging one
+             * would publish a scrambled record as 250 MS/s. Hold instead,
+             * as NORMAL does; only handed-over records are merged. */
+            if (fpga_interleave_active()) {
+                acq_il_roll_holds++;
+                continue;
+            }
             uint32_t since = acq_auto_live ? (last_read_tick - last_handover_tick)
                                            : (last_read_tick - last_commit_tick);
             bool budget_up = (int32_t)since >= (int32_t)fpga_acq_auto_wait_get();
@@ -4196,7 +4207,7 @@ static void fpga_warmtest_acq_task(void *pv)
         if ((marker || varies) && fpga.spi3_hw_timeouts == hw_to_before) {
             fpga.acq_last_rot = fpga_acq_unrotate_staging(triggered);   /* dev plan 2.3: seam-based */
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
-            acq_stage_il = fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
+            acq_stage_il = triggered && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
             if (acq_stage_il)
                 interleave_merge(acq_stage_ch1, acq_stage_ch2, &acq_il_corr);
             fpga_acq_frames_commit();
