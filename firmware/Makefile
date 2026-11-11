@@ -116,6 +116,8 @@ C_SOURCES += src/util/screenshot.c
 C_SOURCES += src/util/gallery_store.c
 C_SOURCES += src/ui/gallery_nav.c
 C_SOURCES += src/ui/gallery_ui.c
+C_SOURCES += src/util/logo_store.c
+C_SOURCES += src/ui/logo_ui.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
 C_SOURCES += src/decode/decode_spi.c
@@ -935,6 +937,20 @@ $(BUILD_DIR)/test_gallery: tests/test_gallery.c src/util/gallery_store.c src/uti
 
 .PHONY: test-gallery
 test-gallery: $(BUILD_DIR)/test_gallery
+	$<
+
+# Boot logo (parity C15): record format, header CRC, sequential upload, commit
+# last, CRC refusal, streaming, and that an upload touches nothing outside the
+# logo region. See tests/test_logo.c.
+$(BUILD_DIR)/test_logo: tests/test_logo.c src/util/logo_store.c src/util/logo_store.h \
+                        src/drivers/flash_regions.c src/drivers/flash_regions.h \
+                        src/util/cal_backup_core.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
+		src/util/logo_store.c src/drivers/flash_regions.c \
+		src/util/cal_backup_core.c -o $@
+
+.PHONY: test-logo
+test-logo: $(BUILD_DIR)/test_logo
 	$<
 
 

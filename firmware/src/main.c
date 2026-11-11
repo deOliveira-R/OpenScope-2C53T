@@ -54,6 +54,7 @@ extern void system_clock_config(void);
 #include "scope_mask.h"
 #include "trig_menu.h"
 #include "sys_pwm.h"
+#include "logo_ui.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -821,6 +822,7 @@ static void vInputTask(void *pvParameters)
 {
     (void)pvParameters;
     button_scan_start();
+    logo_ui_boot_hold(xInputQueue, xDisplayQueue, 1000u);   /* boot logo, any key skips */
 
     for (;;) {
         button_id_t pressed;
@@ -1207,6 +1209,12 @@ int main(void)
      * This replaces the old passive GPIO reads that didn't work on hardware.
      * The driver handles all GPIO config for the 4x3 matrix + 3 passive pins. */
     button_scan_init(xInputQueue);
+
+    /* Boot logo (stock: 2:/LOGO/LOGO2C53T.jpg; ours: logo_store.h). After the
+     * backlight PWM and settings so the stored brightness applies, before the
+     * tasks so the display task starts behind it (it claims the screen until
+     * vInputTask releases it after the ~1 s hold). No logo stored: no-op. */
+    (void)logo_ui_boot_show();
 
     /* Create tasks */
     xTaskCreate(vDisplayTask, "display", 768, NULL, 1, &xDisplayTaskHandle);

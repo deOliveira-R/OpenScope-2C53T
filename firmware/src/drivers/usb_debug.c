@@ -68,6 +68,9 @@
 #include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
 #include "../util/gallery_store.h"
+#include "../ui/logo_ui.h"
+#include "watchdog.h"
+#include "../util/cal_backup_core.h"
 #include "../util/cal_backup_core.h"
 
 #include "fpga_cal_table.h"
@@ -2274,6 +2277,114 @@ static void cmd_screenshot(const char *args)
         usb_send_bytes(buf, (uint16_t)n);
     }
     usb_debug_printf("\r\nSHOTBIN END crc32=%08lX\r\n", (unsigned long)cal_backup_crc32_final(crc));
+}
+
+/*
+ * Boot logo (logo_store.h): upload a 320x240 RGB565 image over the shell.
+ *   logo put <len> <crc32hex>   erase the slot, start an upload (len = 153600)
+ *   logo data <off> <hex>       <= 48 bytes at the next expected offset
+ *   logo end                    verify CRC from flash, commit
+ * scripts/logo_put.py drives this; every reply starts "logo:" and a failure
+ * says "err". The upload session is 12 bytes of static RAM.
+ */
+static logo_upload_t s_logo_up;
+
+static void logo_tick(void)
+{
+    health_checkin_self();
+    vTaskDelay(1);
+}
+
+static int logo_hexbyte(const char *p)
+{
+    int v = 0;
+    for (int i = 0; i < 2; i++) {
+        char c = p[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= c - '0';
+        else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+        else return -1;
+    }
+    return v;
+}
+
+static void cmd_logo(const char *args)
+{
+    static const char usage[] =
+        "Usage: logo info | put <len> <crc32hex> | data <off> <hex> | end | show | clear\r\n";
+    if (args == NULL || *args == '\0' || strcmp(args, "info") == 0) {
+        logo_info_t info;
+        logo_status_t st = logo_info(&info);
+        if (st != LOGO_OK) { usb_debug_printf("logo: err %s\r\n", logo_status_str(st)); return; }
+        const flash_region_t *r = flash_region_get(LOGO_REGION);
+        if (info.state == LOGO_SLOT_VALID) {
+            uint32_t crc = 0;
+            st = logo_crc_payload(&crc, logo_tick);
+            usb_debug_printf("logo: valid %lux%lu rgb565 %lu B crc %08lX payload %s @0x%06lX\r\n",
+                             (unsigned long)LOGO_W, (unsigned long)LOGO_H, (unsigned long)info.len,
+                             (unsigned long)info.crc,
+                             (st == LOGO_OK && crc == info.crc) ? "OK" : "MISMATCH",
+                             (unsigned long)(r ? r->start : 0));
+        } else {
+            usb_debug_printf("logo: %s (built-in splash)\r\n",
+                             info.state == LOGO_SLOT_EMPTY ? "none stored" : "damaged slot");
+        }
+        return;
+    }
+    if (strncmp(args, "put ", 4) == 0) {
+        uint32_t len, crc;
+        const char *p = args + 4;
+        char *e;
+        len = strtoul(p, &e, 10);
+        if (e == p || *e != ' ' || parse_hex32(e + 1, &crc) != 0) { usb_send_str(usage); return; }
+        logo_status_t st = logo_put_begin(&s_logo_up, len, crc, logo_tick);
+        if (st == LOGO_OK) usb_debug_printf("logo: ok put %lu\r\n", (unsigned long)len);
+        else usb_debug_printf("logo: err %s\r\n", logo_status_str(st));
+        return;
+    }
+    if (strncmp(args, "data ", 5) == 0) {
+        uint32_t off;
+        const char *p = args + 5;
+        char *e;
+        off = strtoul(p, &e, 10);
+        if (e == p || *e != ' ') { usb_send_str(usage); return; }
+        p = e + 1;
+        uint8_t buf[LOGO_CHUNK_MAX];
+        uint32_t n = 0;
+        while (p[0] != '\0' && p[1] != '\0') {
+            int b = logo_hexbyte(p);
+            if (b < 0 || n >= sizeof buf) { usb_send_str("logo: err bad hex\r\n"); return; }
+            buf[n++] = (uint8_t)b;
+            p += 2;
+        }
+        if (n == 0u || *p != '\0') { usb_send_str("logo: err bad hex\r\n"); return; }
+        logo_status_t st = logo_put_data(&s_logo_up, off, buf, n);
+        if (st == LOGO_OK) usb_debug_printf("logo: ok %lu\r\n", (unsigned long)s_logo_up.received);
+        else usb_debug_printf("logo: err %s (expect %lu)\r\n", logo_status_str(st),
+                              (unsigned long)s_logo_up.received);
+        return;
+    }
+    if (strcmp(args, "end") == 0) {
+        logo_status_t st = logo_put_end(&s_logo_up, logo_tick);
+        usb_debug_printf(st == LOGO_OK ? "logo: ok committed\r\n" : "logo: err %s\r\n",
+                         logo_status_str(st));
+        return;
+    }
+    if (strcmp(args, "clear") == 0) {
+        logo_status_t st = logo_clear();
+        usb_debug_printf("logo: %s\r\n", st == LOGO_OK ? "ok cleared" : logo_status_str(st));
+        return;
+    }
+    if (strncmp(args, "show", 4) == 0) {
+        uint32_t ms = 2000u;
+        if (args[4] == ' ') parse_int(args + 5, &ms);
+        if (ms > 10000u) ms = 10000u;
+        logo_status_t st = logo_ui_preview(ms);
+        usb_debug_printf("logo: %s\r\n", st == LOGO_OK ? "ok shown" : logo_status_str(st));
+        return;
+    }
+    usb_send_str(usage);
 }
 
 static void cmd_screen_shadow(const char *args)
@@ -9387,6 +9498,10 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("screenshot", cmd_screenshot, 0,
           "screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\n"
           "screenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n"),
+    CMD_A("logo", cmd_logo, 0,
+          "logo [info]                     Boot logo status (CRC-checked)\r\n"
+          "logo put <len> <crc>|data <off> <hex>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\n"
+          "logo show [ms]|clear            Preview now / remove (built-in splash)\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,

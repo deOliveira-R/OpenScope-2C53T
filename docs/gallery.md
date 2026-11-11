@@ -2,8 +2,8 @@
 
 Status 2026-11-11: **screenshot save, 3x3 gallery and the `screenshot` shell
 command are implemented** (host-tested; bench test pending). **USB Sharing (mass
-storage) and the boot-logo upload are designed here but not built**: both need
-RAM the warm-handoff images do not have (see the last two sections).
+storage) is designed but not built** (it needs RAM the warm-handoff images do
+not have). The **boot-logo upload is built** (last section; bench test pending).
 
 ## What stock does (V1.2.0)
 
@@ -130,21 +130,26 @@ FatFs R0.14b, so this needs no new stack. Two things block it today:
 Estimated size: L (BOT buffer patch, virtual FAT generator + tests, enumeration
 switch, settings item).
 
-## Boot logo upload: design, not built
+## Boot logo upload (built)
 
-Stock reads `2:/LOGO/LOGO2C53T.jpg` from its own FAT. For OpenScope:
+Stock reads `2:/LOGO/LOGO2C53T.jpg` from its own FAT. OpenScope stores its own
+image instead (no FAT, no JPEG decoder, no RAM): `firmware/src/util/logo_store.h`.
 
-1. **Upload**: `logo put <len> <crc32>` over CDC into a dedicated slot (reuse one
-   40 KB region slot pattern: a 64 KB area carved from `modules`, header + JPEG,
-   CRC-checked, same commit-last rule as the gallery). No FAT involved.
-2. **Optional stock compatibility**: a read-only FAT12 reader that finds
-   `2:/LOGO/LOGO2C53T.jpg` on stock's volume (path walk + cluster chain, reads
-   only, never mounts read-write, never formats), so a logo a user installed
-   under stock keeps working.
-3. **Decode**: TJpgDec (BSD-style licence, baseline JPEG, ~3.1 KB work area) at
-   boot, before the scheduler starts, with the work area in the shared pool
-   (free at boot). Draw with the backlight at 0, then raise it to the stored
-   brightness, as stock does (`0x0802C04A..0x0802C06C`). Any failure keeps the
-   built-in splash. Shell `logo info` reports source/size/decode result.
-
-Estimated size: M.
+- **Region**: `FLASH_REGION_LOGO`, 0xF70000..0xF9FFFF (192 KB), carved from the
+  unused tail of `modules` (now 0xF20000, 320 KB). One record: 24-byte header at
+  +0 (magic `OSL1`, version, format, 320x240, length, payload CRC32, header
+  CRC32; written LAST as the commit record) and 153,600 bytes of RGB565
+  little-endian at +256.
+- **Upload** (`scripts/logo_put.py upload image.png`): `logo put 153600 <crc32>`
+  erases the slot (header sector first), `logo data <off> <hex>` sends 48 bytes
+  per line at strictly sequential offsets, `logo end` re-reads the payload from
+  flash, compares the CRC and only then writes the header. A failed or
+  interrupted upload leaves the slot empty and the built-in splash shows.
+- **Shell**: `logo info` (state, CRC re-check), `logo show [ms]` (preview over
+  the running UI), `logo clear`.
+- **Boot**: after settings and the backlight PWM are up, `logo_ui_boot_show()`
+  turns the backlight off, streams the image into the LCD, restores the stored
+  brightness; the key task then holds ~1 s (any key skips) and releases the
+  screen. No logo stored: nothing changes. RAM cost: 16 bytes of bss.
+- **Not built**: reading a logo a user installed under stock
+  (`2:/LOGO/LOGO2C53T.jpg`) needs a read-only FAT12 walker and a JPEG decoder.

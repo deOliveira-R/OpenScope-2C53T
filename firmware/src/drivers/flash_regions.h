@@ -103,6 +103,7 @@ typedef enum {
     FLASH_REGION_USER_CAL,     /* append: our user-calibration overlay          */
     FLASH_REGION_SETTINGS,     /* append: our saved settings                    */
     FLASH_REGION_MODULES,      /* rw: module data assets                        */
+    FLASH_REGION_LOGO,         /* rw: boot logo image (logo_store.h)            */
     FLASH_REGION_SCRATCH,      /* rw: screenshot gallery slots (gallery_store.h) */
     FLASH_REGION_FACTORY_CAL_BACKUP, /* rw: MCU factory-cal page mirror (cal_backup.c) */
     FLASH_REGION_TAIL,         /* RO: final sector, programmed, purpose unknown */
