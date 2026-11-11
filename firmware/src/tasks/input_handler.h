@@ -27,6 +27,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t display_queue);
 
 /* Auto power-off timer (parity C15): call every pass of the input task. */
 void input_autooff_poll(void);
+/* Ask the input task to write pending settings now (shell-side changes). */
+void input_request_settings_flush(void);
 
 /* What the scope time view's arrow keys adjust (MOVE cycles it). */
 extern volatile key_focus_t scope_key_focus;
