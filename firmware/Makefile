@@ -109,6 +109,7 @@ C_SOURCES += src/util/calpage.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
 C_SOURCES += src/util/settings_store.c
+C_SOURCES += src/util/shell_persist.c
 C_SOURCES += src/util/usercal_rec.c
 C_SOURCES += src/util/usercal.c
 C_SOURCES += src/util/sys_prefs.c
@@ -713,6 +714,14 @@ $(BUILD_DIR)/test_scope_freq_lock: tests/test_scope_freq_lock.c src/ui/scope_fre
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui $< src/ui/scope_freq.c -lm -o $@
 
 test-scope-freq-lock: $(BUILD_DIR)/test_scope_freq_lock
+	./$<
+
+# Shell `persist` switch (bench sweeps skip the per-command settings flush).
+.PHONY: test-shell-persist
+$(BUILD_DIR)/test_shell_persist: tests/test_shell_persist.c src/util/shell_persist.c src/util/shell_persist.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/shell_persist.c -o $@
+
+test-shell-persist: $(BUILD_DIR)/test_shell_persist
 	./$<
 
 # Settings persistence: config.c + settings_store.c against a NOR flash model
