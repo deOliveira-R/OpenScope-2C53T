@@ -25,6 +25,7 @@
 #include "fpga_cal_table.h"
 #include "fpga_meter_plan.h"
 #include "meter_data.h"
+#include "meter_stock.h"
 #include "scope_trigger.h"
 #include "../dsp/trig_edge.h"
 #include "../dsp/interleave.h"
@@ -181,6 +182,12 @@ static TaskHandle_t      rx_task_handle  = NULL;
 static volatile bool data_ready = false;
 static volatile bool scope_reinit_pending = false;
 static volatile bool meter_transition_busy = false;
+/* M1/M2 state: see fpga_meter_fast_switch_set() and fpga_meter_keepalive_set(). */
+static volatile bool meter_fast_switch_enabled = true;
+static volatile bool meter_keepalive_enabled = true;
+/* Set when a full transition ended with the SoC awake and the selector echoed;
+ * cleared whenever PC11 is dropped (fpga_meter_reset_transport). */
+static volatile bool meter_soc_live_flag = false;
 volatile uint8_t meter_frame_discard_count;
 volatile uint32_t meter_transition_frame_skip_count;
 
@@ -264,6 +271,7 @@ static void fpga_meter_reset_transport(void)
     (void)USART2->dt;
 
     GPIOC->clr = (1U << 11);
+    meter_soc_live_flag = false;       /* the SoC restarts when PC11 rises again */
     fpga_scope_delay_ms(20);
 
     USART2->ctrl1 = (ctrl1 | USART_CTRL1_UEN | USART_CTRL1_RDBFIEN) &
@@ -1230,6 +1238,20 @@ bool fpga_meter_tx_header_get(void)      { return meter_tx_header_aa55; }
 static void meter_build_tx_frame(uint8_t *frame, uint8_t cmd_hi, uint8_t cmd_lo,
                                  bool obey)
 {
+    /*
+     * GUARD (M7 is not implemented on purpose). 0x02A0 / 0x0503 / 0x0501 are
+     * the words of stock's hidden SoC calibration sequence (key slots 7 and 2
+     * in Ohm, 0x0800D6AC..0x0800D79A); obeyed, they may rewrite the SoC's
+     * calibration. Scope/siggen replays send two of them with the 00 00 header
+     * the SoC ignores, and keep doing so. An OBEYED request is downgraded to
+     * the ignored header and counted, so it can never reach the SoC from the
+     * shell, a transition or a future caller.
+     */
+    if (obey && meter_word_is_cal_wizard((uint16_t)(((uint16_t)cmd_hi << 8) | cmd_lo))) {
+        obey = false;
+        fpga.meter_cal_word_refused++;
+        fpga.meter_cal_word_last = (uint16_t)(((uint16_t)cmd_hi << 8) | cmd_lo);
+    }
     memset(frame, 0, FPGA_TX_FRAME_SIZE);
     if (meter_tx_header_aa55 && obey) {
         frame[0] = 0xAAU;
@@ -1912,6 +1934,7 @@ bool fpga_debug_apply_meter_mux_arms(uint8_t portc_porte_mux,
     GPIOB->scr = PB11_MASK;
     GPIOC->scr = PC6_MASK;
     GPIOC->scr = (1U << 11);
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
     if (planned_gpio != 0) {
         *planned_gpio = fpga_meter_mux_gpio_mask_from_state(&mux_state);
     }
@@ -1929,6 +1952,7 @@ static void fpga_set_meter_frontend_for_submode(uint8_t submode)
     GPIOB->scr = PB11_MASK;
     GPIOC->scr = PC6_MASK;
     GPIOC->scr = (1U << 11);
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
 
     /*
      * Invalid local submodes still apply the baseline state returned by the
@@ -2059,10 +2083,12 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
     fpga_meter_reset_transport();
 
     GPIOC->clr = (1U << 11);
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
     GPIOB->scr = PB11_MASK;
     GPIOC->scr = PC6_MASK;
     fpga_apply_meter_mux_gpio_state(&mux_state);
     GPIOC->clr = (1U << 11);
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
 
     if (planned_gpio != 0) {
         *planned_gpio = fpga_meter_mux_gpio_mask_from_state(&mux_state);
@@ -2070,6 +2096,7 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
     fpga_scope_delay_ms(low_ms);
 
     GPIOC->scr = (1U << 11);
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
     fpga_scope_delay_ms(high_ms);
 
     if (actual_gpio != 0) {
@@ -2725,7 +2752,8 @@ static void fpga_meter_poll_task(void *pv)
                 vTaskDelay(pdMS_TO_TICKS(10));
                 usart2_send_cmd_ex(0x05, 0x14, false);  vTaskDelay(pdMS_TO_TICKS(50));
             }
-            fpga_send_meter_poll_sequence(meter_submode);
+            if (meter_keepalive_enabled)
+                fpga_send_meter_poll_sequence(meter_submode);
         }
     }
 }
@@ -3380,6 +3408,7 @@ void fpga_set_meter_mux(bool enable)
     GPIOC->cfghr = (GPIOC->cfghr & ~(0xFu << 12)) | (0x3u << 12);  /* PC11 PP 50MHz */
     if (enable) GPIOC->scr = (1u << 11);
     else        GPIOC->clr = (1u << 11);
+    meter_soc_live_flag = false;       /* the SoC reboots on every PC11 rise */
 
     /* PC11 alone is necessary but NOT sufficient — bench 2026-08-17: with PC11
      * high the relay audibly clicks and the DMM screen still sits frozen,
@@ -5663,6 +5692,7 @@ void fpga_init(void)
     gpio_cfg.gpio_pins = GPIO_PINS_11;
     gpio_init(GPIOC, &gpio_cfg);
     GPIOC->clr = (1U << 11);   /* PC11 LOW */
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
 
     gpio_cfg.gpio_pins = GPIO_PINS_2 | GPIO_PINS_13;
     gpio_init(GPIOD, &gpio_cfg);
@@ -6632,6 +6662,7 @@ void fpga_scope_reinit(void)
 
     /* Exit meter posture explicitly before sending scope-side commands. */
     GPIOC->clr = (1U << 11);  /* PC11 LOW — meter MUX off */
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
     GPIOB->scr = PB11_MASK;   /* PB11 HIGH — FPGA active */
 
     fpga_set_scope_frontend_ranges(ss);
@@ -6727,6 +6758,7 @@ void fpga_enter_siggen_mode(void)
      * For signal gen: try reversing PC12 to route DAC→BNC output.
      * PC11 LOW (meter MUX off — not measuring). */
     GPIOC->clr = (1U << 11);  /* PC11 LOW — meter MUX off */
+    meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
     GPIOC->clr = (1U << 12);  /* PC12 LOW — try routing DAC to BNC */
     GPIOE->clr = (1U << 4);   /* PE4 LOW — clear range select */
     GPIOE->clr = (1U << 5);   /* PE5 LOW */
@@ -6925,7 +6957,72 @@ static void fpga_apply_meter_transition(uint8_t submode, bool wake_preamble)
                                           actual_gpio, tx_before, frame_before);
     fpga_arm_meter_first_rx_latch(submode, &plan, planned_gpio, actual_gpio);
     fpga_meter_discard_next_frames(plan.discard_frames);
+    /* The SoC spoke (it woke) and took the selector: later function changes
+     * can be one word on the live link. */
+    meter_soc_live_flag = (fpga.meter_soc_wake_ms != 0xFFFFu) &&
+                          fpga.meter_selector_confirmed;
     meter_transition_busy = false;
+}
+
+void fpga_meter_fast_switch_set(bool on) { meter_fast_switch_enabled = on; }
+bool fpga_meter_fast_switch_get(void)    { return meter_fast_switch_enabled; }
+void fpga_meter_keepalive_set(bool on)   { meter_keepalive_enabled = on; }
+bool fpga_meter_keepalive_get(void)      { return meter_keepalive_enabled; }
+
+bool fpga_meter_soc_live(void)
+{
+    /* The flag alone is not enough: a PC11 drop anywhere (scope entry, siggen,
+     * fpga_set_meter_mux(false)) leaves the SoC rebooting. Read the pin. */
+    return meter_soc_live_flag && (GPIOC->odt & (1U << 11)) != 0U;
+}
+
+/*
+ * M1: ONE word per function change, like stock.
+ *
+ * Stock (caplog run2/run3, 0x0800B2D4 left handler, 0x0800D2A2 MOVE): a
+ * function change queues one halfword; dvom_TX frames it as
+ * AA 55 05 <word> 00 00 00 00 00 <cs> and that is all. PC11 stays high, no
+ * frontend pin moves (relay switching is inside the SoC, EXP-205 5e), the SoC
+ * does not restart and no keepalive or start word follows. OpenScope used to
+ * drop PC11 on every change: a 1.38 s SoC reboot and a mux projection.
+ *
+ * Returns false (nothing is left half-done) when a fast switch is not
+ * possible or the SoC never echoed the word, and the caller runs the full
+ * transition, which is the safety net.
+ */
+static bool fpga_meter_fast_switch(uint8_t submode)
+{
+    fpga_meter_transition_plan_t plan =
+        fpga_meter_transition_plan_for_submode(submode);
+
+    if (!meter_fast_switch_enabled || !fpga_meter_soc_live()) return false;
+    if (!fpga_meter_submode_is_valid(submode) ||
+        plan.selector_word == FPGA_METER_INVALID_SELECTOR_WORD ||
+        meter_word_is_cal_wizard(plan.selector_word)) {
+        return false;
+    }
+
+    meter_transition_busy = true;
+    meter_data_invalidate(submode);
+    fpga.meter_mode_sequence_count++;
+    fpga.meter_mode_sequence_submode = submode;
+    fpga.meter_mode_selector_word = plan.selector_word;
+    fpga.meter_mode_config_word = 0;
+    fpga.meter_mode_apply_word = 0;
+    fpga.meter_mode_probe_word = 0;
+    fpga.meter_mode_start_word = 0;
+
+    fpga_send_selector_confirmed(plan.selector_word, 0);
+
+    if (!fpga.meter_selector_confirmed) {
+        fpga.meter_fast_fallback_count++;
+        meter_transition_busy = false;
+        return false;
+    }
+    fpga_meter_discard_next_frames(plan.discard_frames);
+    fpga.meter_fast_switch_count++;
+    meter_transition_busy = false;
+    return true;
 }
 
 void fpga_set_meter_mode(uint8_t submode)
@@ -6946,6 +7043,7 @@ void fpga_set_meter_mode(uint8_t submode)
         if (dac_output_is_running()) dac_output_stop();
     }
 
+    if (fpga_meter_fast_switch(submode)) return;
     fpga_apply_meter_transition(submode, false);
 }
 

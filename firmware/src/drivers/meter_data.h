@@ -103,6 +103,15 @@ typedef struct {
     /* Continuity buzzer state */
     bool     continuity_beep;    /* Should buzzer sound */
 
+    /* Stock status text (meter_stock_status_t): AUTO/OL/CAL/PAS/Er1-3/ErC
+     * when the frame's four glyphs spell one, else 0. The text is also in
+     * display_str. */
+    uint8_t  status_code;
+    /* Stock range index ms[0xF37] decoded from frame[6]/[7] for this
+     * submode's function (meter_stock_range_index) and its short label. */
+    uint8_t  range_index;
+    char     range_label[8];
+
     /* Validity */
     bool     valid;              /* At least one successful parse */
     uint32_t update_count;       /* Incremented on each new reading */
@@ -136,6 +145,12 @@ typedef struct {
     uint8_t  frame[12];
     uint8_t  raw_digits[4];
 } meter_frame_history_t;
+
+/* Temperature in degF (stock ms[0xF39], toggled by MOVE in Temp). The parser
+ * converts with stock's v*9/5+32 and labels the reading "F". Changing it
+ * invalidates nothing by itself; the caller resets min/max like stock does. */
+void meter_data_set_fahrenheit(bool on);
+bool meter_data_fahrenheit(void);
 
 /* Global meter reading (defined in meter_data.c) */
 extern meter_reading_t meter_reading;

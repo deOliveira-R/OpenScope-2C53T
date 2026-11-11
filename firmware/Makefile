@@ -67,6 +67,7 @@ C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/dsp/trig_edge.c
 C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/drivers/meter_data.c
+C_SOURCES += src/drivers/meter_stock.c
 C_SOURCES += src/drivers/meter_auto.c
 C_SOURCES += src/drivers/meter_autoselect.c
 C_SOURCES += src/drivers/usb_debug.c
@@ -492,8 +493,8 @@ soak-test: emu
 soak-quick: emu
 	python3 ../scripts/soak_test.py --no-build --duration 30 --seed $(SOAK_SEED) --verbose
 
-$(BUILD_DIR)/test_meter_data: tests/test_meter_data.c src/drivers/meter_data.c src/drivers/meter_data.h src/drivers/fpga_meter_plan.c src/drivers/fpga_meter_plan.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -Wall -Wextra -DMETER_DATA_HOST_TESTS -Isrc/drivers $< src/drivers/meter_data.c src/drivers/fpga_meter_plan.c -lm -pthread -o $@
+$(BUILD_DIR)/test_meter_data: tests/test_meter_data.c src/drivers/meter_data.c src/drivers/meter_stock.c src/drivers/meter_stock.h src/drivers/meter_data.h src/drivers/fpga_meter_plan.c src/drivers/fpga_meter_plan.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -Wall -Wextra -DMETER_DATA_HOST_TESTS -Isrc/drivers $< src/drivers/meter_data.c src/drivers/meter_stock.c src/drivers/fpga_meter_plan.c -lm -pthread -o $@
 
 test-meter-data: $(BUILD_DIR)/test_meter_data
 	$<
@@ -638,10 +639,20 @@ test-config-persist: $(BUILD_DIR)/test_config_persist $(BUILD_DIR)/test_config_p
 	$(BUILD_DIR)/test_config_persist
 	$(BUILD_DIR)/test_config_persist_nowrite
 
+# Stock meter behaviours that are pure logic (M4 beep gate/pulse, M5 status
+# text, degF, range index and rescale, the calibration-wizard word guard).
+# Its own .PHONY line, as the comment above test-fw-loader explains.
+.PHONY: test-meter-stock
+$(BUILD_DIR)/test_meter_stock: tests/test_meter_stock.c src/drivers/meter_stock.c src/drivers/meter_stock.h src/drivers/meter_data.c src/drivers/meter_data.h src/drivers/fpga_meter_plan.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -Wall -Wextra -DMETER_DATA_HOST_TESTS -Isrc/drivers $< src/drivers/meter_stock.c src/drivers/meter_data.c src/drivers/fpga_meter_plan.c -lm -pthread -o $@
+
+test-meter-stock: $(BUILD_DIR)/test_meter_stock
+	$<
+
 test-stock-meter-literals:
 	python3 ../scripts/test_stock_meter_literals.py
 
-test-meter: test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals
+test-meter: test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-meter-stock test-stock-meter-literals
 
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens
 # against a transcription of the pre-B2 logic. See tests/test_redraw_gate.c.

@@ -21,6 +21,7 @@
 
 #include "meter_data.h"
 #include "fpga_meter_plan.h"
+#include "meter_stock.h"
 #include <string.h>
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -39,6 +40,15 @@ uint8_t meter_frame_history_head;
 
 static volatile uint32_t meter_reading_seq;
 static volatile uint8_t meter_writer_lock;
+
+/* Stock ms[0xF39]: temperature shown in degF. Written by the UI task, read by
+ * the parser task: a single byte, no tearing. */
+static volatile bool meter_temp_fahrenheit;
+/* Stock leaves ms[0xF37] alone for some continuity frames: remember it. */
+static uint8_t meter_range_prev;
+
+void meter_data_set_fahrenheit(bool on) { meter_temp_fahrenheit = on; }
+bool meter_data_fahrenheit(void)        { return meter_temp_fahrenheit; }
 
 #ifdef METER_DATA_HOST_TESTS
 static meter_data_test_hook_fn meter_data_test_hook;
@@ -199,6 +209,17 @@ static void meter_clear_payload(meter_reading_t *r)
     r->bar_fraction = 0.0f;
     r->aux_freq_hz = 0.0f;
     r->continuity_beep = false;
+}
+
+/* A frame whose four glyphs spell one of stock's status strings: show the
+ * text, not a number, and say which one in status_code. */
+static void meter_finish_status_text(meter_reading_t *r, meter_stock_status_t st)
+{
+    meter_clear_payload(r);
+    r->status_code = (uint8_t)st;
+    r->result_class = (st >= METER_STATUS_ER1) ? METER_RESULT_INVALID
+                                               : METER_RESULT_BLANK;
+    strcpy(r->display_str, meter_stock_status_text(st));
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1227,6 +1248,8 @@ void meter_data_init(void)
     meter_frame_history_count = 0;
     meter_frame_history_head = 0;
     meter_stock_fsm.stock_mode = 0xFF;
+    meter_range_prev = 0;
+    meter_temp_fahrenheit = false;
 }
 
 bool meter_data_snapshot(meter_reading_t *out)
@@ -1334,6 +1357,10 @@ void meter_data_invalidate(uint8_t submode)
     r->range_indicator = 0;
     r->range_cmd = 0;
     r->continuity_beep = false;
+    r->status_code = 0;
+    r->range_index = 0;
+    r->range_label[0] = '\0';
+    meter_range_prev = 0;
     r->valid = false;
     r->expected_frame_family =
         (uint8_t)fpga_meter_frame_family_for_submode(submode);
@@ -1384,6 +1411,7 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
     for (int i = 0; i < 12; i++) r->dbg_frame[i] = frame[i];
     r->submode = submode;
     r->continuity_beep = false;
+    r->status_code = 0;
     r->aux_freq_hz = 0.0f;
     r->expected_frame_family =
         (uint8_t)fpga_meter_frame_family_for_submode(submode);
@@ -1540,6 +1568,36 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
         r->reject_reason = METER_REJECT_INVALID_SUBMODE;
         METER_REJECT_FRAME();
         return;
+    }
+
+    /* Range index (stock ms[0xF37], tbb at 0x0803E1C8) from the frame's own
+     * range bits, and its label: the live range annunciator. */
+    {
+        uint8_t sel = 0, f36 = 1;
+        (void)meter_stock_selector_for_submode(submode, &sel, &f36);
+        meter_range_prev = meter_stock_range_index(
+            sel, f36, meter_temp_fahrenheit, frame[6], frame[7], meter_range_prev);
+        r->range_index = meter_range_prev;
+        meter_stock_range_label(sel, f36, meter_temp_fahrenheit, r->range_index,
+                                r->range_label, sizeof r->range_label);
+    }
+
+    /* Stock's status strings, decided before anything else in its parser
+     * (0x0803DB64..0x0803DE62): AUTO, CAL, PAS, Er1-3, ErC. The calibration
+     * wizard's own screens, which OpenScope never starts, but a SoC that is
+     * already in that state must read as text and not as "ERR" or a number.
+     * OL and blank keep their dedicated handling below. "PAS" is also the
+     * glyph run of a continuity pass (the marker the continuity branch below
+     * decodes), so it is only labelled here, not short-circuited. */
+    {
+        meter_stock_status_t st = meter_stock_status_from_codes(r->dbg_raw_digits);
+        if (st == METER_STATUS_PAS) r->status_code = (uint8_t)st;
+        if (st == METER_STATUS_AUTO || st == METER_STATUS_CAL ||
+            st >= METER_STATUS_ER1) {
+            meter_finish_status_text(r, st);
+            METER_FINISH_FRAME();
+            return;
+        }
     }
 
     if (frame_has_zero_detect_status(frame) &&
@@ -1794,6 +1852,24 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
             r->reject_reason = METER_REJECT_UNSUPPORTED_EXTENSION;
             METER_REJECT_FRAME();
             return;
+        }
+    }
+
+    /* degF (stock 0x0803E180, selector 5 with ms[0xF39] set): the SoC always
+     * sends degC; stock converts after the value is assembled. */
+    if (submode == 10 && meter_temp_fahrenheit &&
+        r->result_class == METER_RESULT_NORMAL) {
+        float f = meter_stock_degc_to_degf(r->value);
+        r->value = f;
+        meter_stock_format_fixed(r->display_str, sizeof r->display_str, f, 1);
+        r->unit_suffix = "F";
+        r->decimal_pos = 1;
+        {
+            float a = f < 0.0f ? -f : f;
+            float full = meter_stock_degc_to_degf(
+                (submode < 11) ? bar_full_scale[submode] : 100.0f);
+            r->bar_fraction = a / full;
+            if (r->bar_fraction > 1.0f) r->bar_fraction = 1.0f;
         }
     }
 
