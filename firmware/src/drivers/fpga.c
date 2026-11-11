@@ -2129,12 +2129,14 @@ static uint8_t fpga_scope_gain_param(const channel_state_t *ch)
 
 static uint8_t fpga_scope_offset_param(const channel_state_t *ch)
 {
-    int offset = 128 - ch->position;
-
-    if (offset < 0)   offset = 0;
-    if (offset > 255) offset = 255;
-
-    return (uint8_t)offset;
+    /* Pinned at the centre. `position` became stock's -100..+100 vertical
+     * position (parity C4), which stock applies through the analog offset
+     * DAC (0x080089C2 / 0x08008BD4; drivers/scope_vpos.c), and nothing in the
+     * stock trace shows it reaching this USART byte. Before C4 position was
+     * always 0, so the byte was always 128; keeping it there keeps the wire
+     * bit-identical and cannot apply the position twice. */
+    (void)ch;
+    return 128u;
 }
 
 static uint8_t fpga_scope_coupling_param(const scope_state_t *ss)
