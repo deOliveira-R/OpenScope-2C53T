@@ -56,11 +56,9 @@
  *    agree by construction, on every unit, with no m >= 221 gate — the
  *    V1.0.7 behaviour, not the V1.1.2 regression. Trimming the samples as
  *    well would divide by g twice.
- *  - Our grid is 32 px per division, stock's is 25 points. A point is drawn
- *    every 32/25 px so one division still holds 25 points and the stock
- *    labels (50 ms..20 s) say what the grid means; 250 of the 301 points
- *    fit on the glass, the oldest 51 are kept, as stock keeps them, but
- *    fall off the left edge.
+ *  - The grid is stock's C5 geometry (scope_geom.h): 25 px per division
+ *    over a 301-column window, so one point per column, 25 points per
+ *    division, and the whole 301-point FIFO is on the glass.
  */
 
 #ifndef SCOPE_ROLL_H
@@ -76,7 +74,7 @@ extern "C" {
 #define SCOPE_ROLL_STEPS            9u     /* stock indices 0x14..0x1C */
 #define SCOPE_ROLL_POINTS           301u   /* stock FIFO length (ms[0xDB6] cap) */
 #define SCOPE_ROLL_POINTS_PER_DIV   25u    /* stock geometry: label = 25 x period */
-#define SCOPE_ROLL_PX_PER_DIV       32u    /* ours: scope_ui.c vertical grid pitch */
+#define SCOPE_ROLL_PX_PER_DIV       25u    /* C5 grid pitch (scope_geom.h): one point per column */
 #define SCOPE_ROLL_TICK_HZ          10000u /* stock TMR3 tick: PSC = clk/10000 - 1 */
 #define SCOPE_ROLL_STOCK_CODE_BASE  0x14u  /* stock ms[0x2D] of the first roll step */
 
@@ -203,7 +201,8 @@ const char *scope_disp_mode_label(scope_disp_mode_t m);
 /* ── Screen geometry ────────────────────────────────────────────────── */
 
 /* Age of the point drawn at column x of a `width`-px trace: the newest at
- * x = width - 1, one division (25 points) every 32 px to the left. */
+ * x = width - 1, one division (25 points) every 25 px to the left
+ * (one point per column; the window is SCOPE_GEOM_COLS = 301 wide). */
 uint16_t scope_roll_age_at_column(uint16_t x, uint16_t width);
 
 /* Visible points of a `width`-px trace: the ages scope_roll_age_at_column()

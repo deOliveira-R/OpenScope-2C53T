@@ -190,7 +190,7 @@ void draw_info_bar(void)
              */
             char tb[12];
             if (ss->roll) {
-                /* Roll (C11): 25 points per 32 px division, so stock's own
+                /* Roll (C11): 25 points per 25 px division, so stock's own
                  * label is what the grid means (scope_roll.h). */
                 scope_roll_label(ss->roll_step, tb, sizeof(tb));
                 snprintf(buf, sizeof(buf), "H=%s", tb);

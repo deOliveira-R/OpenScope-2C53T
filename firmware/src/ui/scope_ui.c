@@ -1149,10 +1149,21 @@ typedef struct {
 
 static vband_t g_vband[2];
 
+/* The math trace's own scale, as drawn this frame (draw_math_waveform): the
+ * cursors read it instead of the channel bands while the overlay is up, since
+ * it spans the whole glass over them. */
+static struct {
+    bool                on;
+    uint8_t             direct;        /* SCOPE_CURSOR_DIRECT_* */
+    float               unit_per_px;
+    scope_cursor_conf_t conf;
+} g_math_cur;
+
 static void vband_clear(void)
 {
     g_vband[0].on = false;
     g_vband[1].on = false;
+    g_math_cur.on = false;
 }
 
 static void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
@@ -1843,6 +1854,17 @@ static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
 {
     scope_cursor_vmap_t vm;
     memset(&vm, 0, sizeof(vm));
+    if (math_enabled && g_math_cur.on) {
+        /* Volts (or counts) on the math scale about the graticule centre;
+         * any other math unit leaves counts_per_pixel 0 -> pixels. */
+        vm.channel   = 0u;                 /* named "m" by draw_cursors */
+        vm.mid_known = 1u;
+        vm.mid_row   = (int16_t)SCOPE_MID_Y;
+        vm.direct         = g_math_cur.direct;
+        vm.direct_conf    = g_math_cur.conf;
+        vm.unit_per_pixel = g_math_cur.unit_per_px;
+        return vm;
+    }
     for (uint8_t i = 0u; i < 2u; i++) {
         const vband_t *b = &g_vband[i];
         if (!b->on) continue;
@@ -2019,7 +2041,9 @@ static void draw_cursors(void)
         /* Name the channel when the number is a voltage: with two channels on
          * two ranges, "dV=1.20V" alone does not say which frontend measured
          * it. */
-        if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS)
+        if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
+            snprintf(label, sizeof(label), "dVm=%s", buf);   /* the math trace */
+        else if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS)
             snprintf(label, sizeof(label), "dV%u=%s", vm.channel, buf);
         else
             snprintf(label, sizeof(label), "dV=%s", buf);
@@ -2185,6 +2209,24 @@ static void draw_math_waveform(void)
                 lcd_set_pixel((uint16_t)(x0 + i), (uint16_t)y, th->warning);
             prev = rows[i];
         }
+    }
+    /* The cursors' view of this scale: `step` per SCOPE_DIV_PX rows. */
+    g_math_cur.on = true;
+    g_math_cur.direct = (unit == MATH_UNIT_VOLTS)  ? SCOPE_CURSOR_DIRECT_VOLTS
+                      : (unit == MATH_UNIT_COUNTS) ? SCOPE_CURSOR_DIRECT_COUNTS
+                                                   : SCOPE_CURSOR_DIRECT_NONE;
+    g_math_cur.unit_per_px = step / (float)SCOPE_DIV_PX;
+    {
+        scope_cursor_conf_t c = SCOPE_CURSOR_MEASURED;
+        if (math_op_uses_a(op)) {
+            scope_cursor_conf_t ca = scope_cursor_cal_conf(1u, ss->ch1.vdiv_idx);
+            if (ca < c) c = ca;
+        }
+        if (math_op_uses_b(op)) {
+            scope_cursor_conf_t cb = scope_cursor_cal_conf(2u, ss->ch2.vdiv_idx);
+            if (cb < c) c = cb;
+        }
+        g_math_cur.conf = c;
     }
     /* Zero marker of the math trace: a tick at the left edge. */
     for (uint16_t x = 0; x < 6; x++)
@@ -3037,8 +3079,9 @@ void draw_scope_live_frame(void)
  * as draw_scope_live_frame (each pixel's final colour streamed once per
  * column, so a point arriving every 2 ms never blanks the band), fed from
  * a snapshot of the FIFO instead of the 1024-sample record:
- *  - column x shows the point of age scope_roll_age_at_column(x): 25 points
- *    per 32 px division, so the stock label (50 ms..20 s) is what one grid
+ *  - column x shows the point of age scope_roll_age_at_column(x, 301): 25
+ *    points per 25 px division (one point per column, the whole 301-point FIFO
+ *    on the glass), so the stock label (50 ms..20 s) is what one grid
  *    division means;
  *  - the vertical transform is the Y-T one: true volts/div about mid-scale
  *    when `fpga scope graticule true` and the range is calibrated, else the
@@ -3127,7 +3170,7 @@ void draw_roll_screen(bool full)
     const theme_t *th = theme_get();
     const scope_state_t *ss = scope_state_get();
     (void)scope_roll_fifo_snapshot(fpga_roll_fifo(), &roll_snap);
-    const uint16_t nvis = scope_roll_visible(&roll_snap, LCD_WIDTH);
+    const uint16_t nvis = scope_roll_visible(&roll_snap, SCOPE_GEOM_COLS);
 
     const bool en1 = ss->ch1.enabled, en2 = ss->ch2.enabled;
     scope_roll_vmap_t m1 = { false, 0, 255, 128, SCOPE_TOP, SCOPE_BOT, SCOPE_H };
@@ -3152,10 +3195,13 @@ void draw_roll_screen(bool full)
 
     int16_t p1 = -1, p2 = -1;
     for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-        const uint16_t age = scope_roll_age_at_column(x, LCD_WIDTH);
+        /* C5 geometry: the 301-column window, one point per column (25 per
+         * 25 px division); right of it only the furniture and background. */
+        const bool inwin = (x < SCOPE_GEOM_COLS);
+        const uint16_t age = scope_roll_age_at_column(x, SCOPE_GEOM_COLS);
         uint8_t v;
         int16_t lo1 = -1, hi1 = -2, lo2 = -1, hi2 = -2;
-        if (on1 && scope_roll_fifo_get(&roll_snap, 0u, age, &v)) {
+        if (on1 && inwin && scope_roll_fifo_get(&roll_snap, 0u, age, &v)) {
             int16_t y = scope_roll_y(&m1, v);
             lo1 = y; hi1 = (int16_t)(y + 1);
             if (p1 >= 0) { if (p1 < lo1) lo1 = p1; if (p1 > hi1) hi1 = p1; }
@@ -3163,7 +3209,7 @@ void draw_roll_screen(bool full)
         } else {
             p1 = -1;
         }
-        if (on2 && scope_roll_fifo_get(&roll_snap, 1u, age, &v)) {
+        if (on2 && inwin && scope_roll_fifo_get(&roll_snap, 1u, age, &v)) {
             int16_t y = scope_roll_y(&m2, v);
             lo2 = y; hi2 = (int16_t)(y + 1);
             if (p2 >= 0) { if (p2 < lo2) lo2 = p2; if (p2 > hi2) hi2 = p2; }
@@ -3196,10 +3242,11 @@ void draw_roll_screen(bool full)
                     c = th->ch2;
                 else if ((int16_t)y >= lo1 && (int16_t)y <= hi1)
                     c = th->ch1;
-                else if (y == SCOPE_MID_Y || x == LCD_WIDTH / 2)
+                else if (inwin && (y == SCOPE_MID_Y ||
+                                   x == (uint16_t)SCOPE_GEOM_CENTER_COL))
                     c = th->grid_center;
-                else if (((x & 31u) == 0 && (y & 1u) == 0) ||
-                         (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0))
+                else if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
+                                   (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
                     c = th->grid;
                 else
                     c = th->background;

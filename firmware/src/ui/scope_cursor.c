@@ -105,8 +105,23 @@ scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px)
                                        scope_cursor_tb_conf(tb_code), dx_px);
 }
 
+scope_cursor_conf_t scope_cursor_cal_conf(uint8_t channel, uint8_t range_idx)
+{
+    return conf_from_cal(scope_cal_get_tier(channel, range_idx));
+}
+
+static scope_cursor_reading_t direct_reading(const scope_cursor_vmap_t *map, float v)
+{
+    return make(map->direct == SCOPE_CURSOR_DIRECT_VOLTS ? SCOPE_CURSOR_UNIT_VOLTS
+                                                         : SCOPE_CURSOR_UNIT_COUNTS,
+                map->direct == SCOPE_CURSOR_DIRECT_VOLTS ? map->direct_conf
+                                                         : SCOPE_CURSOR_RAW, v);
+}
+
 scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t row)
 {
+    if (map != NULL && map->direct != SCOPE_CURSOR_DIRECT_NONE && map->unit_per_pixel > 0.0f)
+        return direct_reading(map, (float)((int32_t)map->mid_row - row) * map->unit_per_pixel);
     if (map == NULL || map->counts_per_pixel <= 0.0f || !map->mid_known)
         return make(SCOPE_CURSOR_UNIT_NONE, SCOPE_CURSOR_RAW, 0.0f);
 
@@ -124,6 +139,8 @@ scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t ro
 scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,
                                             int32_t dy_px)
 {
+    if (map != NULL && map->direct != SCOPE_CURSOR_DIRECT_NONE && map->unit_per_pixel > 0.0f)
+        return direct_reading(map, (float)dy_px * map->unit_per_pixel);
     if (map == NULL || map->counts_per_pixel <= 0.0f) {
         /* The renderer's vertical transform is unknown (demo trace, no
          * capture, or cursors straddling two autofit bands with different

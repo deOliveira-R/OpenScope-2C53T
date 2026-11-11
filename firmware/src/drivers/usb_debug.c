@@ -1432,10 +1432,15 @@ static void cmd_gpio_set(const char *args)
 
     /* Read back IDT: on a driven pin it is the pin itself, so a line clamped
      * by the outside world shows up here instead of being reported as set. */
-    usb_debug_printf("P%c%d -> %s  (idt reads %u)\r\n",
+    /* SCR/CLR take effect on the next APB cycle: an IDT read in the same
+     * instruction stream can still show the old level ("idt reads 0" right
+     * after driving high). Let the output settle, then read. */
+    for (volatile int i = 0; i < 200; i++) { }
+    usb_debug_printf("P%c%d -> %s  (odt %u, idt reads %u)\r\n",
                      gpio_port_letter(port),
                      __builtin_ctz(pin),
                      val ? "HIGH" : "LOW",
+                     (port->odt & pin) ? 1u : 0u,
                      (port->idt & pin) ? 1u : 0u);
 }
 
@@ -3608,7 +3613,12 @@ static void cmd_fpga_scope_timebase(const char *args)
 
     char lbl[12];
     /* What the status bar shows: x2 merged, times the fast-code zoom (C5). */
-    scope_timebase_view_label(ss->timebase_idx, scope_ui_view_merged(),
+    /* After a set, the published record is still the previous one, so ask
+     * what the NEW code will produce (fpga_interleave_active) rather than
+     * scope_ui_view_merged(), which reads that stale record. */
+    scope_timebase_view_label(ss->timebase_idx,
+                              *args ? fpga_interleave_active()
+                                    : scope_ui_view_merged(),
                               lbl, sizeof(lbl));
     usb_debug_printf("timebase 0x%02X (reg 0x01 = 0x%02X)  %lu S/s  %s/div\r\n",
                      (unsigned)ss->timebase_idx,
@@ -4118,7 +4128,9 @@ static void cmd_fpga_scope_cal(void)
         if (fs <= 0.0f)
             continue;                      /* skip the many unmeasured codes */
         char lbl[12];
-        scope_timebase_label(c, lbl, sizeof(lbl));
+        /* Display label (C5 zoom at 0x00-0x03), per-converter record: the
+         * merged record reads the same label at these codes. */
+        scope_timebase_view_label(c, false, lbl, sizeof(lbl));
         const scope_tb_tier_t t = scope_timebase_get_tier(c);
         usb_debug_printf("0x%02X  %7lu  %7s  %s\r\n",
                          (unsigned)c, (unsigned long)(fs + 0.5f), lbl,
@@ -5271,10 +5283,12 @@ static void cmd_mode(const char *args)
             usb_debug_printf("startup=%s\r\n", startup_mode_name(startup_mode));
         } else if (strcmp(value, "scope") == 0) {
             startup_mode_set(STARTUP_SCOPE);
-            usb_send_str("startup=Scope (saved with the next key press)\r\n");
+            input_request_settings_flush();
+            usb_send_str("startup=Scope (saved within 100 ms)\r\n");
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
-            usb_send_str("startup=Meter (saved with the next key press)\r\n");
+            input_request_settings_flush();
+            usb_send_str("startup=Meter (saved within 100 ms)\r\n");
         } else {
             usb_send_str("Usage: mode startup [scope|meter]\r\n");
         }

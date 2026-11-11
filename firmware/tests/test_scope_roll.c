@@ -5,7 +5,7 @@
  *  - the FIFO behaves like stock's 301-point FIFO (newest right, count
  *    saturating at 301, the oldest dropped),
  *  - the timebase ladder continues past the last FPGA code into roll and back,
- *  - one 32 px grid division holds 25 points, so the stock label holds,
+ *  - one 25 px grid division holds 25 points, so the stock label holds,
  *  - a roll point's volts carry g = (m - 28)/150 on every unit, i.e. NOT
  *    stock V1.1.2's /192 with the m >= 221 gate (ADDENDUM_B S16), and agree
  *    with the Y-T rule (zero = 100 + pos with the cal page).
@@ -139,23 +139,23 @@ static void test_disp_mode(void)
 
 static void test_geometry(void)
 {
-    CHECK("newest point at the right edge", scope_roll_age_at_column(319, 320) == 0);
-    CHECK("one 32 px division back = 25 points (stock label holds)",
-          scope_roll_age_at_column(319 - 32, 320) == 25 &&
-          scope_roll_age_at_column(319 - 64, 320) == 50);
+    CHECK("newest point at the right edge", scope_roll_age_at_column(300, 301) == 0);
+    CHECK("one 25 px division (C5 grid) back = 25 points (stock label holds)",
+          scope_roll_age_at_column(300 - 25, 301) == 25 &&
+          scope_roll_age_at_column(300 - 50, 301) == 50);
     int mono = 1;
-    for (uint16_t x = 1; x < 320; x++)
-        mono &= scope_roll_age_at_column(x, 320) <= scope_roll_age_at_column(x - 1, 320);
+    for (uint16_t x = 1; x < 301; x++)
+        mono &= scope_roll_age_at_column(x, 301) <= scope_roll_age_at_column(x - 1, 301);
     CHECK("age grows right to left (stock scrolls R-to-L)", mono);
-    CHECK("left edge = age 249 (250 of 301 visible)", scope_roll_age_at_column(0, 320) == 249);
-    CHECK("off-trace column refused", scope_roll_age_at_column(320, 320) == 0xFFFF);
+    CHECK("left edge = age 300 (all 301 on the glass)", scope_roll_age_at_column(0, 301) == 300);
+    CHECK("off-trace column refused", scope_roll_age_at_column(301, 301) == 0xFFFF);
 
     static scope_roll_fifo_t f;
     scope_roll_fifo_reset(&f);
     for (int i = 0; i < 100; i++) scope_roll_fifo_push(&f, 1, 2);
-    CHECK("visible = count while filling", scope_roll_visible(&f, 320) == 100);
+    CHECK("visible = count while filling", scope_roll_visible(&f, 301) == 100);
     for (int i = 0; i < 400; i++) scope_roll_fifo_push(&f, 1, 2);
-    CHECK("visible capped at 250 when full", scope_roll_visible(&f, 320) == 250);
+    CHECK("visible capped at 301 when full", scope_roll_visible(&f, 301) == 301);
 
     scope_roll_vmap_t m = { true, 0, 255, 128, 18, 224, 206 };
     CHECK("fixed: centre code at band middle", scope_roll_y(&m, 128) == (18 + 224) / 2);
@@ -165,7 +165,7 @@ static void test_geometry(void)
     scope_roll_fifo_reset(&f);
     for (int i = 0; i < 50; i++) scope_roll_fifo_push(&f, (uint8_t)(60 + i), 0);
     scope_roll_vmap_t fm = { false, 0, 0, 0, 18, 224, 206 };
-    bool fit = scope_roll_fit(&f, 0, scope_roll_visible(&f, 320), &fm);
+    bool fit = scope_roll_fit(&f, 0, scope_roll_visible(&f, 301), &fm);
     CHECK("fit: min..max of the visible points", fit && fm.lo == 60 && fm.hi == 109);
     CHECK("fit: min at the bottom, max at the top",
           scope_roll_y(&fm, 60) == 224 - 3 && scope_roll_y(&fm, 109) == 18 + 2);

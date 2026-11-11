@@ -524,8 +524,43 @@ static void test_absolute_y(void)
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "NULL map refuses");
 }
 
+/* The math trace (C12) is drawn on its own scale about the graticule centre:
+ * `step` per 26 rows. The cursors must read volts on THAT scale, not through a
+ * channel's gain, and must not invent a unit for V^2 / ratio results. */
+static void test_math_direct_scale(void)
+{
+    scope_cursor_vmap_t vm;
+    memset(&vm, 0, sizeof(vm));
+    vm.mid_known = 1u;
+    vm.mid_row = 121;
+    vm.direct = SCOPE_CURSOR_DIRECT_VOLTS;
+    vm.direct_conf = SCOPE_CURSOR_MEASURED;
+    vm.unit_per_pixel = 0.5f / 26.0f;            /* 0.5 V per division */
+    scope_cursor_reading_t r = scope_cursor_y(&vm, 121 - 26);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && fabsf(r.value - 0.5f) < 1e-4f,
+          "one division above mid = +0.5 V on the math scale (%g)", (double)r.value);
+    r = scope_cursor_y(&vm, 121 + 52);
+    CHECK(fabsf(r.value + 1.0f) < 1e-4f, "two divisions below = -1 V (%g)", (double)r.value);
+    r = scope_cursor_delta_v(&vm, 13);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && fabsf(r.value - 0.25f) < 1e-4f,
+          "dV = rows x step/26 (%g)", (double)r.value);
+    CHECK(r.confidence == SCOPE_CURSOR_MEASURED, "tier carried from the sources");
+    vm.direct = SCOPE_CURSOR_DIRECT_COUNTS;
+    r = scope_cursor_delta_v(&vm, 26);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS && r.confidence == SCOPE_CURSOR_RAW,
+          "counts math stays counts, RAW");
+    /* A math unit with no formatter (V^2, ratio): pixels / "--", never volts. */
+    memset(&vm, 0, sizeof(vm));
+    vm.mid_known = 1u; vm.mid_row = 121;
+    r = scope_cursor_delta_v(&vm, 7);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS, "no direct scale -> pixels");
+    r = scope_cursor_y(&vm, 100);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "no direct scale -> --");
+}
+
 int main(void)
 {
+    test_math_direct_scale();
     test_time_comes_from_the_rate_table();
     test_volts_come_from_the_gain_table();
     test_the_vertical_transform_is_the_renderers();
