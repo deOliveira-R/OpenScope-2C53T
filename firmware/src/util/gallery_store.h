@@ -142,6 +142,11 @@ gallery_status_t gallery_save(const uint8_t *pixels, const uint16_t pal565[16],
 /* Delete shot seq: zero its magic (a program, never an erase). */
 gallery_status_t gallery_delete(uint32_t seq);
 
+/* Bumped by every gallery_save()/gallery_delete() that reached the flash
+ * (success or not), so a reader holding an index (the USB mass-storage view,
+ * usb_msc.c) knows to rescan instead of polling the headers. */
+uint32_t gallery_generation(void);
+
 /* Read len bytes of the stored BMP of slot at offset off (0 = 'B'). */
 gallery_status_t gallery_read_bmp(uint32_t slot, uint32_t off, void *buf, uint32_t len);
 

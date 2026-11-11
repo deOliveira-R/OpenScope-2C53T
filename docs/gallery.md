@@ -1,9 +1,10 @@
 # On-device screenshots, gallery, USB Sharing and boot logo (parity C16)
 
 Status 2026-11-11: **screenshot save, 3x3 gallery and the `screenshot` shell
-command are implemented** (host-tested; bench test pending). **USB Sharing (mass
-storage) and the boot-logo upload are designed here but not built**: both need
-RAM the warm-handoff images do not have (see the last two sections).
+command are implemented** (host-tested; bench test pending). **USB Sharing is
+implemented** as a read-only mass-storage drive synthesised from the gallery
+(host-tested, macOS mounts the generated image; bench test pending, see the
+USB Sharing section). The boot-logo upload is designed here but not built.
 
 ## What stock does (V1.2.0)
 
@@ -87,48 +88,84 @@ screenshot save          screenshot: saved <n>.bmp
 screenshot get <n>       SHOTBIN name=<n>.bmp len=38518 crc32=XXXXXXXX\r\n <38518 raw bytes> \r\nSHOTBIN END crc32=XXXXXXXX
 screenshot check <n>     screenshot: <n>.bmp stored=XXXXXXXX read=XXXXXXXX OK
 screenshot delete <n>    screenshot: delete <n>.bmp: ok
+usb [status]             USB conf=1 msc=1 share=off files=.. blocks=1024x512 state=0 cmds=.. reads=.. sectors=..
+                           ioerr=0 badcbw=0 resets=0 wrref=0 rescans=.. last_op=.. last_lba=..
+usb share [on|off]       usb: share on
 ```
 
 `<n>` may be `3` or `3.bmp`.
 
-## USB Sharing (mass storage): design, not built
+## USB Sharing (mass storage)
 
-The AT32 library already ships `usbd_class/msc` and `composite_cdc_msc`, and
-FatFs R0.14b, so this needs no new stack. Two things block it today:
+Stock's Settings item "USB Sharing" (OK handler `0x0800BF08`, ms[0xF68] = 4)
+re-enumerates as a mass-storage-only device, stops the scope, and exposes its
+volume `2:` **writable**. Ours differs on purpose:
 
-1. **RAM.** `msc_bot_scsi.c` keeps a static `MSC_MAX_DATA_BUF_LEN` = 4096-byte
-   buffer, and a virtual FAT needs one 4 KB sector staged at a time. The default
-   image has ~2.5 KB of RAM left and the warm-handoff images ~0.5 KB. The way
-   out is the shared pool: stock stops the scope in USB Sharing (state 4 gates
-   acquisition at `0x08020EAC`), so in that mode the 116 KB pool is free. Patch
-   the BOT layer to take its buffer from `shared_mem_acquire()` (a new owner
-   `SHMEM_OWNER_USBMSC`) on entering the mode and release it on eject.
-2. **Which bytes to expose.** Not stock's volume `2:` as is: its FAT spans
-   `0xD00000+`, and a host that writes to the drive could allocate our clusters
-   (parity2_static.md 4.5: never a writable view of `0xD00000+`). Two options:
-   - **(a) A synthetic read-only FAT12** (recommended first step). The device
-     answers READ(10) for a volume it computes per sector: boot sector, FAT and
-     root directory generated from `gallery_scan()`, one file per valid slot
-     (`<n>.BMP`, 38518 bytes, ten clusters each, mapped one-to-one onto the slot's
-     BMP bytes at `slot+256`). WRITE(10) fails with DATA PROTECT; INQUIRY reports
-     write-protected. No FAT on the W25Q is ever mounted or written, nothing at
-     `0xD00000+` can be reached, and the host sees exactly the gallery. Tests:
-     the generated BPB/FAT/directory parse with `fsck.fat -n` on a host image;
-     sector-to-slot mapping; WRITE refusal.
-   - **(b) Read-through of stock's `2:`** for users who keep stock screenshots:
-     LUN capacity = volume `2:`, reads below `0xD00000` pass through, reads at
-     or above return zeros, all writes refused. Needs no FAT code at all but
-     shows only stock's files, not ours.
-3. **Mode switching.** Stock exposes MSC only; entering USB Sharing stops CDC.
-   Ours: Settings item "USB Sharing" and shell `usb share` re-enumerate as
-   composite CDC+MSC (so the shell keeps working, interface association
-   descriptors from `cdc_msc_desc.c`), or MSC-only behind a build flag if a host
-   misbehaves; leave by MENU or host eject (START STOP UNIT), then re-enumerate
-   as CDC. The descriptor and LUN count of stock's own mode can be read on the
-   host with `lsusb -v` while a stock unit is in USB Sharing (no SWD).
+| | stock | OpenScope |
+|---|---|---|
+| what the PC sees | volume `2:` itself (FAT12, 4 KB sectors) | a FAT12 volume computed per sector from the gallery |
+| writes | allowed | refused (MODE SENSE write-protect; WRITE -> DATA PROTECT / WRITE PROTECTED) |
+| CDC shell | gone while sharing | keeps working: the device is always CDC + MSC |
+| enter / leave | re-enumeration | medium inserted / ejected, no re-enumeration |
+| scope while sharing | stopped | keeps running |
 
-Estimated size: L (BOT buffer patch, virtual FAT generator + tests, enumeration
-switch, settings item).
+**Device.** `src/drivers/usb_composite.c`: interfaces 0-1 are the CDC (one IAD,
+the same endpoints 0x82 / 0x81 / 0x01, the library's unmodified `cdc_class.c`
+reached through its handler table), interface 2 is MSC SCSI/bulk-only on
+0x83 / 0x03 (class triple 08 06 50, as stock's). Device class EF/02/01 (IAD).
+VID:PID stays **2E3C:5740** (the host scripts key "app running" on it);
+`bcdDevice` is 2.01 instead of 2.00 so a host that caches descriptors per
+VID/PID/revision (Windows) treats it as a new device. The serial string is the
+library's MCU-UID algorithm, so macOS should keep naming the port
+`/dev/cu.usbmodem<serial>1` (CDC comm is still interface 0); confirm on the
+bench. Packet memory: EPT2's never-used RX slot went to EPT3, so the device
+fits the 512 bytes exactly (`usb_conf.h`). `make USB_MSC=0` builds the CDC-only
+device of before.
+
+**Volume** (`src/util/gallery_vfat.c`): 512 B sectors, 4 KB clusters, 1 reserved
+sector, 2 FATs of 1 sector, 32 root entries, 1024 sectors = 512 KB, 127 clusters
+(FAT12 by count). Label `OPENSCOPE`. Gallery slot k owns clusters `2 + 10k ..
+11 + 10k` whether or not it holds a shot, so a data sector maps to (slot, byte
+offset) by division and a file never moves when another is deleted; the
+38518-byte BMP is read straight from `slot + 256` (`gallery_read_bmp`), the
+rest of its last cluster reads zero. Root entries are `<seq>.BMP` with the NT
+lower-case flags, attribute read-only + archive, a fixed 2026-01-01 timestamp
+(the slot header has no time). Hosts list `1.bmp`, `2.bmp`, ... A number above
+99999999 does not fit 8.3 and is listed as `SHOT~<slot>.bmp` (it would take
+10^8 saves). Nothing is written to the W25Q, ever: there is no write path.
+
+**Transport** (`src/drivers/usb_msc.c`, SCSI logic in `src/util/msc_scsi.c`).
+The USB interrupt decodes the CBW and answers everything that needs no flash
+(INQUIRY, TEST UNIT READY, READ CAPACITY, MODE SENSE, REQUEST SENSE, READ
+FORMAT CAPACITIES, refusals). A READ is latched and the `usb_dbg` task computes
+it sector by sector (`usb_msc_poll`), because W25Q reads take `flash_fs`'s mutex,
+which an ISR cannot; the ISR wakes the task with a task notification, so there
+is no 10 ms poll per sector. RAM: one 512-byte buffer (also the CBW buffer and
+the sink for dropped write data) plus ~150 bytes of state; measured on the
+default build +328 B bss in all, since the library's 256-byte CDC string buffer
+no longer links. Mismatched host/device data phases follow BOT 6.7 (zero fill
+up to the host's length where a short packet cannot end the phase; dropped
+data on host-to-device; phase error where the spec asks for one).
+
+**Sharing on/off** = medium present or not (removable LUN): Settings "USB
+Sharing" (the last row, On/Off) or `usb share on|off`. Off at boot like stock,
+and because a host warns "not ejected properly" every time a shared unit is
+unplugged or reflashed. Not persisted (stock's is not either). A host eject
+(START STOP UNIT) turns sharing off. Turning it on, and every gallery save or
+delete while shared (`gallery_generation()`), raises UNIT ATTENTION / MEDIUM
+MAY HAVE CHANGED once, so the host drops its cached FAT and re-reads: a shot
+saved while the drive is mounted appears on the PC within the host's polling
+interval. The index is never rebuilt in the middle of a READ.
+
+**Not built: stock's volume `2:` as a second LUN.** It could be read without
+any FAT code (pass-through of `uservol`), but: its BPB says 4096 bytes per
+sector, so it would need a second logical block size and host support for
+4 KB-sector FAT12 we have not verified; its FAT nominally spans `0xD00000+`
+(our fwcache/user-cal/settings/scratch/cal backup), which a read-only view must
+present as zeros, i.e. a volume whose FAT can point at clusters that read
+back as something else; and our bench units' `2:` holds no screenshots (the
+2026-06-13 flash map). If a user with stock screenshots needs them, the shell's
+`flash dump` of `0x200000..` plus a host FAT tool reaches them today.
 
 ## Boot logo upload: design, not built
 

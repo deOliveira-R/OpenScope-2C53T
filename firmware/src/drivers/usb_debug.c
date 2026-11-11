@@ -15,6 +15,15 @@
 #include "usbd_int.h"
 #include "cdc_class.h"
 #include "cdc_desc.h"
+/* USB_MSC (Makefile, default 1): enumerate as CDC + the read-only gallery
+ * mass-storage LUN (usb_composite.c, usb_msc.c). 0 = the CDC-only device. */
+#ifndef USB_MSC
+#define USB_MSC 0
+#endif
+#if USB_MSC
+#include "usb_composite.h"
+#include "usb_msc.h"
+#endif
 #include "dfu_boot.h"
 #include "flash_fs.h"
 #include "fw_loader.h"
@@ -146,8 +155,15 @@ void usb_debug_init(void)
     /* Enable USB interrupt (low priority, below FreeRTOS syscall ceiling) */
     nvic_irq_enable(USBFS_L_CAN1_RX0_IRQn, 6, 0);
 
-    /* Initialize USB device core with CDC class */
+    /* Initialize USB device core: CDC, or CDC + read-only MSC (USB Sharing).
+     * The composite keeps the CDC on the same interfaces, endpoints and
+     * VID:PID, so the shell below is unaware of the difference. */
+#if USB_MSC
+    usbd_core_init(&usb_core_dev, USB, &usb_composite_class_handler,
+                   &usb_composite_desc_handler, 0);
+#else
     usbd_core_init(&usb_core_dev, USB, &cdc_class_handler, &cdc_desc_handler, 0);
+#endif
 
     /* Enable USB pull-up — device becomes visible to host */
     usbd_connect(&usb_core_dev);
@@ -2274,6 +2290,46 @@ static void cmd_screenshot(const char *args)
         usb_send_bytes(buf, (uint16_t)n);
     }
     usb_debug_printf("\r\nSHOTBIN END crc32=%08lX\r\n", (unsigned long)cal_backup_crc32_final(crc));
+}
+
+/* ── usb — USB Sharing (parity C16): the read-only gallery drive ───────
+ * The device always enumerates as CDC + MSC (USB_MSC=1); "share" only says
+ * whether the drive has a medium, so switching never re-enumerates and never
+ * drops this shell. Off at boot (USB_MSC_SHARE_DEFAULT), like stock, where
+ * the user enters USB Sharing explicitly. */
+static void cmd_usb(const char *args)
+{
+#if USB_MSC
+    if (args != NULL && strncmp(args, "share", 5) == 0) {
+        const char *a = args + 5;
+        while (*a == ' ') a++;
+        if (strcmp(a, "on") == 0 || strcmp(a, "1") == 0) usb_msc_set_shared(true);
+        else if (strcmp(a, "off") == 0 || strcmp(a, "0") == 0) usb_msc_set_shared(false);
+        else if (*a != '\0') { usb_send_str("Usage: usb share [on|off]\r\n"); return; }
+        usb_debug_printf("usb: share %s\r\n", usb_msc_shared() ? "on" : "off");
+        return;
+    }
+    if (args != NULL && *args != '\0' && strcmp(args, "status") != 0) {
+        usb_send_str("Usage: usb [status] | usb share [on|off]\r\n");
+        return;
+    }
+    usb_msc_stats_t st;
+    usb_msc_get_stats(&st);
+    usb_debug_printf("USB conf=%d msc=1 share=%s files=%u blocks=%lux512 state=%u "
+                     "cmds=%lu reads=%lu sectors=%lu ioerr=%lu badcbw=%lu resets=%lu "
+                     "wrref=%lu rescans=%lu last_op=%02X last_lba=%lu\r\n",
+                     usb_debug_connected() ? 1 : 0, st.shared ? "on" : "off",
+                     (unsigned)st.files, (unsigned long)st.blocks, (unsigned)st.state,
+                     (unsigned long)st.commands, (unsigned long)st.reads,
+                     (unsigned long)st.sectors, (unsigned long)st.io_errors,
+                     (unsigned long)st.bad_cbw, (unsigned long)st.resets,
+                     (unsigned long)st.writes_refused, (unsigned long)st.rescans,
+                     (unsigned)st.last_op, (unsigned long)st.last_lba);
+#else
+    (void)args;
+    usb_debug_printf("USB conf=%d msc=0 (built with USB_MSC=0: CDC only)\r\n",
+                     usb_debug_connected() ? 1 : 0);
+#endif
 }
 
 static void cmd_screen_shadow(const char *args)
@@ -9387,6 +9443,9 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("screenshot", cmd_screenshot, 0,
           "screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\n"
           "screenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n"),
+    CMD_A("usb", cmd_usb, 0,
+          "usb [status]                    USB Sharing state: read-only gallery drive (MSC) counters\r\n"
+          "usb share [on|off]              Insert/eject the gallery drive (no re-enumeration)\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,
@@ -9936,8 +9995,22 @@ static void vUsbDebugTask(void *pvParameters)
             }
         }
 
+#if USB_MSC
+        /* USB Sharing: serve READ sectors (W25Q reads need this task's
+         * context; the USB interrupt only latches them) and pick up gallery
+         * changes. Cheap when idle: one RAM compare and a state check. */
+        if (usb_msc_poll(&usb_core_dev)) did_work = true;
+#endif
+
         if (!did_work) {
+#if USB_MSC
+            /* Same 10 ms idle cadence as before, but the MSC interrupt can
+             * cut it short (task notification) so a READ does not wait a
+             * poll period per sector. Nothing else notifies this task. */
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+#else
             vTaskDelay(pdMS_TO_TICKS(10));
+#endif
         }
     }
 }
@@ -9945,6 +10018,12 @@ static void vUsbDebugTask(void *pvParameters)
 void usb_debug_create_task(void)
 {
 #ifndef EMULATOR_BUILD
-    xTaskCreate(vUsbDebugTask, "usb_dbg", 768, NULL, 2, NULL);
+    TaskHandle_t h = NULL;
+    xTaskCreate(vUsbDebugTask, "usb_dbg", 768, NULL, 2, &h);
+#if USB_MSC
+    usb_msc_set_notify_task(h);
+#else
+    (void)h;
+#endif
 #endif
 }
