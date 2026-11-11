@@ -1,5 +1,19 @@
 /*
  * OpenScope 2C53T - experimental continuity buzzer drive.
+ *
+ * Two sources decide when to sound it:
+ *
+ *   software (default)  a shorted-lead verdict from the decoded reading, as
+ *                       before (continuity only).
+ *   SoC edge (M4)       what stock does: the SoC's buzzer line reaches EXTI3;
+ *                       each edge sounds a fixed pulse of 11 housekeeping ticks
+ *                       (EXTI3 ISR 0x08009C10 writes 10 to the buzzer timer's
+ *                       compare register and zeroes the counter at 0x20002D67;
+ *                       the housekeeping task 0x08040508 counts to 11 and then
+ *                       clears the register), and only in Auto and Continuity
+ *                       (meter_stock_beep_gate). Off until `meter beep on`,
+ *                       because the EXTI3 source pin is not settled (see
+ *                       continuity_buzzer_soc_edge_config).
  */
 
 #include "continuity_buzzer.h"
@@ -16,12 +30,61 @@
 #define BUZZER_IDLE_MS   5U
 #define BUZZER_LATCH_MS  350U
 
+#include "meter_stock.h"
+
+/* Housekeeping tick that 11 pulse ticks are counted in. Stock's task at
+ * 0x08040508 is a periodic loop whose period was not measured [H: 10 ms];
+ * `meter beep tick <ms>` changes it, and the bench measures the real pulse. */
+#define BUZZER_SOC_TICK_MS_DEFAULT 10U
+
 static TaskHandle_t buzzer_task_handle;
 static volatile TickType_t buzzer_force_until_tick;
 static volatile bool buzzer_task_started;
 static volatile bool buzzer_active_now;
 static volatile uint32_t buzzer_toggle_count;
 static volatile uint32_t buzzer_create_fail_count;
+
+/* SoC-edge mode state. exti3_edges is bumped by the ISR; the task consumes it. */
+static volatile bool     soc_edge_mode;
+static volatile uint32_t exti3_edges;
+static volatile int8_t   soc_port = -1;            /* IOMUX EXINT3 source, -1 = unconfigured */
+static volatile uint32_t soc_tick_ms = BUZZER_SOC_TICK_MS_DEFAULT;
+static meter_beep_pulse_t soc_pulse;
+static volatile uint32_t soc_pulse_count;          /* pulses started (gate passed) */
+static volatile uint32_t soc_edges_gated;          /* edges ignored by the gate */
+
+/*
+ * THE ONE PLACE THE BUZZER PIN IS DRIVEN.
+ *
+ * Stock writes 10 to 0x40015434 on a timer and the pin follows. Which timer is
+ * disputed: the pinout notes say TMR4 CH4, the checker's map says TMR11 C1DT
+ * (+0x34 of 0x40015400); both land on PB9, which is what OpenScope has driven
+ * as a plain GPIO since the first continuity bench. Until the timer is settled
+ * on the bench (`meter beep` shows the pin level while sounding), the drive
+ * stays a ~500 Hz GPIO square wave on PB9. A timer-PWM drive replaces these two
+ * functions and nothing else.
+ */
+static void __attribute__((unused)) buzzer_pin_init(void)
+{
+#ifndef EMULATOR_BUILD
+    crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
+
+    gpio_init_type cfg;
+    gpio_default_para_init(&cfg);
+    cfg.gpio_pins = BUZZER_PIN;
+    cfg.gpio_mode = GPIO_MODE_OUTPUT;
+    cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+    cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_MODERATE;
+    gpio_init(BUZZER_GPIO, &cfg);
+    BUZZER_GPIO->clr = BUZZER_PIN;
+#endif
+}
+
+static inline void buzzer_pin_set(bool level)
+{
+    if (level) BUZZER_GPIO->scr = BUZZER_PIN;
+    else       BUZZER_GPIO->clr = BUZZER_PIN;
+}
 
 /* Same rule as the screen (meter_data.c), so the beep and the green SHORT
  * can never disagree. */
@@ -63,16 +126,7 @@ void continuity_buzzer_init(void)
 #ifdef EMULATOR_BUILD
     return;
 #else
-    crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
-
-    gpio_init_type cfg;
-    gpio_default_para_init(&cfg);
-    cfg.gpio_pins = BUZZER_PIN;
-    cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_MODERATE;
-    gpio_init(BUZZER_GPIO, &cfg);
-    BUZZER_GPIO->clr = BUZZER_PIN;
+    buzzer_pin_init();
 #endif
 }
 
@@ -81,6 +135,8 @@ static void buzzer_task(void *arg)
     (void)arg;
 
     bool level = false;
+    uint32_t seen_edges = exti3_edges;
+    TickType_t next_pulse_tick = 0;
     for (;;) {
         TickType_t now = xTaskGetTickCount();
         bool force_active = buzzer_force_until_tick != 0 &&
@@ -88,19 +144,45 @@ static void buzzer_task(void *arg)
         if (!force_active && buzzer_force_until_tick != 0) {
             buzzer_force_until_tick = 0;
         }
-        buzzer_active_now = force_active || continuity_short_active(now);
+        if (soc_edge_mode) {
+            /* M4: stock's way. An EXTI3 edge restarts the fixed pulse, but
+             * only where the stock gate lets the SoC's line sound at all. */
+            uint32_t edges = exti3_edges;
+            if (edges != seen_edges) {
+                seen_edges = edges;
+                if (current_mode == MODE_MULTIMETER &&
+                    meter_stock_beep_gate_for_submode(meter_submode)) {
+                    if (!soc_pulse.active) next_pulse_tick = now + pdMS_TO_TICKS(soc_tick_ms);
+                    meter_beep_pulse_edge(&soc_pulse);
+                    soc_pulse_count++;
+                } else {
+                    soc_edges_gated++;
+                }
+            }
+            if (soc_pulse.active &&
+                (int32_t)(now - next_pulse_tick) >= 0) {
+                (void)meter_beep_pulse_tick(&soc_pulse);
+                next_pulse_tick = now + pdMS_TO_TICKS(soc_tick_ms);
+            }
+            /* The gate also closes a pulse that outlives the function. */
+            if (soc_pulse.active &&
+                (current_mode != MODE_MULTIMETER ||
+                 !meter_stock_beep_gate_for_submode(meter_submode))) {
+                soc_pulse.active = false;
+                soc_pulse.ticks = 0;
+            }
+            buzzer_active_now = force_active || soc_pulse.active;
+        } else {
+            buzzer_active_now = force_active || continuity_short_active(now);
+        }
 
         if (buzzer_active_now) {
-            if (level) {
-                BUZZER_GPIO->clr = BUZZER_PIN;
-            } else {
-                BUZZER_GPIO->scr = BUZZER_PIN;
-            }
+            buzzer_pin_set(!level);
             level = !level;
             buzzer_toggle_count++;
             vTaskDelay(pdMS_TO_TICKS(BUZZER_TASK_MS));
         } else {
-            BUZZER_GPIO->clr = BUZZER_PIN;
+            buzzer_pin_set(false);
             level = false;
             vTaskDelay(pdMS_TO_TICKS(BUZZER_IDLE_MS));
         }
@@ -161,4 +243,96 @@ void continuity_buzzer_snapshot(bool *task_started, bool *active,
     if (create_fail_count) {
         *create_fail_count = buzzer_create_fail_count;
     }
+}
+
+/* ── SoC buzzer line on EXTI3 (M4) ──────────────────────────────────── */
+
+#ifndef EMULATOR_BUILD
+/* No FreeRTOS calls: counts the edge, the task does the rest. */
+void EXINT3_IRQHandler(void)
+{
+    exint_flag_clear(EXINT_LINE_3);
+    exti3_edges++;
+}
+#endif
+
+/*
+ * Which pin is EXTI3? Stock programs IOMUX EXINTC1 bits [15:12], the init code
+ * was not located, and the candidates are port C (PC3, input-pull in the stock
+ * caplog [H]), D and E (PE3 is a key-matrix scan line in that log: changing
+ * its pull can ghost keys). PA3 is USART2 RX and PB3 is SPI3 SCK here, so
+ * neither can be the buzzer line and this function refuses them.
+ * Rather than guess at boot, the bench picks it: `meter beep src c` and short
+ * the leads in Continuity; the edge counter in `meter beep` moves on the right
+ * port. port: 2 = C ... 4 = E, or -1 to switch the line off.
+ * edge: 0 = rising, 1 = falling, 2 = both (stock's polarity is unknown).
+ */
+bool continuity_buzzer_soc_edge_config(int8_t port, uint8_t edge, bool pull_up)
+{
+#ifdef EMULATOR_BUILD
+    (void)port; (void)edge; (void)pull_up;
+    return false;
+#else
+    exint_init_type ei;
+
+    /* A (PA3 = USART2 RX) and B (PB3 = SPI3 SCK) carry the FPGA link here:
+     * reconfiguring pin 3 there would cut it. */
+    if (port < -1 || (port >= 0 && port < 2) || port > 4 || edge > 2) return false;
+    if (port < 0) {
+        exint_interrupt_enable(EXINT_LINE_3, FALSE);
+        soc_port = -1;
+        return true;
+    }
+    crm_periph_clock_enable(CRM_IOMUX_PERIPH_CLOCK, TRUE);
+    {
+        static const crm_periph_clock_type clk[5] = {
+            CRM_GPIOA_PERIPH_CLOCK, CRM_GPIOB_PERIPH_CLOCK, CRM_GPIOC_PERIPH_CLOCK,
+            CRM_GPIOD_PERIPH_CLOCK, CRM_GPIOE_PERIPH_CLOCK };
+        static gpio_type *const gp[5] = { GPIOA, GPIOB, GPIOC, GPIOD, GPIOE };
+        gpio_init_type cfg;
+        crm_periph_clock_enable(clk[port], TRUE);
+        gpio_default_para_init(&cfg);
+        cfg.gpio_pins = GPIO_PINS_3;
+        cfg.gpio_mode = GPIO_MODE_INPUT;
+        cfg.gpio_pull = pull_up ? GPIO_PULL_UP : GPIO_PULL_DOWN;
+        gpio_init(gp[port], &cfg);
+    }
+    IOMUX->exintc1_bit.exint3 = (uint32_t)port;
+    exint_default_para_init(&ei);
+    ei.line_select   = EXINT_LINE_3;
+    ei.line_mode     = EXINT_LINE_INTERRUPT;
+    ei.line_polarity = edge == 0 ? EXINT_TRIGGER_RISING_EDGE
+                     : edge == 1 ? EXINT_TRIGGER_FALLING_EDGE
+                                 : EXINT_TRIGGER_BOTH_EDGE;
+    ei.line_enable   = TRUE;
+    exint_init(&ei);
+    exint_flag_clear(EXINT_LINE_3);
+    nvic_irq_enable(EXINT3_IRQn, 7, 0);
+    soc_port = port;
+    return true;
+#endif
+}
+
+void continuity_buzzer_soc_edge_mode_set(bool on)
+{
+    soc_edge_mode = on;
+    if (!on) { soc_pulse.active = false; soc_pulse.ticks = 0; }
+}
+
+void continuity_buzzer_soc_tick_ms_set(uint32_t ms)
+{
+    if (ms >= 1U && ms <= 1000U) soc_tick_ms = ms;
+}
+
+void continuity_buzzer_soc_status(bool *mode_on, int8_t *port, uint32_t *edges,
+                                  uint32_t *pulses, uint32_t *gated,
+                                  bool *pulse_active, uint32_t *tick_ms)
+{
+    if (mode_on)      *mode_on = soc_edge_mode;
+    if (port)         *port = soc_port;
+    if (edges)        *edges = exti3_edges;
+    if (pulses)       *pulses = soc_pulse_count;
+    if (gated)        *gated = soc_edges_gated;
+    if (pulse_active) *pulse_active = soc_pulse.active;
+    if (tick_ms)      *tick_ms = soc_tick_ms;
 }

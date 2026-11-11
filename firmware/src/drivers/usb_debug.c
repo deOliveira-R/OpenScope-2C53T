@@ -47,6 +47,7 @@
 #include "meter_auto.h"
 #include "meter_autoselect.h"
 #include "meter_data.h"
+#include "meter_stock.h"
 #include "ui.h"
 #include "../ui/scope_state.h"
 #include "../util/settings_store.h"
@@ -2347,6 +2348,197 @@ static void cmd_meter_hdr(const char *args)
         (unsigned)fpga.meter_selector_confirmed,
         (unsigned)fpga.meter_selector_unconfirmed_total,
         (unsigned)fpga.meter_soc_wake_timeouts);
+}
+
+
+/* ── Stock-parity meter shell (M1/M4/M5) ────────────────────────────────
+ *
+ * `meter func <n>`        change the function without touching the mode and
+ *                         say which path ran (fast = one word) and how long
+ * `meter state`           everything decoded from the last frame, the switch
+ *                         counters, the beep source and the guard
+ * `meter fast [on|off]`   one-word switching (default on); off = old PC11 path
+ * `meter keepalive [..]`  the 4 Hz unobeyed poll (default on)
+ * `meter degf [on|off]`   degC/degF (the UI's MOVE key in Temperature)
+ * `meter beep ...`        the SoC-edge buzzer (default off)
+ */
+static const char *onoff(bool b) { return b ? "on" : "off"; }
+
+static bool shell_onoff_arg(const char *args, bool *out)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "on", 2) == 0)  { *out = true;  return true; }
+    if (strncmp(args, "off", 3) == 0) { *out = false; return true; }
+    return false;
+}
+
+static void cmd_meter_func(const char *args)
+{
+    uint32_t sub;
+    uint16_t fast_before, fb_before;
+    uint32_t t0, dt;
+    bool pc11_before, live_before;
+    fpga_meter_transition_plan_t plan;
+
+    while (*args == ' ') args++;
+    if (!*args || parse_int(args, &sub) != 0 || sub >= METER_SUBMODE_COUNT) {
+        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp)\r\n",
+                         (unsigned)(METER_SUBMODE_COUNT - 1));
+        return;
+    }
+    if (current_mode != MODE_MULTIMETER) {
+        usb_send_str("meter func: not in meter mode (use `mode meter` first)\r\n");
+        return;
+    }
+    plan = fpga_meter_transition_plan_for_submode((uint8_t)sub);
+    live_before = fpga_meter_soc_live();
+    pc11_before = (GPIOC->odt & (1U << 11)) != 0U;
+    fast_before = fpga.meter_fast_switch_count;
+    fb_before = fpga.meter_fast_fallback_count;
+
+    meter_submode = (uint8_t)sub;
+    meter_reset_minmaxavg();
+    t0 = xTaskGetTickCount();
+    fpga_set_meter_mode((uint8_t)sub);
+    dt = (xTaskGetTickCount() - t0) * 1000U / configTICK_RATE_HZ;
+
+    usb_debug_printf(
+        "meter func %lu (%s) word=%04X path=%s dt_ms=%lu | soc_live before=%u after=%u"
+        " PC11 before=%u after=%u | echo ok=%u tries=%u | fast_fallbacks+%u\r\n",
+        sub, meter_submode_name((uint8_t)sub), (unsigned)plan.selector_word,
+        (fpga.meter_fast_switch_count != fast_before) ? "FAST(one word)" : "FULL(PC11 restart)",
+        dt, live_before ? 1U : 0U, fpga_meter_soc_live() ? 1U : 0U,
+        pc11_before ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
+        (unsigned)fpga.meter_selector_confirmed, (unsigned)fpga.meter_selector_attempts,
+        (unsigned)(fpga.meter_fast_fallback_count - fb_before));
+}
+
+static void cmd_meter_fast(const char *args)
+{
+    bool on;
+    if (shell_onoff_arg(args, &on)) fpga_meter_fast_switch_set(on);
+    else if (*args) { usb_send_str("usage: meter fast [on|off]\r\n"); return; }
+    usb_debug_printf("meter fast switching: %s (soc_live=%u, fast=%u fallbacks=%u)\r\n",
+                     onoff(fpga_meter_fast_switch_get()), fpga_meter_soc_live() ? 1U : 0U,
+                     (unsigned)fpga.meter_fast_switch_count,
+                     (unsigned)fpga.meter_fast_fallback_count);
+}
+
+static void cmd_meter_keepalive(const char *args)
+{
+    bool on;
+    if (shell_onoff_arg(args, &on)) fpga_meter_keepalive_set(on);
+    else if (*args) { usb_send_str("usage: meter keepalive [on|off]\r\n"); return; }
+    usb_debug_printf("meter keepalive: %s  data_frames=%u tx_count=%u (read twice, 2 s apart,"
+                     " to see whether frames keep coming)\r\n",
+                     onoff(fpga_meter_keepalive_get()),
+                     (unsigned)fpga.frame_count, (unsigned)fpga.tx_count);
+}
+
+static void cmd_meter_degf(const char *args)
+{
+    bool on;
+    if (shell_onoff_arg(args, &on)) {
+        meter_data_set_fahrenheit(on);
+        meter_reset_minmaxavg();                    /* stock resets the stats on the toggle */
+    } else if (*args) { usb_send_str("usage: meter degf [on|off]\r\n"); return; }
+    usb_debug_printf("meter degF: %s\r\n", onoff(meter_data_fahrenheit()));
+}
+
+static void cmd_meter_beep(const char *args)
+{
+    bool on, m_on, active;
+    int8_t port;
+    uint32_t edges, pulses, gated, tick;
+
+    while (*args == ' ') args++;
+    if (shell_onoff_arg(args, &on)) {
+        continuity_buzzer_soc_edge_mode_set(on);
+    } else if (strncmp(args, "tick", 4) == 0) {
+        uint32_t ms;
+        if (parse_int(args + 4 + (args[4] == ' '), &ms) != 0 || ms < 1 || ms > 1000) {
+            usb_send_str("usage: meter beep tick <1-1000 ms per housekeeping tick>\r\n");
+            return;
+        }
+        continuity_buzzer_soc_tick_ms_set(ms);
+    } else if (strncmp(args, "src", 3) == 0) {
+        /* meter beep src <c|d|e|off> [rise|fall|both] [pu|pd] */
+        const char *p = args + 3;
+        int8_t prt;
+        uint8_t edge = 2;
+        bool pu = true;
+        while (*p == ' ') p++;
+        if (strncmp(p, "off", 3) == 0) prt = -1;
+        else if (*p >= 'c' && *p <= 'e') prt = (int8_t)(*p - 'a');
+        else if (*p >= 'C' && *p <= 'E') prt = (int8_t)(*p - 'A');
+        else { usb_send_str("usage: meter beep src <c|d|e|off> [rise|fall|both] [pu|pd]  (pin 3 of the port = EXTI3; A and B carry USART2/SPI3)\r\n"); return; }
+        if (strstr(p, "rise")) edge = 0;
+        else if (strstr(p, "fall")) edge = 1;
+        if (strstr(p, "pd")) pu = false;
+        if (!continuity_buzzer_soc_edge_config(prt, edge, pu)) {
+            usb_send_str("meter beep src: refused\r\n");
+            return;
+        }
+    } else if (*args) {
+        usb_send_str("usage: meter beep [on|off | src <c|d|e|off> [rise|fall|both] [pu|pd] | tick <ms>]\r\n");
+        return;
+    }
+    continuity_buzzer_soc_status(&m_on, &port, &edges, &pulses, &gated, &active, &tick);
+    usb_debug_printf(
+        "meter beep: soc_edge_mode=%s exti3_port=%c edges=%lu pulses=%lu gated_out=%lu active=%u"
+        " tick_ms=%lu pulse_ticks=%u | gate(now: submode %u)=%u (only Auto and Continuity)\r\n",
+        onoff(m_on), port < 0 ? '-' : (char)('A' + port), edges, pulses, gated,
+        active ? 1U : 0U, tick, (unsigned)METER_BEEP_PULSE_TICKS, (unsigned)meter_submode,
+        meter_stock_beep_gate_for_submode(meter_submode) ? 1U : 0U);
+}
+
+static void cmd_meter_state(void)
+{
+    meter_reading_t r;
+    uint8_t sel = 0, f36 = 0;
+    bool m_on, active;
+    int8_t port;
+    uint32_t edges, pulses, gated, tick;
+    char hex[12 * 3 + 1];
+
+    memset(&r, 0, sizeof r);
+    if (!meter_data_snapshot(&r)) {
+        usb_send_str("meter state: no snapshot\r\n");
+        return;
+    }
+    (void)meter_stock_selector_for_submode(meter_submode, &sel, &f36);
+    usb_debug_printf("meter state: mode=%lu submode=%u (%s) stock_sel=%u F36=%u word=%04X\r\n",
+                     (uint32_t)current_mode, (unsigned)meter_submode,
+                     meter_submode_name(meter_submode), (unsigned)sel, (unsigned)f36,
+                     (unsigned)fpga_meter_stock_cmd_word_for_submode(meter_submode));
+    usb_debug_printf("  link: soc_live=%u PC11=%u fast=%s keepalive=%s fast_switches=%u fallbacks=%u"
+                     " wake_ms=%u echo_ok=%u tries=%u data_frames=%u\r\n",
+                     fpga_meter_soc_live() ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
+                     onoff(fpga_meter_fast_switch_get()), onoff(fpga_meter_keepalive_get()),
+                     (unsigned)fpga.meter_fast_switch_count, (unsigned)fpga.meter_fast_fallback_count,
+                     (unsigned)fpga.meter_soc_wake_ms, (unsigned)fpga.meter_selector_confirmed,
+                     (unsigned)fpga.meter_selector_attempts, (unsigned)fpga.frame_count);
+    usb_debug_printf("  reading: valid=%u sub=%u class=%u status=%u(%s) text=\"%s\" unit=\"%s\" value=%d.%03d\r\n",
+                     r.valid ? 1U : 0U, (unsigned)r.submode, (unsigned)r.result_class,
+                     (unsigned)r.status_code,
+                     meter_stock_status_text((meter_stock_status_t)r.status_code),
+                     r.display_str, r.unit_suffix ? r.unit_suffix : "",
+                     (int)r.value,
+                     (int)((r.value < 0 ? -r.value : r.value) * 1000.0f) % 1000);
+    usb_debug_printf("  range: index=%u label=%s  f6=%02X f7=%02X f8=%02X  degF=%s\r\n",
+                     (unsigned)r.range_index, r.range_label,
+                     (unsigned)r.dbg_frame[6], (unsigned)r.dbg_frame[7], (unsigned)r.dbg_frame[8],
+                     onoff(meter_data_fahrenheit()));
+    for (int i = 0; i < 12; i++)
+        snprintf(hex + i * 3, 4, "%02X ", (unsigned)r.dbg_frame[i]);
+    usb_debug_printf("  frame: %s\r\n", hex);
+    continuity_buzzer_soc_status(&m_on, &port, &edges, &pulses, &gated, &active, &tick);
+    usb_debug_printf("  beep: soc_edge=%s port=%c edges=%lu pulses=%lu gated_out=%lu active=%u tick_ms=%lu gate=%u\r\n",
+                     onoff(m_on), port < 0 ? '-' : (char)('A' + port), edges, pulses, gated,
+                     active ? 1U : 0U, tick,
+                     meter_stock_beep_gate_for_submode(meter_submode) ? 1U : 0U);
+    usb_debug_printf("  cal-wizard guard: refused=%u last=%04X (0x02A0 0x0503 0x0501 are never sent obeyed)\r\n",
+                     (unsigned)fpga.meter_cal_word_refused, (unsigned)fpga.meter_cal_word_last);
 }
 
 /* `fpga rearm [on|off]` — stock's post-read re-arm write (reg 0x01 <- rate idx).
@@ -8479,6 +8671,18 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga rearm [on|off]             Stock post-read re-arm (reg01) A/B toggle\r\n"),
     CMD_A("meter hdr", cmd_meter_hdr, 0,
           "meter hdr [on|off]              Meter TX header AA 55 (default) vs 00 00 (EXP-25) + echo ladder\r\n"),
+    CMD_A("meter func", cmd_meter_func, SC_NEEDARGS,
+          "meter func <0-10>               Change function (one word, no SoC restart) and time it\r\n"),
+    CMD_V("meter state", cmd_meter_state, SC_EXACT,
+          "meter state                     Decoded frame, range, status text, link, beep, cal guard\r\n"),
+    CMD_A("meter fast", cmd_meter_fast, 0,
+          "meter fast [on|off]             One-word function switching (stock) vs PC11 restart\r\n"),
+    CMD_A("meter keepalive", cmd_meter_keepalive, 0,
+          "meter keepalive [on|off]        4 Hz unobeyed poll traffic (stock sends none)\r\n"),
+    CMD_A("meter degf", cmd_meter_degf, 0,
+          "meter degf [on|off]             Temperature in degF (stock MOVE key in Temp)\r\n"),
+    CMD_A("meter beep", cmd_meter_beep, 0,
+          "meter beep [on|off|src <c|d|e|off> [rise|fall|both] [pu|pd]|tick <ms>]  SoC-edge buzzer\r\n"),
     CMD_A("fpga autowait", cmd_fpga_autowait, 0,
           "fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n"),
     CMD_A("fpga rearmwait", cmd_fpga_rearmwait, 0,

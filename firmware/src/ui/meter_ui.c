@@ -23,6 +23,7 @@
 #include "font.h"
 #include "theme.h"
 #include "meter_data.h"
+#include "meter_stock.h"
 #include "meter_autoselect.h"
 #include "softkey.h"
 #include "fuse_table.h"
@@ -103,6 +104,13 @@ static float meter_max_val;
 static float meter_avg_accum;
 static uint32_t meter_avg_count;
 static uint8_t meter_stats_valid;
+/* Unit the stored min/max/mean/chart values are in. A reading in another
+ * range (9.924 kOhm, then 500 Ohm) rescales them first: stock keeps a range
+ * index per stat (ms[0xF54..0xF5C]) and compares through pow10
+ * (0x0803DD5E..0x0803DE2A); here the stats follow the live unit instead. */
+static char meter_stats_unit[8];
+/* Live range annunciator text for the badge row, set per draw. */
+static char meter_view_range[14];
 
 /* FPGA frame debug overlay toggle. Default off in release builds.
  * Flip to true from the debugger, a future settings entry, or a
@@ -201,6 +209,7 @@ static uint8_t hold_stable_count;
 void meter_reset_minmaxavg(void)
 {
     meter_stats_valid = 0;
+    meter_stats_unit[0] = '\0';
     meter_min_val = 0.0f;
     meter_max_val = 0.0f;
     meter_avg_accum = 0.0f;
@@ -221,8 +230,40 @@ void meter_reset_minmaxavg(void)
     meter_hold_locked = false;
 }
 
-static void meter_update_stats(float value)
+/* The reading arrives in `unit`; bring everything stored in the stats' unit
+ * over to it. Unknown units are left alone (nothing sensible to scale by). */
+static void meter_stats_follow_unit(const char *unit)
 {
+    if (!unit || !unit[0]) return;
+    if (meter_stats_valid && meter_stats_unit[0] &&
+        strcmp(meter_stats_unit, unit) != 0) {
+        float from = meter_unit_factor(meter_stats_unit);
+        float to   = meter_unit_factor(unit);
+        if (from > 0.0f && to > 0.0f) {
+            float k = from / to;
+            meter_min_val *= k;
+            meter_max_val *= k;
+            meter_avg_accum *= k;
+            chart_min *= k;
+            chart_max *= k;
+            for (uint16_t i = 0; i < chart_count; i++) {
+                uint16_t idx = (uint16_t)((chart_head + CHART_SAMPLES - 1U - i) % CHART_SAMPLES);
+                chart_buf[idx] *= k;
+            }
+            meter_rel_reference *= k;
+            hist_min_val *= k;
+            hist_max_val *= k;
+            memset(hist_bins, 0, sizeof(hist_bins));    /* bins were in the old unit */
+            hist_total = 0;
+        }
+    }
+    strncpy(meter_stats_unit, unit, sizeof meter_stats_unit - 1);
+    meter_stats_unit[sizeof meter_stats_unit - 1] = '\0';
+}
+
+static void meter_update_stats(float value, const char *unit)
+{
+    meter_stats_follow_unit(unit);
     if (!meter_stats_valid) {
         meter_min_val = value;
         meter_max_val = value;
@@ -361,6 +402,7 @@ static const char *live_unit(const meter_mode_info_t *m,
         reading->unit_suffix[0] != '\0') {
         return reading->unit_suffix;
     }
+    if (mode == 10 && meter_data_fahrenheit()) return "F";
     return m->unit;
 }
 
@@ -904,6 +946,7 @@ static bool unit_to_glyphs(const char *u, char *out, size_t n)
 {
     size_t j = 0;
     if (strcmp(u, "C") == 0) u = "^C";
+    if (strcmp(u, "F") == 0) u = "^F";      /* degF; capacitance is nF/uF, never a bare F */
     for (size_t i = 0; u[i] && j + 1 < n; ) {
         if (strncmp(&u[i], "Ohm", 3) == 0) { out[j++] = '@'; i += 3; continue; }
         out[j++] = (u[i] == 'u') ? '`' : u[i];
@@ -1109,6 +1152,8 @@ static void draw_badge_row(uint16_t y, uint16_t bg, const theme_t *th)
         x += draw_badge(x, y, "REL", th->background, th->highlight, bg);
     if (meter_autoselect_is_running())
         x += draw_badge(x, y, "AUTO", th->background, th->highlight, bg);
+    if (meter_view_range[0])
+        x += draw_badge(x, y, meter_view_range, th->background, th->grid_center, bg);
     if (x < LCD_WIDTH) lcd_fill_rect(x, y, LCD_WIDTH - x, font_small.height, bg);
 }
 
@@ -1322,6 +1367,21 @@ static void skp_rel(void)
     scope_show_popup(meter_rel_enabled ? "Relative: On" : "Relative: Off");
 }
 
+/* MOVE in Temperature: degC <-> degF, as stock (0x0800D2DC flips ms[0xF39];
+ * the parser converts, 0x0803E180). Stock resets min/max/mean on it. The bar
+ * keeps its Function key on LEFT/RIGHT. */
+static void skv_tunit(char *b, uint8_t n) { snprintf(b, n, "%s", meter_data_fahrenheit() ? "degF" : "degC"); }
+static void skp_tunit(void)
+{
+    bool f = !meter_data_fahrenheit();
+    meter_data_set_fahrenheit(f);
+    meter_reset_minmaxavg();
+    meter_hold_release();
+    if (meter_rel_enabled) meter_toggle_relative();
+    meter_data_invalidate(meter_submode);          /* the next frame is in the new unit */
+    scope_show_popup(f ? "Temperature: degF" : "Temperature: degC");
+}
+
 static void skv_view(char *b, uint8_t n)
 {
     snprintf(b, n, "%s", meter_view_names[meter_layout < METER_LAYOUT_COUNT ? meter_layout : 0]);
@@ -1447,6 +1507,12 @@ static const softkey_bar_t meter_bar_cont = {{
     { "Beep",     skv_cont,      skp_cont,     NULL },
     { "View",     skv_view,      skp_view,     NULL },
 }};
+static const softkey_bar_t meter_bar_temp = {{
+    { "Unit",     skv_tunit,     skp_tunit,    NULL },
+    { "Reset",    skv_reset,     skp_reset,    NULL },
+    { "Relative", skv_rel,       skp_rel,      ska_rel },
+    { "View",     skv_view,      skp_view,     NULL },
+}};
 static const softkey_bar_t meter_bar_main = {{
     { "Function", skv_function,  skp_function, NULL },
     { "Reset",    skv_reset,     skp_reset,    NULL },
@@ -1486,6 +1552,7 @@ const softkey_bar_t *meter_softkey_bar(uint8_t layout, uint8_t submode)
         return fuse_view == FUSE_VIEW_SCAN  ? &meter_bar_fuse_scan
              : fuse_view == FUSE_VIEW_TYPES ? &meter_bar_fuse_types : &meter_bar_fuse;
     if (submode == 7)                  return &meter_bar_cont;   /* continuity: Beep threshold */
+    if (submode == 10)                 return &meter_bar_temp;   /* temperature: degC/degF on MOVE */
     return &meter_bar_main;
 }
 
@@ -1581,6 +1648,16 @@ void draw_meter_screen(void)
 
     bool has_live_reading = live_reading_for_mode(&reading, mode);
     meter_screen_last_live = has_live_reading ? 1U : 0U;
+
+    /* Live range annunciator: stock's range index decoded from the frame's own
+     * range bits. Only for a number; status text and dashes have no range. */
+    if (has_live_reading && reading.result_class == METER_RESULT_NORMAL &&
+        reading.range_label[0]) {
+        snprintf(meter_view_range, sizeof meter_view_range, "Rng %s",
+                 reading.range_label);
+    } else {
+        meter_view_range[0] = '\0';
+    }
     if (has_live_reading) {
         current_val = reading.value;
         value_str = reading.display_str;
@@ -1606,7 +1683,7 @@ void draw_meter_screen(void)
     }
 
     if (has_live_reading) {
-        meter_update_stats(current_val);
+        meter_update_stats(current_val, reading.unit_suffix);
     }
 
     /* Continuity visual indicator: flash the entire background green

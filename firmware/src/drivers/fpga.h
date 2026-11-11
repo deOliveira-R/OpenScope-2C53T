@@ -245,6 +245,14 @@ typedef struct {
     volatile uint8_t  meter_selector_confirmed;
     volatile uint16_t meter_selector_unconfirmed_total;
     volatile uint16_t meter_soc_wake_timeouts;
+    /* M1 fast function switching: switches done with one word and no SoC
+     * restart, fast attempts whose selector echo never came (those fell back
+     * to the full transition), and obeyed frames refused because the word is
+     * one of the hidden calibration wizard's (meter_word_is_cal_wizard). */
+    volatile uint16_t meter_fast_switch_count;
+    volatile uint16_t meter_fast_fallback_count;
+    volatile uint16_t meter_cal_word_refused;
+    volatile uint16_t meter_cal_word_last;
     volatile uint8_t  tx_frame_history[FPGA_TX_FRAME_HISTORY][FPGA_TX_FRAME_SIZE];
     volatile uint16_t tx_frame_history_tx_count[FPGA_TX_FRAME_HISTORY];
     volatile uint8_t  tx_frame_history_head;
@@ -717,6 +725,23 @@ bool fpga_usart_tx_task_exists(void);
 
 void fpga_meter_tx_header_set(bool aa55);
 bool fpga_meter_tx_header_get(void);
+
+/* M1: switch the meter function the way stock does, with ONE word
+ * (AA 55 05 xx 00 00 00 00 00 cs) and no PC11 drop, no frontend GPIO writes and
+ * no SoC reboot (stock moves no pin on a function change, and the SoC takes the
+ * word within a frame). Used only while the SoC is already up in meter mode;
+ * the first entry and any failed fast switch still run the full transition.
+ * Default on. `meter fast off` restores the old PC11 + 1.38 s path. */
+void fpga_meter_fast_switch_set(bool on);
+bool fpga_meter_fast_switch_get(void);
+/* The 4 Hz unobeyed keepalive of the meter poll task. Default ON: EXP-25
+ * measured data frames stopping when OpenScope stopped transmitting, while
+ * stock transmits nothing periodically. `meter keepalive off` is the bench A/B
+ * to find out whether the fast path makes it unnecessary. */
+void fpga_meter_keepalive_set(bool on);
+bool fpga_meter_keepalive_get(void);
+/* True while a fast switch is possible (PC11 high, SoC woke and answered). */
+bool fpga_meter_soc_live(void);
 
 /* Queue a frame UNOBEYED: 00 00 header regardless of the header setting. For
  * traffic that has always gone out 00 00 and must stay bit-identical now that
