@@ -847,6 +847,19 @@ $(BUILD_DIR)/test_bode: tests/test_bode_mask.c src/dsp/bode.c src/dsp/bode.h | $
 test-bode: $(BUILD_DIR)/test_bode
 	$<
 
+# Shared pool sizing: built for the host (radix-2) layout AND for the
+# USE_CMSIS_DSP layout every firmware image links, so both pool sizes and the
+# waterfall offset are pinned (RAM diet, 2026-11-11).
+$(BUILD_DIR)/test_shmem_layout: tests/test_shmem_layout.c src/dsp/shared_mem.c src/dsp/shared_mem.h src/dsp/fft.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/shared_mem.c -o $@
+$(BUILD_DIR)/test_shmem_layout_cmsis: tests/test_shmem_layout.c src/dsp/shared_mem.c src/dsp/shared_mem.h src/dsp/fft.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DUSE_CMSIS_DSP -Isrc/dsp $< src/dsp/shared_mem.c -o $@
+
+.PHONY: test-shmem-layout
+test-shmem-layout: $(BUILD_DIR)/test_shmem_layout $(BUILD_DIR)/test_shmem_layout_cmsis
+	$(BUILD_DIR)/test_shmem_layout
+	$(BUILD_DIR)/test_shmem_layout_cmsis
+
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-interleave-cal test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
