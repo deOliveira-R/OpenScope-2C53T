@@ -68,7 +68,10 @@ typedef struct {
     coupling_t      coupling;
     probe_t         probe;
     bool            bw_limit;       /* 20MHz bandwidth limit */
-    int16_t         position;       /* Vertical position offset (pixels) */
+    int16_t         position;       /* Vertical position, stock units -100..+100
+                                     * (stock ms[4]/ms[5]): indexes the cal-page
+                                     * offset-DAC interpolation; set it through
+                                     * scope_vpos_set() (drivers/scope_vpos.h). */
 } channel_state_t;
 
 /* Trigger configuration */
