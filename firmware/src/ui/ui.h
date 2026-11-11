@@ -168,6 +168,11 @@ bool input_inject_button(button_id_t b);
  * run) and how it was found (0 none, 1 soft midline, 2 hardware level
  * crossing of a time-ordered record). */
 int16_t scope_ui_trig_x_actual(void);
+/* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
+ * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the record
+ * rate used. For `fpga scope cursor`. */
+void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
+                            char y1[16], char y2[16], char dy[16], float *fs_out);
 /* Repaint the mask pass/fail readout slot (badge row 2) -- main.c calls it
  * when scope_mask_epoch() moves. */
 void scope_ui_mask_slot_refresh(void);

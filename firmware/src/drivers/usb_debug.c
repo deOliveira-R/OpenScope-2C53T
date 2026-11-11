@@ -3272,8 +3272,13 @@ static void cmd_fpga_scope_measure(const char *args)
     if (reps > 50u) reps = 50u;
 
     const scope_state_t *ss = scope_state_get();
-    const float fs = scope_timebase_sample_rate(ss->timebase_idx);
+    const float fs_tab = scope_timebase_sample_rate(ss->timebase_idx);
     const uint8_t in_force = fpga_acq_rate_idx_get();
+    /* The PUBLISHED record's rate (x2 for an interleaved record) when the
+     * hardware runs the code the UI shows; `fs` in the header and the Freq
+     * estimate both use it, so an interleaved record is not read at half. */
+    const float fs = (in_force == ss->timebase_idx) ? fpga_record_sample_rate()
+                                                    : fs_tab;
     const bool tb_ok = (in_force == ss->timebase_idx) && (fs > 0.0f);
     const float k1 = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
     const float k2 = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
@@ -3305,6 +3310,7 @@ static void cmd_fpga_scope_measure(const char *args)
                              ch2 ? FPGA_ADC_BUF_SIZE : 0u, &m2);
 
         char vpp1[12] = "-", vrms1[12] = "-", per[12] = "-", f[16] = "-";
+        float freq_hz = 0.0f;
         char vpp2[12] = "-";
         if (k1 > 0.0f) {
             snprintf(vpp1, sizeof vpp1, "%lu",
@@ -3318,9 +3324,11 @@ static void cmd_fpga_scope_measure(const char *args)
         if (tb_ok) {
             scope_freq_t fr;
             if (scope_freq_estimate((const uint8_t *)ch1, FPGA_ADC_BUF_SIZE,
-                                    fs, &fr))
+                                    fs, &fr)) {
+                freq_hz = fr.hz;
                 snprintf(f, sizeof f, "%lu",
                          (unsigned long)(fr.hz * 1000.0f + 0.5f));
+            }
         }
         if (m2.valid && k2 > 0.0f)
             snprintf(vpp2, sizeof vpp2, "%lu",
@@ -3345,8 +3353,88 @@ static void cmd_fpga_scope_measure(const char *args)
                          (unsigned long)(m1.level_valid
                                          ? m1.duty_pct * 10.0f + 0.5f : 0.0f),
                          per, f, rise, fall, (unsigned)m2.pp, vpp2);
+
+        /* All 12 of stock's parameters (C6), for CH1, through the SAME
+         * scope_params_compute() the badges use. "--" = refused. Hidden or
+         * not, all 12 are listed: selection only decides what the screen
+         * shows. */
+        {
+            scope_prm_ctx_t ctx;
+            scope_params_t pp;
+            /* Only the code in force describes the record in hand; with a
+             * mismatch the widths stay in samples, like Freq stays "-". */
+            ctx.sample_rate     = tb_ok ? fs : 0.0f;
+            ctx.volts_per_count = k1;
+            ctx.freq_hz         = freq_hz;
+            ctx.zero_count      = SCOPE_MEASURE_ZERO_COUNT;
+            scope_params_compute(&m1, &ctx, &pp);
+            usb_debug_printf("P %2lu", (unsigned long)i);
+            for (unsigned id = 0; id < SCOPE_PRM_COUNT; id++) {
+                char b[16];
+                scope_prm_format(&pp.v[id], b, sizeof b);
+                usb_debug_printf(" %s=%s", scope_prm_label(id), b);
+            }
+            usb_send_str("\r\n");
+        }
         usb_delay_ms(60);
     }
+}
+
+/* `fpga scope prm [mask|all|default|none|toggle <0-11>|hide|show]` — the C6
+ * parameter selection (stock: short PRM chooses which of the 12 show, long PRM
+ * hides them). With no argument, just reports. The mask is bit i = parameter i
+ * in stock's order: Freq Peri Duty+ Duty- Wid+ Wid- Vmax Vmin Vp-p Amp Vrms
+ * Avg. Only the first five selected appear (the five CH1 badge slots). */
+static void cmd_fpga_scope_prm(const char *args)
+{
+    scope_state_t *ss = scope_state_get();
+    while (*args == ' ') args++;
+
+    if (*args) {
+        uint32_t v;
+        if (strncmp(args, "all", 3) == 0)          ss->prm_mask = SCOPE_PRM_ALL_MASK;
+        else if (strncmp(args, "default", 7) == 0) ss->prm_mask = SCOPE_PRM_DEFAULT_MASK;
+        else if (strncmp(args, "none", 4) == 0)    ss->prm_mask = 0u;
+        else if (strncmp(args, "hide", 4) == 0)    ss->prm_hidden = true;
+        else if (strncmp(args, "show", 4) == 0)    ss->prm_hidden = false;
+        else if (strncmp(args, "toggle", 6) == 0) {
+            const char *a = args + 6;
+            while (*a == ' ') a++;
+            if (parse_int(a, &v) != 0 || v >= SCOPE_PRM_COUNT) {
+                usb_send_str("usage: fpga scope prm toggle <0-11>\r\n");
+                return;
+            }
+            ss->prm_mask ^= (uint16_t)(1u << v);
+        } else if (parse_int(args, &v) == 0) {
+            ss->prm_mask = (uint16_t)(v & SCOPE_PRM_ALL_MASK);
+        } else {
+            usb_send_str("usage: fpga scope prm [mask|all|default|none|toggle <0-11>|hide|show]\r\n");
+            return;
+        }
+    }
+
+    usb_debug_printf("prm mask=0x%03X hidden=%u shown:", (unsigned)ss->prm_mask,
+                     (unsigned)ss->prm_hidden);
+    uint8_t ids[SCOPE_PRM_COUNT];
+    const unsigned n = scope_prm_select(ss->prm_mask, ids, SCOPE_PRM_COUNT);
+    for (unsigned i = 0; i < n; i++)
+        usb_debug_printf(" %s%s", scope_prm_label(ids[i]), i >= 5u ? "(no slot)" : "");
+    usb_send_str("\r\n");
+}
+
+/* `fpga scope cursor` — the cursor readouts (C7) as the screen computes them:
+ * X1 X2 X1-X2 1/|dX| from the PUBLISHED record's rate, Y1 Y2 Y1-Y2 from the
+ * last drawn band. Y1/Y2 are "--" unless the true-scale graticule is on (the
+ * autofit render re-anchors the vertical every frame). Move the cursors first
+ * with the CUR key; the cursors' mode does not matter here. */
+static void cmd_fpga_scope_cursor(const char *args)
+{
+    (void)args;
+    char x1[16], x2[16], dx[16], ix[16], y1[16], y2[16], dy[16];
+    float fs = 0.0f;
+    scope_ui_cursor_report(x1, x2, dx, ix, y1, y2, dy, &fs);
+    usb_debug_printf("cursor fs=%lu X1=%s X2=%s X1-X2=%s Y1=%s Y2=%s Y1-Y2=%s 1/dX=%s\r\n",
+                     (unsigned long)(fs + 0.5f), x1, x2, dx, y1, y2, dy, ix);
 }
 
 /* `fpga scope cal` — print what the firmware believes about vertical scale.
@@ -8328,6 +8416,10 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope vdiv <1|2> <0-9>     Set volts/div range: display AND relays together\r\n"),
     CMD_A("fpga scope measure", cmd_fpga_scope_measure, 0,
           "fpga scope measure [reps]       Badge values raw (uV/permille/mHz) for bench validation\r\n"),
+    CMD_A("fpga scope prm", cmd_fpga_scope_prm, 0,
+          "fpga scope prm [mask|all|default|none|toggle N|hide|show]  Parameter selection (12 measurements)\r\n"),
+    CMD_A("fpga scope cursor", cmd_fpga_scope_cursor, 0,
+          "fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n"),
     CMD_A("fpga scope freq", cmd_fpga_scope_freq, 0,
           "fpga scope freq [n]             Run the shipped frequency estimator n times, with diagnostics\r\n"),
     CMD_A("fpga scope graticule", cmd_fpga_scope_graticule, 0,

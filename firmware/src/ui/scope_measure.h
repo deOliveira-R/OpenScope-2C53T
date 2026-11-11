@@ -104,6 +104,33 @@ typedef struct {
     bool     rise_valid;
     float    fall_samples;
     bool     fall_valid;
+
+    /* ── Stock's 12-parameter set (C6) ─────────────────────────────────
+     * Extra raw ingredients for Vmax/Vmin/Amp/Wid+/Wid-, same rules as the
+     * rest of this struct: counts and samples only, never volts or seconds. */
+
+    /* Trimmed extremes (the same 0.5% walk as pp_robust: pp_robust ==
+     * rob_max - rob_min). Vmax/Vmin read these, for the reason pp_robust
+     * exists. */
+    uint8_t  rob_min;
+    uint8_t  rob_max;
+
+    /* Amplitude = top - base, the two histogram MODES (the levels the
+     * waveform dwells at) of the upper and lower half about the mid-level.
+     * Square: its two rails, ignoring overshoot, so Amp < Vp-p when there is
+     * ringing. Sine: the modes sit at the arcsine peaks, so Amp ~ Vp-p.
+     * Stock's exact Amp definition is not decoded; this is the standard
+     * top-base one [H]. */
+    uint8_t  top;
+    uint8_t  base;
+
+    /* Mean width of the COMPLETE high / low pulses (mid-level crossing to the
+     * next opposite crossing, sub-sample interpolated), in SAMPLES. A pulse
+     * cut by either record edge is not complete and is not counted. */
+    float    wid_hi_samples;
+    bool     wid_hi_valid;
+    float    wid_lo_samples;
+    bool     wid_lo_valid;
 } scope_measure_t;
 
 /*
@@ -132,5 +159,87 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
  */
 int scope_measure_find_trigger(const uint8_t *buf, uint16_t max_start,
                                uint8_t threshold, bool rising, uint8_t hyst);
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Stock's 12 measurements per channel (C6)
+ *
+ * Order and labels are stock V1.2.0's table at 0x0804BF28: Freq, Peri,
+ * Duty+, Duty-, Wid+, Wid-, Vmax, Vmin, Vp-p, Amp, Vrms, Avg.
+ *
+ * TIME QUANTITIES USE THE PUBLISHED RECORD'S SAMPLE RATE, not the table's:
+ * pass fpga_record_sample_rate() (2x the table rate for an interleaved
+ * record). This module owns no rate.
+ * VOLTS use the caller's volts-per-count (scope_cal_volts_per_count); k <= 0
+ * means uncalibrated and the vertical quantities stay in ADC COUNTS, exactly
+ * as the badges always did.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+typedef enum {
+    SCOPE_PRM_FREQ = 0, SCOPE_PRM_PERI, SCOPE_PRM_DUTY_POS, SCOPE_PRM_DUTY_NEG,
+    SCOPE_PRM_WID_POS,  SCOPE_PRM_WID_NEG, SCOPE_PRM_VMAX,  SCOPE_PRM_VMIN,
+    SCOPE_PRM_VPP,      SCOPE_PRM_AMP,     SCOPE_PRM_VRMS,  SCOPE_PRM_AVG,
+    SCOPE_PRM_COUNT
+} scope_prm_id_t;
+
+typedef enum {
+    SCOPE_PRM_UNIT_NONE = 0,   /* refused: render "--"                      */
+    SCOPE_PRM_UNIT_HZ,
+    SCOPE_PRM_UNIT_SECONDS,
+    SCOPE_PRM_UNIT_SAMPLES,    /* time quantity with no known rate          */
+    SCOPE_PRM_UNIT_PERCENT,
+    SCOPE_PRM_UNIT_VOLTS,
+    SCOPE_PRM_UNIT_COUNTS,     /* vertical quantity with no calibration     */
+} scope_prm_unit_t;
+
+typedef struct {
+    scope_prm_unit_t unit;
+    float            value;    /* signed, in `unit`; 0 when unit is NONE    */
+} scope_prm_t;
+
+typedef struct {
+    scope_prm_t v[SCOPE_PRM_COUNT];
+} scope_params_t;
+
+typedef struct {
+    float sample_rate;   /* S/s of THIS record (fpga_record_sample_rate()); <=0 = unknown */
+    float volts_per_count;/* probe-tip V per ADC count; <=0 = uncalibrated  */
+    float freq_hz;       /* the SPECTRAL estimate (scope_freq), 0 = declined.
+                          * Freq/Peri come from it only: the crossing period is
+                          * 5-50% out (EXP-13) and is never dressed in Hz.   */
+    uint8_t zero_count;  /* ADC code of 0 V. Vmax/Vmin/Avg are volts relative to
+                          * it; SCOPE_MEASURE_ZERO_COUNT when the channel is
+                          * centred (`fpga scope center`).                   */
+} scope_prm_ctx_t;
+
+/* ADC mid-scale: where a centred baseline sits, and the 'center' the
+ * true-scale renderer already uses. Nominal, not a per-unit number. */
+#define SCOPE_MEASURE_ZERO_COUNT  128u
+
+/* Compute all 12 from an analysed record. m == NULL or !m->valid refuses all. */
+void scope_params_compute(const scope_measure_t *m, const scope_prm_ctx_t *ctx,
+                          scope_params_t *out);
+
+/* Stock's label ("Freq", "Vp-p", ...); "?" out of range. */
+const char *scope_prm_label(unsigned id);
+
+/* "1.00kHz", "50.0%", "-1.20V", "37cnt", "45smp", "--". NUL-terminated;
+ * 16 bytes is enough. Reuses the cursor formatter so the units read alike. */
+void scope_prm_format(const scope_prm_t *p, char *out, uint32_t n);
+
+/*
+ * Parameter selection (stock's short PRM) and hide (long PRM).
+ *
+ * `mask` is bit i = scope_prm_id_t i shown. The default is the five badges the
+ * instrument has always shown for CH1, so selecting nothing changes nothing:
+ * Freq, Peri, Duty+, Vp-p, Vrms.
+ */
+#define SCOPE_PRM_ALL_MASK      ((1u << SCOPE_PRM_COUNT) - 1u)
+#define SCOPE_PRM_DEFAULT_MASK  ((1u << SCOPE_PRM_FREQ) | (1u << SCOPE_PRM_PERI) | \
+                                 (1u << SCOPE_PRM_DUTY_POS) | (1u << SCOPE_PRM_VPP) | \
+                                 (1u << SCOPE_PRM_VRMS))
+
+/* Fill ids[] with the selected parameters in stock order, at most max of them;
+ * returns how many were written. Bits outside the 12 are ignored. */
+unsigned scope_prm_select(uint16_t mask, uint8_t *ids, unsigned max);
 
 #endif /* SCOPE_MEASURE_H */

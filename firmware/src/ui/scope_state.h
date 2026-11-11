@@ -172,6 +172,13 @@ typedef struct {
      * trigger once it is time-ordered (EXP-53, dev plan 2.3), so any column
      * is reachable at 1 sample per pixel. Not persisted. */
     int16_t         trig_x;
+
+    /* Parameter selection (C6): which of stock's 12 measurements the CH1 badge
+     * slots show (bit i = scope_prm_id_t i, see scope_measure.h), and whether
+     * they are hidden altogether (stock: long PRM). Not persisted. Changed via
+     * `fpga scope prm` until the PRM key grows a menu / long-press. */
+    uint16_t        prm_mask;
+    bool            prm_hidden;
 } scope_state_t;
 
 /* ═══════════════════════════════════════════════════════════════════

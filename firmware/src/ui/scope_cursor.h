@@ -110,7 +110,40 @@ typedef struct {
     float   counts_per_pixel;
     uint8_t channel;            /* 1 or 2; anything else => no volts */
     uint8_t range_idx;
+
+    /* Absolute Y (C7). Where the band's middle row sits relative to 0 V, in
+     * counts: known (mid_known != 0) only for a renderer that anchors a fixed
+     * ADC code to that row (the true-scale path: code 128 at the band middle,
+     * so mid_counts = 0 for a centred baseline). Autofit rescales and
+     * re-anchors every frame, so it leaves this zero and absolute Y is "--".
+     * Zero-initialised by the existing `{ cpp, ch, rng }` initialisers. */
+    int16_t mid_row;
+    uint8_t mid_known;
+    float   mid_counts;
 } scope_cursor_vmap_t;
+
+/*
+ * Rate-explicit forms. The record's sample rate is NOT always the table's:
+ * an interleaved record is published at twice the per-converter rate, so the
+ * caller passes fpga_record_sample_rate() (when the record in hand is the one
+ * the timebase code describes) and the table tier of that code as `conf`.
+ * fs <= 0 behaves as "no rate" exactly like an unmeasured code. The tb_code
+ * forms below are these with the table's own rate.
+ */
+scope_cursor_conf_t scope_cursor_tb_conf(uint8_t tb_code);
+scope_cursor_reading_t scope_cursor_delta_t_fs(float fs, scope_cursor_conf_t conf,
+                                               int32_t dx_px);
+scope_cursor_reading_t scope_cursor_one_over_dt_fs(float fs, scope_cursor_conf_t conf,
+                                                   int32_t dx_px);
+
+/* X1 / X2 (C7): time of a screen column relative to the reference column
+ * (the trigger point), signed; samples when there is no rate. */
+scope_cursor_reading_t scope_cursor_x_fs(float fs, scope_cursor_conf_t conf,
+                                         int32_t col, int32_t ref_col);
+
+/* Y1 / Y2 (C7): level of a screen row relative to 0 V — volts when the range
+ * is calibrated, counts otherwise, NONE (--) unless map->mid_known. */
+scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t row);
 
 /* Time between two vertical cursors, dx screen columns apart (signed). */
 scope_cursor_reading_t scope_cursor_delta_t(uint8_t tb_code, int32_t dx_px);

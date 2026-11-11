@@ -514,6 +514,186 @@ static int test_soft_trigger(void)
     return bad;
 }
 
+/* ── C6: stock's 12 parameters ─────────────────────────────────────────
+ *
+ * Synthetic records with closed-form answers: a square of known duty and
+ * levels, a sine of known amplitude. Time must come out in SECONDS at the
+ * rate passed in (the published record's), volts through k, counts at k == 0.
+ */
+
+static int test_params(void)
+{
+    int bad = 0;
+    uint8_t buf[N];
+    scope_measure_t m;
+    scope_params_t p;
+    scope_prm_ctx_t ctx;
+
+    /* Square: period 100 samples, 30 high / 70 low, levels 60..200, shifted by
+     * 20 so the record starts low (complete pulses on both sides). */
+    for (int i = 0; i < N; i++) buf[i] = ((i + 80) % 100 < 30) ? 200 : 60;
+    scope_measure_record(buf, N, &m);
+
+    ctx.sample_rate = 1.0e6f; ctx.volts_per_count = 0.01f;
+    ctx.freq_hz = 10000.0f;   ctx.zero_count = 128u;
+    scope_params_compute(&m, &ctx, &p);
+
+    bad += chk("prm: all 12 present for a clean square", 1);
+    for (int i = 0; i < SCOPE_PRM_COUNT; i++)
+        bad += chk(scope_prm_label((unsigned)i), p.v[i].unit != SCOPE_PRM_UNIT_NONE);
+
+    bad += chk("prm: Freq is the spectral input", p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_HZ &&
+               p.v[SCOPE_PRM_FREQ].value == 10000.0f);
+    bad += chk("prm: Peri = 1/Freq in seconds", p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_SECONDS &&
+               near(p.v[SCOPE_PRM_PERI].value, 100e-6f, 1e-9f));
+    bad += chk("prm: Duty+ ~ 30%", near(p.v[SCOPE_PRM_DUTY_POS].value, 30.0f, 1.0f));
+    bad += chk("prm: Duty+ + Duty- == 100",
+               near(p.v[SCOPE_PRM_DUTY_POS].value + p.v[SCOPE_PRM_DUTY_NEG].value, 100.0f, 1e-3f));
+    /* 30 samples at 1 MS/s = 30 us; 70 samples = 70 us. */
+    bad += chk("prm: Wid+ = 30 us at the record rate",
+               p.v[SCOPE_PRM_WID_POS].unit == SCOPE_PRM_UNIT_SECONDS &&
+               near(p.v[SCOPE_PRM_WID_POS].value, 30e-6f, 1.5e-6f));
+    bad += chk("prm: Wid- = 70 us at the record rate",
+               near(p.v[SCOPE_PRM_WID_NEG].value, 70e-6f, 1.5e-6f));
+    /* volts: (200-128)*0.01 = 0.72, (60-128)*0.01 = -0.68, pp 1.40, amp 1.40 */
+    bad += chk("prm: Vmax", p.v[SCOPE_PRM_VMAX].unit == SCOPE_PRM_UNIT_VOLTS &&
+               near(p.v[SCOPE_PRM_VMAX].value, 0.72f, 1e-4f));
+    bad += chk("prm: Vmin is signed", near(p.v[SCOPE_PRM_VMIN].value, -0.68f, 1e-4f));
+    bad += chk("prm: Vp-p", near(p.v[SCOPE_PRM_VPP].value, 1.40f, 1e-4f));
+    bad += chk("prm: Amp (top-base) of a clean square == Vp-p", near(p.v[SCOPE_PRM_AMP].value, 1.40f, 1e-4f));
+    /* mean = 60 + 0.3*140 = 102 -> (102-128)*0.01 = -0.26 ; rms about mean =
+     * 140*sqrt(0.3*0.7) = 64.16 counts -> 0.6416 V */
+    bad += chk("prm: Avg", near(p.v[SCOPE_PRM_AVG].value, -0.26f, 0.01f));
+    bad += chk("prm: Vrms (AC)", near(p.v[SCOPE_PRM_VRMS].value, 0.6416f, 0.01f));
+
+    /* THE RECORD'S RATE: an interleaved record is 2x. Same samples, double the
+     * rate => widths halve. Passing the table rate for it would be 2x wrong. */
+    ctx.sample_rate = 2.0e6f;
+    scope_params_compute(&m, &ctx, &p);
+    bad += chk("prm: doubled record rate halves Wid+",
+               near(p.v[SCOPE_PRM_WID_POS].value, 15e-6f, 1e-6f));
+    bad += chk("prm: doubled record rate halves Wid-",
+               near(p.v[SCOPE_PRM_WID_NEG].value, 35e-6f, 1e-6f));
+
+    /* No rate: samples, never seconds. */
+    ctx.sample_rate = 0.0f;
+    scope_params_compute(&m, &ctx, &p);
+    bad += chk("prm: no rate -> Wid+ in SAMPLES", p.v[SCOPE_PRM_WID_POS].unit == SCOPE_PRM_UNIT_SAMPLES &&
+               near(p.v[SCOPE_PRM_WID_POS].value, 30.0f, 1.0f));
+
+    /* Uncalibrated: counts, absolute for levels. */
+    ctx.volts_per_count = 0.0f; ctx.freq_hz = 0.0f;
+    scope_params_compute(&m, &ctx, &p);
+    bad += chk("prm: k=0 -> Vmax in counts", p.v[SCOPE_PRM_VMAX].unit == SCOPE_PRM_UNIT_COUNTS &&
+               p.v[SCOPE_PRM_VMAX].value == 200.0f);
+    bad += chk("prm: k=0 -> Vp-p in counts", p.v[SCOPE_PRM_VPP].unit == SCOPE_PRM_UNIT_COUNTS &&
+               p.v[SCOPE_PRM_VPP].value == 140.0f);
+    bad += chk("prm: no spectral Freq -> Freq refused (crossings are never Hz)",
+               p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE);
+    bad += chk("prm: no spectral Freq -> Peri in samples, ~100",
+               p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_SAMPLES &&
+               near(p.v[SCOPE_PRM_PERI].value, 100.0f, 1.0f));
+
+    /* Affine invariance of the time/ratio parameters (same argument as for
+     * duty): y = 2x + 3 must not move Duty or the widths. */
+    {
+        uint8_t b2[N]; scope_measure_t m2; scope_params_t p2, p1;
+        for (int i = 0; i < N; i++) b2[i] = (uint8_t)(buf[i] / 2 + 40);
+        ctx.sample_rate = 1.0e6f;
+        scope_params_compute(&m, &ctx, &p1);
+        scope_measure_record(b2, N, &m2);
+        scope_params_compute(&m2, &ctx, &p2);
+        bad += chk("prm: Duty+ invariant under an affine map",
+                   near(p1.v[SCOPE_PRM_DUTY_POS].value, p2.v[SCOPE_PRM_DUTY_POS].value, 0.5f));
+        bad += chk("prm: Wid+ invariant under an affine map",
+                   near(p1.v[SCOPE_PRM_WID_POS].value, p2.v[SCOPE_PRM_WID_POS].value, 1e-6f));
+    }
+
+    /* Sine: amplitude 50 about 128 -> pp 100, rms 35.36, mean 128; Amp ~ pp. */
+    for (int i = 0; i < N; i++)
+        buf[i] = (uint8_t)lroundf(128.0f + 50.0f * sinf(2.0f * 3.14159265f * (float)i / 64.0f));
+    scope_measure_record(buf, N, &m);
+    ctx.volts_per_count = 0.02f; ctx.freq_hz = 0.0f; ctx.sample_rate = 1.0e6f;
+    scope_params_compute(&m, &ctx, &p);
+    bad += chk("prm: sine Vrms = A/sqrt2 (50*0.02/1.4142 = 0.7071 V)",
+               near(p.v[SCOPE_PRM_VRMS].value, 0.7071f, 0.01f));
+    bad += chk("prm: sine Vp-p = 2A (2.00 V)", near(p.v[SCOPE_PRM_VPP].value, 2.0f, 0.06f));
+    bad += chk("prm: sine Avg ~ 0 V when centred", near(p.v[SCOPE_PRM_AVG].value, 0.0f, 0.01f));
+    bad += chk("prm: sine Amp within 6% of Vp-p",
+               near(p.v[SCOPE_PRM_AMP].value, p.v[SCOPE_PRM_VPP].value, 0.12f));
+    bad += chk("prm: sine Vmax = +A", near(p.v[SCOPE_PRM_VMAX].value, 1.0f, 0.04f));
+
+    /* A flat record: levels are still reportable, duty/widths/amp are not. */
+    memset(buf, 128, sizeof buf);
+    scope_measure_record(buf, N, &m);
+    ctx.volts_per_count = 0.02f;
+    scope_params_compute(&m, &ctx, &p);
+    bad += chk("prm: flat -> Duty refused", p.v[SCOPE_PRM_DUTY_POS].unit == SCOPE_PRM_UNIT_NONE);
+    bad += chk("prm: flat -> Wid refused", p.v[SCOPE_PRM_WID_POS].unit == SCOPE_PRM_UNIT_NONE);
+    bad += chk("prm: flat -> Amp refused", p.v[SCOPE_PRM_AMP].unit == SCOPE_PRM_UNIT_NONE);
+    bad += chk("prm: flat -> Avg is 0 V", p.v[SCOPE_PRM_AVG].unit == SCOPE_PRM_UNIT_VOLTS &&
+               near(p.v[SCOPE_PRM_AVG].value, 0.0f, 1e-6f));
+
+    /* No record at all: everything refused. */
+    scope_params_compute(NULL, &ctx, &p);
+    int any = 0;
+    for (int i = 0; i < SCOPE_PRM_COUNT; i++) any |= (p.v[i].unit != SCOPE_PRM_UNIT_NONE);
+    bad += chk("prm: NULL record refuses all 12", !any);
+
+    /* A pulse cut by the record start is not a complete pulse: record that is
+     * high for the first 10 samples then one full low of 40 then high again
+     * must not report a 10-sample Wid+. */
+    for (int i = 0; i < N; i++) buf[i] = 200;
+    for (int i = 10; i < 50; i++) buf[i] = 60;
+    for (int i = 100; i < 140; i++) buf[i] = 60;
+    scope_measure_record(buf, N, &m);
+    bad += chk("prm: Wid+ ignores the pulse cut by the record start",
+               m.wid_hi_valid && near(m.wid_hi_samples, 50.0f, 1.5f));
+
+    /* Selection. */
+    {
+        uint8_t ids[SCOPE_PRM_COUNT];
+        unsigned n = scope_prm_select(SCOPE_PRM_DEFAULT_MASK, ids, 5);
+        bad += chk("sel: default mask = 5 badges in stock order",
+                   n == 5 && ids[0] == SCOPE_PRM_FREQ && ids[1] == SCOPE_PRM_PERI &&
+                   ids[2] == SCOPE_PRM_DUTY_POS && ids[3] == SCOPE_PRM_VPP &&
+                   ids[4] == SCOPE_PRM_VRMS);
+        n = scope_prm_select(SCOPE_PRM_ALL_MASK, ids, SCOPE_PRM_COUNT);
+        bad += chk("sel: all = 12", n == 12 && ids[11] == SCOPE_PRM_AVG);
+        n = scope_prm_select(SCOPE_PRM_ALL_MASK, ids, 5);
+        bad += chk("sel: capped at max", n == 5);
+        n = scope_prm_select(0u, ids, 5);
+        bad += chk("sel: none = 0", n == 0);
+        n = scope_prm_select(0xF000u, ids, 5);
+        bad += chk("sel: bits above 12 ignored", n == 0);
+    }
+
+    /* Labels = stock's table. */
+    {
+        static const char *const want[12] = { "Freq","Peri","Duty+","Duty-","Wid+","Wid-",
+                                              "Vmax","Vmin","Vp-p","Amp","Vrms","Avg" };
+        int ok = 1;
+        for (unsigned i = 0; i < 12; i++) ok &= (strcmp(scope_prm_label(i), want[i]) == 0);
+        bad += chk("labels match stock 0x0804BF28", ok && strcmp(scope_prm_label(12), "?") == 0);
+    }
+
+    /* Formatting. */
+    {
+        char s[16]; scope_prm_t q;
+        q.unit = SCOPE_PRM_UNIT_PERCENT; q.value = 30.04f; scope_prm_format(&q, s, sizeof s);
+        bad += chk("fmt: percent", strcmp(s, "30.0%") == 0);
+        q.unit = SCOPE_PRM_UNIT_VOLTS; q.value = -0.68f; scope_prm_format(&q, s, sizeof s);
+        bad += chk("fmt: signed volts", strcmp(s, "-680mV") == 0);
+        q.unit = SCOPE_PRM_UNIT_COUNTS; q.value = 200.0f; scope_prm_format(&q, s, sizeof s);
+        bad += chk("fmt: counts", strcmp(s, "200cnt") == 0);
+        q.unit = SCOPE_PRM_UNIT_NONE; scope_prm_format(&q, s, sizeof s);
+        bad += chk("fmt: refused is --", strcmp(s, "--") == 0);
+        q.unit = SCOPE_PRM_UNIT_SECONDS; q.value = 30e-6f; scope_prm_format(&q, s, sizeof s);
+        bad += chk("fmt: seconds", strcmp(s, "30us") == 0);
+    }
+    return bad;
+}
+
 int main(int argc, char **argv)
 {
     g_verbose = (argc > 1 && strcmp(argv[1], "-v") == 0);
@@ -554,6 +734,12 @@ int main(int argc, char **argv)
     printf("   %d failed check(s) -> %s\n\n", trig_bad,
            trig_bad == 0 ? "PASS" : "*** FAIL ***");
     if (trig_bad) fail = 1;
+
+    printf("stock's 12 parameters + selection (C6)\n");
+    int prm_bad = test_params();
+    printf("   %d failed check(s) -> %s\n\n", prm_bad,
+           prm_bad == 0 ? "PASS" : "*** FAIL ***");
+    if (prm_bad) fail = 1;
 
     printf(fail ? "RESULT: FAIL\n" : "RESULT: PASS\n");
     return fail;

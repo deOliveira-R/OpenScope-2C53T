@@ -68,6 +68,7 @@ static int close_rel(float a, float b, float tol)
 static scope_cursor_vmap_t vmap(uint8_t ch, uint8_t range, float cpp)
 {
     scope_cursor_vmap_t m;
+    memset(&m, 0, sizeof m);
     m.counts_per_pixel = cpp;
     m.channel = ch;
     m.range_idx = range;
@@ -423,6 +424,106 @@ static void negctl_source_scale_reaches_the_cursor(void)
           "scope_cal_volts_per_count()", (double)got);
 }
 
+/* ── 4. C7: record-rate forms, X1/X2, absolute Y ─────────────────────── */
+
+static void test_record_rate_doubles_for_an_interleaved_record(void)
+{
+    /* The published record's rate is 2x the table's when interleaved
+     * (fpga_record_sample_rate). The cursor must time off THAT: the same
+     * 100-column span is half the duration, and 1/dt doubles. */
+    const uint8_t code = 0x0Eu;
+    const float fs = scope_timebase_sample_rate(code);
+    const scope_cursor_conf_t cf = scope_cursor_tb_conf(code);
+    CHECK(fs > 0.0f, "code 0x%02X needs a rate", code);
+
+    scope_cursor_reading_t a = scope_cursor_delta_t_fs(fs, cf, 100);
+    scope_cursor_reading_t b = scope_cursor_delta_t_fs(2.0f * fs, cf, 100);
+    CHECK(a.unit == SCOPE_CURSOR_UNIT_SECONDS && b.unit == SCOPE_CURSOR_UNIT_SECONDS,
+          "both must be seconds");
+    CHECK(close_rel(b.value, a.value / 2.0f, 1e-5f),
+          "doubled record rate must halve dt: %g vs %g", (double)b.value, (double)a.value);
+    CHECK(close_rel(b.value, 100.0f / (2.0f * fs), 1e-5f), "dt = dx / record rate");
+
+    a = scope_cursor_one_over_dt_fs(fs, cf, 100);
+    b = scope_cursor_one_over_dt_fs(2.0f * fs, cf, 100);
+    CHECK(close_rel(b.value, 2.0f * a.value, 1e-5f), "doubled rate must double 1/dt");
+
+    /* The tb_code forms are exactly the rate forms at the table's rate. */
+    a = scope_cursor_delta_t(code, 100);
+    b = scope_cursor_delta_t_fs(fs, cf, 100);
+    CHECK(a.value == b.value && a.unit == b.unit && a.confidence == b.confidence,
+          "tb_code form must equal the table-rate form");
+
+    /* No rate: samples for dt, refusal for 1/dt, regardless of confidence. */
+    a = scope_cursor_delta_t_fs(0.0f, SCOPE_CURSOR_MEASURED, 37);
+    CHECK(a.unit == SCOPE_CURSOR_UNIT_SAMPLES && a.value == 37.0f, "no rate -> samples");
+    a = scope_cursor_one_over_dt_fs(0.0f, SCOPE_CURSOR_MEASURED, 37);
+    CHECK(a.unit == SCOPE_CURSOR_UNIT_NONE, "no rate -> no 1/dt");
+}
+
+static void test_x_is_relative_to_the_reference_column(void)
+{
+    const float fs = 1.0e6f;
+    scope_cursor_reading_t r = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 260, 160);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_SECONDS && close_rel(r.value, 100e-6f, 1e-5f),
+          "X1 100 columns after the trigger at 1 MS/s is +100 us");
+    r = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 60, 160);
+    CHECK(close_rel(r.value, -100e-6f, 1e-5f), "left of the trigger is negative");
+    char s[16];
+    scope_cursor_format(&r, s, sizeof s);
+    CHECK(strcmp(s, "-100us") == 0, "expected -100us, got %s", s);
+
+    /* Stock's "X1-X2" is X1 MINUS X2: the shell report feeds delta_t the
+     * column difference v1 - v2, which must equal the two absolute readings'
+     * difference whatever the reference column. */
+    const scope_cursor_reading_t x1 = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 90, 137);
+    const scope_cursor_reading_t x2 = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 250, 137);
+    const scope_cursor_reading_t d  = scope_cursor_delta_t_fs(fs, SCOPE_CURSOR_MEASURED, 90 - 250);
+    CHECK(close_rel(x1.value - x2.value, d.value, 1e-4f) && d.value < 0.0f,
+          "X1-X2 == X1 - X2 (negative when X1 is left of X2)");
+}
+
+static void test_absolute_y(void)
+{
+    /* range 6 is MEASURED (see measured_ranges). Mid row 100, centred (0). */
+    scope_cursor_vmap_t m = vmap(1u, 6u, 2.0f);
+    m.mid_known = 1u; m.mid_row = 100; m.mid_counts = 0.0f;
+    const float k = scope_cal_volts_per_count(1u, 6u);
+    CHECK(k > 0.0f, "range 6 must be calibrated");
+
+    scope_cursor_reading_t r = scope_cursor_y(&m, 90);       /* 10 rows above */
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && close_rel(r.value, 10.0f * 2.0f * k, 1e-5f),
+          "10 rows above the middle = +20 counts of volts");
+    r = scope_cursor_y(&m, 110);
+    CHECK(r.value < 0.0f && close_rel(r.value, -20.0f * k, 1e-5f), "below is negative");
+    r = scope_cursor_y(&m, 100);
+    CHECK(r.value == 0.0f, "the middle row is 0 V when centred");
+
+    /* The difference of two absolute readings is the existing delta (second
+     * minus first, = h1_y - h2_y rows: the same sign convention as dt), so
+     * the Y1-Y2 readout and dV can never disagree. */
+    scope_cursor_reading_t y1 = scope_cursor_y(&m, 70), y2 = scope_cursor_y(&m, 120);
+    scope_cursor_reading_t dv = scope_cursor_delta_v(&m, 70 - 120);
+    CHECK(close_rel(y2.value - y1.value, dv.value, 1e-4f), "Y2 - Y1 == dV");
+    /* Stock's "Y1-Y2" (the shell report): delta_v of h2 - h1 rows. */
+    scope_cursor_reading_t d12 = scope_cursor_delta_v(&m, 120 - 70);
+    CHECK(close_rel(y1.value - y2.value, d12.value, 1e-4f) && d12.value > 0.0f,
+          "Y1-Y2 == Y1 - Y2 (positive when Y1 is above Y2)");
+
+    /* Uncalibrated range: counts. */
+    scope_cursor_vmap_t u = vmap(1u, 0u, 2.0f);
+    u.mid_known = 1u; u.mid_row = 100;
+    r = scope_cursor_y(&u, 90);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS && r.value == 20.0f, "no cal -> counts");
+
+    /* Autofit band (mid unknown) and no transform: refuse, never guess. */
+    scope_cursor_vmap_t a = vmap(1u, 6u, 2.0f);
+    r = scope_cursor_y(&a, 90);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "autofit band has no absolute Y");
+    r = scope_cursor_y(NULL, 90);
+    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "NULL map refuses");
+}
+
 int main(void)
 {
     test_time_comes_from_the_rate_table();
@@ -438,6 +539,10 @@ int main(void)
     test_provisional_ranges_are_marked();
     test_provisional_timebase_is_marked();
     test_formatting();
+
+    test_record_rate_doubles_for_an_interleaved_record();
+    test_x_is_relative_to_the_reference_column();
+    test_absolute_y();
 
     negctl_old_constants_would_be_caught();
     negctl_answer_must_depend_on_the_code();
