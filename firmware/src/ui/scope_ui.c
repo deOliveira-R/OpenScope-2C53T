@@ -667,7 +667,11 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
     {
         /* timebase_idx IS the reg-0x01 code — fpga_stock_timebase_byte()
          * returns it unchanged, and status_bar.c reads it the same way. */
-        const float fs = scope_timebase_sample_rate(ss->timebase_idx);
+        /* The PUBLISHED record's rate: doubled when it is the two-converter
+         * merge (fpga_record_sample_rate). Same code as timebase_idx otherwise. */
+        const float fs = (fpga_acq_rate_idx_get() == ss->timebase_idx)
+                       ? fpga_record_sample_rate()
+                       : scope_timebase_sample_rate(ss->timebase_idx);
         scope_freq_t fr;
 
         /* The acquisition buffer is `volatile` because the acq task fills it;
@@ -2648,7 +2652,7 @@ static float fft_live_rate_in_force(void)
     const scope_state_t *ss = scope_state_get();
     if (fpga_acq_rate_idx_get() != ss->timebase_idx)
         return 0.0f;                         /* display and hardware disagree */
-    return scope_timebase_sample_rate(ss->timebase_idx);
+    return fpga_record_sample_rate();        /* x2 for an interleaved record */
 }
 
 static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,

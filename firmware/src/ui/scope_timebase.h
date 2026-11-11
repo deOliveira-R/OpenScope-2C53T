@@ -162,6 +162,9 @@ float scope_timebase_seconds_per_div(uint8_t code);
  * "--" (no rate). Always NUL-terminated; 10 bytes is enough for every entry.
  */
 void scope_timebase_label(uint8_t code, char *out, uint32_t n);
+/* Same, for a record whose rate is `rate_factor` x the table's (2 for the
+ * single-channel interleave: same 32 samples per division, half the time). */
+void scope_timebase_label_scaled(uint8_t code, uint8_t rate_factor, char *out, uint32_t n);
 
 /*
  * Hz from a measured period in SAMPLES, or 0.0f when the code has no rate or

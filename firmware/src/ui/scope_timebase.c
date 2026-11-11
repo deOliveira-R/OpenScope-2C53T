@@ -322,10 +322,16 @@ float scope_timebase_hz_from_period(uint8_t code, float period_samples)
 
 void scope_timebase_label(uint8_t code, char *out, uint32_t n)
 {
+    scope_timebase_label_scaled(code, 1u, out, n);
+}
+
+void scope_timebase_label_scaled(uint8_t code, uint8_t rate_factor, char *out, uint32_t n)
+{
     if (out == NULL || n == 0u)
         return;
 
-    const float s = scope_timebase_seconds_per_div(code);
+    const float s = scope_timebase_seconds_per_div(code) /
+                    (float)(rate_factor ? rate_factor : 1u);
 
     if (s <= 0.0f) {
         /* No rate. The grid has no time meaning on this code, and saying so is

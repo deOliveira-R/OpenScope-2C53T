@@ -11,6 +11,7 @@
 #include "scope_timebase.h"
 #include "battery.h"
 #include "at32f403a_407.h"
+#include "fpga.h"
 #include <stdio.h>
 
 /* Track whether status bar has been drawn once (first draw needs full clear) */
@@ -151,7 +152,9 @@ void draw_info_bar(void)
              * Codes with no measured rate read "--".
              */
             char tb[12];
-            scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
+            scope_timebase_label_scaled(ss->timebase_idx,
+                                        fpga_acq_record_interleaved() ? 2u : 1u,
+                                        tb, sizeof(tb));
             snprintf(buf, sizeof(buf), "H=%s", tb);
             font_draw_string(155, LCD_HEIGHT - 14, buf,
                              th->text_primary, ib, &font_small);

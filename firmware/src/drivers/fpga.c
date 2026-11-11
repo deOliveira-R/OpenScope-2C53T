@@ -27,6 +27,7 @@
 #include "meter_data.h"
 #include "scope_trigger.h"
 #include "../dsp/trig_edge.h"
+#include "../dsp/interleave.h"
 #include "../ui/ui.h"
 #include "../ui/scope_state.h"
 #include "../ui/scope_timebase.h"
@@ -3053,6 +3054,11 @@ static volatile uint8_t *acq_write_ch2(void)
  * the newest commit against a frame one commit older (2026-09-23). */
 static volatile bool acq_stage_ordered = false;
 static volatile bool acq_pub_ordered = false;
+/* Single-channel 250 MS/s (dsp/interleave.h): the staged / published CH1
+ * record is the merge of both converters. Published with the record, like
+ * `ordered`, so the rate a reader applies always matches the buffer. */
+static volatile bool acq_stage_il = false;
+static volatile bool acq_pub_il = false;
 
 static void fpga_acq_frames_commit(void)
 {
@@ -3062,6 +3068,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch1_buf, acq_stage_ch1, FPGA_ADC_BUF_SIZE);
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
+    acq_pub_il = acq_stage_il;
     acq_frame_gen++;                                   /* even: stable */
 }
 
@@ -3498,6 +3505,13 @@ static volatile uint8_t acq_trig_code = 0xAD;
  * stayed frozen after level +100 -> 0). The apply entry points raise this;
  * the acq task clears capture_in_flight on it and re-primes. */
 static volatile bool acq_reprime_req = false;
+/* Single-channel interleave (2026-11-10, bench B4 on unit #2): with mask 1
+ * both converters sample CH1 half a sample apart; at timebase <= 3 (stock's
+ * gate, 0x080252B2) the acq task merges them into a 250 MS/s record. Runtime
+ * switch, default ON. Converter-B correction defaults to identity; a unit's
+ * own numbers are set with `fpga interleave corr`. */
+static volatile bool acq_il_enable = true;
+static interleave_corr_t acq_il_corr = { 1.0f, 0.0f };
 /* EXP-45 (2026-09-14): gap between the 0x04 and 0x05 reads of a pair. Shell
  * reads 50 ms apart each produce a PC0 edge; the task's back-to-back pair
  * (~140 us apart at /2) produces none, which is why NORMAL could not sustain
@@ -3749,6 +3763,49 @@ bool fpga_acq_gate_get(void)          { return acq_gate_enable; }
 uint32_t fpga_acq_gate_skips(void)    { return acq_gate_skips; }
 void fpga_acq_rate_idx_set(uint8_t v) { acq_rate_idx = v; }
 uint8_t fpga_acq_rate_idx_get(void)   { return acq_rate_idx; }
+
+void fpga_interleave_set(bool on) { acq_il_enable = on; acq_reprime_req = true; }
+bool fpga_interleave_get(void)    { return acq_il_enable; }
+bool fpga_interleave_active(void)
+{
+    return acq_il_enable && fpga.channel_mask == 1u && acq_rate_idx <= 3u;
+}
+void fpga_interleave_corr_set(float gain, float offset)
+{
+    acq_il_corr.gain = gain;
+    acq_il_corr.offset = offset;
+}
+void fpga_interleave_corr_get(float *gain, float *offset)
+{
+    if (gain)   *gain = acq_il_corr.gain;
+    if (offset) *offset = acq_il_corr.offset;
+}
+bool fpga_acq_record_interleaved(void) { return acq_pub_il; }
+/* Rate of the PUBLISHED record: the timebase table's per-converter rate,
+ * doubled when the record is the two-converter merge. 0 = no rate. */
+float fpga_record_sample_rate(void)
+{
+    const float fs = scope_timebase_sample_rate(acq_rate_idx);
+    return acq_pub_il ? 2.0f * fs : fs;
+}
+
+/* Apply the channel enables to the converter routing (mask 1/2/3 on PC1/PC2).
+ * A trigger source on a channel that is now off moves to the one that is on
+ * (stock flips ms[0x16] for the same reason), and the record in flight is
+ * dropped: it was captured with the old routing. Refuses both-off. */
+bool fpga_apply_channel_enables(void)
+{
+    scope_state_t *ss = scope_state_get();
+    if (!ss->ch1.enabled && !ss->ch2.enabled)
+        return false;
+    if (ss->trigger.source == TRIG_SRC_CH2 && !ss->ch2.enabled)
+        ss->trigger.source = TRIG_SRC_CH1;
+    if (ss->trigger.source == TRIG_SRC_CH1 && !ss->ch1.enabled)
+        ss->trigger.source = TRIG_SRC_CH2;
+    fpga_set_channel_mask((ss->ch1.enabled && ss->ch2.enabled) ? 3u : (ss->ch2.enabled ? 2u : 1u));
+    acq_reprime_req = true;
+    return true;
+}
 
 /* See fpga.h. Push a timebase code to the hardware NOW and record it as the
  * value in force, so the axis label and the sample rate cannot disagree.
@@ -4139,6 +4196,9 @@ static void fpga_warmtest_acq_task(void *pv)
         if ((marker || varies) && fpga.spi3_hw_timeouts == hw_to_before) {
             fpga.acq_last_rot = fpga_acq_unrotate_staging(triggered);   /* dev plan 2.3: seam-based */
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
+            acq_stage_il = fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
+            if (acq_stage_il)
+                interleave_merge(acq_stage_ch1, acq_stage_ch2, &acq_il_corr);
             fpga_acq_frames_commit();
             /* Judge (or teach from) the record just committed: exactly once,
              * from the published buffers, in the only task that writes them. */
