@@ -26,6 +26,7 @@
 #include "persistence.h"
 #include "fpga.h"
 #include "scope_vpos.h"
+#include "scope_roll_meas.h"
 #include "FreeRTOS.h"   /* pvPortMalloc — the X-Y snapshot buffers */
 #include "task.h"       /* xTaskGetTickCount — the out-of-scope popup overlay */
 #include "scope_trigger.h"
@@ -2787,8 +2788,9 @@ void draw_scope_live_frame(void)
  *    when `fpga scope graticule true` and the range is calibrated, else the
  *    visible points' own min..max. Codes are drawn raw, as the Y-T record
  *    is; the unit's g = (m-28)/150 sits in the volts/div label;
- *  - no badges, cursors or trigger line: they describe the record, not the
- *    roll (stock's roll trigger is not implemented, see fpga_apply_roll).
+ *  - the 12 measurements are the badges (draw_roll_badges), on the roll point
+ *    rate; no cursors or trigger line (they describe the record). Stock's
+ *    roll trigger runs in the roll service (fpga.c, scope_roll.h).
  * `full` adds the decorations the compositor cannot recompute per pixel
  * (labels, STOP, popup); the band itself is identical either way.
  * ═══════════════════════════════════════════════════════════════════ */
@@ -2813,6 +2815,63 @@ static union {
 #define roll_snap      (ui_draw_scratch.roll)
 #define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
 #define ROLL_LABEL_H 16u
+
+/* The 12 measurements over the roll FIFO (scope_roll_meas.h): the same badge
+ * slots, order and units as the Y-T badges (draw_measurement_badges), the time
+ * base being the roll point rate. Zero and scale are per channel, exactly the
+ * Y-T inputs: scope_measure_zero_for(position) and scope_cal gain. `roll_snap`
+ * is linearised here, after the trace has been drawn from it. Repainted when
+ * `full` or every ROLL_BADGE_EVERY new points, so a 2 ms roll does not
+ * repaint the badges at frame rate. */
+#define ROLL_BADGE_EVERY 8u
+static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
+                             uint16_t nvis, bool full)
+{
+    static uint32_t last_total = 0xFFFFFFFFu;
+    static uint8_t  last_step = 0xFFu;
+    if (ss->prm_hidden)
+        return;
+    if (!full && last_step == ss->roll_step &&
+        (uint32_t)(roll_snap.total - last_total) < ROLL_BADGE_EVERY)
+        return;
+    last_total = roll_snap.total;
+    last_step = ss->roll_step;
+
+    scope_roll_fifo_linearize(&roll_snap);
+    const uint16_t na = th->text_secondary;
+    char buf[16];
+    scope_params_t p1, p2;
+    const uint8_t z1 = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
+    const uint8_t z2 = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
+    const bool have1 = ss->ch1.enabled &&
+        scope_roll_measure(&roll_snap, 0u, nvis, ss->roll_step,
+                           scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, NULL);
+    const bool have2 = ss->ch2.enabled &&
+        scope_roll_measure(&roll_snap, 1u, nvis, ss->roll_step,
+                           scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, NULL);
+
+    const uint16_t y1 = BADGE_ROW_Y, y2 = BADGE_ROW2_Y;
+    uint8_t sel[5];
+    const unsigned ns = scope_prm_select(ss->prm_mask, sel, 5u);
+    for (unsigned k = 0; k < ns; k++) {
+        const uint16_t bx = (k < 4u) ? (uint16_t)(2u + k * (BADGE_W + 2u)) : 2u;
+        const uint16_t by = (k < 4u) ? y1 : y2;
+        const scope_prm_t *p = &p1.v[sel[k]];
+        if (!have1 || p->unit == SCOPE_PRM_UNIT_NONE) {
+            draw_one_badge(bx, by, scope_prm_label(sel[k]), MEAS_NA, na, th);
+        } else {
+            scope_prm_format(p, buf, sizeof(buf));
+            draw_one_badge(bx, by, scope_prm_label(sel[k]), buf, th->ch1, th);
+        }
+    }
+    const uint16_t x2 = 2u + (BADGE_W + 2u);
+    if (have2) {
+        scope_prm_format(&p2.v[SCOPE_PRM_VPP], buf, sizeof(buf));
+        draw_one_badge(x2, y2, "CH2pp", buf, th->ch2, th);
+    } else {
+        draw_one_badge(x2, y2, "CH2pp", MEAS_NA, na, th);
+    }
+}
 
 void draw_roll_screen(bool full)
 {
@@ -2872,11 +2931,11 @@ void draw_roll_screen(bool full)
                               (!ss->running && x >= (LCD_WIDTH - 40) / 2 &&
                                x < (LCD_WIDTH + 40) / 2);
         seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) : (uint16_t)SCOPE_TOP;
-        seg_bot[0] = SCOPE_BOT;
+        seg_bot[0] = BADGE_ROW2_Y;       /* the badge rows repaint themselves, as in Y-T */
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;
-            seg_bot[1] = SCOPE_BOT;
+            seg_bot[1] = BADGE_ROW2_Y;
             nseg = 2;
         }
         for (uint8_t sg = 0; sg < nseg; sg++) {
@@ -2907,6 +2966,7 @@ void draw_roll_screen(bool full)
     if (full)
         lcd_fill_rect(0, SCOPE_TOP, ROLL_LABEL_W, ROLL_LABEL_H, th->background);
     font_draw_string(4, SCOPE_TOP + 2, buf, th->highlight, th->background, &font_small);
+    draw_roll_badges(ss, th, nvis, full);
     if (!full)
         return;
     draw_run_stop(ss, th);

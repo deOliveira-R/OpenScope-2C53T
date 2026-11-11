@@ -17,6 +17,7 @@
 #include <string.h>
 #include <math.h>
 #include "scope_roll.h"
+#include "scope_roll_meas.h"
 #include "scope_cal.h"
 #include "scope_measure.h"
 
@@ -205,6 +206,187 @@ static void test_volts(void)
           scope_roll_point_volts(200, 90, 0.0f) == 0.0f);
 }
 
+
+/* ── FIFO order, roll trigger, measurements ─────────────────────────── */
+
+static void fill(scope_roll_fifo_t *f, unsigned n, uint8_t (*gen)(unsigned i))
+{
+    scope_roll_fifo_reset(f);
+    for (unsigned i = 0; i < n; i++)
+        scope_roll_fifo_push(f, gen(i), (uint8_t)(255u - gen(i)));
+}
+static uint8_t g_ramp(unsigned i) { return (uint8_t)(i & 0xFF); }
+
+static void test_linearize(void)
+{
+    static scope_roll_fifo_t f;
+    /* wrapped: 400 pushes into 301 slots, so head != 0 */
+    fill(&f, 400, g_ramp);
+    scope_roll_fifo_linearize(&f);
+    int ok = (f.count == 301);
+    for (unsigned i = 0; i < 301; i++) {
+        ok &= f.pt[0][i] == g_ramp(99 + i);            /* oldest = push #99 */
+        ok &= f.pt[1][i] == (uint8_t)(255u - g_ramp(99 + i));
+    }
+    CHECK("linearize (wrapped): oldest first, both channels", ok);
+    uint8_t v = 0;
+    CHECK("linearize keeps fifo_get valid (newest = push #399)",
+          scope_roll_fifo_get(&f, 0, 0, &v) && v == g_ramp(399) &&
+          scope_roll_fifo_get(&f, 0, 300, &v) && v == g_ramp(99));
+    fill(&f, 40, g_ramp);
+    scope_roll_fifo_linearize(&f);
+    ok = (f.count == 40);
+    for (unsigned i = 0; i < 40; i++) ok &= f.pt[0][i] == i;
+    CHECK("linearize (not full): unchanged order", ok);
+    CHECK("linearize (not full): fifo_get still returns the newest",
+          scope_roll_fifo_get(&f, 0, 0, &v) && v == 39);
+    fill(&f, 301, g_ramp);
+    scope_roll_fifo_linearize(&f);
+    ok = 1;
+    for (unsigned i = 0; i < 301; i++) ok &= f.pt[0][i] == g_ramp(i);
+    CHECK("linearize (exactly full, head 0): unchanged", ok);
+}
+
+/* Square-ish: low (60) with a single step to high (200) at push index `edge`. */
+static unsigned g_edge;
+static uint8_t g_step(unsigned i) { return i < g_edge ? 60 : 200; }
+static uint8_t g_fall(unsigned i) { return i < g_edge ? 200 : 60; }
+
+static void test_trig(void)
+{
+    static scope_roll_fifo_t f;
+    /* The pair (oldest-first) 149/150 is the crossing when the step lands at
+     * oldest-first index 150: push `edge` = 150 + 100 once 401 are pushed
+     * (oldest = 100). */
+    g_edge = 250;
+    fill(&f, 401, g_step);
+    CHECK("rising step at the centre: rising hits",
+          scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_RISING));
+    CHECK("... either edge hits", scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH));
+    CHECK("... falling does not", !scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_FALLING));
+    CHECK("... CH2 is the inverse: falling hits there",
+          scope_roll_trig_hit(&f, 1, 0, 128, SCOPE_ROLL_EDGE_FALLING) &&
+          !scope_roll_trig_hit(&f, 1, 0, 128, SCOPE_ROLL_EDGE_RISING));
+    CHECK("level above the high rail: no crossing", !scope_roll_trig_hit(&f, 0, 0, 220, SCOPE_ROLL_EDGE_RISING));
+    CHECK("level at the low rail (a <= level < b): hits", scope_roll_trig_hit(&f, 0, 0, 60, SCOPE_ROLL_EDGE_RISING));
+    CHECK("level at the high rail (b > level fails): no hit", !scope_roll_trig_hit(&f, 0, 0, 200, SCOPE_ROLL_EDGE_RISING));
+    /* one push later the step is at index 149: not the checked pair */
+    scope_roll_fifo_push(&f, 200, 60);
+    CHECK("one point later the crossing has moved off the pair", !scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH));
+    CHECK("... the column shift follows it (+/-1)",
+          scope_roll_trig_hit(&f, 0, -1, 128, SCOPE_ROLL_EDGE_RISING) &&
+          !scope_roll_trig_hit(&f, 0, +1, 128, SCOPE_ROLL_EDGE_RISING));
+    CHECK("shift outside the FIFO is refused",
+          !scope_roll_trig_hit(&f, 0, -200, 128, SCOPE_ROLL_EDGE_BOTH) &&
+          !scope_roll_trig_hit(&f, 0, 200, 128, SCOPE_ROLL_EDGE_BOTH));
+
+    g_edge = 250;
+    fill(&f, 401, g_fall);
+    CHECK("falling step: falling and either hit, rising does not",
+          scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_FALLING) &&
+          scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH) &&
+          !scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_RISING));
+    CHECK("falling level 61..200: hit", scope_roll_trig_hit(&f, 0, 0, 61, SCOPE_ROLL_EDGE_FALLING) &&
+                                        scope_roll_trig_hit(&f, 0, 0, 200, SCOPE_ROLL_EDGE_FALLING));
+    CHECK("falling level 60 (b < level fails): no hit", !scope_roll_trig_hit(&f, 0, 0, 60, SCOPE_ROLL_EDGE_FALLING));
+
+    /* armed only on a FULL FIFO */
+    g_edge = 150;
+    fill(&f, 300, g_step);
+    CHECK("300 points (not full): never armed", !scope_roll_trig_hit(&f, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH));
+    CHECK("NULL / bad channel refused",
+          !scope_roll_trig_hit(NULL, 0, 0, 128, 2) && !scope_roll_trig_hit(&f, 2, 0, 128, 2));
+
+    /* The step (hit -> decide -> FIFO), stock 0x0803EC2E..0x08040000. */
+    g_edge = 250;
+    fill(&f, 401, g_step);
+    CHECK("step AUTO: no action, FIFO untouched",
+          scope_roll_trig_step(&f, 0, 0, 0, 128, SCOPE_ROLL_EDGE_RISING) == SCOPE_ROLL_TRIG_NONE &&
+          f.count == SCOPE_ROLL_POINTS);
+    CHECK("step SINGLE: stop, the full FIFO is the frozen frame",
+          scope_roll_trig_step(&f, 2, 0, 0, 128, SCOPE_ROLL_EDGE_RISING) == SCOPE_ROLL_TRIG_STOP &&
+          f.count == SCOPE_ROLL_POINTS && f.total == 401);
+    CHECK("step NORMAL: hit empties the window (ms[0xDB6] = 0), total keeps counting",
+          scope_roll_trig_step(&f, 1, 0, 0, 128, SCOPE_ROLL_EDGE_RISING) == SCOPE_ROLL_TRIG_HIT &&
+          f.count == 0 && f.head == 0 && f.total == 401 && (f.seq & 1u) == 0);
+    {
+        /* Refill with a crossing at the checked pair every point (alternating
+         * 60/200 makes every neighbour pair a crossing): disarmed until full. */
+        bool early = false;
+        for (unsigned i = 0; i < 300u; i++) {
+            scope_roll_fifo_push(&f, (i & 1u) ? 200 : 60, 128);
+            if (scope_roll_trig_step(&f, 1, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH) != SCOPE_ROLL_TRIG_NONE)
+                early = true;
+        }
+        CHECK("NORMAL after a hit: no check for the next 300 points", !early && f.count == 300);
+        scope_roll_fifo_push(&f, 200, 128);
+        CHECK("... re-armed on the 301st (window full again)",
+              scope_roll_trig_step(&f, 1, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH) == SCOPE_ROLL_TRIG_HIT &&
+              f.count == 0);
+        scope_roll_fifo_push(&f, 7, 9);
+        uint8_t v = 0;
+        CHECK("... and the restarted window reads newest-first from slot 0",
+              f.count == 1 && scope_roll_fifo_get(&f, 0, 0, &v) && v == 7);
+    }
+    CHECK("step NULL refused", scope_roll_trig_step(NULL, 1, 0, 0, 128, 2) == SCOPE_ROLL_TRIG_NONE);
+
+    CHECK("mode AUTO never acts", scope_roll_trig_decide(0, true) == SCOPE_ROLL_TRIG_NONE);
+    CHECK("NORMAL hit: window restarts, rolling continues", scope_roll_trig_decide(1, true) == SCOPE_ROLL_TRIG_HIT);
+    CHECK("SINGLE hit stops", scope_roll_trig_decide(2, true) == SCOPE_ROLL_TRIG_STOP);
+    CHECK("no hit does nothing in any mode",
+          scope_roll_trig_decide(1, false) == SCOPE_ROLL_TRIG_NONE &&
+          scope_roll_trig_decide(2, false) == SCOPE_ROLL_TRIG_NONE);
+}
+
+/* 50 ms/div step 0 = 2 ms per point = 500 pts/s. A 25 Hz square: 20 points per
+ * period, 10 high / 10 low. */
+static uint8_t g_sq(unsigned i) { return (i % 20u) < 10u ? 150 : 90; }
+
+static void test_measure(void)
+{
+    static scope_roll_fifo_t f;
+    scope_params_t p;
+    scope_measure_t raw;
+    fill(&f, 450, g_sq);                    /* wrapped */
+    scope_roll_fifo_linearize(&f);
+    CHECK("measure ok on a linearised FIFO", scope_roll_measure(&f, 0, 250, 0, 0.0f, 100, &p, &raw));
+    CHECK("Freq = rate / period = 500/20 = 25 Hz",
+          p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_HZ && fabsf(p.v[SCOPE_PRM_FREQ].value - 25.0f) < 0.3f);
+    CHECK("Peri = 40 ms (seconds, from the point rate)",
+          p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_SECONDS && fabsf(p.v[SCOPE_PRM_PERI].value - 0.040f) < 0.001f);
+    CHECK("Duty+ ~ 50 %",
+          p.v[SCOPE_PRM_DUTY_POS].unit == SCOPE_PRM_UNIT_PERCENT && fabsf(p.v[SCOPE_PRM_DUTY_POS].value - 50.0f) < 6.0f);
+    CHECK("Wid+ = 10 points = 20 ms",
+          p.v[SCOPE_PRM_WID_POS].unit == SCOPE_PRM_UNIT_SECONDS && fabsf(p.v[SCOPE_PRM_WID_POS].value - 0.020f) < 0.0015f);
+    CHECK("uncalibrated: Vp-p in counts = 60", p.v[SCOPE_PRM_VPP].unit == SCOPE_PRM_UNIT_COUNTS &&
+          fabsf(p.v[SCOPE_PRM_VPP].value - 60.0f) < 1.0f);
+
+    /* the time base follows the step: step 3 = 20 ms/point, same samples -> 1/10 000 th... */
+    scope_roll_measure(&f, 0, 250, 3, 0.0f, 100, &p, NULL);
+    CHECK("step 3 (20 ms/point): 20 points = 400 ms, Freq 2.5 Hz",
+          fabsf(p.v[SCOPE_PRM_FREQ].value - 2.5f) < 0.03f);
+    CHECK("bad step refused, params zeroed",
+          !scope_roll_measure(&f, 0, 250, 9, 0.0f, 100, &p, NULL) && p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE);
+
+    /* per-channel zero and scale: the same code reads a different volts on
+     * channels whose zero (position) and gain differ, by the Y-T rule. */
+    const uint8_t z1 = scope_measure_zero_for(1, -29, -28);   /* 71 */
+    const uint8_t z2 = scope_measure_zero_for(1,   0, -28);   /* 100 */
+    CHECK("zero follows the position per channel (71 vs 100)", z1 == 71 && z2 == 100);
+    scope_roll_fifo_reset(&f);
+    for (unsigned i = 0; i < 100; i++) scope_roll_fifo_push(&f, 71, 71);
+    scope_roll_fifo_linearize(&f);
+    scope_params_t a, b;
+    scope_roll_measure(&f, 0, 100, 0, 0.0197f, z1, &a, NULL);
+    scope_roll_measure(&f, 1, 100, 0, 0.0197f, z2, &b, NULL);
+    CHECK("CH1 at its own zero reads 0 V (Avg)", a.v[SCOPE_PRM_AVG].unit == SCOPE_PRM_UNIT_VOLTS &&
+          fabsf(a.v[SCOPE_PRM_AVG].value) < 1e-6f);
+    CHECK("CH2 with ITS zero 100 reads -0.571 V at code 71 (the bench symptom)",
+          fabsf(b.v[SCOPE_PRM_AVG].value + 29.0f * 0.0197f) < 1e-4f);
+    CHECK("... and 0 V once CH2's zero is its real code",
+          (scope_roll_measure(&f, 1, 100, 0, 0.0197f, 71, &b, NULL), fabsf(b.v[SCOPE_PRM_AVG].value) < 1e-6f));
+}
+
 int main(void)
 {
     printf("scope_roll (parity C11)\n");
@@ -214,6 +396,9 @@ int main(void)
     test_disp_mode();
     test_geometry();
     test_volts();
+    test_linearize();
+    test_trig();
+    test_measure();
     printf("%d/%d passed\n", passed, run);
     return passed == run ? 0 : 1;
 }

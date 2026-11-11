@@ -3596,12 +3596,36 @@ static void cmd_fpga_roll(const char *args)
                      (unsigned long)st.rejects, (unsigned long)st.late);
     usb_debug_printf("last op03 rx: %02X %02X [CH1 %02X] %02X [CH2 %02X]\r\n",
                      st.rx[0], st.rx[1], st.rx[2], st.rx[3], st.rx[4]);
+    usb_debug_printf("trigger: mode %u (0 AUTO 1 NORM 2 SINGLE), roll hits %lu, run %u\r\n",
+                     (unsigned)ss->trigger.mode, (unsigned long)st.trig_hits,
+                     (unsigned)ss->running);
     uint8_t c1, c2;
     if (scope_roll_fifo_get(f, 0u, 0u, &c1) && scope_roll_fifo_get(f, 1u, 0u, &c2)) {
         char a[40], b[40];
         fmt_roll_point(a, sizeof(a), 1u, c1);
         fmt_roll_point(b, sizeof(b), 2u, c2);
         usb_debug_printf("newest: CH1 %s  CH2 %s\r\n", a, b);
+        /* Where each channel's 0 V is expected and what the offset DAC was
+         * last told: the zero in the lines above is the cal-page formula
+         * (100 + pos), so a channel whose DAC was never written (or written
+         * for another range) reads off by exactly the difference. */
+        for (uint8_t ch = 1u; ch <= 2u; ch++) {
+            const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+            const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position,
+                                                     (int)FPGA_ADC_OFFSET);
+            uint8_t bk = 0, rg = 0;
+            uint16_t dc = 0;
+            const bool w = scope_vpos_last(ch, &bk, &rg, &dc);
+            const uint8_t c = (ch == 1u) ? c1 : c2;
+            usb_debug_printf("CH%u: en %u pos %d range %u zero %u, newest %u = %+d cnt; "
+                             "dac %s",
+                             (unsigned)ch, (unsigned)cs->enabled, (int)cs->position,
+                             (unsigned)cs->vdiv_idx, (unsigned)z, (unsigned)c,
+                             (int)c - (int)z, w ? "" : "never written\r\n");
+            if (w)
+                usb_debug_printf("bank %u range %u code %u\r\n", (unsigned)bk,
+                                 (unsigned)rg, (unsigned)dc);
+        }
     }
 }
 
