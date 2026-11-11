@@ -122,6 +122,45 @@ bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *d
  * the same transform the Y-T read applies (fpga_warmtest_read_channel). */
 uint8_t scope_roll_record_code(uint8_t raw, int adc_offset);
 
+/* ── FIFO order and the roll trigger ────────────────────────────────── */
+
+/* Rotate both channels in place so the oldest point is at pt[ch][0] and the
+ * newest at pt[ch][count - 1] (head = count mod SCOPE_ROLL_POINTS), for the
+ * consumers that need a time-ordered array (the measurements). The FIFO
+ * stays valid for scope_roll_fifo_get(). Meant for a snapshot copy, never
+ * the live FIFO (the writer owns that). */
+void scope_roll_fifo_linearize(scope_roll_fifo_t *f);
+
+/* Stock's roll trigger (0x0803EC2E..0x0803ED18, after every op03 point).
+ * Armed only when the FIFO is FULL (ms[0xDB6] == 301) and the mode is not AUTO
+ * (ms[0x17] == 1). It looks at ONE pair of neighbours in the middle of the
+ * FIFO, oldest-first indices 149 and 150 (+ the trigger column ms[0x1A]), of
+ * the source channel ms[0x16] against the level, with stock's edge ms[0x18]:
+ * 0 rising (a <= level < b), 1 falling (a >= level > b), 2 either. A hit
+ * leaves the crossing at the centre of the 301 points, 150 of them after it. */
+#define SCOPE_ROLL_TRIG_IDX     149u
+enum { SCOPE_ROLL_EDGE_RISING = 0, SCOPE_ROLL_EDGE_FALLING = 1, SCOPE_ROLL_EDGE_BOTH = 2 };
+
+/* True when the pair at SCOPE_ROLL_TRIG_IDX + col_shift of channel `ch` (0/1)
+ * crosses `level` (record code) in `edge`. False while the FIFO is not full
+ * or the pair falls outside the FIFO. */
+bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,
+                         uint8_t level, uint8_t edge);
+
+/* What a hit does, by the mode (the numbering of trig_policy.h: 0 AUTO,
+ * 1 NORMAL, 2 SINGLE). AUTO never checks. NORMAL keeps rolling (stock only
+ * re-arms its point counter ms[0xDB4] = 301 at 0x0803FFFC; what that counter
+ * gates on the display is not decoded, so no visible effect is claimed).
+ * SINGLE stops: RUN = 0, TMR3 off (0x0803ECAC..0x0803ECC4), and the full FIFO
+ * is the frozen frame, trigger in the middle. */
+typedef enum {
+    SCOPE_ROLL_TRIG_NONE = 0,   /* no hit, or AUTO */
+    SCOPE_ROLL_TRIG_HIT,        /* hit in NORMAL: counted, rolling continues */
+    SCOPE_ROLL_TRIG_STOP        /* hit in SINGLE: stop and hold */
+} scope_roll_trig_act_t;
+
+scope_roll_trig_act_t scope_roll_trig_decide(uint8_t mode, bool hit);
+
 /* ── Timebase stepping ──────────────────────────────────────────────── */
 
 /* One timebase key press. `dir` > 0 is slower. In Y-T the index steps as

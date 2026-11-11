@@ -90,6 +90,7 @@ C_SOURCES += src/ui/theme.c
 C_SOURCES += src/ui/xy_mode.c
 C_SOURCES += src/ui/roll_mode.c
 C_SOURCES += src/ui/scope_roll.c
+C_SOURCES += src/ui/scope_roll_meas.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
@@ -814,13 +815,20 @@ test-key-model: $(BUILD_DIR)/test_key_model
 # Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point
 # FIFO, the timebase ladder into roll and back, the 25-points-per-division
 # geometry, and the amplitude correction at /150 with no m >= 221 gate.
+# Also: the roll trigger (stock 0x0803EC2E..0x0803ED18, pair 149/150 of a full
+# FIFO, mode and edge rules), the time-ordered FIFO, and the 12 measurements
+# on the roll point rate (scope_roll_meas.c).
 $(BUILD_DIR)/test_scope_roll: tests/test_scope_roll.c src/ui/scope_roll.c src/ui/scope_roll.h \
+                              src/ui/scope_roll_meas.c src/ui/scope_roll_meas.h \
+                              src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/scope_timebase.c \
                               src/ui/scope_cal.c src/ui/scope_cal.h src/ui/scope_measure.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
-		src/ui/scope_roll.c src/ui/scope_cal.c -lm -o $@
+		src/ui/scope_roll.c src/ui/scope_roll_meas.c src/ui/scope_measure.c \
+		src/ui/scope_cursor.c src/ui/scope_timebase.c src/ui/scope_cal.c -lm -o $@
 
 .PHONY: test-scope-roll
 test-scope-roll: $(BUILD_DIR)/test_scope_roll
+	$<
 
 # Autoset, baseline correction and 50 % centre (parity C9/C10): the pure
 # engines, on simulated channels (servo convergence, the refusals, autoset

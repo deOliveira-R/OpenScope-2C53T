@@ -1257,6 +1257,7 @@ typedef struct {
     uint32_t late;         /* ticks resynchronised after falling a period behind */
     uint8_t  code;         /* reg-0x01 byte written by the last fpga_apply_roll() */
     uint8_t  step;         /* roll step in force */
+    uint32_t trig_hits;    /* roll-trigger crossings found (NORMAL/SINGLE) */
     uint8_t  rx[5];        /* last op03 frame as received: [op, b1, CH1, b3, CH2] */
 } fpga_roll_stats_t;
 void    fpga_roll_stats_get(fpga_roll_stats_t *out);
