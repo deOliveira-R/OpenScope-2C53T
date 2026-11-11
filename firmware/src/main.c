@@ -354,7 +354,8 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
 
     h = redraw_epoch_mix(h, (uint32_t)math_enabled
                             | ((uint32_t)math_op         << 1)
-                            | ((uint32_t)persist_enabled << 8));
+                            | ((uint32_t)persist_enabled << 8)
+                            | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
 
 #ifdef FEATURE_FFT
@@ -411,8 +412,12 @@ static bool scope_incremental_available(const scope_state_t *s)
      * the popup pinned the renderer to the full clear-then-redraw for its
      * entire life. draw_scope_live_frame() now steps around the popup box.
      * Cursors still force the full path — only it draws them. */
+    /* Math and persistence (C12) are layers of the full path only: the
+     * compositor streams the trace band and knows neither. They trade the
+     * flicker-free update for the feature, on request. */
     return scope_acquisition_ready()
-           && s->cursor.mode == CURSOR_OFF;
+           && s->cursor.mode == CURSOR_OFF
+           && !math_enabled && !persist_enabled;
 #endif
 }
 

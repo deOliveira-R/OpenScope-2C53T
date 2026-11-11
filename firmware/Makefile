@@ -701,6 +701,21 @@ $(BUILD_DIR)/test_trig_edge: tests/test_trig_edge.c src/dsp/trig_edge.c src/dsp/
 test-trig-edge: $(BUILD_DIR)/test_trig_edge
 	$<
 
+# Math channel (parity C12): the eight ops on records with volts/counts units,
+# division by ~0, clipping, the 1-2-5 scale; and the persistence buffer, whose
+# fade is timed in milliseconds and which is fed from live trace rows.
+$(BUILD_DIR)/test_math_channel: tests/test_math_channel.c src/dsp/math_channel.c src/dsp/math_channel.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/math_channel.c -lm -o $@
+
+test-math-channel: $(BUILD_DIR)/test_math_channel
+	$<
+
+$(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src/ui/persistence.h src/dsp/shared_mem.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui -Isrc/dsp $< src/ui/persistence.c src/dsp/shared_mem.c -lm -o $@
+
+test-persistence: $(BUILD_DIR)/test_persistence
+	$<
+
 $(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave.c -lm -o $@
@@ -733,7 +748,7 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 test-siggen: $(BUILD_DIR)/test_siggen
 	$<
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
+.PHONY: test-math-channel test-persistence all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page

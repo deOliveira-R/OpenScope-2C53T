@@ -14,6 +14,7 @@
 #include "watchdog.h"
 #include "scope_state.h"
 #include "math_channel.h"
+#include "persistence.h"
 #include "component_test.h"
 #include "shared_mem.h"
 #include <stdio.h>
@@ -110,7 +111,7 @@ static void draw_settings_math(void)
             }
         }
         if (i == 1) {
-            val = persist_enabled ? "On" : "Off";
+            val = persist_enabled ? persist_mode_name(persist_get_mode()) : "Off";
         }
 
         draw_menu_item(i, 0, settings_sub_selected, math_sub_labels[i], val, th);
