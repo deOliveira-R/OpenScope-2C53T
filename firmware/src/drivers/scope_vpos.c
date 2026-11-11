@@ -23,6 +23,7 @@
 
 #include "cal_backup_core.h"   /* CAL_BACKUP_SRC_ADDR: the one name for 0x08006000 */
 #include "scope_cal.h"
+#include "scope_selfcal.h"   /* sc_corr_pair */
 #include "scope_state.h"
 #include "scope_trigger.h"
 #include "dac_output.h"
@@ -50,6 +51,16 @@ static struct {
     uint8_t  last_bank[CALPAGE_CHANNELS];
     uint8_t  last_range[CALPAGE_CHANNELS];
     uint16_t last_code[CALPAGE_CHANNELS];
+    /* Baseline correction (C10): deltas on the page pair, RAM only, per
+     * (ch, bank in force, range); bit bank*10+range of corr_valid says which
+     * hold one. 248 B. Never written to flash here (persistence is a later,
+     * owner decision); lost at power-off like stock's until its writer runs. */
+    int16_t  corr[CALPAGE_CHANNELS][CALPAGE_BANKS][CALPAGE_RANGES][2];
+    uint32_t corr_valid[CALPAGE_CHANNELS];
+    /* While the servo runs it owns the reference: every re-apply path
+     * (range, timebase, mask, dry-spell recovery) writes its code. */
+    bool     ovr[CALPAGE_CHANNELS];
+    uint16_t ovr_code[CALPAGE_CHANNELS];
 } vp = { .status = CALPAGE_ST_NONE, .enabled = true };
 
 static const uint8_t *page_bytes(void)
@@ -133,11 +144,26 @@ void scope_vpos_apply_ch(uint8_t ch, uint8_t range)
      * `fpga scope vdiv` from the shell during siggen). Re-applied on scope
      * entry instead (fpga_enter_scope_mode). */
     if (ch == 1u && dac_output_is_running()) return;
+    const unsigned i0 = ch - 1u;
     const int pos = calpage_clamp_pos(chan(ch)->position);
     uint16_t code;
-    if (!calpage_dac_code_page(page_bytes(), (const int8_t (*)[CALPAGE_BANKS][CALPAGE_RANGES])vp.src_bank,
-                               (uint8_t)(ch - 1u), bank, range, pos, &code))
-        return;   /* no clean bank for this range: leave the reference alone */
+    if (vp.ovr[i0]) {
+        code = vp.ovr_code[i0];
+    } else {
+        uint16_t base, upper;
+        if (!calpage_pair_page(page_bytes(), (const int8_t (*)[CALPAGE_BANKS][CALPAGE_RANGES])vp.src_bank,
+                               (uint8_t)i0, bank, range, &base, &upper))
+            return;   /* no clean bank for this range: leave the reference alone */
+        uint16_t cb, cu;
+        if (range < CALPAGE_RANGES && bank < CALPAGE_BANKS &&
+            (vp.corr_valid[i0] >> (bank * CALPAGE_RANGES + range)) & 1u &&
+            sc_corr_pair(base, upper, vp.corr[i0][bank][range][0], vp.corr[i0][bank][range][1],
+                         &cb, &cu)) {
+            base = cb;
+            upper = cu;
+        }
+        code = calpage_dac_from_pair(base, upper, pos);
+    }
     if (ch == 1u) scope_trigger_dac_raw(code);    /* DAC1 D1DTH12R, PA4 */
     else          scope_trigger_ch2_raw(code);    /* TMR13 C1DT, PA6    */
     const unsigned i = ch - 1u;
@@ -200,4 +226,59 @@ void scope_vpos_recover(void)
 {
     if (scope_vpos_active()) scope_vpos_apply();
     else                     scope_trigger_dac_raw(VPOS_LEGACY_DAC1);
+}
+
+bool scope_vpos_page_pair(uint8_t ch, uint8_t bank, uint8_t range,
+                          uint16_t *base, uint16_t *upper)
+{
+    if ((ch != 1u && ch != 2u) || !scope_vpos_active()) return false;
+    return calpage_pair_page(page_bytes(), (const int8_t (*)[CALPAGE_BANKS][CALPAGE_RANGES])vp.src_bank,
+                             (uint8_t)(ch - 1u), bank, range, base, upper);
+}
+
+bool scope_vpos_corr_set(uint8_t ch, uint8_t bank, uint8_t range, int16_t d_base, int16_t d_upper)
+{
+    if ((ch != 1u && ch != 2u) || bank >= CALPAGE_BANKS || range >= CALPAGE_RANGES) return false;
+    uint16_t b, u, cb, cu;
+    if (!scope_vpos_page_pair(ch, bank, range, &b, &u) ||
+        !sc_corr_pair(b, u, d_base, d_upper, &cb, &cu))
+        return false;
+    const unsigned i = ch - 1u;
+    vp.corr[i][bank][range][0] = d_base;
+    vp.corr[i][bank][range][1] = d_upper;
+    vp.corr_valid[i] |= 1u << (bank * CALPAGE_RANGES + range);
+    return true;
+}
+
+bool scope_vpos_corr_get(uint8_t ch, uint8_t bank, uint8_t range, int16_t *d_base, int16_t *d_upper)
+{
+    if ((ch != 1u && ch != 2u) || bank >= CALPAGE_BANKS || range >= CALPAGE_RANGES) return false;
+    const unsigned i = ch - 1u;
+    if (!((vp.corr_valid[i] >> (bank * CALPAGE_RANGES + range)) & 1u)) return false;
+    if (d_base)  *d_base  = vp.corr[i][bank][range][0];
+    if (d_upper) *d_upper = vp.corr[i][bank][range][1];
+    return true;
+}
+
+void scope_vpos_corr_clear(void)
+{
+    vp.corr_valid[0] = vp.corr_valid[1] = 0u;
+    scope_vpos_apply();
+}
+
+unsigned scope_vpos_corr_count(void)
+{
+    unsigned n = 0;
+    for (unsigned i = 0; i < CALPAGE_CHANNELS; i++)
+        for (uint32_t v = vp.corr_valid[i]; v; v &= v - 1u) n++;
+    return n;
+}
+
+void scope_vpos_override(uint8_t ch, bool on, uint16_t code)
+{
+    if (ch != 1u && ch != 2u) return;
+    const unsigned i = ch - 1u;
+    vp.ovr[i] = on;
+    vp.ovr_code[i] = (code > 4095u) ? 4095u : code;
+    scope_vpos_apply_ch(ch, chan(ch)->vdiv_idx);
 }

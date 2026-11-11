@@ -147,6 +147,10 @@ typedef enum {
 /* Capture sample rate in samples/second, or 0.0f when unknown. */
 float scope_timebase_sample_rate(uint8_t code);
 
+/* The whole table (SCOPE_TIMEBASE_CODE_COUNT entries, 0.0f = no rate), for a
+ * caller that searches it (autoset, scope_selfcal.h). */
+const float *scope_timebase_rate_table(void);
+
 /* How much to trust it. */
 scope_tb_tier_t scope_timebase_get_tier(uint8_t code);
 

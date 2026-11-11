@@ -88,6 +88,16 @@ static const float stock_nominal_mv[SCOPE_CAL_RANGE_COUNT] = {
     0.4f, 0.8f, 2.0f, 4.0f, 8.0f, 20.0f, 40.0f, 80.0f, 200.0f, 400.0f,
 };
 
+const float *scope_cal_nominal_table(void)
+{
+    return stock_nominal_mv;
+}
+
+float scope_cal_nominal_mv(uint8_t range_idx)
+{
+    return (range_idx < SCOPE_CAL_RANGE_COUNT) ? stock_nominal_mv[range_idx] : 0.0f;
+}
+
 /* Per-channel g from the unit's page; 0 = not in use (see scope_cal.h). */
 static float stock_gain[2];
 

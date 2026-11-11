@@ -132,16 +132,19 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     case BTN_CH2:
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_CH_ENABLE_TOGGLE, 1) : cmd(KA_NONE, 0);
 
-    /* Long confirm is Run/Stop (manual 2.1); in the generator it flips the
-     * output enable, stock's 0x0800D9E2 [H]. */
+    /* Long confirm is Run/Stop in the generator (manual 2.1; stock 0x0800D9E2
+     * [H]); in the scope's time view it is stock's 50 % centre (code 0x17 ->
+     * handler 22, 0x0800D954/0x0800DA3A, ms[0xF68] == 2). */
     case BTN_OK:
         if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_RUNSTOP, 0);
-        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
+        return c->scope_time_view ? cmd(KA_CENTER50, 0) : cmd(KA_NONE, 0);
 
-    /* Ours, stock has no long AUTO in the generator: the boot policy. */
+    /* Long AUTO: stock's baseline correction in the scope's time view (code
+     * 0x10 -> handler 15, 0x0800DF58); in the generator (where stock has no
+     * long AUTO) ours: the output-at-boot policy. */
     case BTN_AUTO:
         if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_BOOT_TOGGLE, 0);
-        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
+        return c->scope_time_view ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
 
     case BTN_SAVE:
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);

@@ -80,4 +80,24 @@ bool scope_vpos_ch1_raw(uint16_t code);
  * the legacy DAC1 mid-scale arm when inactive. */
 void scope_vpos_recover(void);
 
+/* ── Baseline correction (parity C10, src/drivers/scope_selfcal_run.c) ──
+ * RAM-only deltas on the page's endpoint pair per (ch 1/2, bank, range),
+ * applied by every write above. Nothing here touches flash. */
+
+/* The page pair (after substitution, before any correction) the offset path
+ * uses for (ch, bank, range). False when inactive or no bank is clean. */
+bool scope_vpos_page_pair(uint8_t ch, uint8_t bank, uint8_t range,
+                          uint16_t *base, uint16_t *upper);
+/* Store a correction; refused (false) when it would leave 0..4095. The
+ * caller re-applies (scope_vpos_apply) when it is done storing. */
+bool scope_vpos_corr_set(uint8_t ch, uint8_t bank, uint8_t range, int16_t d_base, int16_t d_upper);
+bool scope_vpos_corr_get(uint8_t ch, uint8_t bank, uint8_t range, int16_t *d_base, int16_t *d_upper);
+void scope_vpos_corr_clear(void);   /* and re-apply */
+unsigned scope_vpos_corr_count(void);
+
+/* The servo's hold on a channel's reference: while on, every apply writes
+ * `code` (still never DAC1 while the generator owns it). Off re-applies the
+ * page code. */
+void scope_vpos_override(uint8_t ch, bool on, uint16_t code);
+
 #endif /* SCOPE_VPOS_H */

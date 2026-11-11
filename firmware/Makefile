@@ -51,6 +51,7 @@ C_SOURCES += src/ui/scope_timebase.c
 C_SOURCES += src/ui/scope_cursor.c
 C_SOURCES += src/ui/scope_freq.c
 C_SOURCES += src/ui/key_model.c
+C_SOURCES += src/ui/scope_selfcal.c
 C_SOURCES += src/tasks/input_handler.c
 C_SOURCES += src/drivers/flash_fs.c
 C_SOURCES += src/drivers/flash_regions.c
@@ -67,6 +68,7 @@ C_SOURCES += src/drivers/fpga_scanner.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/drivers/scope_vpos.c
+C_SOURCES += src/drivers/scope_selfcal_run.c
 C_SOURCES += src/dsp/trig_edge.c
 C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/dsp/interleave_cal.c
@@ -807,6 +809,19 @@ $(BUILD_DIR)/test_scope_roll: tests/test_scope_roll.c src/ui/scope_roll.c src/ui
 
 .PHONY: test-scope-roll
 test-scope-roll: $(BUILD_DIR)/test_scope_roll
+
+# Autoset, baseline correction and 50 % centre (parity C9/C10): the pure
+# engines, on simulated channels (servo convergence, the refusals, autoset
+# decisions on synthetic records), against the real nominal ladder and rate
+# table. See tests/test_scope_selfcal.c.
+$(BUILD_DIR)/test_scope_selfcal: tests/test_scope_selfcal.c src/ui/scope_selfcal.c src/ui/scope_selfcal.h \
+                                 src/ui/scope_cal.c src/ui/scope_cal.h \
+                                 src/ui/scope_timebase.c src/ui/scope_timebase.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
+		src/ui/scope_selfcal.c src/ui/scope_cal.c src/ui/scope_timebase.c -lm -o $@
+
+.PHONY: test-scope-selfcal
+test-scope-selfcal: $(BUILD_DIR)/test_scope_selfcal
 	$<
 
 

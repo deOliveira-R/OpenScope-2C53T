@@ -41,6 +41,7 @@
 #include "signal_gen.h"
 #include "dac_output.h"
 #include "scope_vpos.h"
+#include "scope_selfcal_run.h"
 #include "../util/calpage.h"
 #include "fpga.h"
 #include "lcd.h"
@@ -4164,6 +4165,112 @@ static void cmd_cal_pos(const char *args)
     if (!scope_vpos_active())
         usb_send_str("(cal page not in use: position stored, offset reference unchanged)\r\n");
     print_vpos_channel((uint8_t)ch);
+}
+
+/* ---- autoset / baseline correction / 50 % centre (parity C9/C10) --------
+ * The shell only queues a run; the key task's service does it, exactly as
+ * for the AUTO / long AUTO / long OK keys (scope_selfcal_run.h). Poll with
+ * `fpga scope selfcal`. Nothing here writes flash. */
+static const char *selfcal_kind_str(scr_kind_t k)
+{
+    return k == SCR_AUTOSET ? "autoset" : k == SCR_BASECAL ? "baseline" : "idle";
+}
+
+static void cmd_fpga_scope_autoset(void)
+{
+    if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
+    usb_send_str(scope_selfcal_request_autoset()
+                 ? "autoset queued (poll: fpga scope selfcal)\r\n" : "busy\r\n");
+}
+
+static void cmd_fpga_scope_basecal(const char *args)
+{
+    while (*args == ' ') args++;
+    uint32_t banks = 3u;
+    if (*args && (parse_hex32(args, &banks) != 0 || banks == 0u || banks > 7u)) {
+        usb_send_str("usage: fpga scope basecal [banks 1-7, bit b = bank b; default 3]\r\n");
+        return;
+    }
+    if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
+    if (!scope_vpos_active()) { usb_send_str("refused: calibration page not in use (cal page)\r\n"); return; }
+    if (!scope_selfcal_request_basecal((uint8_t)banks)) { usb_send_str("busy\r\n"); return; }
+    usb_debug_printf("baseline correction queued, banks 0x%lX; input must be open/grounded "
+                     "(poll: fpga scope selfcal; cancel: fpga scope selfcal cancel)\r\n",
+                     (unsigned long)banks);
+}
+
+static void cmd_fpga_scope_center50(void)
+{
+    if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
+    if (!scope_selfcal_request_center50()) { usb_send_str("busy\r\n"); return; }
+    vTaskDelay(pdMS_TO_TICKS(250));   /* the key task acts within 100 ms */
+    const scope_state_t *ss = scope_state_get();
+    usb_debug_printf("50%% centre: pos CH1 %d CH2 %d, trig_x %d, level %d (code %u)\r\n",
+                     (int)ss->ch1.position, (int)ss->ch2.position, (int)ss->trig_x,
+                     (int)ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
+}
+
+static void cmd_fpga_scope_selfcal(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "cancel", 6) == 0) {
+        scope_selfcal_request_cancel();
+        vTaskDelay(pdMS_TO_TICKS(250));
+    } else if (*args) {
+        usb_send_str("usage: fpga scope selfcal [cancel]\r\n");
+        return;
+    }
+    scope_selfcal_status_t st;
+    scope_selfcal_get_status(&st);
+    const scope_state_t *ss = scope_state_get();
+    usb_debug_printf("selfcal: %s", selfcal_kind_str(st.kind));
+    if (st.kind == SCR_BASECAL)
+        usb_debug_printf(" %s b%u r%u", st.prechecking ? "pre-check" : "walk",
+                         (unsigned)st.bank, (unsigned)st.range);
+    usb_debug_printf("  last: %s %s  records %lu  timeouts %lu  torn %lu\r\n",
+                     selfcal_kind_str(st.last_kind), st.last_result,
+                     (unsigned long)st.records, (unsigned long)st.timeouts,
+                     (unsigned long)st.torn);
+    if (st.kind == SCR_BASECAL || st.last_kind == SCR_BASECAL)
+        usb_debug_printf("baseline: %u ok %u fail (last fail: CH%u b%u r%u %s)\r\n",
+                         (unsigned)st.n_ok, (unsigned)st.n_fail, (unsigned)st.last_fail_ch + 1u,
+                         (unsigned)st.last_fail_bank, (unsigned)st.last_fail_range,
+                         st.last_fail ? st.last_fail : "-");
+    usb_debug_printf("corrections in RAM: %u   now: CH1 r%u pos %d  CH2 r%u pos %d  tb 0x%02X  "
+                     "trig %s src CH%u level %d\r\n",
+                     (unsigned)st.corr_count, (unsigned)ss->ch1.vdiv_idx, (int)ss->ch1.position,
+                     (unsigned)ss->ch2.vdiv_idx, (int)ss->ch2.position, (unsigned)ss->timebase_idx,
+                     trigger_mode_labels[ss->trigger.mode],
+                     ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u, (int)ss->trigger.level);
+}
+
+/* `cal base [clear]`: the baseline correction's RAM deltas on the page pair. */
+static void cmd_cal_base(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strcmp(args, "clear") == 0) {
+        if (scope_selfcal_busy()) { usb_send_str("busy\r\n"); return; }
+        scope_vpos_corr_clear();
+        usb_send_str("corrections cleared (page values in force)\r\n");
+        return;
+    }
+    if (*args) { usb_send_str("usage: cal base [clear]\r\n"); return; }
+    usb_debug_printf("baseline corrections (RAM only, not persisted): %u\r\n",
+                     scope_vpos_corr_count());
+    for (uint8_t ch = 1; ch <= 2u; ch++)
+        for (uint8_t b = 0; b < CALPAGE_BANKS; b++)
+            for (uint8_t r = 0; r < CALPAGE_RANGES; r++) {
+                int16_t db, du;
+                uint16_t pb, pu;
+                if (!scope_vpos_corr_get(ch, b, r, &db, &du)) continue;
+                const bool pair = scope_vpos_page_pair(ch, b, r, &pb, &pu);
+                usb_debug_printf("  CH%u b%u r%u: base %+d upper %+d", (unsigned)ch, (unsigned)b,
+                                 (unsigned)r, (int)db, (int)du);
+                if (pair)
+                    usb_debug_printf("  -> %u/%u (page %u/%u)", (unsigned)(pb + db),
+                                     (unsigned)(pu + du), (unsigned)pb, (unsigned)pu);
+                usb_send_str("\r\n");
+            }
 }
 
 static void cmd_fpga_diag_clear(void)
@@ -8797,6 +8904,16 @@ static const shell_cmd_t shell_cmds[] = {
           "cal page calc <1|2> <b> <r> <p> One offset code from the page: stock's vs ours\r\n"),
     CMD_A("cal pos", cmd_cal_pos, SC_NEEDARGS,
           "cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n"),
+    CMD_A("cal base", cmd_cal_base, 0,
+          "cal base [clear]                Baseline-correction deltas held in RAM (long AUTO)\r\n"),
+    CMD_V("fpga scope autoset", cmd_fpga_scope_autoset, SC_EXACT,
+          "fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n"),
+    CMD_A("fpga scope basecal", cmd_fpga_scope_basecal, 0,
+          "fpga scope basecal [banks]      Baseline correction, as long AUTO; input open (default banks 3)\r\n"),
+    CMD_V("fpga scope center50", cmd_fpga_scope_center50, SC_EXACT,
+          "fpga scope center50             50% centre, as long OK (positions, trigger column/level)\r\n"),
+    CMD_A("fpga scope selfcal", cmd_fpga_scope_selfcal, 0,
+          "fpga scope selfcal [cancel]     Autoset/baseline progress and result\r\n"),
     CMD_A("screen dump", cmd_screen_dump, 0,
           "screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n"),
     CMD_A("screen dumpbin", cmd_screen_dumpbin, 0,

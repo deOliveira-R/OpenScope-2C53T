@@ -151,9 +151,14 @@ static void test_long_map(void)
           is(key_map(&sc, BTN_CH2, true), KA_CH_ENABLE_TOGGLE, 1));
     CHECK("long CH1 outside the scope does nothing", is(key_map(&me, BTN_CH1, true), KA_NONE, 0));
 
-    CHECK("long AUTO/OK/SAVE in the scope are claimed (hook, not a short action)",
-          key_map(&sc, BTN_AUTO, true).act == KA_LONG_UNUSED &&
-          key_map(&sc, BTN_OK, true).act == KA_LONG_UNUSED &&
+    CHECK("long AUTO in the scope time view = baseline correction (stock 0x0800DF58)",
+          is(key_map(&sc, BTN_AUTO, true), KA_BASECAL, 0));
+    CHECK("long OK in the scope time view = 50 % centre (stock 0x0800DA3A)",
+          is(key_map(&sc, BTN_OK, true), KA_CENTER50, 0));
+    CHECK("long AUTO/OK in an FFT view or the meter do nothing",
+          is(key_map(&fv, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&fv, BTN_OK, true), KA_NONE, 0) &&
+          is(key_map(&me, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&me, BTN_OK, true), KA_NONE, 0));
+    CHECK("long SAVE in the scope is claimed (hook, not a short action)",
           key_map(&sc, BTN_SAVE, true).act == KA_LONG_UNUSED);
     CHECK("long UP is not a thing", is(key_map(&sc, BTN_UP, true), KA_NONE, 0));
 
@@ -167,9 +172,9 @@ static void test_long_map(void)
               is(key_map(&sg, BTN_AUTO, true), KA_SIGGEN_BOOT_TOGGLE, 0));
         CHECK("long SAVE in the generator stays unclaimed",
               is(key_map(&sg, BTN_SAVE, true), KA_NONE, 0));
-        CHECK("long OK in the meter does nothing; in the scope it keeps its hook",
+        CHECK("long OK in the meter does nothing; in the scope it is the 50 % centre",
               is(key_map(&me, BTN_OK, true), KA_NONE, 0) &&
-              key_map(&sc, BTN_OK, true).act == KA_LONG_UNUSED);
+              key_map(&sc, BTN_OK, true).act == KA_CENTER50);
     }
 }
 
