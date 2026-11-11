@@ -191,7 +191,7 @@ C_SOURCES += $(AT32_CDC)/cdc_desc.c
 # the screenshot gallery (src/util/gallery_vfat.c). The CDC half stays the
 # library's cdc_class.c above. USB_MSC=0 builds the CDC-only device of before,
 # e.g. to rule the composite descriptor out on a host that misbehaves.
-USB_MSC ?= 1
+USB_MSC ?= 0   # default OFF: on unit #2 macOS rejected the composite configuration (device !registered, no interfaces) and the CDC shell vanished; enable with USB_MSC=1 only to test the fix
 ifeq ($(USB_MSC),1)
 C_SOURCES += src/drivers/usb_composite.c
 C_SOURCES += src/drivers/usb_msc.c
