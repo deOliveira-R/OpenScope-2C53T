@@ -293,6 +293,15 @@ static void test_labels(void)
     scope_timebase_label(0x0A, buf, sizeof(buf));
     CHECK(strcmp(buf, "26us") == 0, "0x0A label should be 26us, got \"%s\"", buf);
 
+    /* Interleaved record: same 32 samples/div at twice the rate -> half the
+     * time. 124.83 MS/s x2 -> 128 ns/div at 0x00; factor 0 behaves as 1. */
+    scope_timebase_label_scaled(0x00, 2u, buf, sizeof(buf));
+    CHECK(strcmp(buf, "128ns") == 0, "0x00 interleaved label should be 128ns, got \"%s\"", buf);
+    scope_timebase_label_scaled(0x00, 0u, buf, sizeof(buf));
+    CHECK(strcmp(buf, "256ns") == 0, "factor 0 must act as 1, got \"%s\"", buf);
+    scope_timebase_label_scaled(0x05, 2u, buf, sizeof(buf));
+    CHECK(strcmp(buf, "--") == 0, "no rate stays \"--\" when scaled, got \"%s\"", buf);
+
     /* Truncation must be safe. */
     char small[3];
     scope_timebase_label(0x10, small, sizeof(small));
