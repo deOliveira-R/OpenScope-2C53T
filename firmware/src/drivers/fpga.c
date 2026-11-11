@@ -3847,6 +3847,7 @@ bool fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *ou
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     acq_ilcal.on = false;
+    __asm volatile ("" ::: "memory");   /* read the sums only after the feed is off */
     if (acq_ilcal.n < records) return false;
     const float n = (float)acq_ilcal.n;
     out->a_mean = acq_ilcal.sum_a / n;
@@ -3876,8 +3877,11 @@ static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b,
         if (y < bmn) bmn = y;
         if (y > bmx) bmx = y;
     }
-    /* A dead bus reads 0xFF everywhere (record 255 after the offset): not data. */
-    if (amn == 255 && bmn == 255) return;
+    /* Rails in record units: fpga_warmtest_read_channel stores raw + FPGA_ADC_OFFSET
+     * (-28) clamped, so raw 255 (the converter's top, and a dead bus's 0xFF)
+     * reads 227 and anything at raw <= 28 reads 0. A window that touches either
+     * is not a level: the point is marked clipped and the fit drops it. */
+    const uint8_t rail_hi = (uint8_t)(255 + (int)FPGA_ADC_OFFSET);
     const float ma = (float)sa / 512.0f, mb = (float)sb / 512.0f;
     acq_ilcal.sum_a += ma; acq_ilcal.sum_b += mb;
     if (ma < acq_ilcal.amin) acq_ilcal.amin = ma;
@@ -3886,7 +3890,8 @@ static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b,
     if (mb > acq_ilcal.bmax) acq_ilcal.bmax = mb;
     if ((uint8_t)(amx - amn) > acq_ilcal.p2p_a) acq_ilcal.p2p_a = (uint8_t)(amx - amn);
     if ((uint8_t)(bmx - bmn) > acq_ilcal.p2p_b) acq_ilcal.p2p_b = (uint8_t)(bmx - bmn);
-    if (amn == 0 || amx == 255 || bmn == 0 || bmx == 255) acq_ilcal.clipped = true;
+    if (amn == 0 || amx >= rail_hi || bmn == 0 || bmx >= rail_hi) acq_ilcal.clipped = true;
+    __asm volatile ("" ::: "memory");   /* sums land before the count the shell polls */
     acq_ilcal.n++;
 }
 

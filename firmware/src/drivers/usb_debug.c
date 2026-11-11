@@ -2833,7 +2833,9 @@ static void cmd_fpga_scope_probe(const char *args)
  * back to the position-controlled code whatever happens. Integer printing: the
  * shell's printf has no floats. */
 static long x100(float v) { return (long)(v * 100.0f + (v < 0.0f ? -0.5f : 0.5f)); }
-#define F2(v)  (long)(x100(v) / 100), (long)((x100(v) < 0 ? -x100(v) : x100(v)) % 100)
+/* "%s%ld.%02ld": sign apart, or -0.6 would print as 0.60. */
+#define F2(v)  (x100(v) < 0 ? "-" : ""), (long)((x100(v) < 0 ? -x100(v) : x100(v)) / 100), \
+               (long)((x100(v) < 0 ? -x100(v) : x100(v)) % 100)
 
 static void cmd_fpga_interleave_cal(void)
 {
@@ -2861,13 +2863,22 @@ static void cmd_fpga_interleave_cal(void)
             break;
         }
         got++;
-        usb_debug_printf("  DAC %4u  A %ld.%02ld  B %ld.%02ld  p2p %u/%u  drift %ld.%02ld/%ld.%02ld%s\r\n",
+        usb_debug_printf("  DAC %4u  A %s%ld.%02ld  B %s%ld.%02ld  p2p %u/%u  drift %s%ld.%02ld/%s%ld.%02ld%s\r\n",
                          (unsigned)codes[i], F2(pt[i].a_mean), F2(pt[i].b_mean),
                          (unsigned)pt[i].a_p2p, (unsigned)pt[i].b_p2p,
                          F2(pt[i].a_drift), F2(pt[i].b_drift),
                          pt[i].clipped ? "  CLIPPED (not used)" : "");
     }
     scope_vpos_apply_ch(1u, ss->ch1.vdiv_idx);     /* DAC back to the position code */
+    {   /* apply_ch is silent when it cannot write (generator started, no clean
+         * bank after a range change): say so rather than leave a sweep code. */
+        uint16_t pos_code = 0;
+        if (scope_vpos_active() && !dac_output_is_running() &&
+            (!scope_vpos_last(1u, NULL, NULL, &pos_code) || scope_trigger_dac_last() != pos_code))
+            usb_debug_printf("  WARNING: CH1 offset DAC not restored (DAC %u, position code %u); "
+                             "re-select the CH1 range or position\r\n",
+                             (unsigned)scope_trigger_dac_last(), (unsigned)pos_code);
+    }
     if (got < 5u) {
         usb_send_str("interleave cal: aborted, correction unchanged\r\n");
         return;
@@ -2876,12 +2887,20 @@ static void cmd_fpga_interleave_cal(void)
     il_cal_default_params(&prm);
     il_cal_fit_t fit;
     const il_cal_status_t st = il_cal_fit(pt, 5u, &prm, &fit);
-    usb_debug_printf("  fit: B = gain %ld/10000 * A + offset %ld/100   used %u  span %ld.%02ld  "
-                     "residual max %ld.%02ld rms %ld.%02ld\r\n",
+    usb_debug_printf("  fit: B = gain %ld/10000 * A + offset %ld/100   used %u  span %s%ld.%02ld  "
+                     "residual max %s%ld.%02ld rms %s%ld.%02ld\r\n",
                      (long)(fit.gain * 10000.0f + 0.5f), x100(fit.offset), (unsigned)fit.used,
                      F2(fit.a_span), F2(fit.resid_max), F2(fit.resid_rms));
     if (st != IL_CAL_OK) {
         usb_debug_printf("interleave cal: REFUSED, %s; correction unchanged\r\n", il_cal_status_str(st));
+        return;
+    }
+    /* The sweep takes seconds: a CH2 long-press or a timebase change in the
+     * meantime moves op05 off CH1 (or ends the merge), and the points no
+     * longer describe converter B against A. */
+    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+        usb_send_str("interleave cal: REFUSED, channel/timebase changed during the sweep; "
+                     "correction unchanged\r\n");
         return;
     }
     fpga_interleave_corr_set(fit.gain, fit.offset);
