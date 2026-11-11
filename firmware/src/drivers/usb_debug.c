@@ -76,6 +76,7 @@
 #include "../dsp/trig_policy.h"
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
+#include "../util/shell_persist.h"
 #include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
 #include "../util/gallery_store.h"
@@ -5990,6 +5991,35 @@ static void report_startup_save(const char *name)
         usb_debug_printf("startup=%s (save pending: input task did not answer in 500 ms)\r\n", name);
 }
 
+/* persist [on|off]: whether shell commands save the settings they change.
+ * Off is for bench sweeps (one settings record per changed command otherwise);
+ * RAM only, on at every boot. Key presses save as usual either way. */
+static void cmd_persist(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "off", 3) == 0) {
+        shell_persist_set(false);
+        usb_debug_printf("persist off: shell changes stay unsaved until 'persist on' or a key press (back on at boot)\r\n");
+        return;
+    }
+    if (strncmp(args, "on", 2) == 0) {
+        const bool was_on = shell_persist_enabled();
+        const uint32_t skipped = shell_persist_skipped();
+        shell_persist_set(true);
+        settings_flush_outcome_t o;
+        if (input_settings_flush_sync(500u, &o))
+            usb_debug_printf("persist on (%lu commands were not saved; now %s)\r\n",
+                             was_on ? 0ul : (unsigned long)skipped, settings_flush_outcome_text(o));
+        else
+            usb_debug_printf("persist on (save request timed out; the input task will save within 100 ms)\r\n");
+        return;
+    }
+    usb_debug_printf("persist %s", shell_persist_enabled() ? "on" : "off");
+    if (!shell_persist_enabled())
+        usb_debug_printf(" (%lu commands not saved)", (unsigned long)shell_persist_skipped());
+    usb_debug_printf("\r\n");
+}
+
 static void cmd_mode(const char *args)
 {
     /* Numeric aliases for the mode keywords.
@@ -10177,6 +10207,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope timing <5 bytes>     Send 0x20,0x21,0x26..0x28 params\r\n"),
     CMD_A("fpga scope trig", cmd_fpga_scope_trig, SC_NEEDARGS,
           "fpga scope trig <4 bytes>       Send 0x07/0x0A,0x16..0x19\r\n"),
+    CMD_A("persist", cmd_persist, 0,
+          "persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n"),
     CMD_A("mode", cmd_mode, 0,
           "mode meter [submode] [layout]   Switch UI + FPGA to DMM frontend ('mode 1' = same)\r\n" "mode scope                      Switch UI + FPGA to scope frontend ('mode 0' = same)\r\n" "mode startup [scope|meter]      Get/set Settings > Startup on Boot\r\n"),
     CMD_A("meter dump", cmd_meter_dump, 0,
@@ -10307,7 +10339,8 @@ static void dispatch_command(char *line)
             return;
         if (best->fn_args) best->fn_args(args); else best->fn_void();
         fpga_acq_resume();
-        input_request_settings_flush();
+        if (shell_persist_after_command())
+            input_request_settings_flush();
         return;
     }
 
@@ -10316,8 +10349,10 @@ static void dispatch_command(char *line)
      * coupling, probe, trigger, siggen, meter mode, prefs, ...) and none of
      * them has a key press behind it, so settings_after_button() never sees
      * it. One request per command, served by the input task within 100 ms: a
-     * no-op (no flash access) when nothing differs from the saved image. */
-    input_request_settings_flush();
+     * no-op (no flash access) when nothing differs from the saved image.
+     * `persist off` (bench sweeps) skips the request; see shell_persist.h. */
+    if (shell_persist_after_command())
+        input_request_settings_flush();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
