@@ -472,6 +472,15 @@ static void test_x_is_relative_to_the_reference_column(void)
     char s[16];
     scope_cursor_format(&r, s, sizeof s);
     CHECK(strcmp(s, "-100us") == 0, "expected -100us, got %s", s);
+
+    /* Stock's "X1-X2" is X1 MINUS X2: the shell report feeds delta_t the
+     * column difference v1 - v2, which must equal the two absolute readings'
+     * difference whatever the reference column. */
+    const scope_cursor_reading_t x1 = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 90, 137);
+    const scope_cursor_reading_t x2 = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 250, 137);
+    const scope_cursor_reading_t d  = scope_cursor_delta_t_fs(fs, SCOPE_CURSOR_MEASURED, 90 - 250);
+    CHECK(close_rel(x1.value - x2.value, d.value, 1e-4f) && d.value < 0.0f,
+          "X1-X2 == X1 - X2 (negative when X1 is left of X2)");
 }
 
 static void test_absolute_y(void)
@@ -496,6 +505,10 @@ static void test_absolute_y(void)
     scope_cursor_reading_t y1 = scope_cursor_y(&m, 70), y2 = scope_cursor_y(&m, 120);
     scope_cursor_reading_t dv = scope_cursor_delta_v(&m, 70 - 120);
     CHECK(close_rel(y2.value - y1.value, dv.value, 1e-4f), "Y2 - Y1 == dV");
+    /* Stock's "Y1-Y2" (the shell report): delta_v of h2 - h1 rows. */
+    scope_cursor_reading_t d12 = scope_cursor_delta_v(&m, 120 - 70);
+    CHECK(close_rel(y1.value - y2.value, d12.value, 1e-4f) && d12.value > 0.0f,
+          "Y1-Y2 == Y1 - Y2 (positive when Y1 is above Y2)");
 
     /* Uncalibrated range: counts. */
     scope_cursor_vmap_t u = vmap(1u, 0u, 2.0f);

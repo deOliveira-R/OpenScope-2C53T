@@ -1549,7 +1549,10 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     const scope_cursor_conf_t cf = scope_cursor_tb_conf(ss->timebase_idx);
     const int16_t ta = scope_ui_trig_x_actual();
     const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
-    const int32_t ddx = (int32_t)c->v2_x - (int32_t)c->v1_x;
+    /* The readouts carry stock's labels (0x0801CA7C: X1-X2, Y1-Y2), so they
+     * are FIRST minus SECOND: the on-screen dt/dV are second minus first
+     * (v2-v1, and h1-h2 rows = Y2-Y1) and read with the opposite sign. */
+    const int32_t ddx = (int32_t)c->v1_x - (int32_t)c->v2_x;
     scope_cursor_reading_t r;
 
     r = scope_cursor_x_fs(fs, cf, c->v1_x, ref);      scope_cursor_format(&r, x1, 16);
@@ -1560,7 +1563,7 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
     r = scope_cursor_y(&vm, c->h1_y);                 scope_cursor_format(&r, y1, 16);
     r = scope_cursor_y(&vm, c->h2_y);                 scope_cursor_format(&r, y2, 16);
-    r = scope_cursor_delta_v(&vm, (int32_t)c->h1_y - (int32_t)c->h2_y);
+    r = scope_cursor_delta_v(&vm, (int32_t)c->h2_y - (int32_t)c->h1_y);   /* Y1-Y2 */
     scope_cursor_format(&r, dy, 16);
     if (fs_out) *fs_out = fs;
 }

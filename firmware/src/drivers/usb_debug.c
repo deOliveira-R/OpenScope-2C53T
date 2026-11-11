@@ -3357,7 +3357,9 @@ static void cmd_fpga_scope_measure(const char *args)
         {
             scope_prm_ctx_t ctx;
             scope_params_t pp;
-            ctx.sample_rate     = fs;
+            /* Only the code in force describes the record in hand; with a
+             * mismatch the widths stay in samples, like Freq stays "-". */
+            ctx.sample_rate     = tb_ok ? fs : 0.0f;
             ctx.volts_per_count = k1;
             ctx.freq_hz         = freq_hz;
             ctx.zero_count      = SCOPE_MEASURE_ZERO_COUNT;
