@@ -795,14 +795,14 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
             b->nrec = 1;
             return SC_BC_RUNNING;
         }
-        bool disagree = false;
+        bool disagree = false, bad[SC_CH] = { false, false };
         for (unsigned c = 0; c < SC_CH; c++) {
             if (!b->active[c]) continue;
             const float dm = fabsf(obs[c].tmean - b->m_first[c]);
             const float d4 = 4.0f * dm;
             const uint8_t u = (d4 > 255.0f) ? 255u : (uint8_t)d4;
             if (u > b->cur_drift[c]) b->cur_drift[c] = u;
-            if (dm > agree) disagree = true;
+            if (dm > agree) { disagree = true; bad[c] = true; }
         }
         if (disagree) {
             if (++b->retries > SC_BC_RETRIES) {
@@ -811,8 +811,12 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
                     b->active[0] = b->active[1] = false;
                     return SC_BC_NOT_QUIET;
                 }
+                /* Only the channel that wandered is noisy: blaming a quiet
+                 * channel too would feed its open-input streak (bc_fail) and
+                 * abandon a shorted CH1 because CH2 floats. The other one
+                 * agreed on this pair and servoes on it below. */
                 for (unsigned c = 0; c < SC_CH; c++)
-                    if (b->active[c]) bc_fail(b, c, SC_BCF_NOISY);
+                    if (b->active[c] && bad[c]) bc_fail(b, c, SC_BCF_NOISY);
             } else {
                 for (unsigned c = 0; c < SC_CH; c++) b->m_first[c] = obs[c].tmean;
                 return SC_BC_RUNNING;

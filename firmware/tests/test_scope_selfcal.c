@@ -140,6 +140,7 @@ typedef struct {
     float open_mv[2];         /* per channel: floating-input pickup, uniform +- mV (counts = mV / ladder) */
     unsigned burst_len;       /* interference burst per record: this many wild samples ... */
     float burst_amp;          /*  ... uniform +- this many counts */
+    float drift_mv[2];        /* per channel: record-to-record mean wander, uniform +- mV */
     /* results */
     int   commits;
     bool  got[2][3][10];
@@ -194,7 +195,7 @@ static void bc_make_obs(bc_sim_t *s, const sc_basecal_t *b, sc_rec_stats_t obs[2
     for (unsigned c = 0; c < 2; c++) {
         const float z = s->z[c][bank][b->range], k = s->s[c][bank][b->range];
         const float level = 100.0f + ((float)b->dac[c] - z) / k + s->hum * urand()
-                            + s->dc_mv / mv;
+                            + s->dc_mv / mv + (s->drift_mv[c] / mv) * urand();
         for (unsigned i = 0; i < REC_LEN; i++) {
             float v = level + s->noise * urand() + s->noise_cnt[c][b->range] * urand()
                       + (s->open_mv[c] / mv) * urand();
@@ -341,6 +342,20 @@ static void test_basecal_open_input(void)
     st = bc_run(&s, 0x03u, &b);
     CHECK(st == SC_BC_OPEN && s.commits == 0, "both open: %s, %d commits", sc_bc_status_str(st), s.commits);
     CHECK(strstr(sc_bc_status_str(SC_BC_OPEN), "open/noisy") != NULL, "status text");
+
+    /* CH2 floating but slow (each record flat, its mean wanders between
+     * records): CH2 disagrees, CH1 agrees. Only CH2 may be refused as
+     * noisy; a shorted CH1 must never be blamed and declared open. */
+    bc_sim_default(&s);
+    s.drift_mv[1] = 20.0f;   /* +-50 counts at r0 .. +-5 at r3 */
+    st = bc_run(&s, 0x03u, &b);
+    ch1 = ch2 = 0;
+    for (unsigned k = 0; k < 3; k++)
+        for (unsigned r = 0; r < 10; r++) { ch1 += s.got[0][k][r]; ch2 += s.got[1][k][r]; }
+    CHECK(st == SC_BC_DONE && ch1 == 20 && !b.open_ch[0],
+          "CH2 wandering: CH1 %u corrected (open %u), CH2 %u", ch1, b.open_ch[0], ch2);
+    CHECK(sc_basecal_entry(&b, 1, 0, 0, &es, NULL, NULL) && es >= SC_BC_LOG_FAIL0 && !s.got[1][0][0],
+          "log: CH2 b0 r0 refused (state %u)", es);
 
     /* Open channel on bank 2 (one channel per phase) only: the other one is unaffected. */
     bc_sim_default(&s);
