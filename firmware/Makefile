@@ -837,6 +837,16 @@ $(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c sr
 test-paused-view: $(BUILD_DIR)/test_paused_view
 	$<
 
+# Bode sweep maths (step frequency, gain/phase, -3 dB bandwidth) and
+# bode_init(), which since the 2026-11-11 RAM diet fills a caller-owned result
+# instead of a dead 2.4 KB module copy.
+$(BUILD_DIR)/test_bode: tests/test_bode_mask.c src/dsp/bode.c src/dsp/bode.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DTEST_BUILD -Isrc/dsp $< src/dsp/bode.c -lm -o $@
+
+.PHONY: test-bode
+test-bode: $(BUILD_DIR)/test_bode
+	$<
+
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-interleave-cal test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
