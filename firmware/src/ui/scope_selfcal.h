@@ -75,7 +75,19 @@ typedef struct {
     bool     clipped;       /* a body sample sits on a rail (0 or SC_REC_MAX) */
     uint16_t n_rise;        /* rising crossings of the midline, with hysteresis */
     float    period;        /* samples per period from those; 0 = fewer than 2 */
+    /* Glitch-trimmed view (baseline correction), as fpga.c's ilcal_window:
+     * pass 1 takes the mean, pass 2 drops samples more than SC_TRIM counts
+     * from it. Interference bursts (10-40 wild samples, ~5 % of a record on
+     * unit #2 at tb <= 4) stay out of the spread, the mean and the rails. */
+    float    tmean;         /* the middle SC_MEAN_N samples, without the dropped ones */
+    uint8_t  spread;        /* p-p of the kept samples without their 8 most extreme per side; 255 = too many dropped */
+    uint8_t  tclip;         /* a KEPT sample sits on a rail */
+    uint16_t n_out;         /* samples dropped over the whole body */
 } sc_rec_stats_t;
+
+#define SC_TRIM             24      /* ilcal's ILCAL_GLITCH */
+#define SC_SPREAD_SKIP      8u      /* extreme kept samples ignored per side (~1 % of a record) */
+#define SC_TRIM_MAX_PCT     15u     /* ilcal's 77 of 512: more is not a glitch any more */
 
 /* `rec` is a whole record of `len` bytes; the first `head_skip` are ignored.
  * Returns false (and zeroes *out) when the body is shorter than SC_MEAN_N. */
@@ -166,6 +178,7 @@ typedef enum {
     SC_BC_NOT_QUIET,     /* input not flat (a signal on it): refused */
     SC_BC_DC_INPUT,      /* a DC level on the input: refused */
     SC_BC_FAILED,        /* nothing could be corrected */
+    SC_BC_OPEN,          /* every channel with a page was open/noisy: nothing corrected */
 } sc_bc_status_t;
 
 typedef enum {           /* why an entry got no correction */
@@ -178,7 +191,13 @@ typedef enum {           /* why an entry got no correction */
     SC_BCF_DIVERGED,
     SC_BCF_NO_CONVERGE,
     SC_BCF_SPAN,         /* the extrapolated pair is implausible */
+    SC_BCF_OPEN,         /* skipped: this channel was declared open/noisy earlier */
 } sc_bc_fail_t;
+
+/* Per-entry log (one byte each): 0 = not attempted, 1 = corrected,
+ * 2 + sc_bc_fail_t = refused. Indexed [ch][bank][range]. */
+#define SC_BC_LOG_OK        1u
+#define SC_BC_LOG_FAIL0     2u
 
 /* The page's clean pair (after substitution) for (ch 0/1, bank, range). */
 typedef bool (*sc_bc_pair_fn)(void *ctx, uint8_t ch, uint8_t bank, uint8_t range,
@@ -222,6 +241,14 @@ typedef struct {
     uint8_t  st[SC_CH];                      /* per entry: running/converged/failed */
     float    pre_err[SC_CH][2];              /* pre-check: r9, r6 offsets */
     uint8_t  n_not_flat;
+    uint8_t  run_noisy[SC_CH];               /* consecutive noisy refusals per channel */
+    uint8_t  cur_spread[SC_CH];              /* worst trimmed spread seen at this entry */
+    uint8_t  cur_drift[SC_CH];               /* worst |record 2 - record 1| x4, capped */
+    bool     open_ch[SC_CH];                 /* declared open/noisy: no further entries */
+    /* per-entry results, [ch][bank][range]: what `fpga scope selfcal` lists */
+    uint8_t  log[SC_CH][3][SC_RANGES];
+    uint8_t  log_spread[SC_CH][3][SC_RANGES];   /* worst trimmed spread, counts */
+    uint8_t  log_drift[SC_CH][3][SC_RANGES];    /* worst record-to-record mean step x4 */
     /* results */
     uint8_t  n_ok, n_fail;
     sc_bc_fail_t last_fail;
@@ -232,7 +259,9 @@ typedef struct {
 #define SC_BC_TOL           0.5f     /* |mean - target| that is converged, counts */
 #define SC_BC_AGREE         1.5f     /* two records of one step must agree this well */
 #define SC_BC_RETRIES       3u
-#define SC_BC_FLAT_PP       12u      /* max body p-p of a quiet input, counts */
+#define SC_BC_FLAT_PP       12u      /* max trimmed p-p of a quiet input at the coarse ranges, counts */
+#define SC_BC_OPEN_RUN      4u       /* this many noisy refusals in a row: the input is open */
+#define SC_BC_COARSE_R      6u       /* range >= this: a not-flat input is a signal, not noise pickup */
 #define SC_BC_MAX_STEPS     10u
 #define SC_BC_MAX_STEP      400      /* largest single DAC move */
 #define SC_BC_SLOPE_MIN     2.0f     /* believable codes per count */
@@ -243,6 +272,16 @@ typedef struct {
 #define SC_BC_NOT_FLAT_MAX  3u       /* this many non-flat entries abort the run */
 
 extern const sc_bc_phase_t sc_bc_phases[4];
+
+/* Range-aware limits. The same input noise is more counts on the sensitive
+ * ranges (0.4 mV/count at r0, 400 at r9: a floating or merely noisy input
+ * reads 10-1000x more counts there), so the flat limit and the agreement of
+ * two records widen with the gain. Coarse ranges keep the original 12 / 1.5. */
+unsigned sc_bc_flat_limit(uint8_t range);
+float    sc_bc_agree_limit(uint8_t range);
+/* The entry's log (see SC_BC_LOG_*); false if out of range. */
+bool sc_basecal_entry(const sc_basecal_t *b, uint8_t ch, uint8_t bank, uint8_t range,
+                      uint8_t *state, uint8_t *spread, uint8_t *drift_x4);
 
 void sc_basecal_begin(sc_basecal_t *b, const sc_bc_cfg_t *cfg);
 /* obs[ch]: the record read at b->phase/range/dac (channels not active are

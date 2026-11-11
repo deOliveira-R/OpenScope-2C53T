@@ -37,6 +37,47 @@ bool sc_rec_stats(const uint8_t *rec, uint16_t len, uint16_t head_skip, sc_rec_s
     out->mean = (float)sum / (float)SC_MEAN_N;
     out->clipped = (mn == 0u) || (mx >= SC_REC_MAX);
 
+    /* Glitch-trimmed view (see the header): window of +-SC_TRIM counts around
+     * the middle-500 mean; spread, rails and the mean use only what is inside. */
+    {
+        const int c1 = (int)lroundf(out->mean);
+        uint32_t ts = 0, tn = 0;
+        uint8_t kmn = 255u, kmx = 0u;
+        uint16_t n_out = 0, n_in = 0;
+        /* The spread skips the SC_SPREAD_SKIP most extreme kept samples on each
+         * side: a burst of wild values lands a few samples inside the window
+         * by chance, and one such sample must not make a quiet input "not
+         * flat". hi[] is sorted descending, lo[] ascending. */
+        uint8_t hi[SC_SPREAD_SKIP + 1u], lo[SC_SPREAD_SKIP + 1u];
+        memset(hi, 0, sizeof(hi));
+        memset(lo, 255, sizeof(lo));
+        for (uint16_t i = head_skip; i < len; i++) {
+            const int d = (int)rec[i] - c1;
+            if (d > SC_TRIM || d < -SC_TRIM) { n_out++; continue; }
+            n_in++;
+            const uint8_t x = rec[i];
+            if (x < kmn) kmn = x;
+            if (x > kmx) kmx = x;
+            if (x > hi[SC_SPREAD_SKIP]) {
+                unsigned j = SC_SPREAD_SKIP;
+                while (j > 0u && hi[j - 1u] < x) { hi[j] = hi[j - 1u]; j--; }
+                hi[j] = x;
+            }
+            if (x < lo[SC_SPREAD_SKIP]) {
+                unsigned j = SC_SPREAD_SKIP;
+                while (j > 0u && lo[j - 1u] > x) { lo[j] = lo[j - 1u]; j--; }
+                lo[j] = x;
+            }
+            if (i >= m0 && i < m0 + SC_MEAN_N) { ts += x; tn++; }
+        }
+        out->n_out = n_out;
+        out->tmean = tn ? (float)ts / (float)tn : out->mean;
+        const bool too_many = ((uint32_t)n_out * 100u > (uint32_t)n_body * SC_TRIM_MAX_PCT);
+        out->spread = (too_many || n_in <= 2u * SC_SPREAD_SKIP + 1u)
+                          ? 255u : (uint8_t)(hi[SC_SPREAD_SKIP] - lo[SC_SPREAD_SKIP]);
+        out->tclip = (n_in == 0u) || kmn == 0u || kmx >= SC_REC_MAX;
+    }
+
     /* Rising crossings of the midline with a hysteresis of 1/8 p-p, so noise
      * on a slow edge counts once. Below the flat limit there is no edge to
      * count. */
@@ -446,7 +487,23 @@ enum { ST_IDLE = 0, ST_RUN, ST_PT, ST_FAIL };
 
 #define BC_PRE_R_COARSE   9u     /* pre-check ranges: 400 and 40 mV/count nominal, */
 #define BC_PRE_R_FINE     6u     /* 10x apart: a real DC level scales by 10 */
-#define BC_SENS_RANGES    4u     /* r0..r3: noise may exceed the quiet limits */
+
+/* Trimmed-spread limit and two-record agreement per range (see the header).
+ * r0..r9 = 0.4 .. 400 mV/count: noise in counts scales with the gain. The
+ * coarse end keeps the original quiet limit; stock has no such check, so the
+ * steps in between are OpenScope's own and only widen towards the gain. */
+static const uint8_t bc_flat_tab[SC_RANGES]  = { 48, 40, 32, 28, 24, 20, 12, 12, 12, 12 };
+static const uint8_t bc_agree_tab[SC_RANGES] = { 6, 6, 5, 5, 4, 3, 3, 3, 3, 3 };   /* x0.5 counts */
+
+unsigned sc_bc_flat_limit(uint8_t range)
+{
+    return bc_flat_tab[range < SC_RANGES ? range : SC_RANGES - 1u];
+}
+
+float sc_bc_agree_limit(uint8_t range)
+{
+    return 0.5f * (float)bc_agree_tab[range < SC_RANGES ? range : SC_RANGES - 1u];
+}
 
 static int bc_point_pos(uint8_t pt) { return pt ? SC_BC_PT_POS : -SC_BC_PT_POS; }
 
@@ -463,8 +520,34 @@ static bool bc_phase_has(const sc_bc_phase_t *p, unsigned c)
     return (p->mask >> c) & 1u;
 }
 
+static void bc_log(sc_basecal_t *b, unsigned c, uint8_t bank, uint8_t range, uint8_t v)
+{
+    if (bank >= 3u || range >= SC_RANGES) return;
+    b->log[c][bank][range] = v;
+    b->log_spread[c][bank][range] = b->cur_spread[c];
+    b->log_drift[c][bank][range] = b->cur_drift[c];
+}
+
+bool sc_basecal_entry(const sc_basecal_t *b, uint8_t ch, uint8_t bank, uint8_t range,
+                      uint8_t *state, uint8_t *spread, uint8_t *drift_x4)
+{
+    if (ch >= SC_CH || bank >= 3u || range >= SC_RANGES) return false;
+    if (state)    *state    = b->log[ch][bank][range];
+    if (spread)   *spread   = b->log_spread[ch][bank][range];
+    if (drift_x4) *drift_x4 = b->log_drift[ch][bank][range];
+    return true;
+}
+
 static void bc_fail(sc_basecal_t *b, unsigned c, sc_bc_fail_t why)
 {
+    /* Noise at the sensitive ranges, entry after entry: the input is open
+     * (a floating BNC picks up hum that only shows once amplified; the
+     * coarse ranges look quiet, so the pre-check cannot see it). Refuse the
+     * channel for the rest of the run rather than correct it at r6..r9. */
+    if (b->range < SC_BC_COARSE_R && (why == SC_BCF_NOT_FLAT || why == SC_BCF_NOISY)) {
+        if (++b->run_noisy[c] >= SC_BC_OPEN_RUN) b->open_ch[c] = true;
+    }
+    bc_log(b, c, sc_bc_phases[b->phase].bank, b->range, (uint8_t)(SC_BC_LOG_FAIL0 + why));
     b->st[c] = ST_FAIL;
     b->active[c] = false;
     b->n_fail++;
@@ -483,7 +566,16 @@ static bool bc_entry_load(sc_basecal_t *b, int pos)
     for (unsigned c = 0; c < SC_CH; c++) {
         b->st[c] = ST_IDLE;
         b->active[c] = false;
+        b->cur_spread[c] = 0;
+        b->cur_drift[c] = 0;
         if (!bc_phase_has(p, c)) continue;
+        if (b->open_ch[c]) {
+            if (b->stage == BC_WALK) {
+                bc_log(b, c, p->bank, b->range, (uint8_t)(SC_BC_LOG_FAIL0 + SC_BCF_OPEN));
+                b->n_fail++;
+            }
+            continue;
+        }
         uint16_t base, upper;
         if (b->cfg.pair == NULL ||
             !b->cfg.pair(b->cfg.ctx, (uint8_t)c, p->bank, b->range, &base, &upper)) {
@@ -542,11 +634,17 @@ bool sc_basecal_prechecking(const sc_basecal_t *b)
     return b->stage == BC_PRE;
 }
 
+static sc_bc_status_t bc_final(const sc_basecal_t *b)
+{
+    if (b->n_ok > 0u) return SC_BC_DONE;
+    return (b->open_ch[0] || b->open_ch[1]) ? SC_BC_OPEN : SC_BC_FAILED;
+}
+
 static sc_bc_status_t bc_end(sc_basecal_t *b)
 {
     b->stage = BC_END;
     b->active[0] = b->active[1] = false;
-    return (b->n_ok > 0u) ? SC_BC_DONE : SC_BC_FAILED;
+    return bc_final(b);
 }
 
 /* Next walk entry (range, then phase). Returns RUNNING or the end status. */
@@ -587,6 +685,8 @@ static void bc_finish_entry(sc_basecal_t *b, unsigned c)
         b->cfg.commit(b->cfg.ctx, (uint8_t)c, sc_bc_phases[b->phase].bank, b->range,
                       (int16_t)(nb - (long)b->base[c]), (int16_t)(nu - (long)b->upper[c]));
     b->n_ok++;
+    b->run_noisy[c] = 0;
+    bc_log(b, c, sc_bc_phases[b->phase].bank, b->range, SC_BC_LOG_OK);
     b->st[c] = ST_IDLE;
     b->active[c] = false;
 }
@@ -649,33 +749,36 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
     bool dummy;
     if (fresh_settings == NULL) fresh_settings = &dummy;
     *fresh_settings = false;
-    if (b->stage == BC_END) return (b->n_ok > 0u) ? SC_BC_DONE : SC_BC_FAILED;
+    if (b->stage == BC_END) return bc_final(b);
 
     const bool pre = (b->stage == BC_PRE);
-    const bool sens = !pre && b->range < BC_SENS_RANGES;
-    const unsigned flat_pp = sens ? 3u * SC_BC_FLAT_PP : SC_BC_FLAT_PP;
-    const float agree = sens ? 2.0f * SC_BC_AGREE : SC_BC_AGREE;
+    const unsigned flat_pp = pre ? SC_BC_FLAT_PP : sc_bc_flat_limit(b->range);
+    const float agree = pre ? SC_BC_AGREE : sc_bc_agree_limit(b->range);
 
     /* Every record, first or second, must be quiet and unclipped. */
     for (unsigned c = 0; c < SC_CH; c++) {
         if (!b->active[c]) continue;
         const sc_rec_stats_t *o = &obs[c];
-        const unsigned pp = (unsigned)(o->max - o->min);
+        const unsigned pp = o->spread;   /* glitch-trimmed: bursts are not "not flat" */
+        if (o->spread != 255u && o->spread > b->cur_spread[c]) b->cur_spread[c] = o->spread;
+        else if (o->spread == 255u) b->cur_spread[c] = 255u;
         if (pre) {
             /* Coarse ranges, page codes at pos 0: a signal or a big DC level
              * shows as a spread or a rail. The whole run is refused. */
-            if (o->clipped || pp > SC_BC_FLAT_PP) {
+            if (o->tclip || pp > SC_BC_FLAT_PP) {
                 b->stage = BC_END;
                 b->active[0] = b->active[1] = false;
                 return SC_BC_NOT_QUIET;
             }
             continue;
         }
-        if (o->clipped) {
+        if (o->tclip) {
             bc_fail(b, c, SC_BCF_CLIPPED);
         } else if (pp > flat_pp) {
             bc_fail(b, c, SC_BCF_NOT_FLAT);
-            if (!sens && ++b->n_not_flat >= SC_BC_NOT_FLAT_MAX) {
+            /* Coarse ranges do not see pickup: a not-flat input there is a
+             * signal. (Sensitive ranges feed the open-input rule in bc_fail.) */
+            if (b->range >= SC_BC_COARSE_R && ++b->n_not_flat >= SC_BC_NOT_FLAT_MAX) {
                 b->stage = BC_END;
                 b->active[0] = b->active[1] = false;
                 return SC_BC_NOT_QUIET;
@@ -688,13 +791,19 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
         /* Two records per step, which must agree: hum or a slow drift moves
          * the mean between records even when each one is flat. */
         if (b->nrec == 0u) {
-            for (unsigned c = 0; c < SC_CH; c++) b->m_first[c] = obs[c].mean;
+            for (unsigned c = 0; c < SC_CH; c++) b->m_first[c] = obs[c].tmean;
             b->nrec = 1;
             return SC_BC_RUNNING;
         }
         bool disagree = false;
-        for (unsigned c = 0; c < SC_CH; c++)
-            if (b->active[c] && fabsf(obs[c].mean - b->m_first[c]) > agree) disagree = true;
+        for (unsigned c = 0; c < SC_CH; c++) {
+            if (!b->active[c]) continue;
+            const float dm = fabsf(obs[c].tmean - b->m_first[c]);
+            const float d4 = 4.0f * dm;
+            const uint8_t u = (d4 > 255.0f) ? 255u : (uint8_t)d4;
+            if (u > b->cur_drift[c]) b->cur_drift[c] = u;
+            if (dm > agree) disagree = true;
+        }
         if (disagree) {
             if (++b->retries > SC_BC_RETRIES) {
                 if (pre) {
@@ -705,7 +814,7 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
                 for (unsigned c = 0; c < SC_CH; c++)
                     if (b->active[c]) bc_fail(b, c, SC_BCF_NOISY);
             } else {
-                for (unsigned c = 0; c < SC_CH; c++) b->m_first[c] = obs[c].mean;
+                for (unsigned c = 0; c < SC_CH; c++) b->m_first[c] = obs[c].tmean;
                 return SC_BC_RUNNING;
             }
         }
@@ -717,7 +826,7 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
         const unsigned slot = (b->range == BC_PRE_R_COARSE) ? 0u : 1u;
         for (unsigned c = 0; c < SC_CH; c++)
             if (b->active[c])
-                b->pre_err[c][slot] = 0.5f * (obs[c].mean + b->m_first[c]) - (float)SC_ZERO_REC;
+                b->pre_err[c][slot] = 0.5f * (obs[c].tmean + b->m_first[c]) - (float)SC_ZERO_REC;
         if (b->range == BC_PRE_R_COARSE) {
             b->range = BC_PRE_R_FINE;
             if (bc_entry_load(b, 0)) { *fresh_settings = true; return SC_BC_RUNNING; }
@@ -744,7 +853,7 @@ sc_bc_status_t sc_basecal_step(sc_basecal_t *b, const sc_rec_stats_t obs[SC_CH],
     bool moved = false;
     for (unsigned c = 0; c < SC_CH; c++) {
         if (!b->active[c]) continue;
-        const float m = 0.5f * (obs[c].mean + b->m_first[c]);
+        const float m = 0.5f * (obs[c].tmean + b->m_first[c]);
         if (bc_servo(b, c, m)) moved = true;
     }
     if (b->active[0] || b->active[1]) {
@@ -794,6 +903,7 @@ const char *sc_bc_status_str(sc_bc_status_t s)
     case SC_BC_NOT_QUIET: return "refused: input not quiet (remove the probe)";
     case SC_BC_DC_INPUT:  return "refused: DC level on the input";
     case SC_BC_FAILED:    return "failed: nothing corrected";
+    case SC_BC_OPEN:      return "refused: input open/noisy (short or ground it)";
     }
     return "?";
 }
@@ -810,6 +920,7 @@ const char *sc_bc_fail_str(sc_bc_fail_t f)
     case SC_BCF_DIVERGED:    return "diverged";
     case SC_BCF_NO_CONVERGE: return "no convergence";
     case SC_BCF_SPAN:        return "implausible span";
+    case SC_BCF_OPEN:        return "skipped: input open/noisy";
     }
     return "?";
 }

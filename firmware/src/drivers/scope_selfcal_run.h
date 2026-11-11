@@ -57,8 +57,16 @@ typedef struct {
     uint32_t timeouts;          /* runs ended for want of a fresh record */
     uint32_t torn;              /* reads retried because a commit landed */
     uint16_t corr_count;        /* corrections held in RAM */
+    uint8_t  open_mask;         /* basecal: bit c = CH(c+1) declared open/noisy */
 } scope_selfcal_status_t;
 
 void scope_selfcal_get_status(scope_selfcal_status_t *out);
+
+/* Basecal per-entry result (valid when the last/current run is a baseline
+ * correction). Returns false if there is none. `text` gets one short line for
+ * a refused entry ("not flat: spread 31 > 24, drift 0.5"), "" for corrected
+ * or untouched ones; *state is 0 untouched, 1 corrected, 2+ refused. */
+bool scope_selfcal_basecal_entry(uint8_t ch, uint8_t bank, uint8_t range,
+                                 uint8_t *state, char *text, unsigned text_len);
 
 #endif /* SCOPE_SELFCAL_RUN_H */

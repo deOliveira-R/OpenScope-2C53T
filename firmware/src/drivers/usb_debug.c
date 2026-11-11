@@ -4448,6 +4448,26 @@ static void cmd_fpga_scope_selfcal(const char *args)
                          (unsigned)st.n_ok, (unsigned)st.n_fail, (unsigned)st.last_fail_ch + 1u,
                          (unsigned)st.last_fail_bank, (unsigned)st.last_fail_range,
                          st.last_fail ? st.last_fail : "-");
+    if (st.kind == SCR_IDLE && st.last_kind == SCR_BASECAL) {
+        if (st.open_mask)
+            usb_debug_printf("baseline: input open/noisy on%s%s (refused, not corrected)\r\n",
+                             (st.open_mask & 1u) ? " CH1" : "", (st.open_mask & 2u) ? " CH2" : "");
+        /* One line per refused entry (<= 60), as `ch b r: reason`; corrected ones are counted. */
+        char why[96];
+        for (unsigned ch = 0; ch < 2u; ch++) {
+            unsigned okn = 0, bad = 0;
+            for (unsigned bk = 0; bk < 3u; bk++)
+                for (unsigned r = 0; r < 10u; r++) {
+                    uint8_t es = 0;
+                    if (!scope_selfcal_basecal_entry((uint8_t)ch, (uint8_t)bk, (uint8_t)r,
+                                                     &es, why, sizeof(why)) || es == 0u) continue;
+                    if (es == 1u) { okn++; continue; }
+                    bad++;
+                    usb_debug_printf("  refused CH%u b%u r%u: %s\r\n", ch + 1u, bk, r, why);
+                }
+            usb_debug_printf("  CH%u: %u corrected, %u refused\r\n", ch + 1u, okn, bad);
+        }
+    }
     usb_debug_printf("corrections in RAM: %u   now: CH1 r%u pos %d  CH2 r%u pos %d  tb 0x%02X  "
                      "trig %s src CH%u level %d\r\n",
                      (unsigned)st.corr_count, (unsigned)ss->ch1.vdiv_idx, (int)ss->ch1.position,

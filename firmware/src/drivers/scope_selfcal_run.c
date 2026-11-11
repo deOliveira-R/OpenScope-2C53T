@@ -451,8 +451,14 @@ static void bc_end(QueueHandle_t dq, sc_bc_status_t st)
     case SC_BC_NOT_QUIET: popup(dq, "Remove probe! Refused"); break;
     case SC_BC_DC_INPUT:  popup(dq, "DC on input! Refused");  break;
     case SC_BC_FAILED:    popup(dq, "Baseline failed");       break;
+    case SC_BC_OPEN:      popup(dq, "Input open/noisy!");     break;
     default:
-        snprintf(msg, sizeof(msg), "Baseline ok %u bad %u", (unsigned)b->n_ok, (unsigned)b->n_fail);
+        if (b->open_ch[0] || b->open_ch[1])   /* corrected the others, say which was refused */
+            snprintf(msg, sizeof(msg), "CH%s open, ok %u",
+                     (b->open_ch[0] && b->open_ch[1]) ? "1+2" : (b->open_ch[0] ? "1" : "2"),
+                     (unsigned)b->n_ok);
+        else
+            snprintf(msg, sizeof(msg), "Baseline ok %u bad %u", (unsigned)b->n_ok, (unsigned)b->n_fail);
         popup(dq, msg);
         break;
     }
@@ -562,5 +568,31 @@ void scope_selfcal_get_status(scope_selfcal_status_t *out)
         out->last_fail_ch = b->last_fail_ch;
         out->last_fail_bank = b->last_fail_bank;
         out->last_fail_range = b->last_fail_range;
+        out->open_mask = (uint8_t)((b->open_ch[0] ? 1u : 0u) | (b->open_ch[1] ? 2u : 0u));
     }
+}
+
+bool scope_selfcal_basecal_entry(uint8_t ch, uint8_t bank, uint8_t range,
+                                 uint8_t *state, char *text, unsigned text_len)
+{
+    if (!(R.kind == SCR_BASECAL || (R.kind == SCR_IDLE && R.last_kind == SCR_BASECAL)))
+        return false;
+    uint8_t st, sp, dr;
+    if (!sc_basecal_entry(&R.e.bc, ch, bank, range, &st, &sp, &dr)) return false;
+    if (state) *state = st;
+    if (text && text_len) {
+        text[0] = '\0';
+        if (st >= SC_BC_LOG_FAIL0) {
+            const sc_bc_fail_t f = (sc_bc_fail_t)(st - SC_BC_LOG_FAIL0);
+            if (sp == 255u)
+                snprintf(text, text_len, "%s: >%u%% of samples off by >%d counts, drift %u.%02u",
+                         sc_bc_fail_str(f), (unsigned)SC_TRIM_MAX_PCT, (int)SC_TRIM,
+                         (unsigned)(dr / 4u), (unsigned)(dr % 4u) * 25u);
+            else
+                snprintf(text, text_len, "%s: spread %u (limit %u), drift %u.%02u",
+                         sc_bc_fail_str(f), (unsigned)sp, sc_bc_flat_limit(range),
+                         (unsigned)(dr / 4u), (unsigned)(dr % 4u) * 25u);
+        }
+    }
+    return true;
 }
