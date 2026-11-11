@@ -298,6 +298,11 @@ static uint32_t info_bar_epoch(void)
                                 | ((uint32_t)s->ch1.coupling << 8));
         h = redraw_epoch_mix(h, (uint32_t)s->ch2.enabled | ((uint32_t)s->ch2.vdiv_idx << 1)
                                 | ((uint32_t)s->ch2.coupling << 8));
+        /* The info bar prints each channel's probe (the top bar's trigger
+         * edge/source repaint on their own, from draw_status_bar). */
+        h = redraw_epoch_mix(h, (uint32_t)s->ch1.probe | ((uint32_t)s->ch2.probe << 4)
+                                | ((uint32_t)s->trigger.edge << 8)
+                                | ((uint32_t)s->trigger.source << 12));
 #ifdef FEATURE_FFT
         const fft_config_t *cfg = fft_get_config();
         if (cfg)
@@ -346,6 +351,7 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
     h = redraw_epoch_mix(h, (uint32_t)math_enabled
                             | ((uint32_t)math_op         << 1)
                             | ((uint32_t)persist_enabled << 8));
+    h = redraw_epoch_mix(h, (uint32_t)s->meas_hidden);   /* long PRM */
 
 #ifdef FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);

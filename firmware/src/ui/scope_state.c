@@ -88,6 +88,7 @@ void scope_state_init(scope_state_t *s)
     s->true_scale = false;
     s->soft_trigger = true;
     s->trig_x = 160;
+    s->meas_hidden = false;
 
     /* Cursor defaults */
     s->cursor.mode   = CURSOR_OFF;
@@ -105,6 +106,23 @@ void scope_state_init(scope_state_t *s)
      * draw time by scope_cursor.c, which refuses to print a unit when
      * neither table has an entry.
      */
+}
+
+void scope_trigger_summary(const scope_state_t *s, char *buf, unsigned n)
+{
+    static const char *const mode_abbr[TRIG_COUNT] = { "Auto", "Norm", "Sngl" };
+    const char *m = ((unsigned)s->trigger.mode < (unsigned)TRIG_COUNT)
+                        ? mode_abbr[s->trigger.mode] : "?";
+    const char e = (s->trigger.edge == TRIG_FALLING) ? 'F' : 'R';
+    const char c = (s->trigger.source == TRIG_SRC_CH2) ? '2' : '1';
+    if (n == 0) return;
+    /* No snprintf: this file is also built on the host and in tests with
+     * nothing but the header. */
+    unsigned i = 0;
+    for (; *m && i + 1 < n; m++) buf[i++] = *m;
+    const char tail[5] = { ' ', e, ' ', 'C', c };
+    for (unsigned k = 0; k < 5 && i + 1 < n; k++) buf[i++] = tail[k];
+    buf[i] = '\0';
 }
 
 scope_state_t *scope_state_get(void)
@@ -172,6 +190,14 @@ void scope_adjust_trigger_level(scope_state_t *s, int direction)
     s->trigger.level += direction * 5;
     if (s->trigger.level < -100) s->trigger.level = -100;
     if (s->trigger.level > 100) s->trigger.level = 100;
+}
+
+void scope_adjust_position(channel_state_t *ch, int direction)
+{
+    int p = (int)ch->position + direction * SCOPE_POSITION_STEP;
+    if (p < -SCOPE_POSITION_MAX) p = -SCOPE_POSITION_MAX;
+    if (p >  SCOPE_POSITION_MAX) p =  SCOPE_POSITION_MAX;
+    ch->position = (int16_t)p;
 }
 
 void scope_toggle_running(scope_state_t *s)

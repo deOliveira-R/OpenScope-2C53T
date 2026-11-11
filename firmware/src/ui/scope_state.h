@@ -169,6 +169,11 @@ typedef struct {
      * trigger once it is time-ordered (EXP-53, dev plan 2.3), so any column
      * is reachable at 1 sample per pixel. Not persisted. */
     int16_t         trig_x;
+
+    /* Long PRM hides the measurement badges, a second long PRM shows them again
+     * (stock: "Hide measurement parameters"). Not persisted: stock does not
+     * either, and a boot into a screen with no readings would look broken. */
+    bool            meas_hidden;
 } scope_state_t;
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -192,6 +197,12 @@ extern const char *trigger_source_labels[TRIG_SRC_COUNT];
  * API
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* "Auto R C1": trigger mode, edge and source in <= 9 characters, for the
+ * status bar (stock shows the same three; manual 1.2 item 10). The mode is
+ * abbreviated (Auto/Norm/Sngl), the edge is R or F (the 95-glyph font has no
+ * arrow), the source C1/C2. 60 px at font_small, the widest case. */
+void scope_trigger_summary(const scope_state_t *s, char *buf, unsigned n);
+
 /* Initialize scope state with defaults */
 void scope_state_init(scope_state_t *s);
 
@@ -209,6 +220,15 @@ void scope_toggle_channel(channel_state_t *ch);
 void scope_adjust_vdiv(channel_state_t *ch, int direction);
 void scope_adjust_timebase(scope_state_t *s, int direction);
 void scope_adjust_trigger_level(scope_state_t *s, int direction);
+/* Channel vertical position, the channel-move stage of the arrow keys (stock:
+ * "up and down buttons controlling the vertical movement of the channel
+ * waveforms"). Pixels, +1 = trace up, clamped to +-SCOPE_POSITION_MAX (stock's
+ * +-100 range, parity plan C4). This only moves the DRAWN trace; driving the
+ * offset DAC from it is the calibration item's job and belongs in this
+ * function (the caller does not need to change). */
+#define SCOPE_POSITION_MAX   100
+#define SCOPE_POSITION_STEP  5
+void scope_adjust_position(channel_state_t *ch, int direction);
 void scope_toggle_running(scope_state_t *s);
 
 /* Cursor operations */

@@ -10,6 +10,7 @@
 #define INPUT_HANDLER_H
 
 #include "ui.h"
+#include "key_model.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 
@@ -23,6 +24,17 @@
  * Returns the display command sent (or 0 if none).
  */
 uint8_t input_handle_button(button_id_t button, QueueHandle_t display_queue);
+
+/* What the scope time view's arrow keys adjust (MOVE cycles it). */
+extern volatile key_focus_t scope_key_focus;
+
+/*
+ * Measurement selection, the short-PRM action in the scope time view. A weak
+ * default in input_handler.c returns false ("not handled"), and PRM then keeps
+ * its older job (the FFT view cycle). The measurement item provides a strong
+ * definition that opens its parameter selection and returns true.
+ */
+bool scope_param_select(void);
 
 /*
  * Handle OK press in settings menu (top-level and sub-menus).

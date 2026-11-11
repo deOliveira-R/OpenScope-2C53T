@@ -165,10 +165,10 @@ def main():
         sc.cmd("btn ch1"); time.sleep(0.3)
     cal0 = sc.cmd("fpga scope cal")
     v_1x, p_1x = vpp1(sc)
-    sc.cmd("btn select"); time.sleep(0.5)
+    sc.cmd("fpga scope probe 1 10x"); time.sleep(0.5)   # was `btn select` before SELECT became "switch channel"
     v_10x, p_10x = vpp1(sc)
     cal1 = sc.cmd("fpga scope cal")
-    sc.cmd("btn select"); time.sleep(0.5)
+    sc.cmd("fpga scope probe 1 1x"); time.sleep(0.5)
     v_back, p_back = vpp1(sc)
     ratio = (v_10x / v_1x) if v_1x and v_10x else 0.0
     check("probe x10", p_1x == 1 and p_10x == 10 and abs(ratio - 10.0) <= 0.2,
