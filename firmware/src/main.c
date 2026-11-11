@@ -472,14 +472,19 @@ static void vDisplayTask(void *pvParameters)
      * builds where init is fast (emulator, warm boots), then move on. */
     vTaskDelay(pdMS_TO_TICKS(750));
 
-    /* Initial draw */
-    lcd_clear(COLOR_BLACK);
-    draw_status_bar();
-    draw_info_bar();
-    if (current_mode == MODE_MULTIMETER) {
-        draw_meter_screen();
-    } else {
-        draw_scope_screen(0);
+    /* Initial draw, unless the boot logo still owns the screen:
+     * logo_ui_boot_show() claimed it in main() and the key task's ~1 s hold
+     * ends with DCMD_REDRAW_ALL, which paints all of this. Drawing here
+     * regardless cut the logo short at 750 ms. */
+    if (!ui_modal_active) {
+        lcd_clear(COLOR_BLACK);
+        draw_status_bar();
+        draw_info_bar();
+        if (current_mode == MODE_MULTIMETER) {
+            draw_meter_screen();
+        } else {
+            draw_scope_screen(0);
+        }
     }
 
     for (;;) {

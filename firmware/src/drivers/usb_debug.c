@@ -71,7 +71,6 @@
 #include "../ui/logo_ui.h"
 #include "watchdog.h"
 #include "../util/cal_backup_core.h"
-#include "../util/cal_backup_core.h"
 
 #include "fpga_cal_table.h"
 #include "FreeRTOS.h"
