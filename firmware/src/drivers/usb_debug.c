@@ -3699,7 +3699,7 @@ static void cmd_fpga_scope_measure(const char *args)
             ctx.sample_rate     = tb_ok ? fs : 0.0f;
             ctx.volts_per_count = k1;
             ctx.freq_hz         = freq_hz;
-            ctx.zero_count      = SCOPE_MEASURE_ZERO_COUNT;
+            ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
             scope_params_compute(&m1, &ctx, &pp);
             usb_debug_printf("P %2lu", (unsigned long)i);
             for (unsigned id = 0; id < SCOPE_PRM_COUNT; id++) {

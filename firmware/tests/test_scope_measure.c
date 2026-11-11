@@ -694,10 +694,30 @@ static int test_params(void)
     return bad;
 }
 
+static int test_zero_for(void)
+{
+    /* Calibrated page: 0 V at raw 128 + pos = record 100 + pos (bench 2026-11-11:
+     * a 0..3.3 V square read Vmin -1.27 V with the old fixed 128). */
+    int bad = 0;
+    struct { int cal, pos, want; } c[] = { {1, 0, 100}, {1, 50, 150}, {1, -100, 0}, {0, 50, 128} };
+    for (unsigned i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
+        int got = scope_measure_zero_for(c[i].cal, c[i].pos, -28);
+        if (got != c[i].want) {
+            printf("   FAIL zero_for(cal=%d, pos=%d) = %d, want %d\n", c[i].cal, c[i].pos, got, c[i].want);
+            bad++;
+        }
+    }
+    return bad;
+}
+
 int main(int argc, char **argv)
 {
     g_verbose = (argc > 1 && strcmp(argv[1], "-v") == 0);
     int fail = 0;
+
+    int z_bad = test_zero_for();
+    printf("scope_measure: zero-for-0V helper: %d failed check(s)\n\n", z_bad);
+    if (z_bad) fail = 1;
 
     printf("scope_measure: shipped implementation\n");
     int real_bad = battery(scope_measure_record);

@@ -24,6 +24,7 @@
 #include "math_channel.h"
 #include "persistence.h"
 #include "fpga.h"
+#include "scope_vpos.h"
 #include "FreeRTOS.h"   /* pvPortMalloc — the X-Y snapshot buffers */
 #include "task.h"       /* xTaskGetTickCount — the out-of-scope popup overlay */
 #include "scope_trigger.h"
@@ -756,7 +757,7 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
         ctx.sample_rate     = rec_fs;
         ctx.volts_per_count = k1;
         ctx.freq_hz         = freq_hz;
-        ctx.zero_count      = SCOPE_MEASURE_ZERO_COUNT;
+        ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
         scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
     }
 
