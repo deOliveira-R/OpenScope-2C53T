@@ -5,7 +5,7 @@
 
 void il_cal_default_params(il_cal_params_t *p)
 {
-    p->max_p2p    = 8;      /* 8-bit converter: a quiet input is a few codes */
+    p->max_p2p    = 32;     /* glitch-trimmed spread: a quiet input reads +-5 codes at 125 MS/s from a noisy source (bench 2026-11-11); a real signal swings far more */
     p->max_drift  = 2.0f;
     p->min_points = 3;
     p->min_span   = 60.0f;

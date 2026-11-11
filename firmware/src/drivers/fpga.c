@@ -3876,34 +3876,53 @@ bool fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *ou
 #if FPGA_WARM_HANDOFF_TEST   /* the acq task exists only in these builds */
 /* Called by the acq task right after the op04/op05 reads; `ok` = no SPI3
  * hardware timeout during them. Cheap when off. */
+/* One converter's window, robust to isolated glitch samples: on unit #2 a
+ * quiet input at tb <= 3 reads +-5 counts with the odd single sample at 0 or
+ * ~200 (bench 2026-11-11), which a plain peak-to-peak counted as "not flat"
+ * and refused the whole cal. Pass 1 takes the mean; pass 2 drops samples
+ * more than ILCAL_GLITCH counts from it and measures mean, spread and the
+ * rails on the rest. More than ILCAL_GLITCH_MAX dropped samples is not a
+ * glitch any more: the spread is reported as 255 (not flat). */
+#define ILCAL_GLITCH      24
+#define ILCAL_GLITCH_MAX  10u   /* of 512: 2 % */
+static void ilcal_window(const volatile uint8_t *w, float *mean, uint8_t *spread, bool *clip)
+{
+    uint32_t s = 0;
+    for (unsigned i = INTERLEAVE_WIN_LO; i < INTERLEAVE_WIN_LO + 512u; i++) s += w[i];
+    const int m = (int)((s + 256u) / 512u);
+    uint32_t s2 = 0, n = 0;
+    uint8_t mn = 255, mx = 0;
+    for (unsigned i = INTERLEAVE_WIN_LO; i < INTERLEAVE_WIN_LO + 512u; i++) {
+        const uint8_t x = w[i];
+        const int d = (int)x - m;
+        if (d > ILCAL_GLITCH || d < -ILCAL_GLITCH) continue;
+        s2 += x; n++;
+        if (x < mn) mn = x;
+        if (x > mx) mx = x;
+    }
+    /* Rails in record units: fpga_warmtest_read_channel stores raw + FPGA_ADC_OFFSET
+     * (-28) clamped, so raw 255 reads 227 and anything at raw <= 28 reads 0. */
+    const uint8_t rail_hi = (uint8_t)(255 + (int)FPGA_ADC_OFFSET);
+    *mean   = n ? (float)s2 / (float)n : (float)m;
+    *spread = (512u - n > ILCAL_GLITCH_MAX || n == 0) ? 255u : (uint8_t)(mx - mn);
+    *clip   = (n == 0) || mn == 0 || mx >= rail_hi;
+}
+
 static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b, bool ok)
 {
     if (!acq_ilcal.on || !ok) return;
     if (acq_ilcal.skip) { acq_ilcal.skip--; return; }
-    uint32_t sa = 0, sb = 0;
-    uint8_t amn = 255, amx = 0, bmn = 255, bmx = 0;
-    for (unsigned i = INTERLEAVE_WIN_LO; i < INTERLEAVE_WIN_LO + 512u; i++) {
-        const uint8_t x = a[i], y = b[i];
-        sa += x; sb += y;
-        if (x < amn) amn = x;
-        if (x > amx) amx = x;
-        if (y < bmn) bmn = y;
-        if (y > bmx) bmx = y;
-    }
-    /* Rails in record units: fpga_warmtest_read_channel stores raw + FPGA_ADC_OFFSET
-     * (-28) clamped, so raw 255 (the converter's top, and a dead bus's 0xFF)
-     * reads 227 and anything at raw <= 28 reads 0. A window that touches either
-     * is not a level: the point is marked clipped and the fit drops it. */
-    const uint8_t rail_hi = (uint8_t)(255 + (int)FPGA_ADC_OFFSET);
-    const float ma = (float)sa / 512.0f, mb = (float)sb / 512.0f;
+    float ma, mb; uint8_t pa, pb; bool ca, cb;
+    ilcal_window(a, &ma, &pa, &ca);
+    ilcal_window(b, &mb, &pb, &cb);
     acq_ilcal.sum_a += ma; acq_ilcal.sum_b += mb;
     if (ma < acq_ilcal.amin) acq_ilcal.amin = ma;
     if (ma > acq_ilcal.amax) acq_ilcal.amax = ma;
     if (mb < acq_ilcal.bmin) acq_ilcal.bmin = mb;
     if (mb > acq_ilcal.bmax) acq_ilcal.bmax = mb;
-    if ((uint8_t)(amx - amn) > acq_ilcal.p2p_a) acq_ilcal.p2p_a = (uint8_t)(amx - amn);
-    if ((uint8_t)(bmx - bmn) > acq_ilcal.p2p_b) acq_ilcal.p2p_b = (uint8_t)(bmx - bmn);
-    if (amn == 0 || amx >= rail_hi || bmn == 0 || bmx >= rail_hi) acq_ilcal.clipped = true;
+    if (pa > acq_ilcal.p2p_a) acq_ilcal.p2p_a = pa;
+    if (pb > acq_ilcal.p2p_b) acq_ilcal.p2p_b = pb;
+    if (ca || cb) acq_ilcal.clipped = true;
     __asm volatile ("" ::: "memory");   /* sums land before the count the shell polls */
     acq_ilcal.n++;
 }

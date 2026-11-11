@@ -73,8 +73,12 @@ int main(void)
 
     /* 3: refusals */
     line(p, 5, 0.98f, 4.0f, 40.0f, 40.0f);
-    p[2].a_p2p = 20;
+    p[2].a_p2p = 60;          /* a real signal: well above the 32-count noise allowance */
     CHECK(il_cal_fit(p, 5, &prm, &f) == IL_CAL_NOT_FLAT, "p2p not refused");
+    /* Bench noise (+-5 codes, spread ~16 after glitch trimming) must pass. */
+    p[2].a_p2p = 16;
+    CHECK(il_cal_fit(p, 5, &prm, &f) != IL_CAL_NOT_FLAT, "honest noise refused as not flat");
+    p[2].a_p2p = 60;
     line(p, 5, 0.98f, 4.0f, 40.0f, 40.0f);
     p[4].b_drift = 5.0f;
     CHECK(il_cal_fit(p, 5, &prm, &f) == IL_CAL_NOT_FLAT, "drift not refused");
