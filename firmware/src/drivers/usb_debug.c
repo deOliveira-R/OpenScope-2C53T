@@ -2515,6 +2515,7 @@ static void cmd_logo(const char *args)
         return;
     }
     usb_send_str(usage);
+}
 
 /* ── usb — USB Sharing (parity C16): the read-only gallery drive ───────
  * The device always enumerates as CDC + MSC (USB_MSC=1); "share" only says
