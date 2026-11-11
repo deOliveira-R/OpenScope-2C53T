@@ -184,10 +184,9 @@ void draw_info_bar(void)
 
             /*
              * Timebase, DERIVED from the measured sample rate and this
-             * renderer's 32 samples per division — not read out of
-             * timebase_table. Those nominal labels are a constant 2.12-2.15x
-             * away from what our grid means on every code we have measured.
-             * Codes with no measured rate read "--".
+             * renderer's 25 samples per division (stock's, parity C5), x2 for
+             * a merged record and times the zoom at 0x00-0x03 — not read out
+             * of timebase_table. Codes with no measured rate read "--".
              */
             char tb[12];
             if (ss->roll) {
@@ -196,9 +195,9 @@ void draw_info_bar(void)
                 scope_roll_label(ss->roll_step, tb, sizeof(tb));
                 snprintf(buf, sizeof(buf), "H=%s", tb);
             } else {
-                scope_timebase_label_scaled(ss->timebase_idx,
-                                            fpga_acq_record_interleaved() ? 2u : 1u,
-                                            tb, sizeof(tb));
+                scope_timebase_view_label(ss->timebase_idx,
+                                          fpga_acq_record_interleaved(),
+                                          tb, sizeof(tb));
                 snprintf(buf, sizeof(buf), "H=%s", tb);
             }
             font_draw_string(128, LCD_HEIGHT - 14, buf,

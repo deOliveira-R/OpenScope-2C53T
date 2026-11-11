@@ -93,7 +93,9 @@
  * SECONDS PER DIVISION IS A PROPERTY OF OUR RENDERER, NOT OF THE HARDWARE
  * -----------------------------------------------------------------------
  * scope_ui.c draws one sample per screen column and rules a vertical grid line
- * every 32 px, so a division is 32 samples and s/div = 32/fs. That is what our
+ * every 25 px (stock's pitch since parity C5; it was 32 px until then, which
+ * is the geometry the paragraph below measured), so a division is 25 samples
+ * and s/div = 25/fs, divided by the zoom at codes 0x00-0x03. That is what our
  * grid means, and the label must say so.
  *
  * Worth recording, because it is a genuinely different situation from the
@@ -106,7 +108,10 @@
  * describes a renderer that draws a different number of samples per division
  * than ours does. That is a fact about STOCK's geometry, not a defect in ours.
  * If the renderer's geometry is ever changed, change
- * SCOPE_TIMEBASE_SAMPLES_PER_DIV with it and the labels follow.
+ * SCOPE_TIMEBASE_SAMPLES_PER_DIV with it and the labels follow. (C5 did: at
+ * 25 samples/div our labels are STOCK's ladder -- 200 ns at 0x04, 5 us at
+ * 0x08, 2 ms at 0x10 (period table 0x080465E0 x 25) -- to the 0.2 % the
+ * measured rates sit from the round ones. `timebase_table` is still 2x off.)
  *
  * A NOTE ON THE ROUND NUMBERS
  * ---------------------------
@@ -122,6 +127,7 @@
 #define SCOPE_TIMEBASE_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -133,10 +139,12 @@ extern "C" {
 
 /*
  * Samples per screen division — set by the renderer, not the hardware.
- * scope_ui.c: one sample per column, vertical grid every 32 px.
- * scope_ui.c carries a compile-time assertion tying this to its geometry.
+ * scope_ui.c: one sample per column (at zoom 1), vertical grid every 25 px,
+ * stock's geometry since parity C5 (scope_geom.h; 32 px before, which made
+ * every label 1.28x stock's on the same code). scope_ui.c carries a
+ * compile-time assertion tying this to its geometry.
  */
-#define SCOPE_TIMEBASE_SAMPLES_PER_DIV   32.0f
+#define SCOPE_TIMEBASE_SAMPLES_PER_DIV   25.0f
 
 typedef enum {
     SCOPE_TB_NONE = 0,      /* no rate — caller must fall back to samples */
@@ -166,9 +174,29 @@ float scope_timebase_seconds_per_div(uint8_t code);
  * "--" (no rate). Always NUL-terminated; 10 bytes is enough for every entry.
  */
 void scope_timebase_label(uint8_t code, char *out, uint32_t n);
-/* Same, for a record whose rate is `rate_factor` x the table's (2 for the
- * single-channel interleave: same 32 samples per division, half the time). */
+/* Same, for a display whose column rate is `rate_factor` x the table's (2
+ * for the single-channel interleave, times the zoom at the fast codes). */
 void scope_timebase_label_scaled(uint8_t code, uint8_t rate_factor, char *out, uint32_t n);
+
+/*
+ * Display zoom at the fast codes (parity C5): screen columns per record
+ * sample. The converters run at their top rate on every code 0x00-0x03
+ * (124.8 MS/s each, 2x when the published record is the single-channel
+ * merge), so the codes differ only in this factor. Stock's factors
+ * (ms[0xE04] = 1000 / ratio, 0x08030B4E..0x08030B6C):
+ *     code          0x00 0x01 0x02 0x03   others
+ *     merged          10    5    2    1      1
+ *     per converter   20   10    4    2      1
+ * so the time per division is the same 10/20/50/100 ns whichever record
+ * the hardware delivered. `interleaved` is the published record's flag
+ * (fpga_acq_record_interleaved), not the channel count: a single channel
+ * whose merge is off still gets the per-converter row.
+ */
+uint8_t scope_timebase_interp_factor(uint8_t code, bool interleaved);
+
+/* The status-bar label for what the screen shows: the code's rate, x2 for a
+ * merged record, times the zoom above ("10ns" at 0x00 either way). */
+void scope_timebase_view_label(uint8_t code, bool interleaved, char *out, uint32_t n);
 
 /*
  * Hz from a measured period in SAMPLES, or 0.0f when the code has no rate or

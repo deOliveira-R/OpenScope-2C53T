@@ -22,6 +22,7 @@
 #include "scope_cursor.h"
 #include "scope_freq.h"
 #include "scope_record.h"
+#include "scope_geom.h"
 #include "math_channel.h"
 #include "persistence.h"
 #include "fpga.h"
@@ -194,22 +195,25 @@ void draw_scope_grid(void)
     const theme_t *th = theme_get();
     uint16_t x, y;
 
+    /* Stock's graticule (parity C5, scope_geom.h): 12 divisions of 25 px
+     * over window columns 0..300, centre at column 150. Columns 301..319
+     * stay clear for the trigger-level arrow and badge. */
     /* Vertical grid lines (dotted) */
-    for (x = 0; x < LCD_WIDTH; x += 32) {
+    for (x = 0; x < SCOPE_GEOM_COLS; x += SCOPE_GEOM_DIV_PX) {
         for (y = SCOPE_TOP; y < SCOPE_BOT; y += 2)
             lcd_set_pixel(x, y, th->grid);
     }
     /* Horizontal grid lines (dotted) */
     for (y = SCOPE_TOP; y < SCOPE_BOT; y += 26) {
-        for (x = 0; x < LCD_WIDTH; x += 2)
+        for (x = 0; x < SCOPE_GEOM_COLS; x += 2)
             lcd_set_pixel(x, y, th->grid);
     }
 
     /* Center crosshair (solid) */
-    for (x = 0; x < LCD_WIDTH; x++)
+    for (x = 0; x < SCOPE_GEOM_COLS; x++)
         lcd_set_pixel(x, SCOPE_MID_Y, th->grid_center);
     for (y = SCOPE_TOP; y < SCOPE_BOT; y++)
-        lcd_set_pixel(LCD_WIDTH / 2, y, th->grid_center);
+        lcd_set_pixel(SCOPE_GEOM_CENTER_COL, y, th->grid_center);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -385,6 +389,24 @@ static float record_rate_for_display(const scope_state_t *ss)
          : scope_timebase_sample_rate(ss->timebase_idx);
 }
 
+/* The display zoom for the code on the status bar (parity C5,
+ * scope_timebase_interp_factor): 1 everywhere but 0x00-0x03. The label
+ * (status_bar.c) and the cursors derive from the same call. */
+static uint8_t view_factor(const scope_state_t *ss)
+{
+    return scope_timebase_interp_factor(ss->timebase_idx,
+                                        fpga_acq_record_interleaved());
+}
+
+/* Columns per second on the glass: the record rate times the zoom. Only the
+ * column-domain readouts (cursor dt, 1/dt, X) use it; everything measured on
+ * the record itself (Freq, the C6 parameters) keeps the record rate, so a
+ * zoom can never leak into a measurement. */
+static float column_rate_for_display(const scope_state_t *ss)
+{
+    return record_rate_for_display(ss) * (float)view_factor(ss);
+}
+
 /*
  * Measure one channel's live capture record.
  *
@@ -516,20 +538,24 @@ _Static_assert((26 * 256 + SCOPE_H / 2) / SCOPE_H == (int)SCOPE_CAL_COUNTS_PER_D
 _Static_assert(SCOPE_CAL_RANGE_COUNT == VDIV_COUNT,
                "scope_cal range table length must match VDIV_COUNT");
 
-/* The horizontal counterpart: one sample per screen column, vertical grid
- * every 32 px, so a division is 32 samples. If either changes, the seconds/div
- * label and every frequency silently start meaning something else. */
-_Static_assert(SCOPE_TIMEBASE_SAMPLES_PER_DIV == 32.0f,
+/* The horizontal counterpart: one sample per screen column at zoom 1,
+ * vertical grid every SCOPE_GEOM_DIV_PX (25, stock's) px, so a division is 25
+ * samples; at codes 0x00-0x03 the zoom divides it (scope_timebase_view_label).
+ * If either changes, the seconds/div label and every frequency silently start
+ * meaning something else. */
+_Static_assert(SCOPE_TIMEBASE_SAMPLES_PER_DIV == (float)SCOPE_GEOM_DIV_PX,
                "grid pitch no longer matches SCOPE_TIMEBASE_SAMPLES_PER_DIV");
+_Static_assert(SCOPE_GEOM_COLS <= LCD_WIDTH, "the Y-T window must fit the glass");
 _Static_assert(SCOPE_TIMEBASE_CODE_COUNT == TIMEBASE_COUNT,
                "timebase rate table length must match TIMEBASE_COUNT");
 
-/* The cursor readout converts a pixel delta into a sample delta with this,
- * and it is true only because draw_channel_autofit()/draw_channel_fixed()
- * plot buf[x] at column x. Decimating or interpolating the plot without
- * changing this would silently rescale every cursor dt. */
+/* The cursor readout converts a pixel delta into a time with this and the
+ * rate it is handed. Since the fast-code zoom (C5) that rate is the COLUMN
+ * rate, record rate x zoom (column_rate_for_display), so one pixel stays one
+ * unit of the rate passed in. Handing the cursor the record rate while the
+ * plot is zoomed would silently rescale every dt by the zoom. */
 _Static_assert(SCOPE_CURSOR_SAMPLES_PER_PIXEL == 1.0f,
-               "the plot no longer draws one sample per column — "
+               "the cursor is fed the column rate, one column per unit — "
                "cursor dt and 1/dt would be wrong");
 
 /*
@@ -909,6 +935,21 @@ void scope_popup_overlay_tick(void)
  * Two copies of a transform that are supposed to agree will not stay agreeing.
  * One copy, two callers.
  */
+/* Display-task scratch shared by draw paths that never run at once: the roll
+ * view's FIFO copy (~610 B), the FFT waterfall's one-row pixel line (640 B)
+ * and the Y-T window (2 x 301 B, parity C5: what each column of each channel
+ * shows, interpolated at the fast codes). Each is filled and consumed on the
+ * display task inside one view's draw calls, and the views exclude each
+ * other (scope_display_mode). Sharing them keeps the coldtrace build inside
+ * RAM (it overflowed by 56 B when the round-2 parity branches were merged;
+ * the Y-T window is smaller than the waterfall line, so it costs nothing). */
+static union {
+    scope_roll_fifo_t roll;
+    uint16_t          waterfall[SHMEM_FFT_WATERFALL_COLS];
+    uint8_t           yt[2][SCOPE_GEOM_COLS];
+} ui_draw_scratch;
+#define yt_cols (ui_draw_scratch.yt)
+
 typedef struct {
     bool    on;
     int16_t y_top, y_bot;
@@ -924,7 +965,10 @@ typedef struct {
 static void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
                          int16_t y_top, int16_t y_bot, int8_t mask_ch)
 {
-    uint16_t n = (LCD_WIDTH < 512u) ? (uint16_t)LCD_WIDTH : 512u;
+    /* Over the window as DRAWN (the interpolated columns, not the source
+     * samples): sin(x)/x overshoots a fast edge by a few counts, and fitting
+     * the source would clip that flat at the band edge. */
+    uint16_t n = SCOPE_GEOM_COLS;
     uint8_t mn = 255, mx = 0;
     for (uint16_t x = 0; x < n; x++) {
         uint8_t sv = buf[x];
@@ -1042,6 +1086,8 @@ static float autofit_counts_per_pixel(const autofit_t *a)
  */
 static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                           const volatile uint8_t *src_buf);
+static void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
+                       const volatile uint8_t *b2);
 
 static int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
 {
@@ -1063,15 +1109,15 @@ static int16_t trigger_marker_y_full(const scope_state_t *ss)
         return trigger_marker_y(ss, NULL);
     const bool src2 = (ss->trigger.source == TRIG_SRC_CH2);
     const bool c1 = ss->ch1.enabled, c2 = ss->ch2.enabled;
-    const volatile uint8_t *src = src2 ? b2 : b1;
-    uint16_t toff = scope_soft_trigger_offset(ss, src);
+    view_build(ss, b1, b2);
+    const uint8_t *src = yt_cols[src2 ? 1 : 0];
     autofit_t a = { false, 0, 0, 0, 8, 0 };
     if (c1 && c2)
-        autofit_prep(&a, src + toff, src2 ? (int16_t)(SCOPE_MID_Y + 1) : (int16_t)SCOPE_TOP,
-                                     src2 ? (int16_t)SCOPE_BOT : (int16_t)(SCOPE_MID_Y - 1),
+        autofit_prep(&a, src, src2 ? (int16_t)(SCOPE_MID_Y + 1) : (int16_t)SCOPE_TOP,
+                              src2 ? (int16_t)SCOPE_BOT : (int16_t)(SCOPE_MID_Y - 1),
                      src2 ? 1 : 0);
     else if (src2 ? c2 : c1)
-        autofit_prep(&a, src + toff, SCOPE_TOP, SCOPE_BOT, src2 ? 1 : 0);
+        autofit_prep(&a, src, SCOPE_TOP, SCOPE_BOT, src2 ? 1 : 0);
     return trigger_marker_y(ss, &a);
 }
 
@@ -1093,13 +1139,19 @@ static int16_t trigger_marker_y_full(const scope_state_t *ss)
  */
 static uint8_t  g_trig_anchor = 0;        /* see scope_soft_trigger_offset() */
 static int16_t  g_trig_x_actual = -1;
+static scope_window_t g_view = { 0, 1u };   /* the window last placed (scope_geom.h) */
 static bool     g_mask_ov_on;
 static bool     g_mask_bounds_on;
 static uint32_t g_mask_ov_gen;
 
 static void mask_overlay_begin(void)
 {
+    /* L == 1 only: the mask indexes record SAMPLES by column offset from the
+     * anchor (scope_mask_column), which holds only at one column per sample.
+     * A zoomed fast code draws the trace without the overlay rather than
+     * colouring columns 10-20x off the samples that were judged. */
     g_mask_ov_on = (g_trig_anchor == 2u) && g_trig_x_actual >= 0 &&
+                   g_view.L == 1u &&
                    scope_mask_state() != MASK_PF_EMPTY;
     /* The bounds depend on the alignment, not on which record was judged,
      * so they are not gated on the generation: gating them would blink them
@@ -1156,8 +1208,8 @@ static void draw_mask_strip(const theme_t *th, uint16_t band_bot)
  * column, so a ghost is exactly where the trace was, through whichever
  * transform (autofit or fixed) drew it, and costs no per-column storage (RAM
  * is tight). prev_y < 0: first column. */
-static uint16_t g_math_toff;    /* record offset of the drawn window (soft trigger) */
-static bool     g_math_live;    /* a real record was drawn this frame */
+
+static bool     g_math_live;    /* a real record was drawn this frame (yt_cols valid) */
 static inline void persist_note(uint16_t x, int16_t prev_y, int16_t y)
 {
     if (persist_enabled && persist_is_initialized())
@@ -1170,7 +1222,7 @@ static inline void persist_note(uint16_t x, int16_t prev_y, int16_t y)
 static float draw_channel_autofit(const volatile uint8_t *buf, uint16_t color,
                                   int16_t y_top, int16_t y_bot, int8_t mask_ch)
 {
-    uint16_t n = (LCD_WIDTH < 512u) ? (uint16_t)LCD_WIDTH : 512u;
+    uint16_t n = SCOPE_GEOM_COLS;
     autofit_t a;
     autofit_prep(&a, buf, y_top, y_bot, mask_ch);
 
@@ -1223,7 +1275,7 @@ static float draw_channel_fixed(const volatile uint8_t *buf, uint16_t color,
                                 int16_t y_top, int16_t y_bot, uint8_t center,
                                 int8_t mask_ch)
 {
-    uint16_t n = (LCD_WIDTH < 512u) ? (uint16_t)LCD_WIDTH : 512u;
+    uint16_t n = SCOPE_GEOM_COLS;
     int16_t  y_mid = (int16_t)((y_top + y_bot) / 2);
     const uint16_t fail_c = theme_get()->warning;
 
@@ -1295,39 +1347,54 @@ static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *bu
     return trig_edge_anchor(buf, c, ss->trigger.edge == TRIG_RISING);
 }
 
+/* Free-run window: from index 0 at one column per sample, as before C5. A
+ * zoomed window is only 15-151 samples wide, so it starts past the record's
+ * invalid head instead of drawing nothing but that head. */
+static uint16_t view_free_run(uint8_t L)
+{
+    g_view.L  = L;
+    g_view.u0 = (L == 1u) ? 0 : (int32_t)SCOPE_RECORD_HEAD_SKIP * (int32_t)L;
+    return (uint16_t)scope_geom_first_sample(&g_view);
+}
+
+/* Returns the record index window column 0 shows (the old `toff`, which is
+ * what `spi3 frame` prints); the window itself is left in g_view. */
 static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                           const volatile uint8_t *src_buf)
 {
     g_trig_x_actual = -1;
     g_trig_anchor = 0;
+    const uint8_t L = view_factor(ss);
     if (!ss->soft_trigger || src_buf == NULL)
-        return 0;
+        return view_free_run(L);
 
-    uint16_t draw_n = (LCD_WIDTH < 512u) ? (uint16_t)LCD_WIDTH : 512u;
-    if (FPGA_ADC_BUF_SIZE <= draw_n)
-        return 0;                                 /* no slack to slide */
-    uint16_t max_start = (uint16_t)(FPGA_ADC_BUF_SIZE - draw_n);
+    const int32_t N = (int32_t)FPGA_ADC_BUF_SIZE;
 
-    /* Horizontal position: the column the trigger point should land on. */
+    /* Horizontal position: the column the trigger point should land on,
+     * stock's 150 + hpos with hpos +-150 (scope_geom.h). */
     int tx = ss->trig_x;
-    if (tx < 8) tx = 8;
-    if (tx > (int)draw_n - 8) tx = (int)draw_n - 8;
+    if (tx < SCOPE_GEOM_TRIG_COL_MIN) tx = SCOPE_GEOM_TRIG_COL_MIN;
+    if (tx > SCOPE_GEOM_TRIG_COL_MAX) tx = SCOPE_GEOM_TRIG_COL_MAX;
+    int32_t before, after;           /* record samples left / right of tx */
+    scope_geom_span(L, tx, &before, &after);
 
     /* 1. Hardware anchor (2026-09-22): a time-ordered record carries the
      *    hardware trigger at index 512, and the crossing nearest it IS the
      *    event that fired. CH1 only -- the level register was measured there.
      *    Tested on the trigger SOURCE, not the buffer address: `spi3 frame`
      *    passes a snapshot copy, and an address test made the bench check
-     *    exercise the fallback while the screen used the anchor (v17). */
+     *    exercise the fallback while the screen used the anchor (v17).
+     *    Zoomed (L > 1), the crossing is placed to 1/L sample from the two
+     *    samples around it -- stock re-finds it on the interpolated copy for
+     *    the same reason (0x08021EF0): at 10 ns/div one sample is 10-20 px. */
     if (ss->trigger.source != TRIG_SRC_CH2 && fpga_acq_record_time_ordered()) {
         int a = hw_trigger_anchor(ss, src_buf);
-        if (a >= 0) {
-            int start = a - tx;
-            if (start < 0) start = 0;
-            if (start > (int)max_start) start = (int)max_start;
-            g_trig_x_actual = (int16_t)(a - start);
+        if (a >= 1) {
+            const int c = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
+            const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], c);
+            g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx, 0, N);
             g_trig_anchor = 2;
-            return (uint16_t)start;
+            return (uint16_t)scope_geom_first_sample(&g_view);
         }
     }
 
@@ -1341,14 +1408,12 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
      * indistinguishable from free-run. Every frame whose seam fell OUTSIDE
      * the drawn window locked to <0.1 sample, so the algorithm is sound and
      * the guard just keeps it off the bad data: start the search at
-     * SEAM_GUARD, which also keeps the window [off, off+draw_n] clear of the
+     * SEAM_GUARD, which also keeps the drawn window clear of the
      * late seams for any signal above ~35 Hz at the slow timebases. The
      * underlying acquisition defect is filed, not fixed, by this.
      * The number itself lives in scope_record.h so the spectrum views skip
      * the same head (2026-09-15). */
     const uint16_t SEAM_GUARD = SCOPE_RECORD_HEAD_SKIP;
-    if (max_start <= SEAM_GUARD)
-        return 0;
 
     /* Auto-level: base the threshold at the SIGNAL'S OWN midline, not a fixed
      * ADC 128. The capture is frequently not centred (e.g. mean 84, range
@@ -1366,35 +1431,52 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
         if (s > mx) mx = s;
     }
     if ((int)mx - (int)mn < 8)
-        return 0;                                 /* ~flat: nothing to lock to */
+        return view_free_run(L);                  /* ~flat: nothing to lock to */
 
     int thr = ((int)mn + (int)mx) / 2 + ((int)ss->trigger.level * 256) / SCOPE_H;
     if (thr < (int)mn + 1) thr = (int)mn + 1;     /* keep it inside the signal */
     if (thr > (int)mx - 1) thr = (int)mx - 1;
 
     /* 2. Soft anchor: the midline crossing, searched so that the window
-     *    [crossing - tx, crossing - tx + draw_n) stays inside the record and
-     *    clear of the guarded head. */
+     *    (`before` samples left of the crossing, `after` right) stays inside
+     *    the record and clear of the guarded head. */
     /*    Stock's three-point edge confirm (0x08028DE4, parity C3) on top of
      *    the Schmitt arming this always had: a crossing whose next sample
      *    falls straight back is a one-sample spike, not the edge. SINGLE
      *    keeps two points, as stock does. The measured case for adding it
      *    is in trig_edge.h (tests/test_trig_edge.c [7]-[9]). */
-    const int lo = (int)SEAM_GUARD + tx;
-    const int hi = (int)max_start + tx + 1;       /* the old search's span */
+    const int lo = (int)SEAM_GUARD + (int)before;
+    const int hi = (int)N - (int)after;           /* last start that fits, +1 */
     int a = trig_edge_search(src_buf, (int)FPGA_ADC_BUF_SIZE, lo, hi, thr,
                              ss->trigger.edge == TRIG_RISING, 3u,
                              ss->trigger.mode == TRIG_SINGLE ? 0u : 1u);
     /* The old search returned index 0 of its span as "nothing": keep that
      * (a crossing on the very first sample has no "before"). */
     if (a <= lo)
-        return 0u;
-    g_trig_x_actual = (int16_t)tx;
+        return view_free_run(L);
+    const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], thr);
+    g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx,
+                                              (int32_t)SEAM_GUARD, N);
     g_trig_anchor = 1;
-    return (uint16_t)(a - tx);
+    return (uint16_t)scope_geom_first_sample(&g_view);
+}
+
+/* Place the window on the trigger source and fill yt_cols for BOTH channels
+ * through it (a channel with no buffer reads zeros). One copy for every
+ * caller -- full path, live compositor, trigger marker, math trace -- so a
+ * change of renderer can never move or re-phase the trace. */
+static void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
+                       const volatile uint8_t *b2)
+{
+    const volatile uint8_t *src =
+        (ss->trigger.source == TRIG_SRC_CH2 && b2) ? b2 : (b1 ? b1 : b2);
+    (void)scope_soft_trigger_offset(ss, src);
+    scope_geom_fill(b1, (int32_t)FPGA_ADC_BUF_SIZE, &g_view, yt_cols[0], SCOPE_GEOM_COLS);
+    scope_geom_fill(b2, (int32_t)FPGA_ADC_BUF_SIZE, &g_view, yt_cols[1], SCOPE_GEOM_COLS);
 }
 
 int16_t scope_ui_trig_x_actual(void) { return g_trig_x_actual; }
+uint8_t scope_ui_view_factor(void)   { return g_view.L; }
 uint8_t scope_ui_trig_anchor(void)   { return g_trig_anchor; }
 
 /* Exported for bench validation (`spi3 frame`): the offset the renderer would
@@ -1453,17 +1535,14 @@ void draw_demo_waveform(uint32_t frame)
 
         /* Software trigger: find the phase on the trigger SOURCE channel and
          * shift both channels' render windows by the same offset, so the trace
-         * stops free-running (dancing) while staying time-aligned. */
-        const volatile uint8_t *trig_src =
-            (ss->trigger.source == TRIG_SRC_CH2 && ch2_buf) ? ch2_buf :
-            (ch1_buf ? ch1_buf : ch2_buf);
-        uint16_t toff = scope_soft_trigger_offset(ss, trig_src);
+         * stops free-running (dancing) while staying time-aligned. The window
+         * (and the fast-code zoom, C5) is built once into yt_cols. */
+        view_build(ss, ch1_buf, ch2_buf);
         mask_overlay_begin();
-        const volatile uint8_t *b1 = (ch1_buf != NULL) ? ch1_buf + toff : NULL;
-        const volatile uint8_t *b2 = (ch2_buf != NULL) ? ch2_buf + toff : NULL;
+        const volatile uint8_t *b1 = (ch1_buf != NULL) ? yt_cols[0] : NULL;
+        const volatile uint8_t *b2 = (ch2_buf != NULL) ? yt_cols[1] : NULL;
         /* The same window and channel set for the math trace and persistence
          * (C12): they must be drawn from exactly what the traces were. */
-        g_math_toff = toff;
         g_math_live = true;
 
         /* True-scale only where the range has a real volts/div; a NONE range
@@ -1621,7 +1700,7 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 {
     const scope_state_t *ss = scope_state_get();
     const cursor_state_t *c = &ss->cursor;
-    const float fs = record_rate_for_display(ss);
+    const float fs = column_rate_for_display(ss);   /* columns, not samples */
     const scope_cursor_conf_t cf = scope_cursor_tb_conf(ss->timebase_idx);
     const int16_t ta = scope_ui_trig_x_actual();
     const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
@@ -1732,9 +1811,10 @@ static void draw_cursors(void)
          * bar labels and the Freq badge derive from, so the three cannot
          * disagree about what rate is in force. */
         /* The PUBLISHED record's rate, not the table's: an interleaved record
-         * is 2x (record_rate_for_display). The confidence is the table tier of
-         * the code, which the doubling does not change. */
-        const float cfs = record_rate_for_display(ss);
+         * is 2x (record_rate_for_display), times the fast-code zoom, because
+         * dx counts columns (column_rate_for_display). The confidence is the
+         * table tier of the code, which neither factor changes. */
+        const float cfs = column_rate_for_display(ss);
         const scope_cursor_conf_t cconf = scope_cursor_tb_conf(ss->timebase_idx);
         scope_cursor_reading_t dt = scope_cursor_delta_t_fs(cfs, cconf, dx);
         scope_cursor_format(&dt, buf, sizeof(buf));
@@ -1843,8 +1923,8 @@ static void draw_persistence_overlay(void)
 /* ═══════════════════════════════════════════════════════════════════
  * Math channel overlay (C12: stock's 8 ops on the real records)
  *
- * Reads the same 320-sample window the traces were drawn from (g_math_toff,
- * the soft-trigger offset). Volts where the range is calibrated
+ * Reads the same 301-column window the traces were drawn from (yt_cols,
+ * placed by view_build: trigger offset and, at the fast codes, the zoom). Volts where the range is calibrated
  * (scope_cal gain, 0 V = scope_measure_zero_for), counts where not. Drawn
  * about the graticule centre on its OWN scale (a 1-2-5 step per division
  * chosen from the result, shown in the label): A*B and A/B have no common
@@ -1891,13 +1971,14 @@ static void draw_math_waveform(void)
     math_unit_t unit = math_unit_for(op, &in);
 
     float peak = 0.0f;
-    for (uint16_t x0 = 0; x0 < LCD_WIDTH; x0 += CH) {
-        for (uint16_t i = 0; i < CH; i++) {
-            a[i] = s1 ? s1[g_math_toff + x0 + i] : 0u;
-            b[i] = s2 ? s2[g_math_toff + x0 + i] : 0u;
+    for (uint16_t x0 = 0; x0 < SCOPE_GEOM_COLS; x0 += CH) {
+        const uint16_t nc = (SCOPE_GEOM_COLS - x0 < CH) ? (uint16_t)(SCOPE_GEOM_COLS - x0) : CH;
+        for (uint16_t i = 0; i < nc; i++) {
+            a[i] = s1 ? yt_cols[0][x0 + i] : 0u;
+            b[i] = s2 ? yt_cols[1][x0 + i] : 0u;
         }
-        math_compute(op, a, b, CH, &in, v);
-        float pk = math_peak(v, CH);
+        math_compute(op, a, b, nc, &in, v);
+        float pk = math_peak(v, nc);
         if (pk > peak) peak = pk;
     }
 
@@ -1915,14 +1996,15 @@ static void draw_math_waveform(void)
     const float step = math_scale_value(scale_idx);
 
     int16_t prev = -1;
-    for (uint16_t x0 = 0; x0 < LCD_WIDTH; x0 += CH) {
-        for (uint16_t i = 0; i < CH; i++) {
-            a[i] = s1 ? s1[g_math_toff + x0 + i] : 0u;
-            b[i] = s2 ? s2[g_math_toff + x0 + i] : 0u;
+    for (uint16_t x0 = 0; x0 < SCOPE_GEOM_COLS; x0 += CH) {
+        const uint16_t nc = (SCOPE_GEOM_COLS - x0 < CH) ? (uint16_t)(SCOPE_GEOM_COLS - x0) : CH;
+        for (uint16_t i = 0; i < nc; i++) {
+            a[i] = s1 ? yt_cols[0][x0 + i] : 0u;
+            b[i] = s2 ? yt_cols[1][x0 + i] : 0u;
         }
-        math_compute(op, a, b, CH, &in, v);
-        math_to_rows(v, CH, step, SCOPE_DIV_PX, SCOPE_MID_Y, SCOPE_TOP, SCOPE_BOT, rows);
-        for (uint16_t i = 0; i < CH; i++) {
+        math_compute(op, a, b, nc, &in, v);
+        math_to_rows(v, nc, step, SCOPE_DIV_PX, SCOPE_MID_Y, SCOPE_TOP, SCOPE_BOT, rows);
+        for (uint16_t i = 0; i < nc; i++) {
             int16_t lo = rows[i], hi = rows[i];
             if (prev >= 0) {
                 if (prev < lo) lo = prev;
@@ -2581,13 +2663,9 @@ void draw_scope_live_frame(void)
      * to the trigger source's crossing, using the same helper and offset as the
      * full path (draw_demo_waveform) so the two renderers stay in phase. Both
      * channels shift by the same amount to stay time-aligned. */
-    {
-        const volatile uint8_t *trig_src =
-            (ss->trigger.source == TRIG_SRC_CH2) ? b2 : b1;
-        uint16_t toff = scope_soft_trigger_offset(ss, trig_src);
-        b1 += toff;
-        b2 += toff;
-    }
+    view_build(ss, b1, b2);
+    b1 = yt_cols[0];
+    b2 = yt_cols[1];
     mask_overlay_begin();          /* per-column mask colours, see draw_mask_strip */
 
     /* The live band stops where fixed furniture begins: the debug strip
@@ -2648,9 +2726,13 @@ void draw_scope_live_frame(void)
     if (hole_top >= hole_bot) hole = false;
 
     for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        /* The trace lives in the 301-column window (scope_geom.h); right of
+         * it the column carries only the trigger furniture and background. */
+        const bool inwin = (x < SCOPE_GEOM_COLS);
+        const bool on1 = a1.on && inwin, on2 = a2.on && inwin;
         /* One transform, shared with the full path — see autofit_prep. */
-        int16_t y1 = a1.on ? autofit_y(&a1, b1[x]) : (int16_t)SCOPE_MID_Y;
-        int16_t y2 = a2.on ? autofit_y(&a2, b2[x]) : (int16_t)SCOPE_MID_Y;
+        int16_t y1 = on1 ? autofit_y(&a1, b1[x]) : (int16_t)SCOPE_MID_Y;
+        int16_t y2 = on2 ? autofit_y(&a2, b2[x]) : (int16_t)SCOPE_MID_Y;
 
         /* 2-px dot plus a span to the previous sample, so steep edges draw
          * as connected verticals instead of the full path's dotted gaps. */
@@ -2675,10 +2757,10 @@ void draw_scope_live_frame(void)
         int16_t bl1 = -1, bh1 = -1, bl2 = -1, bh2 = -1;
         if (g_mask_bounds_on && MASK_BOUND_DOT(x)) {
             uint8_t lo, hi;
-            if (a1.on && scope_mask_bound_at(0, (int)x, g_trig_x_actual, &lo, &hi)) {
+            if (on1 && scope_mask_bound_at(0, (int)x, g_trig_x_actual, &lo, &hi)) {
                 bl1 = autofit_y(&a1, lo); bh1 = autofit_y(&a1, hi);
             }
-            if (a2.on && scope_mask_bound_at(1, (int)x, g_trig_x_actual, &lo, &hi)) {
+            if (on2 && scope_mask_bound_at(1, (int)x, g_trig_x_actual, &lo, &hi)) {
                 bl2 = autofit_y(&a2, lo); bh2 = autofit_y(&a2, hi);
             }
         }
@@ -2722,19 +2804,20 @@ void draw_scope_live_frame(void)
             else if (mstrip && y >= band_bot - MASK_STRIP_H &&
                      (!mdot || ((x + y) & 1u) == 0u))
                 c = mstrip;
-            else if (a2.on && (int16_t)y >= lo2 && (int16_t)y <= hi2)
+            else if (on2 && (int16_t)y >= lo2 && (int16_t)y <= hi2)
                 c = tc2;
-            else if (a1.on && (int16_t)y >= lo1 && (int16_t)y <= hi1)
+            else if (on1 && (int16_t)y >= lo1 && (int16_t)y <= hi1)
                 c = tc1;
             else if ((int16_t)y == bl1 || (int16_t)y == bh1 ||
                      (int16_t)y == bl2 || (int16_t)y == bh2)
                 c = th->text_secondary;
             else if ((int16_t)y == trig_y && (x & trig_step) == 0 && x < LCD_WIDTH - 6)
                 c = th->trigger;
-            else if (y == SCOPE_MID_Y || x == LCD_WIDTH / 2)
+            else if (inwin && (y == SCOPE_MID_Y || x == SCOPE_GEOM_CENTER_COL))
                 c = th->grid_center;
-            else if (((x & 31u) == 0 && (y & 1u) == 0) ||
-                     (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0))
+            else if (inwin &&
+                     ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
+                      (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
                 c = th->grid;
             else
                 c = th->background;
@@ -2801,15 +2884,8 @@ int scope_display_mode(void)
     return scope_state_get()->roll ? (int)SCOPE_DISP_ROLL : (int)SCOPE_DISP_YT;
 }
 
-/* Display-task scratch shared by two draw paths that never run at once: the
- * roll view's FIFO copy (~610 B) and the FFT waterfall's one-row pixel line
- * (640 B). Both are filled and consumed inside one draw call on the display
- * task. Sharing them keeps the coldtrace build inside RAM (it overflowed by
- * 56 B when the round-2 parity branches were merged). */
-static union {
-    scope_roll_fifo_t roll;
-    uint16_t          waterfall[SHMEM_FFT_WATERFALL_COLS];
-} ui_draw_scratch;
+/* ui_draw_scratch (the roll FIFO copy) is defined with the Y-T window it
+ * shares storage with, above draw_channel_autofit(). */
 #define roll_snap      (ui_draw_scratch.roll)
 #define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
 #define ROLL_LABEL_H 16u

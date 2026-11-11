@@ -180,9 +180,12 @@ bool input_inject_button(button_id_t b);
  * run) and how it was found (0 none, 1 soft midline, 2 hardware level
  * crossing of a time-ordered record). */
 int16_t scope_ui_trig_x_actual(void);
+/* Columns per record sample in the last drawn window (1, or the fast-code
+ * zoom 2..20 at timebase 0x00-0x03; parity C5, scope_geom.h). */
+uint8_t scope_ui_view_factor(void);
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
- * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the record
- * rate used. For `fpga scope cursor`. */
+ * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the column
+ * rate used (record rate x zoom). For `fpga scope cursor`. */
 void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
                             char y1[16], char y2[16], char dy[16], float *fs_out);
 /* Repaint the mask pass/fail readout slot (badge row 2) -- main.c calls it

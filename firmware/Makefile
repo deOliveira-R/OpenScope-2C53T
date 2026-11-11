@@ -90,6 +90,8 @@ C_SOURCES += src/ui/theme.c
 C_SOURCES += src/ui/xy_mode.c
 C_SOURCES += src/ui/roll_mode.c
 C_SOURCES += src/ui/scope_roll.c
+C_SOURCES += src/ui/scope_geom.c
+C_SOURCES += src/dsp/sinc_interp.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
@@ -595,6 +597,27 @@ $(BUILD_DIR)/test_scope_timebase: tests/test_scope_timebase.c src/ui/scope_timeb
 # rates and all three were fitted to an incoherent record, so the test fails
 # the build if any of them is re-entered.
 test-scope-timebase: $(BUILD_DIR)/test_scope_timebase
+	$<
+
+# Parity C5: the fast-timebase sin(x)/x interpolator (table == documented
+# design, frequency response to 0.4 fs, step overshoot within the ideal
+# sinc's own, saturation, edges) and the Y-T column geometry (stock's 25 px
+# divisions, 301 columns, trigger column 150 +- 150, zoom-1 mapping identical
+# to the pre-C5 buf[toff + x], fill == interpolator).
+$(BUILD_DIR)/test_sinc_interp: tests/test_sinc_interp.c src/dsp/sinc_interp.c src/dsp/sinc_interp.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/dsp $< src/dsp/sinc_interp.c -lm -o $@
+
+.PHONY: test-sinc-interp
+test-sinc-interp: $(BUILD_DIR)/test_sinc_interp
+	$<
+
+$(BUILD_DIR)/test_scope_geom: tests/test_scope_geom.c src/ui/scope_geom.c src/ui/scope_geom.h \
+                              src/dsp/sinc_interp.c src/dsp/sinc_interp.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui -Isrc/dsp $< \
+		src/ui/scope_geom.c src/dsp/sinc_interp.c -lm -o $@
+
+.PHONY: test-scope-geom
+test-scope-geom: $(BUILD_DIR)/test_scope_geom
 	$<
 
 $(BUILD_DIR)/test_scope_cursor: tests/test_scope_cursor.c src/ui/scope_cursor.c src/ui/scope_cursor.h \
