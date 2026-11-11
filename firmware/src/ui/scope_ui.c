@@ -2801,7 +2801,16 @@ int scope_display_mode(void)
     return scope_state_get()->roll ? (int)SCOPE_DISP_ROLL : (int)SCOPE_DISP_YT;
 }
 
-static scope_roll_fifo_t roll_snap;   /* display-task copy, ~610 B */
+/* Display-task scratch shared by two draw paths that never run at once: the
+ * roll view's FIFO copy (~610 B) and the FFT waterfall's one-row pixel line
+ * (640 B). Both are filled and consumed inside one draw call on the display
+ * task. Sharing them keeps the coldtrace build inside RAM (it overflowed by
+ * 56 B when the round-2 parity branches were merged). */
+static union {
+    scope_roll_fifo_t roll;
+    uint16_t          waterfall[SHMEM_FFT_WATERFALL_COLS];
+} ui_draw_scratch;
+#define roll_snap      (ui_draw_scratch.roll)
 #define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
 #define ROLL_LABEL_H 16u
 
@@ -3318,7 +3327,7 @@ _Static_assert(WATERFALL_COLS == LCD_WIDTH,
  * large, whereas one line is small enough that the pool's ownership
  * lifetime rules would cost more than they save.
  */
-static uint16_t waterfall_line[WATERFALL_COLS];
+#define waterfall_line (ui_draw_scratch.waterfall)   /* shared, see ui_draw_scratch */
 
 /*
  * Intensity -> colour, with a BLACK floor.
