@@ -62,11 +62,18 @@ void scope_trigger_dac_init(void)
      * faithfulness bug; stock's net CH1 CTRL is 0x3D, buffered). D1EN is set
      * LAST, in its own write, so the first software trigger cannot latch
      * against an unconfigured trigger select.
-     * Preserve channel-2 bits (siggen / CH2 path may use them). */
+     * Preserve channel-2 bits: they are the signal generator (DAC2/PA5,
+     * dac_output.c), which rewrites them from another task. Both sides do
+     * their read-modify-write with interrupts masked, or a preemption
+     * between this read and write would put back a stale channel-2 half
+     * and stop the generator. */
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     uint32_t ctrl = DAC_CTRL & 0xFFFF0000u;
     ctrl |= DAC_D1TSEL_SW | DAC_D1TEN;   /* trigger config, D1EN still clear */
     DAC_CTRL = ctrl;
     DAC_CTRL = ctrl | DAC_D1EN;          /* enable last (stock order) — 0x3D */
+    __set_PRIMASK(primask);
 
     inited = 1;
 }
