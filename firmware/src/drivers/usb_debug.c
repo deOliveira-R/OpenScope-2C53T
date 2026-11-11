@@ -2823,13 +2823,81 @@ static void cmd_fpga_scope_probe(const char *args)
     usb_debug_printf("CH%u probe %s\r\n", (unsigned)ch, probe_labels[c->probe]);
 }
 
+/* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
+ * timebase <= 3, a quiet CH1 input. Sweeps the CH1 offset DAC over five codes
+ * of this unit's calibration page (base+80, base+400, mid, upper-400, upper —
+ * bench B4's set), reads the op04 (A) / op05 (B) means at each, fits
+ * B = gain * A + offset (dsp/interleave_cal.c) and applies it in RAM only.
+ * Refuses, leaving the correction as it was, on a noisy input, rail-clipped
+ * levels, a short span, a gain outside 0.5..2 or a poor fit. The DAC is put
+ * back to the position-controlled code whatever happens. Integer printing: the
+ * shell's printf has no floats. */
+static long x100(float v) { return (long)(v * 100.0f + (v < 0.0f ? -0.5f : 0.5f)); }
+#define F2(v)  (long)(x100(v) / 100), (long)((x100(v) < 0 ? -x100(v) : x100(v)) % 100)
+
+static void cmd_fpga_interleave_cal(void)
+{
+    scope_state_t *ss = scope_state_get();
+    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+        usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
+                     "(fpga scope ch 2 off; fpga scope tb <= 3)\r\n");
+        return;
+    }
+    uint16_t base, upper, codes[5];
+    if (!scope_vpos_ch1_endpoints(&base, &upper) || !il_cal_dac_points(base, upper, codes)) {
+        usb_send_str("refused: needs a usable calibration page (cal page) with a 1000+ code span "
+                     "and the generator off\r\n");
+        return;
+    }
+    static il_cal_point_t pt[5];
+    unsigned got = 0;
+    usb_send_str("interleave cal: keep CH1 quiet (shorted or a steady DC); sweeping the CH1 offset DAC\r\n");
+    for (unsigned i = 0; i < 5u; i++) {
+        if (!scope_vpos_ch1_raw(codes[i])) break;
+        vTaskDelay(pdMS_TO_TICKS(250));            /* the offset RC settles */
+        fpga_ilcal_begin(2);
+        if (!fpga_ilcal_collect(8, 8000, &pt[i])) {
+            usb_debug_printf("  DAC %u: no records (acquisition not running?)\r\n", (unsigned)codes[i]);
+            break;
+        }
+        got++;
+        usb_debug_printf("  DAC %4u  A %ld.%02ld  B %ld.%02ld  p2p %u/%u  drift %ld.%02ld/%ld.%02ld%s\r\n",
+                         (unsigned)codes[i], F2(pt[i].a_mean), F2(pt[i].b_mean),
+                         (unsigned)pt[i].a_p2p, (unsigned)pt[i].b_p2p,
+                         F2(pt[i].a_drift), F2(pt[i].b_drift),
+                         pt[i].clipped ? "  CLIPPED (not used)" : "");
+    }
+    scope_vpos_apply_ch(1u, ss->ch1.vdiv_idx);     /* DAC back to the position code */
+    if (got < 5u) {
+        usb_send_str("interleave cal: aborted, correction unchanged\r\n");
+        return;
+    }
+    il_cal_params_t prm;
+    il_cal_default_params(&prm);
+    il_cal_fit_t fit;
+    const il_cal_status_t st = il_cal_fit(pt, 5u, &prm, &fit);
+    usb_debug_printf("  fit: B = gain %ld/10000 * A + offset %ld/100   used %u  span %ld.%02ld  "
+                     "residual max %ld.%02ld rms %ld.%02ld\r\n",
+                     (long)(fit.gain * 10000.0f + 0.5f), x100(fit.offset), (unsigned)fit.used,
+                     F2(fit.a_span), F2(fit.resid_max), F2(fit.resid_rms));
+    if (st != IL_CAL_OK) {
+        usb_debug_printf("interleave cal: REFUSED, %s; correction unchanged\r\n", il_cal_status_str(st));
+        return;
+    }
+    fpga_interleave_corr_set(fit.gain, fit.offset);
+    usb_send_str("interleave cal: applied (RAM only, lost at reset). Skew is not estimated here.\r\n");
+}
+
 /* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
  * — the single-channel merge and its converter-B correction (B' = (B - off) /
  * gain, record units). Integer arguments: the shell has no float parsing. */
 static void cmd_fpga_interleave(const char *args)
 {
     while (*args == ' ') args++;
-    if (strncmp(args, "corr", 4) == 0) {
+    if (strncmp(args, "cal", 3) == 0) {
+        cmd_fpga_interleave_cal();
+        /* fall through to the status line below */
+    } else if (strncmp(args, "corr", 4) == 0) {
         const char *p = args + 4;
         while (*p == ' ') p++;
         uint32_t g = 0, o = 0;
@@ -8712,7 +8780,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
           "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
-          "fpga interleave [on|off|corr g o]  Single-channel merge; B corr gain x1e4, offset x100\r\n"),
+          "fpga interleave [on|off|corr g o|cal]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga acqbr", cmd_fpga_acqbr, 0,

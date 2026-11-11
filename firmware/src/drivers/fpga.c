@@ -30,6 +30,7 @@
 #include "scope_vpos.h"
 #include "../dsp/trig_edge.h"
 #include "../dsp/interleave.h"
+#include "../dsp/interleave_cal.h"
 #include "../ui/ui.h"
 #include "../ui/scope_state.h"
 #include "../ui/scope_timebase.h"
@@ -3545,6 +3546,19 @@ static volatile bool acq_reprime_req = false;
 static volatile bool acq_il_enable = true;
 static volatile uint32_t acq_il_roll_holds = 0;   /* untriggered reads held, not merged */
 static interleave_corr_t acq_il_corr = { 1.0f, 0.0f };
+/* Self-calibration collector (parity C2, `fpga interleave cal`): while `on`,
+ * every pair the acq task reads (op04 = A, op05 = B, record units) adds the
+ * means of its centre 512 samples (the window the merge uses). DC only: the
+ * same-moment requirement of a merge does not apply to a flat input, so
+ * untriggered roll reads count too. Shell side owns the DAC and the timing. */
+static struct {
+    volatile bool on;
+    volatile uint8_t skip;          /* records to drop after begin (pipeline) */
+    volatile uint8_t n;
+    volatile uint8_t p2p_a, p2p_b;
+    volatile bool clipped;
+    float sum_a, sum_b, amin, amax, bmin, bmax;   /* of the per-record means */
+} acq_ilcal;
 /* EXP-45 (2026-09-14): gap between the 0x04 and 0x05 reads of a pair. Shell
  * reads 50 ms apart each produce a PC0 edge; the task's back-to-back pair
  * (~140 us apart at /2) produces none, which is why NORMAL could not sustain
@@ -3813,6 +3827,71 @@ void fpga_interleave_corr_get(float *gain, float *offset)
     if (gain)   *gain = acq_il_corr.gain;
     if (offset) *offset = acq_il_corr.offset;
 }
+void fpga_ilcal_begin(uint8_t skip)
+{
+    acq_ilcal.on = false;
+    acq_ilcal.skip = skip; acq_ilcal.n = 0;
+    acq_ilcal.p2p_a = acq_ilcal.p2p_b = 0;
+    acq_ilcal.clipped = false;
+    acq_ilcal.sum_a = acq_ilcal.sum_b = 0.0f;
+    acq_ilcal.amin = acq_ilcal.bmin = 1e9f;
+    acq_ilcal.amax = acq_ilcal.bmax = -1e9f;
+    acq_ilcal.on = true;
+}
+
+bool fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *out)
+{
+    const TickType_t t0 = xTaskGetTickCount();
+    while (acq_ilcal.n < records) {
+        if ((xTaskGetTickCount() - t0) >= pdMS_TO_TICKS(timeout_ms)) break;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    acq_ilcal.on = false;
+    if (acq_ilcal.n < records) return false;
+    const float n = (float)acq_ilcal.n;
+    out->a_mean = acq_ilcal.sum_a / n;
+    out->b_mean = acq_ilcal.sum_b / n;
+    out->a_p2p = acq_ilcal.p2p_a;
+    out->b_p2p = acq_ilcal.p2p_b;
+    out->a_drift = acq_ilcal.amax - acq_ilcal.amin;
+    out->b_drift = acq_ilcal.bmax - acq_ilcal.bmin;
+    out->clipped = acq_ilcal.clipped;
+    return true;
+}
+
+#if FPGA_WARM_HANDOFF_TEST   /* the acq task exists only in these builds */
+/* Called by the acq task right after the op04/op05 reads; `ok` = no SPI3
+ * hardware timeout during them. Cheap when off. */
+static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b, bool ok)
+{
+    if (!acq_ilcal.on || !ok) return;
+    if (acq_ilcal.skip) { acq_ilcal.skip--; return; }
+    uint32_t sa = 0, sb = 0;
+    uint8_t amn = 255, amx = 0, bmn = 255, bmx = 0;
+    for (unsigned i = INTERLEAVE_WIN_LO; i < INTERLEAVE_WIN_LO + 512u; i++) {
+        const uint8_t x = a[i], y = b[i];
+        sa += x; sb += y;
+        if (x < amn) amn = x;
+        if (x > amx) amx = x;
+        if (y < bmn) bmn = y;
+        if (y > bmx) bmx = y;
+    }
+    /* A dead bus reads 0xFF everywhere (record 255 after the offset): not data. */
+    if (amn == 255 && bmn == 255) return;
+    const float ma = (float)sa / 512.0f, mb = (float)sb / 512.0f;
+    acq_ilcal.sum_a += ma; acq_ilcal.sum_b += mb;
+    if (ma < acq_ilcal.amin) acq_ilcal.amin = ma;
+    if (ma > acq_ilcal.amax) acq_ilcal.amax = ma;
+    if (mb < acq_ilcal.bmin) acq_ilcal.bmin = mb;
+    if (mb > acq_ilcal.bmax) acq_ilcal.bmax = mb;
+    if ((uint8_t)(amx - amn) > acq_ilcal.p2p_a) acq_ilcal.p2p_a = (uint8_t)(amx - amn);
+    if ((uint8_t)(bmx - bmn) > acq_ilcal.p2p_b) acq_ilcal.p2p_b = (uint8_t)(bmx - bmn);
+    if (amn == 0 || amx == 255 || bmn == 0 || bmx == 255) acq_ilcal.clipped = true;
+    acq_ilcal.n++;
+}
+
+#endif
+
 bool fpga_acq_record_interleaved(void) { return acq_pub_il; }
 uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
 /* Rate of the PUBLISHED record: the timebase table's per-converter rate,
@@ -4160,6 +4239,7 @@ static void fpga_warmtest_acq_task(void *pv)
             vTaskDelay(pdMS_TO_TICKS(1));
             triggered = (fpga.pc0_edges != edges_before);
         }
+        acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
         edges_consumed = fpga.pc0_edges;
         bool first_read = !capture_in_flight;
         capture_in_flight = true;

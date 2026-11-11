@@ -178,6 +178,24 @@ bool scope_vpos_last(uint8_t ch, uint8_t *bank, uint8_t *range, uint16_t *code)
     return true;
 }
 
+bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper)
+{
+    if (!scope_vpos_active() || dac_output_is_running()) return false;
+    const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
+    const uint8_t range = chan(1u)->vdiv_idx;
+    const int8_t (*sb)[CALPAGE_BANKS][CALPAGE_RANGES] =
+        (const int8_t (*)[CALPAGE_BANKS][CALPAGE_RANGES])vp.src_bank;
+    return calpage_dac_code_page(page_bytes(), sb, 0u, bank, range, -100, base) &&
+           calpage_dac_code_page(page_bytes(), sb, 0u, bank, range, 100, upper);
+}
+
+bool scope_vpos_ch1_raw(uint16_t code)
+{
+    if (!scope_vpos_active() || dac_output_is_running() || code > 4095u) return false;
+    scope_trigger_dac_raw(code);
+    return true;
+}
+
 void scope_vpos_recover(void)
 {
     if (scope_vpos_active()) scope_vpos_apply();
