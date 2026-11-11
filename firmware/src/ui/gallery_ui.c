@@ -102,6 +102,15 @@ void gallery_ui_result_text(gallery_status_t st, uint32_t seq, char *out, uint32
 #define THUMB_DX  ((CELL_W - THUMB_W) / 2u)
 #define THUMB_DY  2u
 
+/* lcd_write_data(), not lcd_write_pixels(): it also feeds the LCD's indexed
+ * shadow, so `screen dumpbin` / scripts/screenshot.py (and a SAVE from the
+ * shell while the gallery is open) see the gallery as drawn. The stored
+ * colours are the shadow's own palette, so the shadow copy is exact. */
+static void push(const uint16_t *px, uint32_t n)
+{
+    for (uint32_t i = 0; i < n; i++) lcd_write_data(px[i]);
+}
+
 static uint8_t pix(const uint8_t *row, uint32_t x)
 {
     const uint8_t b = row[x >> 1];
@@ -131,7 +140,7 @@ static bool draw_thumb(uint32_t slot, uint16_t x0, uint16_t y0)
         for (uint32_t tx = 0; tx < THUMB_W; tx++)
             px[tx] = pal[raw[2u * tx] & 0x0Fu];
         lcd_set_window(x0, (uint16_t)(y0 + ty), THUMB_W, 1);
-        lcd_write_pixels(px, THUMB_W);
+        push(px, THUMB_W);
     }
     return true;
 }
@@ -213,7 +222,7 @@ static void draw_full(const gallery_index_t *idx)
         if (gallery_read_row(slot, y, row) != GALLERY_OK) goto fail;
         for (uint32_t x0 = 0; x0 < GALLERY_IMG_W; x0 += 64u) {
             for (uint32_t i = 0; i < 64u; i++) px[i] = pal[pix(row, x0 + i)];
-            lcd_write_pixels(px, 64u);
+            push(px, 64u);
         }
     }
     return;
