@@ -246,6 +246,14 @@ static int test_range_label_and_reading(void)
     ASSERT_STR(b, "mV");
     meter_stock_range_label(4, 1, false, 3, b, sizeof b);
     ASSERT_STR(b, "R3");                          /* unit not settled: index, not a guess */
+    {
+        /* a short buffer truncates and never writes past n */
+        char s[4] = { 'x', 'x', 'x', 'x' };
+        meter_stock_range_label(4, 1, false, 3, s, 2);
+        ASSERT(s[0] == 'R' && s[1] == '\0' && s[2] == 'x' && s[3] == 'x');
+        meter_stock_range_label(3, 1, false, 1, s, 2);
+        ASSERT(s[0] == 'k' && s[1] == '\0' && s[2] == 'x');
+    }
 
     /* a resistance frame in the kOhm regime (f6 upper nibble 4) */
     meter_data_init();

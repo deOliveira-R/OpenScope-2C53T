@@ -132,14 +132,12 @@ void meter_stock_range_label(uint8_t sel, uint8_t f36, bool degf, uint8_t idx,
     }
     (void)f36;
     if (n == 0) return;
-    if (t) {
-        strncpy(buf, t, n - 1);
+    {
+        /* "R<n>" where the unit is not settled. Both paths truncate to n-1
+         * characters: the old fallback wrote buf[1..2] before checking n. */
+        char r[3] = { 'R', (char)('0' + (idx % 10)), '\0' };
+        strncpy(buf, t ? t : r, n - 1);
         buf[n - 1] = '\0';
-    } else {
-        buf[0] = 'R';
-        buf[1] = (char)('0' + (idx % 10));
-        buf[2] = '\0';
-        if (n < 3) buf[n - 1] = '\0';
     }
 }
 
