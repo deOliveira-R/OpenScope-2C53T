@@ -3316,8 +3316,10 @@ static void cmd_fpga_scope_timebase(const char *args)
             return;
         }
         ss->timebase_idx = (uint8_t)v;
+        const bool was_roll = ss->roll;
         ss->roll = false;          /* a Y-T code: leave roll (C11) */
         if (!fpga_apply_timebase((uint8_t)v)) {
+            ss->roll = was_roll;   /* nothing written: acq task is still where it was */
             usb_send_str("acq task would not park — reg 0x01 NOT written\r\n");
             return;
         }

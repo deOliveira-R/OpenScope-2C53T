@@ -5058,6 +5058,20 @@ void fpga_reconcile_timebase_after_arm(void)
 {
     scope_state_t *ss = scope_state_get();
 
+    /* Roll (C11) survives a re-arm: the arm burst leaves reg 0x01 at its own
+     * value, so put back the roll code the FPGA was given, not the Y-T one. */
+    if (ss->roll && acq_roll_on) {
+        const uint8_t rc = (acq_roll_code_override >= 0)
+                               ? (uint8_t)acq_roll_code_override
+                               : scope_roll_stock_code(acq_roll_step);
+        SPI3_CS_ASSERT();
+        spi3_xfer(0x01);
+        spi3_xfer(rc);
+        SPI3_CS_DEASSERT();
+        acq_rate_idx = rc;
+        fpga_tb_reconcile_action = 1u;
+        return;
+    }
     if (scope_timebase_sample_rate(ss->timebase_idx) > 0.0f) {
         SPI3_CS_ASSERT();
         spi3_xfer(0x01);
