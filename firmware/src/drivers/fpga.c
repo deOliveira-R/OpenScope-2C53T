@@ -3789,7 +3789,6 @@ int16_t fpga_acq_unrotate_offset_get(void)    { return acq_unrotate_offset; }
  * Returns the rotation applied (0..1023), or -1 when none was. */
 static int32_t fpga_acq_unrotate_staging(bool triggered)
 {
-    static uint8_t tmp[FPGA_ADC_BUF_SIZE];
     if (!triggered) return -1;
     volatile uint8_t *bufs[2] = { acq_write_ch1(), acq_write_ch2() };
     uint32_t k = 0;
@@ -3800,12 +3799,10 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
         return -1;
     if (!acq_unrotate) return (int32_t)k;        /* reported (status), not applied */
     if (k == 0) return 0;
-    for (int c = 0; c < 2; c++) {
-        uint8_t *b = (uint8_t *)bufs[c];
-        memcpy(tmp, b + k, FPGA_ADC_BUF_SIZE - k);
-        memcpy(tmp + (FPGA_ADC_BUF_SIZE - k), b, k);
-        memcpy(b, tmp, FPGA_ADC_BUF_SIZE);
-    }
+    /* In place, no staging buffer (this used a 1 KB static tmp[]; RAM diet
+     * 2026-11-11). Same result: index 0 becomes the old index k. */
+    for (int c = 0; c < 2; c++)
+        trig_edge_rotate_left(bufs[c], FPGA_ADC_BUF_SIZE, k);
     return (int32_t)k;
 }
 #endif

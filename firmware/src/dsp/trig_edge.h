@@ -115,4 +115,12 @@ int trig_edge_search(const volatile uint8_t *rec, int n, int lo, int hi,
 int trig_edge_search_stock(const volatile uint8_t *rec, int n, int lo, int hi,
                            int level, int rising, unsigned confirm);
 
+/* Rotate rec[0..n) left by k in place (k >= n is taken mod n): afterwards
+ * rec[i] is the old rec[(i + k) % n]. The un-rotation after
+ * trig_edge_find_seam*() is exactly this with k = the seam. By three
+ * reversals, so it needs no working buffer: fpga.c used to stage it through a
+ * 1 KB static tmp[] that was only ever live inside this copy (RAM diet,
+ * 2026-11-11). */
+void trig_edge_rotate_left(volatile uint8_t *rec, uint32_t n, uint32_t k);
+
 #endif
