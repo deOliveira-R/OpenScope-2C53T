@@ -366,6 +366,18 @@ static void draw_one_badge(uint16_t x, uint16_t y, const char *label,
 /* Shown wherever the instrument cannot measure the quantity today. */
 #define MEAS_NA  "--"
 
+/* Rate for anything timed off the record on screen (Freq, widths, cursors):
+ * the PUBLISHED record's rate — doubled when it is the interleaved merge
+ * (fpga_record_sample_rate) — while the hardware is running the code the UI
+ * shows; the table rate for the selected code otherwise. One copy, so the
+ * badges and the cursors cannot disagree. */
+static float record_rate_for_display(const scope_state_t *ss)
+{
+    return (fpga_acq_rate_idx_get() == ss->timebase_idx)
+         ? fpga_record_sample_rate()
+         : scope_timebase_sample_rate(ss->timebase_idx);
+}
+
 /*
  * Measure one channel's live capture record.
  *
@@ -406,6 +418,7 @@ static void fmt_counts(char *b, size_t n, unsigned v)
     snprintf(b, n, "%ucnt", v);
 }
 
+__attribute__((unused))   /* the C6 params format via scope_prm_format */
 static void fmt_tenths(char *b, size_t n, float v, const char *unit)
 {
     if (v < 0.0f) v = 0.0f;
@@ -436,6 +449,7 @@ static void fmt_hz(char *b, size_t n, float hz)
 /*
  * A duration in seconds, ranged us/ms/s. Integer math, as above.
  */
+__attribute__((unused))
 static void fmt_seconds(char *b, size_t n, float s)
 {
     if (s < 0.0f) s = 0.0f;
@@ -637,6 +651,8 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
     /* ── Row 1 — CH1 ─────────────────────────────────────────────── */
     uint16_t x = 2;
     uint16_t y1 = BADGE_ROW_Y;
+    uint16_t y2 = BADGE_ROW2_Y;
+    float    rec_fs;          /* the published record's rate, for the C6 params */
 
     /*
      * Freq — spectral, not edge-counted, and it declines rather than guess.
@@ -669,9 +685,8 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
          * returns it unchanged, and status_bar.c reads it the same way. */
         /* The PUBLISHED record's rate: doubled when it is the two-converter
          * merge (fpga_record_sample_rate). Same code as timebase_idx otherwise. */
-        const float fs = (fpga_acq_rate_idx_get() == ss->timebase_idx)
-                       ? fpga_record_sample_rate()
-                       : scope_timebase_sample_rate(ss->timebase_idx);
+        const float fs = record_rate_for_display(ss);
+        rec_fs = fs;
         scope_freq_t fr;
 
         /* The acquisition buffer is `volatile` because the acq task fills it;
@@ -702,83 +717,60 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
             freq_hz = 0.0f;
         }
 
-        if (freq_hz > 0.0f) {
-            fmt_hz(buf, sizeof(buf), freq_hz);
-            draw_one_badge(x, y1, "Freq", buf, th->ch1, th);
-        } else {
-            draw_one_badge(x, y1, "Freq", MEAS_NA, na, th);
-        }
     }
-    x += BADGE_W + 2;
 
-    /* Calibrated ranges show volts; all others fall back to ADC counts. */
+    /* ── The 12 measurements (C6) ──────────────────────────────────
+     *
+     * Stock's parameter set, chosen by ss->prm_mask (default = the five
+     * badges this instrument always showed for CH1: Freq, Per, Duty, Vpp,
+     * Vrms) and hidden wholesale by ss->prm_hidden (stock: long PRM). They
+     * fill the same five CH1 slots in stock's order. All arithmetic is in
+     * scope_params_compute(): time uses the PUBLISHED record's rate
+     * (rec_fs, doubled when interleaved), volts the scope_cal gain with k == 0
+     * meaning counts. Freq/Per still come only from the spectral estimate
+     * above, with its hold, and Per falls back to crossing SAMPLES. */
     const float k1 = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
 
-    if (have1) {
-        /* pp_robust, not pp: raw max-min is noise-inflated by +4..+10% of
-         * the commanded amplitude (EXP-19) — see scope_measure.h. */
-        if (k1 > 0.0f) fmt_volts(buf, sizeof(buf), (float)m1.pp_robust * k1);
-        else           fmt_counts(buf, sizeof(buf), m1.pp_robust);
-        draw_one_badge(x, y1, "Vpp", buf, th->ch1, th);
-    } else {
-        draw_one_badge(x, y1, "Vpp", MEAS_NA, na, th);
-    }
-    x += BADGE_W + 2;
-
-    if (have1) {
-        if (k1 > 0.0f) fmt_volts(buf, sizeof(buf), m1.ac_rms * k1);
-        else           fmt_counts(buf, sizeof(buf), (unsigned)(m1.ac_rms + 0.5f));
-        draw_one_badge(x, y1, "Vrms", buf, th->ch1, th);
-    } else {
-        draw_one_badge(x, y1, "Vrms", MEAS_NA, na, th);
-    }
-    x += BADGE_W + 2;
-
-    if (have1 && m1.level_valid) {
-        fmt_tenths(buf, sizeof(buf), m1.duty_pct, "%");
-        draw_one_badge(x, y1, "Duty", buf, th->ch1, th);
-    } else {
-        /* Flat/near-flat record: the mid-level threshold would be sitting
-         * inside the noise, so a duty figure would be measuring dither. */
-        draw_one_badge(x, y1, "Duty", MEAS_NA, na, th);
+    scope_params_t p1;
+    {
+        scope_prm_ctx_t ctx;
+        ctx.sample_rate     = rec_fs;
+        ctx.volts_per_count = k1;
+        ctx.freq_hz         = freq_hz;
+        ctx.zero_count      = SCOPE_MEASURE_ZERO_COUNT;
+        scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
     }
 
-    /* ── Row 2 — period, CH2, and the legend ─────────────────────── */
-    x = 2;
-    uint16_t y2 = BADGE_ROW2_Y;
-
-    if (freq_hz > 0.0f) {
-        /*
-         * SECONDS, derived as 1/Freq from the SPECTRAL estimate above — the
-         * one estimator this project trusts (S3: held-out fixture, never
-         * wrong on 72 bench records). NOT from period_samples: the
-         * mid-level-crossing period is 5-50% out (EXP-13), which is why it
-         * was never dressed in real units. Same hold/expiry as the Freq
-         * badge, so the two can never disagree on the screen.
-         */
-        fmt_seconds(buf, sizeof(buf), 1.0f / freq_hz);
-        draw_one_badge(x, y2, "Per", buf, th->ch1, th);
-    } else if (have1 && m1.period_valid) {
-        /* No trustworthy Hz (unmeasured code, or the estimator declined and
-         * the hold expired): fall back to the crossing count in honest
-         * SAMPLES, never converted (EXP-13). */
-        snprintf(buf, sizeof(buf), "%usmp",
-                 (unsigned)(m1.period_samples + 0.5f));
-        draw_one_badge(x, y2, "Per", buf, th->ch1, th);
-    } else {
-        draw_one_badge(x, y2, "Per", MEAS_NA, na, th);
+    if (!ss->prm_hidden) {
+        uint8_t sel[5];
+        const unsigned ns = scope_prm_select(ss->prm_mask, sel, 5u);
+        for (unsigned s = 0; s < ns; s++) {
+            const uint16_t bx = (s < 4u) ? (uint16_t)(2u + s * (BADGE_W + 2u)) : 2u;
+            const uint16_t by = (s < 4u) ? y1 : y2;
+            const scope_prm_t *p = &p1.v[sel[s]];
+            if (p->unit == SCOPE_PRM_UNIT_NONE) {
+                draw_one_badge(bx, by, scope_prm_label(sel[s]), MEAS_NA, na, th);
+            } else {
+                scope_prm_format(p, buf, sizeof(buf));
+                draw_one_badge(bx, by, scope_prm_label(sel[s]), buf, th->ch1, th);
+            }
+        }
     }
-    x += BADGE_W + 2;
 
-    if (have2) {
-        const float k2 = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
-        if (k2 > 0.0f) fmt_volts(buf, sizeof(buf), (float)m2.pp_robust * k2);
-        else           fmt_counts(buf, sizeof(buf), m2.pp_robust);
-        draw_one_badge(x, y2, "CH2pp", buf, th->ch2, th);
-    } else {
-        draw_one_badge(x, y2, "CH2pp", MEAS_NA, na, th);
+    /* CH2: one slot, as before (Vp-p; hidden together with the rest). */
+    if (!ss->prm_hidden) {
+        const uint16_t x2 = 2u + (BADGE_W + 2u);
+        if (have2) {
+            const float k2 = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
+            if (k2 > 0.0f) fmt_volts(buf, sizeof(buf), (float)m2.pp_robust * k2);
+            else           fmt_counts(buf, sizeof(buf), m2.pp_robust);
+            draw_one_badge(x2, y2, "CH2pp", buf, th->ch2, th);
+        } else {
+            draw_one_badge(x2, y2, "CH2pp", MEAS_NA, na, th);
+        }
     }
-    x += BADGE_W + 2;
+    x = 2u + 2u * (BADGE_W + 2u);
+
 
     /*
      * The legend is what makes the "--" and the "cnt" suffix readable
@@ -937,6 +929,9 @@ typedef struct {
     float   counts_per_pixel;
     uint8_t channel;            /* 1 or 2 */
     uint8_t range_idx;
+    bool    mid_known;          /* band-middle row anchors a fixed ADC code  */
+    int16_t mid_row;
+    float   mid_counts;         /* that code relative to 0 V (centred = 0)   */
 } vband_t;
 
 static vband_t g_vband[2];
@@ -957,6 +952,17 @@ static void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
     g_vband[slot].counts_per_pixel = counts_per_pixel;
     g_vband[slot].channel          = channel;
     g_vband[slot].range_idx        = range_idx;
+    g_vband[slot].mid_known         = false;   /* autofit re-anchors per frame */
+}
+
+/* True-scale bands draw ADC code 128 at the band middle row, so absolute Y is
+ * known there (zero = the centred baseline). Call after vband_note(). */
+static void vband_note_fixed_mid(uint8_t slot, int16_t y_top, int16_t y_bot)
+{
+    if (slot > 1u) return;
+    g_vband[slot].mid_known  = g_vband[slot].on;
+    g_vband[slot].mid_row    = (int16_t)((y_top + y_bot) / 2);
+    g_vband[slot].mid_counts = 0.0f;
 }
 
 /* autofit_y() maps counts to pixels with h/span, so its inverse — the number
@@ -1397,17 +1403,21 @@ void draw_demo_waveform(uint32_t frame)
             vband_note(0u, 1u, ss->ch1.vdiv_idx, SCOPE_TOP, SCOPE_MID_Y - 1,
                        fx1 ? draw_channel_fixed(b1, th->ch1, SCOPE_TOP, SCOPE_MID_Y - 1, 128u, 0)
                            : draw_channel_autofit(b1, th->ch1, SCOPE_TOP, SCOPE_MID_Y - 1, 0));
+            if (fx1) vband_note_fixed_mid(0u, SCOPE_TOP, SCOPE_MID_Y - 1);
             vband_note(1u, 2u, ss->ch2.vdiv_idx, SCOPE_MID_Y + 1, SCOPE_BOT,
                        fx2 ? draw_channel_fixed(b2, th->ch2, SCOPE_MID_Y + 1, SCOPE_BOT, 128u, 1)
                            : draw_channel_autofit(b2, th->ch2, SCOPE_MID_Y + 1, SCOPE_BOT, 1));
+            if (fx2) vband_note_fixed_mid(1u, SCOPE_MID_Y + 1, SCOPE_BOT);
         } else if (c1) {
             vband_note(0u, 1u, ss->ch1.vdiv_idx, SCOPE_TOP, SCOPE_BOT,
                        fx1 ? draw_channel_fixed(b1, th->ch1, SCOPE_TOP, SCOPE_BOT, 128u, 0)
                            : draw_channel_autofit(b1, th->ch1, SCOPE_TOP, SCOPE_BOT, 0));
+            if (fx1) vband_note_fixed_mid(0u, SCOPE_TOP, SCOPE_BOT);
         } else if (c2) {
             vband_note(0u, 2u, ss->ch2.vdiv_idx, SCOPE_TOP, SCOPE_BOT,
                        fx2 ? draw_channel_fixed(b2, th->ch2, SCOPE_TOP, SCOPE_BOT, 128u, 1)
                            : draw_channel_autofit(b2, th->ch2, SCOPE_TOP, SCOPE_BOT, 1));
+            if (fx2) vband_note_fixed_mid(0u, SCOPE_TOP, SCOPE_BOT);
         }
         return;
     }
@@ -1504,6 +1514,57 @@ static void draw_hline_dashed(uint16_t y, uint16_t x_left, uint16_t x_right,
     }
 }
 
+/* The vertical transform of the band that contains BOTH rows, as the
+ * renderer last drew it; counts_per_pixel 0 when there is none (see the
+ * delta readout in draw_cursors for why a straddle is refused). */
+static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
+{
+    scope_cursor_vmap_t vm;
+    memset(&vm, 0, sizeof(vm));
+    for (uint8_t i = 0u; i < 2u; i++) {
+        const vband_t *b = &g_vband[i];
+        if (!b->on) continue;
+        if ((int16_t)y_a < b->y_top || (int16_t)y_a > b->y_bot) continue;
+        if ((int16_t)y_b < b->y_top || (int16_t)y_b > b->y_bot) continue;
+        vm.counts_per_pixel = b->counts_per_pixel;
+        vm.channel          = b->channel;
+        vm.range_idx        = b->range_idx;
+        vm.mid_known        = b->mid_known ? 1u : 0u;
+        vm.mid_row          = b->mid_row;
+        vm.mid_counts       = b->mid_counts;
+        break;
+    }
+    return vm;
+}
+
+/* Shell/bench view of the cursors (`fpga scope cursor`): X1 X2 X1-X2 Y1 Y2
+ * Y1-Y2 and 1/|dX|, from the SAME functions the screen uses. Strings are the
+ * formatted readings, "--" where the instrument refuses. */
+void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
+                            char y1[16], char y2[16], char dy[16], float *fs_out)
+{
+    const scope_state_t *ss = scope_state_get();
+    const cursor_state_t *c = &ss->cursor;
+    const float fs = record_rate_for_display(ss);
+    const scope_cursor_conf_t cf = scope_cursor_tb_conf(ss->timebase_idx);
+    const int16_t ta = scope_ui_trig_x_actual();
+    const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
+    const int32_t ddx = (int32_t)c->v2_x - (int32_t)c->v1_x;
+    scope_cursor_reading_t r;
+
+    r = scope_cursor_x_fs(fs, cf, c->v1_x, ref);      scope_cursor_format(&r, x1, 16);
+    r = scope_cursor_x_fs(fs, cf, c->v2_x, ref);      scope_cursor_format(&r, x2, 16);
+    r = scope_cursor_delta_t_fs(fs, cf, ddx);         scope_cursor_format(&r, dx, 16);
+    r = scope_cursor_one_over_dt_fs(fs, cf, ddx);     scope_cursor_format(&r, ix, 16);
+
+    scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
+    r = scope_cursor_y(&vm, c->h1_y);                 scope_cursor_format(&r, y1, 16);
+    r = scope_cursor_y(&vm, c->h2_y);                 scope_cursor_format(&r, y2, 16);
+    r = scope_cursor_delta_v(&vm, (int32_t)c->h1_y - (int32_t)c->h2_y);
+    scope_cursor_format(&r, dy, 16);
+    if (fs_out) *fs_out = fs;
+}
+
 static void draw_cursors(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -1591,14 +1652,19 @@ static void draw_cursors(void)
         /* ss->timebase_idx IS the reg-0x01 code — the same field the status
          * bar labels and the Freq badge derive from, so the three cannot
          * disagree about what rate is in force. */
-        scope_cursor_reading_t dt = scope_cursor_delta_t(ss->timebase_idx, dx);
+        /* The PUBLISHED record's rate, not the table's: an interleaved record
+         * is 2x (record_rate_for_display). The confidence is the table tier of
+         * the code, which the doubling does not change. */
+        const float cfs = record_rate_for_display(ss);
+        const scope_cursor_conf_t cconf = scope_cursor_tb_conf(ss->timebase_idx);
+        scope_cursor_reading_t dt = scope_cursor_delta_t_fs(cfs, cconf, dx);
         scope_cursor_format(&dt, buf, sizeof(buf));
         snprintf(label, sizeof(label), "dt=%s", buf);
         lcd_fill_rect(badge_x, badge_y, 100, 13, th->background);
         font_draw_string(badge_x, badge_y, label,
                          th->highlight, th->highlight, &font_small);
 
-        scope_cursor_reading_t f = scope_cursor_one_over_dt(ss->timebase_idx, dx);
+        scope_cursor_reading_t f = scope_cursor_one_over_dt_fs(cfs, cconf, dx);
         scope_cursor_format(&f, buf, sizeof(buf));
         snprintf(label, sizeof(label), "1/dt=%s", buf);
         lcd_fill_rect(badge_x, badge_y + 14, 100, 13, th->background);
@@ -1618,17 +1684,7 @@ static void draw_cursors(void)
          * spanning the two is not a voltage in either channel — it falls back
          * to pixels rather than picking one scale and hoping.
          */
-        scope_cursor_vmap_t vm = { 0.0f, 0u, 0u };
-        for (uint8_t i = 0u; i < 2u; i++) {
-            const vband_t *b = &g_vband[i];
-            if (!b->on) continue;
-            if ((int16_t)c->h1_y < b->y_top || (int16_t)c->h1_y > b->y_bot) continue;
-            if ((int16_t)c->h2_y < b->y_top || (int16_t)c->h2_y > b->y_bot) continue;
-            vm.counts_per_pixel = b->counts_per_pixel;
-            vm.channel          = b->channel;
-            vm.range_idx        = b->range_idx;
-            break;
-        }
+        scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
 
         scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, dy);
         scope_cursor_format(&dv, buf, sizeof(buf));

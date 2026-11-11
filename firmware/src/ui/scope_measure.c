@@ -10,8 +10,34 @@
 
 #include "scope_measure.h"
 
+#include "scope_cursor.h"
+
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
+
+/* Sub-sample position where the trace crossed the mid-level (mid2 = min+max,
+ * compared against 2*s) on the edge the Schmitt gate just confirmed at index
+ * i. Walks back to the bracketing pair, bounded by the length of one edge.
+ * false when the record's start is reached while still on the far side (the
+ * pulse began before the record, so it is not a genuine crossing). */
+static bool mid_crossing(const uint8_t *s, uint16_t i, uint16_t mid2,
+                         bool rising, float *pos)
+{
+    int j = (int)i - 1;
+    if (rising) {
+        while (j >= 0 && (uint16_t)(2u * s[j]) >= mid2) j--;
+        if (j < 0) return false;
+        float a = (float)(2u * s[j]), b = (float)(2u * s[j + 1]);
+        *pos = (float)j + ((float)mid2 - a) / (b - a);
+    } else {
+        while (j >= 0 && (uint16_t)(2u * s[j]) < mid2) j--;
+        if (j < 0) return false;
+        float a = (float)(2u * s[j]), b = (float)(2u * s[j + 1]);
+        *pos = (float)j + (a - (float)mid2) / (a - b);
+    }
+    return true;
+}
 
 void scope_measure_record(const uint8_t *samples, uint16_t n,
                           scope_measure_t *out)
@@ -47,6 +73,8 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
     }
 
     out->valid = true;
+    out->rob_min = smin;            /* refined by the trim walk below */
+    out->rob_max = smax;
     out->min   = smin;
     out->max   = smax;
     out->pp    = (uint8_t)(smax - smin);
@@ -74,6 +102,8 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
         out->pp_robust = (uint8_t)(hi - lo);
         rob_lo = (uint8_t)lo;
         rob_hi = (uint8_t)hi;
+        out->rob_min = rob_lo;
+        out->rob_max = rob_hi;
     }
 
     /* Variance about the mean, computed as E[x^2] - E[x]^2 in integer form
@@ -89,6 +119,24 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
     out->level_valid = (out->pp >= SCOPE_MEASURE_MIN_PP);
     if (!out->level_valid)
         return;                     /* duty/cycles would be counting noise */
+
+    /* Top and base: the dwell levels, i.e. the histogram mode of each half
+     * about the mid-level (ties go to the extreme-most bin). Restricted to the
+     * trimmed span so a stray outlier cannot be a "level". */
+    {
+        uint16_t mid2 = (uint16_t)smin + (uint16_t)smax;
+        uint16_t bt = 0, bb = 0;        /* best counts */
+        out->top = rob_hi;
+        out->base = rob_lo;
+        for (uint16_t v = rob_lo; v <= rob_hi; v++) {
+            if (hist[v] == 0u) continue;
+            if ((uint16_t)(2u * v) > mid2) {
+                if (hist[v] >= bt) { bt = hist[v]; out->top = (uint8_t)v; }
+            } else {
+                if (hist[v] > bb) { bb = hist[v]; out->base = (uint8_t)v; }
+            }
+        }
+    }
 
     /* ── Pass 2: duty cycle ────────────────────────────────────────────
      *
@@ -134,11 +182,27 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
         uint16_t pc_count = 0;                    /* genuine crossings only   */
         uint16_t prev_s2 = (uint16_t)(2u * (uint16_t)samples[0]);
 
+        /* Pulse widths (Wid+/Wid-): mid-level crossings of each confirmed
+         * edge, paired with the previous genuine edge of the other sense. */
+        float    edge_pos = 0.0f;
+        int      edge_kind = 0;               /* 0 none, 1 rise, 2 fall      */
+        float    hi_sum = 0.0f, lo_sum = 0.0f;
+        uint16_t hi_n = 0, lo_n = 0;
+
         for (uint16_t i = 0; i < n; i++) {
             uint16_t s2 = (uint16_t)(2u * (uint16_t)samples[i]);
             if (state == 0) {
                 if (s2 >= hi_thr2) {
                     state = 1;
+                    {
+                        float cp;
+                        if (mid_crossing(samples, i, mid2, true, &cp)) {
+                            if (edge_kind == 2) { lo_sum += cp - edge_pos; lo_n++; }
+                            edge_pos = cp; edge_kind = 1;
+                        } else {
+                            edge_kind = 0;
+                        }
+                    }
                     if (rising == 0) first_rise = i;
                     last_rise = i;
                     rising++;
@@ -169,11 +233,22 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
                     }
                 }
             } else {
-                if (s2 <= lo_thr2)
+                if (s2 <= lo_thr2) {
                     state = 0;
+                    float cp;
+                    if (mid_crossing(samples, i, mid2, false, &cp)) {
+                        if (edge_kind == 1) { hi_sum += cp - edge_pos; hi_n++; }
+                        edge_pos = cp; edge_kind = 2;
+                    } else {
+                        edge_kind = 0;
+                    }
+                }
             }
             prev_s2 = s2;
         }
+
+        if (hi_n > 0u) { out->wid_hi_samples = hi_sum / (float)hi_n; out->wid_hi_valid = true; }
+        if (lo_n > 0u) { out->wid_lo_samples = lo_sum / (float)lo_n; out->wid_lo_valid = true; }
 
         /* One crossing only tells you where the record happened to start
          * relative to the waveform. A period is the interval BETWEEN
@@ -325,4 +400,127 @@ int scope_measure_find_trigger(const uint8_t *buf, uint16_t max_start,
         }
     }
     return -1;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Stock's 12 measurements (C6) — see the header block for the unit rules.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static const char *const prm_labels[SCOPE_PRM_COUNT] = {
+    "Freq", "Peri", "Duty+", "Duty-", "Wid+", "Wid-",
+    "Vmax", "Vmin", "Vp-p", "Amp", "Vrms", "Avg"
+};
+
+const char *scope_prm_label(unsigned id)
+{
+    return (id < SCOPE_PRM_COUNT) ? prm_labels[id] : "?";
+}
+
+static scope_prm_t prm(scope_prm_unit_t u, float v)
+{
+    scope_prm_t p; p.unit = u; p.value = v; return p;
+}
+
+/* Time quantity: seconds when the record's rate is known, else samples. */
+static scope_prm_t prm_time(float samples, float fs)
+{
+    return (fs > 0.0f) ? prm(SCOPE_PRM_UNIT_SECONDS, samples / fs)
+                       : prm(SCOPE_PRM_UNIT_SAMPLES, samples);
+}
+
+/* Vertical quantity from a count RELATIVE to zero_count (signed) or, with no
+ * calibration, the raw absolute ADC code (a code is exact; a volt is not). */
+static scope_prm_t prm_level(float code, float k, uint8_t zero)
+{
+    return (k > 0.0f) ? prm(SCOPE_PRM_UNIT_VOLTS, (code - (float)zero) * k)
+                      : prm(SCOPE_PRM_UNIT_COUNTS, code);
+}
+
+/* A span (difference of two levels): zero cancels. */
+static scope_prm_t prm_span(float counts, float k)
+{
+    return (k > 0.0f) ? prm(SCOPE_PRM_UNIT_VOLTS, counts * k)
+                      : prm(SCOPE_PRM_UNIT_COUNTS, counts);
+}
+
+void scope_params_compute(const scope_measure_t *m, const scope_prm_ctx_t *ctx,
+                          scope_params_t *out)
+{
+    if (out == NULL)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (m == NULL || !m->valid || ctx == NULL)
+        return;
+
+    const float fs = ctx->sample_rate;
+    const float k  = ctx->volts_per_count;
+    const uint8_t z = ctx->zero_count;
+
+    /* Freq/Peri: the spectral estimate or nothing in real units. Peri falls
+     * back to the crossing period in SAMPLES (never converted), as the badge
+     * always did. */
+    if (ctx->freq_hz > 0.0f) {
+        out->v[SCOPE_PRM_FREQ] = prm(SCOPE_PRM_UNIT_HZ, ctx->freq_hz);
+        out->v[SCOPE_PRM_PERI] = prm(SCOPE_PRM_UNIT_SECONDS, 1.0f / ctx->freq_hz);
+    } else if (m->level_valid && m->period_valid) {
+        out->v[SCOPE_PRM_PERI] = prm(SCOPE_PRM_UNIT_SAMPLES, m->period_samples);
+    }
+
+    /* Duty and widths need a discernible signal (level_valid) like the badge. */
+    if (m->level_valid) {
+        out->v[SCOPE_PRM_DUTY_POS] = prm(SCOPE_PRM_UNIT_PERCENT, m->duty_pct);
+        out->v[SCOPE_PRM_DUTY_NEG] = prm(SCOPE_PRM_UNIT_PERCENT, 100.0f - m->duty_pct);
+        if (m->wid_hi_valid)
+            out->v[SCOPE_PRM_WID_POS] = prm_time(m->wid_hi_samples, fs);
+        if (m->wid_lo_valid)
+            out->v[SCOPE_PRM_WID_NEG] = prm_time(m->wid_lo_samples, fs);
+        out->v[SCOPE_PRM_AMP] = prm_span((float)m->top - (float)m->base, k);
+    }
+
+    out->v[SCOPE_PRM_VMAX] = prm_level((float)m->rob_max, k, z);
+    out->v[SCOPE_PRM_VMIN] = prm_level((float)m->rob_min, k, z);
+    out->v[SCOPE_PRM_VPP]  = prm_span((float)m->pp_robust, k);
+    out->v[SCOPE_PRM_VRMS] = prm_span(m->ac_rms, k);
+    out->v[SCOPE_PRM_AVG]  = prm_level(m->mean, k, z);
+}
+
+void scope_prm_format(const scope_prm_t *p, char *out, uint32_t n)
+{
+    if (out == NULL || n == 0u)
+        return;
+
+    scope_cursor_reading_t r;
+    r.confidence = SCOPE_CURSOR_RAW;
+    r.value = 0.0f;
+    r.unit = SCOPE_CURSOR_UNIT_NONE;
+
+    if (p != NULL) {
+        r.value = p->value;
+        switch (p->unit) {
+        case SCOPE_PRM_UNIT_HZ:      r.unit = SCOPE_CURSOR_UNIT_HERTZ;   break;
+        case SCOPE_PRM_UNIT_SECONDS: r.unit = SCOPE_CURSOR_UNIT_SECONDS; break;
+        case SCOPE_PRM_UNIT_SAMPLES: r.unit = SCOPE_CURSOR_UNIT_SAMPLES; break;
+        case SCOPE_PRM_UNIT_VOLTS:   r.unit = SCOPE_CURSOR_UNIT_VOLTS;   break;
+        case SCOPE_PRM_UNIT_COUNTS:  r.unit = SCOPE_CURSOR_UNIT_COUNTS;  break;
+        case SCOPE_PRM_UNIT_PERCENT: {
+            float v = (p->value < 0.0f) ? 0.0f : p->value;
+            unsigned t = (unsigned)(v * 10.0f + 0.5f);
+            snprintf(out, n, "%u.%u%%", t / 10u, t % 10u);
+            return;
+        }
+        default: break;
+        }
+    }
+    scope_cursor_format(&r, out, n);
+}
+
+unsigned scope_prm_select(uint16_t mask, uint8_t *ids, unsigned max)
+{
+    unsigned c = 0;
+    if (ids == NULL)
+        return 0;
+    for (unsigned i = 0; i < SCOPE_PRM_COUNT && c < max; i++)
+        if (mask & (1u << i))
+            ids[c++] = (uint8_t)i;
+    return c;
 }

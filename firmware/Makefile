@@ -535,8 +535,12 @@ test-meter-word-map: $(BUILD_DIR)/test_meter_word_map
 	@echo "note: this target is EXPECTED to fail until the issue #15 word-table correction lands"
 	$<
 
-$(BUILD_DIR)/test_scope_measure: tests/test_scope_measure.c src/ui/scope_measure.c src/ui/scope_measure.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< src/ui/scope_measure.c -lm -o $@
+# scope_measure.c formats the 12 parameters through scope_cursor.c (one copy of
+# the unit formatting), which pulls in the cal and timebase tables.
+$(BUILD_DIR)/test_scope_measure: tests/test_scope_measure.c src/ui/scope_measure.c src/ui/scope_measure.h \
+                                 src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< src/ui/scope_measure.c \
+		src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c -lm -o $@
 
 # Measurements the scope badges are allowed to print. Includes two negative
 # controls (broken implementations that MUST be caught) — see the file header.

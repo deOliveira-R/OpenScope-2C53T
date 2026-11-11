@@ -3,6 +3,7 @@
  */
 
 #include "scope_state.h"
+#include "scope_measure.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Lookup tables
@@ -88,6 +89,8 @@ void scope_state_init(scope_state_t *s)
     s->true_scale = false;
     s->soft_trigger = true;
     s->trig_x = 160;
+    s->prm_mask = SCOPE_PRM_DEFAULT_MASK;
+    s->prm_hidden = false;
 
     /* Cursor defaults */
     s->cursor.mode   = CURSOR_OFF;

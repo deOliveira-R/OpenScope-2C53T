@@ -45,25 +45,28 @@ static scope_cursor_conf_t conf_from_tb(scope_tb_tier_t t)
     return SCOPE_CURSOR_RAW;
 }
 
-scope_cursor_reading_t scope_cursor_delta_t(uint8_t tb_code, int32_t dx_px)
+scope_cursor_conf_t scope_cursor_tb_conf(uint8_t tb_code)
+{
+    return conf_from_tb(scope_timebase_get_tier(tb_code));
+}
+
+scope_cursor_reading_t scope_cursor_delta_t_fs(float fs, scope_cursor_conf_t conf,
+                                               int32_t dx_px)
 {
     /* Exact, and true whether or not a rate exists: the plot draws one sample
      * per column. */
     const float samples = (float)dx_px * SCOPE_CURSOR_SAMPLES_PER_PIXEL;
 
-    const float fs = scope_timebase_sample_rate(tb_code);
     if (fs <= 0.0f) {
-        /* No measured rate for this code. Samples are what we have, and a
-         * sample count is not a duration however confidently it is printed. */
+        /* No measured rate. Samples are what we have, and a sample count is
+         * not a duration however confidently it is printed. */
         return make(SCOPE_CURSOR_UNIT_SAMPLES, SCOPE_CURSOR_RAW, samples);
     }
-
-    return make(SCOPE_CURSOR_UNIT_SECONDS,
-                conf_from_tb(scope_timebase_get_tier(tb_code)),
-                samples / fs);
+    return make(SCOPE_CURSOR_UNIT_SECONDS, conf, samples / fs);
 }
 
-scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px)
+scope_cursor_reading_t scope_cursor_one_over_dt_fs(float fs, scope_cursor_conf_t conf,
+                                                   int32_t dx_px)
 {
     const int32_t adx = (dx_px < 0) ? -dx_px : dx_px;
 
@@ -72,7 +75,6 @@ scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px)
     if (adx == 0)
         return make(SCOPE_CURSOR_UNIT_NONE, SCOPE_CURSOR_RAW, 0.0f);
 
-    const float fs = scope_timebase_sample_rate(tb_code);
     if (fs <= 0.0f) {
         /* 1/samples has no unit to fall back to. "--" beats inventing a rate,
          * which is exactly what the old fixed time_per_pixel did. */
@@ -80,9 +82,41 @@ scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px)
     }
 
     const float dt = ((float)adx * SCOPE_CURSOR_SAMPLES_PER_PIXEL) / fs;
-    return make(SCOPE_CURSOR_UNIT_HERTZ,
-                conf_from_tb(scope_timebase_get_tier(tb_code)),
-                1.0f / dt);
+    return make(SCOPE_CURSOR_UNIT_HERTZ, conf, 1.0f / dt);
+}
+
+scope_cursor_reading_t scope_cursor_x_fs(float fs, scope_cursor_conf_t conf,
+                                         int32_t col, int32_t ref_col)
+{
+    return scope_cursor_delta_t_fs(fs, conf, col - ref_col);
+}
+
+scope_cursor_reading_t scope_cursor_delta_t(uint8_t tb_code, int32_t dx_px)
+{
+    return scope_cursor_delta_t_fs(scope_timebase_sample_rate(tb_code),
+                                   scope_cursor_tb_conf(tb_code), dx_px);
+}
+
+scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px)
+{
+    return scope_cursor_one_over_dt_fs(scope_timebase_sample_rate(tb_code),
+                                       scope_cursor_tb_conf(tb_code), dx_px);
+}
+
+scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t row)
+{
+    if (map == NULL || map->counts_per_pixel <= 0.0f || !map->mid_known)
+        return make(SCOPE_CURSOR_UNIT_NONE, SCOPE_CURSOR_RAW, 0.0f);
+
+    /* Screen y grows downward, levels grow upward. */
+    const float counts = map->mid_counts +
+                         (float)((int32_t)map->mid_row - row) * map->counts_per_pixel;
+    const float k = scope_cal_volts_per_count(map->channel, map->range_idx);
+    if (k <= 0.0f)
+        return make(SCOPE_CURSOR_UNIT_COUNTS, SCOPE_CURSOR_RAW, counts);
+    return make(SCOPE_CURSOR_UNIT_VOLTS,
+                conf_from_cal(scope_cal_get_tier(map->channel, map->range_idx)),
+                counts * k);
 }
 
 scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,

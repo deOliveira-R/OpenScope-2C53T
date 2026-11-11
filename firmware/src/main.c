@@ -338,6 +338,9 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)s->trigger.source << 8));
     h = redraw_epoch_mix(h, (uint32_t)(uint16_t)s->trigger.level);
 
+    h = redraw_epoch_mix(h, (uint32_t)s->prm_mask
+                            | ((uint32_t)s->prm_hidden << 16));   /* C6 selection */
+
     h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode
                             | ((uint32_t)s->cursor.active << 4));
     h = redraw_epoch_mix(h, ((uint32_t)s->cursor.v1_x << 16) | s->cursor.v2_x);
