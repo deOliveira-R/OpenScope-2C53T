@@ -154,31 +154,25 @@ static void osc_settings_adjust(int dir)
     case 1: /* CH1 Probe */
         ss->ch1.probe = (probe_t)((ss->ch1.probe + PROBE_COUNT + dir) % PROBE_COUNT);
         break;
-    case 2: /* CH1 20M Limit -- no hardware path known; see the menu row */
-        ss->ch1.bw_limit = false;
-        break;
-    case 3: /* CH2 Coupling -- the relay, DC <-> AC; two states, so dir is moot */
+    case 2: /* CH2 Coupling -- the relay, DC <-> AC; two states, so dir is moot */
         { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); }
         break;
-    case 4: /* CH2 Probe */
+    case 3: /* CH2 Probe */
         ss->ch2.probe = (probe_t)((ss->ch2.probe + PROBE_COUNT + dir) % PROBE_COUNT);
         break;
-    case 5: /* CH2 20M Limit -- no hardware path known; see the menu row */
-        ss->ch2.bw_limit = false;
-        break;
-    case 6: /* Trigger Mode */
-    case 7: /* Trigger Edge */
-    case 8: /* Trigger Source */
+    case 4: /* Trigger Mode */
+    case 5: /* Trigger Edge */
+    case 6: /* Trigger Source */
     {
         /* The panel's model, so Settings and the panel cannot disagree on
          * what a change means (or on refusing a source that is off). */
         static const uint8_t row[3] = { TM_ROW_MODE, TM_ROW_EDGE, TM_ROW_SOURCE };
-        trig_menu_t m = { false, row[settings_sub_selected - 6] };
+        trig_menu_t m = { false, row[settings_sub_selected - 4] };
         char t[24];
         trigger_after_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
         break;
     }
-    case 9: /* Cursors */
+    case 7: /* Cursors */
         cursor_mode_cycle();
         break;
     }
@@ -247,13 +241,9 @@ void input_handle_settings_ok(void)
          * only changes when the relay did. */
         case 0: { char t[24]; channel_cycle_coupling(0, &ss->ch1, "CH1", t, sizeof(t)); } break;
         case 1: scope_cycle_probe(&ss->ch1); break;
-        /* 20M limit: refused. Its only consumer was an unobeyed USART bit,
-         * so it was label-only in every build (EXP-70 audit). */
-        case 2: ss->ch1.bw_limit = false; break;
-        case 3: { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); } break;
-        case 4: scope_cycle_probe(&ss->ch2); break;
-        case 5: ss->ch2.bw_limit = false; break;
-        case 6: case 7: case 8: case 9: osc_settings_adjust(+1); break;
+        case 2: { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); } break;
+        case 3: scope_cycle_probe(&ss->ch2); break;
+        case 4: case 5: case 6: case 7: osc_settings_adjust(+1); break;
         default: break;
         }
     } else if (settings_depth == 2) {
@@ -1359,6 +1349,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 scope_show_popup("Await Trigger...");
             } else {
                 scope_toggle_running(ss);
+                if (!ss->running)
+                    scope_ui_paused_latch();   /* ranges at STOP, for the zoom (C14) */
                 scope_show_popup(ss->running ? "RUN" : "STOP");
             }
             send_cmd(dq, cmd);

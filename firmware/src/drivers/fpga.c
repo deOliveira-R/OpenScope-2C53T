@@ -3092,6 +3092,13 @@ static volatile bool acq_pub_ordered = false;
  * `ordered`, so the rate a reader applies always matches the buffer. */
 static volatile bool acq_stage_il = false;
 static volatile bool acq_pub_il = false;
+/* The reg-0x01 code the published record was captured at (0xFF: none yet, the
+ * in-place fallback never commits). acq_rate_idx moves the moment a timebase
+ * key is pressed, even STOPPED, while the held record keeps its own rate:
+ * the zoom-while-paused view (C14, ui/scope_ui.c) and the measurement badges
+ * must read the record's rate, not the selector's. */
+static volatile uint8_t acq_pub_idx = 0xFF;
+static volatile uint8_t acq_rate_idx;       /* defined (initialised) below */
 /* What the published record is (trig_policy.h, parity C3): handed over,
  * free-run, or free-run with two non-simultaneous channels (#84). Staged and
  * published with the frame, like the two flags above, so the badge can never
@@ -3113,6 +3120,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_il = acq_stage_il;
+    acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
     acq_frame_gen++;                                   /* even: stable */
 }
@@ -3991,7 +3999,8 @@ uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
  * doubled when the record is the two-converter merge. 0 = no rate. */
 float fpga_record_sample_rate(void)
 {
-    const float fs = scope_timebase_sample_rate(acq_rate_idx);
+    const uint8_t idx = (acq_pub_idx == 0xFFu) ? acq_rate_idx : acq_pub_idx;
+    const float fs = scope_timebase_sample_rate(idx);
     return acq_pub_il ? 2.0f * fs : fs;
 }
 

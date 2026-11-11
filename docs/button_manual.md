@@ -338,10 +338,10 @@ shell command sets it, and it is saved with the next key press.
 ```
 > CH1 Coupling      [DC / AC / GND]
   CH1 Probe         [1X / 10X]
-  CH1 20M Limit     [ON / OFF]
+
   CH2 Coupling      [DC / AC / GND]
   CH2 Probe         [1X / 10X]
-  CH2 20M Limit     [ON / OFF]
+
   Trigger Mode      [Auto / Normal / Single]
   Trigger Edge      [Rising / Falling]
 ```

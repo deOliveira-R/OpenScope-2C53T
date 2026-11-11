@@ -130,7 +130,7 @@ extern volatile uint8_t       math_op;        /* math_op_t cast */
 extern volatile bool          persist_enabled;
 
 #define SETTINGS_ITEM_COUNT     13
-#define SETTINGS_OSC_ITEM_COUNT 10   /* + Trigger Source, Cursors (parity C3) */
+#define SETTINGS_OSC_ITEM_COUNT 8    /* no 20M Limit rows: stock V1.2.0 has none reachable (C13) */
 #define SETTINGS_ABOUT_LINES    5
 #define METER_SUBMODE_COUNT     12   /* 0-10 stock functions, 11 = Auto (word 0x14) */
 /* Meter views (softkey UI, 2026-10-06), cycled by the View softkey (PRM):
@@ -180,6 +180,11 @@ bool input_inject_button(button_id_t b);
  * run) and how it was found (0 none, 1 soft midline, 2 hardware level
  * crossing of a time-ordered record). */
 int16_t scope_ui_trig_x_actual(void);
+/* Zoom while paused (C14): latch the ranges at STOP (the RUN/STOP key), and ask
+ * whether the held record is being shown zoomed (the column compositor must
+ * not draw it then). */
+void scope_ui_paused_latch(void);
+bool scope_ui_paused_zoom_active(void);
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
  * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the record
  * rate used. For `fpga scope cursor`. */
