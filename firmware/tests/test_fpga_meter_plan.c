@@ -65,7 +65,8 @@ static void test_measured_word_map_is_one_distinct_word_per_submode(void)
      */
     uint32_t seen = 0;
 
-    for (uint8_t i = 0; i < FPGA_METER_LOCAL_SUBMODE_COUNT; i++) {
+    /* Submode 11 is Auto (0x14, parity M2) and is checked on its own below. */
+    for (uint8_t i = 0; i < FPGA_METER_SUBMODE_AUTO; i++) {
         char name[48];
         uint16_t word = fpga_meter_stock_cmd_word_for_submode(i);
         uint8_t low = (uint8_t)(word & 0xFFU);
@@ -78,12 +79,16 @@ static void test_measured_word_map_is_one_distinct_word_per_submode(void)
         EXPECT_EQ_U8(name, (seen & (1UL << low)) ? 1U : 0U, 0U);
         seen |= (1UL << low);
     }
+
+    EXPECT_EQ_U16("Auto is stock's word 0x14", fpga_meter_stock_cmd_word_for_submode(
+                  FPGA_METER_SUBMODE_AUTO), 0x0514);
+    EXPECT_EQ_U8("Auto word is distinct", (seen & (1UL << 0x14)) ? 1U : 0U, 0U);
 }
 
 static void test_local_submode_mapping(void)
 {
     static const uint8_t expected_stock_mode[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
-        0, 1, 2, 2, 3, 3, 4, 6, 7, 5, 5
+        0, 1, 2, 2, 3, 3, 4, 6, 7, 5, 5, 0
     };
 
     for (uint8_t i = 0; i < FPGA_METER_LOCAL_SUBMODE_COUNT; i++) {
@@ -141,8 +146,11 @@ static void test_logical_function_capability_matrix_covers_all_dmm_modes(void)
 
     EXPECT_EQ_U16("all logical DMM functions covered", seen_functions,
                   (uint16_t)((1U << FPGA_METER_LOGICAL_FUNCTION_COUNT) - 1U));
+    /* Auto (submode 11) is a SoC mode, not a jack function: no logical
+     * function maps to it. */
     EXPECT_EQ_U16("all supported local submodes represented", seen_supported_submodes,
-                  (uint16_t)((1U << FPGA_METER_LOCAL_SUBMODE_COUNT) - 1U));
+                  (uint16_t)(((1U << FPGA_METER_LOCAL_SUBMODE_COUNT) - 1U) &
+                             ~(1U << FPGA_METER_SUBMODE_AUTO)));
     EXPECT_EQ_U8("DC uA is unresolved",
                  fpga_meter_logical_function_is_unresolved(FPGA_METER_FUNCTION_DC_UA) ? 1U : 0U,
                  1U);
@@ -162,7 +170,7 @@ static void test_wire_words_are_raw_05_family(void)
     static const uint16_t expected_words[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
         0x050C, 0x050D, 0x0511, 0x0510, 0x0516,
         0x0515, 0x050B, 0x0517, 0x050E, 0x050A,
-        0x0512
+        0x0512, 0x0514
     };
 
     for (uint8_t i = 0; i < FPGA_METER_LOCAL_SUBMODE_COUNT; i++) {
@@ -219,7 +227,7 @@ static void test_stock_toggle_words_are_selectors_not_apply_words(void)
 static void test_transition_plan_covers_mux_family_and_settle_policy(void)
 {
     static const uint8_t expected_stock_mode[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
-        0, 1, 2, 2, 3, 3, 4, 6, 7, 5, 5
+        0, 1, 2, 2, 3, 3, 4, 6, 7, 5, 5, 0
     };
     static const uint8_t expected_family[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
         FPGA_METER_FRAME_FAMILY_VOLTAGE,
@@ -233,24 +241,25 @@ static void test_transition_plan_covers_mux_family_and_settle_policy(void)
         FPGA_METER_FRAME_FAMILY_DIODE,
         FPGA_METER_FRAME_FAMILY_EXTENDED,
         FPGA_METER_FRAME_FAMILY_EXTENDED,
+        FPGA_METER_FRAME_FAMILY_AUTO,
     };
     static const uint16_t expected_selector[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
         0x050C, 0x050D, 0x0511, 0x0510, 0x0516,
         0x0515, 0x050B, 0x0517, 0x050E, 0x050A,
-        0x0512
+        0x0512, 0x0514
     };
     static const uint16_t expected_apply[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
         0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
         0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-        0x0000
+        0x0000, 0x0000
     };
     static const uint16_t expected_config[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
         0x0508, 0x0000, 0x0000, 0x0000, 0x0000,
         0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
-        0x0000
+        0x0000, 0x0000
     };
     static const uint8_t expected_bank[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
-        0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0
+        0, 0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0
     };
 
     for (uint8_t i = 0; i < FPGA_METER_LOCAL_SUBMODE_COUNT; i++) {
@@ -320,6 +329,7 @@ static void test_mux_gpio_state_matches_stock_projection_for_every_submode(void)
         { 0, 0, 0, 1, 0, 1, 1, 0, 0, 0 },
         { 0, 1, 0, 1, 0, 1, 0, 1, 0, 0 },
         { 0, 1, 0, 1, 0, 1, 0, 1, 0, 0 },
+        { 1, 1, 0, 1, 1, 1, 0, 1, 0, 0 },   /* Auto: the DCV posture */
     };
 
     for (uint8_t i = 0; i < FPGA_METER_LOCAL_SUBMODE_COUNT; i++) {
@@ -510,6 +520,25 @@ static void test_frame_family_mismatch_policy_matrix_is_exhaustive(void)
                          families[e], FPGA_METER_FRAME_FAMILY_INVALID) ? 1U : 0U,
                      0U);
     }
+
+    /* Auto (parity M2): stock has no family gate for word 0x14, so every
+     * recovered family is acceptable; an invalid one still is not, and the
+     * observed family can never be "Auto" for the other direction. */
+    for (unsigned o = 0; o < sizeof(families); o++) {
+        char name[64];
+        snprintf(name, sizeof(name), "Auto accepts observed %u", (unsigned)families[o]);
+        EXPECT_EQ_U8(name,
+                     fpga_meter_frame_family_is_acceptable(
+                         FPGA_METER_FRAME_FAMILY_AUTO, families[o]) ? 1U : 0U, 1U);
+        snprintf(name, sizeof(name), "fixed family %u rejects Auto frames", (unsigned)families[o]);
+        EXPECT_EQ_U8(name,
+                     fpga_meter_frame_family_is_acceptable(
+                         families[o], FPGA_METER_FRAME_FAMILY_AUTO) ? 1U : 0U, 0U);
+    }
+    EXPECT_EQ_U8("Auto rejects an invalid observed family",
+                 fpga_meter_frame_family_is_acceptable(
+                     FPGA_METER_FRAME_FAMILY_AUTO, FPGA_METER_FRAME_FAMILY_INVALID) ? 1U : 0U,
+                 0U);
 
     EXPECT_EQ_U8("invalid family not recovered",
                  fpga_meter_frame_family_is_recovered(

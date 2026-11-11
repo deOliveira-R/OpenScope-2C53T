@@ -184,8 +184,11 @@ class SampleDumps(unittest.TestCase):
         if m is None:
             self.skipTest("fpga_meter_plan.c does not carry the per-submode word table yet (PR #33)")
         table = {int(x, 16) for x in re.findall(r"0x([0-9A-Fa-f]{2})", m.group(1))}
-        measured = {w & 0xFF for _, _, w in d["tx"]} - {0x14}  # Auto has no local submode
-        self.assertEqual(table, measured)
+        measured = {w & 0xFF for _, _, w in d["tx"]}
+        # Auto (0x14) is local submode 11 since parity M2; the walks in the
+        # dumps may or may not include it, the table must.
+        self.assertIn(0x14, table)
+        self.assertEqual(table - {0x14}, measured - {0x14})
 
 
 if __name__ == "__main__":

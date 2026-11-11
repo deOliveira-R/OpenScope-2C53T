@@ -14,6 +14,7 @@
 
 #include "meter_data.h"
 #include "meter_stock.h"
+#include "fpga_meter_plan.h"
 
 static int tests_run, tests_passed;
 
@@ -275,7 +276,8 @@ static int test_selector_for_submode(void)
     ASSERT(meter_stock_selector_for_submode(8, &sel, &f36) && sel == 2 && f36 == 1);  /* Diode */
     ASSERT(meter_stock_selector_for_submode(1, &sel, &f36) && sel == 1 && f36 == 2);  /* ACV */
     ASSERT(meter_stock_selector_for_submode(10, &sel, &f36) && sel == 5);
-    ASSERT(!meter_stock_selector_for_submode(11, &sel, &f36));
+    ASSERT(meter_stock_selector_for_submode(11, &sel, &f36) && sel == 0 && f36 == 0);  /* Auto */
+    ASSERT(!meter_stock_selector_for_submode(12, &sel, &f36));
     return 1;
 }
 
@@ -380,6 +382,254 @@ static int test_cal_wizard_words_are_refused(void)
     return 1;
 }
 
+
+/* ── Auto (M2): stock's selector-0 state machine, 0x0803E1F2 ─────────── */
+
+static meter_auto_fsm_t fsm_new(void)
+{
+    meter_auto_fsm_t st = { 0, 0, 0 };
+    meter_auto_fsm_reset(&st);
+    return st;
+}
+
+static int test_auto_fsm_entry_and_undecided(void)
+{
+    meter_auto_fsm_t st = fsm_new();
+    ASSERT(st.f2f == 0 && st.f36 == 1);                 /* 0x0800E3C2, 0x0800CBD6 */
+    /* F2F == 0: the case does nothing, whatever the bits say (0x0803E1F6) */
+    ASSERT(meter_auto_fsm_step(&st, false, 0x02, 0x00, 0x20) == METER_AUTO_FN_NONE);
+    ASSERT(st.f2f == 0 && st.f36 == 1);
+    /* the AUTO glyph run: F2F = 0, F36 = 0 */
+    st.f2f = 1; st.f36 = 2;
+    meter_auto_fsm_auto_text(&st);
+    ASSERT(st.f2f == 0 && st.f36 == 0);
+    ASSERT(meter_auto_fsm_function(&st) == METER_AUTO_FN_NONE);
+    /* a numeric frame presets F2F = 0xFF and decides */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x02, 0x00, 0x00) == METER_AUTO_FN_DCV);
+    return 1;
+}
+
+static int test_auto_fsm_decisions(void)
+{
+    meter_auto_fsm_t st;
+
+    st = fsm_new();      /* DC voltage: rx[2].1 (0x0803E328) */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x02, 0x00, 0x00) == METER_AUTO_FN_DCV);
+    ASSERT(st.f2f == 1 && st.f36 == 1 && st.f37 == 1);
+    ASSERT(meter_auto_fsm_step(&st, true, 0x02, 0x00, 0x01) == METER_AUTO_FN_DCV);
+    ASSERT(st.f37 == 0);                                 /* rx[7].0: the mV range */
+    ASSERT(!meter_auto_fsm_hz_valid(&st));
+
+    st = fsm_new();      /* AC voltage: rx[2].0 (0x0803E338) */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x01, 0x00, 0x00) == METER_AUTO_FN_ACV);
+    ASSERT(st.f2f == 1 && st.f36 == 2 && st.f37 == 1);
+    ASSERT(meter_auto_fsm_hz_valid(&st));                /* Hz only here */
+
+    st = fsm_new();      /* resistance: rx[7].5 (0x0803E2E0) */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x00, 0x20) == METER_AUTO_FN_OHM);
+    ASSERT(st.f2f == 3 && st.f36 == 0 && st.f37 == 0);
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x40, 0x20) == METER_AUTO_FN_OHM);
+    ASSERT(st.f37 == 1);                                 /* rx[6].6: kOhm */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x40, 0x24) == METER_AUTO_FN_OHM);
+    ASSERT(st.f37 == 2);                                 /* rx[7].2 beats rx[6].6 */
+    ASSERT(!meter_auto_fsm_hz_valid(&st));
+
+    st = fsm_new();      /* continuity: rx[7].3 and no earlier bit (0x0803E3A8) */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x00, 0x08) == METER_AUTO_FN_CONT);
+    ASSERT(st.f2f == 2 && st.f36 == 2 && st.f37 == 0);
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x40, 0x08) == METER_AUTO_FN_CONT);
+    ASSERT(st.f37 == 1);
+    ASSERT(!meter_auto_fsm_hz_valid(&st));               /* F36 == 2 but F2F == 2 */
+
+    st = fsm_new();      /* nothing recognised: F36 = 0, no function */
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x00, 0x00) == METER_AUTO_FN_NONE);
+    ASSERT(st.f36 == 0 && st.f2f == 0xFF);
+    return 1;
+}
+
+static int test_auto_fsm_priority_order(void)
+{
+    meter_auto_fsm_t st;
+    /* resistance beats DC beats AC beats continuity, as the branch order */
+    st = fsm_new();
+    ASSERT(meter_auto_fsm_step(&st, true, 0x03, 0x00, 0x28) == METER_AUTO_FN_OHM);
+    st = fsm_new();
+    ASSERT(meter_auto_fsm_step(&st, true, 0x03, 0x00, 0x08) == METER_AUTO_FN_DCV);
+    st = fsm_new();
+    ASSERT(meter_auto_fsm_step(&st, true, 0x01, 0x00, 0x08) == METER_AUTO_FN_ACV);
+    return 1;
+}
+
+static int test_auto_fsm_status_frames_keep_the_decision(void)
+{
+    /* Status text paths (OL, blank, PAS) jump past the F2F = 0xFF preset
+     * (0x0803DCCC..), so a decided state is decided again from the same
+     * bits; an undecided one (F2F == 0 after "AUTO") stays undecided. */
+    meter_auto_fsm_t st = fsm_new();
+    ASSERT(meter_auto_fsm_step(&st, true, 0x00, 0x00, 0x20) == METER_AUTO_FN_OHM);
+    ASSERT(meter_auto_fsm_step(&st, false, 0x00, 0x00, 0x20) == METER_AUTO_FN_OHM);
+    ASSERT(st.f2f == 3);
+    /* the bits go away: F36 = 0 but F2F is not touched */
+    ASSERT(meter_auto_fsm_step(&st, false, 0x00, 0x00, 0x00) == METER_AUTO_FN_OHM);
+    meter_auto_fsm_auto_text(&st);
+    ASSERT(meter_auto_fsm_step(&st, false, 0x00, 0x00, 0x20) == METER_AUTO_FN_NONE);
+    ASSERT(meter_auto_fn_submode(METER_AUTO_FN_DCV) == 0);
+    ASSERT(meter_auto_fn_submode(METER_AUTO_FN_ACV) == 1);
+    ASSERT(meter_auto_fn_submode(METER_AUTO_FN_OHM) == 6);
+    ASSERT(meter_auto_fn_submode(METER_AUTO_FN_CONT) == 7);
+    ASSERT(meter_auto_fn_submode(METER_AUTO_FN_NONE) == 0xFF);
+    return 1;
+}
+
+/* Real frames (unit #2, test_meter_data.c) fed to submode 11. */
+static const uint8_t AUTO_DCV[12] = { 0x5A, 0xA5, 0xC6, 0xF7, 0xEB, 0xEB, 0x0F, 0x00, 0x02, 0x00, 0x01, 0x4E };
+static const uint8_t AUTO_ACV[12] = { 0x5A, 0xA5, 0xA5, 0xAD, 0xED, 0xF7, 0x07, 0x00, 0x02, 0x00, 0x00, 0x32 };
+static const uint8_t AUTO_OHM[12] = { 0x5A, 0xA5, 0x04, 0xE0, 0x9B, 0xEA, 0x07, 0x28, 0x00, 0x00, 0x01, 0x4B };
+
+static int test_auto_reading_dcv(void)
+{
+    meter_data_init();
+    feed(AUTO_DCV, 11);
+    ASSERT(meter_reading.valid);
+    ASSERT(meter_reading.submode == 11);                 /* the UI's submode, not the function */
+    ASSERT(meter_reading.auto_fn == METER_AUTO_FN_DCV);
+    ASSERT(meter_reading.result_class == METER_RESULT_NORMAL);
+    ASSERT_STR(meter_reading.display_str, "5.008");
+    ASSERT_STR(meter_reading.unit_suffix, "V");
+    ASSERT(close_to(meter_reading.value, 5.008f, 0.001f));
+    ASSERT(meter_reading.expected_frame_family == FPGA_METER_FRAME_FAMILY_VOLTAGE);
+    ASSERT(meter_reading.range_index == 1);
+    ASSERT_STR(meter_reading.range_label, "V");
+    return 1;
+}
+
+static int test_auto_reading_acv_needs_no_mains_window(void)
+{
+    uint8_t quiet[12];
+
+    meter_data_init();
+    feed(AUTO_ACV, 11);
+    ASSERT(meter_reading.valid);
+    ASSERT(meter_reading.auto_fn == METER_AUTO_FN_ACV);
+    ASSERT_STR(meter_reading.unit_suffix, "V");
+    ASSERT(meter_reading.value > 200.0f && meter_reading.value < 260.0f);
+    ASSERT(close_to(meter_reading.aux_freq_hz, 50.0f, 0.1f));
+
+    /* 400 Hz: outside the mains window the fixed ACV function insists on.
+     * Auto decided AC from the frame's own bit and prints rx[10..11] as Hz. */
+    memcpy(quiet, AUTO_ACV, 12);
+    quiet[10] = 0x01; quiet[11] = 0x90;
+    meter_data_init();
+    feed(quiet, 1);
+    ASSERT(!meter_reading.valid);                        /* fixed ACV rejects it */
+    meter_data_init();
+    feed(quiet, 11);
+    ASSERT(meter_reading.valid);
+    ASSERT(meter_reading.auto_fn == METER_AUTO_FN_ACV);
+    ASSERT(close_to(meter_reading.aux_freq_hz, 400.0f, 0.1f));
+    return 1;
+}
+
+static int test_auto_reading_ohm_and_the_family_gate(void)
+{
+    uint8_t marked[12];
+
+    meter_data_init();
+    feed(AUTO_OHM, 11);
+    ASSERT(meter_reading.valid);
+    ASSERT(meter_reading.submode == 11 && meter_reading.auto_fn == METER_AUTO_FN_OHM);
+    ASSERT_STR(meter_reading.unit_suffix, "Ohm");
+    ASSERT(meter_reading.expected_frame_family == FPGA_METER_FRAME_FAMILY_RESISTANCE);
+
+    /* The family is the function the frame decided on: a resistance frame
+     * that carries the voltage payload marker is still a foreign frame. */
+    memcpy(marked, AUTO_OHM, 12);
+    marked[8] = 0x02;
+    meter_data_init();
+    feed(marked, 11);
+    ASSERT(!meter_reading.valid);
+    ASSERT(meter_reading.reject_reason == METER_REJECT_WRONG_FRAME_FAMILY);
+    return 1;
+}
+
+static int test_auto_reading_continuity_shows_pas_and_beeps(void)
+{
+    uint8_t f[12];
+    const uint8_t pas[4] = { 16, 18, 10, 5 };
+
+    /* PAS is a status string: stock decides nothing from it while F2F is 0
+     * (right after "AUTO"), so the first numeric frame decides continuity. */
+    meter_data_init();
+    glyph_frame(f, pas, 0, 0x08);
+    feed(f, 11);
+    ASSERT(meter_reading.valid && meter_reading.auto_fn == METER_AUTO_FN_NONE);
+    ASSERT_STR(meter_reading.display_str, "PAS");        /* still the text */
+    {
+        const uint8_t n[4] = { 0, 0, 1, 7 };
+        glyph_frame(f, n, 0, 0x08);
+        feed(f, 11);
+        ASSERT(meter_reading.auto_fn == METER_AUTO_FN_CONT);
+    }
+    glyph_frame(f, pas, 0, 0x08);
+    feed(f, 11);
+    ASSERT(meter_reading.valid);
+    ASSERT(meter_reading.auto_fn == METER_AUTO_FN_CONT);
+    ASSERT(meter_reading.result_class == METER_RESULT_CONTINUITY);
+    ASSERT(meter_reading.continuity_beep);
+    ASSERT(meter_reading.status_code == METER_STATUS_PAS);
+    ASSERT_STR(meter_reading.display_str, "PAS");        /* M5: stock's own text */
+    /* and in the fixed continuity function */
+    meter_data_init();
+    glyph_frame(f, pas, 0, 0x08);
+    feed(f, 7);
+    ASSERT_STR(meter_reading.display_str, "PAS");
+    ASSERT(meter_reading.continuity_beep);
+    return 1;
+}
+
+static int test_auto_reading_undecided_is_not_a_number(void)
+{
+    uint8_t f[12];
+    const uint8_t autot[4] = { 10, 11, 12, 13 };
+    const uint8_t num[4]   = { 1, 2, 3, 4 };
+
+    meter_data_init();
+    glyph_frame(f, autot, 0, 0);
+    feed(f, 11);
+    ASSERT(meter_reading.valid);
+    ASSERT_STR(meter_reading.display_str, "AUTO");
+    ASSERT(meter_reading.auto_fn == METER_AUTO_FN_NONE);
+
+    /* a number whose bits name no function: shown as nothing */
+    glyph_frame(f, num, 0, 0);
+    feed(f, 11);
+    ASSERT(!meter_reading.valid);
+    ASSERT(meter_reading.reject_reason == METER_REJECT_WRONG_FRAME_FAMILY);
+    ASSERT_STR(meter_reading.display_str, "---");
+    ASSERT(meter_reading.range_label[0] == '\0');
+
+    /* the same frame in a fixed function is decided by the MCU, not the SoC */
+    meter_data_init();
+    feed(AUTO_DCV, 11);
+    ASSERT(meter_reading.valid);
+    /* Auto -> a new function word resets the decision */
+    meter_data_invalidate(11);
+    ASSERT(!meter_reading.valid && meter_reading.auto_fn == 0);
+    glyph_frame(f, autot, 0, 0);
+    feed(f, 11);
+    feed(AUTO_OHM, 11);                                  /* decides again after "AUTO" */
+    ASSERT(meter_reading.valid && meter_reading.auto_fn == METER_AUTO_FN_OHM);
+    return 1;
+}
+
+static int test_auto_word_and_beep_gate(void)
+{
+    ASSERT(fpga_meter_stock_cmd_word_for_submode(11) == 0x0514);
+    ASSERT(meter_stock_beep_gate_for_submode(11));       /* beeps in Auto (checker) */
+    ASSERT(!meter_word_is_cal_wizard(0x0514));
+    return 1;
+}
+
 int main(void)
 {
     printf("meter_stock tests\n");
@@ -396,6 +646,16 @@ int main(void)
     TEST(beep_pulse_is_fixed_length);
     TEST(beep_edge_retriggers);
     TEST(cal_wizard_words_are_refused);
+    TEST(auto_fsm_entry_and_undecided);
+    TEST(auto_fsm_decisions);
+    TEST(auto_fsm_priority_order);
+    TEST(auto_fsm_status_frames_keep_the_decision);
+    TEST(auto_reading_dcv);
+    TEST(auto_reading_acv_needs_no_mains_window);
+    TEST(auto_reading_ohm_and_the_family_gate);
+    TEST(auto_reading_continuity_shows_pas_and_beeps);
+    TEST(auto_reading_undecided_is_not_a_number);
+    TEST(auto_word_and_beep_gate);
     printf("%d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

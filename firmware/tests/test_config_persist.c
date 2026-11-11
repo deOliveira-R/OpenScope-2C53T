@@ -57,6 +57,8 @@
 #include "theme.h"
 #include "scope_state.h"
 #include "math_channel.h"
+#include "startup_policy.h"
+#include "fpga_meter_plan.h"
 #include "ui.h"        /* METER_SUBMODE_COUNT / METER_LAYOUT_* and the globals */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -69,6 +71,7 @@ volatile bool     math_enabled  = false;
 volatile uint8_t  math_op       = 0;
 volatile uint8_t  meter_submode = 0;
 volatile uint8_t  meter_layout  = 0;
+volatile startup_mode_t startup_mode = STARTUP_METER;   /* M6: owned by settings_store now */
 
 /* ═══════════════════════════════════════════════════════════════════
  * Test harness
@@ -432,6 +435,7 @@ static void power_cycle(void)
     math_op = 0;
     meter_submode = 0;
     meter_layout = 0;
+    startup_mode = STARTUP_METER;
     if (flash_regions_bind_w25q() != FLASH_REGION_OK) {
         printf("FATAL: rebind failed\n");
         exit(2);
@@ -975,6 +979,76 @@ static void test_live_settings_survive_a_power_cycle(void)
     CHECK(settings_store_get_status()->load_result == CONFIG_LOAD_OK,
           "expected a loaded record, got \"%s\"",
           config_load_result_name(settings_store_get_status()->load_result));
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Parity M6: startup-into-meter and meter-function persistence
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
+{
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_METER, "factory startup is not the meter");
+
+    /* Scope as the boot target, and stock's Auto as the meter function. */
+    startup_mode = STARTUP_SCOPE;
+    meter_submode = FPGA_METER_SUBMODE_AUTO;
+    CHECK(settings_store_flush(1000), "a changed startup mode / function was not written");
+
+    power_cycle();
+    CHECK(startup_mode == STARTUP_METER && meter_submode == 0, "power_cycle() did not reset RAM");
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_SCOPE, "startup mode not restored (%d)", (int)startup_mode);
+    CHECK(meter_submode == FPGA_METER_SUBMODE_AUTO, "Auto function not restored (%u)",
+          (unsigned)meter_submode);
+    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_OSCILLOSCOPE, "boot mode");
+
+    /* and back to the meter */
+    startup_mode = STARTUP_METER;
+    CHECK(settings_store_flush(5000), "meter startup not written");
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_METER, "meter startup not restored");
+    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_MULTIMETER, "boot mode meter");
+}
+
+static void test_startup_mode_from_a_foreign_record_is_the_default(void)
+{
+    device_config_t cfg;
+
+    CHECK(startup_mode_from_config(CONFIG_MODE_OSCILLOSCOPE) == STARTUP_SCOPE, "scope");
+    CHECK(startup_mode_from_config(CONFIG_MODE_MULTIMETER) == STARTUP_METER, "meter");
+    CHECK(startup_mode_from_config(CONFIG_MODE_SIGNAL_GEN) == STARTUP_METER, "siggen -> default");
+    CHECK(startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER, "settings -> default");
+    CHECK(startup_mode_from_config(250) == STARTUP_METER, "garbage -> default");
+
+    config_init_defaults(&cfg);
+    cfg.startup_mode = 77;
+    cfg.meter_submode = 200;
+    startup_mode = STARTUP_SCOPE;
+    settings_store_apply(&cfg);
+    CHECK(startup_mode == STARTUP_METER, "out-of-range startup mode applied");
+    CHECK(meter_submode < METER_SUBMODE_COUNT, "out-of-range meter function applied");
+    cfg.meter_submode = FPGA_METER_SUBMODE_AUTO;
+    settings_store_apply(&cfg);
+    CHECK(meter_submode == FPGA_METER_SUBMODE_AUTO, "Auto is a valid function");
+}
+
+static void test_boot_mode_policy(void)
+{
+    /* A release build boots into what was saved. */
+    CHECK(startup_boot_mode(STARTUP_METER, false, false) == MODE_MULTIMETER, "release meter");
+    CHECK(startup_boot_mode(STARTUP_SCOPE, false, false) == MODE_OSCILLOSCOPE, "release scope");
+    /* A warm-handoff image is scope-only, its meter entry points are no-ops ... */
+    CHECK(startup_boot_mode(STARTUP_METER, true, false) == MODE_OSCILLOSCOPE, "warm: scope only");
+    /* ... unless the meter submodes are enabled, which makes the meter real. */
+    CHECK(startup_boot_mode(STARTUP_METER, true, true) == MODE_MULTIMETER, "warm+submodes meter");
+    CHECK(startup_boot_mode(STARTUP_SCOPE, true, true) == MODE_OSCILLOSCOPE, "warm+submodes scope");
+    CHECK(startup_mode_to_config(STARTUP_SCOPE) == CONFIG_MODE_OSCILLOSCOPE, "to config scope");
+    CHECK(startup_mode_to_config(STARTUP_METER) == CONFIG_MODE_MULTIMETER, "to config meter");
 }
 
 static void test_presses_that_change_nothing_never_write(void)
@@ -2224,6 +2298,11 @@ int main(void)
         run("autosave survives a tick wrap", test_autosave_survives_tick_wrap);
 
         run("live settings survive a power cycle", test_live_settings_survive_a_power_cycle);
+        run("startup mode and Auto function survive a power cycle",
+            test_startup_mode_and_meter_function_survive_a_power_cycle);
+        run("a foreign startup mode is the default",
+            test_startup_mode_from_a_foreign_record_is_the_default);
+        run("boot mode policy", test_boot_mode_policy);
         run("presses that change nothing never write", test_presses_that_change_nothing_never_write);
         run("a change undone before settling costs nothing",
             test_a_change_undone_before_settling_costs_nothing);

@@ -34,6 +34,7 @@
 #include "fpga.h"
 #include "scope_vpos.h"
 #include "meter_autoselect.h"
+#include "fpga_meter_plan.h"
 #include "at32f403a_407.h"
 #include "button_scan.h"
 #include "settings_store.h"
@@ -832,16 +833,13 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_AUTO:
         if (current_mode == MODE_MULTIMETER) {
-            meter_autoselect_status_t st;
-            meter_autoselect_get_status(&st);
-            if (st.state == METER_AUTOSELECT_RUNNING) {
-                meter_autoselect_cancel();
-                scope_show_popup("AUTO CANCEL");
-            } else if (meter_autoselect_start(700U)) {
-                scope_show_popup("AUTO DMM");
-            } else {
-                scope_show_popup("AUTO ERR");
-            }
+            /* Stock's AUTO key in the meter (0x0800CB50) sends word 0x0514
+             * and lets the SoC pick the function (V or Ohm, AC or DC); it
+             * resets hold/REL/min/max like any function change. Pressed
+             * again it re-arms the SoC. The software autoscan this key used
+             * to start stays reachable as the shell's `meter auto`. */
+            meter_function_select(FPGA_METER_SUBMODE_AUTO);
+            scope_show_popup("AUTO");
             cmd = DCMD_DRAW_METER;
             send_cmd(dq, cmd);
         } else if (current_mode == MODE_OSCILLOSCOPE) {

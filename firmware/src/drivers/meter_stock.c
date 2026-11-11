@@ -61,7 +61,7 @@ bool meter_stock_selector_for_submode(uint8_t submode, uint8_t *sel, uint8_t *f3
     /* The function words of fpga_meter_plan.c, by their stock meaning:
      * 0C DCV, 0D ACV, 11 small DC I, 10 large DC I, 16 small AC I, 15 large
      * AC I, 0B Ohm, 17 Continuity, 0E Diode, 0A Cap, 12 Temp. */
-    static const uint8_t map[11][2] = {
+    static const uint8_t map[12][2] = {
         { METER_STOCK_SEL_VOLT,   1 },   /* 0 DCV   */
         { METER_STOCK_SEL_VOLT,   2 },   /* 1 ACV   */
         { METER_STOCK_SEL_ISMALL, 1 },   /* 2 DC mA */
@@ -73,11 +73,84 @@ bool meter_stock_selector_for_submode(uint8_t submode, uint8_t *sel, uint8_t *f3
         { METER_STOCK_SEL_DIODE,  1 },   /* 8 Diode */
         { METER_STOCK_SEL_CAP,    1 },   /* 9 Cap   */
         { METER_STOCK_SEL_TEMP,   1 },   /* 10 Temp */
+        { METER_STOCK_SEL_AUTO,   0 },   /* 11 Auto: F36 is the SoC's to decide */
     };
-    if (submode >= 11) return false;
+    if (submode >= 12) return false;
     if (sel) *sel = map[submode][0];
     if (f36) *f36 = map[submode][1];
     return true;
+}
+
+/* ── Auto (selector 0, 0x0803E1F2) ──────────────────────────────────── */
+
+void meter_auto_fsm_reset(meter_auto_fsm_t *st)
+{
+    st->f2f = 0;
+    st->f36 = 1;
+}
+
+void meter_auto_fsm_auto_text(meter_auto_fsm_t *st)
+{
+    st->f2f = 0;
+    st->f36 = 0;
+}
+
+meter_auto_fn_t meter_auto_fsm_step(meter_auto_fsm_t *st, bool numeric,
+                                    uint8_t rx2, uint8_t rx6, uint8_t rx7)
+{
+    const bool f6_6 = (rx6 & 0x40u) != 0;
+    const bool f7_0 = (rx7 & 0x01u) != 0;
+    const bool f7_2 = (rx7 & 0x04u) != 0;
+
+    if (numeric) st->f2f = 0xFF;                    /* 0x0803E1AA */
+    if (st->f2f == 0)                               /* 0x0803E1F6: undecided */
+        return meter_auto_fsm_function(st);
+
+    if (rx7 & 0x20u) {                              /* 0x0803E2E0: resistance */
+        st->f36 = 0;
+        st->f37 = f7_2 ? 2 : (f6_6 ? 1 : 0);
+        st->f2f = 3;
+    } else if (rx2 & 0x02u) {                       /* 0x0803E328: DC voltage */
+        st->f36 = 1;
+        st->f37 = f7_0 ? 0 : 1;
+        st->f2f = 1;
+    } else if (rx2 & 0x01u) {                       /* 0x0803E338: AC voltage */
+        st->f36 = 2;
+        st->f37 = f7_0 ? 0 : 1;
+        st->f2f = 1;
+    } else if (rx7 & 0x08u) {                       /* 0x0803E3A8: continuity */
+        st->f36 = 2;
+        st->f37 = f7_2 ? 2 : (f6_6 ? 1 : 0);
+        st->f2f = 2;
+    } else {                                        /* 0x0803E222 */
+        st->f36 = 0;
+    }
+    return meter_auto_fsm_function(st);
+}
+
+meter_auto_fn_t meter_auto_fsm_function(const meter_auto_fsm_t *st)
+{
+    if (st->f2f == 1 && st->f36 == 1) return METER_AUTO_FN_DCV;
+    if (st->f2f == 1 && st->f36 == 2) return METER_AUTO_FN_ACV;
+    if (st->f2f == 3 && st->f36 == 0) return METER_AUTO_FN_OHM;
+    if (st->f2f == 2 && st->f36 == 2) return METER_AUTO_FN_CONT;
+    return METER_AUTO_FN_NONE;
+}
+
+uint8_t meter_auto_fn_submode(meter_auto_fn_t fn)
+{
+    switch (fn) {
+    case METER_AUTO_FN_DCV:  return 0;
+    case METER_AUTO_FN_ACV:  return 1;
+    case METER_AUTO_FN_OHM:  return 6;
+    case METER_AUTO_FN_CONT: return 7;
+    default:                 return 0xFF;
+    }
+}
+
+bool meter_auto_fsm_hz_valid(const meter_auto_fsm_t *st)
+{
+    return st->f36 == 2 && st->f2f == 1;
 }
 
 uint8_t meter_stock_range_index(uint8_t sel, uint8_t f36, bool degf,

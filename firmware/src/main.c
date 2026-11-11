@@ -42,6 +42,7 @@ extern void system_clock_config(void);
 #include "meter_voltage_wave.h"
 #include "flash_fs.h"
 #include "settings_store.h"
+#include "startup_policy.h"
 #include "cal_backup.h"
 #include "usb_debug.h"
 #include "rtt.h"
@@ -93,59 +94,12 @@ volatile bool          math_enabled = false;
 volatile uint8_t       math_op = 0;        /* MATH_ADD */
 volatile bool          persist_enabled = false;
 
-#define STARTUP_SETTINGS_ADDR     0x080FF800u
-#define STARTUP_SETTINGS_MAGIC    0x3243534Fu  /* "OSC2", little-endian */
-#define STARTUP_SETTINGS_VERSION  1u
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t mode;
-    uint32_t checksum;
-} startup_settings_record_t;
-
-static uint32_t startup_settings_checksum(uint32_t mode)
-{
-    return STARTUP_SETTINGS_MAGIC ^ STARTUP_SETTINGS_VERSION ^ mode ^ 0x5A5AA5A5u;
-}
-
-static void startup_mode_load(void)
-{
-#ifndef EMULATOR_BUILD
-    const startup_settings_record_t *rec =
-        (const startup_settings_record_t *)STARTUP_SETTINGS_ADDR;
-
-    if (rec->magic == STARTUP_SETTINGS_MAGIC &&
-        rec->version == STARTUP_SETTINGS_VERSION &&
-        rec->mode < STARTUP_COUNT &&
-        rec->checksum == startup_settings_checksum(rec->mode)) {
-        startup_mode = (startup_mode_t)rec->mode;
-    }
-#endif
-}
-
-static void startup_mode_save(void)
-{
-#ifndef EMULATOR_BUILD
-    startup_settings_record_t rec;
-    rec.magic = STARTUP_SETTINGS_MAGIC;
-    rec.version = STARTUP_SETTINGS_VERSION;
-    rec.mode = (uint32_t)startup_mode;
-    rec.checksum = startup_settings_checksum(rec.mode);
-
-    flash_unlock();
-    if (flash_sector_erase(STARTUP_SETTINGS_ADDR) == FLASH_OPERATE_DONE) {
-        const uint32_t *words = (const uint32_t *)&rec;
-        uint32_t addr = STARTUP_SETTINGS_ADDR;
-        for (uint32_t i = 0; i < sizeof(rec) / sizeof(uint32_t); i++, addr += 4) {
-            if (flash_word_program(addr, words[i]) != FLASH_OPERATE_DONE) {
-                break;
-            }
-        }
-    }
-    flash_lock();
-#endif
-}
+/* Startup-on-Boot (parity M6, upstream F07). The choice is part of the
+ * settings record (device_config_t.startup_mode, saved by settings_store with
+ * everything else); main() applies it right after settings_store_init().
+ * Until 2026-11 it lived in its own record in the MCU's flash at 0x080FF800,
+ * which was erased and rewritten on every change and never consulted in the
+ * bench builds. */
 
 const char *startup_mode_name(startup_mode_t mode)
 {
@@ -158,9 +112,8 @@ const char *startup_mode_name(startup_mode_t mode)
 
 void startup_mode_set(startup_mode_t mode)
 {
-    if (mode >= STARTUP_COUNT || startup_mode == mode) return;
-    startup_mode = mode;
-    startup_mode_save();
+    if (mode >= STARTUP_COUNT) return;
+    startup_mode = mode;       /* settings_store captures it on the next key */
 }
 
 void startup_mode_adjust(int dir)
@@ -170,15 +123,17 @@ void startup_mode_adjust(int dir)
     startup_mode_set((startup_mode_t)(next % STARTUP_COUNT));
 }
 
+#ifndef FPGA_WARM_HANDOFF_TEST
+#define FPGA_WARM_HANDOFF_TEST 0
+#endif
+#ifndef FPGA_METER_SUBMODES
+#define FPGA_METER_SUBMODES 0   /* as fpga.c: lifts the "scope-only" half of a warm build */
+#endif
+
 static device_mode_t startup_target_mode(void)
 {
-    switch (startup_mode) {
-    case STARTUP_METER:
-        return MODE_MULTIMETER;
-    case STARTUP_SCOPE:
-    default:
-        return MODE_OSCILLOSCOPE;
-    }
+    return startup_boot_mode(startup_mode, FPGA_WARM_HANDOFF_TEST != 0,
+                             FPGA_METER_SUBMODES != 0);
 }
 
 #ifdef FEATURE_FFT
@@ -1087,12 +1042,10 @@ int main(void)
     /* Initialize meter data parser */
     meter_data_init();
     meter_voltage_wave_init();
-    startup_mode_load();
-#if FPGA_WARM_HANDOFF_TEST
-    current_mode = MODE_OSCILLOSCOPE;
-#else
+    /* The saved startup mode is not known yet (it is in the settings record,
+     * restored below): boot on the factory default for now, nothing before
+     * settings_store_init() looks at current_mode. */
     current_mode = startup_target_mode();
-#endif
 
     /* Factory calibration boundary: initialize the W25Q wrapper, then
      * leave the calibration mirror unloaded. Stock evidence has not
@@ -1135,6 +1088,9 @@ int main(void)
      * And BEFORE the fpga_set_meter_mode(meter_submode) call below, which
      * consumes the restored meter submode, and before the display task exists. */
     settings_store_init();
+    /* Startup-on-Boot, now restored (M6): the mode the display and FPGA tasks
+     * and the mode entry below start in. */
+    current_mode = startup_target_mode();
 
 #if defined(CAL_BACKUP_AUTO_RESTORE) && CAL_BACKUP_AUTO_RESTORE
     /* OFF by default. Manual `cal restore` is the primary path. Even when built

@@ -13,6 +13,12 @@
 #include "fpga_meter_plan.h"
 #include "meter_data.h"
 
+/* The eleven jack/measurement functions (submodes 0-10). Submode 11 is Auto:
+ * the SoC picks the function from the frame's own bits, so the matrices below
+ * that feed one canned frame per submode do not describe it; it has its own
+ * tests (test_auto_*). */
+#define FIXED_SUBMODE_COUNT FPGA_METER_SUBMODE_AUTO
+
 static int tests_run = 0;
 static int tests_passed = 0;
 
@@ -928,7 +934,7 @@ static int test_parser_stock_mode_tracks_transition_plan_for_every_submode(void)
 {
     uint8_t frame[12];
 
-    for (uint8_t mode = 0; mode < FPGA_METER_LOCAL_SUBMODE_COUNT; mode++) {
+    for (uint8_t mode = 0; mode < FIXED_SUBMODE_COUNT; mode++) {
         fpga_meter_transition_plan_t plan =
             fpga_meter_transition_plan_for_submode(mode);
         build_valid_frame_for_mode(frame, mode);
@@ -1035,7 +1041,7 @@ static int test_invalid_submode_rejects_every_frame_family_corpus(void)
 
 static int test_state_machine_property_matrix_covers_all_submodes(void)
 {
-    static const uint8_t modes[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
+    static const uint8_t modes[FIXED_SUBMODE_COUNT] = {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
     };
     uint8_t voltage_frame[12];
@@ -1156,7 +1162,7 @@ static int test_goal_surface_property_enumerates_dmm_state_machine(void)
     static const uint16_t all_logical_functions =
         (uint16_t)((1U << FPGA_METER_LOGICAL_FUNCTION_COUNT) - 1U);
     static const uint16_t all_local_submodes =
-        (uint16_t)((1U << FPGA_METER_LOCAL_SUBMODE_COUNT) - 1U);
+        (uint16_t)((1U << FIXED_SUBMODE_COUNT) - 1U);
     static const uint16_t unresolved_ua_functions =
         (uint16_t)((1U << FPGA_METER_FUNCTION_DC_UA) |
                    (1U << FPGA_METER_FUNCTION_AC_UA));
@@ -1197,11 +1203,11 @@ static int test_goal_surface_property_enumerates_dmm_state_machine(void)
         }
     }
 
-    for (uint8_t source = 0; source < FPGA_METER_LOCAL_SUBMODE_COUNT; source++) {
+    for (uint8_t source = 0; source < FIXED_SUBMODE_COUNT; source++) {
         uint8_t source_frame[12];
 
         build_valid_frame_for_mode(source_frame, source);
-        for (uint8_t dest = 0; dest < FPGA_METER_LOCAL_SUBMODE_COUNT; dest++) {
+        for (uint8_t dest = 0; dest < FIXED_SUBMODE_COUNT; dest++) {
             fpga_meter_transition_plan_t plan =
                 fpga_meter_transition_plan_for_submode(dest);
             uint8_t discard = plan.discard_frames;
@@ -1239,7 +1245,7 @@ static int test_goal_surface_property_enumerates_dmm_state_machine(void)
         }
     }
 
-    for (uint8_t mode = 0; mode < FPGA_METER_LOCAL_SUBMODE_COUNT; mode++) {
+    for (uint8_t mode = 0; mode < FIXED_SUBMODE_COUNT; mode++) {
         fpga_meter_transition_plan_t plan =
             fpga_meter_transition_plan_for_submode(mode);
 
@@ -1296,7 +1302,7 @@ static int test_goal_surface_property_enumerates_dmm_state_machine(void)
         invalid_submode_seen = 1;
     }
 
-    for (uint8_t mode = 0; mode < FPGA_METER_LOCAL_SUBMODE_COUNT; mode++) {
+    for (uint8_t mode = 0; mode < FIXED_SUBMODE_COUNT; mode++) {
         if (mode == 1 || mode == 4 || mode == 5) {
             uint8_t missing_ac_frame[12];
             uint8_t present_ac_frame[12];
@@ -1356,7 +1362,7 @@ static int test_goal_surface_property_enumerates_dmm_state_machine(void)
     ASSERT(stale_transition_sources_seen == all_local_submodes);
     ASSERT(stale_transition_dests_seen == all_local_submodes);
     ASSERT(stale_transition_pairs ==
-           FPGA_METER_LOCAL_SUBMODE_COUNT * FPGA_METER_LOCAL_SUBMODE_COUNT);
+           FIXED_SUBMODE_COUNT * FIXED_SUBMODE_COUNT);
     ASSERT(expected_families_seen ==
            ((1U << FPGA_METER_FRAME_FAMILY_VOLTAGE) |
             (1U << FPGA_METER_FRAME_FAMILY_CURRENT) |
@@ -1389,8 +1395,8 @@ static int test_invalidate_clears_stale_payload_for_every_ordered_mode_transitio
 {
     uint8_t source_frame[12];
 
-    for (uint8_t source = 0; source < FPGA_METER_LOCAL_SUBMODE_COUNT; source++) {
-        for (uint8_t dest = 0; dest < FPGA_METER_LOCAL_SUBMODE_COUNT; dest++) {
+    for (uint8_t source = 0; source < FIXED_SUBMODE_COUNT; source++) {
+        for (uint8_t dest = 0; dest < FIXED_SUBMODE_COUNT; dest++) {
             uint32_t updates_after_source;
             uint32_t display_updates_after_source;
             fpga_meter_transition_plan_t dest_plan =
@@ -1427,8 +1433,8 @@ static int test_transport_gate_blocks_source_frames_during_every_transition(void
 {
     uint8_t source_frame[12];
 
-    for (uint8_t source = 0; source < FPGA_METER_LOCAL_SUBMODE_COUNT; source++) {
-        for (uint8_t dest = 0; dest < FPGA_METER_LOCAL_SUBMODE_COUNT; dest++) {
+    for (uint8_t source = 0; source < FIXED_SUBMODE_COUNT; source++) {
+        for (uint8_t dest = 0; dest < FIXED_SUBMODE_COUNT; dest++) {
             fpga_meter_transition_plan_t dest_plan =
                 fpga_meter_transition_plan_for_submode(dest);
             uint8_t discard = dest_plan.discard_frames;
@@ -1490,7 +1496,7 @@ static int test_transition_phase_marker_frames_follow_destination_state(void)
     build_segment_frame(continuity_frame, 0, 0x12, 0x0A, 5,
                         0x00, 0x00, 0x00, 0x00, 0);
 
-    for (uint8_t dest = 0; dest < FPGA_METER_LOCAL_SUBMODE_COUNT; dest++) {
+    for (uint8_t dest = 0; dest < FIXED_SUBMODE_COUNT; dest++) {
         for (unsigned m = 0; m < sizeof(markers) / sizeof(markers[0]); m++) {
             fpga_meter_transition_plan_t dest_plan =
                 fpga_meter_transition_plan_for_submode(dest);
@@ -1581,7 +1587,7 @@ static int test_marker_visible_family_mismatch_matrix_clears_stale_payload(void)
     build_segment_frame(continuity_frame, 0, 0x12, 0x0A, 5,
                         0x00, 0x00, 0x00, 0x00, 0);
 
-    for (uint8_t mode = 0; mode < FPGA_METER_LOCAL_SUBMODE_COUNT; mode++) {
+    for (uint8_t mode = 0; mode < FIXED_SUBMODE_COUNT; mode++) {
         uint8_t expected =
             (uint8_t)fpga_meter_frame_family_for_submode(mode);
 
@@ -1627,7 +1633,7 @@ static int test_unclassified_normal_frames_follow_active_family_only(void)
      * visible in frame[8]/frame[9]; live frame[8]=00 DCV traces produced
      * confident nonsense readings when accepted as active voltage.
      */
-    static const uint8_t modes[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
+    static const uint8_t modes[FIXED_SUBMODE_COUNT] = {
         0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
     };
     uint8_t frame[12];
@@ -1796,7 +1802,7 @@ static int test_passive_zero_detect_short_frames_report_short_state(void)
     ASSERT(meter_reading.valid);
     ASSERT(meter_reading.reject_reason == METER_REJECT_NONE);
     ASSERT(meter_reading.result_class == METER_RESULT_CONTINUITY);
-    ASSERT_STR_EQ(meter_reading.display_str, "CONT");
+    ASSERT_STR_EQ(meter_reading.display_str, "PAS");   /* stock shows the glyph run */
     ASSERT_STR_EQ(meter_reading.unit_suffix, "Ohm");
     ASSERT(meter_reading.continuity_beep);
     ASSERT(close_to(meter_reading.value, 0.0f, 0.001f));

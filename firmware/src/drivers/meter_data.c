@@ -46,6 +46,9 @@ static volatile uint8_t meter_writer_lock;
 static volatile bool meter_temp_fahrenheit;
 /* Stock leaves ms[0xF37] alone for some continuity frames: remember it. */
 static uint8_t meter_range_prev;
+/* Stock's Auto state (ms[0xF2F]/F36/F37): which function the SoC's last frames
+ * belonged to. Only touched in submode 11 and under the writer lock. */
+static meter_auto_fsm_t meter_auto_state;
 
 void meter_data_set_fahrenheit(bool on) { meter_temp_fahrenheit = on; }
 bool meter_data_fahrenheit(void)        { return meter_temp_fahrenheit; }
@@ -674,7 +677,8 @@ static void finish_zero_detect_short(meter_reading_t *r, uint8_t submode,
         r->decimal_pos = 3;
         r->unit_suffix = "Ohm";
         r->continuity_beep = (submode == 7);
-        strcpy(r->display_str, (submode == 7) ? "CONT" : "0.0");
+        strcpy(r->display_str, (submode == 7) ? meter_stock_status_text(METER_STATUS_PAS)
+                                              : "0.0");
     }
 
     r->value = 0.0f;
@@ -1249,6 +1253,8 @@ void meter_data_init(void)
     meter_frame_history_head = 0;
     meter_stock_fsm.stock_mode = 0xFF;
     meter_range_prev = 0;
+    meter_auto_fsm_reset(&meter_auto_state);
+    meter_auto_state.f37 = 0;
     meter_temp_fahrenheit = false;
 }
 
@@ -1360,7 +1366,9 @@ void meter_data_invalidate(uint8_t submode)
     r->status_code = 0;
     r->range_index = 0;
     r->range_label[0] = '\0';
+    r->auto_fn = 0;
     meter_range_prev = 0;
+    meter_auto_fsm_reset(&meter_auto_state);
     r->valid = false;
     r->expected_frame_family =
         (uint8_t)fpga_meter_frame_family_for_submode(submode);
@@ -1378,12 +1386,58 @@ void meter_data_invalidate(uint8_t submode)
     meter_writer_lock_release();
 }
 
+/* The four glyph codes of a frame (the lookup process_frame() does inline),
+ * needed before the submode is known when the SoC picks the function. */
+static void meter_frame_glyph_codes(const volatile uint8_t *frame, uint8_t out[4])
+{
+    out[0] = bcd_nibble_lookup((uint8_t)((frame[2] & 0xF0U) | (frame[3] & 0x0FU)));
+    out[1] = bcd_nibble_lookup((uint8_t)((frame[3] & 0xF0U) | (frame[4] & 0x0FU)));
+    out[2] = bcd_nibble_lookup((uint8_t)((frame[4] & 0xF0U) | (frame[5] & 0x0FU)));
+    out[3] = bcd_nibble_lookup((uint8_t)((frame[5] & 0xF0U) | (frame[6] & 0x0FU)));
+}
+
 void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
 {
     meter_reading_t *r = &meter_reading;
+    /* Submode 11 (Auto, word 0x14): the SoC decides the function and says so
+     * in each frame's own bits. `ui_submode` stays 11 -- it is what the UI and
+     * the settings know -- while `submode` becomes the function the frame is
+     * decoded and gated as (0 DCV, 1 ACV, 6 Ohm, 7 Cont), or stays 11 while
+     * the SoC has not decided. This is also the frame-family gate fix: stock
+     * has no per-function family gate in Auto (0x0803E1F2), so the family is
+     * whatever the frame is, not a fixed one for the word. */
+    const uint8_t ui_submode = submode;
+    const bool auto_mode = (submode == FPGA_METER_SUBMODE_AUTO);
+    bool auto_numeric_undecided = false;
+    bool auto_hz = false;
+    meter_auto_fn_t auto_fn = METER_AUTO_FN_NONE;
+    uint8_t auto_f37 = 0;
 
-    /* Validate header */
     if (frame[0] != 0x5A || frame[1] != 0xA5) return;
+
+    if (auto_mode) {
+        uint8_t codes[4];
+        meter_stock_status_t st;
+
+        meter_writer_lock_acquire();
+        meter_frame_glyph_codes(frame, codes);
+        st = meter_stock_status_from_codes(codes);
+        if (st == METER_STATUS_AUTO) {
+            meter_auto_fsm_auto_text(&meter_auto_state);
+            auto_fn = meter_auto_fsm_function(&meter_auto_state);
+        } else {
+            auto_fn = meter_auto_fsm_step(&meter_auto_state, st == METER_STATUS_NONE,
+                                          frame[2], frame[6], frame[7]);
+        }
+        auto_hz = meter_auto_fsm_hz_valid(&meter_auto_state);
+        auto_f37 = meter_auto_state.f37;
+        auto_numeric_undecided = (st == METER_STATUS_NONE &&
+                                  auto_fn == METER_AUTO_FN_NONE);
+        if (auto_fn != METER_AUTO_FN_NONE) {
+            submode = meter_auto_fn_submode(auto_fn);
+        }
+        meter_writer_lock_release();
+    }
 
     meter_writer_lock_acquire();
     bool old_valid = r->valid;
@@ -1409,7 +1463,8 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
 
     /* Save raw frame for debug display */
     for (int i = 0; i < 12; i++) r->dbg_frame[i] = frame[i];
-    r->submode = submode;
+    r->submode = ui_submode;
+    r->auto_fn = (uint8_t)auto_fn;
     r->continuity_beep = false;
     r->status_code = 0;
     r->aux_freq_hz = 0.0f;
@@ -1575,11 +1630,19 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
     {
         uint8_t sel = 0, f36 = 1;
         (void)meter_stock_selector_for_submode(submode, &sel, &f36);
-        meter_range_prev = meter_stock_range_index(
-            sel, f36, meter_temp_fahrenheit, frame[6], frame[7], meter_range_prev);
+        if (auto_mode) {
+            /* Auto's own F37 (the state machine above), labelled by the
+             * function it decided; undecided shows nothing. */
+            meter_range_prev = auto_f37;
+            if (auto_fn == METER_AUTO_FN_NONE) sel = 0xFFu;
+        } else {
+            meter_range_prev = meter_stock_range_index(
+                sel, f36, meter_temp_fahrenheit, frame[6], frame[7], meter_range_prev);
+        }
         r->range_index = meter_range_prev;
         meter_stock_range_label(sel, f36, meter_temp_fahrenheit, r->range_index,
                                 r->range_label, sizeof r->range_label);
+        if (auto_mode && auto_fn == METER_AUTO_FN_NONE) r->range_label[0] = '\0';
     }
 
     /* Stock's status strings, decided before anything else in its parser
@@ -1609,8 +1672,14 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
         return;
     }
 
-    if (voltage_frame_missing_required_marker(r, frame) ||
-        dcv_frame_has_unresolved_status20(r, frame) ||
+    /* In Auto the SoC itself decided the function from this frame's bits, so
+     * the voltage-marker and status-bit-5 guards, which exist for a DCV the
+     * MCU selected and the producer may not have applied, do not apply; the
+     * foreign-marker and family checks still do. A numeric frame whose bits
+     * name no function is not a reading. */
+    if (auto_numeric_undecided ||
+        (!auto_mode && (voltage_frame_missing_required_marker(r, frame) ||
+                        dcv_frame_has_unresolved_status20(r, frame))) ||
         frame_is_voltage_payload(submode, frame) ||
         frame_family_mismatch(r)) {
         r->reject_reason = METER_REJECT_WRONG_FRAME_FAMILY;
@@ -1618,7 +1687,7 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
         return;
     }
 
-    if (submode_requires_ac_evidence(submode) &&
+    if (!auto_mode && submode_requires_ac_evidence(submode) &&
         !frame_has_ac_evidence(submode, status, extra)) {
         r->reject_reason = METER_REJECT_MISSING_AC_EVIDENCE;
         METER_REJECT_FRAME();
@@ -1672,7 +1741,9 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
             r->decimal_pos = 0;
             format_reading(r, submode);
         } else {
-            strcpy(r->display_str, "CONT");
+            /* Stock shows the glyph run itself: " PAS" (the PASS of a
+             * continuity test, status string 5 at 0x080163C0). */
+            strcpy(r->display_str, meter_stock_status_text(METER_STATUS_PAS));
             r->value = 0.0f;
         }
         METER_FINISH_FRAME();
@@ -1750,7 +1821,11 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
     r->unit_suffix = unit_suffix_from_stock(submode, meter_stock_fsm.unit_index);
     (void)apply_stock_dcv_voltage_range_hint(r, submode, frame);
 
-    if (((submode == 0 && frame[8] == 0x02 && frame[9] == 0x00) ||
+    if (auto_mode) {
+        /* Stock prints rx[10..11] as "%d Hz" whenever Auto decided AC
+         * voltage (0x0803E358..0x0803E382): no mains-window guess. */
+        if (auto_hz && auto_fn == METER_AUTO_FN_ACV) r->aux_freq_hz = (float)extra;
+    } else if (((submode == 0 && frame[8] == 0x02 && frame[9] == 0x00) ||
          submode_requires_ac_evidence(submode)) &&
         frame_extra_is_empirical_line_frequency_hint(extra)) {
         r->aux_freq_hz = (float)extra;

@@ -4700,10 +4700,10 @@ static void cmd_mode(const char *args)
             usb_debug_printf("startup=%s\r\n", startup_mode_name(startup_mode));
         } else if (strcmp(value, "scope") == 0) {
             startup_mode_set(STARTUP_SCOPE);
-            usb_send_str("startup=Scope\r\n");
+            usb_send_str("startup=Scope (saved with the next key press)\r\n");
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
-            usb_send_str("startup=Meter\r\n");
+            usb_send_str("startup=Meter (saved with the next key press)\r\n");
         } else {
             usb_send_str("Usage: mode startup [scope|meter]\r\n");
         }

@@ -59,7 +59,7 @@
 /* All user-configurable settings.
  *
  * WHICH FIELDS ARE LIVE: settings_store.c captures and re-applies the scope
- * block, the theme, the math block and the meter block. The FFT, signal
+ * block, the theme, the math block, the meter block and startup_mode. The FFT, signal
  * generator, brightness, language, auto-shutdown and sound fields are stored
  * and round-tripped but NOT yet applied at boot — nothing in the firmware
  * currently owns them (there is no backlight PWM, and siggen is initialised
