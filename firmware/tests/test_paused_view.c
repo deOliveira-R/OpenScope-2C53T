@@ -9,11 +9,20 @@
  *     comparison with stock's half-sample table.
  * [4] sampler: ratio 1000 is a pure index map; interpolation reproduces a
  *     slow sine; out-of-record columns are refused (stock leaves them blank).
+ * [5] the one window plan (C5 x C14 merge): running keeps the fast-code zoom,
+ *     a held record whose ratio is 1000/L stays on the C5 integer window,
+ *     anything else takes the general path; the column rate it implies.
+ * [6] the two fills agree: pv_fill at ratio 1000/L over a window inside the
+ *     record is scope_geom_fill byte for byte, for every zoom stock uses, and
+ *     the blank span of a zoomed-out / edge window is reported exactly.
  */
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 #include "paused_view.h"
+#include "scope_geom.h"
+#include <stdlib.h>
 
 static int fails = 0;
 #define CHECK(cond, ...) do { if (cond) { printf("  PASS: "); } else { printf("  FAIL: "); fails++; } \
@@ -121,6 +130,72 @@ int main(void)
         uint8_t v = 0;
         bool ok = pv_sample(g, 0, 32, 31 * 1000 + 500, 200, &v);
         CHECK(ok && v == 90u, "taps past the record end clamp to rec[hi-1] (got %u)", (unsigned)v);
+    }
+
+    printf("[5] window plan\n");
+    {
+        const float adc = 124.8e6f, mrg = 249.6e6f;        /* top rates, scope_timebase */
+        uint32_t r = 0;
+        CHECK(pv_view_plan(false, mrg, 0.0f, 10, &r) == 10 && r == 100,
+              "running, 0x00 merged: the C5 zoom 10, R 100");
+        CHECK(pv_view_plan(false, mrg, mrg, 1, &r) == 1 && r == 1000, "running, slow code: L 1");
+        CHECK(pv_view_plan(true, mrg, mrg * 10.0f, 10, &r) == 10 && r == 100,
+              "STOP at 0x00 merged, untouched: still the C5 window (L 10)");
+        CHECK(pv_view_plan(true, mrg, mrg * 2.0f, 2, &r) == 2 && r == 500,
+              "held 0x00 record (merged), now 0x02: L 2 on the integer window");
+        CHECK(pv_view_plan(true, adc, mrg * 10.0f, 10, &r) == 20 && r == 50,
+              "held per-converter record, now merged 0x00: L 20 (the record's own zoom)");
+        CHECK(pv_view_plan(true, mrg, adc * 1.0f, 1, &r) == 0 && r == 2000,
+              "held 0x03 merged, now 0x04 (half the column rate): general, R 2000");
+        CHECK(pv_view_plan(true, 50e6f, 125e6f, 1, &r) == 0 && r == 400,
+              "held 0x05, now 0x04: R 400 is no divisor zoom -> general");
+        CHECK(pv_view_plan(true, 1e6f, 1e9f, 1, &r) == 0 && r == PV_RATIO_MIN,
+              "a 1000x zoom clamps at 100x (R 10): general (100 does not divide 20)");
+        CHECK(pv_view_plan(true, 125e6f, 125e6f, 1, &r) == 1 && r == 1000, "held, same rate: L 1");
+        CHECK(pv_view_plan(true, 0.0f, 125e6f, 4, &r) == 4 && r == 250,
+              "held but the record rate unknown: the code's own zoom");
+        CHECK(pv_view_plan(false, 1.0f, 1.0f, 3, &r) == 1 && r == 1000,
+              "a zoom the table cannot phase (3) draws at L 1");
+        /* the cursors' column rate is 1000 fs_rec / R: running 0x00 = fs x 10 */
+        pv_view_plan(false, mrg, 0.0f, 10, &r);
+        CHECK(fabsf(1000.0f * mrg / (float)r - mrg * 10.0f) < 1.0f, "column rate = record rate x L");
+    }
+
+    printf("[6] fills agree\n");
+    {
+        enum { N = 1024 };
+        static uint8_t rec[N];
+        uint8_t a[SCOPE_GEOM_COLS], b[SCOPE_GEOM_COLS];
+        srand(7);
+        for (int i = 0; i < N; i++) rec[i] = (uint8_t)(rand() & 0xFF);
+        static const uint8_t Ls[6] = { 1, 2, 4, 5, 10, 20 };
+        int bad = 0, spans = 0;
+        for (int li = 0; li < 6; li++) {
+            const int L = Ls[li];
+            const int32_t umax = (N - 1) * L - (int32_t)(SCOPE_GEOM_COLS - 1);
+            for (int32_t u0 = 0; u0 <= umax; u0 += (umax / 37) + 1) {
+                scope_window_t v = { u0, (uint8_t)L };
+                scope_geom_fill(rec, N, &v, a, SCOPE_GEOM_COLS);
+                uint16_t f = 9, e = 9;
+                pv_fill(rec, 0, N, u0 * (1000 / L), (uint32_t)(1000 / L), b,
+                        SCOPE_GEOM_COLS, &f, &e);
+                if (memcmp(a, b, sizeof a) != 0) bad++;
+                if (f != 0 || e != SCOPE_GEOM_COLS) spans++;
+            }
+        }
+        CHECK(bad == 0, "pv_fill(1000/L) == scope_geom_fill, every L, %d windows differ", bad);
+        CHECK(spans == 0, "an in-record window has no blank column (%d wrong spans)", spans);
+        /* zoomed out 4x about sample 100 at column 150: columns left of
+         * 150 - 100/4 = 125 fall before the record */
+        uint16_t f = 0, e = 0;
+        pv_fill(rec, 0, N, 100 * 1000 - 150 * 4000, 4000, b, SCOPE_GEOM_COLS, &f, &e);
+        CHECK(f == 125 && e == SCOPE_GEOM_COLS, "zoom out: blank prefix to column %u (want 125)", f);
+        CHECK(b[0] == 0 && b[125] == rec[0] && b[150] == rec[100], "blank reads 0, column 150 = sample 100");
+        /* zoomed in 10x near the end: the record ends at column 150 + 10 x 3 */
+        pv_fill(rec, 0, N, 1020 * 1000 - 150 * 100, 100, b, SCOPE_GEOM_COLS, &f, &e);
+        CHECK(f == 0 && e == 150 + 40, "zoom in: last shown column %u (want 190: n = 1023 up to frac .9)", e);
+        pv_fill(rec, 0, N, 5000000, 1000, b, SCOPE_GEOM_COLS, &f, &e);
+        CHECK(f == 0 && e == 0, "nothing in view -> empty span");
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nALL PASS\n", fails);

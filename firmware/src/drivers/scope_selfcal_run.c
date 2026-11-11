@@ -22,6 +22,7 @@
  * instead of committing a free-run one on a quiet input.
  */
 #include "scope_selfcal_run.h"
+#include "scope_geom.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -271,7 +272,7 @@ static void do_center50(QueueHandle_t dq)
     if (!scope_vpos_active()) lvl = 0;
     (void)scope_vpos_set(1u, pos[0]);
     (void)scope_vpos_set(2u, pos[1]);
-    ss->trig_x = 160;          /* stock zeroes the horizontal offsets */
+    ss->trig_x = SCOPE_GEOM_CENTER_COL;          /* stock zeroes the horizontal offsets */
     ss->trigger.level = (int16_t)lvl;
     const bool ok = fpga_apply_trigger_level(lvl);
     popup(dq, ok ? "50% centred" : "50% centred, trig NOT SET");
@@ -343,7 +344,7 @@ static void as_end(QueueHandle_t dq, sc_as_status_t st)
             ss->trigger.source = a->trig_ch ? TRIG_SRC_CH2 : TRIG_SRC_CH1;
             ss->trigger.level = a->trig_level;
             (void)fpga_apply_trigger_level(a->trig_level);
-            ss->trig_x = 160;
+            ss->trig_x = SCOPE_GEOM_CENTER_COL;
         }
         const bool over = a->res[0] == SC_ASC_OVER || a->res[1] == SC_ASC_OVER;
         R.result = (st == SC_AS_DC) ? "DC only" : over ? "done, over range" : "done";

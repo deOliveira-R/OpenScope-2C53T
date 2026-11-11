@@ -25,6 +25,7 @@
 #include "scope_cal.h"
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
+#include "../ui/scope_geom.h"
 #include "signal_gen.h"
 #include "../ui/siggen_edit.h"
 #include "theme.h"
@@ -782,7 +783,10 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         if (ss->roll)
             scope_roll_label(ss->roll_step, tb, sizeof(tb));
         else
-            scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
+            /* The status bar's label (merge x2, fast-code zoom; C5). */
+            scope_timebase_view_label(ss->timebase_idx,
+                                      scope_ui_view_merged(),
+                                      tb, sizeof(tb));
         /* Short on purpose: pb is 24 bytes and a truncated warning is
          * worse than a terse one. */
         snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
@@ -821,12 +825,13 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
 
     case KA_TRIGCOL_STEP: {
-        /* Move the trigger point across the screen, 16 px per press.
+        /* Move the trigger point across the screen, 16 px per press,
+         * over stock's 150 + hpos, hpos +-150 (parity C5, scope_geom.h).
          * The popup reports the column it was ASKED for; the marker at
          * the top shows where it actually landed. */
         int tx = ss->trig_x + dir * 16;
-        if (tx < 8) tx = 8;
-        if (tx > 312) tx = 312;
+        if (tx < SCOPE_GEOM_TRIG_COL_MIN) tx = SCOPE_GEOM_TRIG_COL_MIN;
+        if (tx > SCOPE_GEOM_TRIG_COL_MAX) tx = SCOPE_GEOM_TRIG_COL_MAX;
         ss->trig_x = (int16_t)tx;
         snprintf(pb, sizeof(pb), "Trig at x=%d", tx);
         popup_and_redraw(dq, pb);
