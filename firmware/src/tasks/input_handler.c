@@ -561,6 +561,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
          * stock 0x14..0x1C): a roll change re-applies roll, anything else
          * the Y-T code. Holding at the slowest roll step changes nothing. */
         const bool was_roll = ss->roll;
+        const uint8_t was_step = ss->roll_step;
         const bool roll_changed = scope_adjust_timebase(ss, dir);
         /* Push it to the FPGA. Before 2026-08-19 this line did not exist
          * and the button only relabelled the axis while the hardware kept
@@ -570,6 +571,12 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
          * label for a rate that is not in force. */
         const bool tb_ok = roll_changed ? fpga_apply_roll()
                          : (was_roll ? true : fpga_apply_timebase(ss->timebase_idx));
+        if (roll_changed && !tb_ok) {
+            /* Nothing was written. Unlike a Y-T code, a later press need not
+             * re-apply (the slowest step holds), so put the state back. */
+            ss->roll = was_roll;
+            ss->roll_step = was_step;
+        }
         char tb[12];
         if (ss->roll)
             scope_roll_label(ss->roll_step, tb, sizeof(tb));
