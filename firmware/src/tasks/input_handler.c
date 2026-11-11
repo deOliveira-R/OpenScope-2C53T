@@ -184,15 +184,21 @@ void input_handle_settings_ok(void)
                 math_op = 0;
             }
         } else if (settings_sub_selected == 1) {
-            /* Persistence: toggle on/off with pool lifecycle */
-            persist_enabled = !persist_enabled;
-            if (persist_enabled) {
-                /* Persistence needs the pool — evicts FFT if active */
+            /* Persistence: Off -> 500ms -> 1s -> Inf -> Off (stock's menu,
+             * manual p.30), with the pool lifecycle. */
+            if (!persist_enabled) {
+                /* Persistence needs the pool -- evicts FFT if active */
                 if (fft_is_initialized())
                     fft_deinit();
                 persist_init();
+                persist_set_mode(PERSIST_LOW);
+                persist_enabled = true;
+            } else if (persist_get_mode() == PERSIST_LOW) {
                 persist_set_mode(PERSIST_MEDIUM);
+            } else if (persist_get_mode() == PERSIST_MEDIUM) {
+                persist_set_mode(PERSIST_INFINITE);
             } else {
+                persist_enabled = false;
                 persist_deinit();
             }
         } else if (settings_sub_selected == 2) {

@@ -702,6 +702,22 @@ $(BUILD_DIR)/test_trig_edge: tests/test_trig_edge.c src/dsp/trig_edge.c src/dsp/
 test-trig-edge: $(BUILD_DIR)/test_trig_edge
 	$<
 
+# Math channel (parity C12): the eight ops on records with volts/counts units,
+# division by ~0, clipping, the 1-2-5 scale; and the persistence buffer, whose
+# fade is timed in milliseconds and which is fed from live trace rows.
+$(BUILD_DIR)/test_math_channel: tests/test_math_channel.c src/dsp/math_channel.c src/dsp/math_channel.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/math_channel.c -lm -o $@
+
+test-math-channel: $(BUILD_DIR)/test_math_channel
+	$<
+.PHONY: test-math-channel test-persistence
+
+$(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src/ui/persistence.h src/dsp/shared_mem.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< src/ui/persistence.c src/dsp/shared_mem.c -lm -o $@
+
+test-persistence: $(BUILD_DIR)/test_persistence
+	$<
+
 $(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave.c -lm -o $@

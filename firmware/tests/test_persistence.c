@@ -254,6 +254,99 @@ static void test_clear(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* C12: time-based decay, live rows, theme colour scaling              */
+/* ------------------------------------------------------------------ */
+static void test_decay_ms_500(void)
+{
+    printf("Test 9: 500 ms mode fades a pixel to 0 in 500 ms, at any frame rate\n");
+    int dts[] = { 5, 50, 125, 10 };   /* all divide 250 and 500 */
+    for (unsigned k = 0; k < sizeof(dts) / sizeof(dts[0]); k++) {
+        persist_init();
+        persist_set_mode(PERSIST_LOW);
+        persist_add_point(10, 10);
+        ASSERT_EQ(persist_get_intensity(10, 10), 255, "starts at 255");
+        int t = 0;
+        /* just under tau: still lit, and monotonically dimmer */
+        uint8_t last = 255;
+        while (t + dts[k] < 500) {
+            persist_decay_ms((uint32_t)dts[k]);
+            t += dts[k];
+            uint8_t v = persist_get_intensity(10, 10);
+            ASSERT(v <= last, "never brightens");
+            last = v;
+        }
+        ASSERT(last > 0 && last < 255, "partly faded just before tau");
+        /* half way is about half intensity (frame-rate independent) */
+        persist_clear();
+        persist_add_point(10, 10);
+        for (int e = 0; e < 250; e += dts[k]) persist_decay_ms((uint32_t)dts[k]);
+        int mid = persist_get_intensity(10, 10);
+        ASSERT(mid > 110 && mid < 145, "about half at tau/2");
+        for (int e = 0; e < 600; e += dts[k]) persist_decay_ms((uint32_t)dts[k]);
+        ASSERT_EQ(persist_get_intensity(10, 10), 0, "gone after tau");
+    }
+    tests_passed++;
+    printf("  PASS\n");
+}
+
+static void test_decay_ms_modes(void)
+{
+    printf("Test 10: 1 s is half as fast as 500 ms; infinite never fades; off clears\n");
+    persist_init();
+    persist_set_mode(PERSIST_MEDIUM);
+    persist_add_point(3, 3);
+    for (int i = 0; i < 25; i++) persist_decay_ms(20);      /* 500 ms */
+    ASSERT(persist_get_intensity(3, 3) > 100, "1 s mode still about half at 500 ms");
+    for (int i = 0; i < 30; i++) persist_decay_ms(20);      /* 1.1 s */
+    ASSERT_EQ(persist_get_intensity(3, 3), 0, "1 s mode gone by 1.1 s");
+
+    persist_clear();
+    persist_set_mode(PERSIST_INFINITE);
+    persist_add_point(3, 3);
+    for (int i = 0; i < 1000; i++) persist_decay_ms(1000);
+    ASSERT_EQ(persist_get_intensity(3, 3), 255, "infinite holds");
+
+    persist_set_mode(PERSIST_OFF);
+    persist_decay_ms(1);
+    ASSERT_EQ(persist_get_intensity(3, 3), 0, "off clears at once");
+    ASSERT_EQ((int)persist_mode_tau_ms(PERSIST_LOW), 500, "tau low");
+    ASSERT_EQ((int)persist_mode_tau_ms(PERSIST_MEDIUM), 1000, "tau medium");
+    tests_passed++;
+    printf("  PASS\n");
+}
+
+static void test_add_rows(void)
+{
+    printf("Test 11: live rows: screen row minus origin, edges joined, off-band skipped\n");
+    persist_init();
+    persist_set_mode(PERSIST_INFINITE);
+    int16_t rows[PERSIST_WIDTH];
+    for (int x = 0; x < PERSIST_WIDTH; x++) rows[x] = (x < 100) ? 50 : 150;   /* a step */
+    rows[200] = 5;          /* above the buffer (origin 18): skipped */
+    persist_add_rows(rows, PERSIST_WIDTH, 18);
+    ASSERT_EQ(persist_get_intensity(10, 50 - 18), 255, "low level at row-origin");
+    ASSERT_EQ(persist_get_intensity(10, 50 - 17), 0, "not one row off");
+    ASSERT_EQ(persist_get_intensity(150, 150 - 18), 255, "high level");
+    /* the edge column is joined vertically between the two levels */
+    ASSERT_EQ(persist_get_intensity(100, 100 - 18), 255, "edge is a line");
+    ASSERT_EQ(persist_get_intensity(100, 149 - 18), 255, "edge reaches the top level");
+    ASSERT_EQ(persist_get_intensity(200, 0), 0, "off-band row not drawn");
+    tests_passed++;
+    printf("  PASS\n");
+}
+
+static void test_scale_rgb(void)
+{
+    printf("Test 12: theme colour scaled by intensity\n");
+    ASSERT_EQ(persist_scale_rgb565(0xFFFF, 255), 0xFFFF, "full");
+    ASSERT_EQ(persist_scale_rgb565(0xFFFF, 0), 0, "zero");
+    ASSERT_EQ(persist_scale_rgb565(0xF800, 128) >> 11, 15, "red half");
+    ASSERT_EQ(persist_scale_rgb565(0x07E0, 255), 0x07E0, "green full");
+    tests_passed++;
+    printf("  PASS\n");
+}
+
+/* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
 int main(void)
@@ -268,6 +361,10 @@ int main(void)
     test_color_mapping();
     test_bounds();
     test_clear();
+    test_decay_ms_500();
+    test_decay_ms_modes();
+    test_add_rows();
+    test_scale_rgb();
 
     printf("\n=== Results: %d passed, %d failed ===\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
