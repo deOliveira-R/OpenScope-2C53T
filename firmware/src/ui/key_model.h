@@ -137,6 +137,8 @@ typedef enum {
     KA_ENTER_SIGGEN,      /* long TRIGGER */
     KA_MEAS_HIDE_TOGGLE,  /* long PRM */
     KA_CH_ENABLE_TOGGLE,  /* long CH1/CH2: arg = channel (0/1) */
+    KA_SIGGEN_BOOT_TOGGLE,/* long AUTO in the generator: output-at-boot policy (ours) */
+    KA_SIGGEN_RUNSTOP,    /* long OK in the generator: output Run/Stop (manual 2.1) */
     KA_LONG_UNUSED,       /* long AUTO/OK/SAVE: a later parity item; arg = button id */
     KA_FOCUS_NEXT,        /* short MOVE */
     KA_ADJ_CH_SWITCH,     /* short SELECT: which channel the arrows act on */

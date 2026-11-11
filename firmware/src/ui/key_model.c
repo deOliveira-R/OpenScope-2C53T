@@ -132,7 +132,18 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     case BTN_CH2:
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_CH_ENABLE_TOGGLE, 1) : cmd(KA_NONE, 0);
 
-    case BTN_AUTO: case BTN_OK: case BTN_SAVE:
+    /* Long confirm is Run/Stop (manual 2.1); in the generator it flips the
+     * output enable, stock's 0x0800D9E2 [H]. */
+    case BTN_OK:
+        if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_RUNSTOP, 0);
+        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
+
+    /* Ours, stock has no long AUTO in the generator: the boot policy. */
+    case BTN_AUTO:
+        if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_BOOT_TOGGLE, 0);
+        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
+
+    case BTN_SAVE:
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_LONG_UNUSED, (int8_t)b) : cmd(KA_NONE, 0);
 
     default:

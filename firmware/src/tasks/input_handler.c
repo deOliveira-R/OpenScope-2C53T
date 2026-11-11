@@ -24,6 +24,7 @@
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
 #include "signal_gen.h"
+#include "../ui/siggen_edit.h"
 #include "theme.h"
 #include "math_channel.h"
 #include "component_test.h"
@@ -402,6 +403,7 @@ static void mask_auto_key(char *pb, size_t n)
 static void enter_mode(device_mode_t m, QueueHandle_t dq)
 {
     meter_autoselect_cancel();
+    siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
     current_mode = m;
     if (current_mode == MODE_SETTINGS) {
         settings_selected = 0;
@@ -430,6 +432,44 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
 __attribute__((weak)) bool scope_param_select(void)
 {
     return false;
+}
+
+/* Frequency digit editor (parity G4). While it is open the arrows move the
+ * digit cursor / change the digit, OK or PRM accept, MENU cancels. Every
+ * other key (POWER included) falls through to the normal handlers. Returns
+ * true when the key was consumed. The value goes live after every change,
+ * as in stock. */
+static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
+{
+    if (current_mode != MODE_SIGNAL_GEN) return false;
+    siggen_edit_t *ed = siggen_ui_editor();
+    siggen_edit_key_t k;
+
+    if (!ed->active) {
+        if (button != BTN_PRM) return false;
+        siggen_edit_begin(ed, siggen_get_config()->frequency_hz);
+    } else {
+        /* The shell (`siggen freq`) can change the frequency while the
+         * editor is open; step from the live value, not a stale copy. */
+        if (ed->value != siggen_get_config()->frequency_hz)
+            ed->value = siggen_get_config()->frequency_hz;
+        switch (button) {
+        case BTN_LEFT:  k = SGE_KEY_LEFT;   break;
+        case BTN_RIGHT: k = SGE_KEY_RIGHT;  break;
+        case BTN_UP:    k = SGE_KEY_UP;     break;
+        case BTN_DOWN:  k = SGE_KEY_DOWN;   break;
+        case BTN_OK:
+        case BTN_PRM:   k = SGE_KEY_ACCEPT; break;
+        case BTN_MENU:  k = SGE_KEY_CANCEL; break;
+        default: return false;
+        }
+        siggen_edit_result_t r = siggen_edit_key(ed, k);
+        if (r == SGE_CHANGED || r == SGE_CANCELLED)
+            siggen_set_frequency(ed->value);
+    }
+    uint8_t cmd = DCMD_DRAW_SIGGEN;
+    send_cmd(dq, cmd);
+    return true;
 }
 
 static key_ctx_t key_ctx_now(void)
@@ -525,6 +565,23 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         snprintf(pb, sizeof(pb), "CH%d %s%s", dir + 1, c->enabled ? "ON" : "OFF",
                  fpga_interleave_active() ? " 250MS/s" : "");
         popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_SIGGEN_RUNSTOP: {
+        /* Same effect as the short OK of the previous build; stock moved
+         * Run/Stop to the long confirm. An open frequency edit is not
+         * interrupted: its value is already live. */
+        siggen_enable(!siggen_get_config()->output_enabled);
+        cmd = DCMD_DRAW_SIGGEN;
+        send_cmd(dq, cmd);
+        break;
+    }
+
+    case KA_SIGGEN_BOOT_TOGGLE: {
+        siggen_set_start_on(!siggen_get_config()->start_on);
+        cmd = DCMD_DRAW_SIGGEN;
+        send_cmd(dq, cmd);
         break;
     }
 
@@ -755,6 +812,11 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
     }
 
+    if (siggen_edit_input(button, dq)) {
+        settings_after_button();
+        return DCMD_DRAW_SIGGEN;
+    }
+
     switch (button) {
 
     /* -- Mode / Navigation ---------------------------------------- */
@@ -963,29 +1025,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 fft_deinit();
             }
             send_cmd(dq, cmd);
-        } else if (current_mode == MODE_SIGNAL_GEN) {
-            /* Cycle frequency presets up to stock's 50 kHz ceiling:
-             * 1 -> 10 -> 100 -> 1k -> 10k -> 50k -> 1 Hz. Arbitrary values
-             * go through the shell's `siggen freq` until the digit-cursor
-             * editor (parity G4) lands. */
-            const siggen_config_t *sc = siggen_get_config();
-            uint32_t f = sc->frequency_hz;
-            if (f < 10u) f = 10u;
-            else if (f < 100u) f = 100u;
-            else if (f < 1000u) f = 1000u;
-            else if (f < 10000u) f = 10000u;
-            else if (f < SIGGEN_FREQ_MAX_HZ) f = SIGGEN_FREQ_MAX_HZ;
-            else f = 1u;
-            siggen_set_frequency(f);
-            /* DCMD_DRAW_SIGGEN, not the default DCMD_REDRAW_ALL: the
-             * generator panel owns rows 16..223 and repaints them itself,
-             * so a full-screen clear + status/info bar repaint on every
-             * adjustment was pure flicker. The display task also gates
-             * DCMD_DRAW_SIGGEN on the settings actually moving, which
-             * REDRAW_ALL cannot be gated on (it is the hard invalidate —
-             * see main.c). Applies to all seven siggen adjustments. */
-            cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
         }
         break;
 
@@ -1140,7 +1179,9 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
 #endif
         else if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_duty_cycle_down();
+            /* Duty is editable for Square and Sawtooth only (stock 0x0800A478). */
+            if (siggen_wave_uses_duty(siggen_get_config()->waveform))
+                siggen_duty_cycle_down();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
         }
@@ -1185,7 +1226,9 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
 #endif
         else if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_duty_cycle_up();
+            /* Duty is editable for Square and Sawtooth only (stock 0x0800A478). */
+            if (siggen_wave_uses_duty(siggen_get_config()->waveform))
+                siggen_duty_cycle_up();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
         }

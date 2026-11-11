@@ -23,6 +23,7 @@ extern void system_clock_config(void);
 #include "lcd.h"
 #include "ui.h"
 #include "signal_gen.h"
+#include "ui/siggen_edit.h"
 #include "watchdog.h"
 #include "scope_state.h"
 #include "scope_cal.h"
@@ -395,6 +396,13 @@ static uint32_t siggen_ui_epoch(void)
                             | ((uint32_t)c->output_enabled << 16)
                             | ((uint32_t)c->amplitude_dv << 24));
     h = redraw_epoch_mix(h, c->frequency_hz);
+    /* Editor state and boot policy: a cursor move changes neither the
+     * frequency nor the waveform, so without these it would not repaint. */
+    {
+        const siggen_edit_t *ed = siggen_ui_editor();
+        h = redraw_epoch_mix(h, (uint32_t)ed->active | ((uint32_t)ed->digit << 1)
+                                | ((uint32_t)c->start_on << 8));
+    }
     return h;
 }
 
@@ -1105,9 +1113,9 @@ int main(void)
         dac_output_init();
 
         /* Stock factory values (sine, 1 kHz, 3.0 V, 50 %) but output OFF:
-         * stock boots with it ON (0x080294A0) and persists the enable;
-         * we persist nothing yet, so ON here would force the GEN lead
-         * live on every boot with no way to keep it off. */
+         * stock boots with it ON (0x080294A0). settings_store_init() below
+         * then restores the saved generator settings; the output comes back
+         * ON only with the opt-in boot policy (siggen boot on, parity G5). */
         siggen_init(NULL);
     }
 #endif

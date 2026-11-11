@@ -55,6 +55,8 @@ SRCS = (
     "src/ui/scope_roll.c",
     "src/ui/scope_cal.c",
     "src/ui/scope_timebase.c",
+    "src/dsp/signal_gen.c",
+    "src/dsp/siggen_wave.c",
 )
 INCLUDES = ("src/util", "src/drivers", "src/ui", "src/dsp")
 CFLAGS = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1"]

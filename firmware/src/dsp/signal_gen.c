@@ -15,7 +15,7 @@
 
 static siggen_config_t g_config = {
     SIGGEN_DEFAULT_WAVE, SIGGEN_DEFAULT_FREQ, SIGGEN_DEFAULT_AMP_DV,
-    SIGGEN_DEFAULT_DUTY, false
+    SIGGEN_DEFAULT_DUTY, false, false
 };
 static uint16_t g_cycle[SIGGEN_CYCLE_SAMPLES];
 static bool g_cycle_built = false;
@@ -73,6 +73,7 @@ void siggen_init(const siggen_config_t *cfg)
         g_config.amplitude_dv = SIGGEN_DEFAULT_AMP_DV;
         g_config.duty_pct = SIGGEN_DEFAULT_DUTY;
         g_config.output_enabled = false;
+        g_config.start_on = false;
     }
     rebuild();
     apply();
@@ -162,4 +163,17 @@ bool siggen_get_timing(siggen_timing_t *t)
 {
     if (g_timing_valid && t != NULL) *t = g_timing;
     return g_timing_valid;
+}
+
+bool siggen_preview_timing(siggen_timing_t *t)
+{
+    siggen_timing_t tmp;
+    if (!siggen_timing_compute(g_config.frequency_hz, timer_clock(), &tmp)) return false;
+    if (t != NULL) *t = tmp;
+    return true;
+}
+
+void siggen_set_start_on(bool on)
+{
+    g_config.start_on = on;
 }
