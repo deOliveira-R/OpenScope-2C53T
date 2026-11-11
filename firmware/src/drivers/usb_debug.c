@@ -385,6 +385,26 @@ bool usb_share_wanted(void)
     return r >= 0 ? (r != 0) : usb_mode_sm_sharing(&s_usb_mode);
 }
 
+/* The composite device is up but the host ejected the drive. */
+static bool usb_share_medium_out(void)
+{
+    return s_share_req < 0 && s_usb_mode.active == USB_DEV_COMPOSITE &&
+           s_usb_mode.state == USB_ST_STEADY && !usb_msc_shared();
+}
+
+/* Settings "USB Sharing" OK: re-insert an ejected drive, else toggle. */
+void usb_share_toggle(void)
+{
+    if (usb_share_medium_out()) usb_msc_set_shared(true);
+    else usb_share_request(!usb_share_wanted());
+}
+
+const char *usb_share_label(void)
+{
+    if (!usb_share_wanted()) return "Off";
+    return usb_share_medium_out() ? "Ejected" : "On";
+}
+
 static void usb_core_detach(void)
 {
     (void)usb_irq_mask();
@@ -402,6 +422,7 @@ static void usb_core_attach(usb_dev_kind_t kind)
 {
     (void)usb_irq_mask();
     if (kind == USB_DEV_COMPOSITE) {
+        usb_msc_trace_reset();
         usb_msc_set_shared(true);                /* the medium is the point of sharing */
         usbd_core_init(&usb_core_dev, USB, &usb_composite_class_handler,
                        &usb_composite_desc_handler, 0);
@@ -435,6 +456,9 @@ static void usb_mode_poll(void)
         if (before == USB_ST_ATTACHING) usb_trace_add(UTR_TIMEOUT, NULL);
         break;
     case USB_ACT_ATTACH:
+        /* index the gallery first: the host's first look sees the final
+         * volume, no UNIT ATTENTION in the middle of its probe */
+        if (s_usb_mode.active == USB_DEV_COMPOSITE) usb_msc_prepare();
         usb_core_attach(s_usb_mode.active);
         break;
     default:
@@ -2844,6 +2868,43 @@ static void cmd_usb_trace(void)
         }
     }
     if (n >= USB_TRACE_N) usb_send_str("  (trace full)\r\n");
+
+    uint32_t lost = 0;
+    const uint32_t m = usb_msc_trace_count(&lost);
+    usb_debug_printf("scsi trace: %lu entries%s\r\n", (unsigned long)m,
+                     lost ? " (full: later commands not recorded)" : "");
+    for (uint32_t i = 0; i < m; i++) {
+        usb_msc_trace_t e;
+        if (!usb_msc_trace_get(i, &e)) break;
+        const char *name;
+        switch (e.cdb[0]) {
+        case 0x00: name = "TEST UNIT READY"; break;
+        case 0x03: name = "REQUEST SENSE"; break;
+        case 0x12: name = "INQUIRY"; break;
+        case 0x1A: name = "MODE SENSE(6)"; break;
+        case 0x1B: name = "START STOP UNIT"; break;
+        case 0x1E: name = "PREVENT ALLOW"; break;
+        case 0x23: name = "READ FMT CAPS"; break;
+        case 0x25: name = "READ CAPACITY(10)"; break;
+        case 0x28: name = "READ(10)"; break;
+        case 0x2A: name = "WRITE(10)"; break;
+        case 0x2F: name = "VERIFY(10)"; break;
+        case 0x35: name = "SYNC CACHE(10)"; break;
+        case 0x5A: name = "MODE SENSE(10)"; break;
+        case 0x9E: name = "SERVICE ACT IN(16)"; break;
+        case 0xA8: name = "READ(12)"; break;
+        default:   name = "?"; break;
+        }
+        char hex[3 * 9 + 1];
+        const uint32_t nb = e.cdb_len < 9u ? e.cdb_len : 9u;
+        for (uint32_t k = 0; k < nb; k++) snprintf(hex + 3 * k, 4, "%02X ", e.cdb[k]);
+        hex[nb ? 3 * nb - 1 : 0] = '\0';
+        const char *st = e.status == 0 ? "PASS" : e.status == 1 ? "FAIL" : e.status == 2 ? "PHASE" : "no CSW";
+        usb_debug_printf("  +%6lu ms %-18s %s -> %s", (unsigned long)e.t_ms, name, hex, st);
+        if (e.sk != 0 || e.asc != 0) usb_debug_printf(" sense %02X/%02X/%02X", e.sk, e.asc, e.ascq);
+        if (e.repeat) usb_debug_printf(" (x%u more)", (unsigned)e.repeat);
+        usb_send_str("\r\n");
+    }
 }
 #endif
 
@@ -2860,6 +2921,13 @@ static void cmd_usb(const char *args)
             usb_debug_printf("usb: share %s\r\n", usb_share_wanted() ? "on" : "off");
             return;
         } else { usb_send_str("Usage: usb share [on|off]\r\n"); return; }
+        if (on && usb_share_medium_out()) {
+            /* the host ejected the drive: put the medium back (UNIT
+             * ATTENTION tells the host), no re-enumeration */
+            usb_msc_set_shared(true);
+            usb_send_str("usb: share on: medium re-inserted (the host had ejected it)\r\n");
+            return;
+        }
         if (on == usb_share_wanted() && s_usb_mode.state == USB_ST_STEADY) {
             usb_debug_printf("usb: share already %s\r\n", on ? "on" : "off");
             return;
@@ -2892,10 +2960,11 @@ static void cmd_usb(const char *args)
     if (s_usb_mode.active != USB_DEV_COMPOSITE) return;
     usb_msc_stats_t st;
     usb_msc_get_stats(&st);
-    usb_debug_printf("MSC: conf=%d medium=%s files=%u blocks=%lux512 state=%u "
+    usb_debug_printf("MSC: conf=%d medium=%s%s files=%u blocks=%lux512 state=%u "
                      "cmds=%lu reads=%lu sectors=%lu ioerr=%lu badcbw=%lu resets=%lu "
                      "wrref=%lu rescans=%lu last_op=%02X last_lba=%lu\r\n",
                      st.configured ? 1 : 0, st.shared ? "in" : "out",
+                     (!st.shared && st.host_ejected) ? " (host ejected; 'usb share on' re-inserts)" : "",
                      (unsigned)st.files, (unsigned long)st.blocks, (unsigned)st.state,
                      (unsigned long)st.commands, (unsigned long)st.reads,
                      (unsigned long)st.sectors, (unsigned long)st.io_errors,
@@ -10048,7 +10117,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("usb", cmd_usb, 0,
           "usb [status]                    USB device mode, switch result, CDC/MSC counters\r\n"
           "usb share [on|off]              Re-enumerate as CDC + read-only gallery drive / CDC only\r\n"
-          "usb trace                       Enumeration trace of the last attach (resets, SETUPs)\r\n"),
+          "usb trace                       Last attach: resets/SETUPs, then the SCSI commands\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,

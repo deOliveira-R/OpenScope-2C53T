@@ -189,11 +189,19 @@ void msc_scsi_command(msc_lun_t *lun, const msc_cbw_t *cbw, msc_result_t *r)
         reply(r, 8u, be16(cb + 7));
         return;
 
-    case 0x1B:  /* START STOP UNIT */
+    case 0x1B:  /* START STOP UNIT (SBC-3 5.20) */
+        /* A non-zero POWER CONDITION field makes LoEj/Start meaningless
+         * (power management, e.g. a host going to sleep): nothing to do. */
+        if ((cb[4] & 0xF0u) != 0u) return;
         if ((cb[4] & 0x03u) == 0x02u) {   /* LoEj, !Start: the host ejected us */
             lun->present = false;
             lun->unit_attention = false;
             lun->eject_request = true;
+        } else if ((cb[4] & 0x03u) == 0x03u && !lun->present && lun->eject_request) {
+            /* LoEj + Start: load. Our "tray" is virtual, so a host that
+             * ejected the medium may load it back. Only after a host eject:
+             * a medium that is out because sharing is off stays out. */
+            msc_lun_set_present(lun, true);
         }
         return;
 

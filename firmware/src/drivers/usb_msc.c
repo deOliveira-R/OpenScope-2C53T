@@ -60,6 +60,76 @@ static struct {
              .present = USB_MSC_SHARE_DEFAULT != 0 },
 };
 
+/* ── SCSI trace (usb_msc.h) ── written in interrupt context ── */
+static usb_msc_trace_t s_tr[USB_MSC_TRACE_N];
+static uint32_t s_tr_n, s_tr_lost, s_tr_t0;
+static int32_t  s_tr_cur = -1;      /* entry of the command in flight */
+
+static uint32_t now_ms_isr(void) { return (uint32_t)(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS); }
+
+static void trace_begin(const msc_cbw_t *cbw, const msc_result_t *r, const msc_lun_t *lun)
+{
+    s_tr_cur = -1;
+    if (s_tr_n >= USB_MSC_TRACE_N) { s_tr_lost++; return; }
+    usb_msc_trace_t *e = &s_tr[s_tr_n];
+    memset(e, 0, sizeof *e);
+    e->t_ms = now_ms_isr() - s_tr_t0;
+    e->cdb_len = cbw->cb_len;
+    memcpy(e->cdb, cbw->cb, cbw->cb_len < sizeof e->cdb ? cbw->cb_len : sizeof e->cdb);
+    if (cbw->cb[0] == 0x03u && r->xfer == MSC_XFER_IN_BUF) {
+        e->sk = r->buf[2]; e->asc = r->buf[12]; e->ascq = r->buf[13];   /* what it reported */
+    } else {
+        e->sk = lun->sense_key; e->asc = lun->asc; e->ascq = lun->ascq;
+    }
+    e->status = 0xFFu;              /* until the CSW */
+    s_tr_cur = (int32_t)s_tr_n++;
+}
+
+static void trace_end(uint8_t status, const msc_lun_t *lun, bool io_error)
+{
+    if (s_tr_cur < 0) return;
+    usb_msc_trace_t *e = &s_tr[s_tr_cur];
+    e->status = status;
+    if (io_error) { e->sk = lun->sense_key; e->asc = lun->asc; e->ascq = lun->ascq; }
+    if (s_tr_cur > 0) {
+        usb_msc_trace_t *p = &s_tr[s_tr_cur - 1];
+        if (p->repeat < 0xFFFFu && p->cdb_len == e->cdb_len && memcmp(p->cdb, e->cdb, sizeof e->cdb) == 0 &&
+            p->status == e->status && p->sk == e->sk && p->asc == e->asc && p->ascq == e->ascq) {
+            p->repeat++;
+            s_tr_n--;
+        }
+    }
+    s_tr_cur = -1;
+}
+
+void usb_msc_trace_reset(void)
+{
+    taskENTER_CRITICAL();
+    s_tr_n = 0;
+    s_tr_lost = 0;
+    s_tr_cur = -1;
+    s_tr_t0 = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    taskEXIT_CRITICAL();
+}
+
+uint32_t usb_msc_trace_count(uint32_t *not_recorded)
+{
+    taskENTER_CRITICAL();
+    const uint32_t n = s_tr_n;
+    if (not_recorded != NULL) *not_recorded = s_tr_lost;
+    taskEXIT_CRITICAL();
+    return n;
+}
+
+bool usb_msc_trace_get(uint32_t i, usb_msc_trace_t *out)
+{
+    bool ok = false;
+    taskENTER_CRITICAL();
+    if (i < s_tr_n) { *out = s_tr[i]; ok = true; }
+    taskEXIT_CRITICAL();
+    return ok;
+}
+
 static void notify_task_from_isr(void)
 {
     if (m.notify == NULL) return;
@@ -80,6 +150,7 @@ static void send_csw(usbd_core_type *udev)
 {
     uint8_t status = m.status;
     if (m.io_error && status == MSC_CSW_PASS) status = MSC_CSW_FAIL;
+    trace_end(status, &m.lun, m.io_error);
     msc_csw_build(m.csw, m.cbw.tag, m.residue, status);
     m.state = BOT_CSW;
     usbd_ept_send(udev, USB_COMP_MSC_IN_EPT, m.csw, MSC_CSW_LEN);
@@ -124,6 +195,7 @@ static void start_command(usbd_core_type *udev)
     msc_plan_t p;
     msc_scsi_command(&m.lun, &m.cbw, &r);
     msc_plan(&m.cbw, &r, &p);
+    trace_begin(&m.cbw, &r, &m.lun);
 
     m.st.commands++;
     m.st.last_op = m.cbw.cb[0];
@@ -305,6 +377,11 @@ static bool refresh_index(void)
     return true;
 }
 
+void usb_msc_prepare(void)
+{
+    (void)refresh_index();
+}
+
 bool usb_msc_poll(void *udev)
 {
     usbd_core_type *pudev = (usbd_core_type *)udev;
@@ -350,6 +427,7 @@ void usb_msc_get_stats(usb_msc_stats_t *out)
     taskENTER_CRITICAL();
     *out = m.st;
     out->shared = m.lun.present;
+    out->host_ejected = m.lun.eject_request;
     out->configured = m.configured;
     out->state = m.state;
     out->files = m.vfat.count;
