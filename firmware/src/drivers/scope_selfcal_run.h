@@ -41,6 +41,12 @@ void scope_selfcal_request_cancel(void);
  * which cancel. */
 bool scope_selfcal_busy(void);
 
+/* Nothing running and nothing queued, a 50 % centre included (busy() leaves
+ * that one out because it does not lock the keys). The input task holds a
+ * shell-requested settings flush until this is true, so the record never
+ * captures a run's intermediate ranges/timebase/forced AUTO. */
+bool scope_selfcal_quiet(void);
+
 /* Key task only: one non-blocking pass. `dq` is the display queue. */
 void scope_selfcal_service(QueueHandle_t dq);
 
