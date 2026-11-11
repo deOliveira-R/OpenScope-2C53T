@@ -66,8 +66,9 @@ Directional Keys" does. A popup names the stage:
 
 Order: Zoom -> Channel move -> Trigger move -> [Cursor] -> [Mask] -> Zoom.
 Switching cursors on (TRIGGER) selects the Cursor stage straight away; MOVE
-leaves it. Channel position moves the drawn trace only for now (it does not
-drive the offset DAC yet). Until 2026-11 the stages were V/div -> Trig level ->
+leaves it. Channel position moves only the channel's ground-reference marker
+for now: the live trace is autoscaled and ignores it, and it drives neither the
+offset DAC nor the FPGA offset bytes (the calibration item adds that). Until 2026-11 the stages were V/div -> Trig level ->
 Position -> Mask, and cursors took the arrows whenever they were on.
 
 The trigger edge (Rising/Falling) is in Settings -> Oscilloscope Settings.

@@ -558,8 +558,10 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
     }
 
     case KA_CHPOS_STEP:
-        /* The calibration item makes this drive the offset DAC; it lives in
-         * scope_adjust_position(). Until then it moves the drawn trace. */
+        /* The calibration item (C4) makes this drive the channel offset; that
+         * belongs in scope_adjust_position(). Until then it moves only the
+         * ground-reference marker: the live trace path ignores position
+         * (scope_ui.c, autofit) and fpga.c pins the 0x1B/0x1D offset bytes. */
         scope_adjust_position(ach, dir);
         snprintf(pb, sizeof(pb), "CH%d pos %+d", active_channel + 1, (int)ach->position);
         popup_and_redraw(dq, pb);

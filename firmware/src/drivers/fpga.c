@@ -2128,12 +2128,16 @@ static uint8_t fpga_scope_gain_param(const channel_state_t *ch)
 
 static uint8_t fpga_scope_offset_param(const channel_state_t *ch)
 {
-    int offset = 128 - ch->position;
-
-    if (offset < 0)   offset = 0;
-    if (offset > 255) offset = 255;
-
-    return (uint8_t)offset;
+    /* Pinned at mid-scale, the byte this block has always sent. ch->position
+     * had no setter until the key model's channel-move stage (2026-11, C8)
+     * gave it one; deriving 0x1B/0x1D from it would have turned UP/DOWN into
+     * an unreviewed frontend write on the next scope entry (default build;
+     * the warm-handoff builds never send this block). What the stock offset
+     * bytes do is not recovered, and the channel offset path (the DAC and
+     * these bytes) belongs to the calibration item (C4), which replaces this.
+     * Until then position is display-only (the ground markers). */
+    (void)ch;
+    return 128u;
 }
 
 static uint8_t fpga_scope_coupling_param(const scope_state_t *ss)

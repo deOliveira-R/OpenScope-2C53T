@@ -223,9 +223,11 @@ void scope_adjust_trigger_level(scope_state_t *s, int direction);
 /* Channel vertical position, the channel-move stage of the arrow keys (stock:
  * "up and down buttons controlling the vertical movement of the channel
  * waveforms"). Pixels, +1 = trace up, clamped to +-SCOPE_POSITION_MAX (stock's
- * +-100 range, parity plan C4). This only moves the DRAWN trace; driving the
- * offset DAC from it is the calibration item's job and belongs in this
- * function (the caller does not need to change). */
+ * +-100 range, parity plan C4). Today this only moves the ground-reference
+ * marker (the live trace is autoscaled and ignores it; fpga.c pins the
+ * 0x1B/0x1D offset bytes); driving the channel offset from it is the
+ * calibration item's job and belongs in this function (the caller does not
+ * need to change). */
 #define SCOPE_POSITION_MAX   100
 #define SCOPE_POSITION_STEP  5
 void scope_adjust_position(channel_state_t *ch, int direction);
