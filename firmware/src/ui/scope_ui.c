@@ -29,6 +29,8 @@
 #include "task.h"       /* xTaskGetTickCount — the out-of-scope popup overlay */
 #include "scope_trigger.h"
 #include "trig_edge.h"
+#include "trig_policy.h"
+#include "trig_menu.h"
 #include "scope_mask.h"
 #ifdef FEATURE_FFT
 #include "fft_live.h"
@@ -303,30 +305,32 @@ static void draw_ground_markers(const scope_state_t *ss, const theme_t *th)
  * Trigger status badge
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* What the acquisition actually did, not what the mode is called (parity C3,
+ * trig_policy.h): before C3 NORMAL said "Trig'd" with no signal at all and
+ * AUTO said "Auto" while showing two non-simultaneous channels (#84). Now:
+ * Trig'd / Wait / Auto / Auto* (free-run, CH1 and CH2 two moments) / Await
+ * (SINGLE armed, stock's "Await Trigger...") / STOP (stopped, or SINGLE
+ * captured, as stock). main.c hashes fpga_trigger_status() into the redraw
+ * epoch, so the badge repaints when it changes. */
+#define TRIG_BADGE_W  44
+#define TRIG_BADGE_X  (LCD_WIDTH - TRIG_BADGE_W - 2)
+#define TRIG_BADGE_Y  (SCOPE_TOP + 2)
+#define TRIG_BADGE_H  14
+
 static void draw_trigger_status(const scope_state_t *ss, const theme_t *th)
 {
-    const char *label;
-    uint16_t color;
-
-    if (!ss->running) {
-        label = "STOP";
-        color = th->warning;
-    } else if (ss->trigger.mode == TRIG_AUTO) {
-        label = "Auto";
-        color = th->success;
-    } else if (ss->trigger.mode == TRIG_SINGLE) {
-        label = "Ready";
-        color = th->highlight;
-    } else {
-        label = "Trig'd";
-        color = th->success;
-    }
+    (void)ss;
+    const trig_status_t st = (trig_status_t)fpga_trigger_status();
+    const char *label = trig_status_label(st);
+    const trig_tone_t tone = trig_status_tone(st);
+    const uint16_t color = (tone == TRIG_TONE_OK)   ? th->success :
+                           (tone == TRIG_TONE_INFO) ? th->highlight : th->warning;
 
     /* Draw badge at top-right of waveform area */
-    uint16_t bw = 44;
-    uint16_t bx = LCD_WIDTH - bw - 2;
-    uint16_t by = SCOPE_TOP + 2;
-    lcd_fill_rect(bx, by, bw, 14, th->background);
+    uint16_t bw = TRIG_BADGE_W;
+    uint16_t bx = TRIG_BADGE_X;
+    uint16_t by = TRIG_BADGE_Y;
+    lcd_fill_rect(bx, by, bw, TRIG_BADGE_H, th->background);
     font_draw_string_right(LCD_WIDTH - 4, by + 1, label,
                            color, th->background, &font_small);
 }
@@ -788,6 +792,43 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
         draw_mask_slot(th);        /* the mask readout takes the legend's slot */
     else
         draw_legend_slot(th, have1 || have2);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Trigger panel (parity C3, trig_menu.h): stock's "Trigger Settings"
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Top-left, clear of the centred popup (POPUP_Y) and the status badge at the
+ * top right, so a change's popup and the panel are both readable. Drawn by
+ * the full path only; main.c keeps the compositor off while it is open, as
+ * for cursors. */
+#define TPANEL_X   6
+#define TPANEL_Y   (SCOPE_TOP + 6)
+#define TPANEL_W   124
+#define TPANEL_ROW 14
+#define TPANEL_H   (16 + TM_ROW_COUNT * TPANEL_ROW + 3)
+
+static void draw_trigger_panel(const scope_state_t *ss, const theme_t *th)
+{
+    if (!scope_trig_menu.open)
+        return;
+    lcd_fill_rect(TPANEL_X, TPANEL_Y, TPANEL_W, TPANEL_H, th->background);
+    lcd_fill_rect(TPANEL_X, TPANEL_Y, TPANEL_W, 1, th->trigger);
+    lcd_fill_rect(TPANEL_X, TPANEL_Y + TPANEL_H - 1, TPANEL_W, 1, th->trigger);
+    lcd_fill_rect(TPANEL_X, TPANEL_Y, 1, TPANEL_H, th->trigger);
+    lcd_fill_rect(TPANEL_X + TPANEL_W - 1, TPANEL_Y, 1, TPANEL_H, th->trigger);
+    font_draw_string(TPANEL_X + 5, TPANEL_Y + 3, "Trigger", th->trigger, th->background, &font_small);
+    for (uint8_t r = 0; r < TM_ROW_COUNT; r++) {
+        const bool sel = (r == scope_trig_menu.row);
+        const uint16_t y = (uint16_t)(TPANEL_Y + 16 + r * TPANEL_ROW);
+        const uint16_t bg = sel ? th->menu_selected_bg : th->background;
+        if (sel)
+            lcd_fill_rect(TPANEL_X + 2, y, TPANEL_W - 4, TPANEL_ROW, bg);
+        font_draw_string(TPANEL_X + 5, y + 1, trig_menu_row_label(r),
+                         sel ? th->text_primary : th->text_secondary, bg, &font_small);
+        font_draw_string_right(TPANEL_X + TPANEL_W - 6, y + 1, trig_menu_row_value(ss, r),
+                               th->highlight, bg, &font_small);
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1317,13 +1358,20 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     /* 2. Soft anchor: the midline crossing, searched so that the window
      *    [crossing - tx, crossing - tx + draw_n) stays inside the record and
      *    clear of the guarded head. */
-    int idx = scope_measure_find_trigger((const uint8_t *)src_buf + SEAM_GUARD + tx,
-                                         (uint16_t)(max_start - SEAM_GUARD),
-                                         (uint8_t)thr,
-                                         ss->trigger.edge == TRIG_RISING, 3u);
-    if (idx <= 0)
+    /*    Stock's three-point edge confirm (0x08028DE4, parity C3) on top of
+     *    the Schmitt arming this always had: a crossing whose next sample
+     *    falls straight back is a one-sample spike, not the edge. SINGLE
+     *    keeps two points, as stock does. The measured case for adding it
+     *    is in trig_edge.h (tests/test_trig_edge.c [7]-[9]). */
+    const int lo = (int)SEAM_GUARD + tx;
+    const int hi = (int)max_start + tx + 1;       /* the old search's span */
+    int a = trig_edge_search(src_buf, (int)FPGA_ADC_BUF_SIZE, lo, hi, thr,
+                             ss->trigger.edge == TRIG_RISING, 3u,
+                             ss->trigger.mode == TRIG_SINGLE ? 0u : 1u);
+    /* The old search returned index 0 of its span as "nothing": keep that
+     * (a crossing on the very first sample has no "before"). */
+    if (a <= lo)
         return 0u;
-    int a = idx + SEAM_GUARD + tx;
     g_trig_x_actual = (int16_t)tx;
     g_trig_anchor = 1;
     return (uint16_t)(a - tx);
@@ -2372,6 +2420,9 @@ void draw_scope_screen(uint32_t frame)
     /* Layer 10: Measurement badges */
     draw_measurement_badges(ss, th);
 
+    /* Layer 10b: the trigger panel, under the popup that reports a change */
+    draw_trigger_panel(ss, th);
+
     /* Layer 11: Quick-change popup (on top of everything) */
     draw_popup(th);
 
@@ -2558,6 +2609,14 @@ void draw_scope_live_frame(void)
         uint8_t  nseg = 1;
         seg_top[0] = SCOPE_TOP;
         seg_bot[0] = band_bot;
+        /* The trigger status badge is a second, permanent hole (parity C3):
+         * it says whether the record on the glass was triggered, or is a
+         * two-moment free-run read (#84), so it must survive the live frames.
+         * Before C3 the first live frame painted over it. It changes only
+         * with the trigger status, which is in main.c's redraw epoch, so a
+         * change gets a full repaint that redraws it. */
+        if (x >= TRIG_BADGE_X)
+            seg_top[0] = TRIG_BADGE_Y + TRIG_BADGE_H;
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;

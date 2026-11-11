@@ -73,4 +73,46 @@ int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k);
  * test a different alignment from the one on the glass. */
 int trig_edge_anchor(const volatile uint8_t *rec, int crossing, int rising);
 
+/* ── Software edge search (parity C3, stock 0x08028DE4) ──────────────────
+ *
+ * Stock finds its display trigger in software, in the raw record (ADDENDUM_A
+ * S3, emulated: 30,000 random cases, 0 mismatches). At each i in its window,
+ * rising: s[i-1] <= L < s[i] and, in NORMAL/AUTO, s[i+1] > L too (the third
+ * point); falling is the mirror. SINGLE tests two points only. The third point
+ * is a one-sample glitch filter: a lone spike over the level is not an edge.
+ *
+ * trig_edge_search() is stock's test plus OpenScope's Schmitt arming (the old
+ * soft trigger, scope_measure_find_trigger): a crossing counts only once the
+ * signal has been `hyst` counts on the far side since the window opened. A
+ * crossing whose confirm fails does NOT disarm (stock does not either; doing
+ * so lost half the edges of a slow noisy ramp, the chatter right after the
+ * first touch failing the confirm). Measured in tests/test_trig_edge.c:
+ *   [7] hyst 0 = stock's test exactly, 30,000 random cases;
+ *   [8] a lone spike: the third point skips it, the old Schmitt took it; a
+ *       slow ramp under +/-3 counts of noise: rms error 5.3 samples with the
+ *       third point vs 8.7 with the old Schmitt alone (early noise touches);
+ *   [9] the 57 committed unit-#1 records: with confirm 0 the search is the
+ *       hardware anchor (55/57, the other two an earlier touch); with the
+ *       third point it finds all 57, never earlier, +0..17 samples later
+ *       (2 Hz triangles: a 20-sample band of chatter at the level).
+ * So OpenScope's fallback anchor adopts the third point in NORMAL/AUTO, and
+ * keeps two points in SINGLE as stock does (a one-shot is where a one-sample
+ * glitch is the thing being hunted).
+ *
+ * "Past the level" is INCLUSIVE here: s >= level rising, s <= level falling,
+ * the compare the FPGA itself makes (the committed records fire on the code,
+ * [9]) and the old soft trigger's. Stock's strict L < s is level = L + 1.
+ *
+ * Searched i in [lo, hi), clamped to [1, n - 1 - confirm]. `confirm` = the
+ * samples after i that must stay past the level: 1 = stock NORMAL/AUTO,
+ * 0 = stock SINGLE. Returns i, the first sample past the level (stock stores
+ * i - 1, the last one before it), or -1. */
+int trig_edge_search(const volatile uint8_t *rec, int n, int lo, int hi,
+                     int level, int rising, unsigned hyst, unsigned confirm);
+
+/* Stock's own test with no arming, transcribed literally from S3 (strict
+ * L < s), the reference tests [7] compare trig_edge_search(hyst = 0) with. */
+int trig_edge_search_stock(const volatile uint8_t *rec, int n, int lo, int hi,
+                           int level, int rising, unsigned confirm);
+
 #endif

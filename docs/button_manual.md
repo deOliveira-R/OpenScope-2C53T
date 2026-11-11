@@ -65,13 +65,56 @@ Directional Keys" does. A popup names the stage:
 | Mask (only while a mask exists) | Mask vertical tolerance +-2 counts | Mask horizontal tolerance +-1 sample (SELECT = stop-on-fail) |
 
 Order: Zoom -> Channel move -> Trigger move -> [Cursor] -> [Mask] -> Zoom.
-Switching cursors on (TRIGGER) selects the Cursor stage straight away; MOVE
+Switching cursors on (Settings -> Oscilloscope -> Cursors) selects the Cursor stage straight away; MOVE
 leaves it. Channel position moves only the channel's ground-reference marker
 for now: the live trace is autoscaled and ignores it, and it drives neither the
 offset DAC nor the FPGA offset bytes (the calibration item adds that). Until 2026-11 the stages were V/div -> Trig level ->
 Position -> Mask, and cursors took the arrows whenever they were on.
 
-The trigger edge (Rising/Falling) is in Settings -> Oscilloscope Settings.
+### Trigger (TRIGGER)
+
+**TRIGGER** opens the trigger panel, as stock's TRIGGER opens "Trigger
+Settings": three rows, `Mode:` Auto / Normal / Single, `Edge:` Rising /
+Falling, `Channel:` CH1 / CH2 (the source; a channel that is off is refused).
+
+| Key (panel open) | Action |
+|------------------|--------|
+| **UP/DOWN** | Pick the row |
+| **LEFT/RIGHT**, **OK** | Change it (OK = RIGHT) |
+| **TRIGGER**, **MENU**, **MOVE**, **SELECT**, **PRM** | Close the panel |
+
+The same three are in Settings -> Oscilloscope Settings (Trigger Mode / Edge /
+Source), and on the shell (`fpga scope trigmode`, `fpga scope edge`,
+`fpga scope source`, `fpga scope trigger` for the status). The trigger level
+is the Trigger move stage (MOVE, then UP/DOWN); the dotted line and the arrow
+at the right edge show where the hardware fires, the small triangle at the
+top the column where the trigger point landed.
+
+The source drives the FPGA (reg 0x06) since parity C3: before, CH2 as the
+source moved the label and the soft trigger while the hardware kept firing on
+CH1.
+
+**SINGLE** is stock's one-shot. Selecting it arms it (`Await Trigger...`, badge
+`Await`); the first triggered record after the arm is captured and held (badge
+`STOP`); **OK** then re-arms it (`fpga scope single` does the same). A record
+the FPGA was holding from before the arm is dropped, not taken.
+
+The badge at the top right of the trace says what the acquisition did, not
+what the mode is called:
+
+| Badge | Meaning |
+|-------|---------|
+| `Trig'd` | the record on screen was handed over by a trigger, recently |
+| `Wait` | NORMAL (or AUTO holding): no trigger lately, the trace is held |
+| `Auto` | AUTO free-running (no trigger for a whole budget), one channel on |
+| `Auto*` (warning colour) | AUTO free-running with **both** channels on: CH1 and CH2 were read ~140 us apart while the FPGA kept writing, so they are two moments, not one capture (upstream #84). Trigger the signal, or turn a channel off, for a coherent two-channel record |
+| `Await` | SINGLE armed |
+| `STOP` | stopped, or SINGLE captured |
+
+While edges occur, AUTO shows only triggered records; it falls back to the
+free-running buffer only after a whole budget without one, so a quiet input
+still moves.
+
 The top bar shows `<mode> <edge> <source>` for the trigger (`Auto R C1`,
 `Norm F C2`, `Sngl R C1`: R/F = rising/falling).
 
@@ -117,7 +160,7 @@ failure is held. Full design: `docs/specs/scope/mask-pass-fail.md`.
 
 | Button | Action |
 |--------|--------|
-| **TRIGGER** | Cycle cursor mode: Off -> Vertical -> Horizontal -> Both -> Off |
+| Settings -> Oscilloscope -> **Cursors** | Cycle cursor mode: Off -> Vertical -> Horizontal -> Both -> Off (stock keeps them in its menu, "Cursor Measurement"; TRIGGER cycled them until parity C3) |
 | **UP/DOWN** | Move active cursor (Cursor stage) |
 | **LEFT/RIGHT** | Switch between cursor pairs (V1/V2 or H1/H2) (Cursor stage) |
 
@@ -355,7 +398,7 @@ Shows device info, pool status, heap free, license. **MENU** or **OK** to go bac
 | PRM    | Cycle FFT views  | Softkey: View    | Freq presets     |        -         |
 | SELECT | Probe 1X/10X     | Softkey (Reset)  | Cycle waveform   | Cycle comp type  |
 | MOVE   | Trigger edge     | Softkey (Func.)  |        -         |        -         |
-| TRIGGER| Cursor mode      | Softkey (Rel.)   |        -         |        -         |
+| TRIGGER| Trigger panel    | Softkey (Rel.)   |        -         |        -         |
 | AUTO   | FFT auto-config  | Auto function    |        -         |        -         |
 | SAVE   | Screenshot       | Debug overlay    | Screenshot       | Screenshot       |
 +--------+------------------+------------------+------------------+------------------+

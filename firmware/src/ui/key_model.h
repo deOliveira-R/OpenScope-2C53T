@@ -126,6 +126,7 @@ typedef struct {
     bool          cursors_on;
     bool          mask_present;
     uint8_t       active_channel;    /* 0 = CH1, 1 = CH2 */
+    bool          trig_menu_open;    /* the trigger panel (trig_menu.h) is up */
 } key_ctx_t;
 
 typedef enum {
@@ -150,7 +151,11 @@ typedef enum {
     KA_CURSOR_NEXT,
     KA_MASK_TOL_V,        /* arg = +1 UP */
     KA_MASK_TOL_H,        /* arg = +1 right */
-    KA_MASK_STOPFAIL      /* short SELECT in the mask stage */
+    KA_MASK_STOPFAIL,     /* short SELECT in the mask stage */
+    KA_TRIGMENU_OPEN,     /* short TRIGGER (time view): stock's "Trigger Settings" */
+    KA_TRIGMENU_CLOSE,    /* TRIGGER/MENU/MOVE/SELECT/PRM while it is open */
+    KA_TRIGMENU_ROW,      /* UP/DOWN while open: arg = -1 up, +1 down */
+    KA_TRIGMENU_CHANGE    /* LEFT/RIGHT/OK while open: arg = -1 / +1 */
 } key_action_t;
 
 typedef struct {
