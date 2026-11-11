@@ -99,6 +99,30 @@ static void test_stats(void)
     CHECK(!sc_corr_pair(1000, 4090, 0, 6, &cb, &cu), "corr pair above 4095 refused");
 }
 
+/* Glitch-trimmed spread, mean and rails (the ilcal_window recipe). */
+static void test_trimmed_stats(void)
+{
+    uint8_t r[REC_LEN];
+    sc_rec_stats_t s;
+    for (unsigned i = 0; i < REC_LEN; i++) r[i] = (i < HEAD) ? 0u : (uint8_t)(100u + (i % 5u));  /* 100..104 */
+    for (unsigned i = 500; i < 540; i++) r[i] = (i & 1u) ? 0u : 220u;   /* a 40-sample burst, on both rails */
+    CHECK(sc_rec_stats(r, REC_LEN, HEAD, &s), "stats");
+    CHECK(s.spread == 4 && !s.tclip, "burst trimmed: spread %u, tclip %u", s.spread, s.tclip);
+    CHECK(s.max - s.min > 200 && s.clipped, "the raw view still sees the burst");
+    CHECK(s.n_out == 40, "40 dropped, got %u", s.n_out);
+    CHECK(fabsf(s.tmean - 102.0f) < 0.1f, "trimmed mean %.2f", s.tmean);
+
+    /* More than 15 % wild: not a glitch, spread 255. */
+    for (unsigned i = 300; i < 300 + 140; i++) r[i] = 200u;   /* 180/896 = 20 % outside */
+    sc_rec_stats(r, REC_LEN, HEAD, &s);
+    CHECK(s.spread == 255, "20 %% outliers: spread %u", s.spread);
+
+    /* A record that really sits on the rail stays clipped. */
+    for (unsigned i = 0; i < REC_LEN; i++) r[i] = (i < HEAD) ? 0u : (uint8_t)(i % 3u);
+    sc_rec_stats(r, REC_LEN, HEAD, &s);
+    CHECK(s.tclip, "pegged at the low rail: tclip");
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Baseline correction on a simulated channel
  * ═══════════════════════════════════════════════════════════════════ */
@@ -112,6 +136,11 @@ typedef struct {
     float hum;                /* +- counts, per record */
     float sine_amp_mv;        /* a signal left on the input */
     float dc_mv;              /* a DC level left on the input */
+    float noise_cnt[2][10];   /* per channel and range: uniform +- counts (shorted-input noise) */
+    float open_mv[2];         /* per channel: floating-input pickup, uniform +- mV (counts = mV / ladder) */
+    unsigned burst_len;       /* interference burst per record: this many wild samples ... */
+    float burst_amp;          /*  ... uniform +- this many counts */
+    float drift_mv[2];        /* per channel: record-to-record mean wander, uniform +- mV */
     /* results */
     int   commits;
     bool  got[2][3][10];
@@ -166,12 +195,18 @@ static void bc_make_obs(bc_sim_t *s, const sc_basecal_t *b, sc_rec_stats_t obs[2
     for (unsigned c = 0; c < 2; c++) {
         const float z = s->z[c][bank][b->range], k = s->s[c][bank][b->range];
         const float level = 100.0f + ((float)b->dac[c] - z) / k + s->hum * urand()
-                            + s->dc_mv / mv;
+                            + s->dc_mv / mv + (s->drift_mv[c] / mv) * urand();
         for (unsigned i = 0; i < REC_LEN; i++) {
-            float v = level + s->noise * urand();
+            float v = level + s->noise * urand() + s->noise_cnt[c][b->range] * urand()
+                      + (s->open_mv[c] / mv) * urand();
             if (s->sine_amp_mv > 0.0f)
                 v += s->sine_amp_mv / mv * sinf(6.2831853f * (float)i / 97.0f);
             rec[i] = (i < 40u) ? 0u : clamp_rec(v);   /* invalid head, as on the device */
+        }
+        if (s->burst_len) {   /* one burst somewhere in the body */
+            const unsigned at = 200u + (unsigned)((urand() + 1.0f) * 0.5f * (float)(REC_LEN - 300u - s->burst_len));
+            for (unsigned i = at; i < at + s->burst_len; i++)
+                rec[i] = clamp_rec((float)rec[i] + s->burst_amp * urand());
         }
         sc_rec_stats(rec, REC_LEN, HEAD, &obs[c]);
     }
@@ -228,6 +263,105 @@ static void test_basecal_converges(void)
     st = bc_run(&s, 0x01u, &b);
     CHECK(st == SC_BC_DONE && s.commits == 20, "hum 0.6: %d commits (%s)", s.commits,
           sc_bc_status_str(st));
+}
+
+/* Shorted-input noise in counts per range (grows with the gain: ~2 mV p-p
+ * at 0.4 mV/count is 5 counts, but the front end adds more at the top
+ * sensitivities), worst pp = 2x these, always inside the range's limit. */
+static const float noisy_cnt[10] = { 10, 9, 8, 7, 6, 4, 3, 2, 2, 2 };
+
+static void test_basecal_noisy_ranges(void)
+{
+    static bc_sim_t s;
+    sc_basecal_t b;
+
+    /* Noise at every range plus a 5 % interference burst in every record:
+     * the old fixed limits (12 / 36 below r4) and the raw p-p/rails refused
+     * these ("27 ok / 13 not flat", unit #2). All 40 entries now correct. */
+    bc_sim_default(&s);
+    for (unsigned c = 0; c < 2; c++)
+        for (unsigned r = 0; r < 10; r++) s.noise_cnt[c][r] = noisy_cnt[r];
+    s.noise = 0.5f;
+    s.burst_len = 40;
+    s.burst_amp = 150.0f;
+    sc_bc_status_t st = bc_run(&s, 0x03u, &b);
+    CHECK(st == SC_BC_DONE && s.commits == 40 && b.n_fail == 0,
+          "noisy ranges + bursts: %s, %d commits, %u refused (last %s r%u)", sc_bc_status_str(st),
+          s.commits, b.n_fail, sc_bc_fail_str(b.last_fail), b.last_fail_range);
+    uint8_t es, sp;
+    CHECK(sc_basecal_entry(&b, 0, 1, 4, &es, &sp, NULL) && es == SC_BC_LOG_OK && sp >= 6 && sp <= sc_bc_flat_limit(4),
+          "log: CH1 b1 r4 ok, spread %u within its limit %u", sp, sc_bc_flat_limit(4));
+
+    /* Limits widen with the gain and never fall below the quiet limit. */
+    for (unsigned r = 1; r < 10; r++)
+        CHECK(sc_bc_flat_limit((uint8_t)r) <= sc_bc_flat_limit((uint8_t)(r - 1)) &&
+              sc_bc_flat_limit((uint8_t)r) >= SC_BC_FLAT_PP, "limit monotonic at r%u", r);
+    CHECK(sc_bc_flat_limit(9) == SC_BC_FLAT_PP, "coarse end keeps the quiet limit");
+
+    /* Noise beyond a range's limit is still refused, with the number behind it. */
+    bc_sim_default(&s);
+    s.noise_cnt[0][5] = 20.0f;     /* +-20 -> p-p ~40 on r5, limit 20 */
+    st = bc_run(&s, 0x01u, &b);
+    CHECK(st == SC_BC_DONE && !s.got[0][0][5] && s.commits == 19, "r5 too noisy refused: %d commits", s.commits);
+    CHECK(sc_basecal_entry(&b, 0, 0, 5, &es, &sp, NULL) && es == SC_BC_LOG_FAIL0 + SC_BCF_NOT_FLAT &&
+          sp > sc_bc_flat_limit(5), "log: reason not flat, spread %u > %u", sp, sc_bc_flat_limit(5));
+    CHECK(!b.open_ch[0] && !b.open_ch[1], "one noisy entry does not make the input open");
+}
+
+static void test_basecal_open_input(void)
+{
+    static bc_sim_t s;
+    sc_basecal_t b;
+    uint8_t es;
+
+    /* CH1 shorted, CH2 floating (hum pickup of +-60 mV, invisible at the
+     * coarse ranges, hundreds of counts at the sensitive ones): CH1 is
+     * corrected, CH2 is refused as open and never corrected at r4..r9. */
+    bc_sim_default(&s);
+    s.open_mv[1] = 60.0f;
+    for (unsigned r = 0; r < 10; r++) s.noise_cnt[0][r] = noisy_cnt[r];
+    sc_bc_status_t st = bc_run(&s, 0x03u, &b);
+    CHECK(st == SC_BC_DONE, "CH2 open, CH1 shorted: %s", sc_bc_status_str(st));
+    unsigned ch1 = 0, ch2 = 0;
+    for (unsigned k = 0; k < 3; k++)
+        for (unsigned r = 0; r < 10; r++) { ch1 += s.got[0][k][r]; ch2 += s.got[1][k][r]; }
+    CHECK(ch1 == 20 && ch2 == 0, "CH1 20 corrected, CH2 none: %u / %u", ch1, ch2);
+    CHECK(b.open_ch[1] && !b.open_ch[0], "CH2 declared open/noisy, CH1 not");
+    CHECK(sc_basecal_entry(&b, 1, 0, 0, &es, NULL, NULL) && es == SC_BC_LOG_FAIL0 + SC_BCF_NOT_FLAT,
+          "log: CH2 b0 r0 not flat");
+    CHECK(sc_basecal_entry(&b, 1, 0, 9, &es, NULL, NULL) && es == SC_BC_LOG_FAIL0 + SC_BCF_OPEN,
+          "log: CH2 b0 r9 skipped because open (state %u)", es);
+    CHECK(sc_basecal_entry(&b, 1, 1, 6, &es, NULL, NULL) && es == SC_BC_LOG_FAIL0 + SC_BCF_OPEN,
+          "log: CH2 b1 r6 skipped because open too (the next bank)");
+    CHECK(b.n_ok == 20 && b.n_fail == 20, "ok %u fail %u", b.n_ok, b.n_fail);
+    CHECK(strstr(sc_bc_fail_str(SC_BCF_OPEN), "open") != NULL, "message names the open input");
+
+    /* Both floating: nothing corrected, the status says why. */
+    bc_sim_default(&s);
+    s.open_mv[0] = s.open_mv[1] = 60.0f;
+    st = bc_run(&s, 0x03u, &b);
+    CHECK(st == SC_BC_OPEN && s.commits == 0, "both open: %s, %d commits", sc_bc_status_str(st), s.commits);
+    CHECK(strstr(sc_bc_status_str(SC_BC_OPEN), "open/noisy") != NULL, "status text");
+
+    /* CH2 floating but slow (each record flat, its mean wanders between
+     * records): CH2 disagrees, CH1 agrees. Only CH2 may be refused as
+     * noisy; a shorted CH1 must never be blamed and declared open. */
+    bc_sim_default(&s);
+    s.drift_mv[1] = 20.0f;   /* +-50 counts at r0 .. +-5 at r3 */
+    st = bc_run(&s, 0x03u, &b);
+    ch1 = ch2 = 0;
+    for (unsigned k = 0; k < 3; k++)
+        for (unsigned r = 0; r < 10; r++) { ch1 += s.got[0][k][r]; ch2 += s.got[1][k][r]; }
+    CHECK(st == SC_BC_DONE && ch1 == 20 && !b.open_ch[0],
+          "CH2 wandering: CH1 %u corrected (open %u), CH2 %u", ch1, b.open_ch[0], ch2);
+    CHECK(sc_basecal_entry(&b, 1, 0, 0, &es, NULL, NULL) && es >= SC_BC_LOG_FAIL0 && !s.got[1][0][0],
+          "log: CH2 b0 r0 refused (state %u)", es);
+
+    /* Open channel on bank 2 (one channel per phase) only: the other one is unaffected. */
+    bc_sim_default(&s);
+    s.open_mv[1] = 60.0f;
+    st = bc_run(&s, 0x04u, &b);
+    CHECK(st == SC_BC_DONE && s.commits == 10, "bank 2: CH1 corrected, CH2 refused: %d", s.commits);
 }
 
 static void test_basecal_refusals(void)
@@ -572,6 +706,9 @@ int main(void)
     test_stats();
     test_basecal_converges();
     test_basecal_refusals();
+    test_basecal_noisy_ranges();
+    test_basecal_open_input();
+    test_trimmed_stats();
     test_autoset();
     if (failures) {
         printf("test_scope_selfcal: %d FAILED\n", failures);
