@@ -51,6 +51,7 @@ extern void system_clock_config(void);
 #include "fault.h"
 #include "redraw_gate.h"
 #include "scope_mask.h"
+#include "trig_menu.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -317,6 +318,11 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
+    /* Parity C3: the trigger panel and the trigger status badge (which
+     * says Trig'd / Wait / Auto* ... from the acquisition, not the mode). */
+    h = redraw_epoch_mix(h, (uint32_t)scope_trig_menu.open
+                            | ((uint32_t)scope_trig_menu.row << 1)
+                            | ((uint32_t)fpga_trigger_status() << 8));
 
 #ifdef FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
@@ -395,7 +401,8 @@ static bool scope_incremental_available(const scope_state_t *s)
      * flicker-free update for the feature, on request. */
     return scope_acquisition_ready()
            && s->cursor.mode == CURSOR_OFF
-           && !math_enabled && !persist_enabled;
+           && !math_enabled && !persist_enabled
+           && !scope_trig_menu.open;      /* the trigger panel: full path only, as cursors */
 #endif
 }
 

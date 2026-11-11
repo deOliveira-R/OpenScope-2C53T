@@ -183,10 +183,10 @@ Use the device's own signal generator to test the scope — no external equipmen
 ### 3.5 Trigger
 - [ ] MOVE cycles trigger edge (Rising/Falling)
 - [ ] Verify waveform stabilizes differently with each edge
-- [ ] Trigger status badge shows "Auto" / "Trig'd"
+- [ ] Trigger status badge shows "Trig'd" / "Wait" / "Auto" / "Auto*" (both channels free-running) / "Await" / "STOP"
 
 ### 3.6 Cursors
-- [ ] TRIGGER button cycles cursor mode (Off → Vertical → Horizontal → Both)
+- [ ] Settings → Oscilloscope → Cursors cycles cursor mode (Off → Vertical → Horizontal → Both); TRIGGER opens the trigger panel
 - [ ] UP/DOWN moves active cursor
 - [ ] LEFT/RIGHT switches cursor selection
 - [ ] Readout shows delta-t, frequency, delta-V values

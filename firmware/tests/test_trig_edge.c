@@ -168,6 +168,121 @@ int main(void)
     }
     CHECK(s_bad == 0 && s_found >= 300, "with a stray sample 0: %d found, %d exact, %d wrong", s_found, s_exact, s_bad);
 
+
+    printf("[7] edge search: hyst 0 is stock's test exactly (0x08028DE4, ADDENDUM_A S3)\n");
+    {
+        int mism = 0, hits = 0;
+        static uint8_t r[1024];
+        for (int t = 0; t < 30000; t++) {
+            /* Short random walks and plain noise around a random level, so
+             * crossings, spikes and plateaus at the level all occur. */
+            int n = 8 + (int)(urand() * 120.0);
+            int v = (int)(urand() * 255.0);
+            int walk = (t & 1);
+            for (int i = 0; i < n; i++) {
+                if (walk) { v += (int)(urand() * 9.0) - 4; if (v < 0) v = 0; if (v > 255) v = 255; }
+                else v = 100 + (int)(urand() * 12.0);
+                r[i] = (uint8_t)v;
+            }
+            int L = walk ? (int)r[(int)(urand() * n)] : 100 + (int)(urand() * 12.0);
+            int rising = (t >> 1) & 1;
+            unsigned conf = (unsigned)((t >> 2) & 1);
+            int lo = (int)(urand() * 6.0), hi = n - (int)(urand() * 6.0);
+            /* Stock's strict "L < s" is our inclusive ">= L + 1" (and
+             * "<= L - 1" falling): the same test, one count apart in how the
+             * level is named. */
+            int a = trig_edge_search(r, n, lo, hi, rising ? L + 1 : L - 1, rising, 0u, conf);
+            int b = trig_edge_search_stock(r, n, lo, hi, L, rising, conf);
+            if (a >= 0) hits++;
+            if (a != b) { if (++mism <= 3) printf("    case %d: ours %d stock %d\n", t, a, b); }
+        }
+        CHECK(mism == 0, "30000 random cases, both edges, 2 and 3 points: %d mismatches (%d hits)", mism, hits);
+    }
+
+    printf("[8] edge search: what each filter buys\n");
+    {
+        /* (a) A lone one-sample spike over the level, then the real edge. */
+        static uint8_t r[256];
+        for (int i = 0; i < 256; i++) r[i] = (uint8_t)(i < 150 ? 80 : 180);
+        r[60] = 140;                         /* spike: 80 -> 140 -> 80 across L = 128 */
+        int st3 = trig_edge_search_stock(r, 256, 1, 255, 127, 1, 1u);
+        int st2 = trig_edge_search_stock(r, 256, 1, 255, 127, 1, 0u);
+        int sch = trig_edge_search(r, 256, 1, 255, 128, 1, 3u, 0u);   /* Schmitt only (old soft trigger) */
+        int both = trig_edge_search(r, 256, 1, 255, 128, 1, 3u, 1u);
+        CHECK(st3 == 150 && both == 150, "spike: the third point skips it (stock 3-pt %d, ours %d)", st3, both);
+        CHECK(st2 == 60 && sch == 60, "spike: 2 points / Schmitt alone take it (stock 2-pt %d, Schmitt %d)", st2, sch);
+
+        /* (b) A slow noisy ramp: the jitter of the index found, record to
+         * record, around the true crossing. */
+        int js = 0, jb = 0, jo = 0, ns = 0, nb = 0, no = 0;
+        double ss = 0, sb = 0, so = 0;
+        for (int t = 0; t < 2000; t++) {
+            double x0 = 400.0 + urand() * 8.0;          /* true crossing, fractional */
+            for (int i = 0; i < 1024; i++) {
+                double v = 128.0 + (i - x0) * 0.25 + (urand() - 0.5) * 6.0;   /* 0.25 ct/sample, +/-3 noise */
+                if (v < 0) v = 0; if (v > 255) v = 255;
+                rec[i] = (uint8_t)(v + 0.5);
+            }
+            int a = trig_edge_search_stock(rec, 1024, 300, 600, 127, 1, 1u);
+            int b = trig_edge_search(rec, 1024, 300, 600, 128, 1, 3u, 1u);
+            if (a >= 0) { double d = a - x0; ss += d * d; ns++; if (d < -6 || d > 6) js++; }
+            int o = trig_edge_search(rec, 1024, 300, 600, 128, 1, 3u, 0u);   /* the old soft trigger */
+            if (b >= 0) { double d = b - x0; sb += d * d; nb++; if (d < -6 || d > 6) jb++; }
+            if (o >= 0) { double d = o - x0; so += d * d; no++; if (d < -6 || d > 6) jo++; }
+        }
+        double rs = ns ? sqrt(ss / ns) : 99, rb = nb ? sqrt(sb / nb) : 99, ro = no ? sqrt(so / no) : 99;
+        printf("    noisy ramp, rms error vs the true crossing: stock 3-pt %.2f (%d of %d > 6 off), "
+               "Schmitt+3-pt %.2f (%d of %d), Schmitt 2-pt %.2f (%d of %d)\n",
+               rs, js, ns, rb, jb, nb, ro, jo, no);
+        /* The third point costs nothing on a slow edge: it finds every edge
+         * and is no less steady than either test alone. Its gain is the
+         * spike in (a). */
+        CHECK(nb == 2000 && rb <= rs + 0.05 && rb <= ro + 0.05,
+              "noisy slow edge: Schmitt+3-pt finds all 2000 and is as steady as either alone (%.2f vs %.2f / %.2f)",
+              rb, rs, ro);
+    }
+
+    printf("[9] edge search on the real records vs the hardware anchor (2-point)\n");
+    {
+        /* These are 2 Hz triangles at 0x12: ~0.1 count per sample under
+         * +/-1 count of noise, so the "crossing" is a 20-sample band of
+         * chatter (EXP-53 saw the FPGA fire anywhere in 501..520). The third
+         * point skips the chatter samples that dip straight back, so it lands
+         * at or after the hardware's first touch, never before it, and the
+         * offset measures how much chatter these records hold -- the display
+         * fallback cost, not an error. With confirm 0 the search must be the
+         * anchor itself (same >= compare, same Schmitt). */
+        static uint8_t tmp[1024];
+        int anch = 0, found = 0, early = 0, same2 = 0, maxlate = 0, within4 = 0;
+        for (unsigned i = 0; i < EDGE_FIXTURE_N; i++) {
+            uint32_t k;
+            if (!trig_edge_find_seam_any(EDGE_FIXTURES[i].rec, &k)) continue;
+            for (int j = 0; j < 1024; j++) tmp[j] = EDGE_FIXTURES[i].rec[(j + k) & 1023u];
+            int rising = EDGE_FIXTURES[i].label > 0;
+            int c = EDGE_FIXTURES[i].crossing;
+            int a = trig_edge_anchor(tmp, c, rising);
+            if (a < 0) continue;
+            anch++;
+            /* The anchor arms from 448: search the same span. It takes the
+             * crossing NEAREST 512, the search the FIRST, so a record with
+             * two touches in the span can differ; compare b2 with a. */
+            int b2 = trig_edge_search(tmp, 1024, 449, 561, c, rising, 3u, 0u);
+            int b = trig_edge_search(tmp, 1024, 449, 561, c, rising, 3u, 1u);
+            if (b2 == a) same2++;
+            if (b < 0) continue;
+            found++;
+            if (b < b2) early++;
+            if (b - b2 > maxlate) maxlate = b - b2;
+            if (b - b2 <= 4) within4++;
+        }
+        CHECK(anch > 0 && same2 * 10 >= anch * 9,
+              "2-point search = the hardware anchor on %d of %d records (the rest: an earlier touch in the span)",
+              same2, anch);
+        CHECK(found == anch && early == 0,
+              "3-point: finds all %d of %d, never before the 2-point touch (%d early); within 4 samples on %d, latest +%d",
+              found, anch, early, within4, maxlate);
+    }
+
     printf("\n%s\n", fails ? "FAILED" : "all passed");
     return fails ? 1 : 0;
 }

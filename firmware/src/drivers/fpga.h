@@ -1120,6 +1120,15 @@ void    fpga_interleave_corr_get(float *gain, float *offset);
 void    fpga_ilcal_begin(uint8_t skip);
 bool    fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *out);
 bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge */
+/* Parity C3 (trig_policy.h). The published record's kind (trig_acq_t):
+ * handed over, free-run, or free-run with two non-simultaneous channels. */
+uint8_t fpga_acq_record_kind(void);
+bool    fpga_acq_record_coherent(void);        /* false = CH1 and CH2 are two moments (#84) */
+uint8_t fpga_trigger_status(void);             /* trig_status_t: the badge and `fpga scope trigger` */
+bool    fpga_acq_single_done(void);            /* SINGLE holds its record */
+void    fpga_acq_single_rearm(void);           /* SINGLE: take the next trigger (OK, shell) */
+bool    fpga_apply_trigger_source(void);       /* reg 0x06 from scope_state (CH1 0x00, CH2 0x01) */
+uint8_t fpga_acq_trig_src_code_get(void);      /* reg 0x06 value last written */
 uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while interleaving */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);

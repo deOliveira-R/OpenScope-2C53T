@@ -70,6 +70,8 @@ C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/drivers/scope_vpos.c
 C_SOURCES += src/drivers/scope_selfcal_run.c
 C_SOURCES += src/dsp/trig_edge.c
+C_SOURCES += src/dsp/trig_policy.c
+C_SOURCES += src/ui/trig_menu.c
 C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/dsp/interleave_cal.c
 C_SOURCES += src/drivers/meter_data.c
@@ -721,6 +723,15 @@ $(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< src/ui/persistence.c src/dsp/shared_mem.c -lm -o $@
 
 test-persistence: $(BUILD_DIR)/test_persistence
+
+# Trigger acquisition policy (upstream #84) and status badge, parity C3: the
+# full input space against the pre-C3 loop, the coherence rules by name.
+$(BUILD_DIR)/test_trig_policy: tests/test_trig_policy.c src/dsp/trig_policy.c src/dsp/trig_policy.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
+		$< src/dsp/trig_policy.c -o $@
+
+.PHONY: test-trig-policy
+test-trig-policy: $(BUILD_DIR)/test_trig_policy
 	$<
 
 $(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
@@ -791,7 +802,8 @@ test-calpage: $(BUILD_DIR)/test_calpage
 # Key model: the long-press state machine the TMR3 ISR runs, and the
 # key -> action map the input task asks (src/ui/key_model.h). Both are pure.
 $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/key_model.h \
-                             src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c | $(BUILD_DIR)
+                             src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c \
+                             src/ui/trig_menu.c src/ui/trig_menu.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
 		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@
 

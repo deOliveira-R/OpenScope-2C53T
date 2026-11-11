@@ -216,7 +216,31 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
     if (c->mode != MODE_OSCILLOSCOPE)
         return cmd(KA_LEGACY, 0);
 
+    /* The trigger panel owns the arrows and OK while it is up (parity C3).
+     * The keys that would change what the arrows mean close it instead, so
+     * the panel can never be left up under a different stage. CH1/CH2/AUTO/
+     * SAVE keep their own meaning and leave it open. */
+    if (c->trig_menu_open && c->scope_time_view) {
+        switch (btn) {
+        case BTN_UP:      return cmd(KA_TRIGMENU_ROW, -1);
+        case BTN_DOWN:    return cmd(KA_TRIGMENU_ROW, +1);
+        case BTN_LEFT:    return cmd(KA_TRIGMENU_CHANGE, -1);
+        case BTN_RIGHT:
+        case BTN_OK:      return cmd(KA_TRIGMENU_CHANGE, +1);
+        case BTN_TRIGGER: case BTN_MENU:
+        case BTN_MOVE: case BTN_SELECT: case BTN_PRM:
+                          return cmd(KA_TRIGMENU_CLOSE, 0);
+        default:          return cmd(KA_LEGACY, 0);
+        }
+    }
+
     switch (btn) {
+    case BTN_TRIGGER:
+        /* Stock's TRIGGER = "Trigger Settings" (manual key table). The
+         * cursors it toggled before C3 are in Settings -> Oscilloscope, where
+         * stock keeps them (menu "Cursor Measurement"). FFT views: legacy. */
+        return c->scope_time_view ? cmd(KA_TRIGMENU_OPEN, 0) : cmd(KA_LEGACY, 0);
+
     case BTN_MOVE:
         return cmd(KA_FOCUS_NEXT, 0);       /* every scope view, as before */
 

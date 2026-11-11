@@ -59,6 +59,8 @@
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
 #include "../ui/scope_mask.h"
+#include "../ui/trig_menu.h"
+#include "../dsp/trig_policy.h"
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
 #include "../ui/meter_voltage_wave.h"
@@ -2974,6 +2976,7 @@ static void cmd_fpga_acqbr(const char *args)
 /* `fpga scope trigmode [auto|normal|single]` — set/read the acq wait policy
  * (EXP-30 noted nothing in the shell could set it; the time-view button
  * cycles cursors). Pure state; the acq task reads it each cycle. */
+static void print_trigger_status(void);
 static void cmd_fpga_scope_trigmode(const char *args)
 {
     while (*args == ' ') args++;
@@ -2981,11 +2984,86 @@ static void cmd_fpga_scope_trigmode(const char *args)
     if (*args) {
         if      (strncmp(args, "auto",   4) == 0) ss->trigger.mode = TRIG_AUTO;
         else if (strncmp(args, "normal", 6) == 0) ss->trigger.mode = TRIG_NORMAL;
-        else if (strncmp(args, "single", 6) == 0) ss->trigger.mode = TRIG_SINGLE;
+        else if (strncmp(args, "single", 6) == 0) {
+            /* As the panel does: selecting Single arms the one-shot. */
+            ss->trigger.mode = TRIG_SINGLE;
+            ss->running = true;
+            fpga_acq_single_rearm();
+        }
         else { usb_send_str("usage: fpga scope trigmode [auto|normal|single]\r\n"); return; }
     }
     usb_debug_printf("trigger mode %s (acq wait policy: AUTO falls back after the edge-wait; NORMAL/SINGLE hold)\r\n",
                      trigger_mode_labels[ss->trigger.mode]);
+    print_trigger_status();
+}
+
+/* Parity C3: the whole trigger in two lines -- settings and the wire, then
+ * what the acquisition did (trig_policy.h). `record` is the PUBLISHED
+ * record's kind: handed-over (coherent), freerun (one channel), or
+ * freerun-split (AUTO roll read with both channels on: CH1 and CH2 are two
+ * moments, #84 -- the badge shows "Auto*"). */
+static void print_trigger_status(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    static const char *const kind[] = { "none", "handed-over", "freerun", "freerun-split" };
+    const uint8_t k = fpga_acq_record_kind();
+    const trig_status_t st = (trig_status_t)fpga_trigger_status();
+    usb_debug_printf("trigger mode %s edge %s source %s level %d code 0x%02X reg06 0x%02X\r\n",
+                     trigger_mode_labels[ss->trigger.mode], trigger_edge_labels[ss->trigger.edge],
+                     trigger_source_labels[ss->trigger.source], (int)ss->trigger.level,
+                     (unsigned)fpga_acq_trig_code_get(), (unsigned)fpga_acq_trig_src_code_get());
+    usb_debug_printf("trigger status %s badge %s record %s coherent %s single %s\r\n",
+                     trig_status_word(st), trig_status_label(st),
+                     k < 4u ? kind[k] : "?", fpga_acq_record_coherent() ? "yes" : "no",
+                     ss->trigger.mode != TRIG_SINGLE ? "-" :
+                     fpga_acq_single_done() ? "captured" : "armed");
+}
+
+/* `fpga scope trigger` -- print_trigger_status(). */
+static void cmd_fpga_scope_trigger(const char *args)
+{
+    (void)args;
+    print_trigger_status();
+}
+
+/* `fpga scope source [ch1|ch2]` -- the trigger source, through the same model
+ * as the panel (refuses a channel that is off) and the one writer of reg 0x06. */
+static void cmd_fpga_scope_source(const char *args)
+{
+    while (*args == ' ') args++;
+    scope_state_t *ss = scope_state_get();
+    if (*args) {
+        trigger_source_t want;
+        if      (strncmp(args, "ch1", 3) == 0) want = TRIG_SRC_CH1;
+        else if (strncmp(args, "ch2", 3) == 0) want = TRIG_SRC_CH2;
+        else { usb_send_str("usage: fpga scope source [ch1|ch2]\r\n"); return; }
+        if (want != ss->trigger.source) {
+            trig_menu_t m = { false, TM_ROW_SOURCE };
+            if (trig_menu_change(&m, ss, +1) & TM_REFUSED_OFF) {
+                usb_debug_printf("trigger source %s refused: that channel is off\r\n",
+                                 trigger_source_labels[want]);
+                return;
+            }
+        }
+        if (!fpga_apply_trigger_source()) {
+            usb_send_str("trigger source NOT SET (acq task would not park)\r\n");
+            return;
+        }
+    }
+    usb_debug_printf("trigger source %s -> reg 0x06 = 0x%02X\r\n",
+                     trigger_source_labels[ss->trigger.source],
+                     (unsigned)fpga_acq_trig_src_code_get());
+}
+
+/* `fpga scope single` -- SINGLE and arm it: what OK does after a capture. */
+static void cmd_fpga_scope_single(const char *args)
+{
+    (void)args;
+    scope_state_t *ss = scope_state_get();
+    ss->trigger.mode = TRIG_SINGLE;
+    ss->running = true;
+    fpga_acq_single_rearm();
+    usb_send_str("single armed (Await Trigger...)\r\n");
 }
 
 /* `fpga scope level [level]` — the digital trigger level (reg 0x08) from the
@@ -9041,6 +9119,12 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga pairgap [ms]               Gap between the 04 and 05 reads (EXP-45)\r\n"),
     CMD_A("fpga scope trigmode", cmd_fpga_scope_trigmode, 0,
           "fpga scope trigmode [auto|normal|single]  Acq wait policy (EXP-43)\r\n"),
+    CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,
+          "fpga scope trigger              Trigger settings, reg 0x06/0x08, status, record kind (C3)\r\n"),
+    CMD_A("fpga scope source", cmd_fpga_scope_source, 0,
+          "fpga scope source [ch1|ch2]     Trigger source -> reg 0x06 (C3)\r\n"),
+    CMD_A("fpga scope single", cmd_fpga_scope_single, 0,
+          "fpga scope single               SINGLE: arm the one-shot (OK after a capture does the same)\r\n"),
     CMD_A("fpga scope level", cmd_fpga_scope_level, 0,
           "fpga scope level [-100..100]    Digital trigger level -> reg 0x08 code (EXP-41)\r\n"),
     CMD_A("fpga scope timebase", cmd_fpga_scope_timebase, 0,

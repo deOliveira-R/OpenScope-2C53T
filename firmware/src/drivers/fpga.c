@@ -31,6 +31,7 @@
 #include "../dsp/trig_edge.h"
 #include "../dsp/interleave.h"
 #include "../dsp/interleave_cal.h"
+#include "../dsp/trig_policy.h"
 #include "../ui/ui.h"
 #include "../ui/scope_state.h"
 #include "../ui/scope_timebase.h"
@@ -3091,6 +3092,17 @@ static volatile bool acq_pub_ordered = false;
  * `ordered`, so the rate a reader applies always matches the buffer. */
 static volatile bool acq_stage_il = false;
 static volatile bool acq_pub_il = false;
+/* What the published record is (trig_policy.h, parity C3): handed over,
+ * free-run, or free-run with two non-simultaneous channels (#84). Staged and
+ * published with the frame, like the two flags above, so the badge can never
+ * describe a different record from the one on the glass. */
+static volatile uint8_t  acq_stage_kind = TRIG_ACQ_HOLD;
+static volatile uint8_t  acq_pub_kind = TRIG_ACQ_HOLD;
+static volatile uint32_t acq_last_trig_tick = 0;     /* tick a handed-over record was published */
+/* SINGLE one-shot: the acq task's single_done, published, and the re-arm
+ * request the UI raises (OK / the shell), consumed by the task. */
+static volatile bool     acq_single_done_pub = false;
+static volatile uint32_t acq_single_arm_req = 0;
 
 static void fpga_acq_frames_commit(void)
 {
@@ -3101,6 +3113,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_il = acq_stage_il;
+    acq_pub_kind = acq_stage_kind;
     acq_frame_gen++;                                   /* even: stable */
 }
 
@@ -3898,6 +3911,59 @@ static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b,
 #endif
 
 bool fpga_acq_record_interleaved(void) { return acq_pub_il; }
+uint8_t fpga_acq_record_kind(void)      { return acq_pub_kind; }
+bool fpga_acq_record_coherent(void)     { return trig_acq_coherent((trig_acq_t)acq_pub_kind); }
+bool fpga_acq_single_done(void)         { return acq_single_done_pub; }
+void fpga_acq_single_rearm(void)        { acq_single_arm_req++; }
+
+/* The trigger status the badge and the shell show (trig_policy.h). "Trig'd"
+ * holds for two handover cycles: the FPGA hands a record over at most once
+ * per fill + ~200 ms hold (EXP-72), so a shorter window would flicker
+ * between handovers at the slow codes. */
+uint8_t fpga_trigger_status(void)
+{
+    const scope_state_t *ss = scope_state_get();
+#if FPGA_WARM_HANDOFF_TEST
+    uint32_t stale = 2u * (uint32_t)fpga_acq_post_edge_get();
+    uint32_t aw = 2u * (uint32_t)fpga_acq_auto_wait_get();
+    if (aw > stale) stale = aw;
+    stale += 250u;
+    return (uint8_t)trig_status_eval((uint8_t)ss->trigger.mode, ss->running,
+                                     acq_single_done_pub, (trig_acq_t)acq_pub_kind,
+                                     xTaskGetTickCount() - acq_last_trig_tick, stale);
+#else
+    /* The queue-driven task does not know which reads were handed over:
+     * the badge says what it said before C3. */
+    if (!ss->running) return TRIG_ST_STOP;
+    switch (ss->trigger.mode) {
+    case TRIG_SINGLE: return TRIG_ST_ARMED;
+    case TRIG_NORMAL: return TRIG_ST_TRIGD;
+    default:          return TRIG_ST_AUTO;
+    }
+#endif
+}
+
+/* Trigger source -> SPI3 reg 0x06 (parity C3). Only the boot arm wrote it
+ * (0x00), so CH2 as the source moved the soft trigger and the label while the
+ * FPGA kept firing on CH1. Stock sends op06 = ms[0x16] on every source change
+ * (0x0800C890, 0x0800C96C) and after a channel switch-off (0x080235E8);
+ * EXP-72 saw 0x01 (or 0xFF) move the trigger to CH2 (zero handovers with CH2
+ * undriven). Like reg 0x08, the write drops the capture in flight. */
+static void fpga_scope_write_reg(uint8_t reg, uint8_t val);   /* defined below */
+static volatile uint8_t acq_trig_src_code = 0x00;
+uint8_t fpga_acq_trig_src_code_get(void) { return acq_trig_src_code; }
+bool fpga_apply_trigger_source(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    uint8_t code = (ss->trigger.source == TRIG_SRC_CH2) ? 0x01u : 0x00u;
+    if (!fpga_acq_pause())
+        return false;
+    fpga_scope_write_reg(0x06, code);
+    acq_trig_src_code = code;
+    acq_reprime_req = true;
+    fpga_acq_resume();
+    return true;
+}
 uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
 /* Rate of the PUBLISHED record: the timebase table's per-converter rate,
  * doubled when the record is the two-converter merge. 0 = no rate. */
@@ -3916,10 +3982,13 @@ bool fpga_apply_channel_enables(void)
     scope_state_t *ss = scope_state_get();
     if (!ss->ch1.enabled && !ss->ch2.enabled)
         return false;
+    const trigger_source_t src_was = ss->trigger.source;
     if (ss->trigger.source == TRIG_SRC_CH2 && !ss->ch2.enabled)
         ss->trigger.source = TRIG_SRC_CH1;
     if (ss->trigger.source == TRIG_SRC_CH1 && !ss->ch1.enabled)
         ss->trigger.source = TRIG_SRC_CH2;
+    if (ss->trigger.source != src_was)
+        (void)fpga_apply_trigger_source();   /* stock 0x080235E8: flip ms[0x16] + op06 */
     fpga_set_channel_mask((ss->ch1.enabled && ss->ch2.enabled) ? 3u : (ss->ch2.enabled ? 2u : 1u));
     /* The mask is an input of stock's bank rule (both on -> bank 1 at
      * tb <= 3, one channel -> bank 2), so the offset references move with it
@@ -4264,6 +4333,13 @@ static void fpga_warmtest_acq_task(void *pv)
     uint32_t last_commit_tick = 0;
     uint32_t polls_since_handover = 0;
     trigger_mode_t last_mode = TRIG_AUTO;
+    uint32_t single_arm_seen = acq_single_arm_req;
+    /* The next read's record is dropped, whatever it is: set when SINGLE is
+     * (re-)armed. While we were not reading the FPGA may have finished and
+     * be HOLDING a record from a crossing before the arm; its handover would
+     * pass for the one-shot. Stock's SINGLE path reads the write pointer
+     * instead (op09/0A, 0x080215EE); dropping one read is our equivalent. */
+    bool drop_next = false;
     for (;;) {
         if (!fpga.initialized || fpga.bus_released) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -4338,8 +4414,17 @@ static void fpga_warmtest_acq_task(void *pv)
         trigger_mode_t mode_now = (ss_acq == NULL) ? TRIG_AUTO : ss_acq->trigger.mode;
         if (mode_now != last_mode) {           /* re-selecting SINGLE re-arms it */
             single_done = false;
+            drop_next = (mode_now == TRIG_SINGLE);
             last_mode = mode_now;
         }
+        if (acq_single_arm_req != single_arm_seen) {   /* OK / `fpga scope single` */
+            single_arm_seen = acq_single_arm_req;
+            if (mode_now == TRIG_SINGLE) {
+                single_done = false;
+                drop_next = true;
+            }
+        }
+        acq_single_done_pub = single_done;
         if (acq_reprime_req) {                 /* a register write dropped the capture */
             acq_reprime_req = false;
             capture_in_flight = false;
@@ -4415,30 +4500,42 @@ static void fpga_warmtest_acq_task(void *pv)
             polls_since_handover++;
             fpga.acq_poll_reads++;
         }
-        if (!triggered) {
-            if (auto_mode && acq_gate_enable) {
-                acq_gate_skips++;                /* GATE ON: never show the roll */
-                continue;
+        if (drop_next) {                        /* SINGLE (re-)armed: see drop_next */
+            drop_next = false;
+            continue;
+        }
+        /* What to do with this read: trig_policy.c, host-tested
+         * (tests/test_trig_policy.c; the #84 choice is in its header).
+         *   - GATE ON: AUTO never shows the roll.
+         *   - Interleave needs one moment in BOTH converters. A roll read is
+         *     not that: op04 and op05 are read ~140 us apart while the FPGA
+         *     keeps writing (same-wire test, 2026-11-10), so merging one
+         *     would publish a scrambled record as 250 MS/s. Held, as NORMAL
+         *     does; only handed-over records are merged.
+         *   - NORMAL/SINGLE (or AUTO inside its budget): the rolling buffer
+         *     is not a record. Hold the last trace, poll again.
+         *   - AUTO fallback: no handover for a whole budget -- show the
+         *     free-running buffer so a quiet or off-level input still moves,
+         *     marked SPLIT when both channels are on (two moments, #84). */
+        uint32_t since = acq_auto_live ? (last_read_tick - last_handover_tick)
+                                       : (last_read_tick - last_commit_tick);
+        const trig_acq_in_t pin = {
+            .mode         = (uint8_t)mode_now,
+            .triggered    = triggered,
+            .first_read   = first_read,
+            .budget_up    = (int32_t)since >= (int32_t)fpga_acq_auto_wait_get(),
+            .gate_on      = acq_gate_enable,
+            .interleave   = fpga_interleave_active(),
+            .two_channels = (fpga.channel_mask == 3u),
+            .single_done  = single_done,
+        };
+        const trig_acq_t kind = trig_acq_decide(&pin);
+        if (kind == TRIG_ACQ_HOLD) {
+            if (!triggered) {
+                if (auto_mode && acq_gate_enable) acq_gate_skips++;
+                else if (pin.interleave)          acq_il_roll_holds++;
             }
-            /* Interleave needs one moment in BOTH converters. A roll read is
-             * not that: op04 and op05 are read ~140 us apart while the FPGA
-             * keeps writing (same-wire test, 2026-11-10), so merging one
-             * would publish a scrambled record as 250 MS/s. Hold instead,
-             * as NORMAL does; only handed-over records are merged. */
-            if (fpga_interleave_active()) {
-                acq_il_roll_holds++;
-                continue;
-            }
-            uint32_t since = acq_auto_live ? (last_read_tick - last_handover_tick)
-                                           : (last_read_tick - last_commit_tick);
-            bool budget_up = (int32_t)since >= (int32_t)fpga_acq_auto_wait_get();
-            if (!(auto_mode && (budget_up || first_read))) {
-                /* NORMAL/SINGLE (or AUTO inside its budget): the rolling
-                 * buffer is not a record. Hold the last trace, poll again. */
-                continue;
-            }
-            /* AUTO fallback: no handover for a whole budget — show the
-             * free-running buffer so a quiet or off-level input still moves. */
+            continue;
         }
         /* Edge filter (2026-09-22). A strobed record whose trigger crossing
          * runs the wrong way is handled exactly like a read that found the
@@ -4448,7 +4545,13 @@ static void fpga_warmtest_acq_task(void *pv)
          * fast periodic signal, whose display the soft trigger already
          * aligns to the chosen edge) is committed unfiltered and counted. */
         if (triggered && acq_edge_filter) {
-            trig_edge_class_t ec = trig_edge_classify(w1, (int)acq_trig_code + (int)FPGA_ADC_OFFSET);
+            /* The SOURCE channel's record: with CH2 as the source (reg 0x06)
+             * CH1's shape says nothing about the edge that fired. The level
+             * offset was measured on CH1 only; on CH2 a wrong one comes back
+             * UNKNOWN (committed unfiltered), not as a wrong verdict. */
+            const volatile uint8_t *wsrc =
+                (ss_acq != NULL && ss_acq->trigger.source == TRIG_SRC_CH2) ? w2 : w1;
+            trig_edge_class_t ec = trig_edge_classify(wsrc, (int)acq_trig_code + (int)FPGA_ADC_OFFSET);
             bool want_rising = (fpga_stock_trigger_edge_byte() == (uint8_t)TRIG_RISING);
             if (ec == TRIG_EDGE_CLASS_UNKNOWN) {
                 fpga.acq_edge_unknown++;
@@ -4487,6 +4590,7 @@ static void fpga_warmtest_acq_task(void *pv)
             fpga.acq_last_rot = fpga_acq_unrotate_staging(triggered);   /* dev plan 2.3: seam-based */
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
             acq_stage_il = triggered && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
+            acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)
                 interleave_merge(acq_stage_ch1, acq_stage_ch2, &acq_il_corr);
             fpga_acq_frames_commit();
@@ -4500,8 +4604,12 @@ static void fpga_warmtest_acq_task(void *pv)
             data_ready = true;
             if (triggered)
                 fpga.acq_last_latency_ms = xTaskGetTickCount() - fpga.pc0_last_tick;
-            if (mode_now == TRIG_SINGLE && triggered)
+            if (triggered)
+                acq_last_trig_tick = last_commit_tick;
+            if (mode_now == TRIG_SINGLE && triggered) {
                 single_done = true;            /* one triggered record, then hold */
+                acq_single_done_pub = true;
+            }
         } else {
             fpga.spi3_total_timeouts++;    /* rejected frame — shows in TO: */
             /* Dry-spell recovery only: after a run of rejected reads (a dead
@@ -5188,6 +5296,14 @@ void fpga_reconcile_trigger_after_arm(void)
     SPI3_CS_DEASSERT();
     acq_trig_code = code;
     fpga_trig_reconcile_code = code;
+    /* The arm burst wrote source 0x00 (CH1); a persisted CH2 source must
+     * reach reg 0x06 too, or the FPGA fires on CH1 under a "C2" label. */
+    uint8_t src = (ss->trigger.source == TRIG_SRC_CH2) ? 0x01u : 0x00u;
+    SPI3_CS_ASSERT();
+    spi3_xfer(0x06);
+    spi3_xfer(src);
+    SPI3_CS_DEASSERT();
+    acq_trig_src_code = src;
 }
 
 /* Vertical sibling of the reconcile above: fpga_init() applies the frontend

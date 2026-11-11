@@ -6,7 +6,8 @@
  * then calls input_handle_button() for the actual logic.
  *
  * Integrated features from 4 agent worktrees:
- *   - Cursor measurement mode (TRIGGER toggles, arrows move cursors)
+ *   - Cursor measurement mode (Settings -> Oscilloscope -> Cursors since
+ *     parity C3; TRIGGER is stock's trigger panel, trig_menu.h)
  *   - Meter sub-modes (LEFT/RIGHT cycle, SELECT resets min/max/avg)
  *   - Signal gen: amplitude stepping, duty cycle, frequency presets
  *   - Math channel, persistence, component tester (settings sub-menus)
@@ -14,6 +15,7 @@
 
 #include "../ui/scope_mask.h"
 #include "key_model.h"
+#include "trig_menu.h"
 #include "input_handler.h"
 #include "ui.h"
 #include "softkey.h"
@@ -69,6 +71,47 @@ static uint32_t settings_now_ms(void)
 
 static void channel_cycle_coupling(uint8_t ch, channel_state_t *c, const char *name,
                                    char *pb, size_t n);
+static void set_focus(key_focus_t f);
+
+/* The hardware side of a trigger change, wherever it came from (the
+ * trigger panel, Settings, the shell has its own): reg 0x06 for the source,
+ * the SINGLE arm for the mode (stock: selecting Single arms the one-shot and
+ * shows "Await Trigger...", 0x0801C8C2). The edge is the MCU filter and the
+ * soft trigger only -- no register selects it (EXP-55/73). Writes the popup
+ * text to pb. */
+static void trigger_after_change(uint8_t what, char *pb, size_t n)
+{
+    scope_state_t *ss = scope_state_get();
+    if (what & TM_REFUSED_OFF) {
+        snprintf(pb, n, "CH%d is off", ss->trigger.source == TRIG_SRC_CH2 ? 1 : 2);
+    } else if (what & TM_CHANGED_SOURCE) {
+        const bool ok = fpga_apply_trigger_source();
+        snprintf(pb, n, ok ? "Trig source %s" : "Trig %s NOT SET",
+                 trigger_source_labels[ss->trigger.source]);
+    } else if (what & TM_CHANGED_MODE) {
+        if (ss->trigger.mode == TRIG_SINGLE) {
+            ss->running = true;
+            fpga_acq_single_rearm();
+            snprintf(pb, n, "Await Trigger...");
+        } else {
+            snprintf(pb, n, "Trig: %s", trigger_mode_labels[ss->trigger.mode]);
+        }
+    } else if (what & TM_CHANGED_EDGE) {
+        snprintf(pb, n, "Edge: %s", trigger_edge_labels[ss->trigger.edge]);
+    } else if (n) {
+        pb[0] = '\0';
+    }
+}
+
+/* Settings -> Oscilloscope -> Cursors: what TRIGGER did before C3. */
+static void cursor_mode_cycle(void)
+{
+    scope_state_t *ss = scope_state_get();
+    scope_cursor_cycle_mode();
+    /* Cursors on = the arrows move them, as before the key model; off =
+     * back to zoom. */
+    set_focus(key_focus_after_cursor_change(scope_key_focus, ss->cursor.mode != CURSOR_OFF));
+}
 
 /* Stock's "Display Mode" item (menu table 0x0804C824: Y-T / Rolling / X-Y).
  * This item used to cycle the colour theme, which now has its own row.
@@ -124,10 +167,19 @@ static void osc_settings_adjust(int dir)
         ss->ch2.bw_limit = false;
         break;
     case 6: /* Trigger Mode */
-        ss->trigger.mode = (trigger_mode_t)((ss->trigger.mode + TRIG_COUNT + dir) % TRIG_COUNT);
-        break;
     case 7: /* Trigger Edge */
-        ss->trigger.edge = (trigger_edge_t)((ss->trigger.edge + TRIG_EDGE_COUNT + dir) % TRIG_EDGE_COUNT);
+    case 8: /* Trigger Source */
+    {
+        /* The panel's model, so Settings and the panel cannot disagree on
+         * what a change means (or on refusing a source that is off). */
+        static const uint8_t row[3] = { TM_ROW_MODE, TM_ROW_EDGE, TM_ROW_SOURCE };
+        trig_menu_t m = { false, row[settings_sub_selected - 6] };
+        char t[24];
+        trigger_after_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
+        break;
+    }
+    case 9: /* Cursors */
+        cursor_mode_cycle();
         break;
     }
 }
@@ -201,8 +253,7 @@ void input_handle_settings_ok(void)
         case 3: { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); } break;
         case 4: scope_cycle_probe(&ss->ch2); break;
         case 5: ss->ch2.bw_limit = false; break;
-        case 6: scope_cycle_trigger_mode(ss); break;
-        case 7: scope_cycle_trigger_edge(ss); break;
+        case 6: case 7: case 8: case 9: osc_settings_adjust(+1); break;
         default: break;
         }
     } else if (settings_depth == 2) {
@@ -406,6 +457,7 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
 {
     meter_autoselect_cancel();
     siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
+    trig_menu_close(&scope_trig_menu);   /* never reappears over another mode's return */
     current_mode = m;
     if (current_mode == MODE_SETTINGS) {
         settings_selected = 0;
@@ -493,6 +545,7 @@ static key_ctx_t key_ctx_now(void)
     if (f != scope_key_focus) set_focus(f);
     c.focus          = f;
     c.active_channel = active_channel;
+    c.trig_menu_open = scope_trig_menu.open;
     return c;
 }
 
@@ -741,6 +794,26 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         popup_and_redraw(dq, pb);
         break;
 
+    /* -- the trigger panel (parity C3, trig_menu.h) --------------------- */
+    case KA_TRIGMENU_OPEN:
+        trig_menu_open(&scope_trig_menu);
+        cmd = DCMD_DRAW_SCOPE;
+        send_cmd(dq, cmd);
+        break;
+    case KA_TRIGMENU_CLOSE:
+        trig_menu_close(&scope_trig_menu);
+        send_cmd(dq, cmd);
+        break;
+    case KA_TRIGMENU_ROW:
+        trig_menu_row_step(&scope_trig_menu, dir);
+        cmd = DCMD_DRAW_SCOPE;
+        send_cmd(dq, cmd);
+        break;
+    case KA_TRIGMENU_CHANGE:
+        trigger_after_change(trig_menu_change(&scope_trig_menu, ss, dir), pb, sizeof(pb));
+        popup_and_redraw(dq, pb);
+        break;
+
     case KA_MASK_STOPFAIL: {
         scope_mask_summary_t m;
         scope_mask_summary(&m);
@@ -885,23 +958,11 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_TRIGGER:
         if (current_mode == MODE_OSCILLOSCOPE) {
-#ifdef FEATURE_FFT
-            if (scope_view == SCOPE_VIEW_TIME)
-#endif
-            {
-                /* Toggle cursor mode in time view */
-                scope_cursor_cycle_mode();
-                /* Cursors on = the arrows move them, as before the key model;
-                 * cursors off = back to zoom. */
-                set_focus(key_focus_after_cursor_change(scope_key_focus,
-                                                        ss->cursor.mode != CURSOR_OFF));
-                send_cmd(dq, cmd);
-                break;
-            }
-            /* Fall through for non-time views: cycle trigger mode */
+            /* The time view's TRIGGER is the trigger panel (key_model.c,
+             * claimed above). What reaches here is the FFT views: cycle the
+             * trigger mode, through the same hardware path as the panel. */
             scope_cycle_trigger_mode(ss);
-            snprintf(pb, sizeof(pb), "Trig: %s",
-                     trigger_mode_labels[ss->trigger.mode]);
+            trigger_after_change(TM_CHANGED_MODE, pb, sizeof(pb));
             popup_and_redraw(dq, pb);
         } else {
             send_cmd(dq, cmd);
@@ -1288,6 +1349,14 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                  * the acquisition frozen behind a STOP the user never set. */
                 (void)scope_mask_post(SCOPE_MASK_REQ_RELEASE, 0, 0, 0);
                 scope_show_popup("MASK: RESUME");
+            } else if (ss->trigger.mode == TRIG_SINGLE &&
+                       (!ss->running || fpga_acq_single_done())) {
+                /* Stock's SINGLE: after the capture the scope is STOPPED
+                 * (0x0802163E) and RUN re-arms it. A STOP the user pressed
+                 * while armed re-arms the same way. */
+                ss->running = true;
+                fpga_acq_single_rearm();
+                scope_show_popup("Await Trigger...");
             } else {
                 scope_toggle_running(ss);
                 scope_show_popup(ss->running ? "RUN" : "STOP");
