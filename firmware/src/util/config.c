@@ -67,8 +67,12 @@ void config_init_defaults(device_config_t *cfg)
     /* Signal generator defaults */
     cfg->siggen_waveform  = 0;      /* Sine */
     cfg->siggen_frequency = 1000.0f;
-    cfg->siggen_amplitude = 3.3f;
-    cfg->siggen_offset    = 0.0f;
+    cfg->siggen_amplitude = 3.0f;   /* stock factory 3.0 V (0x080294A0) */
+    /* Stock factory duty; the output boots OFF unless the user opted in
+     * (stock boots ON, 0x080294A0). */
+    cfg->siggen_duty      = 50;
+    cfg->siggen_enabled   = 0;
+    cfg->siggen_start_on  = 0;
 
     /* Display defaults */
     cfg->display_brightness  = 80;
@@ -91,6 +95,7 @@ void config_init_defaults(device_config_t *cfg)
     cfg->math_op              = 0;
     cfg->meter_submode        = 0;  /* DCV */
     cfg->meter_layout         = 0;  /* Full */
+
 
     /* Compute and store checksum */
     cfg->checksum = config_compute_checksum(cfg);

@@ -51,6 +51,7 @@
 #include "ui.h"
 #include "../ui/scope_state.h"
 #include "../util/settings_store.h"
+#include "../ui/siggen_edit.h"
 #include "../ui/scope_cal.h"
 #include "../ui/scope_freq.h"
 #include "../ui/scope_measure.h"
@@ -7995,6 +7996,14 @@ static void siggen_print_state(void)
     else
         usb_debug_printf("  timing: clk=%lu (off)\r\n", (unsigned long)clk);
 
+    {
+        const siggen_edit_t *ed = siggen_ui_editor();
+        usb_debug_printf("  boot=%s  editor=%s digit=%u value=%lu\r\n",
+                         c->start_on ? "restore-on" : "off",
+                         ed->active ? "ACTIVE" : "idle", (unsigned)ed->digit,
+                         (unsigned long)ed->value);
+    }
+
     uint32_t dctrl = DAC->ctrl;
     usb_debug_printf("  TMR7: CTRL1=0x%04lX CTRL2=0x%04lX DIV=%lu PR=%lu CNT=%lu\r\n",
                      (unsigned long)TMR7->ctrl1, (unsigned long)TMR7->ctrl2,
@@ -8036,6 +8045,13 @@ static void cmd_siggen(const char *args)
          tok = strtok_r(NULL, " \t", &save)) {
         if (strcmp(tok, "on") == 0)  { siggen_enable(true);  continue; }
         if (strcmp(tok, "off") == 0) { siggen_enable(false); continue; }
+        if (strcmp(tok, "boot") == 0) {
+            char *bv = strtok_r(NULL, " \t", &save);
+            if (bv != NULL && strcmp(bv, "on") == 0)       siggen_set_start_on(true);
+            else if (bv != NULL && strcmp(bv, "off") == 0) siggen_set_start_on(false);
+            else { usb_send_str("siggen: boot on|off\r\n"); return; }
+            continue;
+        }
         if (strcmp(tok, "dump") == 0) {
             const uint16_t *cy = siggen_get_cycle();
             for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i += 10)
@@ -8568,9 +8584,10 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("trig2", cmd_scope_trig2, SC_NEEDARGS,
           "trig2 raw <0-4095>              Write CH2 ref: TMR13 CH1 PWM-DAC (PA6)\r\n" "trig2 <range> <level>           CH2 vertical-offset ref via the CH1 cal formula\r\n"),
     CMD_A("siggen", cmd_siggen, 0,
-          "siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [dump]\r\n"
+          "siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [boot on|off] [dump]\r\n"
           "  Signal generator (DAC2/PA5): wave 0..12, freq 0..50000 (0 = off),\r\n"
-          "  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state\r\n"),
+          "  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state.\r\n"
+          "  boot on|off = restore the output at power-on (default off)\r\n"),
     CMD_A("trig", cmd_scope_trig, SC_NEEDARGS,
           "trig raw <0-4095>               Write DAC1 (PA4) directly + sw trigger\r\n" "trig <range> <level>            Scope trigger DAC: range 0-9, level -100..100\r\n"),
     CMD_V("flash jedec", cmd_flash_jedec, SC_EXACT,

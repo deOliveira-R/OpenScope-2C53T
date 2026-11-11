@@ -38,6 +38,7 @@ C_SOURCES += src/ui/meter_ui.c
 C_SOURCES += src/ui/softkey.c
 C_SOURCES += src/ui/fuse_model.c
 C_SOURCES += src/ui/siggen_ui.c
+C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
 C_SOURCES += src/ui/component_ui.c
 C_SOURCES += src/ui/resistor_calc_ui.c
@@ -631,7 +632,8 @@ test-scope-freq: $(BUILD_DIR)/test_scope_freq
 # (A third, known-defects build held the #57/#58 power-cut tests until those
 # were fixed; they run in test_config_persist now.)
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
-                      src/ui/theme.c src/ui/scope_state.c src/ui/scope_cal.c src/ui/scope_timebase.c
+                      src/ui/theme.c src/ui/scope_state.c src/ui/scope_cal.c src/ui/scope_timebase.c \
+                      src/dsp/signal_gen.c src/dsp/siggen_wave.c
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
@@ -731,6 +733,15 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 		$< src/dsp/siggen_wave.c -lm -o $@
 
 test-siggen: $(BUILD_DIR)/test_siggen
+	$<
+
+# Generator frequency digit editor (parity G4): the pure state machine in
+# src/ui/siggen_edit.c, no hardware. See tests/test_siggen_edit.c.
+$(BUILD_DIR)/test_siggen_edit: tests/test_siggen_edit.c src/ui/siggen_edit.c src/ui/siggen_edit.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui $< src/ui/siggen_edit.c -o $@
+
+.PHONY: test-siggen-edit
+test-siggen-edit: $(BUILD_DIR)/test_siggen_edit
 	$<
 
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model

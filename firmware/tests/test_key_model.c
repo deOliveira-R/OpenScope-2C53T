@@ -156,6 +156,21 @@ static void test_long_map(void)
           key_map(&sc, BTN_OK, true).act == KA_LONG_UNUSED &&
           key_map(&sc, BTN_SAVE, true).act == KA_LONG_UNUSED);
     CHECK("long UP is not a thing", is(key_map(&sc, BTN_UP, true), KA_NONE, 0));
+
+    /* Parity G5: long OK in the generator is Run/Stop (manual 2.1); long AUTO
+     * there is the output-at-boot policy (ours). The other modes are unchanged. */
+    {
+        key_ctx_t sg = ctx(MODE_SIGNAL_GEN, KF_ZOOM);
+        CHECK("long OK in the generator is Run/Stop",
+              is(key_map(&sg, BTN_OK, true), KA_SIGGEN_RUNSTOP, 0));
+        CHECK("long AUTO in the generator is the boot policy toggle",
+              is(key_map(&sg, BTN_AUTO, true), KA_SIGGEN_BOOT_TOGGLE, 0));
+        CHECK("long SAVE in the generator stays unclaimed",
+              is(key_map(&sg, BTN_SAVE, true), KA_NONE, 0));
+        CHECK("long OK in the meter does nothing; in the scope it keeps its hook",
+              is(key_map(&me, BTN_OK, true), KA_NONE, 0) &&
+              key_map(&sc, BTN_OK, true).act == KA_LONG_UNUSED);
+    }
 }
 
 static void test_short_map(void)

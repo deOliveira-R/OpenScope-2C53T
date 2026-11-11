@@ -17,6 +17,7 @@
 #include "scope_state.h"
 #include "math_channel.h"
 #include "ui.h"
+#include "signal_gen.h"
 
 #include <string.h>
 
@@ -58,7 +59,7 @@ static void stamp(device_config_t *cfg)
  *
  * The two functions must stay symmetric: a field captured but not applied is a
  * setting that silently does not restore, which is the exact failure this
- * whole task was fixing. Fields NOT listed here (fft_*, siggen_*, brightness,
+ * whole task was fixing. Fields NOT listed here (fft_*, brightness,
  * language, auto-shutdown, sound) are carried through untouched — they are
  * stored and round-tripped but nothing in the firmware owns them yet, and
  * config.h says so.
@@ -94,6 +95,17 @@ void settings_store_capture(device_config_t *cfg)
 
     cfg->meter_submode = meter_submode;
     cfg->meter_layout  = meter_layout;
+
+    const siggen_config_t *sg = siggen_get_config();
+    cfg->siggen_waveform  = sg->waveform;
+    cfg->siggen_frequency = (float)sg->frequency_hz;   /* exact: <= 50000 */
+    cfg->siggen_amplitude = (float)sg->amplitude_dv / 10.0f;
+    cfg->siggen_duty      = sg->duty_pct;
+    /* The enable is only a saved setting while the user wants it restored;
+     * with the boot policy OFF it is session state, and recording it would
+     * make every run/stop cycle look like a change to write. */
+    cfg->siggen_enabled   = (sg->start_on && sg->output_enabled) ? 1u : 0u;
+    cfg->siggen_start_on  = sg->start_on ? 1u : 0u;
 
     stamp(cfg);
 }
@@ -131,6 +143,28 @@ void settings_store_apply(const device_config_t *cfg)
 
     meter_submode = clamp_idx(cfg->meter_submode, METER_SUBMODE_COUNT, 0);
     meter_layout  = clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);
+
+    /* Signal generator (parity G5). Clamped, NaN-safe: a float field that is
+     * not a number or not in range falls back to stock's factory value
+     * rather than driving the output with garbage. The output comes back ON
+     * only when the user opted in (siggen_start_on) AND it was on at the last
+     * save; otherwise it boots OFF, which stock does not do. */
+    {
+        siggen_config_t sg;
+        float f = cfg->siggen_frequency;
+        float a = cfg->siggen_amplitude * 10.0f + 0.5f;
+        sg.waveform     = clamp_idx(cfg->siggen_waveform, SIGGEN_WAVEFORM_COUNT, SIGGEN_DEFAULT_WAVE);
+        sg.frequency_hz = (f >= 0.0f && f <= (float)SIGGEN_FREQ_MAX_HZ)
+                          ? (uint32_t)(f + 0.5f) : SIGGEN_DEFAULT_FREQ;
+        sg.amplitude_dv = (a >= 0.0f && a <= (float)SIGGEN_AMP_MAX_DV + 1.0f)
+                          ? (uint8_t)a : SIGGEN_DEFAULT_AMP_DV;
+        if (sg.amplitude_dv > SIGGEN_AMP_MAX_DV) sg.amplitude_dv = SIGGEN_AMP_MAX_DV;
+        sg.duty_pct     = (cfg->siggen_duty <= SIGGEN_DUTY_MAX) ? cfg->siggen_duty
+                                                               : SIGGEN_DEFAULT_DUTY;
+        sg.start_on       = (cfg->siggen_start_on != 0u);
+        sg.output_enabled = sg.start_on && (cfg->siggen_enabled != 0u);
+        siggen_init(&sg);
+    }
 
     /* Deliberately NOT restored: ss->running (a scope always boots running),
      * the cursor state, and channel position — session state, not settings.
