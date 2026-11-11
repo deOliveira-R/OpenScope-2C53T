@@ -3019,8 +3019,147 @@ static void cmd_fpga_interleave_cal(void)
                      "correction unchanged\r\n");
         return;
     }
+    /* The line, then the knots through the levels (parity ilplus): the line
+     * is what gated the fit; the knots are what removes unit #2's ~1 count
+     * level-dependent odd-even step. Setting the line clears old knots. */
     fpga_interleave_corr_set(fit.gain, fit.offset);
-    usb_send_str("interleave cal: applied (RAM; `cal user save` keeps it). Skew is not estimated here.\r\n");
+    if (fit.n_knots >= 2u && fpga_interleave_knots_set(fit.n_knots, fit.knot_a, fit.knot_b))
+        usb_debug_printf("interleave cal: applied, piecewise through %u levels (RAM; `cal user save` "
+                         "keeps it). Skew: `fpga interleave skew measure` with a tone.\r\n",
+                         (unsigned)fit.n_knots);
+    else
+        usb_send_str("interleave cal: applied, line only (RAM; `cal user save` keeps it). "
+                     "Skew: `fpga interleave skew measure` with a tone.\r\n");
+}
+
+/* The shell bus scratch (defined with the spi3 commands below) holds the
+ * merged record `skew measure` copies: same task, never nested. */
+static uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE];
+
+/* "0.451234" from ppm-of-a-period deviation: 500000 + dev. */
+static void print_skew_line(const char *what, int32_t dev)
+{
+    const int32_t t = 500000 + dev;
+    usb_debug_printf("%s B at 0.%06ld of a converter period (%s%ld ppm from 0.5)\r\n",
+                     what, (long)t, dev < 0 ? "-" : "+", (long)(dev < 0 ? -dev : dev));
+}
+
+/* `fpga interleave skew measure` (parity ilplus): CH2 off, timebase <= 3,
+ * a steady tone of 5..50 MHz on CH1 (the G431's 10 MHz square is the bench
+ * source), triggering. Takes 16 fresh merged records, estimates B's delay
+ * after A in each (least-squares phase at the tone, dsp/interleave_cal.c) and
+ * applies the median. With a skew correction already on, the records read
+ * the residual, which is added: a second `measure` should read ~0.500. */
+#define SKEW_RECORDS   16u
+#define SKEW_MIN_OK     8u
+static void cmd_fpga_interleave_skew_measure(void)
+{
+    scope_state_t *ss = scope_state_get();
+    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+        usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
+                     "(fpga scope ch 2 off; fpga scope tb <= 3)\r\n");
+        return;
+    }
+    const volatile uint8_t *c1 = fpga_get_ch1_buf();
+    if (!c1) { usb_send_str("FPGA not initialized\r\n"); return; }
+    const int32_t cur = fpga_interleave_skew_get();
+    float tau[SKEW_RECORDS];
+    unsigned ok = 0;
+    uint8_t *rec = shell_bus_scratch;
+    usb_send_str("interleave skew: keep a steady 5..50 MHz tone on CH1, triggering\r\n");
+    for (unsigned r = 0; r < SKEW_RECORDS; r++) {
+        /* One fresh, whole, merged record: an even generation past the last
+         * one, unchanged across the copy (the acq task commits under it). */
+        const uint32_t want = (fpga_acq_frame_generation() & ~1u) + 2u;
+        const TickType_t t0 = xTaskGetTickCount();
+        bool got = false;
+        while (!got && (xTaskGetTickCount() - t0) < pdMS_TO_TICKS(2000)) {
+            const uint32_t g0 = fpga_acq_frame_generation();
+            if ((g0 & 1u) || (int32_t)(g0 - want) < 0 || !fpga_acq_record_interleaved()) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+                continue;
+            }
+            for (uint32_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) rec[i] = c1[i];
+            got = (fpga_acq_frame_generation() == g0) && fpga_acq_record_interleaved();
+        }
+        if (!got) {
+            usb_debug_printf("  %2u  no fresh merged record in 2 s (not triggering? STOP?)\r\n", r);
+            continue;
+        }
+        il_skew_est_t e;
+        const il_skew_status_t st = il_skew_estimate(rec, &e);
+        const long khz = (long)(e.cycles * 125000.0f + 0.5f);
+        const float tdev = (e.tau - 0.5f) * 1e6f;
+        usb_debug_printf("  %2u  %-8s f %ld.%03ld MHz  amp A %s%ld.%02ld B %s%ld.%02ld  B %ld ppm from 0.5%s%s\r\n",
+                         r, st == IL_SKEW_OK ? "ok" : "refused", khz / 1000, khz % 1000,
+                         F2(e.amp_a), F2(e.amp_b), (long)(tdev + (tdev < 0.0f ? -0.5f : 0.5f)),
+                         st == IL_SKEW_OK ? "" : "  ", st == IL_SKEW_OK ? "" : il_skew_status_str(st));
+        if (st == IL_SKEW_OK) tau[ok++] = e.tau;
+    }
+    if (ok < SKEW_MIN_OK) {
+        usb_debug_printf("interleave skew: REFUSED, %u of %u records usable (need %u); skew unchanged\r\n",
+                         ok, SKEW_RECORDS, SKEW_MIN_OK);
+        return;
+    }
+    for (unsigned i = 1; i < ok; i++)                    /* insertion sort, <= 16 */
+        for (unsigned j = i; j > 0 && tau[j - 1] > tau[j]; j--) { float t = tau[j]; tau[j] = tau[j - 1]; tau[j - 1] = t; }
+    const float med = (ok & 1u) ? tau[ok / 2u] : 0.5f * (tau[ok / 2u - 1u] + tau[ok / 2u]);
+    /* The middle half's spread: a tone at 10 MHz with unit #2's noise
+     * scatters ~0.005 per record; a spread past 0.02 is not a steady tone. */
+    const float iqr = tau[(3u * ok) / 4u] - tau[ok / 4u];
+    const int32_t dev = (int32_t)((med - 0.5f) * 1e6f + (med < 0.5f ? -0.5f : 0.5f));
+    print_skew_line("  median:", dev);
+    usb_debug_printf("  spread (middle half) %ld ppm over %u records; correction was %ld ppm\r\n",
+                     (long)(iqr * 1e6f + 0.5f), ok, (long)cur);
+    if (iqr > 0.02f) {
+        usb_send_str("interleave skew: REFUSED, records disagree (not a steady tone); skew unchanged\r\n");
+        return;
+    }
+    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active() ||
+        fpga_interleave_skew_get() != cur) {
+        usb_send_str("interleave skew: REFUSED, channel/timebase/skew changed during the measurement; "
+                     "skew unchanged\r\n");
+        return;
+    }
+    if (!fpga_interleave_skew_set(cur + dev)) {
+        usb_debug_printf("interleave skew: REFUSED, %ld ppm is beyond +-%ld; skew unchanged\r\n",
+                         (long)(cur + dev), (long)IL_SKEW_PPM_MAX);
+        return;
+    }
+    usb_send_str("interleave skew: applied (RAM; `cal user save` keeps it)\r\n");
+}
+
+/* `fpga interleave skew [measure|set <ppm>|off]` — converter-B timing skew.
+ * <ppm>: B's deviation from half a converter period, ppm of a period (signed;
+ * unit #2 reads 0.451 -> -49000); `set 0` = `off`. */
+static void cmd_fpga_interleave_skew(const char *args)
+{
+    static const char usage[] =
+        "usage: fpga interleave skew [measure|set <ppm>|off]  ppm = B's deviation from half a "
+        "converter period, ppm of a period (B at 0.451 -> -49000), |ppm| <= 150000\r\n";
+    while (*args == ' ') args++;
+    if (strncmp(args, "measure", 7) == 0) {
+        cmd_fpga_interleave_skew_measure();
+    } else if (strncmp(args, "set", 3) == 0) {
+        const char *p = args + 3;
+        while (*p == ' ') p++;
+        const bool neg = (*p == '-');
+        if (neg || *p == '+') p++;
+        uint32_t v = 0;
+        if (parse_int(p, &v) != 0 || v > (uint32_t)IL_SKEW_PPM_MAX ||
+            !fpga_interleave_skew_set(neg ? -(int32_t)v : (int32_t)v)) {
+            usb_send_str(usage);
+            return;
+        }
+    } else if (strncmp(args, "off", 3) == 0) {
+        fpga_interleave_skew_set(0);
+    } else if (*args) {
+        usb_send_str(usage);
+        return;
+    }
+    const int32_t ppm = fpga_interleave_skew_get();
+    if (ppm == 0) usb_send_str("interleave skew: correction OFF (B taken at 0.500)\r\n");
+    else          print_skew_line("interleave skew: correcting", ppm);
 }
 
 /* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
@@ -3032,6 +3171,9 @@ static void cmd_fpga_interleave(const char *args)
     if (strncmp(args, "cal", 3) == 0) {
         cmd_fpga_interleave_cal();
         /* fall through to the status line below */
+    } else if (strncmp(args, "skew", 4) == 0) {
+        cmd_fpga_interleave_skew(args + 4);
+        return;
     } else if (strncmp(args, "corr", 4) == 0) {
         const char *p = args + 4;
         while (*p == ' ') p++;
@@ -3052,10 +3194,12 @@ static void cmd_fpga_interleave(const char *args)
     } else if (*args) {
         if      (strncmp(args, "on", 2) == 0)  fpga_interleave_set(true);
         else if (strncmp(args, "off", 3) == 0) fpga_interleave_set(false);
-        else { usb_send_str("usage: fpga interleave [on|off|corr <g> <o>]\r\n"); return; }
+        else { usb_send_str("usage: fpga interleave [on|off|corr <g> <o>|cal|skew ...]\r\n"); return; }
     }
     float g, o;
     fpga_interleave_corr_get(&g, &o);
+    int16_t ka[IL_KNOTS_MAX], kb[IL_KNOTS_MAX];
+    const uint8_t nk = fpga_interleave_knots_get(ka, kb);
     const int32_t g4 = (int32_t)(g * 10000.0f + 0.5f);
     const int32_t o2 = (int32_t)(o * 100.0f + (o < 0 ? -0.5f : 0.5f));
     usb_debug_printf("interleave %s, %s; last record %s; B corr gain %ld/10000 offset %ld/100; "
@@ -3064,6 +3208,15 @@ static void cmd_fpga_interleave(const char *args)
                      fpga_interleave_active() ? "active (mask 1, tb <= 3)" : "not active",
                      fpga_acq_record_interleaved() ? "merged" : "single converter",
                      (long)g4, (long)o2, (unsigned long)fpga_interleave_roll_holds());
+    if (nk >= 2u) {   /* the knots override the line */
+        usb_send_str("  B map, piecewise (A <- B, x100):");
+        for (uint8_t i = 0; i < nk; i++)
+            usb_debug_printf(" %d<-%d", (int)ka[i], (int)kb[i]);
+        usb_send_str("\r\n");
+    }
+    const int32_t sk = fpga_interleave_skew_get();
+    if (sk) print_skew_line("  skew: correcting", sk);
+    else    usb_send_str("  skew: correction OFF\r\n");
 }
 
 /* `fpga acqbr [0-7|off]` — SPI3 clock divider the acq task sets before each pair (EXP-46). */
@@ -4543,7 +4696,7 @@ static void cmd_cal_user(const char *args)
         usb_send_str("usage: cal user [show|save|clear]\r\n");
         return;
     }
-    usercal_t u;   /* 280 B on this task's 3 KB stack */
+    usercal_t u;   /* ~290 B on this task's 3 KB stack */
     const usercal_status_t st = usercal_store_load(&u);
     const uint32_t live = usercal_live_table_crc();
     uint32_t used = 0, nrec = 0;
@@ -4558,7 +4711,7 @@ static void cmd_cal_user(const char *args)
                          u.il_present ? "gain " : "none");
         if (u.il_present)
             usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_ppm, (long)u.il_off_e4);
-        usb_send_str("\r\n");
+        usb_debug_printf(", %u knots, skew %ld ppm\r\n", (unsigned)u.il_n_knots, (long)u.il_skew_ppm);
     }
     usb_debug_printf("  boot: %s", usercal_status_str(r->load_st));
     if (r->loaded)
@@ -5064,7 +5217,7 @@ static void cmd_reboot_bootloader(void)
  * safe — and it keeps guest RAM in budget: two per-command 1 KB buffers
  * overflowed the region by 368 bytes (2ff992c, caught once #31 unblocked the
  * guest link). One 2 KB buffer costs +1 KB over the old lone snapshot. */
-static uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE] __attribute__((aligned(4)));
+static uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE] __attribute__((aligned(4)));   /* declared above */
 
 static void cmd_spi3_read(const char *args)
 {
@@ -9348,7 +9501,8 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
           "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
-          "fpga interleave [on|off|corr g o|cal]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B\r\n"),
+          "fpga interleave [on|off|corr g o|cal]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B\r\n"
+          "fpga interleave skew [measure|set <ppm>|off]  B timing skew (ppm of a period from 0.5); measure needs a 5-50 MHz tone\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga acqbr", cmd_fpga_acqbr, 0,

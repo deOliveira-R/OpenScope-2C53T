@@ -3562,11 +3562,12 @@ static volatile bool acq_reprime_req = false;
 /* Single-channel interleave (2026-11-10, bench B4 on unit #2): with mask 1
  * both converters sample CH1 half a sample apart; at timebase <= 3 (stock's
  * gate, 0x080252B2) the acq task merges them into a 250 MS/s record. Runtime
- * switch, default ON. Converter-B correction defaults to identity; a unit's
- * own numbers are set with `fpga interleave corr`. */
+ * switch, default ON. Converter-B correction (level map + timing skew,
+ * dsp/interleave.h) defaults to identity; a unit's own numbers come from
+ * `fpga interleave cal` / `skew measure` or a saved user-cal record. */
 static volatile bool acq_il_enable = true;
 static volatile uint32_t acq_il_roll_holds = 0;   /* untriggered reads held, not merged */
-static interleave_corr_t acq_il_corr = { 1.0f, 0.0f };
+static interleave_corr_t acq_il_corr = { .gain = 1.0f, .offset = 0.0f };
 /* Self-calibration collector (parity C2, `fpga interleave cal`): while `on`,
  * every pair the acq task reads (op04 = A, op05 = B, record units) adds the
  * means of its centre 512 samples (the window the merge uses). DC only: the
@@ -3835,11 +3836,30 @@ bool fpga_interleave_active(void)
 {
     return acq_il_enable && fpga.channel_mask == 1u && acq_rate_idx <= 3u;
 }
+/* The line also drops any knots: it is a complete level map of its own
+ * (`fpga interleave corr`, a v1 user-cal record, `cal user clear`). The
+ * skew is independent and stays. */
 void fpga_interleave_corr_set(float gain, float offset)
 {
+    interleave_corr_set_knots(&acq_il_corr, 0, NULL, NULL);
     acq_il_corr.gain = gain;
     acq_il_corr.offset = offset;
 }
+bool fpga_interleave_knots_set(uint8_t n, const int16_t *a, const int16_t *b)
+{
+    return interleave_corr_set_knots(&acq_il_corr, n, a, b);
+}
+uint8_t fpga_interleave_knots_get(int16_t *a, int16_t *b)
+{
+    const uint8_t n = acq_il_corr.n_knots;
+    for (uint8_t i = 0; i < n && i < IL_KNOTS_MAX; i++) {
+        if (a) a[i] = acq_il_corr.knot_a[i];
+        if (b) b[i] = acq_il_corr.knot_b[i];
+    }
+    return n;
+}
+bool fpga_interleave_skew_set(int32_t ppm) { return interleave_skew_set(&acq_il_corr, ppm); }
+int32_t fpga_interleave_skew_get(void)     { return acq_il_corr.skew_ppm; }
 void fpga_interleave_corr_get(float *gain, float *offset)
 {
     if (gain)   *gain = acq_il_corr.gain;
