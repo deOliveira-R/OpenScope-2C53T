@@ -1079,6 +1079,16 @@ uint32_t fpga_usart_baudr(void);
  * (1=CH1, 2=CH2, 3=BOTH) is a 2-bit code on PC1/PC2, NOT just SPI3 op 0x02;
  * leaving those pins floating routes CH1 into both converters. */
 void    fpga_set_channel_mask(uint8_t mask);
+/* Channel enables -> converter routing; false if both channels are off. */
+bool    fpga_apply_channel_enables(void);
+/* Single-channel 250 MS/s interleave (dsp/interleave.h). */
+void    fpga_interleave_set(bool on);
+bool    fpga_interleave_get(void);
+bool    fpga_interleave_active(void);          /* enabled, mask 1, timebase <= 3 */
+void    fpga_interleave_corr_set(float gain, float offset);
+void    fpga_interleave_corr_get(float *gain, float *offset);
+bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge */
+float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);
 extern volatile bool fpga_meter_needs_activation;
 

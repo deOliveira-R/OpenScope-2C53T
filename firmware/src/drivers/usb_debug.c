@@ -2568,6 +2568,78 @@ static void cmd_fpga_unrotate(const char *args)
                      fpga_acq_unrotate_get() ? "ON" : "OFF", (long)fpga.acq_last_rot);
 }
 
+/* `fpga scope ch <1|2> [on|off]` — channel enable from the shell (there is
+ * no UI control yet). Applies the converter routing at once: CH2 off is mask 1,
+ * which at timebase <= 3 gives the 250 MS/s interleaved CH1 record. */
+static void cmd_fpga_scope_ch(const char *args)
+{
+    while (*args == ' ') args++;
+    uint32_t ch = 0;
+    if (parse_int(args, &ch) != 0 || (ch != 1u && ch != 2u)) {
+        usb_send_str("usage: fpga scope ch <1|2> [on|off]\r\n");
+        return;
+    }
+    scope_state_t *ss = scope_state_get();
+    channel_state_t *c = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+    const char *v = strchr(args, ' ');
+    if (v) {
+        while (*v == ' ') v++;
+        bool was = c->enabled;
+        if      (strncmp(v, "on", 2) == 0)  c->enabled = true;
+        else if (strncmp(v, "off", 3) == 0) c->enabled = false;
+        else { usb_send_str("usage: fpga scope ch <1|2> [on|off]\r\n"); return; }
+        if (!fpga_apply_channel_enables()) {
+            c->enabled = was;
+            usb_send_str("refused: at least one channel must stay on\r\n");
+            return;
+        }
+    }
+    usb_debug_printf("CH1 %s  CH2 %s  mask %u  trigger CH%u  interleave %s\r\n",
+                     ss->ch1.enabled ? "on" : "off", ss->ch2.enabled ? "on" : "off",
+                     (unsigned)fpga.channel_mask,
+                     ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u,
+                     fpga_interleave_active() ? "ACTIVE (250 MS/s)" : "inactive");
+}
+
+/* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
+ * — the single-channel merge and its converter-B correction (B' = (B - off) /
+ * gain, record units). Integer arguments: the shell has no float parsing. */
+static void cmd_fpga_interleave(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "corr", 4) == 0) {
+        const char *p = args + 4;
+        while (*p == ' ') p++;
+        uint32_t g = 0, o = 0;
+        int neg = 0;
+        const char *q = strchr(p, ' ');
+        if (parse_int(p, &g) != 0 || g < 5000u || g > 20000u || !q) {
+            usb_send_str("usage: fpga interleave corr <gain x10000, 5000-20000> <offset x100, signed>\r\n");
+            return;
+        }
+        while (*q == ' ') q++;
+        if (*q == '-') { neg = 1; q++; }
+        if (parse_int(q, &o) != 0 || o > 10000u) {
+            usb_send_str("usage: fpga interleave corr <gain x10000, 5000-20000> <offset x100, signed>\r\n");
+            return;
+        }
+        fpga_interleave_corr_set((float)g / 10000.0f, (neg ? -(float)o : (float)o) / 100.0f);
+    } else if (*args) {
+        if      (strncmp(args, "on", 2) == 0)  fpga_interleave_set(true);
+        else if (strncmp(args, "off", 3) == 0) fpga_interleave_set(false);
+        else { usb_send_str("usage: fpga interleave [on|off|corr <g> <o>]\r\n"); return; }
+    }
+    float g, o;
+    fpga_interleave_corr_get(&g, &o);
+    const int32_t g4 = (int32_t)(g * 10000.0f + 0.5f);
+    const int32_t o2 = (int32_t)(o * 100.0f + (o < 0 ? -0.5f : 0.5f));
+    usb_debug_printf("interleave %s, %s; last record %s; B corr gain %ld/10000 offset %ld/100\r\n",
+                     fpga_interleave_get() ? "ON" : "OFF",
+                     fpga_interleave_active() ? "active (mask 1, tb <= 3)" : "not active",
+                     fpga_acq_record_interleaved() ? "merged" : "single converter",
+                     (long)g4, (long)o2);
+}
+
 /* `fpga acqbr [0-7|off]` — SPI3 clock divider the acq task sets before each pair (EXP-46). */
 static void cmd_fpga_acqbr(const char *args)
 {
@@ -7995,6 +8067,10 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga holdlog [on|off]           Per-handover interval log (EXP-72); no arg = dump\r\n"),
     CMD_A("fpga holdread", cmd_fpga_holdread, 0,
           "fpga holdread                   Retired (EXP-54)\r\n"),
+    CMD_A("fpga scope ch", cmd_fpga_scope_ch, SC_NEEDARGS,
+          "fpga scope ch <1|2> [on|off]    Channel enable; CH2 off = mask 1 (250 MS/s at tb <= 3)\r\n"),
+    CMD_A("fpga interleave", cmd_fpga_interleave, 0,
+          "fpga interleave [on|off|corr g o]  Single-channel merge; B corr gain x1e4, offset x100\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga acqbr", cmd_fpga_acqbr, 0,

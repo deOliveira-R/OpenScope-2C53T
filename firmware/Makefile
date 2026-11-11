@@ -65,6 +65,7 @@ C_SOURCES += src/drivers/fpga_scanner.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/dsp/trig_edge.c
+C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/drivers/meter_data.c
 C_SOURCES += src/drivers/meter_auto.c
 C_SOURCES += src/drivers/meter_autoselect.c
@@ -681,6 +682,13 @@ $(BUILD_DIR)/test_trig_edge: tests/test_trig_edge.c src/dsp/trig_edge.c src/dsp/
 test-trig-edge: $(BUILD_DIR)/test_trig_edge
 	$<
 
+$(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
+		$< src/dsp/interleave.c -lm -o $@
+
+test-interleave: $(BUILD_DIR)/test_interleave
+	$<
+
 # Waveform pass/fail masks (docs/specs/scope/mask-pass-fail.md): real records from
 # unit #1, aligned with the firmware's own trig_edge_anchor(); every acceptance
 # has a negative control that must come out the other way.
@@ -693,7 +701,7 @@ $(BUILD_DIR)/test_mask_pf: tests/test_mask_pf.c src/dsp/mask_pf.c src/dsp/mask_p
 test-mask-pf: $(BUILD_DIR)/test_mask_pf
 	$<
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-mask-pf test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BENCH / EXPERIMENT IMAGE INDEX                          (index added 2026-08-13)
