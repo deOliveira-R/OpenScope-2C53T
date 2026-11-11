@@ -440,6 +440,7 @@ const char *fw_loader_breadcrumb_name(uint16_t code)
 /* SPI2 + GPIOB, raw (CS = PB12, same wiring the flash_fs driver uses). */
 #define R_SPI2_STS  (*(volatile uint32_t *)0x40003808u)
 #define R_SPI2_DT   (*(volatile uint32_t *)0x4000380Cu)
+#define R_GPIOB_CFGHR (*(volatile uint32_t *)0x40010C04u)
 #define R_GPIOB_SCR (*(volatile uint32_t *)0x40010C10u)
 #define R_GPIOB_CLR (*(volatile uint32_t *)0x40010C14u)
 
@@ -656,6 +657,11 @@ dead:
      * 0x08007000 upward. */
     rf_bc_write(2, code | stall);
     rf_bc_write(5, *sts & 0xFFFFu);
+    /* PB8 is TMR10 CH1 (AF, backlight PWM) since parity C15, where the
+     * output-data register does nothing: hand it back to a GPIO push-pull
+     * output (CNF/MODE nibble 0x3, as main() configures it at boot) so the
+     * blink below is visible. */
+    R_GPIOB_CFGHR = (R_GPIOB_CFGHR & ~0xFu) | 0x3u;
     for (;;) {
         for (uint32_t b = 0; b < code; ++b) {
             R_GPIOB_CLR = 1u << 8;          /* backlight off */

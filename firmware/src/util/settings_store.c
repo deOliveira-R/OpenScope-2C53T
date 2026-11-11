@@ -19,6 +19,7 @@
 #include "ui.h"
 #include "signal_gen.h"
 #include "startup_policy.h"
+#include "sys_prefs.h"
 
 #include <string.h>
 
@@ -60,9 +61,9 @@ static void stamp(device_config_t *cfg)
  *
  * The two functions must stay symmetric: a field captured but not applied is a
  * setting that silently does not restore, which is the exact failure this
- * whole task was fixing. Startup-on-Boot (startup_mode) is owned here since M6. Fields NOT listed
- * here (fft_*, brightness,
- * language, auto-shutdown, sound) are carried through untouched — they are
+ * whole task was fixing. Startup-on-Boot (startup_mode) is owned here since M6,
+ * and brightness, sound volume and auto power-off since C15 (sys_prefs.c). Fields NOT listed
+ * here (fft_*, language) are carried through untouched — they are
  * stored and round-tripped but nothing in the firmware owns them yet, and
  * config.h says so.
  * ═══════════════════════════════════════════════════════════════════ */
@@ -116,6 +117,10 @@ void settings_store_capture(device_config_t *cfg)
     cfg->siggen_enabled   = (sg->start_on && sg->output_enabled) ? 1u : 0u;
     cfg->siggen_start_on  = sg->start_on ? 1u : 0u;
     cfg->startup_mode = startup_mode_to_config(startup_mode);
+    cfg->display_brightness  = sys_prefs_brightness();
+    cfg->sound_enabled       = sys_prefs_volume();      /* 0..10 since C15 (was 0/1) */
+    cfg->auto_shutdown_mins  = sys_prefs_autooff_mins();
+    cfg->sys_prefs_mark      = CONFIG_SYS_PREFS_MARK;
 
     stamp(cfg);
 }
@@ -176,6 +181,20 @@ void settings_store_apply(const device_config_t *cfg)
         siggen_init(&sg);
     }
     startup_mode  = startup_mode_from_config(cfg->startup_mode);
+    /* Brightness, volume and auto-off are clamped by the setters (a blank or
+     * foreign byte lands on stock's factory value / off). The timers pick the
+     * values up in sys_pwm_init() / the input task; this file stays hardware-free. */
+    if (cfg->sys_prefs_mark == CONFIG_SYS_PREFS_MARK) {
+        sys_prefs_set_brightness(cfg->display_brightness);
+        sys_prefs_set_volume(cfg->sound_enabled);
+        sys_prefs_set_autooff_mins(cfg->auto_shutdown_mins);
+    } else {
+        /* A pre-C15 record: its 80 % / 30 min were defaults, not choices
+         * (config.h). Stock's factory values instead: 100 %, volume 1, off. */
+        sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
+        sys_prefs_set_volume(SYS_VOL_DEFAULT);
+        sys_prefs_set_autooff_mins(0);
+    }
 
     /* Deliberately NOT restored: ss->running (a scope always boots running),
      * the channel enables (an old config with CH2 off boots with both on),

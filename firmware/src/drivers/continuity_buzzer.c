@@ -20,12 +20,12 @@
 #include "at32f403a_407.h"
 #include "meter_data.h"
 #include "ui.h"
+#include "sys_pwm.h"
+#include "sys_prefs.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
 
-#define BUZZER_PIN       GPIO_PINS_9
-#define BUZZER_GPIO      GPIOB
 #define BUZZER_TASK_MS   1U
 #define BUZZER_IDLE_MS   5U
 #define BUZZER_LATCH_MS  350U
@@ -56,34 +56,16 @@ static volatile uint32_t soc_edges_gated;          /* edges ignored by the gate 
 /*
  * THE ONE PLACE THE BUZZER PIN IS DRIVEN.
  *
- * Stock writes 10 to 0x40015434 on a timer and the pin follows. Which timer is
- * disputed: the pinout notes say TMR4 CH4, the checker's map says TMR11 C1DT
- * (+0x34 of 0x40015400); both land on PB9, which is what OpenScope has driven
- * as a plain GPIO since the first continuity bench. Until the timer is settled
- * on the bench (`meter beep` shows the pin level while sounding), the drive
- * stays a ~500 Hz GPIO square wave on PB9. A timer-PWM drive replaces these two
- * functions and nothing else.
+ * Stock writes 10 to 0x40015434 = TMR11 C1DT and the pin (PB9 = TMR11 CH1,
+ * 2 kHz) follows (docs/re/parity2_static.md 4.3, which settles the old TMR4
+ * dispute). The timer is owned by sys_pwm.c (parity C15), which also sounds
+ * the key click and the boot beep on the same output at the stored volume;
+ * this file only holds the SoC/continuity beep at stock's constant duty 10,
+ * which ignores the volume setting exactly as stock's EXTI3 ISR does.
  */
-static void __attribute__((unused)) buzzer_pin_init(void)
-{
-#ifndef EMULATOR_BUILD
-    crm_periph_clock_enable(CRM_GPIOB_PERIPH_CLOCK, TRUE);
-
-    gpio_init_type cfg;
-    gpio_default_para_init(&cfg);
-    cfg.gpio_pins = BUZZER_PIN;
-    cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_MODERATE;
-    gpio_init(BUZZER_GPIO, &cfg);
-    BUZZER_GPIO->clr = BUZZER_PIN;
-#endif
-}
-
 static inline void buzzer_pin_set(bool level)
 {
-    if (level) BUZZER_GPIO->scr = BUZZER_PIN;
-    else       BUZZER_GPIO->clr = BUZZER_PIN;
+    sys_pwm_buzzer_hold(level ? SYS_BEEP_SOC_DUTY : 0u);
 }
 
 /* Same rule as the screen (meter_data.c), so the beep and the green SHORT
@@ -123,11 +105,7 @@ static bool continuity_short_active(TickType_t now)
 
 void continuity_buzzer_init(void)
 {
-#ifdef EMULATOR_BUILD
-    return;
-#else
-    buzzer_pin_init();
-#endif
+    /* PB9 is configured by sys_pwm_init() (TMR11 CH1); nothing to do. */
 }
 
 static void buzzer_task(void *arg)
@@ -137,6 +115,10 @@ static void buzzer_task(void *arg)
     bool level = false;
     uint32_t seen_edges = exti3_edges;
     TickType_t next_pulse_tick = 0;
+    /* Boot beep (stock 0x0802E370) from here, not from main(): before the
+     * scheduler nothing would end it, and main() can still busy-wait for
+     * seconds (the cold meter transition) after the beep had started. */
+    sys_pwm_boot_beep();
     for (;;) {
         TickType_t now = xTaskGetTickCount();
         bool force_active = buzzer_force_until_tick != 0 &&
@@ -177,15 +159,16 @@ static void buzzer_task(void *arg)
         }
 
         if (buzzer_active_now) {
-            buzzer_pin_set(!level);
-            level = !level;
+            if (!level) buzzer_pin_set(true);   /* steady 2 kHz tone, no gating */
+            level = true;
             buzzer_toggle_count++;
             vTaskDelay(pdMS_TO_TICKS(BUZZER_TASK_MS));
         } else {
-            buzzer_pin_set(false);
+            if (level) buzzer_pin_set(false);
             level = false;
             vTaskDelay(pdMS_TO_TICKS(BUZZER_IDLE_MS));
         }
+        sys_pwm_buzzer_service();   /* ends a finished key click / boot beep */
     }
 }
 
@@ -204,7 +187,6 @@ void continuity_buzzer_create_task(void)
         buzzer_task_handle = NULL;
         buzzer_task_started = false;
         buzzer_create_fail_count++;
-        BUZZER_GPIO->clr = BUZZER_PIN;
     }
 #endif
 }
@@ -217,7 +199,6 @@ void continuity_buzzer_force_ms(uint32_t duration_ms)
     if (duration_ms == 0) {
         buzzer_force_until_tick = 0;
         buzzer_active_now = false;
-        BUZZER_GPIO->clr = BUZZER_PIN;
         return;
     }
     if (duration_ms > 5000U) {

@@ -1785,7 +1785,7 @@ static void fpga_set_ch2_frontend_range(uint8_t range_idx)
  * reference (TMR13_CH1 PWM, EXP-07); with FPGA_CH2_TRIGGER the pin is AF and
  * TMR13 owns it, so the old "drive PA6 HIGH" write is kept only for the
  * control build, where PA6 is still a plain output. PB9 is deliberately NOT
- * driven — it is the onboard piezo buzzer (TMR4_CH4 PWM, issue #25). */
+ * driven — it is the onboard piezo buzzer (TMR11 CH1 PWM, sys_pwm.c, C15). */
 static void fpga_scope_frontend_enables(void)
 {
 #if !FPGA_CH2_TRIGGER
@@ -6601,9 +6601,9 @@ void fpga_init(void)
     gpio_init(GPIOC, &gpio_cfg);
 
     /*
-     * PB9 = onboard buzzer (TMR4_CH4 PWM; issue #25) — configured as a plain
-     * output held LOW here = buzzer silent; a future beep driver should take
-     * it over as TMR4 CH4. PA6: stock init configures it as an output but no
+     * PB9 = onboard buzzer — configured as a plain output held LOW here =
+     * buzzer silent until sys_pwm_init() (after this, in main) hands it to
+     * TMR11 CH1 like stock (docs/re/parity2_static.md 4.3). PA6: stock init configures it as an output but no
      * stock BOP/BCR level write has been recovered.  Keep it low rather
      * than applying the old bench-inferred high level. PB11 is configured only
      * after SPI3/H2, then driven by the same mux projection as runtime DMM

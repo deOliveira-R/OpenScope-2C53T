@@ -18,6 +18,7 @@
 #include "persistence.h"
 #include "component_test.h"
 #include "shared_mem.h"
+#include "sys_prefs.h"
 #include <stdio.h>
 
 /* Top-level menu items */
@@ -120,6 +121,25 @@ static void draw_settings_math(void)
     }
 }
 
+/* Sound and Light sub-page (depth 7): stock's two rows, volume 0..10 and
+ * brightness 25..100 % in steps of 5. */
+static void draw_settings_sound_light(void)
+{
+    const theme_t *th = theme_get();
+    char vol[8], bri[8];
+
+    lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
+    font_draw_string_center(LCD_WIDTH / 2, 20, "Sound and Light",
+                            th->text_primary, th->background, &font_large);
+
+    if (sys_prefs_volume() == 0u) snprintf(vol, sizeof(vol), "Off");
+    else                          snprintf(vol, sizeof(vol), "%u", (unsigned)sys_prefs_volume());
+    snprintf(bri, sizeof(bri), "%u%%", (unsigned)sys_prefs_brightness());
+
+    draw_menu_item(0, 0, settings_sub_selected, "Sound", vol, th);
+    draw_menu_item(1, 0, settings_sub_selected, "Brightness", bri, th);
+}
+
 static void draw_settings_top(void)
 {
     const theme_t *th = theme_get();
@@ -139,6 +159,8 @@ static void draw_settings_top(void)
 
         /* Dynamic values for certain items */
         if (i == 0) value = ">";        /* Has sub-menu */
+        if (i == 1) value = ">";        /* Sound and Light: sub-page */
+        if (i == 2) value = sys_autooff_label(sys_prefs_autooff_mins());
         if (i == 3) value = scope_disp_mode_label((scope_disp_mode_t)scope_display_mode()); /* Y-T/Roll/X-Y */
         if (i == 4) value = ">";        /* Math/Persist: sub-menu */
         if (i == 5) value = ">";        /* Component Tester */
@@ -268,6 +290,7 @@ void draw_settings_screen(void)
     case 4:  draw_component_test_screen();     break;
     case 5:  draw_resistor_calc_screen();      break;
     case 6:  draw_bode_screen();              break;
+    case 7:  draw_settings_sound_light();     break;
     default: draw_settings_top();              break;
     }
 }
