@@ -1,0 +1,119 @@
+/* See sinc_interp.h. Table from scripts/gen_sinc_interp.py (do not hand-edit:
+ * tests/test_sinc_interp.c regenerates it and fails on a 2-LSB difference). */
+#include "sinc_interp.h"
+
+static const int32_t sinc_q15[SINC_INTERP_PHASES][SINC_INTERP_TAPS] = {
+    {      0,      0,      0,      0,      0,      0,      0,  32768,      0,      0,      0,      0,      0,      0,      0,      0 },  /* d =  0/20 */
+    {    -25,     60,   -121,    219,   -383,    686,  -1495,  32638,   1665,   -732,    404,   -232,    129,    -65,     28,     -8 },  /* d =  1/20 */
+    {    -47,    115,   -231,    421,   -735,   1313,  -2810,  32234,   3483,  -1494,    822,   -472,    262,   -134,     58,    -17 },  /* d =  2/20 */
+    {    -66,    162,   -329,    601,  -1051,   1871,  -3933,  31565,   5435,  -2270,   1242,   -713,    397,   -204,     89,    -28 },  /* d =  3/20 */
+    {    -81,    202,   -412,    757,  -1323,   2349,  -4861,  30632,   7500,  -3040,   1654,   -949,    530,   -273,    121,    -38 },  /* d =  4/20 */
+    {    -92,    234,   -480,    885,  -1549,   2741,  -5591,  29463,   9651,  -3786,   2047,  -1174,    658,   -341,    152,    -50 },  /* d =  5/20 */
+    {   -100,    257,   -531,    983,  -1724,   3043,  -6123,  28067,  11862,  -4488,   2410,  -1381,    776,   -404,    182,    -61 },  /* d =  6/20 */
+    {   -104,    271,   -566,   1052,  -1847,   3253,  -6464,  26467,  14104,  -5123,   2731,  -1564,    881,   -461,    210,    -72 },  /* d =  7/20 */
+    {   -105,    278,   -585,   1091,  -1918,   3371,  -6622,  24691,  16345,  -5672,   3000,  -1717,    969,   -510,    234,    -82 },  /* d =  8/20 */
+    {   -103,    277,   -587,   1100,  -1938,   3399,  -6607,  22760,  18556,  -6115,   3207,  -1833,   1037,   -548,    254,    -91 },  /* d =  9/20 */
+    {    -98,    269,   -574,   1081,  -1908,   3342,  -6432,  20704,  20704,  -6432,   3342,  -1908,   1081,   -574,    269,    -98 },  /* d = 10/20 */
+    {    -91,    254,   -548,   1037,  -1833,   3207,  -6115,  18556,  22760,  -6607,   3399,  -1938,   1100,   -587,    277,   -103 },  /* d = 11/20 */
+    {    -82,    234,   -510,    969,  -1717,   3000,  -5672,  16345,  24691,  -6622,   3371,  -1918,   1091,   -585,    278,   -105 },  /* d = 12/20 */
+    {    -72,    210,   -461,    881,  -1564,   2731,  -5123,  14104,  26467,  -6464,   3253,  -1847,   1052,   -566,    271,   -104 },  /* d = 13/20 */
+    {    -61,    182,   -404,    776,  -1381,   2410,  -4488,  11862,  28067,  -6123,   3043,  -1724,    983,   -531,    257,   -100 },  /* d = 14/20 */
+    {    -50,    152,   -341,    658,  -1174,   2047,  -3786,   9651,  29463,  -5591,   2741,  -1549,    885,   -480,    234,    -92 },  /* d = 15/20 */
+    {    -38,    121,   -273,    530,   -949,   1654,  -3040,   7500,  30632,  -4861,   2349,  -1323,    757,   -412,    202,    -81 },  /* d = 16/20 */
+    {    -28,     89,   -204,    397,   -713,   1242,  -2270,   5435,  31565,  -3933,   1871,  -1051,    601,   -329,    162,    -66 },  /* d = 17/20 */
+    {    -17,     58,   -134,    262,   -472,    822,  -1494,   3483,  32234,  -2810,   1313,   -735,    421,   -231,    115,    -47 },  /* d = 18/20 */
+    {     -8,     28,    -65,    129,   -232,    404,   -732,   1665,  32638,  -1495,    686,   -383,    219,   -121,     60,    -25 },  /* d = 19/20 */
+};
+
+const int32_t *sinc_interp_row(uint8_t phase20)
+{
+    return sinc_q15[phase20 % SINC_INTERP_PHASES];
+}
+
+uint8_t sinc_interp_at(const uint8_t *src, int32_t n_src, int32_t n, uint8_t phase20)
+{
+    if (src == 0 || n_src <= 0)
+        return 0u;
+    phase20 = (uint8_t)(phase20 % SINC_INTERP_PHASES);
+    if (phase20 == 0u) {
+        /* Identity: the sample itself, bit exact (no rounding path). */
+        if (n < 0) n = 0;
+        if (n >= n_src) n = n_src - 1;
+        return src[n];
+    }
+    const int32_t *h = sinc_q15[phase20];
+    int32_t acc = 1 << 14;                      /* round half up */
+    for (int32_t k = 0; k < (int32_t)SINC_INTERP_TAPS; k++) {
+        int32_t i = n - SINC_INTERP_CENTER + k;
+        if (i < 0) i = 0;
+        if (i >= n_src) i = n_src - 1;
+        acc += h[k] * (int32_t)src[i];          /* |sum| < 2^31: 255 * ~70k */
+    }
+    acc >>= 15;                                 /* arithmetic: floor */
+    if (acc < 0)   acc = 0;
+    if (acc > 255) acc = 255;
+    return (uint8_t)acc;
+}
+
+/* Q15 accumulation of one row at sample n (no rounding, no clamp). Row 20 is
+ * the identity on src[n + 1]. */
+static int32_t sinc_acc(const uint8_t *src, int32_t n_src, int32_t n, uint32_t row)
+{
+    if (row >= SINC_INTERP_PHASES) {
+        int32_t i = n + 1;
+        if (i >= n_src) i = n_src - 1;
+        if (i < 0) i = 0;
+        return (int32_t)src[i] * 32768;
+    }
+    const int32_t *h = sinc_q15[row];
+    int32_t acc = 0;
+    for (int32_t k = 0; k < (int32_t)SINC_INTERP_TAPS; k++) {
+        int32_t i = n - SINC_INTERP_CENTER + k;
+        if (i < 0) i = 0;
+        if (i >= n_src) i = n_src - 1;
+        acc += h[k] * (int32_t)src[i];
+    }
+    return acc;
+}
+
+uint8_t sinc_interp_frac(const uint8_t *src, int32_t n_src, int32_t n, int32_t frac_x1000)
+{
+    enum { STEP = 1000 / SINC_INTERP_PHASES };              /* 50: one row */
+    if (src == 0 || n_src <= 0)
+        return 0u;
+    if (frac_x1000 < 0)   frac_x1000 = 0;
+    if (frac_x1000 > 999) frac_x1000 = 999;
+    const uint32_t row = (uint32_t)frac_x1000 / STEP;
+    const int32_t  r   = frac_x1000 - (int32_t)row * STEP;  /* 0..49 */
+    if (r == 0)
+        return sinc_interp_at(src, n_src, n, (uint8_t)row);
+    /* |acc| < 255 * ~52000 per row; x 50 stays < 2^31. */
+    int32_t acc = sinc_acc(src, n_src, n, row) * (STEP - r)
+                + sinc_acc(src, n_src, n, row + 1u) * r;
+    const int32_t den = 32768 * STEP;
+    acc += den / 2;                                         /* round half up */
+    int32_t q = acc / den;
+    if (acc < 0 && q * den != acc) q--;                     /* floor */
+    if (q < 0)   q = 0;
+    if (q > 255) q = 255;
+    return (uint8_t)q;
+}
+
+void sinc_interp_taps(float frac, float taps[SINC_INTERP_TAPS])
+{
+    if (!(frac > 0.0f)) frac = 0.0f;                        /* also NaN */
+    if (frac >= 1.0f)   frac = 0.999999f;
+    const float u = frac * (float)SINC_INTERP_PHASES;
+    uint32_t row = (uint32_t)u;
+    if (row >= SINC_INTERP_PHASES) row = SINC_INTERP_PHASES - 1u;
+    const float w = u - (float)row;
+    for (uint32_t k = 0; k < SINC_INTERP_TAPS; k++) {
+        const float a = (float)sinc_q15[row][k];
+        float b;
+        if (row + 1u < SINC_INTERP_PHASES)
+            b = (float)sinc_q15[row + 1u][k];
+        else
+            b = (k == (uint32_t)SINC_INTERP_CENTER + 1u) ? 32768.0f : 0.0f;
+        taps[k] = (a * (1.0f - w) + b * w) * (1.0f / 32768.0f);
+    }
+}

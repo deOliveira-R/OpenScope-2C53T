@@ -15,7 +15,10 @@
  *   4. Derived quantities really are derived — s/div from the rate and the
  *      renderer's samples-per-division, Hz from the rate and a period.
  *   5. Labels come from the measurement and are NOT the nominal timebase_table
- *      strings, which are a constant ~2.13x away.
+ *      strings, which are a constant ~2x away at stock's 25 samples/div.
+ *   6. The fast-code zoom (parity C5) is stock's 1000/ratio per published
+ *      record kind, and the label it produces is distinct per code and the
+ *      same whichever record kind the hardware delivered.
  */
 
 #include "../src/ui/scope_timebase.h"
@@ -256,24 +259,24 @@ static void test_labels(void)
 {
     char buf[16];
 
-    /* 12490 S/s, 32 samples/div -> 2.5620 ms/div. */
+    /* 12490 S/s, 25 samples/div (stock's, C5) -> 2.0016 ms/div. */
     scope_timebase_label(0x10, buf, sizeof(buf));
-    CHECK(strcmp(buf, "2.56ms") == 0,
-          "0x10 label should be derived as 2.56ms, got \"%s\"", buf);
+    CHECK(strcmp(buf, "2.00ms") == 0,
+          "0x10 label should be derived as 2.00ms, got \"%s\"", buf);
 
     /* And it must NOT be the nominal table's "1ms" — that is the whole point.
-     * The nominal labels are a constant ~2.13x away on every measured code. */
+     * The nominal labels are a constant ~2x away on every measured code. */
     CHECK(strcmp(buf, "1ms") != 0, "0x10 must not still read as the nominal 1ms");
 
-    /* 24979 S/s -> 1.281 ms/div. */
+    /* 24979 S/s -> 1.0008 ms/div. */
     scope_timebase_label(0x0F, buf, sizeof(buf));
-    CHECK(strcmp(buf, "1.28ms") == 0,
-          "0x0F label should be 1.28ms, got \"%s\"", buf);
+    CHECK(strcmp(buf, "1.00ms") == 0,
+          "0x0F label should be 1.00ms, got \"%s\"", buf);
 
-    /* 49930 S/s -> 641 us/div, sub-millisecond so microseconds. */
+    /* 49930 S/s -> 501 us/div, sub-millisecond so microseconds. */
     scope_timebase_label(0x0E, buf, sizeof(buf));
-    CHECK(strcmp(buf, "641us") == 0,
-          "0x0E label should be 641us, got \"%s\"", buf);
+    CHECK(strcmp(buf, "501us") == 0,
+          "0x0E label should be 501us, got \"%s\"", buf);
 
     /* Provisional carries the marker. 0x0D was re-measured in EXP-18 (R2
      * 0.9997, up from 0.947) but stays provisional: at ~124 kS/s the bench
@@ -286,21 +289,21 @@ static void test_labels(void)
     scope_timebase_label(0x0B, buf, sizeof(buf));
     CHECK(strcmp(buf, "--") == 0, "0x0B label should be \"--\", got \"%s\"", buf);
 
-    /* Fast codes: 4.9975 MS/s -> 6.403 us/div needs a decimal; 124.83 MS/s ->
-     * 256 ns/div needs nanoseconds (it printed "0us" before the ns branch). */
+    /* Fast codes: 4.9975 MS/s -> 5.0025 us/div needs a decimal; 124.83 MS/s ->
+     * 200 ns/div needs nanoseconds (it printed "0us" before the ns branch). */
     scope_timebase_label(0x08, buf, sizeof(buf));
-    CHECK(strcmp(buf, "6.4us") == 0, "0x08 label should be 6.4us, got \"%s\"", buf);
+    CHECK(strcmp(buf, "5.0us") == 0, "0x08 label should be 5.0us, got \"%s\"", buf);
     scope_timebase_label(0x00, buf, sizeof(buf));
-    CHECK(strcmp(buf, "256ns") == 0, "0x00 label should be 256ns, got \"%s\"", buf);
+    CHECK(strcmp(buf, "200ns") == 0, "0x00 label should be 200ns, got \"%s\"", buf);
     scope_timebase_label(0x0A, buf, sizeof(buf));
-    CHECK(strcmp(buf, "26us") == 0, "0x0A label should be 26us, got \"%s\"", buf);
+    CHECK(strcmp(buf, "20us") == 0, "0x0A label should be 20us, got \"%s\"", buf);
 
-    /* Interleaved record: same 32 samples/div at twice the rate -> half the
-     * time. 124.83 MS/s x2 -> 128 ns/div at 0x00; factor 0 behaves as 1. */
+    /* Interleaved record: same 25 samples/div at twice the rate -> half the
+     * time. 124.83 MS/s x2 -> 100 ns/div at 0x00; factor 0 behaves as 1. */
     scope_timebase_label_scaled(0x00, 2u, buf, sizeof(buf));
-    CHECK(strcmp(buf, "128ns") == 0, "0x00 interleaved label should be 128ns, got \"%s\"", buf);
+    CHECK(strcmp(buf, "100ns") == 0, "0x00 interleaved label should be 100ns, got \"%s\"", buf);
     scope_timebase_label_scaled(0x00, 0u, buf, sizeof(buf));
-    CHECK(strcmp(buf, "256ns") == 0, "factor 0 must act as 1, got \"%s\"", buf);
+    CHECK(strcmp(buf, "200ns") == 0, "factor 0 must act as 1, got \"%s\"", buf);
     scope_timebase_label_scaled(0x0B, 2u, buf, sizeof(buf));
     CHECK(strcmp(buf, "--") == 0, "no rate stays \"--\" when scaled, got \"%s\"", buf);
 
@@ -310,8 +313,50 @@ static void test_labels(void)
     CHECK(small[2] == '\0', "label must NUL-terminate within a 3-byte buffer");
 }
 
+/* Parity C5: the fast-code zoom and the label it produces. */
+static void test_view_zoom(void)
+{
+    /* Stock's ms[0xE04] = 1000 / ratio (0x08030B4E..0x08030B6C). */
+    static const uint8_t merged[4]  = { 10, 5, 2, 1 };
+    static const uint8_t per_adc[4] = { 20, 10, 4, 2 };
+    for (uint8_t c = 0; c < 4; c++) {
+        CHECK(scope_timebase_interp_factor(c, true) == merged[c],
+              "code 0x%02X merged zoom should be %u, got %u", c, merged[c],
+              scope_timebase_interp_factor(c, true));
+        CHECK(scope_timebase_interp_factor(c, false) == per_adc[c],
+              "code 0x%02X per-converter zoom should be %u, got %u", c, per_adc[c],
+              scope_timebase_interp_factor(c, false));
+    }
+    for (uint8_t c = 4; c < SCOPE_TIMEBASE_CODE_COUNT + 3u; c++) {
+        CHECK(scope_timebase_interp_factor(c, true) == 1u &&
+              scope_timebase_interp_factor(c, false) == 1u,
+              "code 0x%02X must not be zoomed", c);
+    }
+
+    /* Distinct, correct time/div at 0x00-0x03 for BOTH record kinds, and the
+     * same string either way (the zoom compensates the 2x merge). */
+    static const char *want[4] = { "10ns", "20ns", "50ns", "100ns" };
+    char a[16], b[16];
+    for (uint8_t c = 0; c < 4; c++) {
+        scope_timebase_view_label(c, true, a, sizeof(a));
+        scope_timebase_view_label(c, false, b, sizeof(b));
+        CHECK(strcmp(a, want[c]) == 0, "code 0x%02X merged label should be %s, got \"%s\"",
+              c, want[c], a);
+        CHECK(strcmp(b, want[c]) == 0, "code 0x%02X per-converter label should be %s, got \"%s\"",
+              c, want[c], b);
+    }
+    /* Past the fast codes the view label is the plain (merged x2) one. */
+    scope_timebase_view_label(0x04, false, a, sizeof(a));
+    CHECK(strcmp(a, "200ns") == 0, "0x04 view label should be 200ns, got \"%s\"", a);
+    scope_timebase_view_label(0x10, false, a, sizeof(a));
+    CHECK(strcmp(a, "2.00ms") == 0, "0x10 view label should be 2.00ms, got \"%s\"", a);
+    scope_timebase_view_label(0x0B, true, a, sizeof(a));
+    CHECK(strcmp(a, "--") == 0, "no rate stays \"--\" in the view label, got \"%s\"", a);
+}
+
 int main(void)
 {
+    test_view_zoom();
     test_measured_codes();
     test_code_08_artifacts_stay_out();
     test_fast_codes_2026_11();

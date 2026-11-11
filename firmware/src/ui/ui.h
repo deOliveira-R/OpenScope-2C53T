@@ -184,14 +184,25 @@ bool input_inject_button(button_id_t b);
  * run) and how it was found (0 none, 1 soft midline, 2 hardware level
  * crossing of a time-ordered record). */
 int16_t scope_ui_trig_x_actual(void);
-/* Zoom while paused (C14): latch the ranges at STOP (the RUN/STOP key), and ask
- * whether the held record is being shown zoomed (the column compositor must
- * not draw it then). */
+/* Zoom while paused (C14): latch the ranges at STOP (the RUN/STOP key), for
+ * the true-scale path's vertical rescale of the held record. */
 void scope_ui_paused_latch(void);
-bool scope_ui_paused_zoom_active(void);
+/* The Y-T window's horizontal mapping (C5 x C14, scope_ui.c view_plan), for
+ * the current state:
+ *   view_factor  columns per record sample on the integer window (1, or the
+ *                fast-code zoom 2..20 at 0x00-0x03; scope_geom.h); 0 = a held
+ *                record re-sampled at a general ratio (paused_view.h);
+ *   view_ratio   R, record samples per column x 1000 (1000 / L on the integer
+ *                window);
+ *   view_merged  the merge flag the label and the column rate use: the
+ *                published record's while running, the selected code's
+ *                (fpga_interleave_active) while a record is held. */
+uint8_t  scope_ui_view_factor(void);
+uint32_t scope_ui_view_ratio(void);
+bool     scope_ui_view_merged(void);
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
- * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the record
- * rate used. For `fpga scope cursor`. */
+ * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the column
+ * rate used (record rate x zoom). For `fpga scope cursor`. */
 void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
                             char y1[16], char y2[16], char dy[16], float *fs_out);
 /* Repaint the mask pass/fail readout slot (badge row 2) -- main.c calls it

@@ -91,6 +91,8 @@ C_SOURCES += src/ui/xy_mode.c
 C_SOURCES += src/ui/roll_mode.c
 C_SOURCES += src/ui/scope_roll.c
 C_SOURCES += src/ui/scope_roll_meas.c
+C_SOURCES += src/ui/scope_geom.c
+C_SOURCES += src/dsp/sinc_interp.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
@@ -618,6 +620,27 @@ $(BUILD_DIR)/test_scope_timebase: tests/test_scope_timebase.c src/ui/scope_timeb
 test-scope-timebase: $(BUILD_DIR)/test_scope_timebase
 	$<
 
+# Parity C5: the fast-timebase sin(x)/x interpolator (table == documented
+# design, frequency response to 0.4 fs, step overshoot within the ideal
+# sinc's own, saturation, edges) and the Y-T column geometry (stock's 25 px
+# divisions, 301 columns, trigger column 150 +- 150, zoom-1 mapping identical
+# to the pre-C5 buf[toff + x], fill == interpolator).
+$(BUILD_DIR)/test_sinc_interp: tests/test_sinc_interp.c src/dsp/sinc_interp.c src/dsp/sinc_interp.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/dsp $< src/dsp/sinc_interp.c -lm -o $@
+
+.PHONY: test-sinc-interp
+test-sinc-interp: $(BUILD_DIR)/test_sinc_interp
+	$<
+
+$(BUILD_DIR)/test_scope_geom: tests/test_scope_geom.c src/ui/scope_geom.c src/ui/scope_geom.h \
+                              src/dsp/sinc_interp.c src/dsp/sinc_interp.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui -Isrc/dsp $< \
+		src/ui/scope_geom.c src/dsp/sinc_interp.c -lm -o $@
+
+.PHONY: test-scope-geom
+test-scope-geom: $(BUILD_DIR)/test_scope_geom
+	$<
+
 $(BUILD_DIR)/test_scope_cursor: tests/test_scope_cursor.c src/ui/scope_cursor.c src/ui/scope_cursor.h \
                                 src/ui/scope_cal.c src/ui/scope_timebase.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< \
@@ -814,8 +837,13 @@ test-sys-prefs: $(BUILD_DIR)/test_sys_prefs
 
 # Zoom while paused (parity C14): the ratio, vertical map and 16-tap
 # interpolator of src/dsp/paused_view.c, against the stock dumps and formulas.
-$(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c src/dsp/paused_view.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/paused_view.c -lm -o $@
+# Since the C5 merge it also pins the one window plan and that pv_fill at
+# ratio 1000/L IS scope_geom_fill (one kernel, sinc_interp.c, for both zooms).
+$(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c src/dsp/paused_view.h \
+                               src/dsp/sinc_interp.c src/dsp/sinc_interp.h \
+                               src/ui/scope_geom.c src/ui/scope_geom.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp -Isrc/ui $< src/dsp/paused_view.c \
+		src/dsp/sinc_interp.c src/ui/scope_geom.c -lm -o $@
 
 .PHONY: test-paused-view
 test-paused-view: $(BUILD_DIR)/test_paused_view

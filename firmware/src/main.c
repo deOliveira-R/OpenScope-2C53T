@@ -402,11 +402,13 @@ static bool scope_incremental_available(const scope_state_t *s)
      * Cursors still force the full path — only it draws them. */
     /* Math and persistence (C12) are layers of the full path only: the
      * compositor streams the trace band and knows neither. They trade the
-     * flicker-free update for the feature, on request. */
+     * flicker-free update for the feature, on request. A re-sampled held
+     * record (zoom while paused, C14) no longer forces the full path: both
+     * renderers draw the one window view_build() fills (scope_ui.c), blank
+     * columns included. */
     return scope_acquisition_ready()
            && s->cursor.mode == CURSOR_OFF
            && !math_enabled && !persist_enabled
-           && !scope_ui_paused_zoom_active()   /* a re-sampled held record (C14) */
            && !scope_trig_menu.open;      /* the trigger panel: full path only, as cursors */
 #endif
 }
