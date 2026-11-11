@@ -44,7 +44,7 @@ Derived from `reverse_engineering/analysis_v120/w25q128_flash_map_2026-06-13.md`
 | `usercal` | `0xF00000`–`0xF0FFFF` | 64 KB | append log — user calibration overlay |
 | `settings` | `0xF10000`–`0xF1FFFF` | 64 KB | append log — saved settings |
 | `modules` | `0xF20000`–`0xF9FFFF` | 512 KB | read/write — module data assets |
-| `scratch` | `0xFA0000`–`0xFFEFFF` | 380 KB | read/write — streaming screenshot, general use |
+| `scratch` | `0xFA0000`–`0xFFCFFF` | 372 KB | read/write — on-device screenshot gallery: 9 slots of 40 KB at `0xFA0000 + k*0xA000` ([gallery.md](gallery.md)) |
 | `tail` | `0xFFF000`–`0xFFFFFF` | 4 KB | **read-only** — programmed (4096 zero bytes), purpose unknown |
 
 Why the writable window sits at the top: it is `0xFF`-erased in both archived

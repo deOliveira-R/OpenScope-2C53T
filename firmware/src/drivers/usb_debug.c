@@ -64,6 +64,9 @@
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
 #include "../ui/meter_voltage_wave.h"
+#include "../ui/gallery_ui.h"
+#include "../util/gallery_store.h"
+#include "../util/cal_backup_core.h"
 
 #include "fpga_cal_table.h"
 #include "FreeRTOS.h"
@@ -2166,6 +2169,104 @@ static void cmd_screen_dumpbin(const char *args)
     }
 
     usb_send_str("\r\nSCREENBIN END\r\n");
+}
+
+/* ── screenshot — the on-device gallery over the shell (parity C16) ─────
+ * Same store as SAVE / long SAVE (gallery_store.h: 9 slots in our W25Q
+ * scratch region, never stock's FAT). `get` frames a raw BMP the way
+ * `screen dumpbin` frames its bytes: a header line with len + the CRC32 the
+ * save recorded, the raw file, then an END line with the CRC recomputed from
+ * what was actually sent, so a host can check both. */
+static const char *gallery_status_str(gallery_status_t st)
+{
+    switch (st) {
+    case GALLERY_OK:            return "ok";
+    case GALLERY_ERR_NOT_READY: return "flash region layer not ready";
+    case GALLERY_ERR_FULL:      return "gallery full (delete one)";
+    case GALLERY_ERR_IO:        return "flash io error or busy";
+    case GALLERY_ERR_NOT_FOUND: return "no such screenshot";
+    case GALLERY_ERR_BAD_ARG:   return "bad argument";
+    }
+    return "?";
+}
+
+static void cmd_screenshot(const char *args)
+{
+    static const char usage[] =
+        "Usage: screenshot list | save | get <n> | delete <n> | check <n>\r\n";
+    char name[16];
+    uint32_t seq = 0, slot = 0;
+    gallery_status_t st;
+
+    if (args == NULL || *args == '\0' || strcmp(args, "list") == 0) {
+        gallery_index_t idx;
+        st = gallery_scan(&idx);
+        if (st != GALLERY_OK) { usb_debug_printf("screenshot: %s\r\n", gallery_status_str(st)); return; }
+        const flash_region_t *r = flash_region_get(GALLERY_REGION);
+        usb_debug_printf("SHOTS count=%u slots=%u next=%lu region=%s 0x%06lX+0x%lX slot=0x%lX\r\n",
+                         (unsigned)idx.count, (unsigned)idx.slots_total, (unsigned long)idx.next_seq,
+                         r->name, (unsigned long)r->start, (unsigned long)r->length,
+                         (unsigned long)GALLERY_SLOT_SIZE);
+        for (uint32_t i = 0; i < idx.count; i++) {
+            gallery_slot_info_t info;
+            (void)gallery_slot_info(idx.slot[i], &info);
+            gallery_name(idx.seq[i], name, sizeof name);
+            usb_debug_printf("  %-14s slot %u @0x%06lX len=%lu crc32=%08lX\r\n", name,
+                             (unsigned)idx.slot[i],
+                             (unsigned long)(r->start + idx.slot[i] * GALLERY_SLOT_SIZE + GALLERY_BMP_OFFSET),
+                             (unsigned long)info.bmp_len, (unsigned long)info.bmp_crc);
+        }
+        return;
+    }
+    if (strcmp(args, "save") == 0) {
+        st = gallery_ui_capture(&seq);
+        if (st == GALLERY_OK) {
+            gallery_name(seq, name, sizeof name);
+            usb_debug_printf("screenshot: saved %s\r\n", name);
+        } else {
+            usb_debug_printf("screenshot: save failed: %s\r\n", gallery_status_str(st));
+        }
+        return;
+    }
+
+    const bool is_get = strncmp(args, "get ", 4) == 0;
+    const bool is_del = strncmp(args, "delete ", 7) == 0;
+    const bool is_chk = strncmp(args, "check ", 6) == 0;
+    if (!is_get && !is_del && !is_chk) { usb_send_str(usage); return; }
+    const char *arg = args + (is_get ? 4 : is_del ? 7 : 6);
+    while (*arg == ' ') arg++;
+    if (!gallery_parse_name(arg, &seq)) { usb_send_str(usage); return; }
+    gallery_name(seq, name, sizeof name);
+
+    if (is_del) {
+        st = gallery_delete(seq);
+        usb_debug_printf("screenshot: delete %s: %s\r\n", name, gallery_status_str(st));
+        return;
+    }
+    st = gallery_find(seq, &slot);
+    if (st != GALLERY_OK) { usb_debug_printf("screenshot: %s: %s\r\n", name, gallery_status_str(st)); return; }
+    gallery_slot_info_t info;
+    (void)gallery_slot_info(slot, &info);
+    if (is_chk) {
+        uint32_t crc = 0;
+        st = gallery_crc_bmp(slot, &crc);
+        usb_debug_printf("screenshot: %s stored=%08lX read=%08lX %s\r\n", name,
+                         (unsigned long)info.bmp_crc, (unsigned long)crc,
+                         (st == GALLERY_OK && crc == info.bmp_crc) ? "OK" : "MISMATCH");
+        return;
+    }
+    usb_debug_printf("SHOTBIN name=%s len=%lu crc32=%08lX\r\n", name,
+                     (unsigned long)info.bmp_len, (unsigned long)info.bmp_crc);
+    uint8_t buf[64];
+    uint32_t crc = CAL_BACKUP_CRC32_INIT;
+    for (uint32_t off = 0; off < GALLERY_BMP_LEN; off += sizeof buf) {
+        uint32_t n = GALLERY_BMP_LEN - off;
+        if (n > sizeof buf) n = sizeof buf;
+        if (gallery_read_bmp(slot, off, buf, n) != GALLERY_OK) memset(buf, 0, n);
+        crc = cal_backup_crc32_update(crc, buf, n);
+        usb_send_bytes(buf, (uint16_t)n);
+    }
+    usb_debug_printf("\r\nSHOTBIN END crc32=%08lX\r\n", (unsigned long)cal_backup_crc32_final(crc));
 }
 
 static void cmd_screen_shadow(const char *args)
@@ -8996,6 +9097,9 @@ static const shell_cmd_t shell_cmds[] = {
           "screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n"),
     CMD_A("screen dumpbin", cmd_screen_dumpbin, 0,
           "screen dumpbin [x y w h]        Binary indexed4 LCD shadow dump\r\n"),
+    CMD_A("screenshot", cmd_screenshot, 0,
+          "screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\n"
+          "screenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,

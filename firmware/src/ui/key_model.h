@@ -140,7 +140,7 @@ typedef enum {
     KA_CH_ENABLE_TOGGLE,  /* long CH1/CH2: arg = channel (0/1) */
     KA_SIGGEN_BOOT_TOGGLE,/* long AUTO in the generator: output-at-boot policy (ours) */
     KA_SIGGEN_RUNSTOP,    /* long OK in the generator: output Run/Stop (manual 2.1) */
-    KA_LONG_UNUSED,       /* long SAVE: a later parity item; arg = button id */
+    KA_GALLERY_OPEN,      /* long SAVE in the scope: screenshot gallery (stock "nine palace grid") */
     KA_BASECAL,           /* long AUTO in the scope: baseline correction (stock 0x0800DF58) */
     KA_CENTER50,          /* long OK in the scope: 50 % centre (stock 0x0800DA3A) */
     KA_FOCUS_NEXT,        /* short MOVE */

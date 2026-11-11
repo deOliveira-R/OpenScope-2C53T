@@ -91,6 +91,7 @@ volatile float         fuse_scan_threshold_mv = 0.1f; /* Scan: DRAW at or above 
  * by the next scope frame. The overlay owner clears the flag and sends
  * DCMD_REDRAW_ALL to hand the screen back. */
 volatile bool          ui_modal_active = false;
+volatile uint32_t      ui_modal_idle_count = 0;
 
 /* Scope feature toggles */
 volatile bool          math_enabled = false;
@@ -633,6 +634,7 @@ static void vDisplayTask(void *pvParameters)
          * three seconds of paused re-arm is harmless and resumes on the
          * DCMD_REDRAW_ALL that ends every modal. */
         if (ui_modal_active) {
+            ui_modal_idle_count++;
             frame++;
             continue;
         }
