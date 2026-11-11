@@ -3877,14 +3877,17 @@ bool fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *ou
 /* Called by the acq task right after the op04/op05 reads; `ok` = no SPI3
  * hardware timeout during them. Cheap when off. */
 /* One converter's window, robust to isolated glitch samples: on unit #2 a
- * quiet input at tb <= 3 reads +-5 counts with the odd single sample at 0 or
- * ~200 (bench 2026-11-11), which a plain peak-to-peak counted as "not flat"
- * and refused the whole cal. Pass 1 takes the mean; pass 2 drops samples
+ * quiet input at tb <= 3 reads +-5 counts plus interference bursts (10-40
+ * samples of wild values, ~5 % of a record; bench 2026-11-11), which a plain
+ * peak-to-peak counted as "not flat" and refused the whole cal. Pass 1 takes the mean; pass 2 drops samples
  * more than ILCAL_GLITCH counts from it and measures mean, spread and the
  * rails on the rest. More than ILCAL_GLITCH_MAX dropped samples is not a
  * glitch any more: the spread is reported as 255 (not flat). */
 #define ILCAL_GLITCH      24
-#define ILCAL_GLITCH_MAX  10u   /* of 512: 2 % */
+#define ILCAL_GLITCH_MAX  77u   /* of 512: 15 %. Unit #2 at tb <= 3 shows interference
+                                 * BURSTS of 10-40 samples covering ~5 % of a record
+                                 * (bench 2026-11-11); a real signal leaves far more
+                                 * than 15 % outside +-24 codes of its mean. */
 static void ilcal_window(const volatile uint8_t *w, float *mean, uint8_t *spread, bool *clip)
 {
     uint32_t s = 0;
