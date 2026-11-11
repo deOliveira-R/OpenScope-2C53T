@@ -157,7 +157,7 @@ static void test_one_over_dt(void)
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "dx=0 must refuse");
 
     /* No rate => no Hz either; 1/samples has no unit to fall back to. */
-    r = scope_cursor_one_over_dt(0x05u, 100);
+    r = scope_cursor_one_over_dt(0x0Bu, 100);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE,
           "a code with no rate must not produce a frequency");
 }
@@ -166,10 +166,10 @@ static void test_one_over_dt(void)
 
 static void test_unmeasured_timebase_falls_back_to_samples(void)
 {
-    /* Codes still without a rate (2026-11-10): 0x05 (methods disagree) and
-     * 0x0B/0x0C (below one sample per CAN bit). 0x08, the power-on default,
+    /* Codes still without a rate (2026-11-11): 0x0B/0x0C (below one sample
+     * per CAN bit). 0x08, the power-on default,
      * now has a measured rate and is covered by the seconds tests. */
-    static const uint8_t none_codes[] = { 0x05u, 0x0Bu, 0x0Cu };
+    static const uint8_t none_codes[] = { 0x0Bu, 0x0Cu };
 
     for (unsigned i = 0; i < sizeof(none_codes); i++) {
         const uint8_t code = none_codes[i];

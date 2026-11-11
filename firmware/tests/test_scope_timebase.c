@@ -122,7 +122,8 @@ static void test_fast_codes_2026_11(void)
      */
     const struct { uint8_t code; float fs, round_val; } want[] = {
         { 0x00, 124830000.0f, 125e6f }, { 0x03, 124830000.0f, 125e6f },
-        { 0x04, 124830000.0f, 125e6f }, { 0x06,  24981200.0f,  25e6f },
+        { 0x04, 124830000.0f, 125e6f }, { 0x05,  49900000.0f,  50e6f },
+        { 0x06,  24981200.0f,  25e6f },
         { 0x07,  12494100.0f, 12.5e6f }, { 0x08,   4997500.0f,   5e6f },
         { 0x09,   2498800.0f,  2.5e6f }, { 0x0A,   1249600.0f, 1.25e6f },
     };
@@ -137,8 +138,9 @@ static void test_fast_codes_2026_11(void)
         CHECK(scope_timebase_get_tier(want[i].code) == SCOPE_TB_MEASURED,
               "code 0x%02X should be MEASURED", want[i].code);
     }
-    /* 0x05: the two methods disagree (100 vs 50 MS/s); it must stay empty. */
-    CHECK(scope_timebase_sample_rate(0x05) == 0.0f, "code 0x05 is unresolved and must return 0.0f");
+    /* 0x05 was briefly read as 100 MS/s from an AUTO roll read; stock's own
+     * record settles it at ~50. */
+    CHECK(scope_timebase_sample_rate(0x05) < 60e6f, "code 0x05 must not be the 100 MS/s roll-read artifact");
 }
 
 static void test_precorrection_rates_stay_out(void)
@@ -209,7 +211,7 @@ static void test_precorrection_rates_stay_out(void)
 
 static void test_unmeasured_codes_return_zero(void)
 {
-    const uint8_t none[] = { 5, 0x0B, 0x0C };
+    const uint8_t none[] = { 0x0B, 0x0C };
 
     for (unsigned i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
         CHECK(scope_timebase_sample_rate(none[i]) == 0.0f,
@@ -281,8 +283,8 @@ static void test_labels(void)
     CHECK(buf[0] == '~', "0x0D is PROVISIONAL and must be marked, got \"%s\"", buf);
 
     /* No rate -> explicit nothing, never a nominal number. */
-    scope_timebase_label(0x05, buf, sizeof(buf));
-    CHECK(strcmp(buf, "--") == 0, "0x05 label should be \"--\", got \"%s\"", buf);
+    scope_timebase_label(0x0B, buf, sizeof(buf));
+    CHECK(strcmp(buf, "--") == 0, "0x0B label should be \"--\", got \"%s\"", buf);
 
     /* Fast codes: 4.9975 MS/s -> 6.403 us/div needs a decimal; 124.83 MS/s ->
      * 256 ns/div needs nanoseconds (it printed "0us" before the ns branch). */

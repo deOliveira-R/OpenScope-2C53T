@@ -53,7 +53,7 @@ static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
     /* 0x02 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
     /* 0x03 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
     /* 0x04 */  124830000.0f,   /* 2026-11-10 10 MHz tone, CAN bits agree  */
-    /* 0x05 */          0.0f,   /* CONFLICT: tone 100M (AUTO), CAN 50M (NORMAL) */
+    /* 0x05 */   49900000.0f,   /* 2026-11-11 stock's own record, 10 MHz tone */
     /* 0x06 */   24981200.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
     /* 0x07 */   12494100.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
     /* 0x08 */    4997500.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
@@ -219,9 +219,12 @@ static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
  * Every row lands within 0.15 % of a 125M / 25M / 12.5M / 5M / 2.5M / 1.25M
  * ladder. The measured values are what is written, per this file's rule.
  *
- * 0x05 is left at 0: method A (in AUTO) puts the tone at f/fs = 0.1004 with
- * peaks at 0.1/0.3 (100 MS/s), method B (in NORMAL) gives gaps of 100.4 /
- * 199.7 / 299.7 / 499.5 samples = 1/2/3/5 bits at 50 MS/s. Unresolved.
+ * 0x05 = 49.90 MS/s, settled 2026-11-11 by method A run on STOCK V1.2.0 and
+ * read from stock's own buffers (ms+0x5B0..0xDAF) over SWD: 4.990 samples per
+ * cycle, with controls 0x04 = 124.76 and 0x06 = 24.95 MS/s from the same
+ * session. OpenScope's AUTO tone test had suggested 100 MS/s (peaks at
+ * 0.1/0.3): a roll-read artifact. CAN gaps in NORMAL (1/2/3/5 bits at 100
+ * samples) and the CAN_L edge width (2.0-2.4 vs 4.5 samples at 0x04) agree.
  * 0x0B/0x0C are below one sample per CAN bit and stay unmeasured.
  */
 
@@ -257,7 +260,7 @@ static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
 static const scope_tb_tier_t tier_by_code[SCOPE_TIMEBASE_CODE_COUNT] = {
     SCOPE_TB_MEASURED, SCOPE_TB_MEASURED, SCOPE_TB_MEASURED, SCOPE_TB_MEASURED,
     SCOPE_TB_MEASURED,      /* 0x04 tone + CAN   */
-    SCOPE_TB_NONE,          /* 0x05 conflict     */
+    SCOPE_TB_MEASURED,      /* 0x05 stock record */
     SCOPE_TB_MEASURED,      /* 0x06 CAN          */
     SCOPE_TB_MEASURED,      /* 0x07 CAN          */
     SCOPE_TB_MEASURED,      /* 0x08 CAN          */
