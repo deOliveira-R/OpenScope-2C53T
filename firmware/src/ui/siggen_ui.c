@@ -61,7 +61,9 @@ void draw_siggen_screen(uint32_t frame)
         char d[2] = { 0, 0 };
         uint16_t x = value_x;
         for (int i = (int)SIGGEN_EDIT_DIGITS - 1; i >= 0; i--) {
-            d[0] = (char)('0' + siggen_edit_digit_of(g_editor.value, (uint8_t)i));
+            /* The live value, which the editor tracks key by key; a shell
+             * `siggen freq` while the editor is open shows at once. */
+            d[0] = (char)('0' + siggen_edit_digit_of(cfg->frequency_hz, (uint8_t)i));
             bool cur = ((uint8_t)i == g_editor.digit);
             font_draw_string(x, param_y + 20, d,
                              cur ? th->background : th->text_primary,
@@ -111,8 +113,10 @@ void draw_siggen_screen(uint32_t frame)
                          th->warning, th->background, &font_large);
     }
 
-    /* Boot policy (ours; stock always restores): long AUTO toggles it. */
-    font_draw_string(value_x + 130, param_y + 96, cfg->start_on ? "Boot: ON" : "Boot: OFF",
+    /* Boot policy (ours; stock always restores): long AUTO toggles it.
+     * In the label column: "OUTPUT OFF" in font_large spans value_x..+144,
+     * so anything right of it would not fit in 320 px. */
+    font_draw_string(label_x, param_y + 96, cfg->start_on ? "Boot: ON" : "Boot: OFF",
                      th->text_secondary, th->background, &font_small);
 
     if (g_editor.active) {

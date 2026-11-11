@@ -1075,8 +1075,11 @@ static void test_siggen_run_stop_with_boot_off_costs_no_record(void)
     settings_store_init();
     settings_store_note_change(1000);
     uint32_t w0 = settings_store_get_status()->writes;
+    /* One toggle alone, then flush: an even number of toggles would land
+     * back on the flash image and hide a recorded enable. */
     siggen_enable(true);
     settings_store_note_change(2000);
+    CHECK(!settings_store_flush(2500), "a single Run/Stop caused a write");
     siggen_enable(false);
     settings_store_note_change(3000);
     CHECK(!settings_store_flush(9000), "Run/Stop alone caused a write");

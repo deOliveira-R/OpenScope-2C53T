@@ -48,8 +48,9 @@ siggen_edit_result_t siggen_edit_key(siggen_edit_t *e, siggen_edit_key_t key)
     }
 
     case SGE_KEY_DOWN: {
-        /* Stock's double->u32 conversion of a negative result saturates
-         * to 0 (0x080454B0), which is "output off". */
+        /* Floor at 0, which is "output off" (0x08029D5C). Stock converts
+         * through 0x080454B0 (0x0800A456); that it saturates a negative
+         * result to 0 is [H] (siggen-parity check.md item 2). */
         uint32_t s = siggen_edit_step(e->digit);
         uint32_t v = (e->value > s) ? e->value - s : 0u;
         if (v == e->value) return SGE_MOVED;

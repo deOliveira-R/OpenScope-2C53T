@@ -408,6 +408,10 @@ static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
         if (button != BTN_PRM) return false;
         siggen_edit_begin(ed, siggen_get_config()->frequency_hz);
     } else {
+        /* The shell (`siggen freq`) can change the frequency while the
+         * editor is open; step from the live value, not a stale copy. */
+        if (ed->value != siggen_get_config()->frequency_hz)
+            ed->value = siggen_get_config()->frequency_hz;
         switch (button) {
         case BTN_LEFT:  k = SGE_KEY_LEFT;   break;
         case BTN_RIGHT: k = SGE_KEY_RIGHT;  break;

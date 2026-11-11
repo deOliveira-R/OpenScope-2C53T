@@ -1085,9 +1085,9 @@ int main(void)
         dac_output_init();
 
         /* Stock factory values (sine, 1 kHz, 3.0 V, 50 %) but output OFF:
-         * stock boots with it ON (0x080294A0) and persists the enable;
-         * we persist nothing yet, so ON here would force the GEN lead
-         * live on every boot with no way to keep it off. */
+         * stock boots with it ON (0x080294A0). settings_store_init() below
+         * then restores the saved generator settings; the output comes back
+         * ON only with the opt-in boot policy (siggen boot on, parity G5). */
         siggen_init(NULL);
     }
 #endif
