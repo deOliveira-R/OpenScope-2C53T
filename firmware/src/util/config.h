@@ -55,6 +55,9 @@
  * siggen_offset, so the record keeps its size. A v3 record fails the version
  * check once and the device comes up on defaults. */
 
+/* device_config_t.sys_prefs_mark: brightness/volume/auto-off are real (C15). */
+#define CONFIG_SYS_PREFS_MARK  0xC1u
+
 #define CONFIG_MODE_OSCILLOSCOPE  0
 #define CONFIG_MODE_MULTIMETER    1
 #define CONFIG_MODE_SIGNAL_GEN     2
@@ -96,7 +99,11 @@ typedef struct {
     uint8_t  siggen_enabled;     /* v4: output enable at the last save (stock E58) */
     uint8_t  siggen_start_on;    /* v4: 1 = restore the enable at boot like stock;
                                   * 0 = always boot OFF (default, safety) */
-    uint8_t  siggen_reserved;    /* v4: 0 */
+    uint8_t  sys_prefs_mark;     /* v4 (was siggen_reserved, always 0): CONFIG_SYS_PREFS_MARK
+                                  * once a C15 firmware wrote the record. 0 = an older v4
+                                  * record, whose brightness 80 / auto-off 30 are the old
+                                  * config_init_defaults() values no UI could set: ignored,
+                                  * so an update never starts an idle power-off nobody chose. */
     /* Display */
     uint8_t  display_brightness;
     uint8_t  display_persist_mode;

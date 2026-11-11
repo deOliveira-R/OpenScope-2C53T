@@ -120,6 +120,7 @@ void settings_store_capture(device_config_t *cfg)
     cfg->display_brightness  = sys_prefs_brightness();
     cfg->sound_enabled       = sys_prefs_volume();      /* 0..10 since C15 (was 0/1) */
     cfg->auto_shutdown_mins  = sys_prefs_autooff_mins();
+    cfg->sys_prefs_mark      = CONFIG_SYS_PREFS_MARK;
 
     stamp(cfg);
 }
@@ -183,9 +184,17 @@ void settings_store_apply(const device_config_t *cfg)
     /* Brightness, volume and auto-off are clamped by the setters (a blank or
      * foreign byte lands on stock's factory value / off). The timers pick the
      * values up in sys_pwm_init() / the input task; this file stays hardware-free. */
-    sys_prefs_set_brightness(cfg->display_brightness);
-    sys_prefs_set_volume(cfg->sound_enabled);
-    sys_prefs_set_autooff_mins(cfg->auto_shutdown_mins);
+    if (cfg->sys_prefs_mark == CONFIG_SYS_PREFS_MARK) {
+        sys_prefs_set_brightness(cfg->display_brightness);
+        sys_prefs_set_volume(cfg->sound_enabled);
+        sys_prefs_set_autooff_mins(cfg->auto_shutdown_mins);
+    } else {
+        /* A pre-C15 record: its 80 % / 30 min were defaults, not choices
+         * (config.h). Stock's factory values instead: 100 %, volume 1, off. */
+        sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
+        sys_prefs_set_volume(SYS_VOL_DEFAULT);
+        sys_prefs_set_autooff_mins(0);
+    }
 
     /* Deliberately NOT restored: ss->running (a scope always boots running),
      * the channel enables (an old config with CH2 off boots with both on),

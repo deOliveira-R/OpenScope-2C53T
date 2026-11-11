@@ -115,6 +115,10 @@ static void buzzer_task(void *arg)
     bool level = false;
     uint32_t seen_edges = exti3_edges;
     TickType_t next_pulse_tick = 0;
+    /* Boot beep (stock 0x0802E370) from here, not from main(): before the
+     * scheduler nothing would end it, and main() can still busy-wait for
+     * seconds (the cold meter transition) after the beep had started. */
+    sys_pwm_boot_beep();
     for (;;) {
         TickType_t now = xTaskGetTickCount();
         bool force_active = buzzer_force_until_tick != 0 &&

@@ -83,6 +83,7 @@ void config_init_defaults(device_config_t *cfg)
     /* System defaults */
     cfg->auto_shutdown_mins = 0;      /* stock factory: off (C15) */
     cfg->sound_enabled      = 1;
+    cfg->sys_prefs_mark     = CONFIG_SYS_PREFS_MARK;   /* these are C15's values */
 
     /* v3 block */
     cfg->theme                = 0;  /* THEME_DARK_BLUE */

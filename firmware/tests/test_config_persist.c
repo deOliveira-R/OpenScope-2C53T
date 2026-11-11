@@ -1186,6 +1186,36 @@ static void test_system_prefs_survive_a_power_cycle(void)
     CHECK(sys_prefs_autooff_mins() == 30, "auto-off not restored (%u)", (unsigned)sys_prefs_autooff_mins());
 }
 
+/* A v4 record written before C15 carries the old config defaults (brightness
+ * 80, auto-off 30) with sys_prefs_mark 0. No UI could set them, so applying
+ * them would arm a 30-minute idle power-off nobody chose. */
+static void test_pre_c15_record_gets_stock_factory_prefs(void)
+{
+    device_config_t cfg;
+
+    config_init_defaults(&cfg);
+    cfg.display_brightness = 80;
+    cfg.auto_shutdown_mins = 30;
+    cfg.sound_enabled      = 1;
+    cfg.sys_prefs_mark     = 0;
+    sys_prefs_set_brightness(55);
+    sys_prefs_set_autooff_mins(60);
+    settings_store_apply(&cfg);
+    CHECK(sys_prefs_autooff_mins() == 0, "legacy auto-off 30 applied (%u)", (unsigned)sys_prefs_autooff_mins());
+    CHECK(sys_prefs_brightness() == 100, "legacy brightness 80 applied (%u)", (unsigned)sys_prefs_brightness());
+    CHECK(sys_prefs_volume() == 1, "volume not factory 1 (%u)", (unsigned)sys_prefs_volume());
+
+    cfg.sys_prefs_mark = CONFIG_SYS_PREFS_MARK;
+    settings_store_apply(&cfg);
+    CHECK(sys_prefs_autooff_mins() == 30 && sys_prefs_brightness() == 80,
+          "a C15 record's prefs not applied");
+
+    settings_store_capture(&cfg);
+    CHECK(cfg.sys_prefs_mark == CONFIG_SYS_PREFS_MARK, "capture does not stamp the C15 mark");
+    sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
+    sys_prefs_set_autooff_mins(0);
+}
+
 static void test_startup_mode_from_a_foreign_record_is_the_default(void)
 {
     device_config_t cfg;
@@ -2475,6 +2505,8 @@ int main(void)
         run("startup mode and Auto function survive a power cycle",
             test_startup_mode_and_meter_function_survive_a_power_cycle);
         run("brightness, volume and auto-off survive a power cycle", test_system_prefs_survive_a_power_cycle);
+        run("a pre-C15 record gets stock factory brightness / auto-off",
+            test_pre_c15_record_gets_stock_factory_prefs);
         run("a foreign startup mode is the default",
             test_startup_mode_from_a_foreign_record_is_the_default);
         run("boot mode policy", test_boot_mode_policy);

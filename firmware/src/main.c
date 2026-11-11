@@ -834,6 +834,9 @@ static void vInputTask(void *pvParameters)
             input_handle_button(pressed, xDisplayQueue);
         }
         input_autooff_poll();   /* idle power-off (C15); no-op while "Off" */
+        /* Backstop: the buzzer task ends a key click, but if it failed to
+         * start a click would sound forever; this bounds it to <= ~210 ms. */
+        sys_pwm_buzzer_service();
 #ifndef EMULATOR_BUILD
         /* Autoset / baseline correction / 50 % centre (parity C9/C10): one
          * non-blocking pass, so a run never holds this task (or its health
@@ -1209,8 +1212,7 @@ int main(void)
     /* Create USB debug shell task (CDC virtual serial port).
      * Priority 2 — above display (1) but below input (4) and FPGA tasks. */
     usb_debug_create_task();
-    continuity_buzzer_create_task();
-    sys_pwm_boot_beep();   /* stock beeps once at boot when the volume is not 0 */
+    continuity_buzzer_create_task();   /* also sounds the boot beep (C15) */
     meter_autoselect_create_task();
 
     if (current_mode == MODE_MULTIMETER) {
