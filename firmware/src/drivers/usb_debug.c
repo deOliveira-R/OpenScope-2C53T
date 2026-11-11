@@ -15,6 +15,15 @@
 #include "usbd_int.h"
 #include "cdc_class.h"
 #include "cdc_desc.h"
+/* USB_MSC (Makefile, default 1): enumerate as CDC + the read-only gallery
+ * mass-storage LUN (usb_composite.c, usb_msc.c). 0 = the CDC-only device. */
+#ifndef USB_MSC
+#define USB_MSC 0
+#endif
+#if USB_MSC
+#include "usb_composite.h"
+#include "usb_msc.h"
+#endif
 #include "dfu_boot.h"
 #include "flash_fs.h"
 #include "fw_loader.h"
@@ -69,6 +78,8 @@
 #include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
 #include "../util/gallery_store.h"
+#include "../ui/logo_ui.h"
+#include "watchdog.h"
 #include "../util/cal_backup_core.h"
 
 #include "fpga_cal_table.h"
@@ -147,8 +158,15 @@ void usb_debug_init(void)
     /* Enable USB interrupt (low priority, below FreeRTOS syscall ceiling) */
     nvic_irq_enable(USBFS_L_CAN1_RX0_IRQn, 6, 0);
 
-    /* Initialize USB device core with CDC class */
+    /* Initialize USB device core: CDC, or CDC + read-only MSC (USB Sharing).
+     * The composite keeps the CDC on the same interfaces, endpoints and
+     * VID:PID, so the shell below is unaware of the difference. */
+#if USB_MSC
+    usbd_core_init(&usb_core_dev, USB, &usb_composite_class_handler,
+                   &usb_composite_desc_handler, 0);
+#else
     usbd_core_init(&usb_core_dev, USB, &cdc_class_handler, &cdc_desc_handler, 0);
+#endif
 
     /* Enable USB pull-up — device becomes visible to host */
     usbd_connect(&usb_core_dev);
@@ -2389,6 +2407,153 @@ static void cmd_screenshot(const char *args)
         usb_send_bytes(buf, (uint16_t)n);
     }
     usb_debug_printf("\r\nSHOTBIN END crc32=%08lX\r\n", (unsigned long)cal_backup_crc32_final(crc));
+}
+
+/*
+ * Boot logo (logo_store.h): upload a 320x240 RGB565 image over the shell.
+ *   logo put <len> <crc32hex>   erase the slot, start an upload (len = 153600)
+ *   logo data <off> <hex>       <= 48 bytes at the next expected offset
+ *   logo end                    verify CRC from flash, commit
+ * scripts/logo_put.py drives this; every reply starts "logo:" and a failure
+ * says "err". The upload session is 12 bytes of static RAM.
+ */
+static logo_upload_t s_logo_up;
+
+static void logo_tick(void)
+{
+    health_checkin_self();
+    vTaskDelay(1);
+}
+
+static int logo_hexbyte(const char *p)
+{
+    int v = 0;
+    for (int i = 0; i < 2; i++) {
+        char c = p[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= c - '0';
+        else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+        else return -1;
+    }
+    return v;
+}
+
+static void cmd_logo(const char *args)
+{
+    static const char usage[] =
+        "Usage: logo info | put <len> <crc32hex> | data <off> <hex> | end | show | clear\r\n";
+    if (args == NULL || *args == '\0' || strcmp(args, "info") == 0) {
+        logo_info_t info;
+        logo_status_t st = logo_info(&info);
+        if (st != LOGO_OK) { usb_debug_printf("logo: err %s\r\n", logo_status_str(st)); return; }
+        const flash_region_t *r = flash_region_get(LOGO_REGION);
+        if (info.state == LOGO_SLOT_VALID) {
+            uint32_t crc = 0;
+            st = logo_crc_payload(&crc, logo_tick);
+            usb_debug_printf("logo: valid %lux%lu rgb565 %lu B crc %08lX payload %s @0x%06lX\r\n",
+                             (unsigned long)LOGO_W, (unsigned long)LOGO_H, (unsigned long)info.len,
+                             (unsigned long)info.crc,
+                             (st == LOGO_OK && crc == info.crc) ? "OK" : "MISMATCH",
+                             (unsigned long)(r ? r->start : 0));
+        } else {
+            usb_debug_printf("logo: %s (built-in splash)\r\n",
+                             info.state == LOGO_SLOT_EMPTY ? "none stored" : "damaged slot");
+        }
+        return;
+    }
+    if (strncmp(args, "put ", 4) == 0) {
+        uint32_t len, crc;
+        const char *p = args + 4;
+        char *e;
+        len = strtoul(p, &e, 10);
+        if (e == p || *e != ' ' || parse_hex32(e + 1, &crc) != 0) { usb_send_str(usage); return; }
+        logo_status_t st = logo_put_begin(&s_logo_up, len, crc, logo_tick);
+        if (st == LOGO_OK) usb_debug_printf("logo: ok put %lu\r\n", (unsigned long)len);
+        else usb_debug_printf("logo: err %s\r\n", logo_status_str(st));
+        return;
+    }
+    if (strncmp(args, "data ", 5) == 0) {
+        uint32_t off;
+        const char *p = args + 5;
+        char *e;
+        off = strtoul(p, &e, 10);
+        if (e == p || *e != ' ') { usb_send_str(usage); return; }
+        p = e + 1;
+        uint8_t buf[LOGO_CHUNK_MAX];
+        uint32_t n = 0;
+        while (p[0] != '\0' && p[1] != '\0') {
+            int b = logo_hexbyte(p);
+            if (b < 0 || n >= sizeof buf) { usb_send_str("logo: err bad hex\r\n"); return; }
+            buf[n++] = (uint8_t)b;
+            p += 2;
+        }
+        if (n == 0u || *p != '\0') { usb_send_str("logo: err bad hex\r\n"); return; }
+        logo_status_t st = logo_put_data(&s_logo_up, off, buf, n);
+        if (st == LOGO_OK) usb_debug_printf("logo: ok %lu\r\n", (unsigned long)s_logo_up.received);
+        else usb_debug_printf("logo: err %s (expect %lu)\r\n", logo_status_str(st),
+                              (unsigned long)s_logo_up.received);
+        return;
+    }
+    if (strcmp(args, "end") == 0) {
+        logo_status_t st = logo_put_end(&s_logo_up, logo_tick);
+        usb_debug_printf(st == LOGO_OK ? "logo: ok committed\r\n" : "logo: err %s\r\n",
+                         logo_status_str(st));
+        return;
+    }
+    if (strcmp(args, "clear") == 0) {
+        logo_status_t st = logo_clear();
+        usb_debug_printf("logo: %s\r\n", st == LOGO_OK ? "ok cleared" : logo_status_str(st));
+        return;
+    }
+    if (strncmp(args, "show", 4) == 0) {
+        uint32_t ms = 2000u;
+        if (args[4] == ' ') parse_int(args + 5, &ms);
+        if (ms > 10000u) ms = 10000u;
+        logo_status_t st = logo_ui_preview(ms);
+        usb_debug_printf("logo: %s\r\n", st == LOGO_OK ? "ok shown" : logo_status_str(st));
+        return;
+    }
+    usb_send_str(usage);
+
+/* ── usb — USB Sharing (parity C16): the read-only gallery drive ───────
+ * The device always enumerates as CDC + MSC (USB_MSC=1); "share" only says
+ * whether the drive has a medium, so switching never re-enumerates and never
+ * drops this shell. Off at boot (USB_MSC_SHARE_DEFAULT), like stock, where
+ * the user enters USB Sharing explicitly. */
+static void cmd_usb(const char *args)
+{
+#if USB_MSC
+    if (args != NULL && strncmp(args, "share", 5) == 0) {
+        const char *a = args + 5;
+        while (*a == ' ') a++;
+        if (strcmp(a, "on") == 0 || strcmp(a, "1") == 0) usb_msc_set_shared(true);
+        else if (strcmp(a, "off") == 0 || strcmp(a, "0") == 0) usb_msc_set_shared(false);
+        else if (*a != '\0') { usb_send_str("Usage: usb share [on|off]\r\n"); return; }
+        usb_debug_printf("usb: share %s\r\n", usb_msc_shared() ? "on" : "off");
+        return;
+    }
+    if (args != NULL && *args != '\0' && strcmp(args, "status") != 0) {
+        usb_send_str("Usage: usb [status] | usb share [on|off]\r\n");
+        return;
+    }
+    usb_msc_stats_t st;
+    usb_msc_get_stats(&st);
+    usb_debug_printf("USB conf=%d msc=1 share=%s files=%u blocks=%lux512 state=%u "
+                     "cmds=%lu reads=%lu sectors=%lu ioerr=%lu badcbw=%lu resets=%lu "
+                     "wrref=%lu rescans=%lu last_op=%02X last_lba=%lu\r\n",
+                     usb_debug_connected() ? 1 : 0, st.shared ? "on" : "off",
+                     (unsigned)st.files, (unsigned long)st.blocks, (unsigned)st.state,
+                     (unsigned long)st.commands, (unsigned long)st.reads,
+                     (unsigned long)st.sectors, (unsigned long)st.io_errors,
+                     (unsigned long)st.bad_cbw, (unsigned long)st.resets,
+                     (unsigned long)st.writes_refused, (unsigned long)st.rescans,
+                     (unsigned)st.last_op, (unsigned long)st.last_lba);
+#else
+    (void)args;
+    usb_debug_printf("USB conf=%d msc=0 (built with USB_MSC=0: CDC only)\r\n",
+                     usb_debug_connected() ? 1 : 0);
+#endif
 }
 
 static void cmd_screen_shadow(const char *args)
@@ -5503,6 +5668,18 @@ _Static_assert(sizeof(meter_voltage_wave_snapshot_t) <= sizeof(shell_bus_scratch
 #define MODE_USAGE_LINE \
     "Usage: mode [scope|0 | meter|1 [submode] [layout] | startup [scope|meter]]\r\n"
 
+/* Ask the input task (the one writer of the settings record) to flush and
+ * print what REALLY happened; it used to promise "saved within 100 ms" whether
+ * or not the write took place. */
+static void report_startup_save(const char *name)
+{
+    settings_flush_outcome_t o;
+    if (input_settings_flush_sync(500u, &o))
+        usb_debug_printf("startup=%s (%s)\r\n", name, settings_flush_outcome_text(o));
+    else
+        usb_debug_printf("startup=%s (save pending: input task did not answer in 500 ms)\r\n", name);
+}
+
 static void cmd_mode(const char *args)
 {
     /* Numeric aliases for the mode keywords.
@@ -5571,12 +5748,10 @@ static void cmd_mode(const char *args)
             usb_debug_printf("startup=%s\r\n", startup_mode_name(startup_mode));
         } else if (strcmp(value, "scope") == 0) {
             startup_mode_set(STARTUP_SCOPE);
-            input_request_settings_flush();
-            usb_send_str("startup=Scope (saved within 100 ms)\r\n");
+            report_startup_save("Scope");
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
-            input_request_settings_flush();
-            usb_send_str("startup=Meter (saved within 100 ms)\r\n");
+            report_startup_save("Meter");
         } else {
             usb_send_str("Usage: mode startup [scope|meter]\r\n");
         }
@@ -9508,6 +9683,14 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("screenshot", cmd_screenshot, 0,
           "screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\n"
           "screenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n"),
+    CMD_A("logo", cmd_logo, 0,
+          "logo [info]                     Boot logo status (CRC-checked)\r\n"
+          "logo put <len> <crc>|data <off> <hex>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\n"
+          "logo show [ms]|clear            Preview now / remove (built-in splash)\r\n"),
+
+    CMD_A("usb", cmd_usb, 0,
+          "usb [status]                    USB Sharing state: read-only gallery drive (MSC) counters\r\n"
+          "usb share [on|off]              Insert/eject the gallery drive (no re-enumeration)\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,
@@ -9818,10 +10001,17 @@ static void dispatch_command(char *line)
             return;
         if (best->fn_args) best->fn_args(args); else best->fn_void();
         fpga_acq_resume();
+        input_request_settings_flush();
         return;
     }
 
     if (best->fn_args) best->fn_args(args); else best->fn_void();
+    /* Any command may have changed a persisted setting (timebase, vdiv,
+     * coupling, probe, trigger, siggen, meter mode, prefs, ...) and none of
+     * them has a key press behind it, so settings_after_button() never sees
+     * it. One request per command, served by the input task within 100 ms: a
+     * no-op (no flash access) when nothing differs from the saved image. */
+    input_request_settings_flush();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -10057,8 +10247,22 @@ static void vUsbDebugTask(void *pvParameters)
             }
         }
 
+#if USB_MSC
+        /* USB Sharing: serve READ sectors (W25Q reads need this task's
+         * context; the USB interrupt only latches them) and pick up gallery
+         * changes. Cheap when idle: one RAM compare and a state check. */
+        if (usb_msc_poll(&usb_core_dev)) did_work = true;
+#endif
+
         if (!did_work) {
+#if USB_MSC
+            /* Same 10 ms idle cadence as before, but the MSC interrupt can
+             * cut it short (task notification) so a READ does not wait a
+             * poll period per sector. Nothing else notifies this task. */
+            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+#else
             vTaskDelay(pdMS_TO_TICKS(10));
+#endif
         }
     }
 }
@@ -10066,6 +10270,12 @@ static void vUsbDebugTask(void *pvParameters)
 void usb_debug_create_task(void)
 {
 #ifndef EMULATOR_BUILD
-    xTaskCreate(vUsbDebugTask, "usb_dbg", 768, NULL, 2, NULL);
+    TaskHandle_t h = NULL;
+    xTaskCreate(vUsbDebugTask, "usb_dbg", 768, NULL, 2, &h);
+#if USB_MSC
+    usb_msc_set_notify_task(h);
+#else
+    (void)h;
+#endif
 #endif
 }

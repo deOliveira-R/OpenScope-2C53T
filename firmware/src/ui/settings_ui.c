@@ -19,6 +19,9 @@
 #include "component_test.h"
 #include "shared_mem.h"
 #include "sys_prefs.h"
+#if defined(USB_MSC) && USB_MSC
+#include "usb_msc.h"
+#endif
 #include <stdio.h>
 
 /* Top-level menu items */
@@ -36,6 +39,7 @@ static const char *settings_items[SETTINGS_ITEM_COUNT] = {
     "Firmware Update",
     "Factory Reset",
     "Theme",
+    "USB Sharing",   /* stock's settings item (OK handler 0x0800BF08); appended so no index moves */
 };
 
 /* Math / Persistence sub-menu items */
@@ -169,6 +173,11 @@ static void draw_settings_top(void)
         if (i == 8) value = ">";        /* About: has detail screen */
         if (i == 10) value = "DFU";     /* Firmware Update: reboot to bootloader */
         if (i == 12) value = th->name;  /* Theme (was the Display Mode value) */
+#if defined(USB_MSC) && USB_MSC
+        if (i == 13) value = usb_msc_shared() ? "On" : "Off";   /* read-only gallery drive */
+#else
+        if (i == 13) value = "n/a";     /* built CDC-only (USB_MSC=0) */
+#endif
 
         draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
     }

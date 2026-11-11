@@ -234,6 +234,10 @@ gallery_status_t gallery_pick_slot(uint32_t *slot)
 
 static void do_tick(void (*tick)(void)) { if (tick) tick(); }
 
+static volatile uint32_t g_generation;
+
+uint32_t gallery_generation(void) { return g_generation; }
+
 gallery_status_t gallery_save(const uint8_t *pixels, const uint16_t pal565[16],
                               void (*tick)(void), uint32_t *seq_out)
 {
@@ -246,6 +250,7 @@ gallery_status_t gallery_save(const uint8_t *pixels, const uint16_t pal565[16],
     if (st != GALLERY_OK) return st;
 
     const uint32_t base = slot_offset(slot);
+    g_generation++;   /* from here on the slot's bytes change, whatever the outcome */
     /* Erase the whole slot, sector by sector, so the caller's tick runs
      * between sector erases (a W25Q sector erase is up to 400 ms). The region
      * layer skips sectors that already read blank. */
@@ -283,6 +288,7 @@ gallery_status_t gallery_save(const uint8_t *pixels, const uint16_t pal565[16],
     if (flash_region_write(GALLERY_REGION, base, hdr, sizeof hdr) != FLASH_REGION_OK)
         return GALLERY_ERR_IO;
     if (seq_out) *seq_out = idx.next_seq;
+    g_generation++;   /* the commit record is what makes the shot appear */
     return GALLERY_OK;
 }
 
@@ -292,6 +298,7 @@ gallery_status_t gallery_delete(uint32_t seq)
     gallery_status_t st = gallery_find(seq, &slot);
     if (st != GALLERY_OK) return st;
     static const uint8_t zero[4] = { 0, 0, 0, 0 };
+    g_generation++;
     if (flash_region_write(GALLERY_REGION, slot_offset(slot), zero, sizeof zero) != FLASH_REGION_OK)
         return GALLERY_ERR_IO;
     return GALLERY_OK;

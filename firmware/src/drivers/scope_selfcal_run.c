@@ -109,6 +109,11 @@ bool scope_selfcal_busy(void)
     return R.kind != SCR_IDLE || R.req == REQ_AUTOSET || R.req == REQ_BASECAL;
 }
 
+bool scope_selfcal_quiet(void)
+{
+    return R.kind == SCR_IDLE && R.req == REQ_NONE;
+}
+
 static bool request(uint8_t what, uint8_t banks)
 {
     if (scope_selfcal_busy() || R.req != REQ_NONE) return false;

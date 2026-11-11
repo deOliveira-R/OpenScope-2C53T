@@ -297,13 +297,32 @@ bool settings_store_service(uint32_t now_ms)
     return write_now();
 }
 
-bool settings_store_flush(uint32_t now_ms)
+settings_flush_outcome_t settings_store_flush_ex(uint32_t now_ms)
 {
     settings_store_note_change(now_ms);
-    if (g_write_blocked || !g_auto.pending) {
-        return false;
+    if (g_write_blocked) {
+        return SETTINGS_FLUSH_BLOCKED;
     }
-    return write_now();
+    if (!g_auto.pending) {
+        return SETTINGS_FLUSH_CLEAN;
+    }
+    return write_now() ? SETTINGS_FLUSH_SAVED : SETTINGS_FLUSH_FAILED;
+}
+
+bool settings_store_flush(uint32_t now_ms)
+{
+    return settings_store_flush_ex(now_ms) == SETTINGS_FLUSH_SAVED;
+}
+
+const char *settings_flush_outcome_text(settings_flush_outcome_t o)
+{
+    switch (o) {
+    case SETTINGS_FLUSH_SAVED:   return "saved";
+    case SETTINGS_FLUSH_CLEAN:   return "already saved";
+    case SETTINGS_FLUSH_BLOCKED: return "NOT saved (settings storage blocked after a failed write)";
+    case SETTINGS_FLUSH_FAILED:  return "NOT saved (write failed)";
+    default:                     return "NOT saved (unknown)";
+    }
 }
 
 const settings_store_status_t *settings_store_get_status(void) { return &g_status; }

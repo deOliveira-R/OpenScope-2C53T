@@ -13,7 +13,11 @@
 #include <math.h>
 #include <string.h>
 
-/* Scratch. ~8 KB of .bss against 224 KB of SRAM. Not reentrant.
+/* Scratch. ~8 KB of .bss against 224 KB of SRAM. Not reentrant by itself:
+ * the display task (frequency badge) and the shell task (`scope freq`,
+ * `scope sweep`, ...) both call scope_freq_estimate(), so the whole analysis
+ * runs under the lock registered with scope_freq_set_lock() (a FreeRTOS mutex
+ * in firmware, scope_freq_lock.c; none on the host, where there is one caller).
  *
  * There used to be a third 4 KB array here, a cached Hann table rebuilt
  * whenever n changed. On clean records (no half-record retry) the cache held
@@ -24,6 +28,15 @@
  * (RAM diet, 2026-11-11). */
 static float fft_re[SCOPE_FREQ_MAX_N];
 static float fft_im[SCOPE_FREQ_MAX_N];
+
+static void (*g_lock)(void);
+static void (*g_unlock)(void);
+
+void scope_freq_set_lock(void (*lock)(void), void (*unlock)(void))
+{
+    g_lock = lock;
+    g_unlock = unlock;
+}
 
 /* In-place radix-2 decimation-in-time FFT. n must be a power of two. */
 static void fft(uint16_t n)
@@ -176,6 +189,10 @@ bool scope_freq_estimate(const uint8_t *samples, uint16_t n,
     if (!(sample_rate_hz > 0.0f))
         return false;
 
+    /* Everything from here to the last use of fft_re/fft_im is the critical
+     * section; the early returns above touch no shared scratch. */
+    if (g_lock != NULL) g_lock();
+
     float bin = 0.0f, sharp = 0.0f;
     uint16_t win = n;
     const bool got = analyse(samples, n, &bin, &sharp);
@@ -199,9 +216,13 @@ bool scope_freq_estimate(const uint8_t *samples, uint16_t n,
             sharp = sharp2;
             win = h;
         } else if (!got) {
+            if (g_unlock != NULL) g_unlock();
             return false;
         }
     }
+
+    /* The scratch is no longer read past this point. */
+    if (g_unlock != NULL) g_unlock();
 
     out->bin = bin;
     out->sharpness = sharp;

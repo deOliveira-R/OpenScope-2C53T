@@ -79,6 +79,22 @@ bool settings_store_service(uint32_t now_ms);
  * if a record was written. */
 bool settings_store_flush(uint32_t now_ms);
 
+/* What a flush actually did. settings_store_flush()'s bool cannot tell "nothing
+ * to write" (fine: already saved) from "write refused" (not saved), and the
+ * shell prints a promise to the operator, so it needs the difference. */
+typedef enum {
+    SETTINGS_FLUSH_SAVED = 0,   /* a record was written                          */
+    SETTINGS_FLUSH_CLEAN,       /* live state already equals the saved image     */
+    SETTINGS_FLUSH_BLOCKED,     /* changed, but a failed write blocks retries    */
+    SETTINGS_FLUSH_FAILED,      /* changed, write attempted and failed           */
+} settings_flush_outcome_t;
+
+/* Same as settings_store_flush() but reports the outcome. */
+settings_flush_outcome_t settings_store_flush_ex(uint32_t now_ms);
+
+/* One short word for the shell: "saved", "already saved", "NOT saved (...)". */
+const char *settings_flush_outcome_text(settings_flush_outcome_t o);
+
 /* Apply a config to live UI state, clamping every index to its live range. A
  * record can pass its CRC and its checksum and still hold, say, vdiv index 200
  * — from an older layout, a truncated struct, or a bit flip that the byte-sum
