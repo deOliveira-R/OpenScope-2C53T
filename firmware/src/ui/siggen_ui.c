@@ -11,8 +11,16 @@
 #include "font.h"
 #include "theme.h"
 #include "signal_gen.h"
+#include "siggen_edit.h"
 
 #include <stdio.h>
+
+static siggen_edit_t g_editor;
+
+siggen_edit_t *siggen_ui_editor(void)
+{
+    return &g_editor;
+}
 
 void draw_siggen_screen(uint32_t frame)
 {
@@ -43,18 +51,37 @@ void draw_siggen_screen(uint32_t frame)
     font_draw_string(value_x, param_y, siggen_wave_name(cfg->waveform),
                      th->text_primary, th->background, &font_medium);
 
-    /* Frequency: the requested value; when running, the value TMR7
-     * really produces if it differs (quantised by the 240 MHz clock). */
-    if (cfg->frequency_hz == 0)
-        snprintf(buf, sizeof buf, "0 Hz (off)");
-    else
-        snprintf(buf, sizeof buf, "%lu Hz", (unsigned long)cfg->frequency_hz);
+    /* Frequency: the requested value, as a digit field while the editor is
+     * open (cursor digit highlighted). The value TMR7 really produces is
+     * shown whenever it differs, running or not: the timer divides the
+     * 240 MHz clock, so low frequencies quantise (1 Hz gives 2.2 Hz). */
     font_draw_string(label_x, param_y + 22, "Frequency",
                      th->text_secondary, th->background, &font_small);
-    font_draw_string(value_x, param_y + 20, buf,
-                     th->text_primary, th->background, &font_medium);
+    if (g_editor.active) {
+        char d[2] = { 0, 0 };
+        uint16_t x = value_x;
+        for (int i = (int)SIGGEN_EDIT_DIGITS - 1; i >= 0; i--) {
+            /* The live value, which the editor tracks key by key; a shell
+             * `siggen freq` while the editor is open shows at once. */
+            d[0] = (char)('0' + siggen_edit_digit_of(cfg->frequency_hz, (uint8_t)i));
+            bool cur = ((uint8_t)i == g_editor.digit);
+            font_draw_string(x, param_y + 20, d,
+                             cur ? th->background : th->text_primary,
+                             cur ? th->highlight : th->background, &font_medium);
+            x += 12;
+        }
+        font_draw_string(x + 4, param_y + 20, "Hz", th->text_primary, th->background,
+                         &font_medium);
+    } else {
+        if (cfg->frequency_hz == 0)
+            snprintf(buf, sizeof buf, "0 Hz (off)");
+        else
+            snprintf(buf, sizeof buf, "%lu Hz", (unsigned long)cfg->frequency_hz);
+        font_draw_string(value_x, param_y + 20, buf,
+                         th->text_primary, th->background, &font_medium);
+    }
     siggen_timing_t t;
-    if (siggen_get_timing(&t) && t.actual_mhz != cfg->frequency_hz * 1000u) {
+    if (siggen_preview_timing(&t) && t.actual_mhz != cfg->frequency_hz * 1000u) {
         snprintf(buf, sizeof buf, "= %lu.%03lu", (unsigned long)(t.actual_mhz / 1000u),
                  (unsigned long)(t.actual_mhz % 1000u));
         font_draw_string(value_x + 110, param_y + 22, buf,
@@ -86,6 +113,17 @@ void draw_siggen_screen(uint32_t frame)
                          th->warning, th->background, &font_large);
     }
 
-    font_draw_string(label_x, param_y + 112, "PRM:Freq UP/DN:Amp L/R:Duty SEL:Wave OK:On",
+    /* Boot policy (ours; stock always restores): long AUTO toggles it.
+     * In the label column: "OUTPUT OFF" in font_large spans value_x..+144,
+     * so anything right of it would not fit in 320 px. */
+    font_draw_string(label_x, param_y + 96, cfg->start_on ? "Boot: ON" : "Boot: OFF",
                      th->text_secondary, th->background, &font_small);
+
+    if (g_editor.active) {
+        font_draw_string(label_x, param_y + 112, "LT/RT:Digit UP/DN:Value OK:Done MENU:Undo",
+                         th->text_secondary, th->background, &font_small);
+    } else {
+        font_draw_string(label_x, param_y + 112, "PRM:Freq UP/DN:Amp L/R:Duty SEL:Wave OK*:Run",
+                         th->text_secondary, th->background, &font_small);
+    }
 }

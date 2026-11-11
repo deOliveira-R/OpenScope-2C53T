@@ -179,6 +179,17 @@ typedef struct {
      * `fpga scope prm` until the PRM key grows a menu / long-press. */
     uint16_t        prm_mask;
     bool            prm_hidden;
+
+    /* Roll mode (C11, scope_roll.h): stock's slow timebases 0x14..0x1C
+     * (50 ms..20 s/div) are MCU-paced points, not FPGA records. Kept beside
+     * timebase_idx rather than folded into it, because timebase_idx IS the
+     * reg-0x01 code of a measured Y-T record (scope_timebase.c) and every
+     * consumer of it assumes so. roll = true: the scope shows the roll FIFO
+     * at roll_step (0..SCOPE_ROLL_STEPS-1); timebase_idx keeps the Y-T code
+     * to return to. Not persisted: boot is always Y-T. Change both through
+     * scope_adjust_timebase() / fpga_apply_roll() so the FPGA follows. */
+    bool            roll;
+    uint8_t         roll_step;
 } scope_state_t;
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -223,7 +234,10 @@ void scope_cycle_probe(channel_state_t *ch);
 void scope_toggle_bw_limit(channel_state_t *ch);
 void scope_toggle_channel(channel_state_t *ch);
 void scope_adjust_vdiv(channel_state_t *ch, int direction);
-void scope_adjust_timebase(scope_state_t *s, int direction);
+/* One timebase key press (dir > 0 = slower), Y-T and roll alike: see
+ * scope_roll_tb_step(). Returns true when the roll flag or step changed, so
+ * the caller re-applies roll (fpga_apply_roll) instead of the Y-T code. */
+bool scope_adjust_timebase(scope_state_t *s, int direction);
 void scope_adjust_trigger_level(scope_state_t *s, int direction);
 /* Channel vertical position, the channel-move stage of the arrow keys (stock:
  * "up and down buttons controlling the vertical movement of the channel

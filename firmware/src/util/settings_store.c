@@ -17,6 +17,8 @@
 #include "scope_state.h"
 #include "math_channel.h"
 #include "ui.h"
+#include "signal_gen.h"
+#include "startup_policy.h"
 
 #include <string.h>
 
@@ -58,7 +60,8 @@ static void stamp(device_config_t *cfg)
  *
  * The two functions must stay symmetric: a field captured but not applied is a
  * setting that silently does not restore, which is the exact failure this
- * whole task was fixing. Fields NOT listed here (fft_*, siggen_*, brightness,
+ * whole task was fixing. Startup-on-Boot (startup_mode) is owned here since M6. Fields NOT listed
+ * here (fft_*, brightness,
  * language, auto-shutdown, sound) are carried through untouched — they are
  * stored and round-tripped but nothing in the firmware owns them yet, and
  * config.h says so.
@@ -70,13 +73,20 @@ void settings_store_capture(device_config_t *cfg)
 
     const scope_state_t *ss = scope_state_get();
 
-    cfg->scope_ch1_enabled   = ss->ch1.enabled;
+    /* Channel enables are session state, not settings (parity C2): a CH2-off
+     * saved here would come back after a power cycle as mask 1 (the 250 MS/s
+     * single-channel mode, half the screen blank) with nothing on screen saying
+     * why. The long CH1/CH2 key (KA_CH_ENABLE_TOGGLE) is the way to turn a
+     * channel off and back on; a boot always starts with both on. The fields
+     * stay in the record for format compatibility and are always written true,
+     * so toggling a channel does not even dirty the settings image. */
+    cfg->scope_ch1_enabled   = true;
     cfg->scope_ch1_vdiv      = ss->ch1.vdiv_idx;
     cfg->scope_ch1_coupling  = (uint8_t)ss->ch1.coupling;
     cfg->scope_ch1_probe     = (uint8_t)ss->ch1.probe;
     cfg->scope_ch1_bw_limit  = ss->ch1.bw_limit ? 1u : 0u;
 
-    cfg->scope_ch2_enabled   = ss->ch2.enabled;
+    cfg->scope_ch2_enabled   = true;
     cfg->scope_ch2_vdiv      = ss->ch2.vdiv_idx;
     cfg->scope_ch2_coupling  = (uint8_t)ss->ch2.coupling;
     cfg->scope_ch2_probe     = (uint8_t)ss->ch2.probe;
@@ -95,6 +105,18 @@ void settings_store_capture(device_config_t *cfg)
     cfg->meter_submode = meter_submode;
     cfg->meter_layout  = meter_layout;
 
+    const siggen_config_t *sg = siggen_get_config();
+    cfg->siggen_waveform  = sg->waveform;
+    cfg->siggen_frequency = (float)sg->frequency_hz;   /* exact: <= 50000 */
+    cfg->siggen_amplitude = (float)sg->amplitude_dv / 10.0f;
+    cfg->siggen_duty      = sg->duty_pct;
+    /* The enable is only a saved setting while the user wants it restored;
+     * with the boot policy OFF it is session state, and recording it would
+     * make every run/stop cycle look like a change to write. */
+    cfg->siggen_enabled   = (sg->start_on && sg->output_enabled) ? 1u : 0u;
+    cfg->siggen_start_on  = sg->start_on ? 1u : 0u;
+    cfg->startup_mode = startup_mode_to_config(startup_mode);
+
     stamp(cfg);
 }
 
@@ -104,13 +126,13 @@ void settings_store_apply(const device_config_t *cfg)
 
     scope_state_t *ss = scope_state_get();
 
-    ss->ch1.enabled  = cfg->scope_ch1_enabled;
+    ss->ch1.enabled  = true;   /* not restored: see settings_store_capture */
     ss->ch1.vdiv_idx = clamp_idx(cfg->scope_ch1_vdiv, VDIV_COUNT, 3);
     ss->ch1.coupling = (coupling_t)clamp_idx(cfg->scope_ch1_coupling, COUPLING_COUNT, COUPLING_DC);
     ss->ch1.probe    = (probe_t)clamp_idx(cfg->scope_ch1_probe, PROBE_COUNT, PROBE_1X);
     ss->ch1.bw_limit = (cfg->scope_ch1_bw_limit != 0u);
 
-    ss->ch2.enabled  = cfg->scope_ch2_enabled;
+    ss->ch2.enabled  = true;
     ss->ch2.vdiv_idx = clamp_idx(cfg->scope_ch2_vdiv, VDIV_COUNT, 5);
     ss->ch2.coupling = (coupling_t)clamp_idx(cfg->scope_ch2_coupling, COUPLING_COUNT, COUPLING_DC);
     ss->ch2.probe    = (probe_t)clamp_idx(cfg->scope_ch2_probe, PROBE_COUNT, PROBE_1X);
@@ -132,7 +154,31 @@ void settings_store_apply(const device_config_t *cfg)
     meter_submode = clamp_idx(cfg->meter_submode, METER_SUBMODE_COUNT, 0);
     meter_layout  = clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);
 
+    /* Signal generator (parity G5). Clamped, NaN-safe: a float field that is
+     * not a number or not in range falls back to stock's factory value
+     * rather than driving the output with garbage. The output comes back ON
+     * only when the user opted in (siggen_start_on) AND it was on at the last
+     * save; otherwise it boots OFF, which stock does not do. */
+    {
+        siggen_config_t sg;
+        float f = cfg->siggen_frequency;
+        float a = cfg->siggen_amplitude * 10.0f + 0.5f;
+        sg.waveform     = clamp_idx(cfg->siggen_waveform, SIGGEN_WAVEFORM_COUNT, SIGGEN_DEFAULT_WAVE);
+        sg.frequency_hz = (f >= 0.0f && f <= (float)SIGGEN_FREQ_MAX_HZ)
+                          ? (uint32_t)(f + 0.5f) : SIGGEN_DEFAULT_FREQ;
+        sg.amplitude_dv = (a >= 0.0f && a <= (float)SIGGEN_AMP_MAX_DV + 1.0f)
+                          ? (uint8_t)a : SIGGEN_DEFAULT_AMP_DV;
+        if (sg.amplitude_dv > SIGGEN_AMP_MAX_DV) sg.amplitude_dv = SIGGEN_AMP_MAX_DV;
+        sg.duty_pct     = (cfg->siggen_duty <= SIGGEN_DUTY_MAX) ? cfg->siggen_duty
+                                                               : SIGGEN_DEFAULT_DUTY;
+        sg.start_on       = (cfg->siggen_start_on != 0u);
+        sg.output_enabled = sg.start_on && (cfg->siggen_enabled != 0u);
+        siggen_init(&sg);
+    }
+    startup_mode  = startup_mode_from_config(cfg->startup_mode);
+
     /* Deliberately NOT restored: ss->running (a scope always boots running),
+     * the channel enables (an old config with CH2 off boots with both on),
      * the cursor state, and channel position — session state, not settings.
      * persist_enabled is not restored either: turning persistence on allocates
      * the shared memory pool and evicts FFT, which is not something a boot

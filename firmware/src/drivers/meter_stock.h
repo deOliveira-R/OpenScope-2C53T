@@ -11,6 +11,8 @@
  *   M5  status text (parser 0x0803DB64..0x0803DE62), degF (0x0803E180),
  *       range index (tbb at 0x0803E1C8), per-stat range rescale
  *       (0x0803DD5E..0x0803DE2A)
+ *   M2  Auto function: the selector-0 case of the parser's range switch
+ *       (0x0803E1F2) and the AUTO key's entry state (0x0800CB50)
  *   M7  guard: the hidden SoC calibration wizard's words are never sent
  */
 #ifndef METER_STOCK_H
@@ -60,9 +62,64 @@ float meter_stock_degc_to_degf(float c);
 /* OpenScope submode (0 DCV .. 10 Temp) -> stock selector and ms[0xF36]
  * (1 = DC / diode, 2 = AC / continuity). False for an invalid submode. */
 bool meter_stock_selector_for_submode(uint8_t submode, uint8_t *sel, uint8_t *f36);
+/* Submode 11 is stock's Auto: selector 0, F36 0 (undecided). */
 
-/* Range index ms[0xF37] from rx[6] and rx[7] for selectors 1..7 (the Auto
- * selector's multi-frame state machine is not ported). `prev` is returned when
+/* ── Auto function (M2, stock selector 0) ──────────────────────────── */
+
+/* The Auto word (0x14) hands the choice of function to the SoC. Stock has no
+ * per-function gate for it: its parser reads which function a frame belongs
+ * to off the frame's own bits (ms[0xF2F], ms[0xF36], ms[0xF37]; case 0 of the
+ * tbb at 0x0803E1C8, code at 0x0803E1F2..0x0803E3C8). Inputs below are the
+ * frame bytes rx[2], rx[6], rx[7] (frame[2], frame[6], frame[7] here).
+ *
+ *   F2F  0     "AUTO" text seen: nothing is decided yet (the case does nothing)
+ *        1     voltage      F36 1 = DC, 2 = AC
+ *        2     continuity   F36 2
+ *        3     resistance   F36 0
+ *        0xFF  numeric frame, no bit recognised yet
+ */
+typedef struct {
+    uint8_t f2f;
+    uint8_t f36;
+    uint8_t f37;    /* range index, as meter_stock_range_index() */
+} meter_auto_fsm_t;
+
+typedef enum {
+    METER_AUTO_FN_NONE = 0,    /* not decided: show nothing as a number */
+    METER_AUTO_FN_DCV,
+    METER_AUTO_FN_ACV,
+    METER_AUTO_FN_OHM,
+    METER_AUTO_FN_CONT,
+} meter_auto_fn_t;
+
+/* Entry state: meter entry 0x0800E3C2 zeroes F2F and the AUTO key
+ * (0x0800CBD6) sets F36 = 1. F37 is left as it is. */
+void meter_auto_fsm_reset(meter_auto_fsm_t *st);
+
+/* The SoC's "AUTO" glyph run (0x0803DCBE): F2F = 0, and F36 = 0 in Auto. */
+void meter_auto_fsm_auto_text(meter_auto_fsm_t *st);
+
+/* One frame. `numeric` = the four glyphs are a number, not one of stock's
+ * status strings: stock presets F2F = 0xFF on that path only (0x0803E1AA), the
+ * status paths (OL, blank, PAS, ...) jump past it and keep the last decision.
+ * Returns the function the state now describes. */
+meter_auto_fn_t meter_auto_fsm_step(meter_auto_fsm_t *st, bool numeric,
+                                    uint8_t rx2, uint8_t rx6, uint8_t rx7);
+
+/* The function a state describes (F2F, F36 as above), NONE if undecided. */
+meter_auto_fn_t meter_auto_fsm_function(const meter_auto_fsm_t *st);
+
+/* OpenScope submode a function is decoded as (0 DCV, 1 ACV, 6 Ohm, 7 Cont);
+ * 0xFF for NONE. */
+uint8_t meter_auto_fn_submode(meter_auto_fn_t fn);
+
+/* Stock shows the companion frequency (rx[10..11], "%d Hz") for AC voltage
+ * only: F36 == 2 and F2F == 1 (0x0803E358..0x0803E382). Continuity is F36 == 2
+ * too but is not shown with a frequency. */
+bool meter_auto_fsm_hz_valid(const meter_auto_fsm_t *st);
+
+/* Range index ms[0xF37] from rx[6] and rx[7] for selectors 1..7 (Auto's own state
+ * machine is meter_auto_fsm_step). `prev` is returned when
  * stock leaves the byte alone (continuity frames without rx[7].3). `degf` is
  * ms[0xF39]. Each index is a decade-of-1000 step: shown value x 1000^index is
  * the same physical quantity in the function's smallest unit [V, 0x0803DD6E]. */

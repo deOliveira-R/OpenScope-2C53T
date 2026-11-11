@@ -10,6 +10,7 @@
 #include <string.h>
 #include "key_model.h"
 #include "scope_state.h"
+#include "trig_menu.h"
 
 static int run, passed;
 #define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-62s[PASS]\n", name); } \
@@ -151,11 +152,31 @@ static void test_long_map(void)
           is(key_map(&sc, BTN_CH2, true), KA_CH_ENABLE_TOGGLE, 1));
     CHECK("long CH1 outside the scope does nothing", is(key_map(&me, BTN_CH1, true), KA_NONE, 0));
 
-    CHECK("long AUTO/OK/SAVE in the scope are claimed (hook, not a short action)",
-          key_map(&sc, BTN_AUTO, true).act == KA_LONG_UNUSED &&
-          key_map(&sc, BTN_OK, true).act == KA_LONG_UNUSED &&
+    CHECK("long AUTO in the scope time view = baseline correction (stock 0x0800DF58)",
+          is(key_map(&sc, BTN_AUTO, true), KA_BASECAL, 0));
+    CHECK("long OK in the scope time view = 50 % centre (stock 0x0800DA3A)",
+          is(key_map(&sc, BTN_OK, true), KA_CENTER50, 0));
+    CHECK("long AUTO/OK in an FFT view or the meter do nothing",
+          is(key_map(&fv, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&fv, BTN_OK, true), KA_NONE, 0) &&
+          is(key_map(&me, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&me, BTN_OK, true), KA_NONE, 0));
+    CHECK("long SAVE in the scope is claimed (hook, not a short action)",
           key_map(&sc, BTN_SAVE, true).act == KA_LONG_UNUSED);
     CHECK("long UP is not a thing", is(key_map(&sc, BTN_UP, true), KA_NONE, 0));
+
+    /* Parity G5: long OK in the generator is Run/Stop (manual 2.1); long AUTO
+     * there is the output-at-boot policy (ours). The other modes are unchanged. */
+    {
+        key_ctx_t sg = ctx(MODE_SIGNAL_GEN, KF_ZOOM);
+        CHECK("long OK in the generator is Run/Stop",
+              is(key_map(&sg, BTN_OK, true), KA_SIGGEN_RUNSTOP, 0));
+        CHECK("long AUTO in the generator is the boot policy toggle",
+              is(key_map(&sg, BTN_AUTO, true), KA_SIGGEN_BOOT_TOGGLE, 0));
+        CHECK("long SAVE in the generator stays unclaimed",
+              is(key_map(&sg, BTN_SAVE, true), KA_NONE, 0));
+        CHECK("long OK in the meter does nothing; in the scope it is the 50 % centre",
+              is(key_map(&me, BTN_OK, true), KA_NONE, 0) &&
+              key_map(&sc, BTN_OK, true).act == KA_CENTER50);
+    }
 }
 
 static void test_short_map(void)
@@ -215,13 +236,78 @@ static void test_short_map(void)
             leg &= key_map(&c, keys[k], false).act == KA_LEGACY;
         }
     CHECK("meter / siggen / settings: every short press is legacy (softkeys etc.)", leg);
-    CHECK("scope TRIGGER/CH1/OK/AUTO/MENU/SAVE short stay legacy",
-          key_map(&z, BTN_TRIGGER, false).act == KA_LEGACY &&
+    CHECK("scope CH1/OK/AUTO/MENU/SAVE short stay legacy",
           key_map(&z, BTN_CH1, false).act == KA_LEGACY &&
           key_map(&z, BTN_OK, false).act == KA_LEGACY &&
           key_map(&z, BTN_AUTO, false).act == KA_LEGACY &&
           key_map(&z, BTN_MENU, false).act == KA_LEGACY &&
           key_map(&z, BTN_SAVE, false).act == KA_LEGACY);
+}
+
+static void test_trig_menu(void)
+{
+    printf("trigger panel (C3)\n");
+    key_ctx_t z = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
+    CHECK("time view: TRIGGER short opens the trigger panel (stock Trigger Settings)",
+          is(key_map(&z, BTN_TRIGGER, false), KA_TRIGMENU_OPEN, 0));
+    key_ctx_t fv = z; fv.scope_time_view = false;
+    CHECK("FFT views: TRIGGER short stays legacy", key_map(&fv, BTN_TRIGGER, false).act == KA_LEGACY);
+    CHECK("TRIGGER long is still the signal generator", is(key_map(&z, BTN_TRIGGER, true), KA_ENTER_SIGGEN, 0));
+
+    key_ctx_t o = z; o.trig_menu_open = true;
+    o.focus = KF_CURSOR; o.cursors_on = true;     /* the panel wins over any stage */
+    CHECK("open: UP/DOWN pick the row, LEFT/RIGHT/OK change it",
+          is(key_map(&o, BTN_UP, false), KA_TRIGMENU_ROW, -1) &&
+          is(key_map(&o, BTN_DOWN, false), KA_TRIGMENU_ROW, +1) &&
+          is(key_map(&o, BTN_LEFT, false), KA_TRIGMENU_CHANGE, -1) &&
+          is(key_map(&o, BTN_RIGHT, false), KA_TRIGMENU_CHANGE, +1) &&
+          is(key_map(&o, BTN_OK, false), KA_TRIGMENU_CHANGE, +1));
+    CHECK("open: TRIGGER/MENU/MOVE/SELECT/PRM close it",
+          is(key_map(&o, BTN_TRIGGER, false), KA_TRIGMENU_CLOSE, 0) &&
+          is(key_map(&o, BTN_MENU, false), KA_TRIGMENU_CLOSE, 0) &&
+          is(key_map(&o, BTN_MOVE, false), KA_TRIGMENU_CLOSE, 0) &&
+          is(key_map(&o, BTN_SELECT, false), KA_TRIGMENU_CLOSE, 0) &&
+          is(key_map(&o, BTN_PRM, false), KA_TRIGMENU_CLOSE, 0));
+    CHECK("open: CH1/AUTO keep their meaning; long presses still switch modes",
+          key_map(&o, BTN_CH1, false).act == KA_LEGACY &&
+          key_map(&o, BTN_AUTO, false).act == KA_LEGACY &&
+          is(key_map(&o, BTN_SELECT, true), KA_ENTER_METER, 0));
+
+    scope_state_t s; scope_state_init(&s);
+    trig_menu_t m; trig_menu_open(&m);
+    int a = m.open && m.row == TM_ROW_MODE && strcmp(trig_menu_row_label(m.row), "Mode:") == 0;
+    trig_menu_row_step(&m, -1);
+    int b = m.row == TM_ROW_SOURCE;
+    trig_menu_row_step(&m, +1);
+    CHECK("opens on Mode:, rows wrap", a && b && m.row == TM_ROW_MODE);
+
+    uint8_t r = trig_menu_change(&m, &s, +1);
+    int c1 = (r == TM_CHANGED_MODE) && s.trigger.mode == TRIG_NORMAL &&
+             strcmp(trig_menu_row_value(&s, TM_ROW_MODE), "Normal") == 0;
+    trig_menu_change(&m, &s, +1);
+    int c2 = s.trigger.mode == TRIG_SINGLE;
+    trig_menu_change(&m, &s, +1);
+    int c3 = s.trigger.mode == TRIG_AUTO;
+    trig_menu_change(&m, &s, -1);
+    CHECK("Mode: Auto -> Normal -> Single -> Auto, and back", c1 && c2 && c3 && s.trigger.mode == TRIG_SINGLE);
+
+    m.row = TM_ROW_EDGE;
+    r = trig_menu_change(&m, &s, +1);
+    CHECK("Edge: Rising <-> Falling", r == TM_CHANGED_EDGE && s.trigger.edge == TRIG_FALLING &&
+          strcmp(trig_menu_row_value(&s, TM_ROW_EDGE), "Falling") == 0);
+
+    m.row = TM_ROW_SOURCE;
+    r = trig_menu_change(&m, &s, +1);
+    int d1 = (r == TM_CHANGED_SOURCE) && s.trigger.source == TRIG_SRC_CH2 &&
+             strcmp(trig_menu_row_value(&s, TM_ROW_SOURCE), "CH2") == 0 &&
+             strcmp(trig_menu_row_label(TM_ROW_SOURCE), "Channel:") == 0;
+    trig_menu_change(&m, &s, +1);
+    s.ch2.enabled = false;
+    r = trig_menu_change(&m, &s, +1);
+    CHECK("Channel: CH1 <-> CH2; refused onto a channel that is off",
+          d1 && r == TM_REFUSED_OFF && s.trigger.source == TRIG_SRC_CH1);
+    trig_menu_close(&m);
+    CHECK("closes", !m.open);
 }
 
 static void test_focus(void)
@@ -297,6 +383,7 @@ int main(void)
     test_scan();
     test_long_map();
     test_short_map();
+    test_trig_menu();
     test_focus();
     test_state();
     printf("\n%d/%d passed\n", passed, run);

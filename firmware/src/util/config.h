@@ -49,7 +49,11 @@
  * math/meter block below. A v2 record on a device updated in the field fails
  * the version check and the device comes up on defaults — which is the whole
  * point of having the field. */
-#define CONFIG_VERSION  3
+#define CONFIG_VERSION  4
+/* Bumped to 4 on 2026-11-11 (parity G5): v4 gives the signal generator's
+ * duty, enable and boot policy the four bytes of the old unused float
+ * siggen_offset, so the record keeps its size. A v3 record fails the version
+ * check once and the device comes up on defaults. */
 
 #define CONFIG_MODE_OSCILLOSCOPE  0
 #define CONFIG_MODE_MULTIMETER    1
@@ -59,13 +63,14 @@
 /* All user-configurable settings.
  *
  * WHICH FIELDS ARE LIVE: settings_store.c captures and re-applies the scope
- * block, the theme, the math block and the meter block. The FFT, signal
- * generator, brightness, language, auto-shutdown and sound fields are stored
- * and round-tripped but NOT yet applied at boot — nothing in the firmware
- * currently owns them (there is no backlight PWM, and siggen is initialised
- * before this layer runs). They are listed here rather than deleted so a v3
- * record stays forward-compatible when those get wired up; do not read them
- * back expecting them to mean anything on hardware yet. */
+ * block, the theme, the math block, the meter block and startup_mode. The FFT, signal
+ * generator (siggen_waveform, siggen_frequency, siggen_amplitude, siggen_duty,
+ * siggen_enabled, siggen_start_on), brightness, language, auto-shutdown and sound fields are stored
+ * and round-tripped. The generator IS captured and applied (settings_store.c,
+ * parity G5) and startup_mode too (M6); brightness, language, auto-shutdown, sound and the FFT fields
+ * are NOT yet applied at boot — nothing in the firmware currently owns them
+ * (there is no backlight PWM). Do not read those back expecting them to mean
+ * anything on hardware yet. */
 typedef struct {
     uint32_t magic;              /* CONFIG_MAGIC for validation */
     uint16_t version;            /* CONFIG_VERSION */
@@ -86,9 +91,13 @@ typedef struct {
     bool     fft_max_hold;
     /* Signal Generator */
     uint8_t  siggen_waveform;
-    float    siggen_frequency;
-    float    siggen_amplitude;
-    float    siggen_offset;
+    float    siggen_frequency;   /* Hz, integer-valued 0..50000 (v4 reads it) */
+    float    siggen_amplitude;   /* volts, 0.1 V steps (dV / 10) */
+    uint8_t  siggen_duty;        /* v4 (was the unused float siggen_offset): 0..100 % */
+    uint8_t  siggen_enabled;     /* v4: output enable at the last save (stock E58) */
+    uint8_t  siggen_start_on;    /* v4: 1 = restore the enable at boot like stock;
+                                  * 0 = always boot OFF (default, safety) */
+    uint8_t  siggen_reserved;    /* v4: 0 */
     /* Display */
     uint8_t  display_brightness;
     uint8_t  display_persist_mode;

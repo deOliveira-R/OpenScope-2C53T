@@ -69,8 +69,8 @@
  * itself for the shutdown countdown.
  *
  * AUTO/OK/SAVE are in the set because stock gives them long actions (baseline
- * correction, 50 % centre, gallery) that other parity items will fill in;
- * until then input_handler.c answers them with a "not in this build" popup
+ * correction, 50 % centre, gallery). Long AUTO and long OK are built (C10,
+ * scope_selfcal); long SAVE still answers with a "not in this build" popup
  * rather than a surprise short action. */
 #define KEY_LONG_MASK  ((1u << KEYBIT_AUTO)   | (1u << KEYBIT_CH1)    | \
                         (1u << KEYBIT_MOVE)   | (1u << KEYBIT_SELECT) | \
@@ -126,6 +126,7 @@ typedef struct {
     bool          cursors_on;
     bool          mask_present;
     uint8_t       active_channel;    /* 0 = CH1, 1 = CH2 */
+    bool          trig_menu_open;    /* the trigger panel (trig_menu.h) is up */
 } key_ctx_t;
 
 typedef enum {
@@ -137,7 +138,11 @@ typedef enum {
     KA_ENTER_SIGGEN,      /* long TRIGGER */
     KA_MEAS_HIDE_TOGGLE,  /* long PRM */
     KA_CH_ENABLE_TOGGLE,  /* long CH1/CH2: arg = channel (0/1) */
-    KA_LONG_UNUSED,       /* long AUTO/OK/SAVE: a later parity item; arg = button id */
+    KA_SIGGEN_BOOT_TOGGLE,/* long AUTO in the generator: output-at-boot policy (ours) */
+    KA_SIGGEN_RUNSTOP,    /* long OK in the generator: output Run/Stop (manual 2.1) */
+    KA_LONG_UNUSED,       /* long SAVE: a later parity item; arg = button id */
+    KA_BASECAL,           /* long AUTO in the scope: baseline correction (stock 0x0800DF58) */
+    KA_CENTER50,          /* long OK in the scope: 50 % centre (stock 0x0800DA3A) */
     KA_FOCUS_NEXT,        /* short MOVE */
     KA_ADJ_CH_SWITCH,     /* short SELECT: which channel the arrows act on */
     KA_PARAM_SELECT,      /* short PRM: measurement selection (hook; content is another item) */
@@ -150,7 +155,11 @@ typedef enum {
     KA_CURSOR_NEXT,
     KA_MASK_TOL_V,        /* arg = +1 UP */
     KA_MASK_TOL_H,        /* arg = +1 right */
-    KA_MASK_STOPFAIL      /* short SELECT in the mask stage */
+    KA_MASK_STOPFAIL,     /* short SELECT in the mask stage */
+    KA_TRIGMENU_OPEN,     /* short TRIGGER (time view): stock's "Trigger Settings" */
+    KA_TRIGMENU_CLOSE,    /* TRIGGER/MENU/MOVE/SELECT/PRM while it is open */
+    KA_TRIGMENU_ROW,      /* UP/DOWN while open: arg = -1 up, +1 down */
+    KA_TRIGMENU_CHANGE    /* LEFT/RIGHT/OK while open: arg = -1 / +1 */
 } key_action_t;
 
 typedef struct {

@@ -46,6 +46,32 @@ void persist_add_point(uint16_t x, uint16_t y);
 /* Apply decay to the persistence buffer (call once per frame) */
 void persist_decay(void);
 
+/* Time constant of a mode: milliseconds for an intensity-255 pixel to fade to
+ * 0. 0 for OFF (cleared every frame) and INFINITE (never fades). Stock's menu
+ * is OFF / 500 ms / 1 s / infinite (manual p.30); LOW and MEDIUM are the
+ * first two, HIGH (2 s) is the extra step this firmware always had. */
+uint32_t persist_mode_tau_ms(persist_mode_t mode);
+const char *persist_mode_name(persist_mode_t mode);   /* "Off" "500ms" "1s" ... */
+
+/* Decay by elapsed wall time, independent of the frame rate: a pixel at 255
+ * reaches 0 after persist_mode_tau_ms(). The sub-step remainder is carried
+ * between calls so a fast frame rate does not round the fade away. */
+void persist_decay_ms(uint32_t dt_ms);
+
+/* One column of a LIVE trace, buffer coords: y is lit, and when y_prev >= 0
+ * (the previous column's row) the span between the two is lit too, so a square
+ * wave's edge is a line as on the glass. y outside 0..PERSIST_HEIGHT-1 is
+ * skipped. The scope renderers call this as they draw each column. */
+void persist_add_column(uint16_t x, int y_prev, int y);
+
+/* The same for a whole row array (screen rows; row - y_origin is the buffer
+ * row; one entry per column from column 0). */
+void persist_add_rows(const int16_t *rows, uint16_t n, int y_origin);
+
+/* RGB565 `color` scaled by intensity/255 (a phosphor tail in the trace's own
+ * theme colour). */
+uint16_t persist_scale_rgb565(uint16_t color, uint8_t intensity);
+
 /* Get intensity at a pixel (0-255) */
 uint8_t persist_get_intensity(uint16_t x, uint16_t y);
 

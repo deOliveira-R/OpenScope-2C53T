@@ -23,6 +23,8 @@ typedef struct {
     uint8_t  amplitude_dv;      /* 0..30, 0.1 V units (E61) */
     uint8_t  duty_pct;          /* 0..100, Square/Sawtooth only (E60) */
     bool     output_enabled;    /* (E58) */
+    bool     start_on;          /* boot policy (ours): restore the enable at
+                                 * power-on like stock, instead of OFF */
 } siggen_config_t;
 
 /* Stock factory values (0x080294A0..0x0802954C) except the enable, which
@@ -54,5 +56,12 @@ const uint16_t *siggen_get_cycle(void);
 
 /* The timer setting of the last apply; false when output is off. */
 bool siggen_get_timing(siggen_timing_t *t);
+
+/* The timer setting the current frequency would produce, whether or not
+ * the output is on, so the screen can show the real frequency while the
+ * generator is stopped. False for 0 Hz. */
+bool siggen_preview_timing(siggen_timing_t *t);
+
+void siggen_set_start_on(bool on);
 
 #endif

@@ -42,6 +42,7 @@
 #include "signal_gen.h"
 #include "dac_output.h"
 #include "scope_vpos.h"
+#include "scope_selfcal_run.h"
 #include "../util/calpage.h"
 #include "fpga.h"
 #include "lcd.h"
@@ -52,11 +53,15 @@
 #include "ui.h"
 #include "../ui/scope_state.h"
 #include "../util/settings_store.h"
+#include "../ui/siggen_edit.h"
 #include "../ui/scope_cal.h"
 #include "../ui/scope_freq.h"
 #include "../ui/scope_measure.h"
 #include "../ui/scope_timebase.h"
+#include "../ui/scope_roll.h"
 #include "../ui/scope_mask.h"
+#include "../ui/trig_menu.h"
+#include "../dsp/trig_policy.h"
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
 #include "../ui/meter_voltage_wave.h"
@@ -2499,7 +2504,7 @@ static void cmd_meter_func(const char *args)
 
     while (*args == ' ') args++;
     if (!*args || parse_int(args, &sub) != 0 || sub >= METER_SUBMODE_COUNT) {
-        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp)\r\n",
+        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp 11 Auto)\r\n",
                          (unsigned)(METER_SUBMODE_COUNT - 1));
         return;
     }
@@ -2642,10 +2647,12 @@ static void cmd_meter_state(void)
                      r.display_str, r.unit_suffix ? r.unit_suffix : "",
                      (int)r.value,
                      (int)((r.value < 0 ? -r.value : r.value) * 1000.0f) % 1000);
-    usb_debug_printf("  range: index=%u label=%s  f6=%02X f7=%02X f8=%02X  degF=%s\r\n",
+    usb_debug_printf("  range: index=%u label=%s  f6=%02X f7=%02X f8=%02X  degF=%s"
+                     "  auto_fn=%u (0 none,1 DCV,2 ACV,3 Ohm,4 Cont) f2=%02X\r\n",
                      (unsigned)r.range_index, r.range_label,
                      (unsigned)r.dbg_frame[6], (unsigned)r.dbg_frame[7], (unsigned)r.dbg_frame[8],
-                     onoff(meter_data_fahrenheit()));
+                     onoff(meter_data_fahrenheit()), (unsigned)r.auto_fn,
+                     (unsigned)r.dbg_frame[2]);
     for (int i = 0; i < 12; i++)
         snprintf(hex + i * 3, 4, "%02X ", (unsigned)r.dbg_frame[i]);
     usb_debug_printf("  frame: %s\r\n", hex);
@@ -2938,13 +2945,100 @@ static void cmd_fpga_scope_probe(const char *args)
     usb_debug_printf("CH%u probe %s\r\n", (unsigned)ch, probe_labels[c->probe]);
 }
 
+/* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
+ * timebase <= 3, a quiet CH1 input. Sweeps the CH1 offset DAC over five codes
+ * of this unit's calibration page (base+80, base+400, mid, upper-400, upper —
+ * bench B4's set), reads the op04 (A) / op05 (B) means at each, fits
+ * B = gain * A + offset (dsp/interleave_cal.c) and applies it in RAM only.
+ * Refuses, leaving the correction as it was, on a noisy input, rail-clipped
+ * levels, a short span, a gain outside 0.5..2 or a poor fit. The DAC is put
+ * back to the position-controlled code whatever happens. Integer printing: the
+ * shell's printf has no floats. */
+static long x100(float v) { return (long)(v * 100.0f + (v < 0.0f ? -0.5f : 0.5f)); }
+/* "%s%ld.%02ld": sign apart, or -0.6 would print as 0.60. */
+#define F2(v)  (x100(v) < 0 ? "-" : ""), (long)((x100(v) < 0 ? -x100(v) : x100(v)) / 100), \
+               (long)((x100(v) < 0 ? -x100(v) : x100(v)) % 100)
+
+static void cmd_fpga_interleave_cal(void)
+{
+    scope_state_t *ss = scope_state_get();
+    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+        usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
+                     "(fpga scope ch 2 off; fpga scope tb <= 3)\r\n");
+        return;
+    }
+    uint16_t base, upper, codes[5];
+    if (!scope_vpos_ch1_endpoints(&base, &upper) || !il_cal_dac_points(base, upper, codes)) {
+        usb_send_str("refused: needs a usable calibration page (cal page) with a 1000+ code span "
+                     "and the generator off\r\n");
+        return;
+    }
+    static il_cal_point_t pt[5];
+    unsigned got = 0;
+    usb_send_str("interleave cal: keep CH1 quiet (shorted or a steady DC); sweeping the CH1 offset DAC\r\n");
+    for (unsigned i = 0; i < 5u; i++) {
+        if (!scope_vpos_ch1_raw(codes[i])) break;
+        vTaskDelay(pdMS_TO_TICKS(250));            /* the offset RC settles */
+        fpga_ilcal_begin(2);
+        if (!fpga_ilcal_collect(8, 8000, &pt[i])) {
+            usb_debug_printf("  DAC %u: no records (acquisition not running?)\r\n", (unsigned)codes[i]);
+            break;
+        }
+        got++;
+        usb_debug_printf("  DAC %4u  A %s%ld.%02ld  B %s%ld.%02ld  p2p %u/%u  drift %s%ld.%02ld/%s%ld.%02ld%s\r\n",
+                         (unsigned)codes[i], F2(pt[i].a_mean), F2(pt[i].b_mean),
+                         (unsigned)pt[i].a_p2p, (unsigned)pt[i].b_p2p,
+                         F2(pt[i].a_drift), F2(pt[i].b_drift),
+                         pt[i].clipped ? "  CLIPPED (not used)" : "");
+    }
+    scope_vpos_apply_ch(1u, ss->ch1.vdiv_idx);     /* DAC back to the position code */
+    {   /* apply_ch is silent when it cannot write (generator started, no clean
+         * bank after a range change): say so rather than leave a sweep code. */
+        uint16_t pos_code = 0;
+        if (scope_vpos_active() && !dac_output_is_running() &&
+            (!scope_vpos_last(1u, NULL, NULL, &pos_code) || scope_trigger_dac_last() != pos_code))
+            usb_debug_printf("  WARNING: CH1 offset DAC not restored (DAC %u, position code %u); "
+                             "re-select the CH1 range or position\r\n",
+                             (unsigned)scope_trigger_dac_last(), (unsigned)pos_code);
+    }
+    if (got < 5u) {
+        usb_send_str("interleave cal: aborted, correction unchanged\r\n");
+        return;
+    }
+    il_cal_params_t prm;
+    il_cal_default_params(&prm);
+    il_cal_fit_t fit;
+    const il_cal_status_t st = il_cal_fit(pt, 5u, &prm, &fit);
+    usb_debug_printf("  fit: B = gain %ld/10000 * A + offset %ld/100   used %u  span %s%ld.%02ld  "
+                     "residual max %s%ld.%02ld rms %s%ld.%02ld\r\n",
+                     (long)(fit.gain * 10000.0f + 0.5f), x100(fit.offset), (unsigned)fit.used,
+                     F2(fit.a_span), F2(fit.resid_max), F2(fit.resid_rms));
+    if (st != IL_CAL_OK) {
+        usb_debug_printf("interleave cal: REFUSED, %s; correction unchanged\r\n", il_cal_status_str(st));
+        return;
+    }
+    /* The sweep takes seconds: a CH2 long-press or a timebase change in the
+     * meantime moves op05 off CH1 (or ends the merge), and the points no
+     * longer describe converter B against A. */
+    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+        usb_send_str("interleave cal: REFUSED, channel/timebase changed during the sweep; "
+                     "correction unchanged\r\n");
+        return;
+    }
+    fpga_interleave_corr_set(fit.gain, fit.offset);
+    usb_send_str("interleave cal: applied (RAM only, lost at reset). Skew is not estimated here.\r\n");
+}
+
 /* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
  * — the single-channel merge and its converter-B correction (B' = (B - off) /
  * gain, record units). Integer arguments: the shell has no float parsing. */
 static void cmd_fpga_interleave(const char *args)
 {
     while (*args == ' ') args++;
-    if (strncmp(args, "corr", 4) == 0) {
+    if (strncmp(args, "cal", 3) == 0) {
+        cmd_fpga_interleave_cal();
+        /* fall through to the status line below */
+    } else if (strncmp(args, "corr", 4) == 0) {
         const char *p = args + 4;
         while (*p == ' ') p++;
         uint32_t g = 0, o = 0;
@@ -2997,6 +3091,7 @@ static void cmd_fpga_acqbr(const char *args)
 /* `fpga scope trigmode [auto|normal|single]` — set/read the acq wait policy
  * (EXP-30 noted nothing in the shell could set it; the time-view button
  * cycles cursors). Pure state; the acq task reads it each cycle. */
+static void print_trigger_status(void);
 static void cmd_fpga_scope_trigmode(const char *args)
 {
     while (*args == ' ') args++;
@@ -3004,11 +3099,86 @@ static void cmd_fpga_scope_trigmode(const char *args)
     if (*args) {
         if      (strncmp(args, "auto",   4) == 0) ss->trigger.mode = TRIG_AUTO;
         else if (strncmp(args, "normal", 6) == 0) ss->trigger.mode = TRIG_NORMAL;
-        else if (strncmp(args, "single", 6) == 0) ss->trigger.mode = TRIG_SINGLE;
+        else if (strncmp(args, "single", 6) == 0) {
+            /* As the panel does: selecting Single arms the one-shot. */
+            ss->trigger.mode = TRIG_SINGLE;
+            ss->running = true;
+            fpga_acq_single_rearm();
+        }
         else { usb_send_str("usage: fpga scope trigmode [auto|normal|single]\r\n"); return; }
     }
     usb_debug_printf("trigger mode %s (acq wait policy: AUTO falls back after the edge-wait; NORMAL/SINGLE hold)\r\n",
                      trigger_mode_labels[ss->trigger.mode]);
+    print_trigger_status();
+}
+
+/* Parity C3: the whole trigger in two lines -- settings and the wire, then
+ * what the acquisition did (trig_policy.h). `record` is the PUBLISHED
+ * record's kind: handed-over (coherent), freerun (one channel), or
+ * freerun-split (AUTO roll read with both channels on: CH1 and CH2 are two
+ * moments, #84 -- the badge shows "Auto*"). */
+static void print_trigger_status(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    static const char *const kind[] = { "none", "handed-over", "freerun", "freerun-split" };
+    const uint8_t k = fpga_acq_record_kind();
+    const trig_status_t st = (trig_status_t)fpga_trigger_status();
+    usb_debug_printf("trigger mode %s edge %s source %s level %d code 0x%02X reg06 0x%02X\r\n",
+                     trigger_mode_labels[ss->trigger.mode], trigger_edge_labels[ss->trigger.edge],
+                     trigger_source_labels[ss->trigger.source], (int)ss->trigger.level,
+                     (unsigned)fpga_acq_trig_code_get(), (unsigned)fpga_acq_trig_src_code_get());
+    usb_debug_printf("trigger status %s badge %s record %s coherent %s single %s\r\n",
+                     trig_status_word(st), trig_status_label(st),
+                     k < 4u ? kind[k] : "?", fpga_acq_record_coherent() ? "yes" : "no",
+                     ss->trigger.mode != TRIG_SINGLE ? "-" :
+                     fpga_acq_single_done() ? "captured" : "armed");
+}
+
+/* `fpga scope trigger` -- print_trigger_status(). */
+static void cmd_fpga_scope_trigger(const char *args)
+{
+    (void)args;
+    print_trigger_status();
+}
+
+/* `fpga scope source [ch1|ch2]` -- the trigger source, through the same model
+ * as the panel (refuses a channel that is off) and the one writer of reg 0x06. */
+static void cmd_fpga_scope_source(const char *args)
+{
+    while (*args == ' ') args++;
+    scope_state_t *ss = scope_state_get();
+    if (*args) {
+        trigger_source_t want;
+        if      (strncmp(args, "ch1", 3) == 0) want = TRIG_SRC_CH1;
+        else if (strncmp(args, "ch2", 3) == 0) want = TRIG_SRC_CH2;
+        else { usb_send_str("usage: fpga scope source [ch1|ch2]\r\n"); return; }
+        if (want != ss->trigger.source) {
+            trig_menu_t m = { false, TM_ROW_SOURCE };
+            if (trig_menu_change(&m, ss, +1) & TM_REFUSED_OFF) {
+                usb_debug_printf("trigger source %s refused: that channel is off\r\n",
+                                 trigger_source_labels[want]);
+                return;
+            }
+        }
+        if (!fpga_apply_trigger_source()) {
+            usb_send_str("trigger source NOT SET (acq task would not park)\r\n");
+            return;
+        }
+    }
+    usb_debug_printf("trigger source %s -> reg 0x06 = 0x%02X\r\n",
+                     trigger_source_labels[ss->trigger.source],
+                     (unsigned)fpga_acq_trig_src_code_get());
+}
+
+/* `fpga scope single` -- SINGLE and arm it: what OK does after a capture. */
+static void cmd_fpga_scope_single(const char *args)
+{
+    (void)args;
+    scope_state_t *ss = scope_state_get();
+    ss->trigger.mode = TRIG_SINGLE;
+    ss->running = true;
+    fpga_acq_single_rearm();
+    usb_send_str("single armed (Await Trigger...)\r\n");
 }
 
 /* `fpga scope level [level]` — the digital trigger level (reg 0x08) from the
@@ -3430,7 +3600,10 @@ static void cmd_fpga_scope_timebase(const char *args)
             return;
         }
         ss->timebase_idx = (uint8_t)v;
+        const bool was_roll = ss->roll;
+        ss->roll = false;          /* a Y-T code: leave roll (C11) */
         if (!fpga_apply_timebase((uint8_t)v)) {
+            ss->roll = was_roll;   /* nothing written: acq task is still where it was */
             usb_send_str("acq task would not park — reg 0x01 NOT written\r\n");
             return;
         }
@@ -3451,6 +3624,99 @@ static void cmd_fpga_scope_timebase(const char *args)
                      (unsigned)fpga_acq_rate_idx_get(),
                      (unsigned long)(scope_timebase_sample_rate(ss->timebase_idx) + 0.5f),
                      lbl);
+}
+
+/* Millivolts of one roll point as a signed "x.yyy" string, or counts when the
+ * range is uncalibrated -- the same rule and units the Y-T badges use. */
+static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
+{
+    const scope_state_t *ss = scope_state_get();
+    const channel_state_t *c = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+    const uint8_t zero = scope_measure_zero_for(scope_vpos_active(), c->position,
+                                                (int)FPGA_ADC_OFFSET);
+    const float vpc = scope_cal_volts_per_count(ch, c->vdiv_idx);
+    if (!(vpc > 0.0f)) {
+        snprintf(out, n, "code %u (zero %u, no cal)", (unsigned)code, (unsigned)zero);
+        return;
+    }
+    const float v = scope_roll_point_volts(code, zero, vpc);
+    long mv = (long)(v * 1000.0f + (v >= 0.0f ? 0.5f : -0.5f));
+    const char sign = (mv < 0) ? '-' : '+';
+    if (mv < 0) mv = -mv;
+    snprintf(out, n, "code %u = %c%ld.%03ld V", (unsigned)code, sign, mv / 1000, mv % 1000);
+}
+
+/* `fpga roll [off|<step 0-8>|code <hex>|code stock]` -- roll mode (C11).
+ * A step enters roll there; `off` returns to the Y-T code; `code` picks the
+ * reg-0x01 byte written on entry (stock writes 0x14 + step; 0x14 is the only
+ * code with a measured rate) and re-applies if rolling. Bare: status, with the
+ * last op03 frame exactly as received so the live slots can be checked. */
+static void cmd_fpga_roll(const char *args)
+{
+    while (*args == ' ') args++;
+    scope_state_t *ss = scope_state_get();
+    bool apply = false;
+
+    if (strncmp(args, "off", 3) == 0) {
+        ss->roll = false;
+        apply = true;
+    } else if (strncmp(args, "code", 4) == 0) {
+        const char *p = args + 4;
+        while (*p == ' ') p++;
+        uint32_t v;
+        if (strncmp(p, "stock", 5) == 0) {
+            fpga_roll_code_override_set(-1);
+        } else if (*p && parse_hex32(p, &v) == 0 && v <= 0xFFu) {
+            fpga_roll_code_override_set((int)v);
+        } else {
+            usb_send_str("usage: fpga roll code <hex 00-FF>|stock\r\n");
+            return;
+        }
+        apply = ss->roll;
+    } else if (*args) {
+        uint32_t v;
+        if (parse_int(args, &v) != 0 || v >= SCOPE_ROLL_STEPS) {
+            usb_debug_printf("usage: fpga roll [off|0-%u|code <hex>|code stock]\r\n",
+                             (unsigned)(SCOPE_ROLL_STEPS - 1u));
+            return;
+        }
+        ss->roll = true;
+        ss->roll_step = (uint8_t)v;
+        apply = true;
+    }
+    if (apply && !fpga_apply_roll()) {
+        usb_send_str("acq task would not park -- reg 0x01 NOT written\r\n");
+        return;
+    }
+
+    fpga_roll_stats_t st;
+    fpga_roll_stats_get(&st);
+    char lbl[12];
+    scope_roll_label(ss->roll_step, lbl, sizeof(lbl));
+    const int ov = fpga_roll_code_override_get();
+    usb_debug_printf("roll: %s  step %u = %s/div, %lu ms/point  (ui %s, acq %s)\r\n",
+                     ss->roll ? "ON" : "off", (unsigned)ss->roll_step, lbl,
+                     (unsigned long)scope_roll_period_ms(ss->roll_step),
+                     ss->roll ? "roll" : "Y-T",
+                     fpga_roll_active() ? "op03" : "04/05");
+    usb_debug_printf("reg 0x01 = 0x%02X (last apply; entry byte %s%02X)\r\n",
+                     (unsigned)fpga_acq_rate_idx_get(),
+                     ov >= 0 ? "override 0x" : "stock 0x",
+                     (unsigned)(ov >= 0 ? (unsigned)ov : scope_roll_stock_code(ss->roll_step)));
+    const scope_roll_fifo_t *f = fpga_roll_fifo();
+    usb_debug_printf("fifo %u/%u points, %lu pushed; reads %lu rejects %lu late %lu\r\n",
+                     (unsigned)f->count, (unsigned)SCOPE_ROLL_POINTS,
+                     (unsigned long)f->total, (unsigned long)st.reads,
+                     (unsigned long)st.rejects, (unsigned long)st.late);
+    usb_debug_printf("last op03 rx: %02X %02X [CH1 %02X] %02X [CH2 %02X]\r\n",
+                     st.rx[0], st.rx[1], st.rx[2], st.rx[3], st.rx[4]);
+    uint8_t c1, c2;
+    if (scope_roll_fifo_get(f, 0u, 0u, &c1) && scope_roll_fifo_get(f, 1u, 0u, &c2)) {
+        char a[40], b[40];
+        fmt_roll_point(a, sizeof(a), 1u, c1);
+        fmt_roll_point(b, sizeof(b), 2u, c2);
+        usb_debug_printf("newest: CH1 %s  CH2 %s\r\n", a, b);
+    }
 }
 
 /* `fpga scope graticule [auto|true|toggle]` — the M3 seam. Choose whether the
@@ -4092,6 +4358,112 @@ static void cmd_cal_pos(const char *args)
     if (!scope_vpos_active())
         usb_send_str("(cal page not in use: position stored, offset reference unchanged)\r\n");
     print_vpos_channel((uint8_t)ch);
+}
+
+/* ---- autoset / baseline correction / 50 % centre (parity C9/C10) --------
+ * The shell only queues a run; the key task's service does it, exactly as
+ * for the AUTO / long AUTO / long OK keys (scope_selfcal_run.h). Poll with
+ * `fpga scope selfcal`. Nothing here writes flash. */
+static const char *selfcal_kind_str(scr_kind_t k)
+{
+    return k == SCR_AUTOSET ? "autoset" : k == SCR_BASECAL ? "baseline" : "idle";
+}
+
+static void cmd_fpga_scope_autoset(void)
+{
+    if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
+    usb_send_str(scope_selfcal_request_autoset()
+                 ? "autoset queued (poll: fpga scope selfcal)\r\n" : "busy\r\n");
+}
+
+static void cmd_fpga_scope_basecal(const char *args)
+{
+    while (*args == ' ') args++;
+    uint32_t banks = 3u;
+    if (*args && (parse_hex32(args, &banks) != 0 || banks == 0u || banks > 7u)) {
+        usb_send_str("usage: fpga scope basecal [banks 1-7, bit b = bank b; default 3]\r\n");
+        return;
+    }
+    if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
+    if (!scope_vpos_active()) { usb_send_str("refused: calibration page not in use (cal page)\r\n"); return; }
+    if (!scope_selfcal_request_basecal((uint8_t)banks)) { usb_send_str("busy\r\n"); return; }
+    usb_debug_printf("baseline correction queued, banks 0x%lX; input must be open/grounded "
+                     "(poll: fpga scope selfcal; cancel: fpga scope selfcal cancel)\r\n",
+                     (unsigned long)banks);
+}
+
+static void cmd_fpga_scope_center50(void)
+{
+    if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
+    if (!scope_selfcal_request_center50()) { usb_send_str("busy\r\n"); return; }
+    vTaskDelay(pdMS_TO_TICKS(250));   /* the key task acts within 100 ms */
+    const scope_state_t *ss = scope_state_get();
+    usb_debug_printf("50%% centre: pos CH1 %d CH2 %d, trig_x %d, level %d (code %u)\r\n",
+                     (int)ss->ch1.position, (int)ss->ch2.position, (int)ss->trig_x,
+                     (int)ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
+}
+
+static void cmd_fpga_scope_selfcal(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "cancel", 6) == 0) {
+        scope_selfcal_request_cancel();
+        vTaskDelay(pdMS_TO_TICKS(250));
+    } else if (*args) {
+        usb_send_str("usage: fpga scope selfcal [cancel]\r\n");
+        return;
+    }
+    scope_selfcal_status_t st;
+    scope_selfcal_get_status(&st);
+    const scope_state_t *ss = scope_state_get();
+    usb_debug_printf("selfcal: %s", selfcal_kind_str(st.kind));
+    if (st.kind == SCR_BASECAL)
+        usb_debug_printf(" %s b%u r%u", st.prechecking ? "pre-check" : "walk",
+                         (unsigned)st.bank, (unsigned)st.range);
+    usb_debug_printf("  last: %s %s  records %lu  timeouts %lu  torn %lu\r\n",
+                     selfcal_kind_str(st.last_kind), st.last_result,
+                     (unsigned long)st.records, (unsigned long)st.timeouts,
+                     (unsigned long)st.torn);
+    if (st.kind == SCR_BASECAL || st.last_kind == SCR_BASECAL)
+        usb_debug_printf("baseline: %u ok %u fail (last fail: CH%u b%u r%u %s)\r\n",
+                         (unsigned)st.n_ok, (unsigned)st.n_fail, (unsigned)st.last_fail_ch + 1u,
+                         (unsigned)st.last_fail_bank, (unsigned)st.last_fail_range,
+                         st.last_fail ? st.last_fail : "-");
+    usb_debug_printf("corrections in RAM: %u   now: CH1 r%u pos %d  CH2 r%u pos %d  tb 0x%02X  "
+                     "trig %s src CH%u level %d\r\n",
+                     (unsigned)st.corr_count, (unsigned)ss->ch1.vdiv_idx, (int)ss->ch1.position,
+                     (unsigned)ss->ch2.vdiv_idx, (int)ss->ch2.position, (unsigned)ss->timebase_idx,
+                     trigger_mode_labels[ss->trigger.mode],
+                     ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u, (int)ss->trigger.level);
+}
+
+/* `cal base [clear]`: the baseline correction's RAM deltas on the page pair. */
+static void cmd_cal_base(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strcmp(args, "clear") == 0) {
+        if (scope_selfcal_busy()) { usb_send_str("busy\r\n"); return; }
+        scope_vpos_corr_clear();
+        usb_send_str("corrections cleared (page values in force)\r\n");
+        return;
+    }
+    if (*args) { usb_send_str("usage: cal base [clear]\r\n"); return; }
+    usb_debug_printf("baseline corrections (RAM only, not persisted): %u\r\n",
+                     scope_vpos_corr_count());
+    for (uint8_t ch = 1; ch <= 2u; ch++)
+        for (uint8_t b = 0; b < CALPAGE_BANKS; b++)
+            for (uint8_t r = 0; r < CALPAGE_RANGES; r++) {
+                int16_t db, du;
+                uint16_t pb, pu;
+                if (!scope_vpos_corr_get(ch, b, r, &db, &du)) continue;
+                const bool pair = scope_vpos_page_pair(ch, b, r, &pb, &pu);
+                usb_debug_printf("  CH%u b%u r%u: base %+d upper %+d", (unsigned)ch, (unsigned)b,
+                                 (unsigned)r, (int)db, (int)du);
+                if (pair)
+                    usb_debug_printf("  -> %u/%u (page %u/%u)", (unsigned)(pb + db),
+                                     (unsigned)(pu + du), (unsigned)pb, (unsigned)pu);
+                usb_send_str("\r\n");
+            }
 }
 
 static void cmd_fpga_diag_clear(void)
@@ -4815,10 +5187,10 @@ static void cmd_mode(const char *args)
             usb_debug_printf("startup=%s\r\n", startup_mode_name(startup_mode));
         } else if (strcmp(value, "scope") == 0) {
             startup_mode_set(STARTUP_SCOPE);
-            usb_send_str("startup=Scope\r\n");
+            usb_send_str("startup=Scope (saved with the next key press)\r\n");
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
-            usb_send_str("startup=Meter\r\n");
+            usb_send_str("startup=Meter (saved with the next key press)\r\n");
         } else {
             usb_send_str("Usage: mode startup [scope|meter]\r\n");
         }
@@ -8110,6 +8482,14 @@ static void siggen_print_state(void)
     else
         usb_debug_printf("  timing: clk=%lu (off)\r\n", (unsigned long)clk);
 
+    {
+        const siggen_edit_t *ed = siggen_ui_editor();
+        usb_debug_printf("  boot=%s  editor=%s digit=%u value=%lu\r\n",
+                         c->start_on ? "restore-on" : "off",
+                         ed->active ? "ACTIVE" : "idle", (unsigned)ed->digit,
+                         (unsigned long)ed->value);
+    }
+
     uint32_t dctrl = DAC->ctrl;
     usb_debug_printf("  TMR7: CTRL1=0x%04lX CTRL2=0x%04lX DIV=%lu PR=%lu CNT=%lu\r\n",
                      (unsigned long)TMR7->ctrl1, (unsigned long)TMR7->ctrl2,
@@ -8151,6 +8531,13 @@ static void cmd_siggen(const char *args)
          tok = strtok_r(NULL, " \t", &save)) {
         if (strcmp(tok, "on") == 0)  { siggen_enable(true);  continue; }
         if (strcmp(tok, "off") == 0) { siggen_enable(false); continue; }
+        if (strcmp(tok, "boot") == 0) {
+            char *bv = strtok_r(NULL, " \t", &save);
+            if (bv != NULL && strcmp(bv, "on") == 0)       siggen_set_start_on(true);
+            else if (bv != NULL && strcmp(bv, "off") == 0) siggen_set_start_on(false);
+            else { usb_send_str("siggen: boot on|off\r\n"); return; }
+            continue;
+        }
         if (strcmp(tok, "dump") == 0) {
             const uint16_t *cy = siggen_get_cycle();
             for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i += 10)
@@ -8683,9 +9070,10 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("trig2", cmd_scope_trig2, SC_NEEDARGS,
           "trig2 raw <0-4095>              Write CH2 ref: TMR13 CH1 PWM-DAC (PA6)\r\n" "trig2 <range> <level>           CH2 vertical-offset ref via the CH1 cal formula\r\n"),
     CMD_A("siggen", cmd_siggen, 0,
-          "siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [dump]\r\n"
+          "siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [boot on|off] [dump]\r\n"
           "  Signal generator (DAC2/PA5): wave 0..12, freq 0..50000 (0 = off),\r\n"
-          "  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state\r\n"),
+          "  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state.\r\n"
+          "  boot on|off = restore the output at power-on (default off)\r\n"),
     CMD_A("trig", cmd_scope_trig, SC_NEEDARGS,
           "trig raw <0-4095>               Write DAC1 (PA4) directly + sw trigger\r\n" "trig <range> <level>            Scope trigger DAC: range 0-9, level -100..100\r\n"),
     CMD_V("flash jedec", cmd_flash_jedec, SC_EXACT,
@@ -8715,6 +9103,16 @@ static const shell_cmd_t shell_cmds[] = {
           "cal page calc <1|2> <b> <r> <p> One offset code from the page: stock's vs ours\r\n"),
     CMD_A("cal pos", cmd_cal_pos, SC_NEEDARGS,
           "cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n"),
+    CMD_A("cal base", cmd_cal_base, 0,
+          "cal base [clear]                Baseline-correction deltas held in RAM (long AUTO)\r\n"),
+    CMD_V("fpga scope autoset", cmd_fpga_scope_autoset, SC_EXACT,
+          "fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n"),
+    CMD_A("fpga scope basecal", cmd_fpga_scope_basecal, 0,
+          "fpga scope basecal [banks]      Baseline correction, as long AUTO; input open (default banks 3)\r\n"),
+    CMD_V("fpga scope center50", cmd_fpga_scope_center50, SC_EXACT,
+          "fpga scope center50             50% centre, as long OK (positions, trigger column/level)\r\n"),
+    CMD_A("fpga scope selfcal", cmd_fpga_scope_selfcal, 0,
+          "fpga scope selfcal [cancel]     Autoset/baseline progress and result\r\n"),
     CMD_A("screen dump", cmd_screen_dump, 0,
           "screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n"),
     CMD_A("screen dumpbin", cmd_screen_dumpbin, 0,
@@ -8833,7 +9231,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
           "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
-          "fpga interleave [on|off|corr g o]  Single-channel merge; B corr gain x1e4, offset x100\r\n"),
+          "fpga interleave [on|off|corr g o|cal]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga acqbr", cmd_fpga_acqbr, 0,
@@ -8842,10 +9240,18 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga pairgap [ms]               Gap between the 04 and 05 reads (EXP-45)\r\n"),
     CMD_A("fpga scope trigmode", cmd_fpga_scope_trigmode, 0,
           "fpga scope trigmode [auto|normal|single]  Acq wait policy (EXP-43)\r\n"),
+    CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,
+          "fpga scope trigger              Trigger settings, reg 0x06/0x08, status, record kind (C3)\r\n"),
+    CMD_A("fpga scope source", cmd_fpga_scope_source, 0,
+          "fpga scope source [ch1|ch2]     Trigger source -> reg 0x06 (C3)\r\n"),
+    CMD_A("fpga scope single", cmd_fpga_scope_single, 0,
+          "fpga scope single               SINGLE: arm the one-shot (OK after a capture does the same)\r\n"),
     CMD_A("fpga scope level", cmd_fpga_scope_level, 0,
           "fpga scope level [-100..100]    Digital trigger level -> reg 0x08 code (EXP-41)\r\n"),
     CMD_A("fpga scope timebase", cmd_fpga_scope_timebase, 0,
           "fpga scope timebase [code]      Set timebase in BOTH display state and reg 0x01 (hex)\r\n"),
+    CMD_A("fpga roll", cmd_fpga_roll, 0,
+          "fpga roll [off|0-8|code <hex>|code stock]  Roll mode (C11): step 0-8 = 50ms..20s/div, status\r\n"),
     CMD_A("fpga scope center", cmd_fpga_scope_center, 0,
           "fpga scope center [ch2] [0-9]   Auto-center offset ref per range (CH1/DAC1 default); all if omitted\r\n"),
     CMD_A("fpga usart", cmd_fpga_usart, 0,
@@ -8855,7 +9261,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("meter hdr", cmd_meter_hdr, 0,
           "meter hdr [on|off]              Meter TX header AA 55 (default) vs 00 00 (EXP-25) + echo ladder\r\n"),
     CMD_A("meter func", cmd_meter_func, SC_NEEDARGS,
-          "meter func <0-10>               Change function (one word, no SoC restart) and time it\r\n"),
+          "meter func <0-11>               Change function (11 = Auto, word 0x14) (one word, no SoC restart) and time it\r\n"),
     CMD_V("meter state", cmd_meter_state, SC_EXACT,
           "meter state                     Decoded frame, range, status text, link, beep, cal guard\r\n"),
     CMD_A("meter fast", cmd_meter_fast, 0,

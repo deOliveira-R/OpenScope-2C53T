@@ -187,6 +187,13 @@ float scope_cal_stock_gain(uint8_t ch);   /* 0.0f = not in use */
  */
 float scope_cal_mv_per_count(uint8_t ch, uint8_t range_idx);
 
+/* Stock's nominal ladder (0x0804BFB8), mV per count at the BNC, 0 for a bad
+ * index. Not a calibration: autoset uses only the RATIOS between ranges to
+ * predict a span on a range it has not looked at, which it needs on r0..r3
+ * too, where a unit without a page has no measured gain. */
+float scope_cal_nominal_mv(uint8_t range_idx);
+const float *scope_cal_nominal_table(void);   /* SCOPE_CAL_RANGE_COUNT entries */
+
 /* Volts per ADC count AT THE PROBE TIP — the form the badges, cursor and
  * volts/div labels want. = mV/count x the channel's probe factor / 1000.
  * 0.0f as above. scope_cal_mv_per_count() above stays BNC-referred: it is the

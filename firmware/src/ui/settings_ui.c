@@ -13,7 +13,9 @@
 #include "theme.h"
 #include "watchdog.h"
 #include "scope_state.h"
+#include "scope_roll.h"
 #include "math_channel.h"
+#include "persistence.h"
 #include "component_test.h"
 #include "shared_mem.h"
 #include <stdio.h>
@@ -32,6 +34,7 @@ static const char *settings_items[SETTINGS_ITEM_COUNT] = {
     "FPGA SPI Scanner",
     "Firmware Update",
     "Factory Reset",
+    "Theme",
 };
 
 /* Math / Persistence sub-menu items */
@@ -110,7 +113,7 @@ static void draw_settings_math(void)
             }
         }
         if (i == 1) {
-            val = persist_enabled ? "On" : "Off";
+            val = persist_enabled ? persist_mode_name(persist_get_mode()) : "Off";
         }
 
         draw_menu_item(i, 0, settings_sub_selected, math_sub_labels[i], val, th);
@@ -136,13 +139,14 @@ static void draw_settings_top(void)
 
         /* Dynamic values for certain items */
         if (i == 0) value = ">";        /* Has sub-menu */
-        if (i == 3) value = th->name;   /* Display Mode: theme name */
+        if (i == 3) value = scope_disp_mode_label((scope_disp_mode_t)scope_display_mode()); /* Y-T/Roll/X-Y */
         if (i == 4) value = ">";        /* Math/Persist: sub-menu */
         if (i == 5) value = ">";        /* Component Tester */
         if (i == 6) value = ">";        /* Bode Plot */
         if (i == 7) value = startup_mode_name(startup_mode);
         if (i == 8) value = ">";        /* About: has detail screen */
         if (i == 10) value = "DFU";     /* Firmware Update: reboot to bootloader */
+        if (i == 12) value = th->name;  /* Theme (was the Display Mode value) */
 
         draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
     }
@@ -162,27 +166,42 @@ static void draw_settings_osc(void)
     font_draw_string_center(LCD_WIDTH / 2, 20, "Oscilloscope",
                             th->text_primary, th->background, &font_large);
 
+    /* Ten rows, seven visible: scroll so the selected one is on screen.
+     * (Before C3 the eighth row, Trigger Edge, sat below the last visible
+     * slot with no scroll, so it could be selected but not seen.) */
+    int sc = 0;
+    if (settings_sub_selected >= MENU_VISIBLE)
+        sc = settings_sub_selected - MENU_VISIBLE + 1;
+
     /* CH1 section */
-    draw_menu_item(0, 0, settings_sub_selected,
+    draw_menu_item(0, sc, settings_sub_selected,
                    "CH1 Coupling", coupling_labels[ss->ch1.coupling], th);
-    draw_menu_item(1, 0, settings_sub_selected,
+    draw_menu_item(1, sc, settings_sub_selected,
                    "CH1 Probe", probe_labels[ss->ch1.probe], th);
-    draw_menu_item(2, 0, settings_sub_selected,
+    draw_menu_item(2, sc, settings_sub_selected,
                    "CH1 20M Limit", "n/a", th);   /* no hardware path known (EXP-70) */
 
     /* CH2 section */
-    draw_menu_item(3, 0, settings_sub_selected,
+    draw_menu_item(3, sc, settings_sub_selected,
                    "CH2 Coupling", coupling_labels[ss->ch2.coupling], th);
-    draw_menu_item(4, 0, settings_sub_selected,
+    draw_menu_item(4, sc, settings_sub_selected,
                    "CH2 Probe", probe_labels[ss->ch2.probe], th);
-    draw_menu_item(5, 0, settings_sub_selected,
+    draw_menu_item(5, sc, settings_sub_selected,
                    "CH2 20M Limit", "n/a", th);   /* no hardware path known (EXP-70) */
 
-    /* Trigger section */
-    draw_menu_item(6, 0, settings_sub_selected,
+    /* Trigger section (the TRIGGER key's panel holds the same three) */
+    draw_menu_item(6, sc, settings_sub_selected,
                    "Trigger Mode", trigger_mode_labels[ss->trigger.mode], th);
-    draw_menu_item(7, 0, settings_sub_selected,
+    draw_menu_item(7, sc, settings_sub_selected,
                    "Trigger Edge", trigger_edge_labels[ss->trigger.edge], th);
+    draw_menu_item(8, sc, settings_sub_selected,
+                   "Trigger Source", trigger_source_labels[ss->trigger.source], th);
+
+    /* Cursors: stock's "Cursor Measurement" menu entry; TRIGGER cycled them
+     * before C3. */
+    static const char *const cur_labels[] = { "Off", "Vertical", "Horizontal", "Both" };
+    draw_menu_item(9, sc, settings_sub_selected, "Cursors",
+                   ((unsigned)ss->cursor.mode < 4u) ? cur_labels[ss->cursor.mode] : "?", th);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

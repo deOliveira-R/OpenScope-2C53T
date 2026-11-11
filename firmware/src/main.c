@@ -23,10 +23,12 @@ extern void system_clock_config(void);
 #include "lcd.h"
 #include "ui.h"
 #include "signal_gen.h"
+#include "ui/siggen_edit.h"
 #include "watchdog.h"
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "scope_vpos.h"
+#include "scope_selfcal_run.h"
 #include "input_handler.h"
 #include "theme.h"
 #include "math_channel.h"
@@ -42,6 +44,7 @@ extern void system_clock_config(void);
 #include "meter_voltage_wave.h"
 #include "flash_fs.h"
 #include "settings_store.h"
+#include "startup_policy.h"
 #include "cal_backup.h"
 #include "usb_debug.h"
 #include "rtt.h"
@@ -49,6 +52,7 @@ extern void system_clock_config(void);
 #include "redraw_gate.h"
 #include "scope_mask.h"
 #include "can_scope.h"
+#include "trig_menu.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -94,59 +98,12 @@ volatile bool          math_enabled = false;
 volatile uint8_t       math_op = 0;        /* MATH_ADD */
 volatile bool          persist_enabled = false;
 
-#define STARTUP_SETTINGS_ADDR     0x080FF800u
-#define STARTUP_SETTINGS_MAGIC    0x3243534Fu  /* "OSC2", little-endian */
-#define STARTUP_SETTINGS_VERSION  1u
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t mode;
-    uint32_t checksum;
-} startup_settings_record_t;
-
-static uint32_t startup_settings_checksum(uint32_t mode)
-{
-    return STARTUP_SETTINGS_MAGIC ^ STARTUP_SETTINGS_VERSION ^ mode ^ 0x5A5AA5A5u;
-}
-
-static void startup_mode_load(void)
-{
-#ifndef EMULATOR_BUILD
-    const startup_settings_record_t *rec =
-        (const startup_settings_record_t *)STARTUP_SETTINGS_ADDR;
-
-    if (rec->magic == STARTUP_SETTINGS_MAGIC &&
-        rec->version == STARTUP_SETTINGS_VERSION &&
-        rec->mode < STARTUP_COUNT &&
-        rec->checksum == startup_settings_checksum(rec->mode)) {
-        startup_mode = (startup_mode_t)rec->mode;
-    }
-#endif
-}
-
-static void startup_mode_save(void)
-{
-#ifndef EMULATOR_BUILD
-    startup_settings_record_t rec;
-    rec.magic = STARTUP_SETTINGS_MAGIC;
-    rec.version = STARTUP_SETTINGS_VERSION;
-    rec.mode = (uint32_t)startup_mode;
-    rec.checksum = startup_settings_checksum(rec.mode);
-
-    flash_unlock();
-    if (flash_sector_erase(STARTUP_SETTINGS_ADDR) == FLASH_OPERATE_DONE) {
-        const uint32_t *words = (const uint32_t *)&rec;
-        uint32_t addr = STARTUP_SETTINGS_ADDR;
-        for (uint32_t i = 0; i < sizeof(rec) / sizeof(uint32_t); i++, addr += 4) {
-            if (flash_word_program(addr, words[i]) != FLASH_OPERATE_DONE) {
-                break;
-            }
-        }
-    }
-    flash_lock();
-#endif
-}
+/* Startup-on-Boot (parity M6, upstream F07). The choice is part of the
+ * settings record (device_config_t.startup_mode, saved by settings_store with
+ * everything else); main() applies it right after settings_store_init().
+ * Until 2026-11 it lived in its own record in the MCU's flash at 0x080FF800,
+ * which was erased and rewritten on every change and never consulted in the
+ * bench builds. */
 
 const char *startup_mode_name(startup_mode_t mode)
 {
@@ -159,9 +116,8 @@ const char *startup_mode_name(startup_mode_t mode)
 
 void startup_mode_set(startup_mode_t mode)
 {
-    if (mode >= STARTUP_COUNT || startup_mode == mode) return;
-    startup_mode = mode;
-    startup_mode_save();
+    if (mode >= STARTUP_COUNT) return;
+    startup_mode = mode;       /* settings_store captures it on the next key */
 }
 
 void startup_mode_adjust(int dir)
@@ -171,15 +127,17 @@ void startup_mode_adjust(int dir)
     startup_mode_set((startup_mode_t)(next % STARTUP_COUNT));
 }
 
+#ifndef FPGA_WARM_HANDOFF_TEST
+#define FPGA_WARM_HANDOFF_TEST 0
+#endif
+#ifndef FPGA_METER_SUBMODES
+#define FPGA_METER_SUBMODES 0   /* as fpga.c: lifts the "scope-only" half of a warm build */
+#endif
+
 static device_mode_t startup_target_mode(void)
 {
-    switch (startup_mode) {
-    case STARTUP_METER:
-        return MODE_MULTIMETER;
-    case STARTUP_SCOPE:
-    default:
-        return MODE_OSCILLOSCOPE;
-    }
+    return startup_boot_mode(startup_mode, FPGA_WARM_HANDOFF_TEST != 0,
+                             FPGA_METER_SUBMODES != 0);
 }
 
 #ifdef FEATURE_FFT
@@ -295,7 +253,8 @@ static uint32_t info_bar_epoch(void)
     if (current_mode == MODE_OSCILLOSCOPE) {
         const scope_state_t *s = scope_state_get();
         h = redraw_epoch_mix(h, (uint32_t)scope_view);
-        h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode | ((uint32_t)s->timebase_idx << 8));
+        h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode | ((uint32_t)s->timebase_idx << 8)
+                                | ((uint32_t)s->roll << 16) | ((uint32_t)s->roll_step << 20));
         h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled | ((uint32_t)s->ch1.vdiv_idx << 1)
                                 | ((uint32_t)s->ch1.coupling << 8));
         h = redraw_epoch_mix(h, (uint32_t)s->ch2.enabled | ((uint32_t)s->ch2.vdiv_idx << 1)
@@ -325,7 +284,9 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
     h = redraw_epoch_mix(h, (uint32_t)theme_get_id());
     h = redraw_epoch_mix(h, (uint32_t)active_channel);
     h = redraw_epoch_mix(h, (uint32_t)s->timebase_idx
-                            | ((uint32_t)s->running << 8));
+                            | ((uint32_t)s->running << 8)
+                            | ((uint32_t)s->roll << 9)
+                            | ((uint32_t)s->roll_step << 12));
 
     h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled
                             | ((uint32_t)s->ch1.vdiv_idx << 1)
@@ -355,8 +316,14 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
 
     h = redraw_epoch_mix(h, (uint32_t)math_enabled
                             | ((uint32_t)math_op         << 1)
-                            | ((uint32_t)persist_enabled << 8));
+                            | ((uint32_t)persist_enabled << 8)
+                            | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
+    /* Parity C3: the trigger panel and the trigger status badge (which
+     * says Trig'd / Wait / Auto* ... from the acquisition, not the mode). */
+    h = redraw_epoch_mix(h, (uint32_t)scope_trig_menu.open
+                            | ((uint32_t)scope_trig_menu.row << 1)
+                            | ((uint32_t)fpga_trigger_status() << 8));
 
 #ifdef FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
@@ -392,7 +359,23 @@ static uint32_t siggen_ui_epoch(void)
                             | ((uint32_t)c->output_enabled << 16)
                             | ((uint32_t)c->amplitude_dv << 24));
     h = redraw_epoch_mix(h, c->frequency_hz);
+    /* Editor state and boot policy: a cursor move changes neither the
+     * frequency nor the waveform, so without these it would not repaint. */
+    {
+        const siggen_edit_t *ed = siggen_ui_editor();
+        h = redraw_epoch_mix(h, (uint32_t)ed->active | ((uint32_t)ed->digit << 1)
+                                | ((uint32_t)c->start_on << 8));
+    }
     return h;
+}
+
+/* Is the scope showing the roll view (C11)? Time view with roll on. */
+static bool s_roll_view(void)
+{
+#ifdef FEATURE_FFT
+    if (scope_view != SCOPE_VIEW_TIME) return false;
+#endif
+    return scope_state_get()->roll;
 }
 
 /* Can this frame be served by the flicker-free column compositor?
@@ -407,13 +390,20 @@ static bool scope_incremental_available(const scope_state_t *s)
 #ifdef FEATURE_FFT
     if (scope_view != SCOPE_VIEW_TIME) return false;
 #endif
+    /* Roll: its compositor needs no record and draws no cursors. */
+    if (s->roll) return true;
     /* A popup no longer disqualifies the compositor. It used to, and that is
      * what made every timebase change blank the whole screen ten times over:
      * the popup pinned the renderer to the full clear-then-redraw for its
      * entire life. draw_scope_live_frame() now steps around the popup box.
      * Cursors still force the full path — only it draws them. */
+    /* Math and persistence (C12) are layers of the full path only: the
+     * compositor streams the trace band and knows neither. They trade the
+     * flicker-free update for the feature, on request. */
     return scope_acquisition_ready()
-           && s->cursor.mode == CURSOR_OFF;
+           && s->cursor.mode == CURSOR_OFF
+           && !math_enabled && !persist_enabled
+           && !scope_trig_menu.open;      /* the trigger panel: full path only, as cursors */
 #endif
 }
 
@@ -433,6 +423,15 @@ static void scope_render(uint32_t frame, redraw_action_t action)
     if (scope_view == SCOPE_VIEW_XY)        { ui_scope_full_draws++;
                                               draw_xy_screen();         return; }
 #endif
+    /* Roll (C11) has its own compositor over the roll FIFO; the Y-T paths
+     * below would draw the stale 1024-sample record. */
+    if (s_roll_view()) {
+        const bool inc = (action == REDRAW_INCREMENTAL);
+        if (inc) ui_scope_live_draws++; else ui_scope_full_draws++;
+        draw_roll_screen(!inc);
+        if (inc) scope_popup_overlay_tick();
+        return;
+    }
 #ifndef EMULATOR_BUILD
     if (action == REDRAW_INCREMENTAL) {
         ui_scope_live_draws++;
@@ -837,6 +836,12 @@ static void vInputTask(void *pvParameters)
         if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE) {
             input_handle_button(pressed, xDisplayQueue);
         }
+#ifndef EMULATOR_BUILD
+        /* Autoset / baseline correction / 50 % centre (parity C9/C10): one
+         * non-blocking pass, so a run never holds this task (or its health
+         * check-in) and AUTO/MENU can always cancel it. */
+        scope_selfcal_service(xDisplayQueue);
+#endif
 
         /* Check in with health monitor */
         health_checkin(health_slot_input);
@@ -1081,9 +1086,9 @@ int main(void)
         dac_output_init();
 
         /* Stock factory values (sine, 1 kHz, 3.0 V, 50 %) but output OFF:
-         * stock boots with it ON (0x080294A0) and persists the enable;
-         * we persist nothing yet, so ON here would force the GEN lead
-         * live on every boot with no way to keep it off. */
+         * stock boots with it ON (0x080294A0). settings_store_init() below
+         * then restores the saved generator settings; the output comes back
+         * ON only with the opt-in boot policy (siggen boot on, parity G5). */
         siggen_init(NULL);
     }
 #endif
@@ -1091,12 +1096,10 @@ int main(void)
     /* Initialize meter data parser */
     meter_data_init();
     meter_voltage_wave_init();
-    startup_mode_load();
-#if FPGA_WARM_HANDOFF_TEST
-    current_mode = MODE_OSCILLOSCOPE;
-#else
+    /* The saved startup mode is not known yet (it is in the settings record,
+     * restored below): boot on the factory default for now, nothing before
+     * settings_store_init() looks at current_mode. */
     current_mode = startup_target_mode();
-#endif
 
     /* Factory calibration boundary: initialize the W25Q wrapper, then
      * leave the calibration mirror unloaded. Stock evidence has not
@@ -1139,6 +1142,9 @@ int main(void)
      * And BEFORE the fpga_set_meter_mode(meter_submode) call below, which
      * consumes the restored meter submode, and before the display task exists. */
     settings_store_init();
+    /* Startup-on-Boot, now restored (M6): the mode the display and FPGA tasks
+     * and the mode entry below start in. */
+    current_mode = startup_target_mode();
 
 #if defined(CAL_BACKUP_AUTO_RESTORE) && CAL_BACKUP_AUTO_RESTORE
     /* OFF by default. Manual `cal restore` is the primary path. Even when built
@@ -1204,7 +1210,20 @@ int main(void)
     meter_autoselect_create_task();
 
     if (current_mode == MODE_MULTIMETER) {
+#if FPGA_WARM_HANDOFF_TEST
+        /* A warm-handoff image reaches here only with FPGA_METER_SUBMODES
+         * (startup_policy.h). Its USART2 is parked (ctrl1 = 0, IRQ masked,
+         * FPGA_USART_SILENT_SCOPE) and fpga_meter_reset_transport() re-arms it
+         * only with the scheduler running, so a transition from here would
+         * busy-wait ~3 s for a SoC frame and 5 x 300 ms for a selector echo
+         * that cannot arrive, and the SoC would boot into its own Auto while
+         * meter_submode says otherwise. Hand it to the poll task instead: it
+         * runs the same transition `mode meter N` runs, once the scheduler
+         * is up. */
+        fpga_request_meter_mode(meter_submode);
+#else
         fpga_set_meter_mode(meter_submode);
+#endif
     } else {
         fpga_enter_scope_mode();
     }

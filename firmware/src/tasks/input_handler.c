@@ -6,7 +6,8 @@
  * then calls input_handle_button() for the actual logic.
  *
  * Integrated features from 4 agent worktrees:
- *   - Cursor measurement mode (TRIGGER toggles, arrows move cursors)
+ *   - Cursor measurement mode (Settings -> Oscilloscope -> Cursors since
+ *     parity C3; TRIGGER is stock's trigger panel, trig_menu.h)
  *   - Meter sub-modes (LEFT/RIGHT cycle, SELECT resets min/max/avg)
  *   - Signal gen: amplitude stepping, duty cycle, frequency presets
  *   - Math channel, persistence, component tester (settings sub-menus)
@@ -14,6 +15,7 @@
 
 #include "../ui/scope_mask.h"
 #include "key_model.h"
+#include "trig_menu.h"
 #include "input_handler.h"
 #include "ui.h"
 #include "softkey.h"
@@ -22,7 +24,9 @@
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "../ui/scope_timebase.h"
+#include "../ui/scope_roll.h"
 #include "signal_gen.h"
+#include "../ui/siggen_edit.h"
 #include "theme.h"
 #include "math_channel.h"
 #include "component_test.h"
@@ -33,7 +37,9 @@
 #endif
 #include "fpga.h"
 #include "scope_vpos.h"
+#include "scope_selfcal_run.h"
 #include "meter_autoselect.h"
+#include "fpga_meter_plan.h"
 #include "at32f403a_407.h"
 #include "button_scan.h"
 #include "settings_store.h"
@@ -65,6 +71,78 @@ static uint32_t settings_now_ms(void)
 
 static void channel_cycle_coupling(uint8_t ch, channel_state_t *c, const char *name,
                                    char *pb, size_t n);
+static void set_focus(key_focus_t f);
+
+/* The hardware side of a trigger change, wherever it came from (the
+ * trigger panel, Settings, the shell has its own): reg 0x06 for the source,
+ * the SINGLE arm for the mode (stock: selecting Single arms the one-shot and
+ * shows "Await Trigger...", 0x0801C8C2). The edge is the MCU filter and the
+ * soft trigger only -- no register selects it (EXP-55/73). Writes the popup
+ * text to pb. */
+static void trigger_after_change(uint8_t what, char *pb, size_t n)
+{
+    scope_state_t *ss = scope_state_get();
+    if (what & TM_REFUSED_OFF) {
+        snprintf(pb, n, "CH%d is off", ss->trigger.source == TRIG_SRC_CH2 ? 1 : 2);
+    } else if (what & TM_CHANGED_SOURCE) {
+        const bool ok = fpga_apply_trigger_source();
+        snprintf(pb, n, ok ? "Trig source %s" : "Trig %s NOT SET",
+                 trigger_source_labels[ss->trigger.source]);
+    } else if (what & TM_CHANGED_MODE) {
+        if (ss->trigger.mode == TRIG_SINGLE) {
+            ss->running = true;
+            fpga_acq_single_rearm();
+            snprintf(pb, n, "Await Trigger...");
+        } else {
+            snprintf(pb, n, "Trig: %s", trigger_mode_labels[ss->trigger.mode]);
+        }
+    } else if (what & TM_CHANGED_EDGE) {
+        snprintf(pb, n, "Edge: %s", trigger_edge_labels[ss->trigger.edge]);
+    } else if (n) {
+        pb[0] = '\0';
+    }
+}
+
+/* Settings -> Oscilloscope -> Cursors: what TRIGGER did before C3. */
+static void cursor_mode_cycle(void)
+{
+    scope_state_t *ss = scope_state_get();
+    scope_cursor_cycle_mode();
+    /* Cursors on = the arrows move them, as before the key model; off =
+     * back to zoom. */
+    set_focus(key_focus_after_cursor_change(scope_key_focus, ss->cursor.mode != CURSOR_OFF));
+}
+
+/* Stock's "Display Mode" item (menu table 0x0804C824: Y-T / Rolling / X-Y).
+ * This item used to cycle the colour theme, which now has its own row.
+ * Roll is the C11 MCU-paced mode (re-applied to the FPGA here, so the menu
+ * and the timebase keys reach the same state); X-Y is the existing Lissajous
+ * view, so it needs the FEATURE_FFT build that carries it and is skipped
+ * otherwise. Leaving X-Y releases the FFT pool exactly as the PRM cycle does
+ * on its way back to the time view (fft_deinit is a no-op if unclaimed). */
+static void display_mode_step(int dir)
+{
+    scope_state_t *ss = scope_state_get();
+    const scope_disp_mode_t cur = (scope_disp_mode_t)scope_display_mode();
+    scope_disp_mode_t next = scope_disp_mode_cycle(cur, dir);
+#ifndef FEATURE_FFT
+    if (next == SCOPE_DISP_XY)
+        next = scope_disp_mode_cycle(next, dir);
+#else
+    if (next == SCOPE_DISP_XY) {
+        scope_view = SCOPE_VIEW_XY;
+    } else if (scope_view != SCOPE_VIEW_TIME) {
+        scope_view = SCOPE_VIEW_TIME;
+        fft_deinit();
+    }
+#endif
+    const bool want_roll = (next == SCOPE_DISP_ROLL);
+    if (want_roll != ss->roll) {
+        ss->roll = want_roll;
+        if (!fpga_apply_roll())
+            ss->roll = !want_roll;  /* nothing was written: keep the old mode */
+    }
+}
 
 static void osc_settings_adjust(int dir)
 {
@@ -89,10 +167,19 @@ static void osc_settings_adjust(int dir)
         ss->ch2.bw_limit = false;
         break;
     case 6: /* Trigger Mode */
-        ss->trigger.mode = (trigger_mode_t)((ss->trigger.mode + TRIG_COUNT + dir) % TRIG_COUNT);
-        break;
     case 7: /* Trigger Edge */
-        ss->trigger.edge = (trigger_edge_t)((ss->trigger.edge + TRIG_EDGE_COUNT + dir) % TRIG_EDGE_COUNT);
+    case 8: /* Trigger Source */
+    {
+        /* The panel's model, so Settings and the panel cannot disagree on
+         * what a change means (or on refusing a source that is off). */
+        static const uint8_t row[3] = { TM_ROW_MODE, TM_ROW_EDGE, TM_ROW_SOURCE };
+        trig_menu_t m = { false, row[settings_sub_selected - 6] };
+        char t[24];
+        trigger_after_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
+        break;
+    }
+    case 9: /* Cursors */
+        cursor_mode_cycle();
         break;
     }
 }
@@ -111,7 +198,10 @@ void input_handle_settings_ok(void)
             settings_depth = 1;
             settings_sub_selected = 0;
             break;
-        case 3: /* Display Mode -- cycle theme */
+        case 3: /* Display Mode: Y-T / Roll / X-Y (stock menu 0x0804C824) */
+            display_mode_step(+1);
+            break;
+        case 12: /* Theme -- moved off Display Mode, which is stock's Y-T/Roll/X-Y */
             theme_cycle();
             break;
         case 4: /* Math Channel -- enter math sub-menu */
@@ -163,8 +253,7 @@ void input_handle_settings_ok(void)
         case 3: { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); } break;
         case 4: scope_cycle_probe(&ss->ch2); break;
         case 5: ss->ch2.bw_limit = false; break;
-        case 6: scope_cycle_trigger_mode(ss); break;
-        case 7: scope_cycle_trigger_edge(ss); break;
+        case 6: case 7: case 8: case 9: osc_settings_adjust(+1); break;
         default: break;
         }
     } else if (settings_depth == 2) {
@@ -184,15 +273,21 @@ void input_handle_settings_ok(void)
                 math_op = 0;
             }
         } else if (settings_sub_selected == 1) {
-            /* Persistence: toggle on/off with pool lifecycle */
-            persist_enabled = !persist_enabled;
-            if (persist_enabled) {
-                /* Persistence needs the pool — evicts FFT if active */
+            /* Persistence: Off -> 500ms -> 1s -> Inf -> Off (stock's menu,
+             * manual p.30), with the pool lifecycle. */
+            if (!persist_enabled) {
+                /* Persistence needs the pool -- evicts FFT if active */
                 if (fft_is_initialized())
                     fft_deinit();
                 persist_init();
+                persist_set_mode(PERSIST_LOW);
+                persist_enabled = true;
+            } else if (persist_get_mode() == PERSIST_LOW) {
                 persist_set_mode(PERSIST_MEDIUM);
+            } else if (persist_get_mode() == PERSIST_MEDIUM) {
+                persist_set_mode(PERSIST_INFINITE);
             } else {
+                persist_enabled = false;
                 persist_deinit();
             }
         } else if (settings_sub_selected == 2) {
@@ -361,6 +456,8 @@ static void mask_auto_key(char *pb, size_t n)
 static void enter_mode(device_mode_t m, QueueHandle_t dq)
 {
     meter_autoselect_cancel();
+    siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
+    trig_menu_close(&scope_trig_menu);   /* never reappears over another mode's return */
     current_mode = m;
     if (current_mode == MODE_SETTINGS) {
         settings_selected = 0;
@@ -391,6 +488,44 @@ __attribute__((weak)) bool scope_param_select(void)
     return false;
 }
 
+/* Frequency digit editor (parity G4). While it is open the arrows move the
+ * digit cursor / change the digit, OK or PRM accept, MENU cancels. Every
+ * other key (POWER included) falls through to the normal handlers. Returns
+ * true when the key was consumed. The value goes live after every change,
+ * as in stock. */
+static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
+{
+    if (current_mode != MODE_SIGNAL_GEN) return false;
+    siggen_edit_t *ed = siggen_ui_editor();
+    siggen_edit_key_t k;
+
+    if (!ed->active) {
+        if (button != BTN_PRM) return false;
+        siggen_edit_begin(ed, siggen_get_config()->frequency_hz);
+    } else {
+        /* The shell (`siggen freq`) can change the frequency while the
+         * editor is open; step from the live value, not a stale copy. */
+        if (ed->value != siggen_get_config()->frequency_hz)
+            ed->value = siggen_get_config()->frequency_hz;
+        switch (button) {
+        case BTN_LEFT:  k = SGE_KEY_LEFT;   break;
+        case BTN_RIGHT: k = SGE_KEY_RIGHT;  break;
+        case BTN_UP:    k = SGE_KEY_UP;     break;
+        case BTN_DOWN:  k = SGE_KEY_DOWN;   break;
+        case BTN_OK:
+        case BTN_PRM:   k = SGE_KEY_ACCEPT; break;
+        case BTN_MENU:  k = SGE_KEY_CANCEL; break;
+        default: return false;
+        }
+        siggen_edit_result_t r = siggen_edit_key(ed, k);
+        if (r == SGE_CHANGED || r == SGE_CANCELLED)
+            siggen_set_frequency(ed->value);
+    }
+    uint8_t cmd = DCMD_DRAW_SIGGEN;
+    send_cmd(dq, cmd);
+    return true;
+}
+
 static key_ctx_t key_ctx_now(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -410,18 +545,16 @@ static key_ctx_t key_ctx_now(void)
     if (f != scope_key_focus) set_focus(f);
     c.focus          = f;
     c.active_channel = active_channel;
+    c.trig_menu_open = scope_trig_menu.open;
     return c;
 }
 
-/* Long AUTO/OK/SAVE: stock's baseline correction, 50 % centre and screenshot
- * gallery. Other parity items fill these in; until then say so. */
+/* Long SAVE: stock's screenshot gallery. Another parity item fills it in;
+ * until then say so. */
 static const char *long_unused_text(button_id_t b)
 {
-    switch (b) {
-    case BTN_AUTO: return "Long AUTO: not built";
-    case BTN_OK:   return "Long OK: not built";
-    default:       return "Long SAVE: not built";
-    }
+    (void)b;
+    return "Long SAVE: not built";
 }
 
 /* Execute one answer of key_map(). Returns the display command sent. */
@@ -487,8 +620,36 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
     }
 
+    case KA_SIGGEN_RUNSTOP: {
+        /* Same effect as the short OK of the previous build; stock moved
+         * Run/Stop to the long confirm. An open frequency edit is not
+         * interrupted: its value is already live. */
+        siggen_enable(!siggen_get_config()->output_enabled);
+        cmd = DCMD_DRAW_SIGGEN;
+        send_cmd(dq, cmd);
+        break;
+    }
+
+    case KA_SIGGEN_BOOT_TOGGLE: {
+        siggen_set_start_on(!siggen_get_config()->start_on);
+        cmd = DCMD_DRAW_SIGGEN;
+        send_cmd(dq, cmd);
+        break;
+    }
+
     case KA_LONG_UNUSED:
         popup_and_redraw(dq, long_unused_text((button_id_t)dir));
+        break;
+
+    /* Long AUTO / long OK (parity C10): queued for the key task's selfcal
+     * service, which runs right after this returns and shows its own
+     * popups. Baseline correction walks banks 0 and 1 (stock's order); bank
+     * 2, the interleaved single-channel regime, is `fpga scope basecal 7`. */
+    case KA_BASECAL:
+        if (!scope_selfcal_request_basecal(0x03u)) popup_and_redraw(dq, "Busy");
+        break;
+    case KA_CENTER50:
+        if (!scope_selfcal_request_center50()) popup_and_redraw(dq, "Busy");
         break;
 
     /* -- short presses -------------------------------------------------- */
@@ -522,16 +683,31 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
 
     case KA_TB_STEP: {
-        scope_adjust_timebase(ss, dir);
+        /* Past the last FPGA code the ladder continues into roll (C11,
+         * stock 0x14..0x1C): a roll change re-applies roll, anything else
+         * the Y-T code. Holding at the slowest roll step changes nothing. */
+        const bool was_roll = ss->roll;
+        const uint8_t was_step = ss->roll_step;
+        const bool roll_changed = scope_adjust_timebase(ss, dir);
         /* Push it to the FPGA. Before 2026-08-19 this line did not exist
          * and the button only relabelled the axis while the hardware kept
          * sampling at whatever the arm block left in reg 0x01 — so the
          * derived s/div below was a confident, wrong number. If the write
          * fails the rate did NOT change, so say so rather than print a
          * label for a rate that is not in force. */
-        const bool tb_ok = fpga_apply_timebase(ss->timebase_idx);
+        const bool tb_ok = roll_changed ? fpga_apply_roll()
+                         : (was_roll ? true : fpga_apply_timebase(ss->timebase_idx));
+        if (roll_changed && !tb_ok) {
+            /* Nothing was written. Unlike a Y-T code, a later press need not
+             * re-apply (the slowest step holds), so put the state back. */
+            ss->roll = was_roll;
+            ss->roll_step = was_step;
+        }
         char tb[12];
-        scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
+        if (ss->roll)
+            scope_roll_label(ss->roll_step, tb, sizeof(tb));
+        else
+            scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
         /* Short on purpose: pb is 24 bytes and a truncated warning is
          * worse than a terse one. */
         snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
@@ -618,6 +794,26 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         popup_and_redraw(dq, pb);
         break;
 
+    /* -- the trigger panel (parity C3, trig_menu.h) --------------------- */
+    case KA_TRIGMENU_OPEN:
+        trig_menu_open(&scope_trig_menu);
+        cmd = DCMD_DRAW_SCOPE;
+        send_cmd(dq, cmd);
+        break;
+    case KA_TRIGMENU_CLOSE:
+        trig_menu_close(&scope_trig_menu);
+        send_cmd(dq, cmd);
+        break;
+    case KA_TRIGMENU_ROW:
+        trig_menu_row_step(&scope_trig_menu, dir);
+        cmd = DCMD_DRAW_SCOPE;
+        send_cmd(dq, cmd);
+        break;
+    case KA_TRIGMENU_CHANGE:
+        trigger_after_change(trig_menu_change(&scope_trig_menu, ss, dir), pb, sizeof(pb));
+        popup_and_redraw(dq, pb);
+        break;
+
     case KA_MASK_STOPFAIL: {
         scope_mask_summary_t m;
         scope_mask_summary(&m);
@@ -653,6 +849,22 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
     char pb[24];
+
+    /* While autoset or the baseline correction runs the keys are locked, as
+     * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
+     * timebase press would pull the front end out from under the servo.
+     * AUTO and MENU (short or long) cancel and restore; POWER still works. */
+    if (scope_selfcal_busy()) {
+        const button_id_t base = (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG);
+        if (base == BTN_AUTO || base == BTN_MENU) {
+            scope_selfcal_request_cancel();
+            return cmd;
+        }
+        if (base != BTN_POWER) {
+            popup_and_redraw(dq, "Busy: AUTO cancels");
+            return cmd;
+        }
+    }
 
     /* A long press arrives as the id with BTN_LONG_FLAG set. It is handled
      * FIRST, before the meter's softkey catch below: long SELECT/MOVE/TRIGGER
@@ -699,6 +911,11 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
     }
 
+    if (siggen_edit_input(button, dq)) {
+        settings_after_button();
+        return DCMD_DRAW_SIGGEN;
+    }
+
     switch (button) {
 
     /* -- Mode / Navigation ---------------------------------------- */
@@ -741,23 +958,11 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_TRIGGER:
         if (current_mode == MODE_OSCILLOSCOPE) {
-#ifdef FEATURE_FFT
-            if (scope_view == SCOPE_VIEW_TIME)
-#endif
-            {
-                /* Toggle cursor mode in time view */
-                scope_cursor_cycle_mode();
-                /* Cursors on = the arrows move them, as before the key model;
-                 * cursors off = back to zoom. */
-                set_focus(key_focus_after_cursor_change(scope_key_focus,
-                                                        ss->cursor.mode != CURSOR_OFF));
-                send_cmd(dq, cmd);
-                break;
-            }
-            /* Fall through for non-time views: cycle trigger mode */
+            /* The time view's TRIGGER is the trigger panel (key_model.c,
+             * claimed above). What reaches here is the FFT views: cycle the
+             * trigger mode, through the same hardware path as the panel. */
             scope_cycle_trigger_mode(ss);
-            snprintf(pb, sizeof(pb), "Trig: %s",
-                     trigger_mode_labels[ss->trigger.mode]);
+            trigger_after_change(TM_CHANGED_MODE, pb, sizeof(pb));
             popup_and_redraw(dq, pb);
         } else {
             send_cmd(dq, cmd);
@@ -832,16 +1037,13 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_AUTO:
         if (current_mode == MODE_MULTIMETER) {
-            meter_autoselect_status_t st;
-            meter_autoselect_get_status(&st);
-            if (st.state == METER_AUTOSELECT_RUNNING) {
-                meter_autoselect_cancel();
-                scope_show_popup("AUTO CANCEL");
-            } else if (meter_autoselect_start(700U)) {
-                scope_show_popup("AUTO DMM");
-            } else {
-                scope_show_popup("AUTO ERR");
-            }
+            /* Stock's AUTO key in the meter (0x0800CB50) sends word 0x0514
+             * and lets the SoC pick the function (V or Ohm, AC or DC); it
+             * resets hold/REL/min/max like any function change. Pressed
+             * again it re-arms the SoC. The software autoscan this key used
+             * to start stays reachable as the shell's `meter auto`. */
+            meter_function_select(FPGA_METER_SUBMODE_AUTO);
+            scope_show_popup("AUTO");
             cmd = DCMD_DRAW_METER;
             send_cmd(dq, cmd);
         } else if (current_mode == MODE_OSCILLOSCOPE) {
@@ -873,9 +1075,17 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 break;
             }
 #endif
-            /* Time view: the mask key (teach / cancel / clear). */
-            mask_auto_key(pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
+            /* Time view: autoset (parity C9; stock 0x0800CB50). While a
+             * mask exists, or the arrows are on its stage, AUTO keeps its
+             * mask meaning (cancel a teach / clear): the mask is ours, and
+             * an autoset would move the picture it was taught on. Teaching
+             * a new one is `mask teach` in the shell. */
+            if (scope_mask_state() != MASK_PF_EMPTY || scope_key_focus == KF_MASK) {
+                mask_auto_key(pb, sizeof(pb));
+                popup_and_redraw(dq, pb);
+            } else if (!scope_selfcal_request_autoset()) {
+                popup_and_redraw(dq, "Busy");
+            }
         }
         break;
 
@@ -906,29 +1116,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 /* Returning to time-domain — release pool */
                 fft_deinit();
             }
-            send_cmd(dq, cmd);
-        } else if (current_mode == MODE_SIGNAL_GEN) {
-            /* Cycle frequency presets up to stock's 50 kHz ceiling:
-             * 1 -> 10 -> 100 -> 1k -> 10k -> 50k -> 1 Hz. Arbitrary values
-             * go through the shell's `siggen freq` until the digit-cursor
-             * editor (parity G4) lands. */
-            const siggen_config_t *sc = siggen_get_config();
-            uint32_t f = sc->frequency_hz;
-            if (f < 10u) f = 10u;
-            else if (f < 100u) f = 100u;
-            else if (f < 1000u) f = 1000u;
-            else if (f < 10000u) f = 10000u;
-            else if (f < SIGGEN_FREQ_MAX_HZ) f = SIGGEN_FREQ_MAX_HZ;
-            else f = 1u;
-            siggen_set_frequency(f);
-            /* DCMD_DRAW_SIGGEN, not the default DCMD_REDRAW_ALL: the
-             * generator panel owns rows 16..223 and repaints them itself,
-             * so a full-screen clear + status/info bar repaint on every
-             * adjustment was pure flicker. The display task also gates
-             * DCMD_DRAW_SIGGEN on the settings actually moving, which
-             * REDRAW_ALL cannot be gated on (it is the hard invalidate —
-             * see main.c). Applies to all seven siggen adjustments. */
-            cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
         }
         break;
@@ -1047,8 +1234,10 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_LEFT:
         if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 3 || settings_selected == 7)) {
+            (settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
             if (settings_selected == 3)
+                display_mode_step(-1);
+            else if (settings_selected == 12)
                 theme_cycle_reverse();
             else
                 startup_mode_adjust(-1);
@@ -1082,7 +1271,9 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
 #endif
         else if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_duty_cycle_down();
+            /* Duty is editable for Square and Sawtooth only (stock 0x0800A478). */
+            if (siggen_wave_uses_duty(siggen_get_config()->waveform))
+                siggen_duty_cycle_down();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
         }
@@ -1090,8 +1281,10 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     case BTN_RIGHT:
         if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 3 || settings_selected == 7)) {
+            (settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
             if (settings_selected == 3)
+                display_mode_step(+1);
+            else if (settings_selected == 12)
                 theme_cycle();
             else
                 startup_mode_adjust(1);
@@ -1125,7 +1318,9 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
 #endif
         else if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_duty_cycle_up();
+            /* Duty is editable for Square and Sawtooth only (stock 0x0800A478). */
+            if (siggen_wave_uses_duty(siggen_get_config()->waveform))
+                siggen_duty_cycle_up();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
         }
@@ -1154,6 +1349,14 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                  * the acquisition frozen behind a STOP the user never set. */
                 (void)scope_mask_post(SCOPE_MASK_REQ_RELEASE, 0, 0, 0);
                 scope_show_popup("MASK: RESUME");
+            } else if (ss->trigger.mode == TRIG_SINGLE &&
+                       (!ss->running || fpga_acq_single_done())) {
+                /* Stock's SINGLE: after the capture the scope is STOPPED
+                 * (0x0802163E) and RUN re-arms it. A STOP the user pressed
+                 * while armed re-arms the same way. */
+                ss->running = true;
+                fpga_acq_single_rearm();
+                scope_show_popup("Await Trigger...");
             } else {
                 scope_toggle_running(ss);
                 scope_show_popup(ss->running ? "RUN" : "STOP");

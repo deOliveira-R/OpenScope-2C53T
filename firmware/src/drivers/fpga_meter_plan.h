@@ -4,7 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define FPGA_METER_LOCAL_SUBMODE_COUNT 11u
+#define FPGA_METER_LOCAL_SUBMODE_COUNT 12u
+#define FPGA_METER_SUBMODE_AUTO        11u  /* stock's Auto function, word 0x14 */
 #define FPGA_METER_STOCK_MODE_COUNT    8u   /* formatter families, not wire words */
 #define FPGA_METER_LOGICAL_FUNCTION_COUNT 13u
 #define FPGA_METER_TRANSITION_DISCARD_FRAMES 2u
@@ -38,6 +39,7 @@ typedef enum {
     FPGA_METER_FRAME_FAMILY_CONTINUITY = 3,
     FPGA_METER_FRAME_FAMILY_DIODE = 4,
     FPGA_METER_FRAME_FAMILY_EXTENDED = 5,
+    FPGA_METER_FRAME_FAMILY_AUTO = 6,   /* the SoC picks the function: see meter_data.c */
     FPGA_METER_FRAME_FAMILY_INVALID = 0xFF,
 } fpga_meter_frame_family_t;
 

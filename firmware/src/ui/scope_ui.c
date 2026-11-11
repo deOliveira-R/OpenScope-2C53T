@@ -18,6 +18,7 @@
 #include "scope_measure.h"
 #include "scope_cal.h"
 #include "scope_timebase.h"
+#include "scope_roll.h"
 #include "scope_cursor.h"
 #include "scope_freq.h"
 #include "scope_record.h"
@@ -29,6 +30,8 @@
 #include "task.h"       /* xTaskGetTickCount — the out-of-scope popup overlay */
 #include "scope_trigger.h"
 #include "trig_edge.h"
+#include "trig_policy.h"
+#include "trig_menu.h"
 #include "scope_mask.h"
 #ifdef FEATURE_FFT
 #include "fft_live.h"
@@ -48,6 +51,7 @@
 #define SCOPE_BOT       (LCD_HEIGHT - 16)  /* Above info bar */
 #define SCOPE_H         (SCOPE_BOT - SCOPE_TOP)
 #define SCOPE_MID_Y     (SCOPE_TOP + SCOPE_H / 2)
+#define SCOPE_DIV_PX    26      /* graticule division, rows (grid + math scale) */
 #ifdef SCOPE_DEBUG_OVERLAY
 #define SCOPE_DBG_Y     (LCD_HEIGHT - 60)  /* top of the debug strip */
 #endif
@@ -304,30 +308,32 @@ static void draw_ground_markers(const scope_state_t *ss, const theme_t *th)
  * Trigger status badge
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* What the acquisition actually did, not what the mode is called (parity C3,
+ * trig_policy.h): before C3 NORMAL said "Trig'd" with no signal at all and
+ * AUTO said "Auto" while showing two non-simultaneous channels (#84). Now:
+ * Trig'd / Wait / Auto / Auto* (free-run, CH1 and CH2 two moments) / Await
+ * (SINGLE armed, stock's "Await Trigger...") / STOP (stopped, or SINGLE
+ * captured, as stock). main.c hashes fpga_trigger_status() into the redraw
+ * epoch, so the badge repaints when it changes. */
+#define TRIG_BADGE_W  44
+#define TRIG_BADGE_X  (LCD_WIDTH - TRIG_BADGE_W - 2)
+#define TRIG_BADGE_Y  (SCOPE_TOP + 2)
+#define TRIG_BADGE_H  14
+
 static void draw_trigger_status(const scope_state_t *ss, const theme_t *th)
 {
-    const char *label;
-    uint16_t color;
-
-    if (!ss->running) {
-        label = "STOP";
-        color = th->warning;
-    } else if (ss->trigger.mode == TRIG_AUTO) {
-        label = "Auto";
-        color = th->success;
-    } else if (ss->trigger.mode == TRIG_SINGLE) {
-        label = "Ready";
-        color = th->highlight;
-    } else {
-        label = "Trig'd";
-        color = th->success;
-    }
+    (void)ss;
+    const trig_status_t st = (trig_status_t)fpga_trigger_status();
+    const char *label = trig_status_label(st);
+    const trig_tone_t tone = trig_status_tone(st);
+    const uint16_t color = (tone == TRIG_TONE_OK)   ? th->success :
+                           (tone == TRIG_TONE_INFO) ? th->highlight : th->warning;
 
     /* Draw badge at top-right of waveform area */
-    uint16_t bw = 44;
-    uint16_t bx = LCD_WIDTH - bw - 2;
-    uint16_t by = SCOPE_TOP + 2;
-    lcd_fill_rect(bx, by, bw, 14, th->background);
+    uint16_t bw = TRIG_BADGE_W;
+    uint16_t bx = TRIG_BADGE_X;
+    uint16_t by = TRIG_BADGE_Y;
+    lcd_fill_rect(bx, by, bw, TRIG_BADGE_H, th->background);
     font_draw_string_right(LCD_WIDTH - 4, by + 1, label,
                            color, th->background, &font_small);
 }
@@ -812,6 +818,43 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Trigger panel (parity C3, trig_menu.h): stock's "Trigger Settings"
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Top-left, clear of the centred popup (POPUP_Y) and the status badge at the
+ * top right, so a change's popup and the panel are both readable. Drawn by
+ * the full path only; main.c keeps the compositor off while it is open, as
+ * for cursors. */
+#define TPANEL_X   6
+#define TPANEL_Y   (SCOPE_TOP + 6)
+#define TPANEL_W   124
+#define TPANEL_ROW 14
+#define TPANEL_H   (16 + TM_ROW_COUNT * TPANEL_ROW + 3)
+
+static void draw_trigger_panel(const scope_state_t *ss, const theme_t *th)
+{
+    if (!scope_trig_menu.open)
+        return;
+    lcd_fill_rect(TPANEL_X, TPANEL_Y, TPANEL_W, TPANEL_H, th->background);
+    lcd_fill_rect(TPANEL_X, TPANEL_Y, TPANEL_W, 1, th->trigger);
+    lcd_fill_rect(TPANEL_X, TPANEL_Y + TPANEL_H - 1, TPANEL_W, 1, th->trigger);
+    lcd_fill_rect(TPANEL_X, TPANEL_Y, 1, TPANEL_H, th->trigger);
+    lcd_fill_rect(TPANEL_X + TPANEL_W - 1, TPANEL_Y, 1, TPANEL_H, th->trigger);
+    font_draw_string(TPANEL_X + 5, TPANEL_Y + 3, "Trigger", th->trigger, th->background, &font_small);
+    for (uint8_t r = 0; r < TM_ROW_COUNT; r++) {
+        const bool sel = (r == scope_trig_menu.row);
+        const uint16_t y = (uint16_t)(TPANEL_Y + 16 + r * TPANEL_ROW);
+        const uint16_t bg = sel ? th->menu_selected_bg : th->background;
+        if (sel)
+            lcd_fill_rect(TPANEL_X + 2, y, TPANEL_W - 4, TPANEL_ROW, bg);
+        font_draw_string(TPANEL_X + 5, y + 1, trig_menu_row_label(r),
+                         sel ? th->text_primary : th->text_secondary, bg, &font_small);
+        font_draw_string_right(TPANEL_X + TPANEL_W - 6, y + 1, trig_menu_row_value(ss, r),
+                               th->highlight, bg, &font_small);
+    }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * Quick-change popup overlay
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -1130,6 +1173,19 @@ static void draw_mask_strip(const theme_t *th, uint16_t band_bot)
     }
 }
 
+/* Persistence (C12) is fed from the channel renderers as they draw each
+ * column, so a ghost is exactly where the trace was, through whichever
+ * transform (autofit or fixed) drew it, and costs no per-column storage (RAM
+ * is tight). prev_y < 0: first column. */
+static uint16_t g_math_toff;    /* record offset of the drawn window (soft trigger) */
+static bool     g_math_live;    /* a real record was drawn this frame */
+static inline void persist_note(uint16_t x, int16_t prev_y, int16_t y)
+{
+    if (persist_enabled && persist_is_initialized())
+        persist_add_column(x, prev_y < 0 ? -1 : (int)prev_y - SCOPE_TOP,
+                           (int)y - SCOPE_TOP);
+}
+
 /* Returns the ADC counts one screen row was worth in the frame it just drew,
  * for the cursor readout. */
 static float draw_channel_autofit(const volatile uint8_t *buf, uint16_t color,
@@ -1144,6 +1200,7 @@ static float draw_channel_autofit(const volatile uint8_t *buf, uint16_t color,
     int16_t prev_y = -1;
     for (uint16_t x = 0; x < n; x++) {
         int16_t y = autofit_y(&a, buf[x]);
+        persist_note(x, prev_y, y);
         uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
         uint8_t blo, bhi;
         if (g_mask_bounds_on && mask_ch >= 0 && MASK_BOUND_DOT(x) &&
@@ -1197,6 +1254,7 @@ static float draw_channel_fixed(const volatile uint8_t *buf, uint16_t color,
         if (yy < y_top)   yy = y_top;
         if (yy >= y_bot)  yy = y_bot - 1;
         int16_t y = (int16_t)yy;
+        persist_note(x, prev_y, y);
         uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
         uint8_t blo, bhi;
         if (g_mask_bounds_on && mask_ch >= 0 && MASK_BOUND_DOT(x) &&
@@ -1338,13 +1396,20 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     /* 2. Soft anchor: the midline crossing, searched so that the window
      *    [crossing - tx, crossing - tx + draw_n) stays inside the record and
      *    clear of the guarded head. */
-    int idx = scope_measure_find_trigger((const uint8_t *)src_buf + SEAM_GUARD + tx,
-                                         (uint16_t)(max_start - SEAM_GUARD),
-                                         (uint8_t)thr,
-                                         ss->trigger.edge == TRIG_RISING, 3u);
-    if (idx <= 0)
+    /*    Stock's three-point edge confirm (0x08028DE4, parity C3) on top of
+     *    the Schmitt arming this always had: a crossing whose next sample
+     *    falls straight back is a one-sample spike, not the edge. SINGLE
+     *    keeps two points, as stock does. The measured case for adding it
+     *    is in trig_edge.h (tests/test_trig_edge.c [7]-[9]). */
+    const int lo = (int)SEAM_GUARD + tx;
+    const int hi = (int)max_start + tx + 1;       /* the old search's span */
+    int a = trig_edge_search(src_buf, (int)FPGA_ADC_BUF_SIZE, lo, hi, thr,
+                             ss->trigger.edge == TRIG_RISING, 3u,
+                             ss->trigger.mode == TRIG_SINGLE ? 0u : 1u);
+    /* The old search returned index 0 of its span as "nothing": keep that
+     * (a crossing on the very first sample has no "before"). */
+    if (a <= lo)
         return 0u;
-    int a = idx + SEAM_GUARD + tx;
     g_trig_x_actual = (int16_t)tx;
     g_trig_anchor = 1;
     return (uint16_t)(a - tx);
@@ -1375,6 +1440,7 @@ void draw_demo_waveform(uint32_t frame)
      * scale that belongs to a trace no longer on the screen. */
     vband_clear();
     g_mask_ov_on = false;          /* re-armed by mask_overlay_begin() on live data */
+    g_math_live = false;
 
     /* Freeze waveform when stopped — hold the last running frame */
     static uint32_t frozen_frame = 0;
@@ -1416,6 +1482,10 @@ void draw_demo_waveform(uint32_t frame)
         mask_overlay_begin();
         const volatile uint8_t *b1 = (ch1_buf != NULL) ? ch1_buf + toff : NULL;
         const volatile uint8_t *b2 = (ch2_buf != NULL) ? ch2_buf + toff : NULL;
+        /* The same window and channel set for the math trace and persistence
+         * (C12): they must be drawn from exactly what the traces were. */
+        g_math_toff = toff;
+        g_math_live = true;
 
         /* True-scale only where the range has a real volts/div; a NONE range
          * always autofits (its grid has no volts meaning to honour). Default
@@ -1748,41 +1818,42 @@ static void draw_cursors(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Persistence overlay
+ * Persistence overlay (C12: live traces)
+ *
+ * Layer 1 draws what earlier frames left in the buffer, BEFORE this frame's
+ * trace goes on top; the channel renderers add this frame's trace to the
+ * buffer as they draw it (persist_note), for the next frames. The
+ * fade runs on wall time (persist_decay_ms), so 500 ms / 1 s mean that
+ * whatever the frame rate. Dual-channel mode splits the glass into a CH1 band
+ * above and a CH2 band below SCOPE_MID_Y, so a ghost's row says whose it is
+ * and takes that channel's theme colour.
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_persistence_overlay(uint32_t frame)
+static void draw_persistence_overlay(void)
 {
-    if (!persist_enabled) return;
+    if (!persist_enabled || !persist_is_initialized()) return;
 
-    /* Feed demo waveform y-values into persistence buffer */
-    static const int8_t sin_lut_p[64] = {
-         0, 10, 19, 29, 38, 47, 56, 63, 71, 77, 83, 88, 92, 96, 98, 99,
-        100, 99, 98, 96, 92, 88, 83, 77, 71, 63, 56, 47, 38, 29, 19, 10,
-         0,-10,-19,-29,-38,-47,-56,-63,-71,-77,-83,-88,-92,-96,-98,-99,
-       -100,-99,-98,-96,-92,-88,-83,-77,-71,-63,-56,-47,-38,-29,-19,-10,
-    };
+    static uint32_t last_tick;
+    static bool     have_tick;
+    uint32_t now = (uint32_t)xTaskGetTickCount() * (1000u / configTICK_RATE_HZ);
+    persist_decay_ms(have_tick ? (uint32_t)(now - last_tick) : 0u);
+    last_tick = now;
+    have_tick = true;
 
-    uint16_t y_vals[PERSIST_WIDTH];
-    uint16_t y_center = SCOPE_H / 2;
-    for (uint16_t px = 0; px < PERSIST_WIDTH; px++) {
-        uint8_t idx = (uint8_t)((px * 4 + frame) & 0x3F);
-        int16_t yv = (int16_t)(y_center - (sin_lut_p[idx] * 40 / 100));
-        if (yv < 0) yv = 0;
-        if (yv >= PERSIST_HEIGHT) yv = PERSIST_HEIGHT - 1;
-        y_vals[px] = (uint16_t)yv;
-    }
-    persist_add_trace(y_vals, 0);
-    persist_decay();
-
+    const theme_t *th = theme_get();
+    const scope_state_t *ss = scope_state_get();
     const uint8_t *buf = persist_get_buffer();
     if (!buf) return;
+    const bool split = ss->ch1.enabled && ss->ch2.enabled;
+    const uint16_t single_c = ss->ch1.enabled ? th->ch1 : th->ch2;
 
     for (uint16_t y = 0; y < PERSIST_HEIGHT; y++) {
+        const uint16_t base = split ? ((y + SCOPE_TOP < SCOPE_MID_Y) ? th->ch1 : th->ch2)
+                                    : single_c;
         for (uint16_t x = 0; x < PERSIST_WIDTH; x++) {
             uint8_t intensity = buf[y * PERSIST_WIDTH + x];
             if (intensity > 0) {
-                uint16_t color = persist_intensity_to_color_ch1(intensity);
+                uint16_t color = persist_scale_rgb565(base, intensity);
                 if (color != 0x0000)
                     lcd_set_pixel(x, y + SCOPE_TOP, color);
             }
@@ -1791,45 +1862,106 @@ static void draw_persistence_overlay(uint32_t frame)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Math channel overlay
+ * Math channel overlay (C12: stock's 8 ops on the real records)
+ *
+ * Reads the same 320-sample window the traces were drawn from (g_math_toff,
+ * the soft-trigger offset). Volts where the range is calibrated
+ * (scope_cal gain, 0 V = scope_measure_zero_for), counts where not. Drawn
+ * about the graticule centre on its OWN scale (a 1-2-5 step per division
+ * chosen from the result, shown in the label): A*B and A/B have no common
+ * graticule with A and B.
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_math_waveform(uint32_t frame)
+static void draw_math_waveform(void)
 {
     if (!math_enabled) return;
 
     const theme_t *th = theme_get();
+    const scope_state_t *ss = scope_state_get();
+    const math_op_t op = ((math_op_t)math_op < MATH_COUNT) ? (math_op_t)math_op : MATH_ADD;
+    char label[32];
 
-    static const int8_t sin_lut_m[64] = {
-         0, 10, 19, 29, 38, 47, 56, 63, 71, 77, 83, 88, 92, 96, 98, 99,
-        100, 99, 98, 96, 92, 88, 83, 77, 71, 63, 56, 47, 38, 29, 19, 10,
-         0,-10,-19,-29,-38,-47,-56,-63,-71,-77,-83,-88,-92,-96,-98,-99,
-       -100,-99,-98,-96,-92,-88,-83,-77,-71,-63,-56,-47,-38,-29,-19,-10,
-    };
+    const volatile uint8_t *s1 = fpga_get_ch1_buf();
+    const volatile uint8_t *s2 = fpga_get_ch2_buf();
+    const bool ok = g_math_live
+        && (!math_op_uses_a(op) || (ss->ch1.enabled && s1 != NULL))
+        && (!math_op_uses_b(op) || (ss->ch2.enabled && s2 != NULL));
 
-    int16_t ch_a[LCD_WIDTH], ch_b[LCD_WIDTH], result[LCD_WIDTH];
-    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-        uint8_t idx = (uint8_t)((x * 4 + frame) & 0x3F);
-        ch_a[x] = (int16_t)(sin_lut_m[idx] * 40);
-        uint8_t phase = (uint8_t)((x * 4 + frame) & 0x3F);
-        ch_b[x] = (int16_t)(phase < 32 ? -2500 : 2500);
+    if (!ok) {
+        /* No record, or a channel the op reads is off: say so, draw nothing. */
+        snprintf(label, sizeof(label), "M:%s --", math_channel_name(op));
+        font_draw_string(130, SCOPE_TOP, label, th->warning, th->warning, &font_small);
+        return;
     }
 
-    math_config_t cfg;
-    cfg.operation = (math_op_t)math_op;
-    cfg.scale = 1.0f;
-    math_channel_compute(ch_a, ch_b, result, LCD_WIDTH, &cfg);
+    math_in_t in;
+    in.zero_a = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
+    in.zero_b = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
+    in.k_a = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
+    in.k_b = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
 
-    uint16_t y_center = SCOPE_MID_Y;
-    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-        int16_t y = (int16_t)(y_center - result[x] / 100);
-        if (y >= SCOPE_TOP && y < SCOPE_BOT)
-            lcd_set_pixel(x, (uint16_t)y, th->warning);
+    /* Two passes over 64-sample chunks (peak, then rows) so no 320-sample
+     * scratch has to live in RAM. Byte reads cannot tear a sample, but the
+     * window (and the two passes) can straddle a record commit, exactly as the
+     * trace renderers' own reads can: at worst one frame is scaled from a
+     * slightly different record than it is drawn from, and clips. */
+    enum { CH = 64 };
+    uint8_t a[CH], b[CH];
+    float v[CH];
+    int16_t rows[CH];
+    math_unit_t unit = math_unit_for(op, &in);
+
+    float peak = 0.0f;
+    for (uint16_t x0 = 0; x0 < LCD_WIDTH; x0 += CH) {
+        for (uint16_t i = 0; i < CH; i++) {
+            a[i] = s1 ? s1[g_math_toff + x0 + i] : 0u;
+            b[i] = s2 ? s2[g_math_toff + x0 + i] : 0u;
+        }
+        math_compute(op, a, b, CH, &in, v);
+        float pk = math_peak(v, CH);
+        if (pk > peak) peak = pk;
     }
 
-    const char *name = math_channel_name((math_op_t)math_op);
-    font_draw_string(130, SCOPE_TOP, "MATH:", th->warning, th->warning, &font_small);
-    font_draw_string(170, SCOPE_TOP, name, th->warning, th->warning, &font_small);
+    /* Scale choice keeps its last step while it still fits (no flicker). */
+    static int scale_idx = -1;
+    static uint8_t scale_key = 0xFFu;
+    const uint8_t key = (uint8_t)(op | ((uint8_t)unit << 4));
+    if (key != scale_key) { scale_idx = -1; scale_key = key; }
+    scale_idx = math_scale_pick(peak, scale_idx);
+    /* Never finer than the source channel's own division, so ADC noise on a
+     * quiet result (A-B of one signal) stays a flat line, not a full screen. */
+    const int floor_idx = math_scale_floor_idx(
+        math_step_floor(op, &in, SCOPE_CAL_COUNTS_PER_DIV));
+    if (scale_idx < floor_idx) scale_idx = floor_idx;
+    const float step = math_scale_value(scale_idx);
+
+    int16_t prev = -1;
+    for (uint16_t x0 = 0; x0 < LCD_WIDTH; x0 += CH) {
+        for (uint16_t i = 0; i < CH; i++) {
+            a[i] = s1 ? s1[g_math_toff + x0 + i] : 0u;
+            b[i] = s2 ? s2[g_math_toff + x0 + i] : 0u;
+        }
+        math_compute(op, a, b, CH, &in, v);
+        math_to_rows(v, CH, step, SCOPE_DIV_PX, SCOPE_MID_Y, SCOPE_TOP, SCOPE_BOT, rows);
+        for (uint16_t i = 0; i < CH; i++) {
+            int16_t lo = rows[i], hi = rows[i];
+            if (prev >= 0) {
+                if (prev < lo) lo = prev;
+                if (prev > hi) hi = prev;
+            }
+            for (int16_t y = lo; y <= hi; y++)
+                lcd_set_pixel((uint16_t)(x0 + i), (uint16_t)y, th->warning);
+            prev = rows[i];
+        }
+    }
+    /* Zero marker of the math trace: a tick at the left edge. */
+    for (uint16_t x = 0; x < 6; x++)
+        lcd_set_pixel(x, SCOPE_MID_Y, th->warning);
+
+    char sc[16];
+    math_scale_label(scale_idx, unit, sc, sizeof(sc));
+    snprintf(label, sizeof(label), "M:%s %s", math_channel_name(op), sc);
+    font_draw_string(130, SCOPE_TOP, label, th->warning, th->warning, &font_small);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2348,7 +2480,7 @@ void draw_scope_screen(uint32_t frame)
     lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, SCOPE_H, th->background);
 
     /* Layer 1: Persistence overlay (under everything) */
-    draw_persistence_overlay(frame);
+    draw_persistence_overlay();
 
     /* Layer 2: Grid */
     draw_scope_grid();
@@ -2379,7 +2511,7 @@ void draw_scope_screen(uint32_t frame)
     }
 
     /* Layer 6: Math channel overlay */
-    draw_math_waveform(frame);
+    draw_math_waveform();
 
     /* Layer 7: Cursor lines */
     draw_cursors();
@@ -2392,6 +2524,9 @@ void draw_scope_screen(uint32_t frame)
 
     /* Layer 10: Measurement badges */
     draw_measurement_badges(ss, th);
+
+    /* Layer 10b: the trigger panel, under the popup that reports a change */
+    draw_trigger_panel(ss, th);
 
     /* Layer 11: Quick-change popup (on top of everything) */
     draw_popup(th);
@@ -2579,6 +2714,14 @@ void draw_scope_live_frame(void)
         uint8_t  nseg = 1;
         seg_top[0] = SCOPE_TOP;
         seg_bot[0] = band_bot;
+        /* The trigger status badge is a second, permanent hole (parity C3):
+         * it says whether the record on the glass was triggered, or is a
+         * two-moment free-run read (#84), so it must survive the live frames.
+         * Before C3 the first live frame painted over it. It changes only
+         * with the trigger status, which is in main.c's redraw epoch, so a
+         * change gets a full repaint that redraws it. */
+        if (x >= TRIG_BADGE_X)
+            seg_top[0] = TRIG_BADGE_Y + TRIG_BADGE_H;
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;
@@ -2648,6 +2791,147 @@ void draw_scope_live_frame(void)
     /* Keep the counters moving; opaque fixed-width lines, no strip refill. */
     draw_scope_debug(th);
 #endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Roll view (parity C11, scope_roll.h)
+ *
+ * Stock draws its 301-point roll FIFO right-to-left, newest at the right
+ * edge (0x0801B6D2, Update Log V1.1.0). This is the same column compositor
+ * as draw_scope_live_frame (each pixel's final colour streamed once per
+ * column, so a point arriving every 2 ms never blanks the band), fed from
+ * a snapshot of the FIFO instead of the 1024-sample record:
+ *  - column x shows the point of age scope_roll_age_at_column(x): 25 points
+ *    per 32 px division, so the stock label (50 ms..20 s) is what one grid
+ *    division means;
+ *  - the vertical transform is the Y-T one: true volts/div about mid-scale
+ *    when `fpga scope graticule true` and the range is calibrated, else the
+ *    visible points' own min..max. Codes are drawn raw, as the Y-T record
+ *    is; the unit's g = (m-28)/150 sits in the volts/div label;
+ *  - no badges, cursors or trigger line: they describe the record, not the
+ *    roll (stock's roll trigger is not implemented, see fpga_apply_roll).
+ * `full` adds the decorations the compositor cannot recompute per pixel
+ * (labels, STOP, popup); the band itself is identical either way.
+ * ═══════════════════════════════════════════════════════════════════ */
+int scope_display_mode(void)
+{
+#ifdef FEATURE_FFT
+    if (scope_view == SCOPE_VIEW_XY)
+        return (int)SCOPE_DISP_XY;
+#endif
+    return scope_state_get()->roll ? (int)SCOPE_DISP_ROLL : (int)SCOPE_DISP_YT;
+}
+
+/* Display-task scratch shared by two draw paths that never run at once: the
+ * roll view's FIFO copy (~610 B) and the FFT waterfall's one-row pixel line
+ * (640 B). Both are filled and consumed inside one draw call on the display
+ * task. Sharing them keeps the coldtrace build inside RAM (it overflowed by
+ * 56 B when the round-2 parity branches were merged). */
+static union {
+    scope_roll_fifo_t roll;
+    uint16_t          waterfall[SHMEM_FFT_WATERFALL_COLS];
+} ui_draw_scratch;
+#define roll_snap      (ui_draw_scratch.roll)
+#define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
+#define ROLL_LABEL_H 16u
+
+void draw_roll_screen(bool full)
+{
+    const theme_t *th = theme_get();
+    const scope_state_t *ss = scope_state_get();
+    (void)scope_roll_fifo_snapshot(fpga_roll_fifo(), &roll_snap);
+    const uint16_t nvis = scope_roll_visible(&roll_snap, LCD_WIDTH);
+
+    const bool en1 = ss->ch1.enabled, en2 = ss->ch2.enabled;
+    scope_roll_vmap_t m1 = { false, 0, 255, 128, SCOPE_TOP, SCOPE_BOT, SCOPE_H };
+    scope_roll_vmap_t m2 = m1;
+    if (en1 && en2) {
+        m1.y_bot = SCOPE_MID_Y - 1;
+        m2.y_top = SCOPE_MID_Y + 1;
+    }
+    bool on1 = en1, on2 = en2;
+    if (ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx)) m1.fixed = true;
+    else on1 = on1 && scope_roll_fit(&roll_snap, 0u, nvis, &m1);
+    if (ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx)) m2.fixed = true;
+    else on2 = on2 && scope_roll_fit(&roll_snap, 1u, nvis, &m2);
+
+    /* Popup hole: as the live compositor, never paint over the box. */
+    bool     hole     = (popup_frames > 0);
+    uint16_t hole_top = POPUP_Y;
+    uint16_t hole_bot = POPUP_Y + POPUP_H;
+    if (hole_top < SCOPE_TOP) hole_top = SCOPE_TOP;
+    if (hole_bot > SCOPE_BOT) hole_bot = SCOPE_BOT;
+    if (hole_top >= hole_bot) hole = false;
+
+    int16_t p1 = -1, p2 = -1;
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        const uint16_t age = scope_roll_age_at_column(x, LCD_WIDTH);
+        uint8_t v;
+        int16_t lo1 = -1, hi1 = -2, lo2 = -1, hi2 = -2;
+        if (on1 && scope_roll_fifo_get(&roll_snap, 0u, age, &v)) {
+            int16_t y = scope_roll_y(&m1, v);
+            lo1 = y; hi1 = (int16_t)(y + 1);
+            if (p1 >= 0) { if (p1 < lo1) lo1 = p1; if (p1 > hi1) hi1 = p1; }
+            p1 = y;
+        } else {
+            p1 = -1;
+        }
+        if (on2 && scope_roll_fifo_get(&roll_snap, 1u, age, &v)) {
+            int16_t y = scope_roll_y(&m2, v);
+            lo2 = y; hi2 = (int16_t)(y + 1);
+            if (p2 >= 0) { if (p2 < lo2) lo2 = p2; if (p2 > hi2) hi2 = p2; }
+            p2 = y;
+        } else {
+            p2 = -1;
+        }
+
+        uint16_t seg_top[2], seg_bot[2];
+        uint8_t  nseg = 1;
+        /* The fill label (top left) and the STOP badge (top centre) are
+         * holes too, repainted opaque below, so they never strobe. */
+        const bool in_label = (x < ROLL_LABEL_W) ||
+                              (!ss->running && x >= (LCD_WIDTH - 40) / 2 &&
+                               x < (LCD_WIDTH + 40) / 2);
+        seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) : (uint16_t)SCOPE_TOP;
+        seg_bot[0] = SCOPE_BOT;
+        if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
+            seg_bot[0] = hole_top;
+            seg_top[1] = hole_bot;
+            seg_bot[1] = SCOPE_BOT;
+            nseg = 2;
+        }
+        for (uint8_t sg = 0; sg < nseg; sg++) {
+            if (seg_bot[sg] <= seg_top[sg]) continue;
+            lcd_set_window(x, seg_top[sg], 1, (uint16_t)(seg_bot[sg] - seg_top[sg]));
+            for (uint16_t y = seg_top[sg]; y < seg_bot[sg]; y++) {
+                uint16_t c;
+                if ((int16_t)y >= lo2 && (int16_t)y <= hi2)
+                    c = th->ch2;
+                else if ((int16_t)y >= lo1 && (int16_t)y <= hi1)
+                    c = th->ch1;
+                else if (y == SCOPE_MID_Y || x == LCD_WIDTH / 2)
+                    c = th->grid_center;
+                else if (((x & 31u) == 0 && (y & 1u) == 0) ||
+                         (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0))
+                    c = th->grid;
+                else
+                    c = th->background;
+                lcd_write_data(c);
+            }
+        }
+    }
+
+    /* Fill counter, top left: how much of the 301-point history is in. */
+    char buf[24];
+    snprintf(buf, sizeof(buf), "ROLL %3u/%u", (unsigned)roll_snap.count,
+             (unsigned)SCOPE_ROLL_POINTS);
+    if (full)
+        lcd_fill_rect(0, SCOPE_TOP, ROLL_LABEL_W, ROLL_LABEL_H, th->background);
+    font_draw_string(4, SCOPE_TOP + 2, buf, th->highlight, th->background, &font_small);
+    if (!full)
+        return;
+    draw_run_stop(ss, th);
+    draw_popup(th);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3064,7 +3348,7 @@ _Static_assert(WATERFALL_COLS == LCD_WIDTH,
  * large, whereas one line is small enough that the pool's ownership
  * lifetime rules would cost more than they save.
  */
-static uint16_t waterfall_line[WATERFALL_COLS];
+#define waterfall_line (ui_draw_scratch.waterfall)   /* shared, see ui_draw_scratch */
 
 /*
  * Intensity -> colour, with a BLACK floor.

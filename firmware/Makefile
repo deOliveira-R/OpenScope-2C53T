@@ -38,6 +38,7 @@ C_SOURCES += src/ui/meter_ui.c
 C_SOURCES += src/ui/softkey.c
 C_SOURCES += src/ui/fuse_model.c
 C_SOURCES += src/ui/siggen_ui.c
+C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
 C_SOURCES += src/ui/component_ui.c
 C_SOURCES += src/ui/resistor_calc_ui.c
@@ -50,6 +51,7 @@ C_SOURCES += src/ui/scope_timebase.c
 C_SOURCES += src/ui/scope_cursor.c
 C_SOURCES += src/ui/scope_freq.c
 C_SOURCES += src/ui/key_model.c
+C_SOURCES += src/ui/scope_selfcal.c
 C_SOURCES += src/tasks/input_handler.c
 C_SOURCES += src/drivers/flash_fs.c
 C_SOURCES += src/drivers/flash_regions.c
@@ -66,8 +68,12 @@ C_SOURCES += src/drivers/fpga_scanner.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/drivers/scope_vpos.c
+C_SOURCES += src/drivers/scope_selfcal_run.c
 C_SOURCES += src/dsp/trig_edge.c
+C_SOURCES += src/dsp/trig_policy.c
+C_SOURCES += src/ui/trig_menu.c
 C_SOURCES += src/dsp/interleave.c
+C_SOURCES += src/dsp/interleave_cal.c
 C_SOURCES += src/drivers/meter_data.c
 C_SOURCES += src/drivers/meter_stock.c
 C_SOURCES += src/drivers/meter_auto.c
@@ -83,6 +89,7 @@ C_SOURCES += src/ui/persistence.c
 C_SOURCES += src/ui/theme.c
 C_SOURCES += src/ui/xy_mode.c
 C_SOURCES += src/ui/roll_mode.c
+C_SOURCES += src/ui/scope_roll.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
@@ -643,7 +650,8 @@ test-scope-freq: $(BUILD_DIR)/test_scope_freq
 # (A third, known-defects build held the #57/#58 power-cut tests until those
 # were fixed; they run in test_config_persist now.)
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
-                      src/ui/theme.c src/ui/scope_state.c src/ui/scope_cal.c src/ui/scope_timebase.c
+                      src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
+                      src/dsp/signal_gen.c src/dsp/siggen_wave.c
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
@@ -713,11 +721,44 @@ $(BUILD_DIR)/test_trig_edge: tests/test_trig_edge.c src/dsp/trig_edge.c src/dsp/
 test-trig-edge: $(BUILD_DIR)/test_trig_edge
 	$<
 
+# Math channel (parity C12): the eight ops on records with volts/counts units,
+# division by ~0, clipping, the 1-2-5 scale; and the persistence buffer, whose
+# fade is timed in milliseconds and which is fed from live trace rows.
+$(BUILD_DIR)/test_math_channel: tests/test_math_channel.c src/dsp/math_channel.c src/dsp/math_channel.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/math_channel.c -lm -o $@
+
+test-math-channel: $(BUILD_DIR)/test_math_channel
+	$<
+.PHONY: test-math-channel test-persistence
+
+$(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src/ui/persistence.h src/dsp/shared_mem.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< src/ui/persistence.c src/dsp/shared_mem.c -lm -o $@
+
+test-persistence: $(BUILD_DIR)/test_persistence
+
+# Trigger acquisition policy (upstream #84) and status badge, parity C3: the
+# full input space against the pre-C3 loop, the coherence rules by name.
+$(BUILD_DIR)/test_trig_policy: tests/test_trig_policy.c src/dsp/trig_policy.c src/dsp/trig_policy.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
+		$< src/dsp/trig_policy.c -o $@
+
+.PHONY: test-trig-policy
+test-trig-policy: $(BUILD_DIR)/test_trig_policy
+	$<
+
 $(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave.c -lm -o $@
 
 test-interleave: $(BUILD_DIR)/test_interleave
+	$<
+
+# 250 MS/s self-calibration fit and refusals (parity C2).
+$(BUILD_DIR)/test_interleave_cal: tests/test_interleave_cal.c src/dsp/interleave_cal.c src/dsp/interleave_cal.h src/dsp/interleave.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
+		$< src/dsp/interleave_cal.c src/dsp/interleave.c -lm -o $@
+
+test-interleave-cal: $(BUILD_DIR)/test_interleave_cal
 	$<
 
 # Waveform pass/fail masks (docs/specs/scope/mask-pass-fail.md): real records from
@@ -745,7 +786,16 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 test-siggen: $(BUILD_DIR)/test_siggen
 	$<
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace
+# Generator frequency digit editor (parity G4): the pure state machine in
+# src/ui/siggen_edit.c, no hardware. See tests/test_siggen_edit.c.
+$(BUILD_DIR)/test_siggen_edit: tests/test_siggen_edit.c src/ui/siggen_edit.c src/ui/siggen_edit.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui $< src/ui/siggen_edit.c -o $@
+
+.PHONY: test-siggen-edit
+test-siggen-edit: $(BUILD_DIR)/test_siggen_edit
+	$<
+
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace test-interleave-cal
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page
@@ -764,12 +814,38 @@ test-calpage: $(BUILD_DIR)/test_calpage
 # Key model: the long-press state machine the TMR3 ISR runs, and the
 # key -> action map the input task asks (src/ui/key_model.h). Both are pure.
 $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/key_model.h \
-                             src/ui/scope_state.c src/ui/scope_state.h | $(BUILD_DIR)
+                             src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c \
+                             src/ui/trig_menu.c src/ui/trig_menu.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
-		src/ui/key_model.c src/ui/scope_state.c -o $@
+		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@
 
 .PHONY: test-key-model
 test-key-model: $(BUILD_DIR)/test_key_model
+	$<
+
+# Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point
+# FIFO, the timebase ladder into roll and back, the 25-points-per-division
+# geometry, and the amplitude correction at /150 with no m >= 221 gate.
+$(BUILD_DIR)/test_scope_roll: tests/test_scope_roll.c src/ui/scope_roll.c src/ui/scope_roll.h \
+                              src/ui/scope_cal.c src/ui/scope_cal.h src/ui/scope_measure.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
+		src/ui/scope_roll.c src/ui/scope_cal.c -lm -o $@
+
+.PHONY: test-scope-roll
+test-scope-roll: $(BUILD_DIR)/test_scope_roll
+
+# Autoset, baseline correction and 50 % centre (parity C9/C10): the pure
+# engines, on simulated channels (servo convergence, the refusals, autoset
+# decisions on synthetic records), against the real nominal ladder and rate
+# table. See tests/test_scope_selfcal.c.
+$(BUILD_DIR)/test_scope_selfcal: tests/test_scope_selfcal.c src/ui/scope_selfcal.c src/ui/scope_selfcal.h \
+                                 src/ui/scope_cal.c src/ui/scope_cal.h \
+                                 src/ui/scope_timebase.c src/ui/scope_timebase.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
+		src/ui/scope_selfcal.c src/ui/scope_cal.c src/ui/scope_timebase.c -lm -o $@
+
+.PHONY: test-scope-selfcal
+test-scope-selfcal: $(BUILD_DIR)/test_scope_selfcal
 	$<
 
 

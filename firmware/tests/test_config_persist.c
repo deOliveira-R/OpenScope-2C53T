@@ -57,6 +57,10 @@
 #include "theme.h"
 #include "scope_state.h"
 #include "math_channel.h"
+#include "startup_policy.h"
+#include "fpga_meter_plan.h"
+#include "signal_gen.h"
+#include "dac_output.h"
 #include "ui.h"        /* METER_SUBMODE_COUNT / METER_LAYOUT_* and the globals */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -69,6 +73,17 @@ volatile bool     math_enabled  = false;
 volatile uint8_t  math_op       = 0;
 volatile uint8_t  meter_submode = 0;
 volatile uint8_t  meter_layout  = 0;
+volatile startup_mode_t startup_mode = STARTUP_METER;   /* M6: owned by settings_store now */
+
+/* The generator's output driver, stubbed: signal_gen.c is the real one, the
+ * registers are not. dac_running is what the GEN lead would be doing. */
+static bool     dac_running = false;
+static uint32_t dac_apply_calls = 0;
+static uint16_t dac_buf[SIGGEN_CYCLE_SAMPLES];
+void dac_output_apply(const siggen_timing_t *t) { (void)t; dac_running = true; dac_apply_calls++; }
+void dac_output_stop(void) { dac_running = false; }
+uint16_t *dac_output_get_buffer(void) { return dac_buf; }
+uint32_t dac_output_timer_clock_hz(void) { return 240000000u; }
 
 /* ═══════════════════════════════════════════════════════════════════
  * Test harness
@@ -432,6 +447,9 @@ static void power_cycle(void)
     math_op = 0;
     meter_submode = 0;
     meter_layout = 0;
+    startup_mode = STARTUP_METER;
+    siggen_init(NULL);           /* main.c does this before settings_store_init() */
+    dac_running = false;
     if (flash_regions_bind_w25q() != FLASH_REGION_OK) {
         printf("FATAL: rebind failed\n");
         exit(2);
@@ -977,6 +995,208 @@ static void test_live_settings_survive_a_power_cycle(void)
           config_load_result_name(settings_store_get_status()->load_result));
 }
 
+/* Parity G5: the generator's settings live in the settings store. Stock's
+ * factory values (sine, 1 kHz, 3.0 V, 50 %) with the output OFF at boot
+ * unless the user opted in. */
+static void test_siggen_factory_defaults_and_boot_off(void)
+{
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    const siggen_config_t *c = siggen_get_config();
+    CHECK(c->waveform == SIGGEN_SINE && c->frequency_hz == 1000u &&
+          c->amplitude_dv == 30u && c->duty_pct == 50u,
+          "factory defaults wrong: wave %u %lu Hz %u dV %u%%", c->waveform,
+          (unsigned long)c->frequency_hz, c->amplitude_dv, c->duty_pct);
+    CHECK(!c->output_enabled && !c->start_on && !dac_running,
+          "the generator must boot OFF by default");
+}
+
+static void test_siggen_settings_round_trip(void)
+{
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+
+    siggen_set_waveform(SIGGEN_SQUARE);
+    siggen_set_frequency(12345u);
+    siggen_set_amplitude_dv(17u);
+    siggen_set_duty(35u);
+    settings_store_note_change(1000);
+    CHECK(settings_store_flush(1000), "generator change was not written");
+
+    power_cycle();
+    settings_store_init();
+    const siggen_config_t *c = siggen_get_config();
+    CHECK(c->waveform == SIGGEN_SQUARE, "waveform %u", c->waveform);
+    CHECK(c->frequency_hz == 12345u, "frequency %lu", (unsigned long)c->frequency_hz);
+    CHECK(c->amplitude_dv == 17u, "amplitude %u", c->amplitude_dv);
+    CHECK(c->duty_pct == 35u, "duty %u", c->duty_pct);
+    CHECK(!c->output_enabled && !dac_running, "boot-off policy violated");
+}
+
+static void test_siggen_boot_policy_gates_the_output(void)
+{
+    /* Running at the last save, boot policy OFF: it must still come up OFF. */
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    siggen_enable(true);
+    CHECK(dac_running, "stub: output did not start");
+    settings_store_note_change(1000);
+    (void)settings_store_flush(1000);
+    power_cycle();
+    settings_store_init();
+    CHECK(!siggen_get_config()->output_enabled && !dac_running,
+          "output came back ON with the boot policy off");
+
+    /* Policy ON and running at the save: it comes back, like stock. */
+    siggen_set_start_on(true);
+    siggen_enable(true);
+    settings_store_note_change(5000);
+    CHECK(settings_store_flush(5000), "boot policy change was not written");
+    power_cycle();
+    settings_store_init();
+    CHECK(siggen_get_config()->start_on && siggen_get_config()->output_enabled && dac_running,
+          "output did not come back with the boot policy on");
+
+    /* Policy ON but stopped at the save: stays stopped. */
+    siggen_enable(false);
+    settings_store_note_change(9000);
+    (void)settings_store_flush(9000);
+    power_cycle();
+    settings_store_init();
+    CHECK(siggen_get_config()->start_on && !siggen_get_config()->output_enabled && !dac_running,
+          "a stopped generator restarted at boot");
+}
+
+static void test_siggen_run_stop_with_boot_off_costs_no_record(void)
+{
+    /* With the policy OFF the enable is session state; toggling it must not
+     * look like a settings change (flash wear, and a write per Run/Stop). */
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    settings_store_note_change(1000);
+    uint32_t w0 = settings_store_get_status()->writes;
+    /* One toggle alone, then flush: an even number of toggles would land
+     * back on the flash image and hide a recorded enable. */
+    siggen_enable(true);
+    settings_store_note_change(2000);
+    CHECK(!settings_store_flush(2500), "a single Run/Stop caused a write");
+    siggen_enable(false);
+    settings_store_note_change(3000);
+    CHECK(!settings_store_flush(9000), "Run/Stop alone caused a write");
+    CHECK(settings_store_get_status()->writes == w0, "write counted");
+}
+
+static void test_siggen_corrupt_record_values_are_sanitised(void)
+{
+    device_config_t cfg;
+    config_init_defaults(&cfg);
+    cfg.siggen_waveform = 200;
+    cfg.siggen_frequency = 1.0e9f;
+    cfg.siggen_amplitude = 99.0f;
+    cfg.siggen_duty = 250;
+    cfg.siggen_start_on = 1;
+    cfg.siggen_enabled = 1;
+    settings_store_apply(&cfg);
+    const siggen_config_t *c = siggen_get_config();
+    CHECK(c->waveform == SIGGEN_SINE, "wave %u", c->waveform);
+    CHECK(c->frequency_hz == SIGGEN_DEFAULT_FREQ, "freq %lu", (unsigned long)c->frequency_hz);
+    CHECK(c->amplitude_dv == SIGGEN_AMP_MAX_DV, "amp %u", c->amplitude_dv);
+    CHECK(c->duty_pct == SIGGEN_DEFAULT_DUTY, "duty %u", c->duty_pct);
+
+    /* A record that says "enabled" with the boot policy off (forged or from
+     * a future build) must still boot OFF. */
+    config_init_defaults(&cfg);
+    cfg.siggen_enabled = 1;
+    cfg.siggen_start_on = 0;
+    settings_store_apply(&cfg);
+    CHECK(!siggen_get_config()->output_enabled && !dac_running,
+          "enable restored although the boot policy is off");
+
+    config_init_defaults(&cfg);
+    cfg.siggen_frequency = 0.0f / 0.0f;     /* NaN */
+    cfg.siggen_amplitude = -1.0f;
+    settings_store_apply(&cfg);
+    c = siggen_get_config();
+    CHECK(c->frequency_hz == SIGGEN_DEFAULT_FREQ, "NaN frequency not rejected: %lu",
+          (unsigned long)c->frequency_hz);
+    CHECK(c->amplitude_dv == SIGGEN_DEFAULT_AMP_DV, "negative amplitude not rejected: %u",
+          c->amplitude_dv);
+}
+
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Parity M6: startup-into-meter and meter-function persistence
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
+{
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_METER, "factory startup is not the meter");
+
+    /* Scope as the boot target, and stock's Auto as the meter function. */
+    startup_mode = STARTUP_SCOPE;
+    meter_submode = FPGA_METER_SUBMODE_AUTO;
+    CHECK(settings_store_flush(1000), "a changed startup mode / function was not written");
+
+    power_cycle();
+    CHECK(startup_mode == STARTUP_METER && meter_submode == 0, "power_cycle() did not reset RAM");
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_SCOPE, "startup mode not restored (%d)", (int)startup_mode);
+    CHECK(meter_submode == FPGA_METER_SUBMODE_AUTO, "Auto function not restored (%u)",
+          (unsigned)meter_submode);
+    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_OSCILLOSCOPE, "boot mode");
+
+    /* and back to the meter */
+    startup_mode = STARTUP_METER;
+    CHECK(settings_store_flush(5000), "meter startup not written");
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_METER, "meter startup not restored");
+    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_MULTIMETER, "boot mode meter");
+}
+
+static void test_startup_mode_from_a_foreign_record_is_the_default(void)
+{
+    device_config_t cfg;
+
+    CHECK(startup_mode_from_config(CONFIG_MODE_OSCILLOSCOPE) == STARTUP_SCOPE, "scope");
+    CHECK(startup_mode_from_config(CONFIG_MODE_MULTIMETER) == STARTUP_METER, "meter");
+    CHECK(startup_mode_from_config(CONFIG_MODE_SIGNAL_GEN) == STARTUP_METER, "siggen -> default");
+    CHECK(startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER, "settings -> default");
+    CHECK(startup_mode_from_config(250) == STARTUP_METER, "garbage -> default");
+
+    config_init_defaults(&cfg);
+    cfg.startup_mode = 77;
+    cfg.meter_submode = 200;
+    startup_mode = STARTUP_SCOPE;
+    settings_store_apply(&cfg);
+    CHECK(startup_mode == STARTUP_METER, "out-of-range startup mode applied");
+    CHECK(meter_submode < METER_SUBMODE_COUNT, "out-of-range meter function applied");
+    cfg.meter_submode = FPGA_METER_SUBMODE_AUTO;
+    settings_store_apply(&cfg);
+    CHECK(meter_submode == FPGA_METER_SUBMODE_AUTO, "Auto is a valid function");
+}
+
+static void test_boot_mode_policy(void)
+{
+    /* A release build boots into what was saved. */
+    CHECK(startup_boot_mode(STARTUP_METER, false, false) == MODE_MULTIMETER, "release meter");
+    CHECK(startup_boot_mode(STARTUP_SCOPE, false, false) == MODE_OSCILLOSCOPE, "release scope");
+    /* A warm-handoff image is scope-only, its meter entry points are no-ops ... */
+    CHECK(startup_boot_mode(STARTUP_METER, true, false) == MODE_OSCILLOSCOPE, "warm: scope only");
+    /* ... unless the meter submodes are enabled, which makes the meter real. */
+    CHECK(startup_boot_mode(STARTUP_METER, true, true) == MODE_MULTIMETER, "warm+submodes meter");
+    CHECK(startup_boot_mode(STARTUP_SCOPE, true, true) == MODE_OSCILLOSCOPE, "warm+submodes scope");
+    CHECK(startup_mode_to_config(STARTUP_SCOPE) == CONFIG_MODE_OSCILLOSCOPE, "to config scope");
+    CHECK(startup_mode_to_config(STARTUP_METER) == CONFIG_MODE_MULTIMETER, "to config meter");
+}
+
 static void test_presses_that_change_nothing_never_write(void)
 {
     fresh_device();
@@ -1170,7 +1390,7 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     ss->ch1.coupling = COUPLING_GND;
     ss->ch1.probe = PROBE_10X;
     ss->ch1.bw_limit = true;
-    ss->ch2.enabled = true;
+    ss->ch2.enabled = false;
     ss->ch2.vdiv_idx = 9;
     ss->ch2.coupling = COUPLING_AC;
     ss->ch2.probe = PROBE_10X;
@@ -1198,7 +1418,10 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     settings_store_apply(&cfg);
 
     ss = scope_state_get();
-    CHECK(ss->ch1.enabled == false && ss->ch2.enabled == true, "channel enables lost");
+    /* Channel enables are NOT persisted (parity C2): a CH2-off must not
+     * come back silently after a power cycle. Both are on after apply. */
+    CHECK(ss->ch1.enabled && ss->ch2.enabled, "channel enables must boot on, not be restored");
+    CHECK(cfg.scope_ch1_enabled && cfg.scope_ch2_enabled, "capture must not store a channel off");
     CHECK(ss->ch1.vdiv_idx == 1 && ss->ch2.vdiv_idx == 9, "vdiv lost");
     CHECK(ss->ch1.coupling == COUPLING_GND && ss->ch2.coupling == COUPLING_AC, "coupling lost");
     CHECK(ss->ch1.probe == PROBE_10X && ss->ch2.probe == PROBE_10X, "probe lost");
@@ -2224,6 +2447,18 @@ int main(void)
         run("autosave survives a tick wrap", test_autosave_survives_tick_wrap);
 
         run("live settings survive a power cycle", test_live_settings_survive_a_power_cycle);
+        run("startup mode and Auto function survive a power cycle",
+            test_startup_mode_and_meter_function_survive_a_power_cycle);
+        run("a foreign startup mode is the default",
+            test_startup_mode_from_a_foreign_record_is_the_default);
+        run("boot mode policy", test_boot_mode_policy);
+        run("siggen: factory defaults, output OFF at boot", test_siggen_factory_defaults_and_boot_off);
+        run("siggen: settings round-trip", test_siggen_settings_round_trip);
+        run("siggen: boot policy gates the output", test_siggen_boot_policy_gates_the_output);
+        run("siggen: Run/Stop with boot OFF costs no record",
+            test_siggen_run_stop_with_boot_off_costs_no_record);
+        run("siggen: corrupt record values are sanitised",
+            test_siggen_corrupt_record_values_are_sanitised);
         run("presses that change nothing never write", test_presses_that_change_nothing_never_write);
         run("a change undone before settling costs nothing",
             test_a_change_undone_before_settling_costs_nothing);
