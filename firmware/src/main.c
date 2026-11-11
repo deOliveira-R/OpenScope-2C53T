@@ -294,7 +294,8 @@ static uint32_t info_bar_epoch(void)
     if (current_mode == MODE_OSCILLOSCOPE) {
         const scope_state_t *s = scope_state_get();
         h = redraw_epoch_mix(h, (uint32_t)scope_view);
-        h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode | ((uint32_t)s->timebase_idx << 8));
+        h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode | ((uint32_t)s->timebase_idx << 8)
+                                | ((uint32_t)s->roll << 16) | ((uint32_t)s->roll_step << 20));
         h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled | ((uint32_t)s->ch1.vdiv_idx << 1)
                                 | ((uint32_t)s->ch1.coupling << 8));
         h = redraw_epoch_mix(h, (uint32_t)s->ch2.enabled | ((uint32_t)s->ch2.vdiv_idx << 1)
@@ -324,7 +325,9 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
     h = redraw_epoch_mix(h, (uint32_t)theme_get_id());
     h = redraw_epoch_mix(h, (uint32_t)active_channel);
     h = redraw_epoch_mix(h, (uint32_t)s->timebase_idx
-                            | ((uint32_t)s->running << 8));
+                            | ((uint32_t)s->running << 8)
+                            | ((uint32_t)s->roll << 9)
+                            | ((uint32_t)s->roll_step << 12));
 
     h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled
                             | ((uint32_t)s->ch1.vdiv_idx << 1)
@@ -395,6 +398,15 @@ static uint32_t siggen_ui_epoch(void)
     return h;
 }
 
+/* Is the scope showing the roll view (C11)? Time view with roll on. */
+static bool s_roll_view(void)
+{
+#ifdef FEATURE_FFT
+    if (scope_view != SCOPE_VIEW_TIME) return false;
+#endif
+    return scope_state_get()->roll;
+}
+
 /* Can this frame be served by the flicker-free column compositor?
  * It draws the trace band only, so anything living outside that band or
  * layered on top (popup, cursors) forces the full path. */
@@ -407,6 +419,8 @@ static bool scope_incremental_available(const scope_state_t *s)
 #ifdef FEATURE_FFT
     if (scope_view != SCOPE_VIEW_TIME) return false;
 #endif
+    /* Roll: its compositor needs no record and draws no cursors. */
+    if (s->roll) return true;
     /* A popup no longer disqualifies the compositor. It used to, and that is
      * what made every timebase change blank the whole screen ten times over:
      * the popup pinned the renderer to the full clear-then-redraw for its
@@ -437,6 +451,15 @@ static void scope_render(uint32_t frame, redraw_action_t action)
     if (scope_view == SCOPE_VIEW_XY)        { ui_scope_full_draws++;
                                               draw_xy_screen();         return; }
 #endif
+    /* Roll (C11) has its own compositor over the roll FIFO; the Y-T paths
+     * below would draw the stale 1024-sample record. */
+    if (s_roll_view()) {
+        const bool inc = (action == REDRAW_INCREMENTAL);
+        if (inc) ui_scope_live_draws++; else ui_scope_full_draws++;
+        draw_roll_screen(!inc);
+        if (inc) scope_popup_overlay_tick();
+        return;
+    }
 #ifndef EMULATOR_BUILD
     if (action == REDRAW_INCREMENTAL) {
         ui_scope_live_draws++;

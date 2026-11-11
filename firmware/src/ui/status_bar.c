@@ -9,6 +9,7 @@
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "scope_timebase.h"
+#include "scope_roll.h"
 #include "battery.h"
 #include "at32f403a_407.h"
 #include "fpga.h"
@@ -189,10 +190,17 @@ void draw_info_bar(void)
              * Codes with no measured rate read "--".
              */
             char tb[12];
-            scope_timebase_label_scaled(ss->timebase_idx,
-                                        fpga_acq_record_interleaved() ? 2u : 1u,
-                                        tb, sizeof(tb));
-            snprintf(buf, sizeof(buf), "H=%s", tb);
+            if (ss->roll) {
+                /* Roll (C11): 25 points per 32 px division, so stock's own
+                 * label is what the grid means (scope_roll.h). */
+                scope_roll_label(ss->roll_step, tb, sizeof(tb));
+                snprintf(buf, sizeof(buf), "H=%s", tb);
+            } else {
+                scope_timebase_label_scaled(ss->timebase_idx,
+                                            fpga_acq_record_interleaved() ? 2u : 1u,
+                                            tb, sizeof(tb));
+                snprintf(buf, sizeof(buf), "H=%s", tb);
+            }
             font_draw_string(128, LCD_HEIGHT - 14, buf,
                              th->text_primary, ib, &font_small);
 

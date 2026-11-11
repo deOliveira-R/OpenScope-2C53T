@@ -3959,12 +3959,22 @@ static void fpga_scope_write_reg(uint8_t reg, uint8_t val)
     SPI3_CS_DEASSERT();
 }
 
+/* Roll mode state (C11). acq_roll_on is the acquisition task's path switch;
+ * it changes only inside a park (fpga_apply_roll / fpga_apply_timebase), so
+ * the task never sees a reg-0x01 code and a read path that disagree. */
+static scope_roll_fifo_t acq_roll_fifo;
+static volatile bool     acq_roll_on = false;
+static volatile uint8_t  acq_roll_step = 0;
+static int               acq_roll_code_override = -1;
+static volatile fpga_roll_stats_t acq_roll_stats;
+
 bool fpga_apply_timebase(uint8_t code)
 {
     if (!fpga_acq_pause())
         return false;
     fpga_scope_write_reg(0x01, code);
     acq_rate_idx = code;
+    acq_roll_on = false;          /* a Y-T code is in force: back to records */
     /* The timebase picks the calibration bank (>= 5 -> 0, 4 -> 1, <= 3 ->
      * 1 or 2 by mask): crossing 4/5 moves the offset references. DAC/TMR13
      * writes only, no SPI3, so inside or outside the park is equivalent. */
@@ -3972,6 +3982,67 @@ bool fpga_apply_timebase(uint8_t code)
     acq_reprime_req = true;
     fpga_acq_resume();
     return true;
+}
+
+/* See fpga.h. Stock's timebase-change routine (0x0800B6B2..0x0800B798) does
+ * the same three things for tb >= 0x14: arms the pacing timer, resets the
+ * point counter (ms[0xDB4] = 301) and queues op01, whose handler
+ * (0x0803E54C) writes ms[0x2D] = 0x14..0x1C to reg 0x01 unmodified. What the
+ * FPGA does with 0x15..0x1C is unmeasured (0x14 = 500 S/s is, EXP-18); op03
+ * reads a live point either way, so the shell can force 0x14 for an A/B.
+ *
+ * The FIFO is cleared on every step change. Stock keeps its points and
+ * draws them at the new spacing; a trace whose left part claims the old
+ * time per point is a confident wrong axis, so we start empty instead. */
+bool fpga_apply_roll(void)
+{
+    scope_state_t *ss = scope_state_get();
+    const bool on = ss->roll;
+    const uint8_t step = (ss->roll_step < SCOPE_ROLL_STEPS) ? ss->roll_step
+                                                            : (uint8_t)(SCOPE_ROLL_STEPS - 1u);
+    uint8_t code;
+    if (on)
+        code = (acq_roll_code_override >= 0) ? (uint8_t)acq_roll_code_override
+                                             : scope_roll_stock_code(step);
+    else
+        code = ss->timebase_idx;
+    if (!fpga_acq_pause())
+        return false;
+    fpga_scope_write_reg(0x01, code);
+    acq_rate_idx = code;
+    acq_roll_step = step;
+    acq_roll_stats.code = code;
+    acq_roll_stats.step = step;
+    scope_roll_fifo_reset(&acq_roll_fifo);
+    acq_roll_on = on;
+    /* Stock's bank rule is on ms[0x2D] (>= 5 -> bank 0, SYNTHESIS 1.2), so
+     * a roll code keeps the offset references of the slow Y-T codes. */
+    scope_vpos_apply();
+    acq_reprime_req = true;
+    fpga_acq_resume();
+    return true;
+}
+
+bool fpga_roll_active(void)                     { return acq_roll_on; }
+const scope_roll_fifo_t *fpga_roll_fifo(void)   { return &acq_roll_fifo; }
+void fpga_roll_code_override_set(int code)
+{
+    acq_roll_code_override = (code >= 0 && code <= 0xFF) ? code : -1;
+}
+int  fpga_roll_code_override_get(void)          { return acq_roll_code_override; }
+void fpga_roll_stats_get(fpga_roll_stats_t *out)
+{
+    if (out == NULL)
+        return;
+    taskENTER_CRITICAL();
+    out->reads   = acq_roll_stats.reads;
+    out->rejects = acq_roll_stats.rejects;
+    out->late    = acq_roll_stats.late;
+    out->code    = acq_roll_stats.code;
+    out->step    = acq_roll_stats.step;
+    for (unsigned i = 0; i < 5u; i++)
+        out->rx[i] = acq_roll_stats.rx[i];
+    taskEXIT_CRITICAL();
 }
 
 /* Trigger sibling of fpga_apply_timebase (EXP-41, 2026-09-14): write the
@@ -4103,6 +4174,77 @@ static uint8_t fpga_warmtest_read_channel(uint8_t opcode, volatile uint8_t *buf)
     return s0;
 }
 
+/* ─── Roll point reader (parity C11) ────────────────────────────────────
+ * One op-0x03 frame per point, paced from the RTOS tick. Stock's TMR3 ISR
+ * (0x0802E71C) queues op03 once per (ARR + 1)/10 kHz; the handler
+ * (0x0803E9F2..0x0803EB38) clocks four 0xFF after the opcode and keeps
+ * received byte 2 (CH1) and byte 4 (CH2). Our TMR3 is the key scan, so the
+ * cadence comes from the tick instead (scope_roll.h: every stock period is a
+ * whole number of ms). All five received bytes are kept for the shell, so
+ * the bench can confirm which slots are live.
+ *
+ * Returns to the task loop at least every 10 ms so the park point above
+ * still acks within fpga_acq_pause()'s budget at 800 ms per point. STOP
+ * (ss->running false) reads nothing and freezes the FIFO, as stock's ISR
+ * does on ms[0x2C]. A tick that falls more than a period behind (a park, a
+ * STOP) resynchronises instead of bursting points that were never sampled
+ * on time. */
+static uint32_t roll_next_tick;
+static bool     roll_tick_armed = false;
+
+static void fpga_roll_service(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    const uint32_t period = pdMS_TO_TICKS(scope_roll_period_ms(acq_roll_step));
+    if (ss == NULL || !ss->running || period == 0u) {
+        roll_tick_armed = false;
+        vTaskDelay(pdMS_TO_TICKS(10));
+        return;
+    }
+    uint32_t now = xTaskGetTickCount();
+    if (!roll_tick_armed) {
+        roll_next_tick = now;
+        roll_tick_armed = true;
+    }
+    int32_t wait = (int32_t)(roll_next_tick - now);
+    if (wait > 0) {
+        vTaskDelay((TickType_t)(wait > 10 ? 10 : wait));
+        return;
+    }
+    if ((uint32_t)(-wait) > period) {
+        roll_next_tick = now;
+        acq_roll_stats.late++;
+    }
+    roll_next_tick += period;
+
+    if (acq_read_br != 0xFF)
+        spi3_set_br(acq_read_br);
+    uint16_t hw_to_before = fpga.spi3_hw_timeouts;
+    uint8_t rx[5];
+    SPI3_CS_ASSERT();
+    rx[0] = spi3_xfer(0x03);
+    for (unsigned i = 1; i < 5u; i++)
+        rx[i] = spi3_xfer(0xFF);
+    SPI3_CS_DEASSERT();
+    for (unsigned i = 0; i < 5u; i++)
+        acq_roll_stats.rx[i] = rx[i];
+
+    if (fpga.spi3_hw_timeouts != hw_to_before) {
+        acq_roll_stats.rejects++;        /* a fabricated 0xFF is not a point */
+        fpga.spi3_total_timeouts++;
+        return;
+    }
+    /* Record codes, the Y-T read's domain (raw + FPGA_ADC_OFFSET); the unit's
+     * amplitude correction g = (m-28)/150 is applied in volts, exactly where
+     * the Y-T trace gets it (scope_roll.h). */
+    scope_roll_fifo_push(&acq_roll_fifo,
+                         scope_roll_record_code(rx[2], (int)FPGA_ADC_OFFSET),
+                         scope_roll_record_code(rx[4], (int)FPGA_ADC_OFFSET));
+    acq_roll_stats.reads++;
+    fpga.spi3_ok_count++;                /* the display's new-data signal */
+    fpga.spi3_timeout_count = 0;
+}
+
 static void fpga_warmtest_acq_task(void *pv)
 {
     (void)pv;
@@ -4145,6 +4287,14 @@ static void fpga_warmtest_acq_task(void *pv)
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+
+        /* Roll (C11): paced op03 points instead of the 04/05 record poll.
+         * Nothing below applies -- no record, no handover, no re-arm. */
+        if (acq_roll_on) {
+            fpga_roll_service();
+            continue;
+        }
+        roll_tick_armed = false;
 
         /* EDGE-PACED ready wait — rewritten 2026-08-14 after the June-capture
          * re-read (analysis_v120/trigger_regime_findings_2026-08-14.md).
@@ -4993,6 +5143,20 @@ void fpga_reconcile_timebase_after_arm(void)
 {
     scope_state_t *ss = scope_state_get();
 
+    /* Roll (C11) survives a re-arm: the arm burst leaves reg 0x01 at its own
+     * value, so put back the roll code the FPGA was given, not the Y-T one. */
+    if (ss->roll && acq_roll_on) {
+        const uint8_t rc = (acq_roll_code_override >= 0)
+                               ? (uint8_t)acq_roll_code_override
+                               : scope_roll_stock_code(acq_roll_step);
+        SPI3_CS_ASSERT();
+        spi3_xfer(0x01);
+        spi3_xfer(rc);
+        SPI3_CS_DEASSERT();
+        acq_rate_idx = rc;
+        fpga_tb_reconcile_action = 1u;
+        return;
+    }
     if (scope_timebase_sample_rate(ss->timebase_idx) > 0.0f) {
         SPI3_CS_ASSERT();
         spi3_xfer(0x01);

@@ -84,6 +84,7 @@ C_SOURCES += src/ui/persistence.c
 C_SOURCES += src/ui/theme.c
 C_SOURCES += src/ui/xy_mode.c
 C_SOURCES += src/ui/roll_mode.c
+C_SOURCES += src/ui/scope_roll.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
@@ -632,7 +633,7 @@ test-scope-freq: $(BUILD_DIR)/test_scope_freq
 # (A third, known-defects build held the #57/#58 power-cut tests until those
 # were fixed; they run in test_config_persist now.)
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
-                      src/ui/theme.c src/ui/scope_state.c src/ui/scope_cal.c src/ui/scope_timebase.c
+                      src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
@@ -777,12 +778,24 @@ test-calpage: $(BUILD_DIR)/test_calpage
 # Key model: the long-press state machine the TMR3 ISR runs, and the
 # key -> action map the input task asks (src/ui/key_model.h). Both are pure.
 $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/key_model.h \
-                             src/ui/scope_state.c src/ui/scope_state.h | $(BUILD_DIR)
+                             src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
-		src/ui/key_model.c src/ui/scope_state.c -o $@
+		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@
 
 .PHONY: test-key-model
 test-key-model: $(BUILD_DIR)/test_key_model
+	$<
+
+# Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point
+# FIFO, the timebase ladder into roll and back, the 25-points-per-division
+# geometry, and the amplitude correction at /150 with no m >= 221 gate.
+$(BUILD_DIR)/test_scope_roll: tests/test_scope_roll.c src/ui/scope_roll.c src/ui/scope_roll.h \
+                              src/ui/scope_cal.c src/ui/scope_cal.h src/ui/scope_measure.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
+		src/ui/scope_roll.c src/ui/scope_cal.c -lm -o $@
+
+.PHONY: test-scope-roll
+test-scope-roll: $(BUILD_DIR)/test_scope_roll
 	$<
 
 

@@ -55,6 +55,7 @@
 #include "../ui/scope_freq.h"
 #include "../ui/scope_measure.h"
 #include "../ui/scope_timebase.h"
+#include "../ui/scope_roll.h"
 #include "../ui/scope_mask.h"
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
@@ -3402,7 +3403,10 @@ static void cmd_fpga_scope_timebase(const char *args)
             return;
         }
         ss->timebase_idx = (uint8_t)v;
+        const bool was_roll = ss->roll;
+        ss->roll = false;          /* a Y-T code: leave roll (C11) */
         if (!fpga_apply_timebase((uint8_t)v)) {
+            ss->roll = was_roll;   /* nothing written: acq task is still where it was */
             usb_send_str("acq task would not park — reg 0x01 NOT written\r\n");
             return;
         }
@@ -3423,6 +3427,99 @@ static void cmd_fpga_scope_timebase(const char *args)
                      (unsigned)fpga_acq_rate_idx_get(),
                      (unsigned long)(scope_timebase_sample_rate(ss->timebase_idx) + 0.5f),
                      lbl);
+}
+
+/* Millivolts of one roll point as a signed "x.yyy" string, or counts when the
+ * range is uncalibrated -- the same rule and units the Y-T badges use. */
+static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
+{
+    const scope_state_t *ss = scope_state_get();
+    const channel_state_t *c = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+    const uint8_t zero = scope_measure_zero_for(scope_vpos_active(), c->position,
+                                                (int)FPGA_ADC_OFFSET);
+    const float vpc = scope_cal_volts_per_count(ch, c->vdiv_idx);
+    if (!(vpc > 0.0f)) {
+        snprintf(out, n, "code %u (zero %u, no cal)", (unsigned)code, (unsigned)zero);
+        return;
+    }
+    const float v = scope_roll_point_volts(code, zero, vpc);
+    long mv = (long)(v * 1000.0f + (v >= 0.0f ? 0.5f : -0.5f));
+    const char sign = (mv < 0) ? '-' : '+';
+    if (mv < 0) mv = -mv;
+    snprintf(out, n, "code %u = %c%ld.%03ld V", (unsigned)code, sign, mv / 1000, mv % 1000);
+}
+
+/* `fpga roll [off|<step 0-8>|code <hex>|code stock]` -- roll mode (C11).
+ * A step enters roll there; `off` returns to the Y-T code; `code` picks the
+ * reg-0x01 byte written on entry (stock writes 0x14 + step; 0x14 is the only
+ * code with a measured rate) and re-applies if rolling. Bare: status, with the
+ * last op03 frame exactly as received so the live slots can be checked. */
+static void cmd_fpga_roll(const char *args)
+{
+    while (*args == ' ') args++;
+    scope_state_t *ss = scope_state_get();
+    bool apply = false;
+
+    if (strncmp(args, "off", 3) == 0) {
+        ss->roll = false;
+        apply = true;
+    } else if (strncmp(args, "code", 4) == 0) {
+        const char *p = args + 4;
+        while (*p == ' ') p++;
+        uint32_t v;
+        if (strncmp(p, "stock", 5) == 0) {
+            fpga_roll_code_override_set(-1);
+        } else if (*p && parse_hex32(p, &v) == 0 && v <= 0xFFu) {
+            fpga_roll_code_override_set((int)v);
+        } else {
+            usb_send_str("usage: fpga roll code <hex 00-FF>|stock\r\n");
+            return;
+        }
+        apply = ss->roll;
+    } else if (*args) {
+        uint32_t v;
+        if (parse_int(args, &v) != 0 || v >= SCOPE_ROLL_STEPS) {
+            usb_debug_printf("usage: fpga roll [off|0-%u|code <hex>|code stock]\r\n",
+                             (unsigned)(SCOPE_ROLL_STEPS - 1u));
+            return;
+        }
+        ss->roll = true;
+        ss->roll_step = (uint8_t)v;
+        apply = true;
+    }
+    if (apply && !fpga_apply_roll()) {
+        usb_send_str("acq task would not park -- reg 0x01 NOT written\r\n");
+        return;
+    }
+
+    fpga_roll_stats_t st;
+    fpga_roll_stats_get(&st);
+    char lbl[12];
+    scope_roll_label(ss->roll_step, lbl, sizeof(lbl));
+    const int ov = fpga_roll_code_override_get();
+    usb_debug_printf("roll: %s  step %u = %s/div, %lu ms/point  (ui %s, acq %s)\r\n",
+                     ss->roll ? "ON" : "off", (unsigned)ss->roll_step, lbl,
+                     (unsigned long)scope_roll_period_ms(ss->roll_step),
+                     ss->roll ? "roll" : "Y-T",
+                     fpga_roll_active() ? "op03" : "04/05");
+    usb_debug_printf("reg 0x01 = 0x%02X (last apply; entry byte %s%02X)\r\n",
+                     (unsigned)fpga_acq_rate_idx_get(),
+                     ov >= 0 ? "override 0x" : "stock 0x",
+                     (unsigned)(ov >= 0 ? (unsigned)ov : scope_roll_stock_code(ss->roll_step)));
+    const scope_roll_fifo_t *f = fpga_roll_fifo();
+    usb_debug_printf("fifo %u/%u points, %lu pushed; reads %lu rejects %lu late %lu\r\n",
+                     (unsigned)f->count, (unsigned)SCOPE_ROLL_POINTS,
+                     (unsigned long)f->total, (unsigned long)st.reads,
+                     (unsigned long)st.rejects, (unsigned long)st.late);
+    usb_debug_printf("last op03 rx: %02X %02X [CH1 %02X] %02X [CH2 %02X]\r\n",
+                     st.rx[0], st.rx[1], st.rx[2], st.rx[3], st.rx[4]);
+    uint8_t c1, c2;
+    if (scope_roll_fifo_get(f, 0u, 0u, &c1) && scope_roll_fifo_get(f, 1u, 0u, &c2)) {
+        char a[40], b[40];
+        fmt_roll_point(a, sizeof(a), 1u, c1);
+        fmt_roll_point(b, sizeof(b), 2u, c2);
+        usb_debug_printf("newest: CH1 %s  CH2 %s\r\n", a, b);
+    }
 }
 
 /* `fpga scope graticule [auto|true|toggle]` — the M3 seam. Choose whether the
@@ -8812,6 +8909,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope level [-100..100]    Digital trigger level -> reg 0x08 code (EXP-41)\r\n"),
     CMD_A("fpga scope timebase", cmd_fpga_scope_timebase, 0,
           "fpga scope timebase [code]      Set timebase in BOTH display state and reg 0x01 (hex)\r\n"),
+    CMD_A("fpga roll", cmd_fpga_roll, 0,
+          "fpga roll [off|0-8|code <hex>|code stock]  Roll mode (C11): step 0-8 = 50ms..20s/div, status\r\n"),
     CMD_A("fpga scope center", cmd_fpga_scope_center, 0,
           "fpga scope center [ch2] [0-9]   Auto-center offset ref per range (CH1/DAC1 default); all if omitted\r\n"),
     CMD_A("fpga usart", cmd_fpga_usart, 0,

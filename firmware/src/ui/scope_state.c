@@ -4,6 +4,7 @@
 
 #include "scope_state.h"
 #include "scope_measure.h"
+#include "scope_roll.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Lookup tables
@@ -91,6 +92,8 @@ void scope_state_init(scope_state_t *s)
     s->trig_x = 160;
     s->prm_mask = SCOPE_PRM_DEFAULT_MASK;
     s->prm_hidden = false;
+    s->roll = false;          /* boot is Y-T; roll is not persisted */
+    s->roll_step = 0;
 
     /* Cursor defaults */
     s->cursor.mode   = CURSOR_OFF;
@@ -179,12 +182,12 @@ void scope_adjust_vdiv(channel_state_t *ch, int direction)
     ch->vdiv_idx = (uint8_t)idx;
 }
 
-void scope_adjust_timebase(scope_state_t *s, int direction)
+bool scope_adjust_timebase(scope_state_t *s, int direction)
 {
-    int idx = (int)s->timebase_idx + direction;
-    if (idx < 0) idx = 0;
-    if (idx >= TIMEBASE_COUNT) idx = TIMEBASE_COUNT - 1;
-    s->timebase_idx = (uint8_t)idx;
+    /* Stock's ladder continues past the last FPGA record into roll
+     * (ms[0x2D] 0x14..0x1C); ours continues past code TIMEBASE_COUNT-1. */
+    return scope_roll_tb_step(&s->timebase_idx, &s->roll, &s->roll_step,
+                              direction, TIMEBASE_COUNT);
 }
 
 void scope_adjust_trigger_level(scope_state_t *s, int direction)
