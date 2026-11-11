@@ -215,6 +215,18 @@ typedef struct {
  * true-scale renderer already uses. Nominal, not a per-unit number. */
 #define SCOPE_MEASURE_ZERO_COUNT  128u
 
+/* Record code of 0 V for a channel. With the stock calibration page in use
+ * (scope_vpos), the offset DAC puts 0 V at raw 128 + pos, and records are
+ * raw + adc_offset (FPGA_ADC_OFFSET, -28), so 0 V sits at 100 + pos. Without
+ * the page the legacy centring targets record 128. Clamped to 0..255. */
+static inline uint8_t scope_measure_zero_for(int calibrated, int pos, int adc_offset)
+{
+    int z = calibrated ? 128 + adc_offset + pos : (int)SCOPE_MEASURE_ZERO_COUNT;
+    if (z < 0) z = 0;
+    if (z > 255) z = 255;
+    return (uint8_t)z;
+}
+
 /* Compute all 12 from an analysed record. m == NULL or !m->valid refuses all. */
 void scope_params_compute(const scope_measure_t *m, const scope_prm_ctx_t *ctx,
                           scope_params_t *out);
