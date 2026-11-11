@@ -248,6 +248,11 @@ void lcd_shadow_set_page(uint16_t y)
     lcd_shadow_clear();
 }
 
+const uint16_t *lcd_shadow_palette_get(void)
+{
+    return lcd_shadow_palette;
+}
+
 uint16_t lcd_shadow_page_y(void)
 {
     return lcd_shadow_page;

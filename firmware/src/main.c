@@ -46,6 +46,7 @@ extern void system_clock_config(void);
 #include "settings_store.h"
 #include "startup_policy.h"
 #include "cal_backup.h"
+#include "usercal.h"
 #include "usb_debug.h"
 #include "rtt.h"
 #include "fault.h"
@@ -53,6 +54,7 @@ extern void system_clock_config(void);
 #include "scope_mask.h"
 #include "can_scope.h"
 #include "trig_menu.h"
+#include "sys_pwm.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -92,6 +94,7 @@ volatile float         fuse_scan_threshold_mv = 0.1f; /* Scan: DRAW at or above 
  * by the next scope frame. The overlay owner clears the flag and sends
  * DCMD_REDRAW_ALL to hand the screen back. */
 volatile bool          ui_modal_active = false;
+volatile uint32_t      ui_modal_idle_count = 0;
 
 /* Scope feature toggles */
 volatile bool          math_enabled = false;
@@ -403,6 +406,7 @@ static bool scope_incremental_available(const scope_state_t *s)
     return scope_acquisition_ready()
            && s->cursor.mode == CURSOR_OFF
            && !math_enabled && !persist_enabled
+           && !scope_ui_paused_zoom_active()   /* a re-sampled held record (C14) */
            && !scope_trig_menu.open;      /* the trigger panel: full path only, as cursors */
 #endif
 }
@@ -634,6 +638,7 @@ static void vDisplayTask(void *pvParameters)
          * three seconds of paused re-arm is harmless and resumes on the
          * DCMD_REDRAW_ALL that ends every modal. */
         if (ui_modal_active) {
+            ui_modal_idle_count++;
             frame++;
             continue;
         }
@@ -836,6 +841,10 @@ static void vInputTask(void *pvParameters)
         if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE) {
             input_handle_button(pressed, xDisplayQueue);
         }
+        input_autooff_poll();   /* idle power-off (C15); no-op while "Off" */
+        /* Backstop: the buzzer task ends a key click, but if it failed to
+         * start a click would sound forever; this bounds it to <= ~210 ms. */
+        sys_pwm_buzzer_service();
 #ifndef EMULATOR_BUILD
         /* Autoset / baseline correction / 50 % centre (parity C9/C10): one
          * non-blocking pass, so a run never holds this task (or its health
@@ -1177,12 +1186,23 @@ int main(void)
      * restored timebase and vdiv; a unit without a usable page keeps the
      * fixed arm fpga_init() just made. */
     scope_vpos_init();
+    /* OpenScope's own saved corrections (usercal.h): baseline deltas on top
+     * of the page just parsed, and the 250 MS/s B correction. After
+     * scope_vpos_init() because corr_set needs the page's pairs; deltas
+     * measured against a different page table are refused, not applied.
+     * Read-only on flash — saving is `cal user save` only. */
+    usercal_boot_load();
 #endif
 
     /* Create queues */
     xDisplayQueue = xQueueCreate(20, sizeof(uint8_t));
     xInputQueue   = xQueueCreate(15, sizeof(button_id_t));
 
+    /* Backlight (TMR10 on PB8) and buzzer (TMR11 on PB9), parity C15. After
+     * settings_store_init() so the stored brightness is the first PWM value;
+     * the pin has been held high as a GPIO since the splash, so nothing goes
+     * dark. EMULATOR_BUILD compiles these to no-ops. */
+    sys_pwm_init();
     continuity_buzzer_init();
 
     /* Initialize button matrix scan driver (TMR3 ISR at 500Hz).
@@ -1206,7 +1226,7 @@ int main(void)
     /* Create USB debug shell task (CDC virtual serial port).
      * Priority 2 — above display (1) but below input (4) and FPGA tasks. */
     usb_debug_create_task();
-    continuity_buzzer_create_task();
+    continuity_buzzer_create_task();   /* also sounds the boot beep (C15) */
     meter_autoselect_create_task();
 
     if (current_mode == MODE_MULTIMETER) {

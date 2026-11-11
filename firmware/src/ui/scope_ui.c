@@ -23,9 +23,11 @@
 #include "scope_freq.h"
 #include "scope_record.h"
 #include "math_channel.h"
+#include "paused_view.h"
 #include "persistence.h"
 #include "fpga.h"
 #include "scope_vpos.h"
+#include "scope_roll_meas.h"
 #include "FreeRTOS.h"   /* pvPortMalloc — the X-Y snapshot buffers */
 #include "task.h"       /* xTaskGetTickCount — the out-of-scope popup overlay */
 #include "scope_trigger.h"
@@ -528,7 +530,10 @@ _Static_assert(SCOPE_TIMEBASE_CODE_COUNT == TIMEBASE_COUNT,
 /* The cursor readout converts a pixel delta into a sample delta with this,
  * and it is true only because draw_channel_autofit()/draw_channel_fixed()
  * plot buf[x] at column x. Decimating or interpolating the plot without
- * changing this would silently rescale every cursor dt. */
+ * changing this would silently rescale every cursor dt. The one exception,
+ * the zoomed paused view (C14, pv_col), re-samples the record so that a
+ * column is 1 / fs_now: the cursors read column_rate_for_display(), which
+ * keeps "one column = one sample at the column rate" true there too. */
 _Static_assert(SCOPE_CURSOR_SAMPLES_PER_PIXEL == 1.0f,
                "the plot no longer draws one sample per column — "
                "cursor dt and 1/dt would be wrong");
@@ -937,6 +942,113 @@ typedef struct {
     uint8_t mn;
 } autofit_t;
 
+/* ── Zoom while paused (parity C14) ──────────────────────────────────────
+ * Stock re-renders the held record when the timebase or range changes while
+ * STOPPED (0x08021178..0x08021348, docs/re/parity2_static.md section 3); it
+ * never re-arms. Here the capture hardware does follow the keys (fpga_apply_
+ * timebase writes reg 0x01 whatever RUN says) but publishes nothing new, so
+ * the record on the glass is the held one at its OWN rate
+ * (fpga_record_sample_rate = rate at commit), and the view is re-sampled:
+ * one column is now 1 / fs_now seconds, i.e. ratio = 1000 fs_cap / fs_now
+ * record samples per column (src/dsp/paused_view.c).
+ *   horizontal  every column is sampled through pv_col(): the plain index map
+ *               for ratio >= 1000, the 16-tap interpolator below it; the
+ *               column the trigger sits on stays put; columns outside the
+ *               record are blank, as in stock.
+ *   vertical    in the true-scale path only (autofit is range-blind by
+ *               construction): counts rescaled by V[range_cap] / V[range_now].
+ *               Stock's position term is not applied: a position key moves
+ *               the offset DAC for the NEXT capture, and the default autofit
+ *               view has no use for it.
+ * Cursor and badge rates: the cursors read the column rate (fs_now); the
+ * measurements read the record's own (record_rate_for_display). */
+typedef struct {
+    bool     on;        /* horizontal zoom in force (ratio != 1000) */
+    uint32_t ratio;     /* ratio_x1000 */
+    int16_t  pivot;     /* column that stays put */
+    int32_t  lo, hi;    /* record bounds in the index space of the window pointer */
+} pv_state_t;
+static pv_state_t g_pv;
+static float      g_pv_vcap[2];       /* volts/div of the ranges at STOP, 0 = unknown */
+
+/* Is the paused view zoomed, by how much, and what is a column worth now?
+ * A pure function of the state, so the cursor shell command and the badges
+ * answer without a draw having run. */
+static bool pv_zoom(const scope_state_t *ss, uint32_t *ratio, float *fs_col)
+{
+    if (ss->running || ss->roll || !fpga_data_ready())
+        return false;
+    const float fs_cap = fpga_record_sample_rate();
+    float fs_now = scope_timebase_sample_rate(ss->timebase_idx);
+    if (fs_now > 0.0f && fpga_interleave_active())
+        fs_now *= 2.0f;
+    const uint32_t r = pv_ratio_x1000(fs_cap, fs_now);
+    if (r == PV_RATIO_ONE)
+        return false;
+    if (ratio)  *ratio  = r;
+    if (fs_col) *fs_col = fs_now;
+    return true;
+}
+
+/* What one COLUMN is worth for the cursors: the zoomed paused view's
+ * fs_now, otherwise the record's own rate (one sample per column). */
+static float column_rate_for_display(const scope_state_t *ss)
+{
+    float fs;
+    return pv_zoom(ss, NULL, &fs) ? fs : record_rate_for_display(ss);
+}
+
+/* Called once per frame after the soft-trigger window start `toff` is known. */
+static void pv_begin(const scope_state_t *ss, uint16_t toff)
+{
+    uint32_t r;
+    g_pv.on = pv_zoom(ss, &r, NULL);
+    if (!g_pv.on)
+        return;
+    g_pv.ratio = r;
+    const int16_t tx = scope_ui_trig_x_actual();     /* this frame's window */
+    g_pv.pivot = (tx >= 0) ? tx : (int16_t)(LCD_WIDTH / 2);
+    g_pv.lo = -(int32_t)toff;
+    g_pv.hi = (int32_t)FPGA_ADC_BUF_SIZE - (int32_t)toff;
+}
+
+/* Latch what the ranges were at STOP (called from the RUN/STOP key). */
+void scope_ui_paused_latch(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    g_pv_vcap[0] = scope_cal_volts_per_div(1u, ss->ch1.vdiv_idx);
+    g_pv_vcap[1] = scope_cal_volts_per_div(2u, ss->ch2.vdiv_idx);
+}
+
+bool scope_ui_paused_zoom_active(void)
+{
+    return pv_zoom(scope_state_get(), NULL, NULL);
+}
+
+/* The sample drawn at column x, false = blank column. */
+static inline bool pv_col(const volatile uint8_t *buf, uint16_t x, uint8_t *v)
+{
+    if (!g_pv.on || scope_state_get()->running) { *v = buf[x]; return true; }
+    return pv_sample(buf, g_pv.lo, g_pv.hi,
+                     pv_src_pos_x1000((int32_t)x, g_pv.pivot, g_pv.pivot, g_pv.ratio),
+                     g_pv.ratio, v);
+}
+
+/* The true-scale path's vertical rescale: identity while running, or while the
+ * range is the one the record was taken at. */
+static inline uint8_t pv_vscale(uint8_t v, uint8_t centre, int8_t ch)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->running || ch < 0 || ch > 1)
+        return v;
+    const float vcap = g_pv_vcap[ch];
+    const float vnow = scope_cal_volts_per_div((uint8_t)(ch + 1),
+                                               ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
+    if (!(vcap > 0.0f) || !(vnow > 0.0f) || vcap == vnow)
+        return v;
+    return (uint8_t)pv_y_map((int)v, (int)centre, 0, 0, vcap, vnow, 0, 255);
+}
+
 /* mask_ch: the channel this band draws (0/1), or -1. When a finished mask
  * covers it, the fit also spans the mask's extent, so the bounds drawn over
  * the trace stay on the glass instead of clamping to the band edge. Every
@@ -948,7 +1060,9 @@ static void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
     uint16_t n = (LCD_WIDTH < 512u) ? (uint16_t)LCD_WIDTH : 512u;
     uint8_t mn = 255, mx = 0;
     for (uint16_t x = 0; x < n; x++) {
-        uint8_t sv = buf[x];
+        uint8_t sv;
+        if (!pv_col(buf, x, &sv))
+            continue;                       /* blank column of a zoomed paused view */
         if (sv < mn) mn = sv;
         if (sv > mx) mx = sv;
     }
@@ -1086,6 +1200,7 @@ static int16_t trigger_marker_y_full(const scope_state_t *ss)
     const bool c1 = ss->ch1.enabled, c2 = ss->ch2.enabled;
     const volatile uint8_t *src = src2 ? b2 : b1;
     uint16_t toff = scope_soft_trigger_offset(ss, src);
+    pv_begin(ss, toff);
     autofit_t a = { false, 0, 0, 0, 8, 0 };
     if (c1 && c2)
         autofit_prep(&a, src + toff, src2 ? (int16_t)(SCOPE_MID_Y + 1) : (int16_t)SCOPE_TOP,
@@ -1120,7 +1235,8 @@ static uint32_t g_mask_ov_gen;
 
 static void mask_overlay_begin(void)
 {
-    g_mask_ov_on = (g_trig_anchor == 2u) && g_trig_x_actual >= 0 &&
+    g_mask_ov_on = !g_pv.on &&              /* its columns are the unzoomed ones */
+                   (g_trig_anchor == 2u) && g_trig_x_actual >= 0 &&
                    scope_mask_state() != MASK_PF_EMPTY;
     /* The bounds depend on the alignment, not on which record was judged,
      * so they are not gated on the generation: gating them would blink them
@@ -1199,7 +1315,9 @@ static float draw_channel_autofit(const volatile uint8_t *buf, uint16_t color,
     const uint16_t bnd_c  = theme_get()->text_secondary;
     int16_t prev_y = -1;
     for (uint16_t x = 0; x < n; x++) {
-        int16_t y = autofit_y(&a, buf[x]);
+        uint8_t sv;
+        if (!pv_col(buf, x, &sv)) { prev_y = -1; continue; }
+        int16_t y = autofit_y(&a, sv);
         persist_note(x, prev_y, y);
         uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
         uint8_t blo, bhi;
@@ -1250,7 +1368,10 @@ static float draw_channel_fixed(const volatile uint8_t *buf, uint16_t color,
 
     int16_t prev_y = -1;
     for (uint16_t x = 0; x < n; x++) {
-        int yy = (int)y_mid - ((int)buf[x] - (int)center) * SCOPE_H / 256;
+        uint8_t sv;
+        if (!pv_col(buf, x, &sv)) { prev_y = -1; continue; }
+        sv = pv_vscale(sv, center, mask_ch);
+        int yy = (int)y_mid - ((int)sv - (int)center) * SCOPE_H / 256;
         if (yy < y_top)   yy = y_top;
         if (yy >= y_bot)  yy = y_bot - 1;
         int16_t y = (int16_t)yy;
@@ -1479,6 +1600,7 @@ void draw_demo_waveform(uint32_t frame)
             (ss->trigger.source == TRIG_SRC_CH2 && ch2_buf) ? ch2_buf :
             (ch1_buf ? ch1_buf : ch2_buf);
         uint16_t toff = scope_soft_trigger_offset(ss, trig_src);
+        pv_begin(ss, toff);
         mask_overlay_begin();
         const volatile uint8_t *b1 = (ch1_buf != NULL) ? ch1_buf + toff : NULL;
         const volatile uint8_t *b2 = (ch2_buf != NULL) ? ch2_buf + toff : NULL;
@@ -1642,7 +1764,7 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 {
     const scope_state_t *ss = scope_state_get();
     const cursor_state_t *c = &ss->cursor;
-    const float fs = record_rate_for_display(ss);
+    const float fs = column_rate_for_display(ss);
     const scope_cursor_conf_t cf = scope_cursor_tb_conf(ss->timebase_idx);
     const int16_t ta = scope_ui_trig_x_actual();
     const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
@@ -1755,7 +1877,7 @@ static void draw_cursors(void)
         /* The PUBLISHED record's rate, not the table's: an interleaved record
          * is 2x (record_rate_for_display). The confidence is the table tier of
          * the code, which the doubling does not change. */
-        const float cfs = record_rate_for_display(ss);
+        const float cfs = column_rate_for_display(ss);
         const scope_cursor_conf_t cconf = scope_cursor_tb_conf(ss->timebase_idx);
         scope_cursor_reading_t dt = scope_cursor_delta_t_fs(cfs, cconf, dx);
         scope_cursor_format(&dt, buf, sizeof(buf));
@@ -2596,6 +2718,7 @@ void draw_scope_live_frame(void)
     const volatile uint8_t *b2 = fpga_get_ch2_buf();
 
     if (!b1 || !b2) return;
+    g_pv.on = false;                /* the compositor never draws a zoomed view */
 
     /* Software trigger — THIS is the per-frame live path, so this is where the
      * free-run "dancing" actually happens. Shift both channels' render window
@@ -2808,8 +2931,9 @@ void draw_scope_live_frame(void)
  *    when `fpga scope graticule true` and the range is calibrated, else the
  *    visible points' own min..max. Codes are drawn raw, as the Y-T record
  *    is; the unit's g = (m-28)/150 sits in the volts/div label;
- *  - no badges, cursors or trigger line: they describe the record, not the
- *    roll (stock's roll trigger is not implemented, see fpga_apply_roll).
+ *  - the 12 measurements are the badges (draw_roll_badges), on the roll point
+ *    rate; no cursors or trigger line (they describe the record). Stock's
+ *    roll trigger runs in the roll service (fpga.c, scope_roll.h).
  * `full` adds the decorations the compositor cannot recompute per pixel
  * (labels, STOP, popup); the band itself is identical either way.
  * ═══════════════════════════════════════════════════════════════════ */
@@ -2834,6 +2958,63 @@ static union {
 #define roll_snap      (ui_draw_scratch.roll)
 #define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
 #define ROLL_LABEL_H 16u
+
+/* The 12 measurements over the roll FIFO (scope_roll_meas.h): the same badge
+ * slots, order and units as the Y-T badges (draw_measurement_badges), the time
+ * base being the roll point rate. Zero and scale are per channel, exactly the
+ * Y-T inputs: scope_measure_zero_for(position) and scope_cal gain. `roll_snap`
+ * is linearised here, after the trace has been drawn from it. Repainted when
+ * `full` or every ROLL_BADGE_EVERY new points, so a 2 ms roll does not
+ * repaint the badges at frame rate. */
+#define ROLL_BADGE_EVERY 8u
+static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
+                             uint16_t nvis, bool full)
+{
+    static uint32_t last_total = 0xFFFFFFFFu;
+    static uint8_t  last_step = 0xFFu;
+    if (ss->prm_hidden)
+        return;
+    if (!full && last_step == ss->roll_step &&
+        (uint32_t)(roll_snap.total - last_total) < ROLL_BADGE_EVERY)
+        return;
+    last_total = roll_snap.total;
+    last_step = ss->roll_step;
+
+    scope_roll_fifo_linearize(&roll_snap);
+    const uint16_t na = th->text_secondary;
+    char buf[16];
+    scope_params_t p1, p2;
+    const uint8_t z1 = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
+    const uint8_t z2 = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
+    const bool have1 = ss->ch1.enabled &&
+        scope_roll_measure(&roll_snap, 0u, nvis, ss->roll_step,
+                           scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, NULL);
+    const bool have2 = ss->ch2.enabled &&
+        scope_roll_measure(&roll_snap, 1u, nvis, ss->roll_step,
+                           scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, NULL);
+
+    const uint16_t y1 = BADGE_ROW_Y, y2 = BADGE_ROW2_Y;
+    uint8_t sel[5];
+    const unsigned ns = scope_prm_select(ss->prm_mask, sel, 5u);
+    for (unsigned k = 0; k < ns; k++) {
+        const uint16_t bx = (k < 4u) ? (uint16_t)(2u + k * (BADGE_W + 2u)) : 2u;
+        const uint16_t by = (k < 4u) ? y1 : y2;
+        const scope_prm_t *p = &p1.v[sel[k]];
+        if (!have1 || p->unit == SCOPE_PRM_UNIT_NONE) {
+            draw_one_badge(bx, by, scope_prm_label(sel[k]), MEAS_NA, na, th);
+        } else {
+            scope_prm_format(p, buf, sizeof(buf));
+            draw_one_badge(bx, by, scope_prm_label(sel[k]), buf, th->ch1, th);
+        }
+    }
+    const uint16_t x2 = 2u + (BADGE_W + 2u);
+    if (have2) {
+        scope_prm_format(&p2.v[SCOPE_PRM_VPP], buf, sizeof(buf));
+        draw_one_badge(x2, y2, "CH2pp", buf, th->ch2, th);
+    } else {
+        draw_one_badge(x2, y2, "CH2pp", MEAS_NA, na, th);
+    }
+}
 
 void draw_roll_screen(bool full)
 {
@@ -2893,11 +3074,11 @@ void draw_roll_screen(bool full)
                               (!ss->running && x >= (LCD_WIDTH - 40) / 2 &&
                                x < (LCD_WIDTH + 40) / 2);
         seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) : (uint16_t)SCOPE_TOP;
-        seg_bot[0] = SCOPE_BOT;
+        seg_bot[0] = BADGE_ROW2_Y;       /* the badge rows repaint themselves, as in Y-T */
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;
-            seg_bot[1] = SCOPE_BOT;
+            seg_bot[1] = BADGE_ROW2_Y;
             nseg = 2;
         }
         for (uint8_t sg = 0; sg < nseg; sg++) {
@@ -2928,6 +3109,7 @@ void draw_roll_screen(bool full)
     if (full)
         lcd_fill_rect(0, SCOPE_TOP, ROLL_LABEL_W, ROLL_LABEL_H, th->background);
     font_draw_string(4, SCOPE_TOP + 2, buf, th->highlight, th->background, &font_small);
+    draw_roll_badges(ss, th, nvis, full);
     if (!full)
         return;
     draw_run_stop(ss, th);

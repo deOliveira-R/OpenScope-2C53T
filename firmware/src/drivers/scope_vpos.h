@@ -82,7 +82,8 @@ void scope_vpos_recover(void);
 
 /* ── Baseline correction (parity C10, src/drivers/scope_selfcal_run.c) ──
  * RAM-only deltas on the page's endpoint pair per (ch 1/2, bank, range),
- * applied by every write above. Nothing here touches flash. */
+ * applied by every write above. Nothing here touches flash; persistence
+ * (on request only) is src/util/usercal.c. */
 
 /* The page pair (after substitution, before any correction) the offset path
  * uses for (ch, bank, range). False when inactive or no bank is clean. */

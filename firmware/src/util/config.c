@@ -75,14 +75,15 @@ void config_init_defaults(device_config_t *cfg)
     cfg->siggen_start_on  = 0;
 
     /* Display defaults */
-    cfg->display_brightness  = 80;
+    cfg->display_brightness  = 100;   /* stock factory (C15) */
     cfg->display_persist_mode = 0;
     cfg->language = 0;              /* English */
     cfg->startup_mode = CONFIG_MODE_MULTIMETER;
 
     /* System defaults */
-    cfg->auto_shutdown_mins = 30;
+    cfg->auto_shutdown_mins = 0;      /* stock factory: off (C15) */
     cfg->sound_enabled      = 1;
+    cfg->sys_prefs_mark     = CONFIG_SYS_PREFS_MARK;   /* these are C15's values */
 
     /* v3 block */
     cfg->theme                = 0;  /* THEME_DARK_BLUE */

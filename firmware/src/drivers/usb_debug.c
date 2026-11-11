@@ -20,6 +20,7 @@
 #include "fw_loader.h"
 #include "cal_backup.h"
 #include "can_scope.h"
+#include "usercal.h"
 #include "rtt.h"
 #include "continuity_buzzer.h"
 
@@ -65,6 +66,9 @@
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
 #include "../ui/meter_voltage_wave.h"
+#include "../ui/gallery_ui.h"
+#include "../util/gallery_store.h"
+#include "../util/cal_backup_core.h"
 
 #include "fpga_cal_table.h"
 #include "FreeRTOS.h"
@@ -2283,6 +2287,104 @@ static void cmd_screen_dumpbin(const char *args)
     usb_send_str("\r\nSCREENBIN END\r\n");
 }
 
+/* ── screenshot — the on-device gallery over the shell (parity C16) ─────
+ * Same store as SAVE / long SAVE (gallery_store.h: 9 slots in our W25Q
+ * scratch region, never stock's FAT). `get` frames a raw BMP the way
+ * `screen dumpbin` frames its bytes: a header line with len + the CRC32 the
+ * save recorded, the raw file, then an END line with the CRC recomputed from
+ * what was actually sent, so a host can check both. */
+static const char *gallery_status_str(gallery_status_t st)
+{
+    switch (st) {
+    case GALLERY_OK:            return "ok";
+    case GALLERY_ERR_NOT_READY: return "flash region layer not ready";
+    case GALLERY_ERR_FULL:      return "gallery full (delete one)";
+    case GALLERY_ERR_IO:        return "flash io error or busy";
+    case GALLERY_ERR_NOT_FOUND: return "no such screenshot";
+    case GALLERY_ERR_BAD_ARG:   return "bad argument";
+    }
+    return "?";
+}
+
+static void cmd_screenshot(const char *args)
+{
+    static const char usage[] =
+        "Usage: screenshot list | save | get <n> | delete <n> | check <n>\r\n";
+    char name[16];
+    uint32_t seq = 0, slot = 0;
+    gallery_status_t st;
+
+    if (args == NULL || *args == '\0' || strcmp(args, "list") == 0) {
+        gallery_index_t idx;
+        st = gallery_scan(&idx);
+        if (st != GALLERY_OK) { usb_debug_printf("screenshot: %s\r\n", gallery_status_str(st)); return; }
+        const flash_region_t *r = flash_region_get(GALLERY_REGION);
+        usb_debug_printf("SHOTS count=%u slots=%u next=%lu region=%s 0x%06lX+0x%lX slot=0x%lX\r\n",
+                         (unsigned)idx.count, (unsigned)idx.slots_total, (unsigned long)idx.next_seq,
+                         r->name, (unsigned long)r->start, (unsigned long)r->length,
+                         (unsigned long)GALLERY_SLOT_SIZE);
+        for (uint32_t i = 0; i < idx.count; i++) {
+            gallery_slot_info_t info;
+            (void)gallery_slot_info(idx.slot[i], &info);
+            gallery_name(idx.seq[i], name, sizeof name);
+            usb_debug_printf("  %-14s slot %u @0x%06lX len=%lu crc32=%08lX\r\n", name,
+                             (unsigned)idx.slot[i],
+                             (unsigned long)(r->start + idx.slot[i] * GALLERY_SLOT_SIZE + GALLERY_BMP_OFFSET),
+                             (unsigned long)info.bmp_len, (unsigned long)info.bmp_crc);
+        }
+        return;
+    }
+    if (strcmp(args, "save") == 0) {
+        st = gallery_ui_capture(&seq);
+        if (st == GALLERY_OK) {
+            gallery_name(seq, name, sizeof name);
+            usb_debug_printf("screenshot: saved %s\r\n", name);
+        } else {
+            usb_debug_printf("screenshot: save failed: %s\r\n", gallery_status_str(st));
+        }
+        return;
+    }
+
+    const bool is_get = strncmp(args, "get ", 4) == 0;
+    const bool is_del = strncmp(args, "delete ", 7) == 0;
+    const bool is_chk = strncmp(args, "check ", 6) == 0;
+    if (!is_get && !is_del && !is_chk) { usb_send_str(usage); return; }
+    const char *arg = args + (is_get ? 4 : is_del ? 7 : 6);
+    while (*arg == ' ') arg++;
+    if (!gallery_parse_name(arg, &seq)) { usb_send_str(usage); return; }
+    gallery_name(seq, name, sizeof name);
+
+    if (is_del) {
+        st = gallery_delete(seq);
+        usb_debug_printf("screenshot: delete %s: %s\r\n", name, gallery_status_str(st));
+        return;
+    }
+    st = gallery_find(seq, &slot);
+    if (st != GALLERY_OK) { usb_debug_printf("screenshot: %s: %s\r\n", name, gallery_status_str(st)); return; }
+    gallery_slot_info_t info;
+    (void)gallery_slot_info(slot, &info);
+    if (is_chk) {
+        uint32_t crc = 0;
+        st = gallery_crc_bmp(slot, &crc);
+        usb_debug_printf("screenshot: %s stored=%08lX read=%08lX %s\r\n", name,
+                         (unsigned long)info.bmp_crc, (unsigned long)crc,
+                         (st == GALLERY_OK && crc == info.bmp_crc) ? "OK" : "MISMATCH");
+        return;
+    }
+    usb_debug_printf("SHOTBIN name=%s len=%lu crc32=%08lX\r\n", name,
+                     (unsigned long)info.bmp_len, (unsigned long)info.bmp_crc);
+    uint8_t buf[64];
+    uint32_t crc = CAL_BACKUP_CRC32_INIT;
+    for (uint32_t off = 0; off < GALLERY_BMP_LEN; off += sizeof buf) {
+        uint32_t n = GALLERY_BMP_LEN - off;
+        if (n > sizeof buf) n = sizeof buf;
+        if (gallery_read_bmp(slot, off, buf, n) != GALLERY_OK) memset(buf, 0, n);
+        crc = cal_backup_crc32_update(crc, buf, n);
+        usb_send_bytes(buf, (uint16_t)n);
+    }
+    usb_debug_printf("\r\nSHOTBIN END crc32=%08lX\r\n", (unsigned long)cal_backup_crc32_final(crc));
+}
+
 static void cmd_screen_shadow(const char *args)
 {
     if (args == NULL || *args == '\0') {
@@ -3026,7 +3128,7 @@ static void cmd_fpga_interleave_cal(void)
         return;
     }
     fpga_interleave_corr_set(fit.gain, fit.offset);
-    usb_send_str("interleave cal: applied (RAM only, lost at reset). Skew is not estimated here.\r\n");
+    usb_send_str("interleave cal: applied (RAM; `cal user save` keeps it). Skew is not estimated here.\r\n");
 }
 
 /* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
@@ -3710,12 +3812,36 @@ static void cmd_fpga_roll(const char *args)
                      (unsigned long)st.rejects, (unsigned long)st.late);
     usb_debug_printf("last op03 rx: %02X %02X [CH1 %02X] %02X [CH2 %02X]\r\n",
                      st.rx[0], st.rx[1], st.rx[2], st.rx[3], st.rx[4]);
+    usb_debug_printf("trigger: mode %u (0 AUTO 1 NORM 2 SINGLE), roll hits %lu, run %u\r\n",
+                     (unsigned)ss->trigger.mode, (unsigned long)st.trig_hits,
+                     (unsigned)ss->running);
     uint8_t c1, c2;
     if (scope_roll_fifo_get(f, 0u, 0u, &c1) && scope_roll_fifo_get(f, 1u, 0u, &c2)) {
         char a[40], b[40];
         fmt_roll_point(a, sizeof(a), 1u, c1);
         fmt_roll_point(b, sizeof(b), 2u, c2);
         usb_debug_printf("newest: CH1 %s  CH2 %s\r\n", a, b);
+        /* Where each channel's 0 V is expected and what the offset DAC was
+         * last told: the zero in the lines above is the cal-page formula
+         * (100 + pos), so a channel whose DAC was never written (or written
+         * for another range) reads off by exactly the difference. */
+        for (uint8_t ch = 1u; ch <= 2u; ch++) {
+            const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+            const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position,
+                                                     (int)FPGA_ADC_OFFSET);
+            uint8_t bk = 0, rg = 0;
+            uint16_t dc = 0;
+            const bool w = scope_vpos_last(ch, &bk, &rg, &dc);
+            const uint8_t c = (ch == 1u) ? c1 : c2;
+            usb_debug_printf("CH%u: en %u pos %d range %u zero %u, newest %u = %+d cnt; "
+                             "dac %s",
+                             (unsigned)ch, (unsigned)cs->enabled, (int)cs->position,
+                             (unsigned)cs->vdiv_idx, (unsigned)z, (unsigned)c,
+                             (int)c - (int)z, w ? "" : "never written\r\n");
+            if (w)
+                usb_debug_printf("bank %u range %u code %u\r\n", (unsigned)bk,
+                                 (unsigned)rg, (unsigned)dc);
+        }
     }
 }
 
@@ -4448,7 +4574,7 @@ static void cmd_cal_base(const char *args)
         return;
     }
     if (*args) { usb_send_str("usage: cal base [clear]\r\n"); return; }
-    usb_debug_printf("baseline corrections (RAM only, not persisted): %u\r\n",
+    usb_debug_printf("baseline corrections in RAM: %u (`cal user save` keeps them across power-off)\r\n",
                      scope_vpos_corr_count());
     for (uint8_t ch = 1; ch <= 2u; ch++)
         for (uint8_t b = 0; b < CALPAGE_BANKS; b++)
@@ -4464,6 +4590,58 @@ static void cmd_cal_base(const char *args)
                                      (unsigned)(pu + du), (unsigned)pb, (unsigned)pu);
                 usb_send_str("\r\n");
             }
+}
+
+/* `cal user [show|save|clear]` — OpenScope's own corrections in the W25Q
+ * (usercal.h, FLASH_REGION_USER_CAL 0xF00000): the baseline deltas (long
+ * AUTO / `fpga scope basecal`) and the interleave B correction (`fpga
+ * interleave cal`). Owner policy: nothing is saved unless asked here (or by
+ * a UI confirm); the stock page is never written. `clear` appends an empty
+ * record (no erase) and drops the RAM corrections too, so the live state and
+ * the next boot agree; `cal base clear` is RAM only. */
+static void cmd_cal_user(const char *args)
+{
+    while (*args == ' ') args++;
+    const usercal_report_t *r = usercal_report();
+    if (strcmp(args, "save") == 0 || strcmp(args, "clear") == 0) {
+        if (scope_selfcal_busy()) { usb_send_str("busy\r\n"); return; }
+        const bool clr = (args[0] == 'c');
+        const flash_region_status_t st = clr ? usercal_clear_saved() : usercal_save();
+        if (st != FLASH_REGION_OK) {
+            usb_debug_printf("cal user %s: FAILED, %s; nothing changed\r\n", args, flash_region_strerror(st));
+            return;
+        }
+        if (clr) usb_send_str("cal user clear: empty record saved; RAM corrections dropped (page values in force)\r\n");
+        else usb_debug_printf("cal user save: saved %u baseline deltas\r\n", scope_vpos_corr_count());
+        /* fall through to the status below */
+    } else if (*args && strcmp(args, "show") != 0) {
+        usb_send_str("usage: cal user [show|save|clear]\r\n");
+        return;
+    }
+    usercal_t u;   /* 280 B on this task's 3 KB stack */
+    const usercal_status_t st = usercal_store_load(&u);
+    const uint32_t live = usercal_live_table_crc();
+    uint32_t used = 0, nrec = 0;
+    (void)flash_region_log_info(USERCAL_REGION, &used, NULL, &nrec);
+    usb_debug_printf("user cal @0x%06lX: %s; log %lu B, %lu records\r\n",
+                     (unsigned long)flash_region_get(USERCAL_REGION)->start, usercal_status_str(st),
+                     (unsigned long)used, (unsigned long)nrec);
+    if (st == USERCAL_ST_OK) {
+        usb_debug_printf("  saved: %u baseline deltas, table %08lX (%s live %08lX); interleave %s",
+                         usercal_count(&u), (unsigned long)u.table_crc,
+                         u.table_crc == live ? "matches" : "STALE vs", (unsigned long)live,
+                         u.il_present ? "gain " : "none");
+        if (u.il_present)
+            usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_ppm, (long)u.il_off_e4);
+        usb_send_str("\r\n");
+    }
+    usb_debug_printf("  boot: %s", usercal_status_str(r->load_st));
+    if (r->loaded)
+        usb_debug_printf(", %u applied, %u not applied%s, interleave %s",
+                         (unsigned)r->applied, (unsigned)r->refused,
+                         r->table_match ? "" : " (page table changed since the save)",
+                         r->il_applied ? "applied" : "none");
+    usb_debug_printf("\r\n  live: %u baseline deltas in RAM\r\n", scope_vpos_corr_count());
 }
 
 static void cmd_fpga_diag_clear(void)
@@ -9105,6 +9283,8 @@ static const shell_cmd_t shell_cmds[] = {
           "cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n"),
     CMD_A("cal base", cmd_cal_base, 0,
           "cal base [clear]                Baseline-correction deltas held in RAM (long AUTO)\r\n"),
+    CMD_A("cal user", cmd_cal_user, 0,
+          "cal user [show|save|clear]      Save/clear OpenScope's own corrections (baseline + interleave) in W25Q\r\n"),
     CMD_V("fpga scope autoset", cmd_fpga_scope_autoset, SC_EXACT,
           "fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n"),
     CMD_A("fpga scope basecal", cmd_fpga_scope_basecal, 0,
@@ -9117,6 +9297,9 @@ static const shell_cmd_t shell_cmds[] = {
           "screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n"),
     CMD_A("screen dumpbin", cmd_screen_dumpbin, 0,
           "screen dumpbin [x y w h]        Binary indexed4 LCD shadow dump\r\n"),
+    CMD_A("screenshot", cmd_screenshot, 0,
+          "screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\n"
+          "screenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,

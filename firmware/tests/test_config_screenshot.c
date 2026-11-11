@@ -58,7 +58,7 @@ static void test_config_defaults(void)
     ASSERT_TRUE(cfg.scope_ch1_enabled, "ch1 should be enabled");
     ASSERT_TRUE(cfg.scope_ch2_enabled, "ch2 should be enabled");
     ASSERT_EQ(cfg.scope_ch1_vdiv, 3, "ch1 vdiv default");
-    ASSERT_EQ(cfg.display_brightness, 80, "brightness default");
+    ASSERT_EQ(cfg.display_brightness, 100, "brightness default");
     ASSERT_EQ(cfg.language, 0, "language default");
     ASSERT_EQ(cfg.startup_mode, CONFIG_MODE_MULTIMETER, "startup mode default");
     PASS();

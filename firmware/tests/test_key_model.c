@@ -159,8 +159,8 @@ static void test_long_map(void)
     CHECK("long AUTO/OK in an FFT view or the meter do nothing",
           is(key_map(&fv, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&fv, BTN_OK, true), KA_NONE, 0) &&
           is(key_map(&me, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&me, BTN_OK, true), KA_NONE, 0));
-    CHECK("long SAVE in the scope is claimed (hook, not a short action)",
-          key_map(&sc, BTN_SAVE, true).act == KA_LONG_UNUSED);
+    CHECK("long SAVE in the scope opens the screenshot gallery (parity C16)",
+          is(key_map(&sc, BTN_SAVE, true), KA_GALLERY_OPEN, 0));
     CHECK("long UP is not a thing", is(key_map(&sc, BTN_UP, true), KA_NONE, 0));
 
     /* Parity G5: long OK in the generator is Run/Stop (manual 2.1); long AUTO

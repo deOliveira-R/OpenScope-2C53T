@@ -238,3 +238,80 @@ float scope_roll_point_volts(uint8_t code, uint8_t zero, float volts_per_count)
         return 0.0f;
     return ((float)code - (float)zero) * volts_per_count;
 }
+
+/* Reverse a[lo..hi] (inclusive). */
+static void rev(uint8_t *a, uint16_t lo, uint16_t hi)
+{
+    while (lo < hi) {
+        uint8_t t = a[lo];
+        a[lo++] = a[hi];
+        a[hi--] = t;
+    }
+}
+
+void scope_roll_fifo_linearize(scope_roll_fifo_t *f)
+{
+    if (f == NULL)
+        return;
+    /* Not full: the ring has never wrapped, so slot 0 is the oldest already.
+     * Full: the oldest sits at `head`; rotating left by head is three
+     * reversals, no scratch (RAM is the scarce thing here). */
+    if (f->count >= SCOPE_ROLL_POINTS && f->head != 0u) {
+        for (unsigned ch = 0; ch < 2u; ch++) {
+            rev(f->pt[ch], 0u, (uint16_t)(f->head - 1u));
+            rev(f->pt[ch], f->head, (uint16_t)(SCOPE_ROLL_POINTS - 1u));
+            rev(f->pt[ch], 0u, (uint16_t)(SCOPE_ROLL_POINTS - 1u));
+        }
+    }
+    f->head = (uint16_t)(f->count % SCOPE_ROLL_POINTS);
+}
+
+bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,
+                         uint8_t level, uint8_t edge)
+{
+    if (f == NULL || ch > 1u || f->count != SCOPE_ROLL_POINTS)
+        return false;
+    const int i = (int)SCOPE_ROLL_TRIG_IDX + col_shift;
+    if (i < 0 || i + 1 >= (int)SCOPE_ROLL_POINTS)
+        return false;
+    /* oldest-first index i is age (count - 1 - i). */
+    uint8_t a, b;
+    if (!scope_roll_fifo_get(f, ch, (uint16_t)(SCOPE_ROLL_POINTS - 1u - (unsigned)i), &a) ||
+        !scope_roll_fifo_get(f, ch, (uint16_t)(SCOPE_ROLL_POINTS - 2u - (unsigned)i), &b))
+        return false;
+    /* Stock's compare chain (0x0803EC64..0x0803ECA2): rising skips when
+     * a > level and needs b > level; falling skips when a < level and needs
+     * b < level. */
+    if ((edge == SCOPE_ROLL_EDGE_RISING || edge == SCOPE_ROLL_EDGE_BOTH) &&
+        a <= level && b > level)
+        return true;
+    if ((edge == SCOPE_ROLL_EDGE_FALLING || edge == SCOPE_ROLL_EDGE_BOTH) &&
+        a >= level && b < level)
+        return true;
+    return false;
+}
+
+scope_roll_trig_act_t scope_roll_trig_decide(uint8_t mode, bool hit)
+{
+    if (!hit || mode == 0u)
+        return SCOPE_ROLL_TRIG_NONE;
+    return (mode == 2u) ? SCOPE_ROLL_TRIG_STOP : SCOPE_ROLL_TRIG_HIT;
+}
+
+scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
+                                           uint8_t ch, int col_shift,
+                                           uint8_t level, uint8_t edge)
+{
+    if (f == NULL || mode == 0u)          /* AUTO: stock skips the check (ms[0x17] == 1) */
+        return SCOPE_ROLL_TRIG_NONE;
+    const scope_roll_trig_act_t act =
+        scope_roll_trig_decide(mode, scope_roll_trig_hit(f, ch, col_shift, level, edge));
+    if (act == SCOPE_ROLL_TRIG_HIT) {
+        /* Stock's word store at 0x08040000: width ms[0xDB6] = 0. */
+        f->seq++;
+        f->head = 0u;
+        f->count = 0u;
+        f->seq++;
+    }
+    return act;
+}

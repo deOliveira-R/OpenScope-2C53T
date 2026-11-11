@@ -55,6 +55,9 @@
  * siggen_offset, so the record keeps its size. A v3 record fails the version
  * check once and the device comes up on defaults. */
 
+/* device_config_t.sys_prefs_mark: brightness/volume/auto-off are real (C15). */
+#define CONFIG_SYS_PREFS_MARK  0xC1u
+
 #define CONFIG_MODE_OSCILLOSCOPE  0
 #define CONFIG_MODE_MULTIMETER    1
 #define CONFIG_MODE_SIGNAL_GEN     2
@@ -65,11 +68,10 @@
  * WHICH FIELDS ARE LIVE: settings_store.c captures and re-applies the scope
  * block, the theme, the math block, the meter block and startup_mode. The FFT, signal
  * generator (siggen_waveform, siggen_frequency, siggen_amplitude, siggen_duty,
- * siggen_enabled, siggen_start_on), brightness, language, auto-shutdown and sound fields are stored
+ * siggen_enabled, siggen_start_on) and language and FFT fields are stored
  * and round-tripped. The generator IS captured and applied (settings_store.c,
- * parity G5) and startup_mode too (M6); brightness, language, auto-shutdown, sound and the FFT fields
- * are NOT yet applied at boot — nothing in the firmware currently owns them
- * (there is no backlight PWM). Do not read those back expecting them to mean
+ * parity G5) and startup_mode too (M6), and brightness, sound volume and auto-shutdown (C15, sys_prefs.c); language and the FFT fields
+ * are NOT yet applied at boot — nothing in the firmware currently owns them. Do not read those back expecting them to mean
  * anything on hardware yet. */
 typedef struct {
     uint32_t magic;              /* CONFIG_MAGIC for validation */
@@ -97,15 +99,19 @@ typedef struct {
     uint8_t  siggen_enabled;     /* v4: output enable at the last save (stock E58) */
     uint8_t  siggen_start_on;    /* v4: 1 = restore the enable at boot like stock;
                                   * 0 = always boot OFF (default, safety) */
-    uint8_t  siggen_reserved;    /* v4: 0 */
+    uint8_t  sys_prefs_mark;     /* v4 (was siggen_reserved, always 0): CONFIG_SYS_PREFS_MARK
+                                  * once a C15 firmware wrote the record. 0 = an older v4
+                                  * record, whose brightness 80 / auto-off 30 are the old
+                                  * config_init_defaults() values no UI could set: ignored,
+                                  * so an update never starts an idle power-off nobody chose. */
     /* Display */
     uint8_t  display_brightness;
     uint8_t  display_persist_mode;
     uint8_t  language;           /* 0=English */
     uint8_t  startup_mode;       /* CONFIG_MODE_* */
     /* System */
-    uint8_t  auto_shutdown_mins; /* 0=disabled, 5/10/15/30/60 */
-    uint8_t  sound_enabled;
+    uint8_t  auto_shutdown_mins; /* 0=disabled, 15/30/60 (stock; C15) */
+    uint8_t  sound_enabled;      /* sound volume 0..10 (C15; 0/1 before) */
     /* v3 block */
     uint8_t  theme;              /* theme_id_t */
     uint8_t  scope_ch1_probe;    /* 0=1x, 1=10x */

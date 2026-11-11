@@ -90,9 +90,11 @@ C_SOURCES += src/ui/theme.c
 C_SOURCES += src/ui/xy_mode.c
 C_SOURCES += src/ui/roll_mode.c
 C_SOURCES += src/ui/scope_roll.c
+C_SOURCES += src/ui/scope_roll_meas.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
+C_SOURCES += src/dsp/paused_view.c
 C_SOURCES += src/dsp/bode.c
 C_SOURCES += src/tasks/component_test.c
 C_SOURCES += src/dsp/mask_pf.c
@@ -104,7 +106,14 @@ C_SOURCES += src/util/calpage.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
 C_SOURCES += src/util/settings_store.c
+C_SOURCES += src/util/usercal_rec.c
+C_SOURCES += src/util/usercal.c
+C_SOURCES += src/util/sys_prefs.c
+C_SOURCES += src/drivers/sys_pwm.c
 C_SOURCES += src/util/screenshot.c
+C_SOURCES += src/util/gallery_store.c
+C_SOURCES += src/ui/gallery_nav.c
+C_SOURCES += src/ui/gallery_ui.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
 C_SOURCES += src/decode/decode_spi.c
@@ -651,7 +660,7 @@ test-scope-freq: $(BUILD_DIR)/test_scope_freq
 # were fixed; they run in test_config_persist now.)
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
                       src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
-                      src/dsp/signal_gen.c src/dsp/siggen_wave.c
+                      src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
@@ -795,6 +804,23 @@ $(BUILD_DIR)/test_siggen_edit: tests/test_siggen_edit.c src/ui/siggen_edit.c src
 test-siggen-edit: $(BUILD_DIR)/test_siggen_edit
 	$<
 
+# System preferences (parity C15): brightness / sound level laws, the beep
+# timer and the idle power-off state machine. Pure, no hardware.
+$(BUILD_DIR)/test_sys_prefs: tests/test_sys_prefs.c src/util/sys_prefs.c src/util/sys_prefs.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/sys_prefs.c -o $@
+
+.PHONY: test-sys-prefs
+test-sys-prefs: $(BUILD_DIR)/test_sys_prefs
+
+# Zoom while paused (parity C14): the ratio, vertical map and 16-tap
+# interpolator of src/dsp/paused_view.c, against the stock dumps and formulas.
+$(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c src/dsp/paused_view.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/paused_view.c -lm -o $@
+
+.PHONY: test-paused-view
+test-paused-view: $(BUILD_DIR)/test_paused_view
+	$<
+
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace test-interleave-cal
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
@@ -826,13 +852,20 @@ test-key-model: $(BUILD_DIR)/test_key_model
 # Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point
 # FIFO, the timebase ladder into roll and back, the 25-points-per-division
 # geometry, and the amplitude correction at /150 with no m >= 221 gate.
+# Also: the roll trigger (stock 0x0803EC2E..0x0803ED18, pair 149/150 of a full
+# FIFO, mode and edge rules), the time-ordered FIFO, and the 12 measurements
+# on the roll point rate (scope_roll_meas.c).
 $(BUILD_DIR)/test_scope_roll: tests/test_scope_roll.c src/ui/scope_roll.c src/ui/scope_roll.h \
+                              src/ui/scope_roll_meas.c src/ui/scope_roll_meas.h \
+                              src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/scope_timebase.c \
                               src/ui/scope_cal.c src/ui/scope_cal.h src/ui/scope_measure.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
-		src/ui/scope_roll.c src/ui/scope_cal.c -lm -o $@
+		src/ui/scope_roll.c src/ui/scope_roll_meas.c src/ui/scope_measure.c \
+		src/ui/scope_cursor.c src/ui/scope_timebase.c src/ui/scope_cal.c -lm -o $@
 
 .PHONY: test-scope-roll
 test-scope-roll: $(BUILD_DIR)/test_scope_roll
+	$<
 
 # Autoset, baseline correction and 50 % centre (parity C9/C10): the pure
 # engines, on simulated channels (servo convergence, the refusals, autoset
@@ -848,6 +881,36 @@ $(BUILD_DIR)/test_scope_selfcal: tests/test_scope_selfcal.c src/ui/scope_selfcal
 test-scope-selfcal: $(BUILD_DIR)/test_scope_selfcal
 	$<
 
+# On-device screenshots and gallery (parity C16): slot layout inside the
+# scratch region, 4-bpp BMP format, <seq>.bmp naming, save/delete/reuse and
+# the 3x3 grid keys, against the real region layer on a NOR model. Asserts
+# byte for byte that saving never touches flash outside scratch (the cal
+# backup at 0xFFD000, the user-cal log at 0xF00000). See tests/test_gallery.c.
+$(BUILD_DIR)/test_gallery: tests/test_gallery.c src/util/gallery_store.c src/util/gallery_store.h \
+                           src/ui/gallery_nav.c src/ui/gallery_nav.h src/drivers/flash_regions.c \
+                           src/drivers/flash_regions.h src/util/cal_backup_core.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/ui -Isrc/drivers $< \
+		src/util/gallery_store.c src/ui/gallery_nav.c src/drivers/flash_regions.c \
+		src/util/cal_backup_core.c -o $@
+
+.PHONY: test-gallery
+test-gallery: $(BUILD_DIR)/test_gallery
+	$<
+
+
+# OpenScope's persisted calibration corrections (baseline deltas + interleave
+# B correction): the v1 record format, its CRC, the version gate, corrupt and
+# foreign records, the page fingerprint, and save/load/compaction through the
+# real region layer on a NOR model with power cuts. See tests/test_usercal.c.
+$(BUILD_DIR)/test_usercal: tests/test_usercal.c src/util/usercal_rec.c src/util/usercal_rec.h \
+                           src/util/cal_backup_core.c src/util/cal_backup_core.h \
+                           src/util/cal_reference.c src/drivers/flash_regions.c src/drivers/flash_regions.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
+		src/util/usercal_rec.c src/util/cal_backup_core.c src/util/cal_reference.c src/drivers/flash_regions.c -o $@
+
+.PHONY: test-usercal
+test-usercal: $(BUILD_DIR)/test_usercal
+	$<
 
 # ═══════════════════════════════════════════════════════════════════════════
 # BENCH / EXPERIMENT IMAGE INDEX                          (index added 2026-08-13)

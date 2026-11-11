@@ -1785,7 +1785,7 @@ static void fpga_set_ch2_frontend_range(uint8_t range_idx)
  * reference (TMR13_CH1 PWM, EXP-07); with FPGA_CH2_TRIGGER the pin is AF and
  * TMR13 owns it, so the old "drive PA6 HIGH" write is kept only for the
  * control build, where PA6 is still a plain output. PB9 is deliberately NOT
- * driven — it is the onboard piezo buzzer (TMR4_CH4 PWM, issue #25). */
+ * driven — it is the onboard piezo buzzer (TMR11 CH1 PWM, sys_pwm.c, C15). */
 static void fpga_scope_frontend_enables(void)
 {
 #if !FPGA_CH2_TRIGGER
@@ -3092,6 +3092,13 @@ static volatile bool acq_pub_ordered = false;
  * `ordered`, so the rate a reader applies always matches the buffer. */
 static volatile bool acq_stage_il = false;
 static volatile bool acq_pub_il = false;
+/* The reg-0x01 code the published record was captured at (0xFF: none yet, the
+ * in-place fallback never commits). acq_rate_idx moves the moment a timebase
+ * key is pressed, even STOPPED, while the held record keeps its own rate:
+ * the zoom-while-paused view (C14, ui/scope_ui.c) and the measurement badges
+ * must read the record's rate, not the selector's. */
+static volatile uint8_t acq_pub_idx = 0xFF;
+static volatile uint8_t acq_rate_idx;       /* defined (initialised) below */
 /* What the published record is (trig_policy.h, parity C3): handed over,
  * free-run, or free-run with two non-simultaneous channels (#84). Staged and
  * published with the frame, like the two flags above, so the badge can never
@@ -3113,6 +3120,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_il = acq_stage_il;
+    acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
     acq_frame_gen++;                                   /* even: stable */
 }
@@ -3991,7 +3999,8 @@ uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
  * doubled when the record is the two-converter merge. 0 = no rate. */
 float fpga_record_sample_rate(void)
 {
-    const float fs = scope_timebase_sample_rate(acq_rate_idx);
+    const uint8_t idx = (acq_pub_idx == 0xFFu) ? acq_rate_idx : acq_pub_idx;
+    const float fs = scope_timebase_sample_rate(idx);
     return acq_pub_il ? 2.0f * fs : fs;
 }
 
@@ -4131,6 +4140,7 @@ void fpga_roll_stats_get(fpga_roll_stats_t *out)
     out->late    = acq_roll_stats.late;
     out->code    = acq_roll_stats.code;
     out->step    = acq_roll_stats.step;
+    out->trig_hits = acq_roll_stats.trig_hits;
     for (unsigned i = 0; i < 5u; i++)
         out->rx[i] = acq_roll_stats.rx[i];
     taskEXIT_CRITICAL();
@@ -4334,6 +4344,41 @@ static void fpga_roll_service(void)
     acq_roll_stats.reads++;
     fpga.spi3_ok_count++;                /* the display's new-data signal */
     fpga.spi3_timeout_count = 0;
+
+    /* Stock's roll trigger (0x0803EC2E..0x0803ED18, scope_roll.h): once the
+     * FIFO is full and the mode is not AUTO, one crossing check in the middle
+     * of it after every point. SINGLE stops (RUN = 0) and the full FIFO is the
+     * frozen frame, the crossing at its centre; the OK key re-arms through the
+     * Y-T path's own `!running` test. NORMAL empties the FIFO (stock's 32-bit
+     * store at 0x08040000 zeroes the width ms[0xDB6]): the trace refills from
+     * the right and the check re-arms 301 points later.
+     * The level is the register in force (acq_trig_code, raw) lifted into the
+     * record domain like every other comparison against a record; the source
+     * and edge are the trigger settings. The column shift is 0: our trigger
+     * column (ss->trig_x) places the Y-T trigger point and has no roll
+     * meaning. */
+    acq_single_done_pub = false;         /* running again = armed */
+    {
+        scope_state_t *sw = scope_state_get();
+        if (sw != NULL && sw->trigger.mode != TRIG_AUTO) {
+            int lv = (int)acq_trig_code + (int)FPGA_ADC_OFFSET;
+            if (lv < 0)   lv = 0;
+            if (lv > 255) lv = 255;
+            const scope_roll_trig_act_t act = scope_roll_trig_step(
+                &acq_roll_fifo, (uint8_t)sw->trigger.mode,
+                (sw->trigger.source == TRIG_SRC_CH2) ? 1u : 0u, 0,
+                (uint8_t)lv,
+                (sw->trigger.edge == TRIG_FALLING) ? SCOPE_ROLL_EDGE_FALLING
+                                                   : SCOPE_ROLL_EDGE_RISING);
+            if (act != SCOPE_ROLL_TRIG_NONE) {
+                acq_roll_stats.trig_hits++;
+                if (act == SCOPE_ROLL_TRIG_STOP) {
+                    sw->running = false;
+                    acq_single_done_pub = true;
+                }
+            }
+        }
+    }
 }
 
 static void fpga_warmtest_acq_task(void *pv)
@@ -4453,6 +4498,20 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         if (mode_now == TRIG_SINGLE && single_done) {
             vTaskDelay(pdMS_TO_TICKS(10));     /* hold the one record */
+            continue;
+        }
+        /* STOP holds the published record (stock: ms[0x2E] = 0 at 0x0800BE5E,
+         * and a stopped timebase/range key re-renders instead of re-arming,
+         * 0x0800B6AA; docs/re/parity2_static.md section 3). Before this the
+         * task never tested `running` (trigger-modes.md D7): AUTO kept
+         * committing free-run reads and NORMAL every handover, so a key press
+         * while STOPPED drew a NEW record, and after a timebase key the next
+         * commit relabelled acq_pub_idx -- the zoom-while-paused view (C14)
+         * collapsed to ratio 1000 within one poll. Read nothing, like the
+         * SINGLE hold above: reg 0x01 may still follow the keys, the held
+         * record and its rate stay. Autoset/baseline set `running` first. */
+        if (ss_acq != NULL && !ss_acq->running) {
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         /* EXP-53/54 (2026-09-20..22) — PC0 is a HANDOVER strobe, not a
@@ -6601,9 +6660,9 @@ void fpga_init(void)
     gpio_init(GPIOC, &gpio_cfg);
 
     /*
-     * PB9 = onboard buzzer (TMR4_CH4 PWM; issue #25) — configured as a plain
-     * output held LOW here = buzzer silent; a future beep driver should take
-     * it over as TMR4 CH4. PA6: stock init configures it as an output but no
+     * PB9 = onboard buzzer — configured as a plain output held LOW here =
+     * buzzer silent until sys_pwm_init() (after this, in main) hands it to
+     * TMR11 CH1 like stock (docs/re/parity2_static.md 4.3). PA6: stock init configures it as an output but no
      * stock BOP/BCR level write has been recovered.  Keep it low rather
      * than applying the old bench-inferred high level. PB11 is configured only
      * after SPI3/H2, then driven by the same mux projection as runtime DMM

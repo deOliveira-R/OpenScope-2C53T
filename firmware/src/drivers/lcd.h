@@ -214,6 +214,9 @@ const uint8_t *lcd_shadow_bits(void);
 void lcd_shadow_clear(void);
 void lcd_shadow_set_page(uint16_t y);
 uint16_t lcd_shadow_page_y(void);
+/* The 16 RGB565 colours the shadow's indices stand for (screenshots store it
+ * with the pixels, gallery_store.c). */
+const uint16_t *lcd_shadow_palette_get(void);
 
 /* Delay helper (platform-specific, must be provided) */
 extern void delay_ms(uint32_t ms);

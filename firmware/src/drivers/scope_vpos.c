@@ -53,8 +53,9 @@ static struct {
     uint16_t last_code[CALPAGE_CHANNELS];
     /* Baseline correction (C10): deltas on the page pair, RAM only, per
      * (ch, bank in force, range); bit bank*10+range of corr_valid says which
-     * hold one. 248 B. Never written to flash here (persistence is a later,
-     * owner decision); lost at power-off like stock's until its writer runs. */
+     * hold one. 248 B. Never written to flash here: `cal user save`
+     * (src/util/usercal.c) stores them in our own W25Q log on request and
+     * the boot re-applies them through scope_vpos_corr_set(). */
     int16_t  corr[CALPAGE_CHANNELS][CALPAGE_BANKS][CALPAGE_RANGES][2];
     uint32_t corr_valid[CALPAGE_CHANNELS];
     /* While the servo runs it owns the reference: every re-apply path
