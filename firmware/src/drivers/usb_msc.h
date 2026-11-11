@@ -48,7 +48,8 @@ void         usb_msc_bus_reset(void);
 void usb_msc_set_notify_task(void *task_handle);
 bool usb_msc_poll(void *udev);
 
-/* "USB Sharing": medium present or not. No re-enumeration either way. */
+/* Medium present or not. The glue (usb_debug.c) inserts it when the
+ * composite device is attached for "USB Sharing"; a host eject removes it. */
 void usb_msc_set_shared(bool on);
 bool usb_msc_shared(void);
 

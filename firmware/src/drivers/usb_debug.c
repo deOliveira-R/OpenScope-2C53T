@@ -23,7 +23,9 @@
 #if USB_MSC
 #include "usb_composite.h"
 #include "usb_msc.h"
+#include "../util/usb_mode_sm.h"
 #endif
+#include "../util/raw_block.h"
 #include "dfu_boot.h"
 #include "flash_fs.h"
 #include "fw_loader.h"
@@ -126,10 +128,72 @@ void usb_delay_us(uint32_t us)
  * USB Interrupt Handler
  * ═══════════════════════════════════════════════════════════════════ */
 
+#if USB_MSC
+/* Enumeration trace: the first USB_TRACE_N bus resets and SETUP packets
+ * after each attach, timestamped, with "stalled" when the device answered
+ * with a STALL. `usb trace` prints it. After a fallback it shows exactly
+ * how far the host got with the composite device (the last request before
+ * the 3 s silence is the one to look at). 12 B per entry; the CDC re-attach
+ * after a fallback keeps the failed attempt's trace. */
+#define USB_TRACE_N 48
+enum { UTR_RESET = 1, UTR_SETUP, UTR_CONFIGURED, UTR_TIMEOUT };
+typedef struct {
+    uint16_t t_ms;
+    uint8_t  kind;
+    uint8_t  stalled;
+    uint8_t  setup[8];
+} usb_trace_ent_t;
+static usb_trace_ent_t s_utrace[USB_TRACE_N];
+static volatile uint8_t s_utrace_n;
+static uint32_t s_utrace_t0;
+static uint8_t s_utrace_dev;          /* usb_dev_kind_t of this attach */
+
+static void usb_trace_add(uint8_t kind, const uint8_t *setup)
+{
+    uint8_t n = s_utrace_n;
+    if (n >= USB_TRACE_N) return;
+    usb_trace_ent_t *e = &s_utrace[n];
+    e->t_ms = (uint16_t)(xTaskGetTickCountFromISR() - s_utrace_t0);
+    e->kind = kind;
+    e->stalled = 0;
+    if (setup != NULL) memcpy(e->setup, setup, 8); else memset(e->setup, 0, 8);
+    s_utrace_n = (uint8_t)(n + 1u);
+}
+
+static void usb_trace_reset(uint8_t dev)
+{
+    s_utrace_n = 0;
+    s_utrace_t0 = xTaskGetTickCount();
+    s_utrace_dev = dev;
+}
+#endif
+
 void USBFS_L_CAN1_RX0_IRQHandler(void)
 {
+#if USB_MSC
+    const uint8_t n0 = s_utrace_n;
+    const uint32_t sts = USB->intsts;
+    if (n0 < USB_TRACE_N) {
+        if (sts & USB_RST_FLAG) usb_trace_add(UTR_RESET, NULL);
+        if ((sts & USB_TC_FLAG) && (sts & USB_EPT_NUM_FLAG) == 0u &&
+            (USB->ept[0] & USB_SETUPTC)) {
+            uint8_t pkt[8];
+            usb_read_packet(pkt, EPT0_RX_ADDR, 8);
+            usb_trace_add(UTR_SETUP, pkt);
+        }
+    }
+#endif
     usbd_irq_handler(&usb_core_dev);
+#if USB_MSC
+    if (s_utrace_n > n0 && s_utrace[s_utrace_n - 1u].kind == UTR_SETUP &&
+        (USB->ept[0] & USB_TXSTS) == USB_TX_STALL)
+        s_utrace[s_utrace_n - 1u].stalled = 1;
+#endif
 }
+
+#if USB_MSC
+static usb_mode_sm_t s_usb_mode;
+#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * USB CDC Initialization
@@ -162,11 +226,14 @@ void usb_debug_init(void)
      * The composite keeps the CDC on the same interfaces, endpoints and
      * VID:PID, so the shell below is unaware of the difference. */
 #if USB_MSC
-    usbd_core_init(&usb_core_dev, USB, &usb_composite_class_handler,
-                   &usb_composite_desc_handler, 0);
-#else
-    usbd_core_init(&usb_core_dev, USB, &cdc_class_handler, &cdc_desc_handler, 0);
+    /* Boot as the plain CDC device (exactly the USB_MSC=0 descriptors).
+     * The composite one is presented only on request, behind the
+     * fallback in usb_mode_poll(): a host that rejects it never costs the
+     * shell. */
+    usb_mode_sm_init(&s_usb_mode);
+    usb_trace_reset(USB_DEV_CDC);
 #endif
+    usbd_core_init(&usb_core_dev, USB, &cdc_class_handler, &cdc_desc_handler, 0);
 
     /* Enable USB pull-up — device becomes visible to host */
     usbd_connect(&usb_core_dev);
@@ -192,6 +259,75 @@ bool usb_debug_connected(void)
  * goes to whichever is live. On the bench unit USB CDC has never enumerated
  * (CLAUDE.local.md), so in practice this is the RTT path — but the CDC path is
  * left intact so a unit with working USB behaves as before. */
+/* ── CDC endpoint health ──────────────────────────────────────────────
+ * The CDC bulk pair shares endpoint register 1. A completion the library
+ * lost (usb_conf.h: the CTR read-modify-write race, now fixed there) used to
+ * wedge the shell until a USB replug: g_tx_completed never returned, so
+ * every send waited its 1 s and was dropped; or the OUT endpoint stayed NAK
+ * and nothing more was received. These checks recognise the stuck state from
+ * the hardware itself and recover, with the USB interrupt masked so they
+ * cannot interleave with it:
+ *   TX lost:  g_tx_completed == 0, STAT_TX == NAK (the packet went out: the
+ *             hardware only leaves VALID after the host ACKed it), no TXTC
+ *             pending  ->  the completion happened; mark it.
+ *   RX lost:  g_rx_completed == 0, STAT_RX == NAK (a packet arrived and the
+ *             hardware stopped accepting), no RXTC pending  ->  read the
+ *             packet out of packet memory exactly as the ISR would have.
+ * Neither state exists legitimately: this task is the only one that clears
+ * the flags, and it re-arms the endpoint (VALID) in the same breath.
+ * Counters in `usb`. A host that simply is not reading (port closed) keeps
+ * STAT_TX == VALID: after one full 1 s timeout further sends are dropped at
+ * once until the host reads again, so the shell stays responsive. */
+#define USB_CDC_EPT   (USBD_CDC_BULK_IN_EPT & 0x7Fu)
+static struct {
+    uint32_t tx_heals, rx_heals, tx_drops, tx_timeouts;
+    bool     host_absent;
+} s_cdc;
+
+static bool usb_irq_mask(void)
+{
+    const bool was = NVIC_GetEnableIRQ(USBFS_L_CAN1_RX0_IRQn) != 0u;
+    NVIC_DisableIRQ(USBFS_L_CAN1_RX0_IRQn);
+    __DSB();
+    __ISB();
+    return was;
+}
+
+static void usb_irq_restore(bool was)
+{
+    if (was) NVIC_EnableIRQ(USBFS_L_CAN1_RX0_IRQn);
+}
+
+static bool cdc_tx_heal(cdc_struct_type *pcdc)
+{
+    bool healed = false;
+    const bool was = usb_irq_mask();
+    const uint32_t ep = USB->ept[USB_CDC_EPT];
+    if (!pcdc->g_tx_completed && (ep & USB_TXSTS) == USB_TX_NAK && (ep & USB_TXTC) == 0u) {
+        pcdc->g_tx_completed = 1;
+        s_cdc.tx_heals++;
+        healed = true;
+    }
+    usb_irq_restore(was);
+    return healed;
+}
+
+static void cdc_rx_heal(cdc_struct_type *pcdc)
+{
+    if (pcdc->g_rx_completed) return;
+    const bool was = usb_irq_mask();
+    const uint32_t ep = USB->ept[USB_CDC_EPT];
+    if (!pcdc->g_rx_completed && (ep & USB_RXSTS) == USB_RX_NAK && (ep & USB_RXTC) == 0u) {
+        uint16_t n = USB_GET_RX_LEN(USB_CDC_EPT);
+        if (n > USBD_CDC_OUT_MAXPACKET_SIZE) n = USBD_CDC_OUT_MAXPACKET_SIZE;
+        usb_read_packet(pcdc->g_rx_buff, usb_core_dev.ept_out[USB_CDC_EPT].rx_addr, n);
+        pcdc->g_rxlen = n;
+        pcdc->g_rx_completed = 1;
+        s_cdc.rx_heals++;
+    }
+    usb_irq_restore(was);
+}
+
 static void usb_send_bytes(const uint8_t *data, uint16_t len)
 {
     rtt_write(data, len);
@@ -203,19 +339,29 @@ static void usb_send_bytes(const uint8_t *data, uint16_t len)
     if (!usb_debug_connected()) return;
 
     cdc_struct_type *pcdc = (cdc_struct_type *)usb_core_dev.class_handler->pdata;
+    const bool sched = xTaskGetSchedulerState() == taskSCHEDULER_RUNNING;
 
     /* Send in 64-byte chunks (USB full-speed max packet) */
     while (len > 0) {
         uint16_t chunk = (len > USBD_CDC_IN_MAXPACKET_SIZE) ?
                          USBD_CDC_IN_MAXPACKET_SIZE : len;
 
-        /* Wait for previous TX to complete (with timeout) */
-        uint32_t timeout = 1000;
-        while (!pcdc->g_tx_completed && --timeout) {
-            if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
-                vTaskDelay(1);
+        /* Wait for the previous packet to leave (or recover a lost
+         * completion, or give up on a host that is not reading). */
+        uint32_t waited = 0;
+        while (!pcdc->g_tx_completed) {
+            if (waited >= 2u && cdc_tx_heal(pcdc)) break;
+            if (s_cdc.host_absent || waited >= 1000u) {
+                if (!s_cdc.host_absent) s_cdc.tx_timeouts++;
+                s_cdc.host_absent = true;
+                s_cdc.tx_drops++;
+                return;
+            }
+            if (sched) vTaskDelay(1);
+            else usb_delay_us(1000);
+            waited++;
         }
-        if (!timeout) return;
+        s_cdc.host_absent = false;
 
         usb_vcp_send_data(&usb_core_dev, (uint8_t *)data, chunk);
         data += chunk;
@@ -223,6 +369,84 @@ static void usb_send_bytes(const uint8_t *data, uint16_t len)
     }
 #endif
 }
+
+/* ── USB Sharing: which device we are (usb_mode_sm.h) ─────────────── */
+#if USB_MSC
+static volatile int8_t s_share_req = -1;      /* -1 none, 0 off, 1 on: any task */
+
+void usb_share_request(bool on)
+{
+    s_share_req = on ? 1 : 0;
+}
+
+bool usb_share_wanted(void)
+{
+    const int8_t r = s_share_req;
+    return r >= 0 ? (r != 0) : usb_mode_sm_sharing(&s_usb_mode);
+}
+
+static void usb_core_detach(void)
+{
+    (void)usb_irq_mask();
+    /* close the class endpoints first so none stays armed across the switch */
+    if (usb_core_dev.conn_state == USB_CONN_STATE_CONFIGURED &&
+        usb_core_dev.class_handler->clear_handler != NULL)
+        usb_core_dev.class_handler->clear_handler(&usb_core_dev);
+    usbd_disconnect(&usb_core_dev);              /* D+ pull-up off: the host sees an unplug */
+    usb_core_dev.conn_state = USB_CONN_STATE_DEFAULT;
+    usb_msc_bus_reset();
+    /* the interrupt stays off until the next attach */
+}
+
+static void usb_core_attach(usb_dev_kind_t kind)
+{
+    (void)usb_irq_mask();
+    if (kind == USB_DEV_COMPOSITE) {
+        usb_msc_set_shared(true);                /* the medium is the point of sharing */
+        usbd_core_init(&usb_core_dev, USB, &usb_composite_class_handler,
+                       &usb_composite_desc_handler, 0);
+    } else {
+        usb_msc_set_shared(false);
+        usbd_core_init(&usb_core_dev, USB, &cdc_class_handler, &cdc_desc_handler, 0);
+    }
+    /* keep the failed composite attempt's trace through the fallback */
+    if (!(kind == USB_DEV_CDC && s_usb_mode.fallback_pending)) usb_trace_reset((uint8_t)kind);
+    s_cdc.host_absent = false;
+    NVIC_ClearPendingIRQ(USBFS_L_CAN1_RX0_IRQn);
+    NVIC_EnableIRQ(USBFS_L_CAN1_RX0_IRQn);
+    usbd_connect(&usb_core_dev);
+}
+
+/* Called every pass of the shell task (<= 10 ms apart when idle). */
+static void usb_mode_poll(void)
+{
+    taskENTER_CRITICAL();
+    const int8_t r = s_share_req;
+    s_share_req = -1;
+    taskEXIT_CRITICAL();
+    if (r >= 0) usb_mode_sm_request(&s_usb_mode, r != 0);
+
+    const usb_mode_state_t before = s_usb_mode.state;
+    const bool configured = usb_core_dev.conn_state == USB_CONN_STATE_CONFIGURED;
+    const uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    switch (usb_mode_sm_step(&s_usb_mode, now, configured)) {
+    case USB_ACT_DETACH:
+        usb_core_detach();                       /* masks the USB interrupt */
+        if (before == USB_ST_ATTACHING) usb_trace_add(UTR_TIMEOUT, NULL);
+        break;
+    case USB_ACT_ATTACH:
+        usb_core_attach(s_usb_mode.active);
+        break;
+    default:
+        if (before == USB_ST_ATTACHING && s_usb_mode.state == USB_ST_STEADY && configured) {
+            const bool was = usb_irq_mask();
+            usb_trace_add(UTR_CONFIGURED, NULL);
+            usb_irq_restore(was);
+        }
+        break;
+    }
+}
+#endif
 
 static void usb_send_str(const char *str)
 {
@@ -2419,6 +2643,43 @@ static void cmd_screenshot(const char *args)
  */
 static logo_upload_t s_logo_up;
 
+/* Raw block receive for `logo blk` (raw_block.h): armed by the command,
+ * fed by the task loop (shell_rx) before the line editor sees anything. The
+ * block lands in the shell bus scratch, like fw_loader's: same task, never
+ * nested with the spi3/skew commands that also borrow it. */
+static raw_block_t s_raw;
+static uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE] __attribute__((aligned(4)));   /* defined below */
+#define LOGO_BLK_MAX 1024u
+
+static uint32_t shell_now_ms(void) { return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
+
+/* A raw block finished (complete or timed out): write it, answer. */
+static void logo_blk_finish(void)
+{
+    const raw_block_state_t st = s_raw.state;
+    const uint32_t off = s_raw.tag, n = s_raw.want;
+    raw_block_reset(&s_raw);
+    if (st == RAW_TIMEOUT) {
+        usb_debug_printf("logo: err timeout (block @%lu: %lu of %lu bytes; expect %lu)\r\n> ",
+                         (unsigned long)off, (unsigned long)s_raw.got, (unsigned long)n,
+                         (unsigned long)s_logo_up.received);
+        return;
+    }
+    if (st == RAW_DONE_CRC) {
+        usb_debug_printf("logo: err crc (block @%lu; expect %lu)\r\n> ",
+                         (unsigned long)off, (unsigned long)s_logo_up.received);
+        return;
+    }
+    logo_status_t ls = LOGO_OK;
+    for (uint32_t k = 0; k < n && ls == LOGO_OK; k += LOGO_CHUNK_MAX) {
+        const uint32_t m = (n - k) < LOGO_CHUNK_MAX ? (n - k) : LOGO_CHUNK_MAX;
+        ls = logo_put_data(&s_logo_up, off + k, shell_bus_scratch + k, m);
+    }
+    if (ls == LOGO_OK) usb_debug_printf("logo: ok %lu\r\n> ", (unsigned long)s_logo_up.received);
+    else usb_debug_printf("logo: err %s (expect %lu)\r\n> ", logo_status_str(ls),
+                          (unsigned long)s_logo_up.received);
+}
+
 static void logo_tick(void)
 {
     health_checkin_self();
@@ -2442,7 +2703,7 @@ static int logo_hexbyte(const char *p)
 static void cmd_logo(const char *args)
 {
     static const char usage[] =
-        "Usage: logo info | put <len> <crc32hex> | data <off> <hex> | end | show | clear\r\n";
+        "Usage: logo info | put <len> <crc32hex> | blk <off> <len> <crc32hex> | data <off> <hex> | pos | end | show | clear\r\n";
     if (args == NULL || *args == '\0' || strcmp(args, "info") == 0) {
         logo_info_t info;
         logo_status_t st = logo_info(&info);
@@ -2495,6 +2756,36 @@ static void cmd_logo(const char *args)
                               (unsigned long)s_logo_up.received);
         return;
     }
+    if (strncmp(args, "blk ", 4) == 0) {
+        /* logo blk <off> <len> <crc32hex>: the next <len> raw bytes on this
+         * transport are pixel data for <off>; answered "logo: ready", then
+         * "logo: ok <received>" once they are in, CRC-checked and written. */
+        uint32_t off, n, crc;
+        const char *p = args + 4;
+        char *e;
+        off = strtoul(p, &e, 10);
+        if (e == p || *e != ' ') { usb_send_str(usage); return; }
+        p = e + 1;
+        n = strtoul(p, &e, 10);
+        if (e == p || *e != ' ' || parse_hex32(e + 1, &crc) != 0) { usb_send_str(usage); return; }
+        if (!s_logo_up.active) { usb_send_str("logo: err no upload in progress (logo put first)\r\n"); return; }
+        if (off != s_logo_up.received) {
+            usb_debug_printf("logo: err sequence (expect %lu)\r\n", (unsigned long)s_logo_up.received);
+            return;
+        }
+        if (n == 0u || n > LOGO_BLK_MAX || n > LOGO_PIXEL_BYTES - off) {
+            usb_debug_printf("logo: err bad length (1..%u)\r\n", (unsigned)LOGO_BLK_MAX);
+            return;
+        }
+        (void)raw_block_begin(&s_raw, shell_bus_scratch, LOGO_BLK_MAX, n, crc, off, shell_now_ms());
+        usb_send_str("logo: ready\r\n");
+        return;
+    }
+    if (strcmp(args, "pos") == 0) {
+        usb_debug_printf("logo: pos %lu %s\r\n", (unsigned long)s_logo_up.received,
+                         s_logo_up.active ? "active" : "idle");
+        return;
+    }
     if (strcmp(args, "end") == 0) {
         logo_status_t st = logo_put_end(&s_logo_up, logo_tick);
         usb_debug_printf(st == LOGO_OK ? "logo: ok committed\r\n" : "logo: err %s\r\n",
@@ -2518,32 +2809,93 @@ static void cmd_logo(const char *args)
 }
 
 /* ── usb — USB Sharing (parity C16): the read-only gallery drive ───────
- * The device always enumerates as CDC + MSC (USB_MSC=1); "share" only says
- * whether the drive has a medium, so switching never re-enumerates and never
- * drops this shell. Off at boot (USB_MSC_SHARE_DEFAULT), like stock, where
- * the user enters USB Sharing explicitly. */
+ * The unit boots as the plain CDC device. `usb share on` (or Settings "USB
+ * Sharing") re-enumerates it as CDC + MSC: this port closes, and comes back
+ * about a second later with the drive. If the host has not configured the
+ * composite device within 3 s, the unit returns as CDC-only on its own and
+ * `usb` reports FALLBACK; `usb trace` then shows the host's requests. */
+static void cmd_usb_cdc_counters(void)
+{
+    usb_debug_printf("CDC: conf=%d tx_heals=%lu rx_heals=%lu tx_timeouts=%lu tx_drops=%lu%s\r\n",
+                     usb_debug_connected() ? 1 : 0,
+                     (unsigned long)s_cdc.tx_heals, (unsigned long)s_cdc.rx_heals,
+                     (unsigned long)s_cdc.tx_timeouts, (unsigned long)s_cdc.tx_drops,
+                     s_cdc.host_absent ? " (host not reading)" : "");
+}
+
+#if USB_MSC
+static void cmd_usb_trace(void)
+{
+    static const char *const kind[] = { "?", "RESET", "SETUP", "CONFIGURED", "TIMEOUT" };
+    const uint8_t n = s_utrace_n;
+    usb_debug_printf("usb trace: attach as %s, %u events\r\n",
+                     s_utrace_dev == USB_DEV_COMPOSITE ? "CDC+MSC" : "CDC", (unsigned)n);
+    for (uint8_t i = 0; i < n; i++) {
+        const usb_trace_ent_t *e = &s_utrace[i];
+        if (e->kind == UTR_SETUP) {
+            const uint8_t *q = e->setup;
+            usb_debug_printf("  +%5u ms SETUP %02X %02X wValue=%04X wIndex=%04X wLength=%u%s\r\n",
+                             (unsigned)e->t_ms, q[0], q[1], (unsigned)(q[2] | (q[3] << 8)),
+                             (unsigned)(q[4] | (q[5] << 8)), (unsigned)(q[6] | (q[7] << 8)),
+                             e->stalled ? "  -> STALL" : "");
+        } else {
+            usb_debug_printf("  +%5u ms %s\r\n", (unsigned)e->t_ms,
+                             kind[e->kind < 5u ? e->kind : 0]);
+        }
+    }
+    if (n >= USB_TRACE_N) usb_send_str("  (trace full)\r\n");
+}
+#endif
+
 static void cmd_usb(const char *args)
 {
 #if USB_MSC
     if (args != NULL && strncmp(args, "share", 5) == 0) {
         const char *a = args + 5;
         while (*a == ' ') a++;
-        if (strcmp(a, "on") == 0 || strcmp(a, "1") == 0) usb_msc_set_shared(true);
-        else if (strcmp(a, "off") == 0 || strcmp(a, "0") == 0) usb_msc_set_shared(false);
-        else if (*a != '\0') { usb_send_str("Usage: usb share [on|off]\r\n"); return; }
-        usb_debug_printf("usb: share %s\r\n", usb_msc_shared() ? "on" : "off");
+        bool on;
+        if (strcmp(a, "on") == 0 || strcmp(a, "1") == 0) on = true;
+        else if (strcmp(a, "off") == 0 || strcmp(a, "0") == 0) on = false;
+        else if (*a == '\0') {
+            usb_debug_printf("usb: share %s\r\n", usb_share_wanted() ? "on" : "off");
+            return;
+        } else { usb_send_str("Usage: usb share [on|off]\r\n"); return; }
+        if (on == usb_share_wanted() && s_usb_mode.state == USB_ST_STEADY) {
+            usb_debug_printf("usb: share already %s\r\n", on ? "on" : "off");
+            return;
+        }
+        usb_debug_printf("usb: share %s: re-enumerating as %s. This port closes now and returns in"
+                         " ~1 s (same name); reconnect. %s\r\n",
+                         on ? "on" : "off", on ? "CDC + read-only drive" : "CDC only",
+                         on ? "If the host does not configure it within 3 s the unit comes back"
+                              " CDC-only by itself: 'usb' then says FALLBACK, 'usb trace' shows why."
+                            : "");
+        usb_share_request(on);
+        return;
+    }
+    if (args != NULL && strcmp(args, "trace") == 0) {
+        cmd_usb_trace();
         return;
     }
     if (args != NULL && *args != '\0' && strcmp(args, "status") != 0) {
-        usb_send_str("Usage: usb [status] | usb share [on|off]\r\n");
+        usb_send_str("Usage: usb [status] | usb share [on|off] | usb trace\r\n");
         return;
     }
+    usb_debug_printf("USB: mode=%s state=%s share=%s last_switch=%s switches=%lu fallbacks=%lu"
+                     " attach_ms=%lu\r\n",
+                     s_usb_mode.active == USB_DEV_COMPOSITE ? "cdc+msc" : "cdc",
+                     usb_mode_state_str(s_usb_mode.state), usb_share_wanted() ? "on" : "off",
+                     usb_mode_result_str(s_usb_mode.last),
+                     (unsigned long)s_usb_mode.switches, (unsigned long)s_usb_mode.fallbacks,
+                     (unsigned long)s_usb_mode.attach_ms);
+    cmd_usb_cdc_counters();
+    if (s_usb_mode.active != USB_DEV_COMPOSITE) return;
     usb_msc_stats_t st;
     usb_msc_get_stats(&st);
-    usb_debug_printf("USB conf=%d msc=1 share=%s files=%u blocks=%lux512 state=%u "
+    usb_debug_printf("MSC: conf=%d medium=%s files=%u blocks=%lux512 state=%u "
                      "cmds=%lu reads=%lu sectors=%lu ioerr=%lu badcbw=%lu resets=%lu "
                      "wrref=%lu rescans=%lu last_op=%02X last_lba=%lu\r\n",
-                     usb_debug_connected() ? 1 : 0, st.shared ? "on" : "off",
+                     st.configured ? 1 : 0, st.shared ? "in" : "out",
                      (unsigned)st.files, (unsigned long)st.blocks, (unsigned)st.state,
                      (unsigned long)st.commands, (unsigned long)st.reads,
                      (unsigned long)st.sectors, (unsigned long)st.io_errors,
@@ -2551,9 +2903,12 @@ static void cmd_usb(const char *args)
                      (unsigned long)st.writes_refused, (unsigned long)st.rescans,
                      (unsigned)st.last_op, (unsigned long)st.last_lba);
 #else
-    (void)args;
-    usb_debug_printf("USB conf=%d msc=0 (built with USB_MSC=0: CDC only)\r\n",
-                     usb_debug_connected() ? 1 : 0);
+    if (args != NULL && (strncmp(args, "share", 5) == 0 || strcmp(args, "trace") == 0)) {
+        usb_send_str("usb: built with USB_MSC=0 (CDC only): no sharing\r\n");
+        return;
+    }
+    usb_send_str("USB: mode=cdc (built with USB_MSC=0: CDC only)\r\n");
+    cmd_usb_cdc_counters();
 #endif
 }
 
@@ -9686,12 +10041,14 @@ static const shell_cmd_t shell_cmds[] = {
           "screenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n"),
     CMD_A("logo", cmd_logo, 0,
           "logo [info]                     Boot logo status (CRC-checked)\r\n"
-          "logo put <len> <crc>|data <off> <hex>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\n"
+          "logo put <len> <crc>|blk <off> <n> <crc>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\n"
+          "logo pos|data <off> <hex>       Upload position / legacy 48-byte hex chunk\r\n"
           "logo show [ms]|clear            Preview now / remove (built-in splash)\r\n"),
 
     CMD_A("usb", cmd_usb, 0,
-          "usb [status]                    USB Sharing state: read-only gallery drive (MSC) counters\r\n"
-          "usb share [on|off]              Insert/eject the gallery drive (no re-enumeration)\r\n"),
+          "usb [status]                    USB device mode, switch result, CDC/MSC counters\r\n"
+          "usb share [on|off]              Re-enumerate as CDC + read-only gallery drive / CDC only\r\n"
+          "usb trace                       Enumeration trace of the last attach (resets, SETUPs)\r\n"),
     CMD_A("screen shadow", cmd_screen_shadow, 0,
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS,
@@ -10028,28 +10385,69 @@ static void dispatch_command(char *line)
 static char cmd_buf[CMD_BUF_SIZE];
 static int  cmd_pos = 0;
 
-static void shell_feed(const uint8_t *bytes, uint16_t len, bool echo)
+/* Returns how many bytes were consumed. Less than len only when a command
+ * armed a raw block: the rest of the packet is that block's data.
+ *
+ * Echo is batched: one packet per received chunk instead of one IN transfer
+ * per character. Per-character echo meant ~115 one-byte IN transfers for
+ * every 115-byte `logo data` line, interleaved with the host's OUT packets
+ * on the same endpoint: slow, and exactly the IN/OUT overlap that triggered
+ * the lost-completion race (usb_conf.h). */
+static uint16_t shell_feed(const uint8_t *bytes, uint16_t len, bool echo)
 {
+    uint8_t eb[64];
+    uint16_t ne = 0;
+#define ECHO_PUT(ch) do { if (ne == sizeof eb) { usb_send_bytes(eb, ne); ne = 0; } eb[ne++] = (uint8_t)(ch); } while (0)
+#define ECHO_FLUSH() do { if (ne) { usb_send_bytes(eb, ne); ne = 0; } } while (0)
+
     for (uint16_t i = 0; i < len; i++) {
         char c = (char)bytes[i];
 
         if (c == '\r' || c == '\n') {
-            if (echo) usb_send_str("\r\n");
+            if (echo) { ECHO_PUT('\r'); ECHO_PUT('\n'); }
+            ECHO_FLUSH();
             cmd_buf[cmd_pos] = '\0';
             if (cmd_pos > 0) {
                 dispatch_command(cmd_buf);
             }
             cmd_pos = 0;
+            if (raw_block_active(&s_raw)) {
+                /* the line ending's second half is not block data */
+                if (c == '\r' && i + 1u < len && bytes[i + 1u] == '\n') i++;
+                return (uint16_t)(i + 1u);
+            }
             usb_send_str("> ");
         } else if (c == '\b' || c == 0x7F) {
             if (cmd_pos > 0) {
                 cmd_pos--;
-                if (echo) usb_send_str("\b \b");
+                if (echo) { ECHO_PUT('\b'); ECHO_PUT(' '); ECHO_PUT('\b'); }
             }
         } else if (c >= ' ' && cmd_pos < CMD_BUF_SIZE - 1) {
             cmd_buf[cmd_pos++] = c;
-            if (echo) usb_send_bytes((const uint8_t *)&c, 1);
+            if (echo) ECHO_PUT(c);
         }
+    }
+    ECHO_FLUSH();
+#undef ECHO_PUT
+#undef ECHO_FLUSH
+    return len;
+}
+
+/* All shell input goes through here: a raw block in progress takes its
+ * bytes first, the line editor gets the rest. */
+static void shell_rx(const uint8_t *buf, uint16_t n, bool echo)
+{
+    while (n > 0u) {
+        if (raw_block_active(&s_raw)) {
+            const uint32_t used = raw_block_feed(&s_raw, buf, n, shell_now_ms());
+            buf += used;
+            n = (uint16_t)(n - used);
+            if (!raw_block_active(&s_raw)) logo_blk_finish();
+            continue;
+        }
+        const uint16_t used = shell_feed(buf, n, echo);
+        buf += used;
+        n = (uint16_t)(n - used);
     }
 }
 
@@ -10141,7 +10539,7 @@ static void vUsbDebugTask(void *pvParameters)
                 usb_send_str(shell_banner);
                 rtt_banner_sent = true;
             }
-            shell_feed(rtt_buf, (uint16_t)rtt_len, false);
+            shell_rx(rtt_buf, (uint16_t)rtt_len, false);
             did_work = true;
         }
 
@@ -10157,6 +10555,8 @@ static void vUsbDebugTask(void *pvParameters)
                     usb_banner_sent = true;
                 }
             } else {
+                /* recover an OUT completion the library lost (see cdc_rx_heal) */
+                cdc_rx_heal((cdc_struct_type *)usb_core_dev.class_handler->pdata);
                 uint16_t rx_len = usb_vcp_get_rxdata(&usb_core_dev, rx_buf);
                 if (rx_len > 0) {
                     if (fw_loader_active()) {
@@ -10199,11 +10599,11 @@ static void vUsbDebugTask(void *pvParameters)
                                          "shell is listening again\r\n");
                         }
                         if (rx_len > drop) {
-                            shell_feed(rx_buf + drop,
+                            shell_rx(rx_buf + drop,
                                        (uint16_t)(rx_len - drop), true);
                         }
                     } else {
-                        shell_feed(rx_buf, rx_len, true);
+                        shell_rx(rx_buf, rx_len, true);
                     }
                     did_work = true;
                 }
@@ -10248,21 +10648,35 @@ static void vUsbDebugTask(void *pvParameters)
             }
         }
 
+        /* A raw `logo blk` block whose host went quiet: abandon it. */
+        raw_block_poll(&s_raw, shell_now_ms());
+        if (s_raw.state == RAW_TIMEOUT) logo_blk_finish();
+
 #if USB_MSC
+        /* Which device we are: switch on request, fall back to CDC-only when
+         * the host does not configure the composite device (usb_mode_sm.h). */
+        usb_mode_poll();
+
         /* USB Sharing: serve READ sectors (W25Q reads need this task's
          * context; the USB interrupt only latches them) and pick up gallery
-         * changes. Cheap when idle: one RAM compare and a state check. */
-        if (usb_msc_poll(&usb_core_dev)) did_work = true;
+         * changes. Only while the composite device is up: as the CDC device
+         * there is no drive to keep current. */
+        if (s_usb_mode.active == USB_DEV_COMPOSITE && usb_msc_poll(&usb_core_dev)) did_work = true;
 #endif
 
         if (!did_work) {
+            /* 10 ms idle cadence, 1 ms while an upload is in flight (each
+             * `logo blk` round trip would otherwise wait out a poll period
+             * twice). */
+            const TickType_t idle = (raw_block_active(&s_raw) || s_logo_up.active)
+                                        ? 1 : pdMS_TO_TICKS(10);
 #if USB_MSC
-            /* Same 10 ms idle cadence as before, but the MSC interrupt can
-             * cut it short (task notification) so a READ does not wait a
-             * poll period per sector. Nothing else notifies this task. */
-            (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(10));
+            /* The MSC interrupt can cut it short (task notification) so a
+             * READ does not wait a poll period per sector. Nothing else
+             * notifies this task. */
+            (void)ulTaskNotifyTake(pdTRUE, idle);
 #else
-            vTaskDelay(pdMS_TO_TICKS(10));
+            vTaskDelay(idle);
 #endif
         }
     }

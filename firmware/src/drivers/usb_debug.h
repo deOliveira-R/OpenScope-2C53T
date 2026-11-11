@@ -55,4 +55,11 @@ int usb_debug_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)))
  */
 bool usb_debug_connected(void);
 
+/* USB Sharing (USB_MSC=1 builds only): ask the shell task to re-enumerate as
+ * CDC + read-only gallery drive (on) or CDC only (off); safe from any task.
+ * usb_share_wanted() is what was last asked for (after an automatic fallback
+ * to CDC-only: off). See usb_mode_sm.h. */
+void usb_share_request(bool on);
+bool usb_share_wanted(void);
+
 #endif /* USB_DEBUG_H */

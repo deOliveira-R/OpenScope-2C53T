@@ -1,6 +1,8 @@
 /*
- * usb_composite — OpenScope's USB device: the CDC debug shell plus a
- * read-only mass-storage LUN (parity C16, "USB Sharing").
+ * usb_composite — OpenScope's USB Sharing device: the CDC debug shell plus a
+ * read-only mass-storage LUN (parity C16). Presented only on request: the
+ * unit boots as the library's plain CDC device and re-enumerates as this one
+ * (usb_mode_sm.h), falling back to CDC-only if the host does not configure it.
  *
  * Interfaces:   0 CDC comm (INT IN 0x82)   } one IAD, exactly the endpoints,
  *               1 CDC data (0x81 / 0x01)   } addresses and class code the
@@ -22,11 +24,7 @@
 
 #include "usbd_core.h"
 
-#define USB_COMP_CDC_COMM_IF   0u
-#define USB_COMP_CDC_DATA_IF   1u
-#define USB_COMP_MSC_IF        2u
-#define USB_COMP_MSC_IN_EPT    0x83u
-#define USB_COMP_MSC_OUT_EPT   0x03u
+#include "usb_comp_desc.h"   /* interface/endpoint numbers and the descriptor bytes */
 
 extern usbd_class_handler usb_composite_class_handler;
 extern usbd_desc_handler  usb_composite_desc_handler;

@@ -48,7 +48,7 @@
 #include "sys_pwm.h"
 #include "../ui/gallery_ui.h"
 #if defined(USB_MSC) && USB_MSC
-#include "usb_msc.h"        /* Settings "USB Sharing" */
+#include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
 #include "task.h"
 #include <stdio.h>
@@ -363,12 +363,13 @@ void input_handle_settings_ok(void)
                 fpga_scanner_run();
             }
             break;
-        case 13: /* USB Sharing: insert/eject the read-only gallery drive.
-                  * Stock (0x0800BF08) re-enumerates as MSC-only and stops the
-                  * scope; ours is always enumerated CDC + MSC, so this only
-                  * changes whether the drive has a medium. */
+        case 13: /* USB Sharing: re-enumerate as CDC + read-only gallery
+                  * drive, or back to CDC only. Stock (0x0800BF08) goes
+                  * MSC-only and stops the scope; ours keeps the shell and
+                  * the scope, and falls back to CDC-only by itself if the
+                  * host does not configure the composite device (usb_mode_sm.h). */
 #if defined(USB_MSC) && USB_MSC
-            usb_msc_set_shared(!usb_msc_shared());
+            usb_share_request(!usb_share_wanted());
 #endif
             break;
         case 10: /* Firmware Update -- reboot into DFU bootloader */

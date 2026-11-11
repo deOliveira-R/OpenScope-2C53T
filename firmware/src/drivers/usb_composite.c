@@ -101,64 +101,26 @@ usbd_class_handler usb_composite_class_handler = {
 
 /* ── Descriptors ───────────────────────────────────────────────────────── */
 
-#define COMP_BCD_DEVICE     0x0201u   /* CDC-only build: 0x0200 */
-#define COMP_CONFIG_LEN     (9u + 8u + 9u + 5u + 5u + 4u + 5u + 7u + 9u + 7u + 7u + 9u + 7u + 7u)
+/* The bytes are usb_comp_desc.c's (pure, checked on the host by
+ * tests/test_usb_desc.c). These pin them to the library's own numbers. */
+_Static_assert(USB_COMP_VID == USBD_CDC_VENDOR_ID, "VID");
+_Static_assert(USB_COMP_PID == USBD_CDC_PRODUCT_ID, "PID");
+_Static_assert(USB_COMP_EP0_MPS == USB_MAX_EP0_SIZE, "EP0 size");
+_Static_assert(USB_COMP_CDC_INT_EPT == USBD_CDC_INT_EPT, "CDC notify endpoint");
+_Static_assert(USB_COMP_CDC_IN_EPT == USBD_CDC_BULK_IN_EPT, "CDC bulk IN");
+_Static_assert(USB_COMP_CDC_OUT_EPT == USBD_CDC_BULK_OUT_EPT, "CDC bulk OUT");
+_Static_assert(USB_COMP_CDC_INT_MPS == USBD_CDC_CMD_MAXPACKET_SIZE, "CDC notify size");
+_Static_assert(USB_COMP_CDC_BULK_MPS == USBD_CDC_IN_MAXPACKET_SIZE, "CDC IN size");
+_Static_assert(USB_COMP_CDC_BULK_MPS == USBD_CDC_OUT_MAXPACKET_SIZE, "CDC OUT size");
+_Static_assert(USB_COMP_CDC_INT_INTERVAL == CDC_HID_BINTERVAL_TIME, "CDC notify interval");
+_Static_assert(USB_COMP_CDC_BCD == CDC_BCD_NUM, "bcdCDC");
+_Static_assert(USB_COMP_MSC_MPS == USB_MSC_MPS, "MSC packet size");
+_Static_assert(USB_COMP_DEVICE_LEN == USB_DEVICE_DESC_LEN, "device descriptor size");
+_Static_assert(USB_MFC_STRING == 1 && USB_PRODUCT_STRING == 2 && USB_SERIAL_STRING == 3, "string indices");
+_Static_assert((USB_COMP_MSC_IN_EPT & 0x7Fu) == 3u && (USB_COMP_MSC_OUT_EPT & 0x7Fu) == 3u,
+               "MSC endpoints use EPT3_TX_ADDR / EPT3_RX_ADDR (usb_conf.h)");
 
-static const uint8_t device_desc[USB_DEVICE_DESC_LEN] ALIGNED_TAIL = {
-    USB_DEVICE_DESC_LEN,
-    USB_DESCIPTOR_TYPE_DEVICE,
-    0x00, 0x02,                         /* bcdUSB 2.00 */
-    0xEF, 0x02, 0x01,                   /* misc / common / IAD: a composite device */
-    USB_MAX_EP0_SIZE,
-    LBYTE(USBD_CDC_VENDOR_ID), HBYTE(USBD_CDC_VENDOR_ID),
-    LBYTE(USBD_CDC_PRODUCT_ID), HBYTE(USBD_CDC_PRODUCT_ID),
-    LBYTE(COMP_BCD_DEVICE), HBYTE(COMP_BCD_DEVICE),
-    USB_MFC_STRING, USB_PRODUCT_STRING, USB_SERIAL_STRING,
-    1,
-};
-
-static const uint8_t config_desc[COMP_CONFIG_LEN] ALIGNED_TAIL = {
-    USB_DEVICE_CFG_DESC_LEN, USB_DESCIPTOR_TYPE_CONFIGURATION,
-    LBYTE(COMP_CONFIG_LEN), HBYTE(COMP_CONFIG_LEN),
-    3,                                  /* interfaces */
-    1,                                  /* bConfigurationValue */
-    0,
-    0xC0,                               /* self powered (as the CDC build) */
-    0x32,                               /* 100 mA */
-
-    /* IAD: CDC owns interfaces 0..1 */
-    0x08, 0x0B, USB_COMP_CDC_COMM_IF, 2, USB_CLASS_CODE_CDC, 0x02, 0x01, 0,
-
-    /* interface 0: CDC comm, ACM — byte for byte the CDC build's */
-    USB_DEVICE_IF_DESC_LEN, USB_DESCIPTOR_TYPE_INTERFACE, USB_COMP_CDC_COMM_IF, 0, 1,
-    USB_CLASS_CODE_CDC, 0x02, 0x01, 0,
-    0x05, USBD_CDC_CS_INTERFACE, USBD_CDC_SUBTYPE_HEADER, LBYTE(CDC_BCD_NUM), HBYTE(CDC_BCD_NUM),
-    0x05, USBD_CDC_CS_INTERFACE, USBD_CDC_SUBTYPE_CMF, 0x00, USB_COMP_CDC_DATA_IF,
-    0x04, USBD_CDC_CS_INTERFACE, USBD_CDC_SUBTYPE_ACM, 0x02,
-    0x05, USBD_CDC_CS_INTERFACE, USBD_CDC_SUBTYPE_UFD, USB_COMP_CDC_COMM_IF, USB_COMP_CDC_DATA_IF,
-    USB_DEVICE_EPT_LEN, USB_DESCIPTOR_TYPE_ENDPOINT, USBD_CDC_INT_EPT, USB_EPT_DESC_INTERRUPT,
-    LBYTE(USBD_CDC_CMD_MAXPACKET_SIZE), HBYTE(USBD_CDC_CMD_MAXPACKET_SIZE), CDC_HID_BINTERVAL_TIME,
-
-    /* interface 1: CDC data */
-    USB_DEVICE_IF_DESC_LEN, USB_DESCIPTOR_TYPE_INTERFACE, USB_COMP_CDC_DATA_IF, 0, 2,
-    USB_CLASS_CODE_CDCDATA, 0x00, 0x00, 0,
-    USB_DEVICE_EPT_LEN, USB_DESCIPTOR_TYPE_ENDPOINT, USBD_CDC_BULK_IN_EPT, USB_EPT_DESC_BULK,
-    LBYTE(USBD_CDC_IN_MAXPACKET_SIZE), HBYTE(USBD_CDC_IN_MAXPACKET_SIZE), 0,
-    USB_DEVICE_EPT_LEN, USB_DESCIPTOR_TYPE_ENDPOINT, USBD_CDC_BULK_OUT_EPT, USB_EPT_DESC_BULK,
-    LBYTE(USBD_CDC_OUT_MAXPACKET_SIZE), HBYTE(USBD_CDC_OUT_MAXPACKET_SIZE), 0,
-
-    /* interface 2: mass storage, SCSI transparent, bulk-only — the class
-     * triple stock's own USB Sharing descriptor carries (08 06 50,
-     * docs/re/parity2_static.md 4.5) */
-    USB_DEVICE_IF_DESC_LEN, USB_DESCIPTOR_TYPE_INTERFACE, USB_COMP_MSC_IF, 0, 2,
-    USB_CLASS_CODE_MSC, 0x06, 0x50, 0,
-    USB_DEVICE_EPT_LEN, USB_DESCIPTOR_TYPE_ENDPOINT, USB_COMP_MSC_IN_EPT, USB_EPT_DESC_BULK,
-    LBYTE(USB_MSC_MPS), HBYTE(USB_MSC_MPS), 0,
-    USB_DEVICE_EPT_LEN, USB_DESCIPTOR_TYPE_ENDPOINT, USB_COMP_MSC_OUT_EPT, USB_EPT_DESC_BULK,
-    LBYTE(USB_MSC_MPS), HBYTE(USB_MSC_MPS), 0,
-};
-
-static const uint8_t lang_id_desc[4] ALIGNED_TAIL = { 4, USB_DESCIPTOR_TYPE_STRING, 0x09, 0x04 };
+static uint8_t lang_id_desc[4] ALIGNED_TAIL = { 4, USB_DESCIPTOR_TYPE_STRING, 0x09, 0x04 };
 
 /* Strings are built on request into one buffer (the core sends it before the
  * next request can arrive). 64 bytes: the longest, the product string
@@ -166,9 +128,9 @@ static const uint8_t lang_id_desc[4] ALIGNED_TAIL = { 4, USB_DESCIPTOR_TYPE_STRI
  * file keeps 256 bytes for this; with --gc-sections it no longer links. */
 static uint8_t str_buf[64] ALIGNED_TAIL;
 
-static usbd_desc_t d_device = { sizeof device_desc, (uint8_t *)device_desc };
-static usbd_desc_t d_config = { sizeof config_desc, (uint8_t *)config_desc };
-static usbd_desc_t d_lang   = { sizeof lang_id_desc, (uint8_t *)lang_id_desc };
+static usbd_desc_t d_device = { sizeof usb_comp_device_desc, usb_comp_device_desc };
+static usbd_desc_t d_config = { sizeof usb_comp_config_desc, usb_comp_config_desc };
+static usbd_desc_t d_lang   = { sizeof lang_id_desc, lang_id_desc };
 static usbd_desc_t d_str;
 
 static usbd_desc_t *ascii_string(const char *s)
