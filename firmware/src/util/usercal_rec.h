@@ -32,28 +32,39 @@
  * the baseline block is refused and the interleave block, which describes
  * converter B against converter A and not the page, still loads.
  *
- * RECORD LAYOUT v1 (little-endian, packed by hand: no struct is memcpy'd, so
+ * RECORD LAYOUT v2 (little-endian, packed by hand: no struct is memcpy'd, so
  * compiler padding never reaches flash)
  *   off  size  field
  *   0    4     magic        USERCAL_MAGIC "OSUC"
- *   4    2     version      USERCAL_VERSION
+ *   4    2     version      USERCAL_VERSION (2)
  *   6    2     length       USERCAL_REC_LEN (the whole record, checksum incl.)
  *   8    4     table_crc    CRC32 of the page endpoint table at save time
- *   12   4     flags        bit0 = interleave block present
+ *   12   4     flags        bit0 = interleave line present
+ *                           bit1 = interleave knots present (v2)
+ *                           bit2 = interleave skew present (v2)
  *   16   4     il_gain_ppm  int32, B gain x 1e6   (500000..2000000)
  *   20   4     il_off_e4    int32, B offset x 1e4 record units (+-1000000)
  *   24   8     valid[2]     u32 per channel: bit bank*10+range holds a delta
  *   32   240   corr         int16 [ch 2][bank 3][range 10][base, upper]
- *   272  4     crc          CRC32 of bytes [0, 272)
- *   276        end
+ *   272  1     il_n_knots   2..5 with bit1, else 0                       (v2)
+ *   273  3     reserved     0                                            (v2)
+ *   276  20    knots        [5] { u16 A, u16 B } x 100 record units      (v2)
+ *   296  4     il_skew_ppm  int32, B's deviation from half a converter
+ *                           period, ppm of a period (|x| <= 150000)      (v2)
+ *   300  4     crc          CRC32 of bytes [0, 300)
+ *   304        end
+ * v1 (276 bytes) is the same layout up to byte 272, where its CRC sits.
  * The region layer adds its own CRC32 over the payload (defence in depth, as
  * config.c does): a torn record is skipped by the layer and the previous one
- * wins; a well-formed record that is not a v1 user-cal fails here.
+ * wins; a well-formed record that is neither a v1 nor a v2 user-cal fails
+ * here.
  *
- * VERSIONING: a record of another version is refused (USERCAL_ST_VERSION) and
- * nothing is applied — the unit runs on the page alone until the next save,
- * which is the safe failure for a correction. A later layout bumps the
- * version and may add a decoder for v1 here.
+ * VERSIONING: v2 adds the piecewise converter-B map and the timing skew
+ * (parity ilplus, dsp/interleave.h). A v1 record still decodes (migration:
+ * its line, no knots, no skew), so an update never drops a unit's saved
+ * corrections; the next save writes v2. Any other version is refused
+ * (USERCAL_ST_VERSION) and nothing is applied — the unit runs on the page
+ * alone until the next save, which is the safe failure for a correction.
  *
  * Pure apart from the region layer (flash_regions.c, itself host-portable):
  * tests/test_usercal.c runs it against a NOR model. The capture/apply glue
@@ -68,13 +79,17 @@
 
 #include "calpage.h"          /* CALPAGE_CHANNELS / _BANKS / _RANGES / _LEN */
 #include "flash_regions.h"
+#include "../dsp/interleave.h"   /* IL_KNOTS_MAX, interleave_knots_valid, IL_SKEW_PPM_MAX */
 
 #define USERCAL_MAGIC        0x4355534Fu   /* 'O','S','U','C' little-endian */
-#define USERCAL_VERSION      1u
-#define USERCAL_REC_LEN      276u
+#define USERCAL_VERSION      2u
+#define USERCAL_REC_LEN      304u
+#define USERCAL_V1_LEN       276u          /* still decoded: migration */
 #define USERCAL_REGION       FLASH_REGION_USER_CAL
 
-#define USERCAL_F_IL         0x01u         /* interleave block present */
+#define USERCAL_F_IL         0x01u         /* interleave line present */
+#define USERCAL_F_IL_KNOTS   0x02u         /* interleave knots present (v2) */
+#define USERCAL_F_IL_SKEW    0x04u         /* interleave skew present (v2) */
 
 /* Page bytes the fingerprint covers: the 60-word endpoint table. */
 #define USERCAL_TABLE_OFF    0x38u
@@ -93,6 +108,10 @@ typedef struct {
     bool     il_present;
     int32_t  il_gain_ppm;
     int32_t  il_off_e4;
+    uint8_t  il_n_knots;                  /* 0, or 2..IL_KNOTS_MAX (v2) */
+    int16_t  il_knot_a[IL_KNOTS_MAX];     /* 1/100 record unit, ascending */
+    int16_t  il_knot_b[IL_KNOTS_MAX];
+    int32_t  il_skew_ppm;                 /* 0 = none (v2) */
     uint32_t valid[CALPAGE_CHANNELS];
     int16_t  corr[CALPAGE_CHANNELS][CALPAGE_BANKS][CALPAGE_RANGES][2];
 } usercal_t;
@@ -111,7 +130,7 @@ typedef enum {
 
 const char *usercal_status_str(usercal_status_t st);
 
-/* Zero record: no deltas, no interleave block. */
+/* Zero record: no deltas, no interleave line, knots or skew. */
 void usercal_clear(usercal_t *u);
 
 /* CRC32 of the endpoint table of a page of at least CALPAGE_LEN bytes. */
@@ -120,7 +139,8 @@ uint32_t usercal_table_crc(const uint8_t *page);
 /* Pack *u into buf (cap >= USERCAL_REC_LEN). Returns USERCAL_REC_LEN, or 0. */
 size_t usercal_encode(const usercal_t *u, uint8_t *buf, size_t cap);
 
-/* Validate and unpack. *out is written ONLY on USERCAL_ST_OK. */
+/* Validate and unpack a v2 record or a v1 one (migrated: no knots, no
+ * skew). *out is written ONLY on USERCAL_ST_OK. */
 usercal_status_t usercal_decode(const uint8_t *buf, size_t len, usercal_t *out);
 
 /* Number of deltas a record holds. */

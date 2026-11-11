@@ -96,6 +96,12 @@ static void sample(usercal_t *u, int seed)
     u->il_present = true;
     u->il_gain_ppm = 1012345 + seed;
     u->il_off_e4 = -23456 - seed;
+    /* Unit #2's bench levels (2026-11-11) as knots, and its skew. Test data. */
+    static const int16_t ka[5] = { 977, 4961, 9898, 14860, 19902 };
+    static const int16_t kb[5] = { 1396, 5163, 10096, 15059, 19862 };
+    u->il_n_knots = 5;
+    for (unsigned i = 0; i < 5; i++) { u->il_knot_a[i] = ka[i]; u->il_knot_b[i] = kb[i]; }
+    u->il_skew_ppm = -49000 + seed;
     /* A few deltas on both channels and all three banks, signed both ways. */
     const struct { unsigned c, b, r; int16_t db, du; } e[] = {
         {0, 0, 0,  12, -7}, {0, 1, 6, -40, 33}, {0, 2, 9, 4095, -4095},
@@ -113,6 +119,9 @@ static bool same(const usercal_t *a, const usercal_t *b)
 {
     if (a->table_crc != b->table_crc || a->il_present != b->il_present) return false;
     if (a->il_present && (a->il_gain_ppm != b->il_gain_ppm || a->il_off_e4 != b->il_off_e4)) return false;
+    if (a->il_n_knots != b->il_n_knots || a->il_skew_ppm != b->il_skew_ppm) return false;
+    for (unsigned i = 0; i < a->il_n_knots; i++)
+        if (a->il_knot_a[i] != b->il_knot_a[i] || a->il_knot_b[i] != b->il_knot_b[i]) return false;
     for (unsigned c = 0; c < CALPAGE_CHANNELS; c++) {
         if (a->valid[c] != b->valid[c]) return false;
         for (unsigned b2 = 0; b2 < CALPAGE_BANKS; b2++)
@@ -127,12 +136,13 @@ static bool same(const usercal_t *a, const usercal_t *b)
 
 /* Re-stamp the trailing CRC after a deliberate edit, so the test reaches the
  * check behind it instead of stopping at the CRC. */
-static void restamp(uint8_t *buf)
+static void restamp_len(uint8_t *buf, unsigned len)
 {
-    const uint32_t c = cal_backup_crc32(buf, USERCAL_REC_LEN - 4u);
-    buf[272] = (uint8_t)c; buf[273] = (uint8_t)(c >> 8);
-    buf[274] = (uint8_t)(c >> 16); buf[275] = (uint8_t)(c >> 24);
+    const uint32_t c = cal_backup_crc32(buf, len - 4u);
+    buf[len - 4u] = (uint8_t)c; buf[len - 3u] = (uint8_t)(c >> 8);
+    buf[len - 2u] = (uint8_t)(c >> 16); buf[len - 1u] = (uint8_t)(c >> 24);
 }
+static void restamp(uint8_t *buf) { restamp_len(buf, USERCAL_REC_LEN); }
 
 /* ── Format ──────────────────────────────────────────────────────── */
 
@@ -146,8 +156,9 @@ static void test_round_trip(void)
     /* Header bytes, as the shell's `flash read 0xF00008 16` will show them
      * after the layer's 8-byte header. */
     CHECK(buf[0] == 'O' && buf[1] == 'S' && buf[2] == 'U' && buf[3] == 'C', "magic OSUC");
-    CHECK(buf[4] == 1 && buf[5] == 0 && buf[6] == (USERCAL_REC_LEN & 0xFF) && buf[7] == (USERCAL_REC_LEN >> 8),
-          "version 1, length 276");
+    CHECK(buf[4] == 2 && buf[5] == 0 && buf[6] == (USERCAL_REC_LEN & 0xFF) && buf[7] == (USERCAL_REC_LEN >> 8),
+          "version 2, length 304");
+    CHECK(buf[12] == (USERCAL_F_IL | USERCAL_F_IL_KNOTS | USERCAL_F_IL_SKEW), "flags line+knots+skew");
     CHECK(usercal_decode(buf, sizeof(buf), &b) == USERCAL_ST_OK, "decode ok");
     CHECK(same(&a, &b), "round trip preserves every field");
     CHECK(usercal_count(&b) == 5u, "count 5, got %u", usercal_count(&b));
@@ -205,8 +216,8 @@ static void test_header_rejections(void)
     sample(&a, 2);
 
     usercal_encode(&a, buf, sizeof(buf));
-    buf[4] = 2; restamp(buf);
-    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_VERSION, "version 2 -> unknown version");
+    buf[4] = 3; restamp(buf);
+    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_VERSION, "version 3 -> unknown version");
     buf[4] = 0; restamp(buf);
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_VERSION, "version 0 -> unknown version");
 
@@ -222,7 +233,7 @@ static void test_header_rejections(void)
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_SIZE, "length field disagrees");
 
     usercal_encode(&a, buf, sizeof(buf));
-    buf[272] ^= 1;
+    buf[USERCAL_REC_LEN - 4u] ^= 1;
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_CRC, "bad crc");
 
     /* A config record (settings log) in the wrong region is foreign. */
@@ -234,7 +245,7 @@ static void test_header_rejections(void)
 
 static void test_value_rejections(void)
 {
-    /* Records that pass their CRC but hold what no v1 writer produces. */
+    /* Records that pass their CRC but hold what no writer produces. */
     usercal_t a, out;
     uint8_t buf[USERCAL_REC_LEN];
 
@@ -267,8 +278,66 @@ static void test_value_rejections(void)
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "valid bit beyond bank 2 range 9");
 
     usercal_encode(&a, buf, sizeof(buf));
-    buf[12] |= 0x02u; restamp(buf);       /* a flag v1 does not define */
+    buf[12] |= 0x08u; restamp(buf);       /* a flag v2 does not define */
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "unknown flag bit");
+
+    /* v2 interleave fields */
+    sample(&a, 0);
+    a.il_knot_b[2] = a.il_knot_b[1];      /* flat segment: not a converter */
+    usercal_encode(&a, buf, sizeof(buf));
+    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "non-monotonic knots");
+    sample(&a, 0);
+    usercal_encode(&a, buf, sizeof(buf));
+    buf[272] = 6; restamp(buf);           /* more knots than the map holds */
+    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "6 knots");
+    sample(&a, 0);
+    a.il_skew_ppm = IL_SKEW_PPM_MAX + 1;
+    usercal_encode(&a, buf, sizeof(buf));
+    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "skew out of range");
+    sample(&a, 0);
+    usercal_encode(&a, buf, sizeof(buf));
+    buf[12] &= (uint8_t)~USERCAL_F_IL_SKEW; restamp(buf);   /* a skew without its flag */
+    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "skew without flag");
+    sample(&a, 0);
+    a.il_n_knots = 0; a.il_skew_ppm = 0;
+    usercal_encode(&a, buf, sizeof(buf));
+    CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_OK && out.il_n_knots == 0 &&
+          out.il_skew_ppm == 0 && buf[12] == USERCAL_F_IL, "line only");
+}
+
+/* A v1 record (276 B, CRC at 272), built byte by byte as v1 firmware wrote
+ * it: decodes with its line and deltas, no knots, no skew; loads from the
+ * log; and the next save is a v2 record. */
+static void test_v1_migration(void)
+{
+    usercal_t a, out;
+    uint8_t v2[USERCAL_REC_LEN], v1[USERCAL_V1_LEN];
+    sample(&a, 4);
+    usercal_encode(&a, v2, sizeof(v2));
+    memcpy(v1, v2, USERCAL_V1_LEN);
+    v1[4] = 1; v1[5] = 0;
+    v1[6] = (uint8_t)USERCAL_V1_LEN; v1[7] = (uint8_t)(USERCAL_V1_LEN >> 8);
+    v1[12] = USERCAL_F_IL;
+    restamp_len(v1, USERCAL_V1_LEN);
+    memset(&out, 0xA5, sizeof(out));
+    CHECK(usercal_decode(v1, sizeof(v1), &out) == USERCAL_ST_OK, "v1 record refused");
+    CHECK(out.il_present && out.il_gain_ppm == a.il_gain_ppm && out.il_off_e4 == a.il_off_e4,
+          "v1 line lost");
+    CHECK(out.il_n_knots == 0 && out.il_skew_ppm == 0, "v1 migrated with knots/skew");
+    CHECK(usercal_count(&out) == usercal_count(&a) && out.table_crc == a.table_crc, "v1 deltas lost");
+    CHECK(usercal_decode(v1, sizeof(v1) - 1u, &out) == USERCAL_ST_SIZE, "short v1");
+    v1[12] |= USERCAL_F_IL_KNOTS; restamp_len(v1, USERCAL_V1_LEN);
+    CHECK(usercal_decode(v1, sizeof(v1), &out) == USERCAL_ST_RANGE, "v1 with a v2 flag");
+    v1[12] = USERCAL_F_IL; restamp_len(v1, USERCAL_V1_LEN);
+    /* A v1 length with a v2 version, and the reverse, are not records. */
+    CHECK(usercal_decode(v2, USERCAL_V1_LEN, &out) == USERCAL_ST_SIZE, "v2 header at v1 length");
+
+    chip_blank();
+    CHECK(flash_region_append(USERCAL_REGION, v1, sizeof(v1)) == FLASH_REGION_OK, "plant v1");
+    CHECK(usercal_store_load(&out) == USERCAL_ST_OK && out.il_gain_ppm == a.il_gain_ppm &&
+          out.il_n_knots == 0, "v1 record from the log");
+    CHECK(usercal_store_save(&a) == FLASH_REGION_OK, "save after a v1");
+    CHECK(usercal_store_load(&out) == USERCAL_ST_OK && same(&a, &out), "v2 save over v1 loads");
 }
 
 static void test_table_fingerprint(void)
@@ -376,16 +445,16 @@ static void test_foreign_and_future_records(void)
     usercal_t out;
     uint8_t buf[USERCAL_REC_LEN];
 
-    /* A well-formed layer record that is a v2 user-cal of the same size. */
+    /* A well-formed layer record that is a v3 user-cal of the same size. */
     chip_blank();
     usercal_t a;
     sample(&a, 0);
     usercal_encode(&a, buf, sizeof(buf));
-    buf[4] = 2; restamp(buf);
-    CHECK(flash_region_append(USERCAL_REGION, buf, sizeof(buf)) == FLASH_REGION_OK, "plant v2");
+    buf[4] = 3; restamp(buf);
+    CHECK(flash_region_append(USERCAL_REGION, buf, sizeof(buf)) == FLASH_REGION_OK, "plant v3");
     memset(&out, 0xA5, sizeof(out));
     usercal_t before = out;
-    CHECK(usercal_store_load(&out) == USERCAL_ST_VERSION, "v2 record -> unknown version");
+    CHECK(usercal_store_load(&out) == USERCAL_ST_VERSION, "v3 record -> unknown version");
     CHECK(memcmp(&out, &before, sizeof(out)) == 0, "rejected record leaves *out untouched");
 
     /* A later, longer layout. */
@@ -453,6 +522,7 @@ int main(void)
     test_every_byte_is_covered();
     test_header_rejections();
     test_value_rejections();
+    test_v1_migration();
     test_table_fingerprint();
     test_store_round_trip();
     test_torn_and_damaged();

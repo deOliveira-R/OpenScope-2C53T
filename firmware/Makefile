@@ -766,15 +766,16 @@ $(BUILD_DIR)/test_trig_policy: tests/test_trig_policy.c src/dsp/trig_policy.c sr
 test-trig-policy: $(BUILD_DIR)/test_trig_policy
 	$<
 
-$(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
+# Merge, level map (line and bench knots) and skew FIR with its image spur (parity ilplus).
+$(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/dsp/interleave.h src/dsp/interleave_skew_taps.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave.c -lm -o $@
 
 test-interleave: $(BUILD_DIR)/test_interleave
 	$<
 
-# 250 MS/s self-calibration fit and refusals (parity C2).
-$(BUILD_DIR)/test_interleave_cal: tests/test_interleave_cal.c src/dsp/interleave_cal.c src/dsp/interleave_cal.h src/dsp/interleave.c | $(BUILD_DIR)
+# 250 MS/s self-calibration fit, knots and refusals (parity C2), skew estimate (ilplus).
+$(BUILD_DIR)/test_interleave_cal: tests/test_interleave_cal.c src/dsp/interleave_cal.c src/dsp/interleave_cal.h src/dsp/interleave.c src/dsp/interleave.h src/dsp/interleave_skew_taps.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
 		$< src/dsp/interleave_cal.c src/dsp/interleave.c -lm -o $@
 
@@ -915,14 +916,17 @@ test-gallery: $(BUILD_DIR)/test_gallery
 
 
 # OpenScope's persisted calibration corrections (baseline deltas + interleave
-# B correction): the v1 record format, its CRC, the version gate, corrupt and
-# foreign records, the page fingerprint, and save/load/compaction through the
-# real region layer on a NOR model with power cuts. See tests/test_usercal.c.
+# B correction): the v2 record format (line, knots, skew), v1 migration, its
+# CRC, the version gate, corrupt and foreign records, the page fingerprint, and
+# save/load/compaction through the real region layer on a NOR model with power
+# cuts. See tests/test_usercal.c.
 $(BUILD_DIR)/test_usercal: tests/test_usercal.c src/util/usercal_rec.c src/util/usercal_rec.h \
                            src/util/cal_backup_core.c src/util/cal_backup_core.h \
-                           src/util/cal_reference.c src/drivers/flash_regions.c src/drivers/flash_regions.h | $(BUILD_DIR)
+                           src/util/cal_reference.c src/drivers/flash_regions.c src/drivers/flash_regions.h \
+                           src/dsp/interleave.c src/dsp/interleave.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
-		src/util/usercal_rec.c src/util/cal_backup_core.c src/util/cal_reference.c src/drivers/flash_regions.c -o $@
+		src/util/usercal_rec.c src/util/cal_backup_core.c src/util/cal_reference.c src/drivers/flash_regions.c \
+		src/dsp/interleave.c -o $@
 
 .PHONY: test-usercal
 test-usercal: $(BUILD_DIR)/test_usercal

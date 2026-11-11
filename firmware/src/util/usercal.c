@@ -2,8 +2,8 @@
  * usercal.c — capture/apply glue between the live corrections and the
  * persisted record. See usercal.h and usercal_rec.h.
  *
- * RAM: only the report below is static (~12 B). The record (usercal_t, 280 B)
- * and its encode buffer (276 B) live on the caller's stack: main() at boot,
+ * RAM: only the report below is static (~12 B). The record (usercal_t, 312 B)
+ * and its encode buffer (304 B) live on the caller's stack: main() at boot,
  * the usb_dbg task (3 KB) for the shell.
  */
 #include "usercal.h"
@@ -49,6 +49,8 @@ void usercal_capture(usercal_t *u)
     u->il_off_e4   = round_i32(o * 1e4f);
     /* Identity (the boot default, fpga.c acq_il_corr) is "no correction". */
     u->il_present  = (u->il_gain_ppm != 1000000 || u->il_off_e4 != 0);
+    u->il_n_knots  = fpga_interleave_knots_get(u->il_knot_a, u->il_knot_b);
+    u->il_skew_ppm = fpga_interleave_skew_get();
 }
 
 void usercal_apply(const usercal_t *u)
@@ -78,6 +80,12 @@ void usercal_apply(const usercal_t *u)
         fpga_interleave_corr_set((float)u->il_gain_ppm / 1e6f, (float)u->il_off_e4 / 1e4f);
         rep.il_applied = true;
     }
+    /* After the line: setting the line clears the knots. Both setters
+     * re-check what the decoder already checked. */
+    if (u->il_n_knots >= 2u && fpga_interleave_knots_set(u->il_n_knots, u->il_knot_a, u->il_knot_b))
+        rep.il_applied = true;
+    if (u->il_skew_ppm != 0 && fpga_interleave_skew_set(u->il_skew_ppm))
+        rep.il_applied = true;
 }
 
 void usercal_boot_load(void)
@@ -106,7 +114,8 @@ flash_region_status_t usercal_clear_saved(void)
     rep.saved = true;
     if (rep.last_save == FLASH_REGION_OK) {
         scope_vpos_corr_clear();
-        fpga_interleave_corr_set(1.0f, 0.0f);
+        fpga_interleave_corr_set(1.0f, 0.0f);   /* line to identity, knots dropped */
+        fpga_interleave_skew_set(0);
     }
     return rep.last_save;
 }
