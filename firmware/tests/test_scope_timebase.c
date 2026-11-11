@@ -8,9 +8,9 @@
  *   1. A code with no trustworthy rate returns exactly 0.0f, so a caller that
  *      forgets to check gets an obviously-zero frequency rather than a
  *      plausible one.
- *   2. Code 0x08 in particular returns nothing. Three different rates have
- *      been published for it and all three were artifacts; if someone
- *      re-enters one, this fails.
+ *   2. Code 0x08 must never return one of its three withdrawn artifacts (all
+ *      fitted to AUTO roll reads); it holds the 2026-11-10 NORMAL-trigger
+ *      measurement.
  *   3. Out-of-range codes refuse rather than wrap.
  *   4. Derived quantities really are derived — s/div from the rate and the
  *      renderer's samples-per-division, Hz from the rate and a period.
@@ -94,23 +94,51 @@ static void test_measured_codes(void)
           "0x0E should be about double 0x0F");
 }
 
-static void test_code_08_stays_withdrawn(void)
+static void test_code_08_artifacts_stay_out(void)
 {
     /*
-     * 0x08 has had three published rates — 1.07 kS/s, 1,660 S/s, and a
-     * two-pass 1,414/1,526 — and every one was fitted to a record that does
-     * not reproduce between reads. This test exists so that re-entering any of
-     * them fails the build.
+     * 0x08 has had three published rates -- 1.07 kS/s, 1,660 S/s, and a
+     * two-pass 1,414/1,526 -- all fitted to AUTO roll reads that do not
+     * reproduce. It now holds the 2026-11-10 NORMAL-trigger CAN-bit fit
+     * (4.9975 MS/s). Re-entering any artifact fails the build, and so does
+     * dropping back to a kS/s-scale number.
      */
-    CHECK(scope_timebase_sample_rate(0x08) == 0.0f,
-          "code 0x08 is INCOHERENT and must return exactly 0.0f, got %.1f",
-          (double)scope_timebase_sample_rate(0x08));
-    CHECK(scope_timebase_get_tier(0x08) == SCOPE_TB_NONE,
-          "code 0x08 must be tier NONE");
-    CHECK(scope_timebase_seconds_per_div(0x08) == 0.0f,
-          "code 0x08 must have no seconds/div");
-    CHECK(scope_timebase_hz_from_period(0x08, 50.0f) == 0.0f,
-          "code 0x08 must not yield a frequency");
+    const float artifacts[] = { 1070.0f, 1660.0f, 1414.0f, 1526.0f };
+    const float got = scope_timebase_sample_rate(0x08);
+    for (unsigned i = 0; i < 4; i++)
+        CHECK(fabsf(got - artifacts[i]) > 1.0f,
+              "code 0x08 is back at the withdrawn artifact %.0f S/s", (double)artifacts[i]);
+    CHECK(got > 4.9e6f && got < 5.1e6f,
+          "code 0x08 should hold the CAN-bit measurement (~5.0 MS/s), got %.1f", (double)got);
+    CHECK(scope_timebase_get_tier(0x08) == SCOPE_TB_MEASURED, "code 0x08 must be MEASURED");
+}
+
+static void test_fast_codes_2026_11(void)
+{
+    /*
+     * 2026-11-10: method A (10.000 MHz tone, fold-checked) for 0x00-0x04,
+     * method B (500 kbit/s CAN bits, NORMAL trigger) for 0x06-0x0A. Values are
+     * what was measured, not the round ladder they sit within 0.15 % of.
+     */
+    const struct { uint8_t code; float fs, round_val; } want[] = {
+        { 0x00, 124830000.0f, 125e6f }, { 0x03, 124830000.0f, 125e6f },
+        { 0x04, 124830000.0f, 125e6f }, { 0x06,  24981200.0f,  25e6f },
+        { 0x07,  12494100.0f, 12.5e6f }, { 0x08,   4997500.0f,   5e6f },
+        { 0x09,   2498800.0f,  2.5e6f }, { 0x0A,   1249600.0f, 1.25e6f },
+    };
+    for (unsigned i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
+        const float got = scope_timebase_sample_rate(want[i].code);
+        CHECK(fabsf(got / want[i].fs - 1.0f) < 1e-6f, "code 0x%02X: expected %.0f, got %.0f",
+              want[i].code, (double)want[i].fs, (double)got);
+        CHECK(got != want[i].round_val, "code 0x%02X was rounded to %.0f", want[i].code,
+              (double)want[i].round_val);
+        CHECK(fabsf(got / want[i].round_val - 1.0f) < 0.005f,
+              "code 0x%02X drifted >0.5%% from its ladder value", want[i].code);
+        CHECK(scope_timebase_get_tier(want[i].code) == SCOPE_TB_MEASURED,
+              "code 0x%02X should be MEASURED", want[i].code);
+    }
+    /* 0x05: the two methods disagree (100 vs 50 MS/s); it must stay empty. */
+    CHECK(scope_timebase_sample_rate(0x05) == 0.0f, "code 0x05 is unresolved and must return 0.0f");
 }
 
 static void test_precorrection_rates_stay_out(void)
@@ -181,7 +209,7 @@ static void test_precorrection_rates_stay_out(void)
 
 static void test_unmeasured_codes_return_zero(void)
 {
-    const uint8_t none[] = { 0, 1, 5, 7, 9, 0x0A, 0x0B, 0x0C };
+    const uint8_t none[] = { 5, 0x0B, 0x0C };
 
     for (unsigned i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
         CHECK(scope_timebase_sample_rate(none[i]) == 0.0f,
@@ -253,10 +281,17 @@ static void test_labels(void)
     CHECK(buf[0] == '~', "0x0D is PROVISIONAL and must be marked, got \"%s\"", buf);
 
     /* No rate -> explicit nothing, never a nominal number. */
+    scope_timebase_label(0x05, buf, sizeof(buf));
+    CHECK(strcmp(buf, "--") == 0, "0x05 label should be \"--\", got \"%s\"", buf);
+
+    /* Fast codes: 4.9975 MS/s -> 6.403 us/div needs a decimal; 124.83 MS/s ->
+     * 256 ns/div needs nanoseconds (it printed "0us" before the ns branch). */
     scope_timebase_label(0x08, buf, sizeof(buf));
-    CHECK(strcmp(buf, "--") == 0, "0x08 label should be \"--\", got \"%s\"", buf);
+    CHECK(strcmp(buf, "6.4us") == 0, "0x08 label should be 6.4us, got \"%s\"", buf);
     scope_timebase_label(0x00, buf, sizeof(buf));
-    CHECK(strcmp(buf, "--") == 0, "0x00 label should be \"--\", got \"%s\"", buf);
+    CHECK(strcmp(buf, "256ns") == 0, "0x00 label should be 256ns, got \"%s\"", buf);
+    scope_timebase_label(0x0A, buf, sizeof(buf));
+    CHECK(strcmp(buf, "26us") == 0, "0x0A label should be 26us, got \"%s\"", buf);
 
     /* Truncation must be safe. */
     char small[3];
@@ -267,7 +302,8 @@ static void test_labels(void)
 int main(void)
 {
     test_measured_codes();
-    test_code_08_stays_withdrawn();
+    test_code_08_artifacts_stay_out();
+    test_fast_codes_2026_11();
     test_precorrection_rates_stay_out();
     test_unmeasured_codes_return_zero();
     test_out_of_range();

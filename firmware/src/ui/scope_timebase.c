@@ -48,12 +48,17 @@
  * as 0.0f, and the reason is INCOHERENT rather than UNMEASURED.
  */
 static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
-    /* 0x00-0x05 */ 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f,
-    /* 0x06 */      0.0f,        /* INCOHERENT — see the block below      */
-    /* 0x07 */      0.0f,        /* INCOHERENT                            */
-    /* 0x08 */      0.0f,        /* INCOHERENT — measured, no rate exists */
-    /* 0x09 */      0.0f,        /* INCOHERENT                            */
-    /* 0x0A */      0.0f,        /* source too slow to measure (R2 -1.03)   */
+    /* 0x00 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
+    /* 0x01 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
+    /* 0x02 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
+    /* 0x03 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
+    /* 0x04 */  124830000.0f,   /* 2026-11-10 10 MHz tone, CAN bits agree  */
+    /* 0x05 */          0.0f,   /* CONFLICT: tone 100M (AUTO), CAN 50M (NORMAL) */
+    /* 0x06 */   24981200.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
+    /* 0x07 */   12494100.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
+    /* 0x08 */    4997500.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
+    /* 0x09 */    2498800.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
+    /* 0x0A */    1249600.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
     /* 0x0B */      0.0f,        /* source too slow to measure (R2 -0.05)   */
     /* 0x0C */      0.0f,        /* source too slow to measure (R2  0.60)   */
     /* 0x0D */     123662.7f,   /* EXP-18 R2 0.9997 — provisional, bins 4-25 */
@@ -166,9 +171,66 @@ static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
  */
 
 /*
+ * EXTENDED 2026-11-10 (unit #2, deOliveira-R bench). Codes 0x00-0x04 and
+ * 0x06-0x0A now have rates. Two methods, two independent references.
+ *
+ * WHY 0x06-0x09 WERE "INCOHERENT". In AUTO with a quiet or untriggered input
+ * the task commits free-running roll reads. op04 and op05 are read ~140 us
+ * apart while the FPGA keeps writing, so the two channels of one committed
+ * record are different moments, and successive reads do not reproduce.
+ * Same-wire test: CH1 and CH2 clipped to ONE CAN_L node, sparse traffic
+ * (1 frame / 100 ms): AUTO records show the frame on one channel and idle on
+ * the other; NORMAL trigger (held, handed-over records only) agrees 99.7-100 %
+ * sample by sample at 0x08 and 99.8 % at 0x04. The rates below were all taken
+ * in NORMAL. The EXP-15 cluster near 1.25 kS/s for 0x06-0x09 is consistent
+ * with fitting the roll cadence, as Stlkv predicted.
+ *
+ * Method A, 0x00-0x04: G431 TIM1 on PA8 = 170 MHz / 17 = 10.000 MHz (HSI,
+ * +-1 %), square, into CH1, range 6. FFT peaks at 0x04: 0.0797 0.1604 0.2402
+ * 0.4006 plus folded 80->45 / 70->55 MHz, i.e. every harmonic of 10 MHz at
+ * 125 MS/s and none of them at 100 (which would put all on multiples of 0.1).
+ * Refined fundamental over 6 records: f/fs = 0.08011 +- 0.00001 -> 124.83 MS/s
+ * against the 10.000 MHz nominal. 0x00-0x03 give identical peak lists with
+ * both channels on (mask 3), so per converter they run the same clock; the
+ * single-channel interleave (mask 1, tb <= 3) doubles it and is not modelled
+ * by this table.
+ *
+ * Method B, 0x04 and 0x06-0x0A: a 500 kbit/s CAN bus (G0B1 + G431, both on
+ * HSI) as the time reference. Edge-to-edge gaps of the differential signal
+ * (sub-sample threshold interpolation), each assigned its integer bit count,
+ * least-squares samples/bit, fs = spb / 2.000 us. 12 records per code:
+ *   0x06  49.962 +- 0.012 spb (51 gaps)  -> 24.981 MS/s
+ *   0x07  24.988 +- 0.008     (113)      -> 12.494 MS/s
+ *   0x08   9.995 +- 0.003     (252)      ->  4.9975 MS/s
+ *   0x09   4.998 +- 0.001     (518)      ->  2.4988 MS/s
+ *   0x0A   2.4993, rms 0.56  (1244 edges, up to 404 bits from the first
+ *          edge of each record)    ->  1.2496 MS/s
+ * At 2.5 samples/bit a one-bit gap is sampled as 2 or 3 and a three-bit gap
+ * as 7 or 8, so the smallest-gap cluster (2.0) is NOT the bit: fitting it
+ * gives 1.0 MS/s, which is wrong. Fitting cumulative edge positions against
+ * integer bit counts resolves it; the CAN analyser (CRC-valid decodes at
+ * 2.50 samples/bit) agrees.
+ * The gap populations sit on clean 1/2/3-bit multiples (0x06: 49.9 / 99.8 /
+ * 149.7), which is the fold check for this method. 0x04: 498 samples per two
+ * bits = 124.5 MS/s, agreeing with method A to 0.3 % (the two HSI references).
+ * Cross-method at 0x06: the method-A tone record there peaks at 0.4006 =
+ * 10/25, consistent with 25 MS/s.
+ *
+ * Every row lands within 0.15 % of a 125M / 25M / 12.5M / 5M / 2.5M / 1.25M
+ * ladder. The measured values are what is written, per this file's rule.
+ *
+ * 0x05 is left at 0: method A (in AUTO) puts the tone at f/fs = 0.1004 with
+ * peaks at 0.1/0.3 (100 MS/s), method B (in NORMAL) gives gaps of 100.4 /
+ * 199.7 / 299.7 / 499.5 samples = 1/2/3/5 bits at 50 MS/s. Unresolved.
+ * 0x0B/0x0C are below one sample per CAN bit and stay unmeasured.
+ */
+
+/*
  * Why each code is where it is. Three distinct kinds of "no":
  *
- *   0x06-0x09     INCOHERENT. Measured, and the records do not reproduce.
+ *   0x06-0x09     (HISTORICAL, superseded 2026-11-10 -- see the block above:
+ *                 measured in NORMAL they are coherent.) INCOHERENT. Measured,
+ *                 and the records do not reproduce.
  *                 EXP-15 (2026-08-19) widened this from 0x08 alone: fitting all
  *                 four codes gives 1,231 / 1,595 / 1,350 / 1,550 S/s — a 30%
  *                 band — where a real ladder step is 2-2.5x, and 40 Hz lands on
@@ -193,13 +255,14 @@ static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
  * a pin driven low as one thing, which cost this project weeks.
  */
 static const scope_tb_tier_t tier_by_code[SCOPE_TIMEBASE_CODE_COUNT] = {
-    SCOPE_TB_NONE, SCOPE_TB_NONE, SCOPE_TB_NONE, SCOPE_TB_NONE,
-    SCOPE_TB_NONE, SCOPE_TB_NONE,
-    SCOPE_TB_NONE,          /* 0x06 incoherent   */
-    SCOPE_TB_NONE,          /* 0x07 incoherent   */
-    SCOPE_TB_NONE,          /* 0x08 incoherent   */
-    SCOPE_TB_NONE,          /* 0x09 incoherent   */
-    SCOPE_TB_NONE,          /* 0x0A unmeasurable */
+    SCOPE_TB_MEASURED, SCOPE_TB_MEASURED, SCOPE_TB_MEASURED, SCOPE_TB_MEASURED,
+    SCOPE_TB_MEASURED,      /* 0x04 tone + CAN   */
+    SCOPE_TB_NONE,          /* 0x05 conflict     */
+    SCOPE_TB_MEASURED,      /* 0x06 CAN          */
+    SCOPE_TB_MEASURED,      /* 0x07 CAN          */
+    SCOPE_TB_MEASURED,      /* 0x08 CAN          */
+    SCOPE_TB_MEASURED,      /* 0x09 CAN          */
+    SCOPE_TB_MEASURED,      /* 0x0A CAN          */
     SCOPE_TB_NONE,          /* 0x0B unmeasurable */
     SCOPE_TB_NONE,          /* 0x0C unmeasurable */
     SCOPE_TB_PROVISIONAL,   /* 0x0D              */
@@ -274,7 +337,12 @@ void scope_timebase_label(uint8_t code, char *out, uint32_t n)
 
     /* Integer formatting throughout: the shell and the LCD both build against
      * nano.specs, which has no float printf. */
-    if (s < 1e-3f) {
+    if (s < 1e-6f) {
+        snprintf(out, n, "%s%uns", mark, (unsigned)(s * 1e9f + 0.5f));
+    } else if (s < 1e-5f) {
+        const unsigned tenths_us = (unsigned)(s * 1e7f + 0.5f);
+        snprintf(out, n, "%s%u.%uus", mark, tenths_us / 10u, tenths_us % 10u);
+    } else if (s < 1e-3f) {
         snprintf(out, n, "%s%uus", mark, (unsigned)(s * 1e6f + 0.5f));
     } else if (s < 1.0f) {
         const unsigned hundredths_ms = (unsigned)(s * 1e5f + 0.5f);
