@@ -404,6 +404,7 @@ static bool scope_incremental_available(const scope_state_t *s)
     return scope_acquisition_ready()
            && s->cursor.mode == CURSOR_OFF
            && !math_enabled && !persist_enabled
+           && !scope_ui_paused_zoom_active()   /* a re-sampled held record (C14) */
            && !scope_trig_menu.open;      /* the trigger panel: full path only, as cursors */
 #endif
 }

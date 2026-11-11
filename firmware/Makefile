@@ -94,6 +94,7 @@ C_SOURCES += src/ui/scope_roll_meas.c
 C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
+C_SOURCES += src/dsp/paused_view.c
 C_SOURCES += src/dsp/bode.c
 C_SOURCES += src/tasks/component_test.c
 C_SOURCES += src/dsp/mask_pf.c
@@ -795,6 +796,14 @@ $(BUILD_DIR)/test_sys_prefs: tests/test_sys_prefs.c src/util/sys_prefs.c src/uti
 
 .PHONY: test-sys-prefs
 test-sys-prefs: $(BUILD_DIR)/test_sys_prefs
+
+# Zoom while paused (parity C14): the ratio, vertical map and 16-tap
+# interpolator of src/dsp/paused_view.c, against the stock dumps and formulas.
+$(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c src/dsp/paused_view.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/paused_view.c -lm -o $@
+
+.PHONY: test-paused-view
+test-paused-view: $(BUILD_DIR)/test_paused_view
 	$<
 
 .PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-interleave-cal test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model

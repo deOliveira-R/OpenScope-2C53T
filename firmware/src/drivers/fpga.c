@@ -3092,6 +3092,13 @@ static volatile bool acq_pub_ordered = false;
  * `ordered`, so the rate a reader applies always matches the buffer. */
 static volatile bool acq_stage_il = false;
 static volatile bool acq_pub_il = false;
+/* The reg-0x01 code the published record was captured at (0xFF: none yet, the
+ * in-place fallback never commits). acq_rate_idx moves the moment a timebase
+ * key is pressed, even STOPPED, while the held record keeps its own rate:
+ * the zoom-while-paused view (C14, ui/scope_ui.c) and the measurement badges
+ * must read the record's rate, not the selector's. */
+static volatile uint8_t acq_pub_idx = 0xFF;
+static volatile uint8_t acq_rate_idx;       /* defined (initialised) below */
 /* What the published record is (trig_policy.h, parity C3): handed over,
  * free-run, or free-run with two non-simultaneous channels (#84). Staged and
  * published with the frame, like the two flags above, so the badge can never
@@ -3113,6 +3120,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_il = acq_stage_il;
+    acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
     acq_frame_gen++;                                   /* even: stable */
 }
@@ -3991,7 +3999,8 @@ uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
  * doubled when the record is the two-converter merge. 0 = no rate. */
 float fpga_record_sample_rate(void)
 {
-    const float fs = scope_timebase_sample_rate(acq_rate_idx);
+    const uint8_t idx = (acq_pub_idx == 0xFFu) ? acq_rate_idx : acq_pub_idx;
+    const float fs = scope_timebase_sample_rate(idx);
     return acq_pub_il ? 2.0f * fs : fs;
 }
 
@@ -4489,6 +4498,20 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         if (mode_now == TRIG_SINGLE && single_done) {
             vTaskDelay(pdMS_TO_TICKS(10));     /* hold the one record */
+            continue;
+        }
+        /* STOP holds the published record (stock: ms[0x2E] = 0 at 0x0800BE5E,
+         * and a stopped timebase/range key re-renders instead of re-arming,
+         * 0x0800B6AA; docs/re/parity2_static.md section 3). Before this the
+         * task never tested `running` (trigger-modes.md D7): AUTO kept
+         * committing free-run reads and NORMAL every handover, so a key press
+         * while STOPPED drew a NEW record, and after a timebase key the next
+         * commit relabelled acq_pub_idx -- the zoom-while-paused view (C14)
+         * collapsed to ratio 1000 within one poll. Read nothing, like the
+         * SINGLE hold above: reg 0x01 may still follow the keys, the held
+         * record and its rate stay. Autoset/baseline set `running` first. */
+        if (ss_acq != NULL && !ss_acq->running) {
+            vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
         /* EXP-53/54 (2026-09-20..22) — PC0 is a HANDOVER strobe, not a
