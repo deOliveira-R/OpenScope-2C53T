@@ -70,13 +70,20 @@ void settings_store_capture(device_config_t *cfg)
 
     const scope_state_t *ss = scope_state_get();
 
-    cfg->scope_ch1_enabled   = ss->ch1.enabled;
+    /* Channel enables are session state, not settings (parity C2): a CH2-off
+     * saved here would come back after a power cycle as mask 1 (the 250 MS/s
+     * single-channel mode, half the screen blank) with nothing on screen saying
+     * why. The long CH1/CH2 key (KA_CH_ENABLE_TOGGLE) is the way to turn a
+     * channel off and back on; a boot always starts with both on. The fields
+     * stay in the record for format compatibility and are always written true,
+     * so toggling a channel does not even dirty the settings image. */
+    cfg->scope_ch1_enabled   = true;
     cfg->scope_ch1_vdiv      = ss->ch1.vdiv_idx;
     cfg->scope_ch1_coupling  = (uint8_t)ss->ch1.coupling;
     cfg->scope_ch1_probe     = (uint8_t)ss->ch1.probe;
     cfg->scope_ch1_bw_limit  = ss->ch1.bw_limit ? 1u : 0u;
 
-    cfg->scope_ch2_enabled   = ss->ch2.enabled;
+    cfg->scope_ch2_enabled   = true;
     cfg->scope_ch2_vdiv      = ss->ch2.vdiv_idx;
     cfg->scope_ch2_coupling  = (uint8_t)ss->ch2.coupling;
     cfg->scope_ch2_probe     = (uint8_t)ss->ch2.probe;
@@ -104,13 +111,13 @@ void settings_store_apply(const device_config_t *cfg)
 
     scope_state_t *ss = scope_state_get();
 
-    ss->ch1.enabled  = cfg->scope_ch1_enabled;
+    ss->ch1.enabled  = true;   /* not restored: see settings_store_capture */
     ss->ch1.vdiv_idx = clamp_idx(cfg->scope_ch1_vdiv, VDIV_COUNT, 3);
     ss->ch1.coupling = (coupling_t)clamp_idx(cfg->scope_ch1_coupling, COUPLING_COUNT, COUPLING_DC);
     ss->ch1.probe    = (probe_t)clamp_idx(cfg->scope_ch1_probe, PROBE_COUNT, PROBE_1X);
     ss->ch1.bw_limit = (cfg->scope_ch1_bw_limit != 0u);
 
-    ss->ch2.enabled  = cfg->scope_ch2_enabled;
+    ss->ch2.enabled  = true;
     ss->ch2.vdiv_idx = clamp_idx(cfg->scope_ch2_vdiv, VDIV_COUNT, 5);
     ss->ch2.coupling = (coupling_t)clamp_idx(cfg->scope_ch2_coupling, COUPLING_COUNT, COUPLING_DC);
     ss->ch2.probe    = (probe_t)clamp_idx(cfg->scope_ch2_probe, PROBE_COUNT, PROBE_1X);
@@ -133,6 +140,7 @@ void settings_store_apply(const device_config_t *cfg)
     meter_layout  = clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);
 
     /* Deliberately NOT restored: ss->running (a scope always boots running),
+     * the channel enables (an old config with CH2 off boots with both on),
      * the cursor state, and channel position — session state, not settings.
      * persist_enabled is not restored either: turning persistence on allocates
      * the shared memory pool and evicts FFT, which is not something a boot

@@ -66,6 +66,16 @@ int  scope_vpos_get(uint8_t ch);
  * from the page. False if nothing was written yet. */
 bool scope_vpos_last(uint8_t ch, uint8_t *bank, uint8_t *range, uint16_t *code);
 
+/* CH1 offset-DAC endpoints (pos -100 and +100) for the bank and range in
+ * force, from the page. False when inactive, the generator owns DAC1, or no
+ * clean pair exists. For the 250 MS/s self-calibration sweep (C2). */
+bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper);
+
+/* Write a raw CH1 offset-DAC code (self-calibration sweep); undo with
+ * scope_vpos_apply_ch(1, range) or scope_vpos_apply(). Same guards as
+ * scope_vpos_apply_ch. */
+bool scope_vpos_ch1_raw(uint16_t code);
+
 /* Acquisition dry-spell recovery (fpga.c): re-apply the calibrated codes, or
  * the legacy DAC1 mid-scale arm when inactive. */
 void scope_vpos_recover(void);

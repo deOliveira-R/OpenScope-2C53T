@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "fpga_meter_plan.h"
+#include "../dsp/interleave_cal.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 
@@ -1112,6 +1113,11 @@ bool    fpga_interleave_get(void);
 bool    fpga_interleave_active(void);          /* enabled, mask 1, timebase <= 3 */
 void    fpga_interleave_corr_set(float gain, float offset);
 void    fpga_interleave_corr_get(float *gain, float *offset);
+/* Self-calibration collector (fpga interleave cal). begin() drops `skip`
+ * records then starts averaging the acq task's A/B centre windows; collect()
+ * waits for `records` of them (false on timeout) and stops. */
+void    fpga_ilcal_begin(uint8_t skip);
+bool    fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *out);
 bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge */
 uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while interleaving */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */

@@ -68,6 +68,7 @@ C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/drivers/scope_vpos.c
 C_SOURCES += src/dsp/trig_edge.c
 C_SOURCES += src/dsp/interleave.c
+C_SOURCES += src/dsp/interleave_cal.c
 C_SOURCES += src/drivers/meter_data.c
 C_SOURCES += src/drivers/meter_stock.c
 C_SOURCES += src/drivers/meter_auto.c
@@ -708,6 +709,14 @@ $(BUILD_DIR)/test_interleave: tests/test_interleave.c src/dsp/interleave.c src/d
 test-interleave: $(BUILD_DIR)/test_interleave
 	$<
 
+# 250 MS/s self-calibration fit and refusals (parity C2).
+$(BUILD_DIR)/test_interleave_cal: tests/test_interleave_cal.c src/dsp/interleave_cal.c src/dsp/interleave_cal.h src/dsp/interleave.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp \
+		$< src/dsp/interleave_cal.c src/dsp/interleave.c -lm -o $@
+
+test-interleave-cal: $(BUILD_DIR)/test_interleave_cal
+	$<
+
 # Waveform pass/fail masks (docs/specs/scope/mask-pass-fail.md): real records from
 # unit #1, aligned with the firmware's own trig_edge_anchor(); every acceptance
 # has a negative control that must come out the other way.
@@ -733,7 +742,7 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 test-siggen: $(BUILD_DIR)/test_siggen
 	$<
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-interleave-cal test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page

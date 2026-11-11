@@ -1170,7 +1170,7 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     ss->ch1.coupling = COUPLING_GND;
     ss->ch1.probe = PROBE_10X;
     ss->ch1.bw_limit = true;
-    ss->ch2.enabled = true;
+    ss->ch2.enabled = false;
     ss->ch2.vdiv_idx = 9;
     ss->ch2.coupling = COUPLING_AC;
     ss->ch2.probe = PROBE_10X;
@@ -1198,7 +1198,10 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     settings_store_apply(&cfg);
 
     ss = scope_state_get();
-    CHECK(ss->ch1.enabled == false && ss->ch2.enabled == true, "channel enables lost");
+    /* Channel enables are NOT persisted (parity C2): a CH2-off must not
+     * come back silently after a power cycle. Both are on after apply. */
+    CHECK(ss->ch1.enabled && ss->ch2.enabled, "channel enables must boot on, not be restored");
+    CHECK(cfg.scope_ch1_enabled && cfg.scope_ch2_enabled, "capture must not store a channel off");
     CHECK(ss->ch1.vdiv_idx == 1 && ss->ch2.vdiv_idx == 9, "vdiv lost");
     CHECK(ss->ch1.coupling == COUPLING_GND && ss->ch2.coupling == COUPLING_AC, "coupling lost");
     CHECK(ss->ch1.probe == PROBE_10X && ss->ch2.probe == PROBE_10X, "probe lost");
