@@ -5024,7 +5024,7 @@ static void cmd_reboot_bootloader(void)
  * safe — and it keeps guest RAM in budget: two per-command 1 KB buffers
  * overflowed the region by 368 bytes (2ff992c, caught once #31 unblocked the
  * guest link). One 2 KB buffer costs +1 KB over the old lone snapshot. */
-static uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE];
+static uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE] __attribute__((aligned(4)));
 
 static void cmd_spi3_read(const char *args)
 {
@@ -5176,7 +5176,13 @@ static const char *meter_layout_name(uint8_t layout)
     }
 }
 
-static meter_voltage_wave_snapshot_t usb_meter_wave_snap;
+/* The meter wave snapshot lives in the shell's bus scratch: both belong to
+ * the shell task, which runs one command at a time, and `meter wave` is the
+ * only user of the snapshot. Saves its ~930 B of static RAM (the warm-handoff
+ * bench build with the CAN analyser overflowed RAM by 48 B). */
+_Static_assert(sizeof(meter_voltage_wave_snapshot_t) <= sizeof(shell_bus_scratch),
+               "meter wave snapshot must fit the shell bus scratch");
+#define usb_meter_wave_snap (*(meter_voltage_wave_snapshot_t *)(void *)shell_bus_scratch)
 
 /* One usage line, so every rejection path names the same accepted set. */
 #define MODE_USAGE_LINE \
