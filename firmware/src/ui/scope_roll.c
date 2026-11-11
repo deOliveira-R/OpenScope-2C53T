@@ -297,3 +297,21 @@ scope_roll_trig_act_t scope_roll_trig_decide(uint8_t mode, bool hit)
         return SCOPE_ROLL_TRIG_NONE;
     return (mode == 2u) ? SCOPE_ROLL_TRIG_STOP : SCOPE_ROLL_TRIG_HIT;
 }
+
+scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
+                                           uint8_t ch, int col_shift,
+                                           uint8_t level, uint8_t edge)
+{
+    if (f == NULL || mode == 0u)          /* AUTO: stock skips the check (ms[0x17] == 1) */
+        return SCOPE_ROLL_TRIG_NONE;
+    const scope_roll_trig_act_t act =
+        scope_roll_trig_decide(mode, scope_roll_trig_hit(f, ch, col_shift, level, edge));
+    if (act == SCOPE_ROLL_TRIG_HIT) {
+        /* Stock's word store at 0x08040000: width ms[0xDB6] = 0. */
+        f->seq++;
+        f->head = 0u;
+        f->count = 0u;
+        f->seq++;
+    }
+    return act;
+}

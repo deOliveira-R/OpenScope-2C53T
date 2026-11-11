@@ -297,8 +297,41 @@ static void test_trig(void)
     CHECK("NULL / bad channel refused",
           !scope_roll_trig_hit(NULL, 0, 0, 128, 2) && !scope_roll_trig_hit(&f, 2, 0, 128, 2));
 
+    /* The step (hit -> decide -> FIFO), stock 0x0803EC2E..0x08040000. */
+    g_edge = 250;
+    fill(&f, 401, g_step);
+    CHECK("step AUTO: no action, FIFO untouched",
+          scope_roll_trig_step(&f, 0, 0, 0, 128, SCOPE_ROLL_EDGE_RISING) == SCOPE_ROLL_TRIG_NONE &&
+          f.count == SCOPE_ROLL_POINTS);
+    CHECK("step SINGLE: stop, the full FIFO is the frozen frame",
+          scope_roll_trig_step(&f, 2, 0, 0, 128, SCOPE_ROLL_EDGE_RISING) == SCOPE_ROLL_TRIG_STOP &&
+          f.count == SCOPE_ROLL_POINTS && f.total == 401);
+    CHECK("step NORMAL: hit empties the window (ms[0xDB6] = 0), total keeps counting",
+          scope_roll_trig_step(&f, 1, 0, 0, 128, SCOPE_ROLL_EDGE_RISING) == SCOPE_ROLL_TRIG_HIT &&
+          f.count == 0 && f.head == 0 && f.total == 401 && (f.seq & 1u) == 0);
+    {
+        /* Refill with a crossing at the checked pair every point (alternating
+         * 60/200 makes every neighbour pair a crossing): disarmed until full. */
+        bool early = false;
+        for (unsigned i = 0; i < 300u; i++) {
+            scope_roll_fifo_push(&f, (i & 1u) ? 200 : 60, 128);
+            if (scope_roll_trig_step(&f, 1, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH) != SCOPE_ROLL_TRIG_NONE)
+                early = true;
+        }
+        CHECK("NORMAL after a hit: no check for the next 300 points", !early && f.count == 300);
+        scope_roll_fifo_push(&f, 200, 128);
+        CHECK("... re-armed on the 301st (window full again)",
+              scope_roll_trig_step(&f, 1, 0, 0, 128, SCOPE_ROLL_EDGE_BOTH) == SCOPE_ROLL_TRIG_HIT &&
+              f.count == 0);
+        scope_roll_fifo_push(&f, 7, 9);
+        uint8_t v = 0;
+        CHECK("... and the restarted window reads newest-first from slot 0",
+              f.count == 1 && scope_roll_fifo_get(&f, 0, 0, &v) && v == 7);
+    }
+    CHECK("step NULL refused", scope_roll_trig_step(NULL, 1, 0, 0, 128, 2) == SCOPE_ROLL_TRIG_NONE);
+
     CHECK("mode AUTO never acts", scope_roll_trig_decide(0, true) == SCOPE_ROLL_TRIG_NONE);
-    CHECK("NORMAL hit counts, rolling continues", scope_roll_trig_decide(1, true) == SCOPE_ROLL_TRIG_HIT);
+    CHECK("NORMAL hit: window restarts, rolling continues", scope_roll_trig_decide(1, true) == SCOPE_ROLL_TRIG_HIT);
     CHECK("SINGLE hit stops", scope_roll_trig_decide(2, true) == SCOPE_ROLL_TRIG_STOP);
     CHECK("no hit does nothing in any mode",
           scope_roll_trig_decide(1, false) == SCOPE_ROLL_TRIG_NONE &&

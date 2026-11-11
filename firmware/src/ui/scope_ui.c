@@ -2841,15 +2841,14 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
     const uint16_t na = th->text_secondary;
     char buf[16];
     scope_params_t p1, p2;
-    scope_measure_t r1, r2;
     const uint8_t z1 = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
     const uint8_t z2 = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
     const bool have1 = ss->ch1.enabled &&
         scope_roll_measure(&roll_snap, 0u, nvis, ss->roll_step,
-                           scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, &r1);
+                           scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, NULL);
     const bool have2 = ss->ch2.enabled &&
         scope_roll_measure(&roll_snap, 1u, nvis, ss->roll_step,
-                           scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, &r2);
+                           scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, NULL);
 
     const uint16_t y1 = BADGE_ROW_Y, y2 = BADGE_ROW2_Y;
     uint8_t sel[5];

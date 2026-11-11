@@ -147,19 +147,34 @@ enum { SCOPE_ROLL_EDGE_RISING = 0, SCOPE_ROLL_EDGE_FALLING = 1, SCOPE_ROLL_EDGE_
 bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,
                          uint8_t level, uint8_t edge);
 
-/* What a hit does, by the mode (the numbering of trig_policy.h: 0 AUTO,
- * 1 NORMAL, 2 SINGLE). AUTO never checks. NORMAL keeps rolling (stock only
- * re-arms its point counter ms[0xDB4] = 301 at 0x0803FFFC; what that counter
- * gates on the display is not decoded, so no visible effect is claimed).
+/* What a hit does, by the mode (OUR numbering, scope_state.h: 0 AUTO,
+ * 1 NORMAL, 2 SINGLE; stock's ms[0x17] is 0 NORMAL / 1 AUTO / 2 SINGLE).
+ * AUTO never checks.
+ * NORMAL restarts the window: 0x0803FFFC..0x08040000 is a 32-bit
+ * `str.w #301, [ms + 0xDB4]`, i.e. ms[0xDB4] (start column) = 301 AND
+ * ms[0xDB6] (width, the 301 the trigger gate tests) = 0. Each point then
+ * decrements the start and grows the width (0x0803E9F2..0x0803EA14), so the
+ * trace refills from the right and the trigger re-arms only once 301 new
+ * points are in. Our equivalent: empty the FIFO (scope_roll_trig_step).
  * SINGLE stops: RUN = 0, TMR3 off (0x0803ECAC..0x0803ECC4), and the full FIFO
  * is the frozen frame, trigger in the middle. */
 typedef enum {
     SCOPE_ROLL_TRIG_NONE = 0,   /* no hit, or AUTO */
-    SCOPE_ROLL_TRIG_HIT,        /* hit in NORMAL: counted, rolling continues */
+    SCOPE_ROLL_TRIG_HIT,        /* hit in NORMAL: window restarts, rolling continues */
     SCOPE_ROLL_TRIG_STOP        /* hit in SINGLE: stop and hold */
 } scope_roll_trig_act_t;
 
 scope_roll_trig_act_t scope_roll_trig_decide(uint8_t mode, bool hit);
+
+/* One trigger check after a push, as stock runs it after every op03 point:
+ * hit -> decide -> apply to the FIFO. A NORMAL hit empties the FIFO (head and
+ * count 0; `total` keeps counting the points ever pushed), which is stock's
+ * width = 0 and disarms the check for the next 300 points. SINGLE leaves the
+ * FIFO as the frozen frame; stopping RUN is the caller's. The caller owns
+ * the FIFO (the writer task). */
+scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
+                                           uint8_t ch, int col_shift,
+                                           uint8_t level, uint8_t edge);
 
 /* ── Timebase stepping ──────────────────────────────────────────────── */
 

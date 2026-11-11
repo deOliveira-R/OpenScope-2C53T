@@ -4340,7 +4340,9 @@ static void fpga_roll_service(void)
      * FIFO is full and the mode is not AUTO, one crossing check in the middle
      * of it after every point. SINGLE stops (RUN = 0) and the full FIFO is the
      * frozen frame, the crossing at its centre; the OK key re-arms through the
-     * Y-T path's own `!running` test. NORMAL keeps rolling and only counts.
+     * Y-T path's own `!running` test. NORMAL empties the FIFO (stock's 32-bit
+     * store at 0x08040000 zeroes the width ms[0xDB6]): the trace refills from
+     * the right and the check re-arms 301 points later.
      * The level is the register in force (acq_trig_code, raw) lifted into the
      * record domain like every other comparison against a record; the source
      * and edge are the trigger settings. The column shift is 0: our trigger
@@ -4353,12 +4355,12 @@ static void fpga_roll_service(void)
             int lv = (int)acq_trig_code + (int)FPGA_ADC_OFFSET;
             if (lv < 0)   lv = 0;
             if (lv > 255) lv = 255;
-            const bool hit = scope_roll_trig_hit(
-                &acq_roll_fifo, (sw->trigger.source == TRIG_SRC_CH2) ? 1u : 0u, 0,
+            const scope_roll_trig_act_t act = scope_roll_trig_step(
+                &acq_roll_fifo, (uint8_t)sw->trigger.mode,
+                (sw->trigger.source == TRIG_SRC_CH2) ? 1u : 0u, 0,
                 (uint8_t)lv,
                 (sw->trigger.edge == TRIG_FALLING) ? SCOPE_ROLL_EDGE_FALLING
                                                    : SCOPE_ROLL_EDGE_RISING);
-            const scope_roll_trig_act_t act = scope_roll_trig_decide((uint8_t)sw->trigger.mode, hit);
             if (act != SCOPE_ROLL_TRIG_NONE) {
                 acq_roll_stats.trig_hits++;
                 if (act == SCOPE_ROLL_TRIG_STOP) {
