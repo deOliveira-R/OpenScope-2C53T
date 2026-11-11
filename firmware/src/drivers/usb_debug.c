@@ -2633,11 +2633,12 @@ static void cmd_fpga_interleave(const char *args)
     fpga_interleave_corr_get(&g, &o);
     const int32_t g4 = (int32_t)(g * 10000.0f + 0.5f);
     const int32_t o2 = (int32_t)(o * 100.0f + (o < 0 ? -0.5f : 0.5f));
-    usb_debug_printf("interleave %s, %s; last record %s; B corr gain %ld/10000 offset %ld/100\r\n",
+    usb_debug_printf("interleave %s, %s; last record %s; B corr gain %ld/10000 offset %ld/100; "
+                     "untriggered reads held %lu (only triggered records are merged; AUTO holds like NORMAL)\r\n",
                      fpga_interleave_get() ? "ON" : "OFF",
                      fpga_interleave_active() ? "active (mask 1, tb <= 3)" : "not active",
                      fpga_acq_record_interleaved() ? "merged" : "single converter",
-                     (long)g4, (long)o2);
+                     (long)g4, (long)o2, (unsigned long)fpga_interleave_roll_holds());
 }
 
 /* `fpga acqbr [0-7|off]` — SPI3 clock divider the acq task sets before each pair (EXP-46). */
