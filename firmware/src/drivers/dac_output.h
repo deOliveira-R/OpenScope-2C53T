@@ -1,14 +1,18 @@
 /*
- * OpenScope 2C53T - DAC Output Driver
+ * OpenScope 2C53T - signal generator output driver.
  *
- * Drives the AT32F403A's 12-bit DAC1 (PA4) for signal generator output.
- * Uses TMR6 as trigger source and DMA2 Channel 3 for zero-CPU-overhead
- * continuous waveform output from a circular buffer.
+ * Stock V1.2.0's hardware path (init 0x0802C8E8..0x0802CAF6, apply
+ * 0x08029D40):
  *
- * Architecture:
- *   siggen_fill_buffer() → dac_buffer[256] → DMA2 CH3 → DAC1 → PA4
- *                                              ↑
- *                                         TMR6 TRGO trigger
+ *   dac_buffer[100] -> DMA2 ch4 (flex request 6 = DAC2, circular)
+ *                   -> DAC channel 2 (D2DTH12R, output buffer ON) -> PA5
+ *                         ^
+ *                    TMR7 TRGO (update), 100 updates per output cycle
+ *
+ * DAC channel 1 (PA4) is the scope's CH1 offset / trigger reference DAC
+ * (scope_trigger.c). This driver only ever writes the upper half of
+ * DAC_CTRL (channel 2) and never touches DMA2 ch3, so the generator can
+ * run in every mode, as it does in stock.
  */
 
 #ifndef DAC_OUTPUT_H
@@ -17,51 +21,40 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* Waveform buffer size — one complete cycle.
- * Output frequency = sample_rate / DAC_BUFFER_SIZE */
-#define DAC_BUFFER_SIZE  256
+#include "siggen_wave.h"
+
+#define DAC_BUFFER_SIZE  SIGGEN_CYCLE_SAMPLES
 
 /*
- * Initialize DAC1 hardware:
- *   - PA4 as analog output
- *   - DAC1 with TMR6 trigger
- *   - DMA2 Channel 3 in circular mode
- *   - TMR6 configured but not started
- *
- * Call once during system init, before FreeRTOS scheduler.
+ * PA5 analog, DAC channel 2 armed on TMR7 TRGO with DMA, DMA2 ch4
+ * running circular over the buffer, TMR7 programmed but stopped: the
+ * output sits at 0 V until dac_output_apply() starts the timer. Stock
+ * does the same at init (EN2 set, CEN left clear). Call once at boot.
  */
 void dac_output_init(void);
 
 /*
- * Start continuous DAC output from the waveform buffer.
- * sample_rate: DAC conversion rate in Hz (e.g., 256000 for 1kHz sine)
- *
- * The buffer must be filled with 12-bit unsigned values (0-4095)
- * before calling this. DMA runs in circular mode — the buffer is
- * output repeatedly until dac_output_stop() is called.
+ * Start or retune: program TMR7 DIV/PR from *t, fire an update event and
+ * start the counter (stock 0x08029D9E..0x08029DD2). The buffer must hold
+ * the cycle already.
  */
-void dac_output_start(uint32_t sample_rate);
+void dac_output_apply(const siggen_timing_t *t);
 
 /*
- * Stop DAC output. Disables TMR6 and sets DAC output to mid-scale.
+ * Stock's off state (0x08029DD6..0x08029E0A): stop TMR7, then drive code 0
+ * through a software trigger and re-select TMR7. DAC2 stays enabled, so
+ * the GEN lead is held at 0 V rather than left floating, and the DMA
+ * stays armed for the next start.
  */
 void dac_output_stop(void);
 
-/*
- * Update the sample rate without stopping output.
- * Use when frequency changes but waveform shape stays the same.
- */
-void dac_output_set_rate(uint32_t sample_rate);
-
-/*
- * Get pointer to the waveform buffer for filling.
- * Buffer holds DAC_BUFFER_SIZE uint16_t values (12-bit, 0-4095).
- */
+/* The 100-sample DMA source buffer (12-bit codes, right-aligned). */
 uint16_t *dac_output_get_buffer(void);
 
-/*
- * Check if DAC output is currently active.
- */
 bool dac_output_is_running(void);
+
+/* TMR7 input clock: APB1 x2 when APB1 is divided (240 MHz on this board,
+ * measured live: stock's DIV 1199 / PR 1 gave 998 Hz for 1 kHz). */
+uint32_t dac_output_timer_clock_hz(void);
 
 #endif /* DAC_OUTPUT_H */

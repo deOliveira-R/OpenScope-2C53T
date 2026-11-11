@@ -625,10 +625,11 @@ def verify_meter_transition_production_contract() -> dict[str, Any]:
         "fpga_send_meter_mode_sequence(submode);",
         "fpga_meter_discard_next_frames(plan.discard_frames);",
     ]
+    # The signal generator no longer stops on a meter transition: it is on
+    # DAC2/PA5, clear of the scope's DAC1, and stock keeps it running in
+    # every mode (parity G1/G5), so dac_output_stop() is no longer required.
     required_set_mode = [
         "if (!fpga.initialized) return;",
-        "dac_output_is_running()",
-        "dac_output_stop();",
         "fpga_apply_meter_transition(submode, false);",
     ]
     required_reinit = [

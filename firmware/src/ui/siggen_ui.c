@@ -1,5 +1,9 @@
 /*
  * OpenScope 2C53T - Signal Generator UI
+ *
+ * Shows stock's parameters (waveform, frequency, amplitude, duty) and the
+ * 100-sample cycle the DAC is actually fed, so the preview is the output,
+ * not a separate rendering of it.
  */
 
 #include "ui.h"
@@ -8,21 +12,8 @@
 #include "theme.h"
 #include "signal_gen.h"
 
-/* Helper: format a float as "X.X" into buf, returns length written */
-static int fmt_float1(char *buf, float val)
-{
-    int i = 0;
-    int whole = (int)val;
-    int frac = (int)((val - (float)whole) * 10.0f + 0.5f);
-    if (frac >= 10) { whole++; frac = 0; }
-    if (whole >= 10) buf[i++] = (char)('0' + whole / 10);
-    buf[i++] = (char)('0' + whole % 10);
-    buf[i++] = '.';
-    buf[i++] = (char)('0' + frac);
-    return i;
-}
+#include <stdio.h>
 
-/* Draw the signal generator screen */
 void draw_siggen_screen(uint32_t frame)
 {
     (void)frame;
@@ -30,107 +21,64 @@ void draw_siggen_screen(uint32_t frame)
     lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
 
     const siggen_config_t *cfg = siggen_get_config();
+    const uint16_t *cycle = siggen_get_cycle();
 
-    /* Waveform preview: generate samples and plot */
-    static int16_t preview_buf[280];
-    float preview_rate = cfg->frequency_hz * 280.0f / 2.5f;
-    if (preview_rate < 1.0f) preview_rate = 1.0f;
-
-    siggen_fill_buffer(preview_buf, 280, preview_rate);
-
-    uint16_t y_center = 75;
-    for (uint16_t x = 0; x < 280; x++) {
-        int16_t y_off = (int16_t)(((int32_t)preview_buf[x] * 30) / 32767);
-        uint16_t py = (uint16_t)(y_center - y_off);
-        if (py >= 18 && py < LCD_HEIGHT - 16) {
-            lcd_set_pixel(x + 20, py, th->ch1);
-            if (py + 1 < LCD_HEIGHT - 16)
-                lcd_set_pixel(x + 20, py + 1, th->ch1);
-        }
+    /* Preview: two cycles across 280 px, DAC codes 0..4095 over 60 px
+     * (rows 45..105), so amplitude and the Half/Full pedestal read true. */
+    const uint16_t x0 = 20, w = 280, y_bot = 105, h = 60;
+    for (uint16_t x = 0; x < w; x++) {
+        uint32_t i = ((uint32_t)x * 2u * SIGGEN_CYCLE_SAMPLES / w) % SIGGEN_CYCLE_SAMPLES;
+        uint16_t py = (uint16_t)(y_bot - (uint32_t)cycle[i] * h / 4095u);
+        lcd_set_pixel(x0 + x, py, th->ch1);
+        lcd_set_pixel(x0 + x, py + 1, th->ch1);
     }
 
-    /* Parameter display below waveform */
     uint16_t param_y = 120;
     uint16_t label_x = 20;
     uint16_t value_x = 120;
-
-    /* Waveform name */
-    static const char *wave_names[] = {
-        "Sine", "Square", "Triangle", "Sawtooth",
-        "FullRect", "HalfRect", "Pulse", "Noise"
-    };
-    const char *wname = (cfg->waveform < SIGGEN_WAVEFORM_COUNT)
-                        ? wave_names[cfg->waveform] : "?";
+    char buf[32];
 
     font_draw_string(label_x, param_y, "Waveform",
                      th->text_secondary, th->background, &font_small);
-    font_draw_string(value_x, param_y, wname,
+    font_draw_string(value_x, param_y, siggen_wave_name(cfg->waveform),
                      th->text_primary, th->background, &font_medium);
 
-    /* Frequency */
-    char freq_str[16];
-    int i = 0;
-    float f = cfg->frequency_hz;
-    if (f >= 1000.0f) {
-        int fk = (int)(f / 1000.0f);
-        int fd = ((int)f % 1000) / 100;
-        if (fk >= 10) freq_str[i++] = (char)('0' + fk / 10);
-        freq_str[i++] = (char)('0' + fk % 10);
-        freq_str[i++] = '.';
-        freq_str[i++] = (char)('0' + fd);
-        freq_str[i++] = ' ';
-        freq_str[i++] = 'k'; freq_str[i++] = 'H'; freq_str[i++] = 'z';
-    } else {
-        int fi = (int)f;
-        if (fi >= 100) freq_str[i++] = (char)('0' + fi / 100);
-        if (fi >= 10) freq_str[i++] = (char)('0' + (fi / 10) % 10);
-        freq_str[i++] = (char)('0' + fi % 10);
-        freq_str[i++] = ' ';
-        freq_str[i++] = 'H'; freq_str[i++] = 'z';
-    }
-    freq_str[i] = '\0';
-
+    /* Frequency: the requested value; when running, the value TMR7
+     * really produces if it differs (quantised by the 240 MHz clock). */
+    if (cfg->frequency_hz == 0)
+        snprintf(buf, sizeof buf, "0 Hz (off)");
+    else
+        snprintf(buf, sizeof buf, "%lu Hz", (unsigned long)cfg->frequency_hz);
     font_draw_string(label_x, param_y + 22, "Frequency",
                      th->text_secondary, th->background, &font_small);
-    font_draw_string(value_x, param_y + 20, freq_str,
+    font_draw_string(value_x, param_y + 20, buf,
                      th->text_primary, th->background, &font_medium);
+    siggen_timing_t t;
+    if (siggen_get_timing(&t) && t.actual_mhz != cfg->frequency_hz * 1000u) {
+        snprintf(buf, sizeof buf, "= %lu.%03lu", (unsigned long)(t.actual_mhz / 1000u),
+                 (unsigned long)(t.actual_mhz % 1000u));
+        font_draw_string(value_x + 110, param_y + 22, buf,
+                         th->text_secondary, th->background, &font_small);
+    }
 
-    /* Amplitude -- now dynamic */
-    char amp_str[16];
-    i = fmt_float1(amp_str, cfg->amplitude_vpp);
-    amp_str[i++] = ' '; amp_str[i++] = 'V';
-    amp_str[i++] = 'p'; amp_str[i++] = 'p';
-    amp_str[i] = '\0';
-
+    /* Amplitude in stock's 0.1 V unit: peak-to-peak for the periodic
+     * types, the level for DC; Half/Full swing half of it on a pedestal. */
+    snprintf(buf, sizeof buf, "%u.%u V", cfg->amplitude_dv / 10u, cfg->amplitude_dv % 10u);
     font_draw_string(label_x, param_y + 44, "Amplitude",
                      th->text_secondary, th->background, &font_small);
-    font_draw_string(value_x, param_y + 42, amp_str,
+    font_draw_string(value_x, param_y + 42, buf,
                      th->text_primary, th->background, &font_medium);
 
-    /* Duty cycle -- show for square and pulse waveforms */
-    if (cfg->waveform == SIGGEN_SQUARE || cfg->waveform == SIGGEN_PULSE) {
-        char duty_str[8];
-        int d = cfg->duty_cycle_pct;
-        i = 0;
-        if (d >= 10) duty_str[i++] = (char)('0' + d / 10);
-        duty_str[i++] = (char)('0' + d % 10);
-        duty_str[i++] = '%';
-        duty_str[i] = '\0';
-
-        font_draw_string(label_x, param_y + 66, "Duty",
+    if (siggen_wave_uses_duty(cfg->waveform)) {
+        snprintf(buf, sizeof buf, "%u%%", cfg->duty_pct);
+        font_draw_string(label_x, param_y + 66,
+                         cfg->waveform == SIGGEN_SAWTOOTH ? "Symmetry" : "Duty",
                          th->text_secondary, th->background, &font_small);
-        font_draw_string(value_x, param_y + 64, duty_str,
-                         th->text_primary, th->background, &font_medium);
-    } else {
-        /* Offset for non-duty-cycle waveforms */
-        font_draw_string(label_x, param_y + 66, "Offset",
-                         th->text_secondary, th->background, &font_small);
-        font_draw_string(value_x, param_y + 64, "0.0 V",
+        font_draw_string(value_x, param_y + 64, buf,
                          th->text_primary, th->background, &font_medium);
     }
 
-    /* Output state - prominent */
-    if (cfg->output_enabled) {
+    if (cfg->output_enabled && cfg->frequency_hz != 0) {
         font_draw_string(value_x, param_y + 88, "OUTPUT ON",
                          th->success, th->background, &font_large);
     } else {
@@ -138,7 +86,6 @@ void draw_siggen_screen(uint32_t frame)
                          th->warning, th->background, &font_large);
     }
 
-    /* Hint bar at bottom */
-    font_draw_string(label_x, param_y + 112, "UP/DN:Amp L/R:Duty SEL:Wave OK:On/Off",
+    font_draw_string(label_x, param_y + 112, "PRM:Freq UP/DN:Amp L/R:Duty SEL:Wave OK:On",
                      th->text_secondary, th->background, &font_small);
 }

@@ -377,11 +377,10 @@ static uint32_t siggen_ui_epoch(void)
     if (c == NULL) return h;
 
     h = redraw_epoch_mix(h, (uint32_t)c->waveform
-                            | ((uint32_t)c->duty_cycle_pct << 8)
-                            | ((uint32_t)c->output_enabled << 16));
-    h = redraw_epoch_mix_f(h, c->frequency_hz);
-    h = redraw_epoch_mix_f(h, c->amplitude_vpp);
-    h = redraw_epoch_mix_f(h, c->offset_v);
+                            | ((uint32_t)c->duty_pct << 8)
+                            | ((uint32_t)c->output_enabled << 16)
+                            | ((uint32_t)c->amplitude_dv << 24));
+    h = redraw_epoch_mix(h, c->frequency_hz);
     return h;
 }
 
@@ -1067,14 +1066,11 @@ int main(void)
         extern void dac_output_init(void);
         dac_output_init();
 
-        siggen_config_t sg_cfg;
-        sg_cfg.waveform       = SIGGEN_SINE;
-        sg_cfg.frequency_hz   = 1000.0f;
-        sg_cfg.amplitude_vpp  = 3.3f;
-        sg_cfg.offset_v       = 0.0f;
-        sg_cfg.duty_cycle_pct = 50;
-        sg_cfg.output_enabled = false;
-        siggen_init(&sg_cfg);
+        /* Stock factory values (sine, 1 kHz, 3.0 V, 50 %) but output OFF:
+         * stock boots with it ON (0x080294A0) and persists the enable;
+         * we persist nothing yet, so ON here would force the GEN lead
+         * live on every boot with no way to keep it off. */
+        siggen_init(NULL);
     }
 #endif
 

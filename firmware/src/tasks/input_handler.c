@@ -622,15 +622,18 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             }
             send_cmd(dq, cmd);
         } else if (current_mode == MODE_SIGNAL_GEN) {
-            /* Cycle frequency presets: 1 -> 10 -> 100 -> 1k -> 10k -> 25k -> 1 Hz */
+            /* Cycle frequency presets up to stock's 50 kHz ceiling:
+             * 1 -> 10 -> 100 -> 1k -> 10k -> 50k -> 1 Hz. Arbitrary values
+             * go through the shell's `siggen freq` until the digit-cursor
+             * editor (parity G4) lands. */
             const siggen_config_t *sc = siggen_get_config();
-            float f = sc->frequency_hz;
-            if (f < 10.0f) f = 10.0f;
-            else if (f < 100.0f) f = 100.0f;
-            else if (f < 1000.0f) f = 1000.0f;
-            else if (f < 10000.0f) f = 10000.0f;
-            else if (f < 25000.0f) f = 25000.0f;
-            else f = 1.0f;
+            uint32_t f = sc->frequency_hz;
+            if (f < 10u) f = 10u;
+            else if (f < 100u) f = 100u;
+            else if (f < 1000u) f = 1000u;
+            else if (f < 10000u) f = 10000u;
+            else if (f < SIGGEN_FREQ_MAX_HZ) f = SIGGEN_FREQ_MAX_HZ;
+            else f = 1u;
             siggen_set_frequency(f);
             /* DCMD_DRAW_SIGGEN, not the default DCMD_REDRAW_ALL: the
              * generator panel owns rows 16..223 and repaints them itself,

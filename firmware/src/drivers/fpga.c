@@ -5902,9 +5902,8 @@ void fpga_init(void)
      * comparator loses its reference, and every capture reads flat zeros
      * until it is restored. Arm mid-scale. Touches only MCU-internal state
      * (CRM clocks, PA4 analog, DAC registers) — cannot disturb the FPGA.
-     * Ordering: main() ran dac_output_init() (siggen) before fpga_init(), so
-     * this write is not clobbered at boot; do NOT start siggen output in
-     * this build, it shares DAC1 and would drop the reference. */
+     * The signal generator is on DAC channel 2 (PA5) and its driver only
+     * writes the upper half of DAC_CTRL, so it cannot disturb this. */
     scope_trigger_dac_raw(2048);
 
 #if FPGA_CH2_TRIGGER
@@ -6667,12 +6666,10 @@ void fpga_enter_scope_mode(void)
 #endif
     if (!fpga.initialized) return;
 
-    /* Stop DAC output if signal gen was running */
-    {
-        extern void dac_output_stop(void);
-        extern bool dac_output_is_running(void);
-        if (dac_output_is_running()) dac_output_stop();
-    }
+    /* The signal generator keeps running: it is on DAC2/PA5, clear of the
+     * scope's DAC1, and stock never stops it on a mode change (its apply
+     * 0x08029D40 has no mode-switch caller; the manual has you leave it
+     * running and look at it in scope mode). */
 
     fpga_stock_diag_seed_base2();
     fpga_scope_reinit();
@@ -6685,42 +6682,26 @@ void fpga_enter_scope_mode(void)
 void fpga_enter_siggen_mode(void)
 {
 #if FPGA_WARM_HANDOFF_TEST
-    /* Warm-handoff: siggen shares DAC1 with the trigger reference this build
-     * depends on; entering it would drop the reference and kill capture. */
+    /* Warm-handoff: no USART frames and no relay moves outside the scope
+     * posture this build exists to preserve. The generator itself (DAC2)
+     * needs nothing from the FPGA or the meter SoC. */
     return;
 #endif
     if (!fpga.initialized) return;
 
-    /* Send signal generator init command sequence.
-     * Stock firmware mode init dispatcher (FUN_0800b908, case 2) sends:
-     *   0x02, 0x03, 0x04, 0x05, 0x06, 0x08
-     * Then falls through to case 9 tail: 0x14, 0x09, [0x07/0x0A]
-     *
-     * 0x02-0x06 = siggen setup (freq, wave, amplitude, offset, duty)
-     * 0x08 = shared meter configure/setup byte; not a recovered DMM range
-     *        selector or low-DCV correction source
-     * 0x14 = meter variant setup
-     * 0x09 = meter start measurement
-     * 0x07/0x0A = stock PC7 command tail, not a DMM range state */
-    /* Unobeyed: this block has always gone out 00 00 and the SoC's reaction
-     * to AA 55 frames with a 0x00 high byte has never been measured. */
-    fpga_send_cmd_unobeyed(0x00, 0x02);  /* Siggen: frequency */
-    fpga_send_cmd_unobeyed(0x00, 0x03);  /* Siggen: waveform */
-    fpga_send_cmd_unobeyed(0x00, 0x04);  /* Siggen: amplitude */
-    fpga_send_cmd_unobeyed(0x00, 0x05);  /* Siggen: offset */
-    fpga_send_cmd_unobeyed(0x00, 0x06);  /* Siggen: duty cycle */
-    fpga_send_cmd_unobeyed(0x00, 0x08);  /* Shared meter configure/setup byte */
-
-    /* Case 9 tail: meter variant + stock PC7 command tail */
-    fpga_send_cmd_unobeyed(0x00, 0x14);
-    fpga_send_cmd_unobeyed(0x00, FPGA_CMD_METER_START);
-
-    /* Stock PC7 command tail: high -> 0x07, low -> 0x0A. */
-    if (GPIOC->idt & (1U << 7)) {
-        fpga_send_cmd_unobeyed(0x00, 0x07);
-    } else {
-        fpga_send_cmd_unobeyed(0x00, FPGA_CMD_METER_NOPROBE);
-    }
+    /* No mode-init selector bytes here (parity G6). This used to send
+     * 0x02, 0x03, 0x04, 0x05, 0x06, 0x08, 0x14, 0x09, 0x07/0x0A labelled
+     * "siggen: frequency/waveform/amplitude/offset/duty" from "case 2 of
+     * FUN_0800b908". In V1.2.0 that dispatcher is 0x08012908 (the
+     * Ghidra name is -0x7000), its tbh switches on ms[0xF68], and F68 = 2
+     * is the SCOPE (RESULTS 2026-11-11: stock boots at F68 = 0 = home,
+     * scope = 2), so case 2 (0x08012A6C: 02 03 04 05 06 08 ...) is the
+     * scope arm. Siggen entry 0x0800E5E4 sets F68 = 3 and tail-calls the
+     * dispatcher, whose case 3 (0x08012ACE) queues 00 08 09 07/0A 16 17
+     * 18 19: internal selector bytes (07/0A and 16..19 are the ones our
+     * `fpga scope trig` shell command treats as trigger ops), none of them
+     * a generator op, so they are not replayed either. The generator itself is pure MCU (DAC2,
+     * TMR7, DMA2) in stock: 0x08029D40 and 0x08029E14 touch no USART. */
 
     /* Switch analog MUX for signal gen output.
      * In meter mode: PC12=HIGH routes probe→meter IC, PE4/5/6 set range.
@@ -6939,12 +6920,10 @@ void fpga_set_meter_mode(uint8_t submode)
 #endif
     if (!fpga.initialized) return;
 
-    /* Stop DAC output if signal gen was running */
-    {
-        extern void dac_output_stop(void);
-        extern bool dac_output_is_running(void);
-        if (dac_output_is_running()) dac_output_stop();
-    }
+    /* The signal generator keeps running: it is on DAC2/PA5, clear of the
+     * scope's DAC1, and stock never stops it on a mode change (its apply
+     * 0x08029D40 has no mode-switch caller; the manual has you leave it
+     * running and look at it in scope mode). */
 
     fpga_apply_meter_transition(submode, false);
 }

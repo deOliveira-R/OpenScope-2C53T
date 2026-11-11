@@ -1,351 +1,165 @@
 /*
- * DDS (Direct Digital Synthesis) Signal Generator Engine
+ * OpenScope 2C53T - signal generator state and apply (see signal_gen.h).
  *
- * Uses a 32-bit phase accumulator for precise frequency generation
- * from 0.1 Hz to 25 kHz. 8 waveform types with duty cycle control.
- *
- * When output is enabled, generates samples into the DAC hardware
- * buffer (12-bit unsigned, 0-4095) and drives PA4 via DMA.
+ * Replaces the earlier 8-waveform DDS (256 samples, DAC1/PA4, bipolar
+ * around 1.65 V) with stock V1.2.0's model: 13 waveforms, exactly 100
+ * samples per cycle at every frequency, unipolar codes 20 + ..., DAC2/PA5.
  */
 
 #include "signal_gen.h"
 #ifndef EMULATOR_BUILD
 #include "dac_output.h"
 #endif
-#include <math.h>
 
-/* ═══════════════════════════════════════════════════════════════════
- * 256-entry sine lookup table: sin(2*PI*i/256) * 32767
- * Stored in flash (.rodata) to save SRAM
- * ═══════════════════════════════════════════════════════════════════ */
-static const int16_t sine_lut[256] = {
-         0,    804,   1608,   2410,   3212,   4011,   4808,   5602,
-      6393,   7179,   7962,   8739,   9512,  10278,  11039,  11793,
-     12539,  13279,  14010,  14732,  15446,  16151,  16846,  17530,
-     18204,  18868,  19519,  20159,  20787,  21403,  22005,  22594,
-     23170,  23731,  24279,  24811,  25329,  25832,  26319,  26790,
-     27245,  27683,  28105,  28510,  28898,  29268,  29621,  29956,
-     30273,  30571,  30852,  31113,  31356,  31580,  31785,  31971,
-     32137,  32285,  32412,  32521,  32609,  32678,  32728,  32757,
-     32767,  32757,  32728,  32678,  32609,  32521,  32412,  32285,
-     32137,  31971,  31785,  31580,  31356,  31113,  30852,  30571,
-     30273,  29956,  29621,  29268,  28898,  28510,  28105,  27683,
-     27245,  26790,  26319,  25832,  25329,  24811,  24279,  23731,
-     23170,  22594,  22005,  21403,  20787,  20159,  19519,  18868,
-     18204,  17530,  16846,  16151,  15446,  14732,  14010,  13279,
-     12539,  11793,  11039,  10278,   9512,   8739,   7962,   7179,
-      6393,   5602,   4808,   4011,   3212,   2410,   1608,    804,
-         0,   -804,  -1608,  -2410,  -3212,  -4011,  -4808,  -5602,
-     -6393,  -7179,  -7962,  -8739,  -9512, -10278, -11039, -11793,
-    -12539, -13279, -14010, -14732, -15446, -16151, -16846, -17530,
-    -18204, -18868, -19519, -20159, -20787, -21403, -22005, -22594,
-    -23170, -23731, -24279, -24811, -25329, -25832, -26319, -26790,
-    -27245, -27683, -28105, -28510, -28898, -29268, -29621, -29956,
-    -30273, -30571, -30852, -31113, -31356, -31580, -31785, -31971,
-    -32137, -32285, -32412, -32521, -32609, -32678, -32728, -32757,
-    -32767, -32757, -32728, -32678, -32609, -32521, -32412, -32285,
-    -32137, -31971, -31785, -31580, -31356, -31113, -30852, -30571,
-    -30273, -29956, -29621, -29268, -28898, -28510, -28105, -27683,
-    -27245, -26790, -26319, -25832, -25329, -24811, -24279, -23731,
-    -23170, -22594, -22005, -21403, -20787, -20159, -19519, -18868,
-    -18204, -17530, -16846, -16151, -15446, -14732, -14010, -13279,
-    -12539, -11793, -11039, -10278,  -9512,  -8739,  -7962,  -7179,
-     -6393,  -5602,  -4808,  -4011,  -3212,  -2410,  -1608,   -804,
+#include <string.h>
+
+static siggen_config_t g_config = {
+    SIGGEN_DEFAULT_WAVE, SIGGEN_DEFAULT_FREQ, SIGGEN_DEFAULT_AMP_DV,
+    SIGGEN_DEFAULT_DUTY, false
 };
+static uint16_t g_cycle[SIGGEN_CYCLE_SAMPLES];
+static bool g_cycle_built = false;
+static siggen_timing_t g_timing;
+static bool g_timing_valid = false;
 
-/* ═══════════════════════════════════════════════════════════════════
- * DDS State
- * ═══════════════════════════════════════════════════════════════════ */
-
-static siggen_config_t g_config;
-static uint32_t g_phase_acc;    /* 32-bit phase accumulator */
-static uint32_t g_tuning_word;  /* phase increment per sample */
-static uint32_t g_noise_state = 0xDEADBEEF; /* LFSR state for noise */
-
-/* Predefined amplitude steps (Vpp) */
-static const float amplitude_steps[] = { 0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 3.3f };
-#define NUM_AMP_STEPS (sizeof(amplitude_steps) / sizeof(amplitude_steps[0]))
-
-/* Forward declaration — refreshes DAC hardware buffer when params change */
-static void siggen_update_dac(void);
-
-/* ═══════════════════════════════════════════════════════════════════
- * Internal helpers
- * ═══════════════════════════════════════════════════════════════════ */
-
-static uint32_t compute_tuning_word(float freq_hz, float sample_rate)
+static uint32_t timer_clock(void)
 {
-    return (uint32_t)((double)freq_hz / (double)sample_rate * 4294967296.0);
+#ifndef EMULATOR_BUILD
+    return dac_output_timer_clock_hz();
+#else
+    return 240000000u;
+#endif
 }
 
-static int32_t generate_raw_sample(uint32_t phase)
+/* Stock 0x08029E14: rebuild the cycle into the live DMA buffer. Stock
+ * builds in place while the DMA runs; building aside and copying keeps
+ * the mixed-cycle window to one memcpy. */
+static void rebuild(void)
 {
-    switch (g_config.waveform) {
-    case SIGGEN_SINE: {
-        uint8_t idx = (uint8_t)(phase >> 24);
-        uint8_t frac = (uint8_t)(phase >> 16);
-        int32_t s0 = sine_lut[idx];
-        int32_t s1 = sine_lut[(uint8_t)(idx + 1)];
-        return s0 + (((s1 - s0) * frac) >> 8);
-    }
-
-    case SIGGEN_SQUARE: {
-        uint32_t threshold = (uint32_t)((uint64_t)g_config.duty_cycle_pct * 4294967295ULL / 100);
-        return (phase < threshold) ? 32767 : -32767;
-    }
-
-    case SIGGEN_TRIANGLE: {
-        uint32_t p = phase;
-        int32_t ramp;
-        if (p < 0x80000000UL) {
-            ramp = (int32_t)(p >> 15);
-            if (ramp > 32767) ramp = 65535 - ramp;
-        } else {
-            p -= 0x80000000UL;
-            ramp = (int32_t)(p >> 15);
-            if (ramp > 32767) ramp = 65535 - ramp;
-            ramp = -ramp;
-        }
-        if (ramp > 32767) ramp = 32767;
-        if (ramp < -32767) ramp = -32767;
-        return ramp;
-    }
-
-    case SIGGEN_SAWTOOTH:
-        return (int32_t)(phase >> 16) - 32768;
-
-    case SIGGEN_FULLRECT_SINE: {
-        uint8_t idx = (uint8_t)(phase >> 24);
-        uint8_t frac = (uint8_t)(phase >> 16);
-        int32_t s0 = sine_lut[idx];
-        int32_t s1 = sine_lut[(uint8_t)(idx + 1)];
-        int32_t val = s0 + (((s1 - s0) * frac) >> 8);
-        return (val < 0) ? -val : val;
-    }
-
-    case SIGGEN_HALFRECT_SINE: {
-        uint8_t idx = (uint8_t)(phase >> 24);
-        uint8_t frac = (uint8_t)(phase >> 16);
-        int32_t s0 = sine_lut[idx];
-        int32_t s1 = sine_lut[(uint8_t)(idx + 1)];
-        int32_t val = s0 + (((s1 - s0) * frac) >> 8);
-        return (val > 0) ? val : 0;
-    }
-
-    case SIGGEN_PULSE: {
-        uint32_t threshold = (uint32_t)((uint64_t)g_config.duty_cycle_pct * 4294967295ULL / 100);
-        return (phase < threshold) ? 32767 : -32767;
-    }
-
-    case SIGGEN_NOISE: {
-        g_noise_state ^= g_noise_state << 13;
-        g_noise_state ^= g_noise_state >> 17;
-        g_noise_state ^= g_noise_state << 5;
-        return (int32_t)(g_noise_state & 0xFFFF) - 32768;
-    }
-
-    default:
-        return 0;
-    }
+    siggen_wave_build(g_cycle, g_config.waveform, g_config.amplitude_dv,
+                      g_config.duty_pct);
+    g_cycle_built = true;
+#ifndef EMULATOR_BUILD
+    memcpy(dac_output_get_buffer(), g_cycle, sizeof g_cycle);
+#endif
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Public API
- * ═══════════════════════════════════════════════════════════════════ */
+/* Stock 0x08029D40: off when the enable is clear or the frequency is 0,
+ * otherwise program TMR7 and run. */
+static void apply(void)
+{
+    g_timing_valid = g_config.output_enabled &&
+                     siggen_timing_compute(g_config.frequency_hz,
+                                           timer_clock(), &g_timing);
+#ifndef EMULATOR_BUILD
+    if (g_timing_valid)
+        dac_output_apply(&g_timing);
+    else
+        dac_output_stop();
+#endif
+}
 
 void siggen_init(const siggen_config_t *cfg)
 {
-    if (cfg) {
+    if (cfg != NULL) {
         g_config = *cfg;
+        if (g_config.waveform >= SIGGEN_WAVEFORM_COUNT) g_config.waveform = SIGGEN_SINE;
+        if (g_config.frequency_hz > SIGGEN_FREQ_MAX_HZ) g_config.frequency_hz = SIGGEN_FREQ_MAX_HZ;
+        if (g_config.amplitude_dv > SIGGEN_AMP_MAX_DV) g_config.amplitude_dv = SIGGEN_AMP_MAX_DV;
+        if (g_config.duty_pct > SIGGEN_DUTY_MAX) g_config.duty_pct = SIGGEN_DUTY_MAX;
     } else {
-        g_config.waveform       = SIGGEN_SINE;
-        g_config.frequency_hz   = 1000.0f;
-        g_config.amplitude_vpp  = 3.3f;
-        g_config.offset_v       = 0.0f;
-        g_config.duty_cycle_pct = 50;
+        g_config.waveform = SIGGEN_DEFAULT_WAVE;
+        g_config.frequency_hz = SIGGEN_DEFAULT_FREQ;
+        g_config.amplitude_dv = SIGGEN_DEFAULT_AMP_DV;
+        g_config.duty_pct = SIGGEN_DEFAULT_DUTY;
         g_config.output_enabled = false;
     }
-    g_phase_acc = 0;
-    g_tuning_word = 0;
+    rebuild();
+    apply();
 }
 
-void siggen_fill_buffer(int16_t *buffer, uint16_t num_samples, float sample_rate)
+void siggen_set_frequency(uint32_t freq_hz)
 {
-    if (!buffer || num_samples == 0 || sample_rate <= 0.0f) return;
-
-    g_tuning_word = compute_tuning_word(g_config.frequency_hz, sample_rate);
-
-    float amp_scale = g_config.amplitude_vpp / 3.3f;
-    if (amp_scale > 1.0f) amp_scale = 1.0f;
-    if (amp_scale < 0.0f) amp_scale = 0.0f;
-
-    int32_t offset_counts = (int32_t)(g_config.offset_v / 3.3f * 32767.0f);
-
-    for (uint16_t i = 0; i < num_samples; i++) {
-        int32_t raw = generate_raw_sample(g_phase_acc);
-        int32_t scaled = (int32_t)((float)raw * amp_scale);
-        scaled += offset_counts;
-        if (scaled > 32767) scaled = 32767;
-        if (scaled < -32767) scaled = -32767;
-        buffer[i] = (int16_t)scaled;
-        g_phase_acc += g_tuning_word;
-    }
-}
-
-void siggen_set_frequency(float freq_hz)
-{
-    if (freq_hz < 0.1f) freq_hz = 0.1f;
-    if (freq_hz > 25000.0f) freq_hz = 25000.0f;
+    if (freq_hz > SIGGEN_FREQ_MAX_HZ) freq_hz = SIGGEN_FREQ_MAX_HZ;
     g_config.frequency_hz = freq_hz;
-    siggen_update_dac();
+    apply();            /* the cycle does not depend on frequency */
 }
 
-void siggen_set_waveform(siggen_waveform_t wave)
+void siggen_set_waveform(uint8_t wave)
 {
-    if (wave < SIGGEN_WAVEFORM_COUNT) {
-        g_config.waveform = wave;
-        g_phase_acc = 0;
-        siggen_update_dac();
-    }
+    if (wave >= SIGGEN_WAVEFORM_COUNT) return;
+    g_config.waveform = wave;
+    rebuild();
 }
 
-void siggen_set_amplitude(float vpp)
+void siggen_set_amplitude_dv(uint8_t amp_dv)
 {
-    if (vpp < 0.0f) vpp = 0.0f;
-    if (vpp > 3.3f) vpp = 3.3f;
-    g_config.amplitude_vpp = vpp;
-    siggen_update_dac();
+    if (amp_dv > SIGGEN_AMP_MAX_DV) amp_dv = SIGGEN_AMP_MAX_DV;
+    g_config.amplitude_dv = amp_dv;
+    rebuild();
 }
 
-void siggen_set_offset(float offset_v)
+void siggen_set_duty(uint8_t pct)
 {
-    g_config.offset_v = offset_v;
-    siggen_update_dac();
-}
-
-/*
- * Fill the DAC hardware buffer and start/restart output.
- * Converts the DDS engine's int16 samples (-32767..+32767)
- * to 12-bit unsigned DAC values (0..4095).
- *
- * sample_rate = frequency_hz × DAC_BUFFER_SIZE
- * This gives exactly one waveform cycle per buffer.
- */
-static void siggen_update_dac(void)
-{
-#ifndef EMULATOR_BUILD
-    if (!g_config.output_enabled) return;
-
-    /* One complete cycle in the buffer.
-     * sample_rate = freq × buffer_size so DDS wraps exactly once. */
-    uint32_t sample_rate = (uint32_t)(g_config.frequency_hz * DAC_BUFFER_SIZE);
-    if (sample_rate < 256) sample_rate = 256;      /* ~1 Hz minimum */
-    if (sample_rate > 6400000) sample_rate = 6400000; /* ~25 kHz max */
-
-    /* Generate one cycle of int16 samples into a temp buffer */
-    int16_t temp[DAC_BUFFER_SIZE];
-    uint32_t saved_phase = g_phase_acc;
-    g_phase_acc = 0;  /* Start from phase 0 for clean cycle */
-    siggen_fill_buffer(temp, DAC_BUFFER_SIZE, (float)sample_rate);
-    g_phase_acc = saved_phase;
-
-    /* Convert int16 (-32767..+32767) → uint12 (0..4095) */
-    uint16_t *dac_buf = dac_output_get_buffer();
-    for (int i = 0; i < DAC_BUFFER_SIZE; i++) {
-        int32_t val = (int32_t)temp[i] + 32768;  /* Shift to 0..65535 */
-        val = val >> 4;                            /* Scale to 0..4095 */
-        if (val > 4095) val = 4095;
-        if (val < 0) val = 0;
-        dac_buf[i] = (uint16_t)val;
-    }
-
-    /* Start or restart DMA output at the computed rate */
-    dac_output_start(sample_rate);
-#endif
+    if (pct > SIGGEN_DUTY_MAX) pct = SIGGEN_DUTY_MAX;
+    g_config.duty_pct = pct;
+    rebuild();
 }
 
 void siggen_enable(bool enable)
 {
-#if FPGA_WARM_HANDOFF_TEST
-    /* Warm-handoff build: siggen shares DAC1/PA4 with the scope trigger
-     * reference armed at fpga_init (scope_trigger_dac_raw(2048)), and the
-     * disable path's dac_output_stop() would clear D1EN and leave PA4
-     * high-impedance — silently killing capture for the rest of the boot,
-     * with the LCD symptom indistinguishable from a failed handoff. Keep the
-     * toggle fully inert (config flag too, so the UI never claims ON). */
-    (void)enable;
-    return;
-#else
     g_config.output_enabled = enable;
-#ifndef EMULATOR_BUILD
-    if (enable) {
-        siggen_update_dac();
-    } else {
-        dac_output_stop();
-    }
-#endif
-#endif
+    apply();
 }
 
 siggen_waveform_t siggen_cycle_waveform(void)
 {
-    g_config.waveform = (siggen_waveform_t)((g_config.waveform + 1) % SIGGEN_WAVEFORM_COUNT);
-    g_phase_acc = 0;
-    return g_config.waveform;
+    siggen_set_waveform((uint8_t)((g_config.waveform + 1u) % SIGGEN_WAVEFORM_COUNT));
+    return (siggen_waveform_t)g_config.waveform;
 }
 
-void siggen_set_duty_cycle(uint8_t pct)
+uint8_t siggen_amplitude_up(void)
 {
-    if (pct < 10) pct = 10;
-    if (pct > 90) pct = 90;
-    g_config.duty_cycle_pct = pct;
+    if (g_config.amplitude_dv < SIGGEN_AMP_MAX_DV)
+        siggen_set_amplitude_dv((uint8_t)(g_config.amplitude_dv + 1u));
+    return g_config.amplitude_dv;
 }
 
-float siggen_amplitude_up(void)
+uint8_t siggen_amplitude_down(void)
 {
-    for (uint8_t i = 0; i < NUM_AMP_STEPS; i++) {
-        if (amplitude_steps[i] > g_config.amplitude_vpp + 0.01f) {
-            g_config.amplitude_vpp = amplitude_steps[i];
-            siggen_update_dac();
-            return g_config.amplitude_vpp;
-        }
-    }
-    g_config.amplitude_vpp = amplitude_steps[NUM_AMP_STEPS - 1];
-    siggen_update_dac();
-    return g_config.amplitude_vpp;
-}
-
-float siggen_amplitude_down(void)
-{
-    for (int i = (int)NUM_AMP_STEPS - 1; i >= 0; i--) {
-        if (amplitude_steps[i] < g_config.amplitude_vpp - 0.01f) {
-            g_config.amplitude_vpp = amplitude_steps[i];
-            siggen_update_dac();
-            return g_config.amplitude_vpp;
-        }
-    }
-    g_config.amplitude_vpp = amplitude_steps[0];
-    siggen_update_dac();
-    return g_config.amplitude_vpp;
+    if (g_config.amplitude_dv > 0)
+        siggen_set_amplitude_dv((uint8_t)(g_config.amplitude_dv - 1u));
+    return g_config.amplitude_dv;
 }
 
 uint8_t siggen_duty_cycle_up(void)
 {
-    if (g_config.duty_cycle_pct < 90)
-        g_config.duty_cycle_pct += 10;
-    siggen_update_dac();
-    return g_config.duty_cycle_pct;
+    uint32_t d = g_config.duty_pct + 5u;
+    siggen_set_duty((uint8_t)(d > SIGGEN_DUTY_MAX ? SIGGEN_DUTY_MAX : d));
+    return g_config.duty_pct;
 }
 
 uint8_t siggen_duty_cycle_down(void)
 {
-    if (g_config.duty_cycle_pct > 10)
-        g_config.duty_cycle_pct -= 10;
-    siggen_update_dac();
-    return g_config.duty_cycle_pct;
+    siggen_set_duty((uint8_t)(g_config.duty_pct > 5u ? g_config.duty_pct - 5u : 0u));
+    return g_config.duty_pct;
 }
 
 const siggen_config_t *siggen_get_config(void)
 {
     return &g_config;
+}
+
+const uint16_t *siggen_get_cycle(void)
+{
+    /* The emulator build never calls siggen_init(); build on first look
+     * so the preview is not a flat line. */
+    if (!g_cycle_built) rebuild();
+    return g_cycle;
+}
+
+bool siggen_get_timing(siggen_timing_t *t)
+{
+    if (g_timing_valid && t != NULL) *t = g_timing;
+    return g_timing_valid;
 }

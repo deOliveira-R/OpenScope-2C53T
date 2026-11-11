@@ -38,6 +38,8 @@
 #define DEBUG_SHELL_RTT_ONLY 0
 #endif
 #include "scope_trigger.h"
+#include "signal_gen.h"
+#include "dac_output.h"
 #include "fpga.h"
 #include "lcd.h"
 #include "meter_auto.h"
@@ -7480,6 +7482,112 @@ static void cmd_spi3_probe(void)
                      (GPIOC->idt & (1 << 6)) ? 1 : 0);
 }
 
+/* ── siggen — signal generator state + the registers behind it ─────────
+ * Bench check for parity G1/G3/G4: every field the stock SWD session read
+ * (TMR7 DIV/PR/CTRL1, DAC CTRL both halves, DMA2 ch4, flex select, PA5
+ * mode) printed next to what we asked for, so a GEN-lead -> CH2 capture
+ * can be tied to the programming. Arguments are applied left to right:
+ *   siggen wave 3 amp 15 freq 2000 on */
+static void siggen_print_state(void)
+{
+    const siggen_config_t *c = siggen_get_config();
+    siggen_timing_t t, st;
+    bool run = siggen_get_timing(&t);
+    uint32_t clk = dac_output_timer_clock_hz();
+    bool st_ok = siggen_timing_stock(c->frequency_hz, clk, &st);
+
+    usb_debug_printf("siggen: %s wave=%u(%s) freq=%lu Hz amp=%u.%u V duty=%u%%\r\n",
+                     run ? "ON" : (c->output_enabled ? "OFF(freq 0)" : "OFF"),
+                     c->waveform, siggen_wave_name(c->waveform),
+                     (unsigned long)c->frequency_hz,
+                     c->amplitude_dv / 10u, c->amplitude_dv % 10u, c->duty_pct);
+    if (run)
+        usb_debug_printf("  timing: clk=%lu DIV=%u PR=%u -> %lu.%03lu Hz (stock DIV=%u PR=%u -> %lu.%03lu Hz)\r\n",
+                         (unsigned long)clk, t.div, t.pr,
+                         (unsigned long)(t.actual_mhz / 1000u), (unsigned long)(t.actual_mhz % 1000u),
+                         st.div, st.pr,
+                         (unsigned long)(st_ok ? st.actual_mhz / 1000u : 0u),
+                         (unsigned long)(st_ok ? st.actual_mhz % 1000u : 0u));
+    else
+        usb_debug_printf("  timing: clk=%lu (off)\r\n", (unsigned long)clk);
+
+    uint32_t dctrl = DAC->ctrl;
+    usb_debug_printf("  TMR7: CTRL1=0x%04lX CTRL2=0x%04lX DIV=%lu PR=%lu CNT=%lu\r\n",
+                     (unsigned long)TMR7->ctrl1, (unsigned long)TMR7->ctrl2,
+                     (unsigned long)TMR7->div, (unsigned long)TMR7->pr,
+                     (unsigned long)TMR7->cval);
+    usb_debug_printf("  DAC: CTRL=0x%08lX (ch2 0x%04lX, ch1 0x%04lX) D2DTH12R=%lu D2ODT=%lu D1ODT=%lu\r\n",
+                     (unsigned long)dctrl, (unsigned long)(dctrl >> 16),
+                     (unsigned long)(dctrl & 0xFFFFu),
+                     (unsigned long)(DAC->d2dth12r & 0xFFFu),
+                     (unsigned long)(DAC->d2odt & 0xFFFu),
+                     (unsigned long)(DAC->d1odt & 0xFFFu));
+    usb_debug_printf("  DMA2 ch4: CTRL=0x%04lX DTCNT=%lu PADDR=0x%08lX MADDR=0x%08lX SRCSEL0=0x%08lX SRCSEL1=0x%08lX\r\n",
+                     (unsigned long)DMA2_CHANNEL4->ctrl, (unsigned long)DMA2_CHANNEL4->dtcnt,
+                     (unsigned long)DMA2_CHANNEL4->paddr, (unsigned long)DMA2_CHANNEL4->maddr,
+                     (unsigned long)DMA2->src_sel0, (unsigned long)DMA2->src_sel1);
+    usb_debug_printf("  PA5 CFG nibble=0x%lX (0 = analog)  buffer=0x%08lX\r\n",
+                     (unsigned long)((GPIOA->cfglr >> 20) & 0xFu),
+                     (unsigned long)(uint32_t)dac_output_get_buffer());
+    const uint16_t *cy = siggen_get_cycle();
+    uint16_t mn = 0xFFFF, mx = 0;
+    for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i++) {
+        if (cy[i] < mn) mn = cy[i];
+        if (cy[i] > mx) mx = cy[i];
+    }
+    usb_debug_printf("  cycle: [0]=%u [25]=%u [50]=%u [75]=%u min=%u max=%u\r\n",
+                     cy[0], cy[25], cy[50], cy[75], mn, mx);
+}
+
+static void cmd_siggen(const char *args)
+{
+    char buf[96];
+    size_t n = strlen(args);
+    if (n >= sizeof buf) n = sizeof buf - 1;
+    memcpy(buf, args, n);
+    buf[n] = '\0';
+
+    char *save = NULL;
+    for (char *tok = strtok_r(buf, " \t", &save); tok != NULL;
+         tok = strtok_r(NULL, " \t", &save)) {
+        if (strcmp(tok, "on") == 0)  { siggen_enable(true);  continue; }
+        if (strcmp(tok, "off") == 0) { siggen_enable(false); continue; }
+        if (strcmp(tok, "dump") == 0) {
+            const uint16_t *cy = siggen_get_cycle();
+            for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i += 10)
+                usb_debug_printf("  %3u: %4u %4u %4u %4u %4u %4u %4u %4u %4u %4u\r\n", i,
+                                 cy[i], cy[i + 1], cy[i + 2], cy[i + 3], cy[i + 4],
+                                 cy[i + 5], cy[i + 6], cy[i + 7], cy[i + 8], cy[i + 9]);
+            continue;
+        }
+        char *val = strtok_r(NULL, " \t", &save);
+        uint32_t v = 0;
+        if (val == NULL || parse_int(val, &v) != 0) {
+            usb_debug_printf("siggen: '%s' needs a number\r\n", tok);
+            return;
+        }
+        if (strcmp(tok, "wave") == 0) {
+            if (v >= SIGGEN_WAVEFORM_COUNT) { usb_send_str("siggen: wave 0..12\r\n"); return; }
+            siggen_set_waveform((uint8_t)v);
+        } else if (strcmp(tok, "freq") == 0) {
+            if (v > SIGGEN_FREQ_MAX_HZ) { usb_send_str("siggen: freq 0..50000 Hz\r\n"); return; }
+            siggen_set_frequency(v);
+        } else if (strcmp(tok, "amp") == 0) {
+            if (v > SIGGEN_AMP_MAX_DV) { usb_send_str("siggen: amp 0..30 (0.1 V)\r\n"); return; }
+            siggen_set_amplitude_dv((uint8_t)v);
+        } else if (strcmp(tok, "duty") == 0) {
+            if (v > SIGGEN_DUTY_MAX) { usb_send_str("siggen: duty 0..100\r\n"); return; }
+            siggen_set_duty((uint8_t)v);
+        } else {
+            usb_debug_printf("siggen: unknown '%s'\r\n", tok);
+            return;
+        }
+    }
+    /* The siggen screen repaints on its next key press; the shell has no
+     * handle on the display queue. */
+    siggen_print_state();
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Shell command table (2026-08-20; audit item 8.9)
  *
@@ -7943,6 +8051,10 @@ static const shell_cmd_t shell_cmds[] = {
           "mem write <addr> <value>        Write 32-bit word\r\n"),
     CMD_A("trig2", cmd_scope_trig2, SC_NEEDARGS,
           "trig2 raw <0-4095>              Write CH2 ref: TMR13 CH1 PWM-DAC (PA6)\r\n" "trig2 <range> <level>           CH2 vertical-offset ref via the CH1 cal formula\r\n"),
+    CMD_A("siggen", cmd_siggen, 0,
+          "siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [dump]\r\n"
+          "  Signal generator (DAC2/PA5): wave 0..12, freq 0..50000 (0 = off),\r\n"
+          "  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state\r\n"),
     CMD_A("trig", cmd_scope_trig, SC_NEEDARGS,
           "trig raw <0-4095>               Write DAC1 (PA4) directly + sw trigger\r\n" "trig <range> <level>            Scope trigger DAC: range 0-9, level -100..100\r\n"),
     CMD_V("flash jedec", cmd_flash_jedec, SC_EXACT,
