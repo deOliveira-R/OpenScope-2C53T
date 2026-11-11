@@ -43,6 +43,8 @@
 #include "at32f403a_407.h"
 #include "button_scan.h"
 #include "settings_store.h"
+#include "sys_prefs.h"
+#include "sys_pwm.h"
 #include "task.h"
 #include <stdio.h>
 #include <string.h>
@@ -64,6 +66,84 @@ static uint32_t settings_now_ms(void)
 #include "fft.h"
 #include "fft_test_signals.h"
 #endif
+
+/* ── System preferences (parity C15) ─────────────────────────────────
+ * Auto power-off: stock resets its idle counter on every handled key event
+ * (ms[0xF6C], 0x08040038) and at 15/30/60 min saves the settings and drops
+ * PC9. The count is wall time here (stock's tick period is unproven [L]).
+ * The pure timer is sys_prefs.c; this file owns the keys and the actual
+ * power-off, because only it may flush settings (see settings_store.h). */
+static sys_autooff_t g_autooff;
+static bool          g_autooff_ready;
+
+static void autooff_touch(void)
+{
+    uint32_t now = settings_now_ms();
+    if (!g_autooff_ready) {
+        sys_autooff_init(&g_autooff, sys_prefs_autooff_mins(), now);
+        g_autooff_ready = true;
+    }
+    sys_autooff_activity(&g_autooff, now);
+}
+
+/* The one orderly power-off: flush settings FIRST (the rail is about to stop),
+ * backlight to 0 like stock's saver (0x080293EE), then release the PC9 hold. */
+static void power_off_now(void)
+{
+    (void)settings_store_flush(settings_now_ms());
+    sys_pwm_backlight_off();
+    GPIOC->clr = (1U << 9);
+    while (1) { }
+}
+
+/* Called every pass of the input task (<= 100 ms). */
+void input_autooff_poll(void)
+{
+    uint32_t now = settings_now_ms();
+    if (!g_autooff_ready) {
+        sys_autooff_init(&g_autooff, sys_prefs_autooff_mins(), now);
+        g_autooff_ready = true;
+    }
+    if (!sys_autooff_poll(&g_autooff, now)) return;
+
+    const theme_t *th = theme_get();
+    uint16_t bg = 0x0010;
+    ui_modal_active = true;          /* same screen claim as the POWER countdown */
+    vTaskDelay(pdMS_TO_TICKS(120));
+    lcd_fill_rect(60, 80, 200, 80, bg);
+    font_draw_string_center(160, 100, "Auto power off",
+                            th->warning, bg, &font_medium);
+    font_draw_string_center(160, 126, "Goodbye!", th->success, bg, &font_large);
+    vTaskDelay(pdMS_TO_TICKS(800));
+    power_off_now();
+}
+
+/* Settings > Auto Shutdown value (top-level row 2). */
+static void autooff_adjust(int dir, bool wrap)
+{
+    uint8_t m = sys_autooff_step(sys_prefs_autooff_mins(), dir, wrap);
+    sys_prefs_set_autooff_mins(m);
+    sys_autooff_set_minutes(&g_autooff, m, settings_now_ms());
+    g_autooff_ready = true;
+}
+
+/* Settings > Sound and Light (depth 7): row 0 volume, row 1 brightness. */
+static void sound_light_adjust(int dir, bool wrap)
+{
+    if (settings_sub_selected == 0) {
+        uint8_t v = sys_prefs_volume();
+        uint8_t n = sys_vol_step(v, dir);
+        if (wrap && n == v) n = (dir > 0) ? 0u : SYS_VOL_MAX;
+        sys_prefs_set_volume(n);
+        sys_pwm_click();             /* hear the new level */
+    } else {
+        uint8_t b = sys_prefs_brightness();
+        uint8_t n = sys_bright_step(b, dir);
+        if (wrap && n == b) n = (dir > 0) ? SYS_BRIGHT_MIN : SYS_BRIGHT_MAX;
+        sys_prefs_set_brightness(n);
+        sys_pwm_apply_brightness();
+    }
+}
 
 /* ═══════════════════════════════════════════════════════════════════
  * Oscilloscope settings Left/Right handler
@@ -198,6 +278,13 @@ void input_handle_settings_ok(void)
             settings_depth = 1;
             settings_sub_selected = 0;
             break;
+        case 1: /* Sound and Light -- stock sub-page: volume, brightness */
+            settings_depth = 7;
+            settings_sub_selected = 0;
+            break;
+        case 2: /* Auto Shutdown: Off / 15 / 30 / 60 min */
+            autooff_adjust(+1, true);
+            break;
         case 3: /* Display Mode: Y-T / Roll / X-Y (stock menu 0x0804C824) */
             display_mode_step(+1);
             break;
@@ -256,6 +343,8 @@ void input_handle_settings_ok(void)
         case 6: case 7: case 8: case 9: osc_settings_adjust(+1); break;
         default: break;
         }
+    } else if (settings_depth == 7) {
+        sound_light_adjust(+1, true);
     } else if (settings_depth == 2) {
         /* About screen -- OK goes back */
         settings_depth = 0;
@@ -850,6 +939,12 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     uint8_t cmd = DCMD_REDRAW_ALL;
     char pb[24];
 
+    /* Every key event: restart the auto power-off count and click at the
+     * stored volume (stock does both for each key the key task handles,
+     * 0x08040038; a volume of 0 is silent). */
+    autooff_touch();
+    sys_pwm_click();
+
     /* While autoset or the baseline correction runs the keys are locked, as
      * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
      * timebase press would pull the front end out from under the servo.
@@ -1155,7 +1250,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 resistor_calc_change_color(1);
             } else if (settings_depth == 0) {
                 if (settings_selected > 0) settings_selected--;
-            } else if (settings_depth == 3) {
+            } else if (settings_depth == 3 || settings_depth == 7) {
                 if (settings_sub_selected > 0) settings_sub_selected--;
             } else if (settings_depth == 1) {
                 if (settings_sub_selected > 0) settings_sub_selected--;
@@ -1198,6 +1293,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             } else if (settings_depth == 3) {
                 /* Math/persist sub-menu: 3 items (0,1,2) */
                 if (settings_sub_selected < 2) settings_sub_selected++;
+            } else if (settings_depth == 7) {
+                if (settings_sub_selected < 1) settings_sub_selected++;   /* 2 rows */
             } else if (settings_depth == 1) {
                 if (settings_sub_selected < SETTINGS_OSC_ITEM_COUNT - 1)
                     settings_sub_selected++;
@@ -1233,9 +1330,16 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     /* -- LEFT / RIGHT --------------------------------------------- */
 
     case BTN_LEFT:
-        if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
-            if (settings_selected == 3)
+        if (current_mode == MODE_SETTINGS && settings_depth == 7) {
+            sound_light_adjust(-1, false);
+            cmd = DCMD_DRAW_SETTINGS;
+            send_cmd(dq, cmd);
+        }
+        else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
+            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
+            if (settings_selected == 2)
+                autooff_adjust(-1, false);
+            else if (settings_selected == 3)
                 display_mode_step(-1);
             else if (settings_selected == 12)
                 theme_cycle_reverse();
@@ -1280,9 +1384,16 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         break;
 
     case BTN_RIGHT:
-        if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
-            if (settings_selected == 3)
+        if (current_mode == MODE_SETTINGS && settings_depth == 7) {
+            sound_light_adjust(+1, false);
+            cmd = DCMD_DRAW_SETTINGS;
+            send_cmd(dq, cmd);
+        }
+        else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
+            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
+            if (settings_selected == 2)
+                autooff_adjust(+1, false);
+            else if (settings_selected == 3)
                 display_mode_step(+1);
             else if (settings_selected == 12)
                 theme_cycle();
@@ -1431,13 +1542,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
              * KNOW the settings are about to stop existing in RAM. Runs behind
              * the "Goodbye!" frame so its SPI2 traffic is invisible to the
              * user, and before the rail drops. */
-            (void)settings_store_flush(settings_now_ms());
-
-            /* Drop PC9 LOW — device powers off */
-            GPIOC->clr = (1U << 9);
-
-            /* Should never reach here */
-            while (1);
+            /* then the backlight to 0 and the PC9 release (stock's order) */
+            power_off_now();
         }
         power_done:
         break;

@@ -94,7 +94,7 @@ extern volatile device_mode_t current_mode;
 extern volatile startup_mode_t startup_mode;
 extern volatile uint32_t      uptime_seconds;
 extern volatile int8_t        settings_selected;  /* Selected menu item index */
-extern volatile int8_t        settings_depth;      /* 0=top, 1=sub-menu, 2=about, 3=osc-math, 4=component */
+extern volatile int8_t        settings_depth;      /* 0=top, 1=sub-menu, 2=about, 3=osc-math, 4=component, 7=sound+light */
 extern volatile int8_t        settings_sub_selected; /* Sub-menu selection */
 extern volatile uint8_t       active_channel;      /* 0=CH1, 1=CH2 (for scope adjustments) */
 extern volatile uint8_t       meter_submode;       /* 0-11: current meter sub-mode (11 = Auto) */

@@ -61,6 +61,7 @@
 #include "fpga_meter_plan.h"
 #include "signal_gen.h"
 #include "dac_output.h"
+#include "sys_prefs.h"
 #include "ui.h"        /* METER_SUBMODE_COUNT / METER_LAYOUT_* and the globals */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -448,6 +449,9 @@ static void power_cycle(void)
     meter_submode = 0;
     meter_layout = 0;
     startup_mode = STARTUP_METER;
+    sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
+    sys_prefs_set_volume(SYS_VOL_DEFAULT);
+    sys_prefs_set_autooff_mins(0);
     siggen_init(NULL);           /* main.c does this before settings_store_init() */
     dac_running = false;
     if (flash_regions_bind_w25q() != FLASH_REGION_OK) {
@@ -1159,6 +1163,27 @@ static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
     settings_store_init();
     CHECK(startup_mode == STARTUP_METER, "meter startup not restored");
     CHECK(startup_boot_mode(startup_mode, false, false) == MODE_MULTIMETER, "boot mode meter");
+}
+
+static void test_system_prefs_survive_a_power_cycle(void)
+{
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    CHECK(sys_prefs_brightness() == 100 && sys_prefs_volume() == 1 && sys_prefs_autooff_mins() == 0,
+          "factory: brightness 100, volume 1, auto-off off");
+
+    sys_prefs_set_brightness(55);
+    sys_prefs_set_volume(7);
+    sys_prefs_set_autooff_mins(30);
+    CHECK(settings_store_flush(1000), "changed brightness / volume / auto-off not written");
+
+    power_cycle();
+    CHECK(sys_prefs_brightness() == 100 && sys_prefs_autooff_mins() == 0, "power_cycle() did not reset RAM");
+    settings_store_init();
+    CHECK(sys_prefs_brightness() == 55, "brightness not restored (%u)", (unsigned)sys_prefs_brightness());
+    CHECK(sys_prefs_volume() == 7, "volume not restored (%u)", (unsigned)sys_prefs_volume());
+    CHECK(sys_prefs_autooff_mins() == 30, "auto-off not restored (%u)", (unsigned)sys_prefs_autooff_mins());
 }
 
 static void test_startup_mode_from_a_foreign_record_is_the_default(void)
@@ -2449,6 +2474,7 @@ int main(void)
         run("live settings survive a power cycle", test_live_settings_survive_a_power_cycle);
         run("startup mode and Auto function survive a power cycle",
             test_startup_mode_and_meter_function_survive_a_power_cycle);
+        run("brightness, volume and auto-off survive a power cycle", test_system_prefs_survive_a_power_cycle);
         run("a foreign startup mode is the default",
             test_startup_mode_from_a_foreign_record_is_the_default);
         run("boot mode policy", test_boot_mode_policy);

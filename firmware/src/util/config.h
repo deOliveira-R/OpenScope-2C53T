@@ -65,11 +65,10 @@
  * WHICH FIELDS ARE LIVE: settings_store.c captures and re-applies the scope
  * block, the theme, the math block, the meter block and startup_mode. The FFT, signal
  * generator (siggen_waveform, siggen_frequency, siggen_amplitude, siggen_duty,
- * siggen_enabled, siggen_start_on), brightness, language, auto-shutdown and sound fields are stored
+ * siggen_enabled, siggen_start_on) and language and FFT fields are stored
  * and round-tripped. The generator IS captured and applied (settings_store.c,
- * parity G5) and startup_mode too (M6); brightness, language, auto-shutdown, sound and the FFT fields
- * are NOT yet applied at boot — nothing in the firmware currently owns them
- * (there is no backlight PWM). Do not read those back expecting them to mean
+ * parity G5) and startup_mode too (M6), and brightness, sound volume and auto-shutdown (C15, sys_prefs.c); language and the FFT fields
+ * are NOT yet applied at boot — nothing in the firmware currently owns them. Do not read those back expecting them to mean
  * anything on hardware yet. */
 typedef struct {
     uint32_t magic;              /* CONFIG_MAGIC for validation */
@@ -104,8 +103,8 @@ typedef struct {
     uint8_t  language;           /* 0=English */
     uint8_t  startup_mode;       /* CONFIG_MODE_* */
     /* System */
-    uint8_t  auto_shutdown_mins; /* 0=disabled, 5/10/15/30/60 */
-    uint8_t  sound_enabled;
+    uint8_t  auto_shutdown_mins; /* 0=disabled, 15/30/60 (stock; C15) */
+    uint8_t  sound_enabled;      /* sound volume 0..10 (C15; 0/1 before) */
     /* v3 block */
     uint8_t  theme;              /* theme_id_t */
     uint8_t  scope_ch1_probe;    /* 0=1x, 1=10x */

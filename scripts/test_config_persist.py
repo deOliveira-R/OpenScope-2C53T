@@ -57,6 +57,7 @@ SRCS = (
     "src/ui/scope_timebase.c",
     "src/dsp/signal_gen.c",
     "src/dsp/siggen_wave.c",
+    "src/util/sys_prefs.c",
 )
 INCLUDES = ("src/util", "src/drivers", "src/ui", "src/dsp")
 CFLAGS = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1"]
