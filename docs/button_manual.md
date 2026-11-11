@@ -26,11 +26,19 @@ If you're inside a Settings sub-menu, **MENU** goes back to the top-level Settin
 
 | Button | Action |
 |--------|--------|
-| **CH1** | Select CH1 as active channel + cycle coupling (DC -> AC -> GND) |
-| **CH2** | Select CH2 as active channel + cycle coupling (DC -> AC -> GND) |
-| **SELECT** | Cycle probe setting (1X -> 10X) for active channel |
+| **CH1** | Select CH1 as active channel + toggle coupling (DC <-> AC, on the relay) |
+| **CH2** | Select CH2 as active channel + toggle coupling (DC <-> AC, on the relay) |
+| **CH1 / CH2, long** | Channel on/off. At least one stays on. CH2 off at a fast timebase (code 3 and below) gives the single-channel 250 MS/s record; the popup says `250MS/s` when that routing is in force |
+| **SELECT** | **Switch CH1/CH2 adjustment**: which channel UP/DOWN act on (stock's key meaning; a channel that is off is skipped). Mask stage: stop-on-fail. FFT views: window function |
+
+The probe (1X/10X) is in Settings -> Oscilloscope Settings, and on the bench
+shell as `fpga scope probe <1|2> [1x|10x]`. SELECT used to cycle it; stock's
+SELECT switches the adjusted channel, so it does that now. A 10X probe shows
+as `10X` after the coupling in the bottom bar.
 
 ### Vertical / Horizontal
+
+In the Zoom stage (the default, see MOVE below):
 
 | Button | Action |
 |--------|--------|
@@ -43,24 +51,53 @@ V/div steps: 5mV, 10mV, 20mV, 50mV, 100mV, 200mV, 500mV, 1V, 2V, 5V
 
 Timebase steps: 5ns, 10ns, 20ns, 50ns, 100ns, 200ns, 500ns, 1us, 2us, 5us, 10us, 20us, 50us, 100us, 200us, 500us, 1ms, 2ms, 5ms, 10ms, 20ms
 
-### Trigger and MOVE
+### What the arrow keys adjust (MOVE)
 
-**MOVE** cycles what the arrow keys adjust (a popup names the stage):
+**MOVE** cycles the arrow keys' function, as stock's "Select Function for
+Directional Keys" does. A popup names the stage:
 
-| Stage | UP/DOWN | LEFT/RIGHT | SELECT |
-|-------|---------|------------|--------|
-| V/div (default) | V/div of the active channel | Timebase | Probe 1X/10X |
-| Trig level | Trigger level (the dotted line) | Timebase | Probe 1X/10X |
-| Position | V/div | Trigger point across the screen | Probe 1X/10X |
-| Mask (only while a mask exists) | Mask vertical tolerance ±2 counts | Mask horizontal tolerance ±1 sample | Stop-on-fail on/off |
+| Stage | UP/DOWN | LEFT/RIGHT |
+|-------|---------|------------|
+| Zoom (default) | V/div of the adjusted channel | Timebase |
+| Channel move | Vertical position of the adjusted channel (+-100 px, 5 per press) | Trigger point across the screen |
+| Trigger move | Trigger level (the dotted line) | Trigger point across the screen |
+| Cursor (only while cursors are on) | Move the active cursor | Switch cursor |
+| Mask (only while a mask exists) | Mask vertical tolerance +-2 counts | Mask horizontal tolerance +-1 sample (SELECT = stop-on-fail) |
+
+Order: Zoom -> Channel move -> Trigger move -> [Cursor] -> [Mask] -> Zoom.
+Switching cursors on (TRIGGER) selects the Cursor stage straight away; MOVE
+leaves it. Channel position moves only the channel's ground-reference marker
+for now: the live trace is autoscaled and ignores it, and it drives neither the
+offset DAC nor the FPGA offset bytes (the calibration item adds that). Until 2026-11 the stages were V/div -> Trig level ->
+Position -> Mask, and cursors took the arrows whenever they were on.
 
 The trigger edge (Rising/Falling) is in Settings -> Oscilloscope Settings.
-(Until 2026-09-22 this table said MOVE cycled the edge; it has not done so
-since the trigger-level control landed.)
+The top bar shows `<mode> <edge> <source>` for the trigger (`Auto R C1`,
+`Norm F C2`, `Sngl R C1`: R/F = rising/falling).
 
 | Button | Action |
 |--------|--------|
 | **OK** | Toggle Run / Stop (or, while a mask failure is held, resume testing) |
+
+### Long presses
+
+A long press is a hold of about 1 s (`KEY_LONG_TICKS`, key_model.h). Keys that
+have a long action deliver their short press on **release**, so a long press
+never fires the short action first; AUTO, OK and the arrows are unchanged
+where they have no long action. POWER is unchanged (its own countdown).
+
+| Long press | Action |
+|------------|--------|
+| **MENU** (stock: BACK) | Home. OpenScope has no home page; the Settings list stands in (from inside a settings page it goes to the top of the list) |
+| **SELECT** | Multimeter (from any mode) |
+| **MOVE** | Oscilloscope (from any mode) |
+| **TRIGGER** | Signal generator (from any mode) |
+| **PRM** (scope time view) | Hide / show the measurement badges |
+| **CH1 / CH2** (scope) | Channel on/off (see above; stock has no long CH1/CH2) |
+| **AUTO / OK / SAVE** (scope) | Popup `not built`: stock's baseline correction, 50 % centre and gallery are later parity items |
+
+The shell's `btn <name> long` injects the same event, and `keys` prints the
+mode, the arrow stage, the adjusted channel and the channel enables.
 
 ### Mask pass/fail (time view)
 
@@ -81,16 +118,16 @@ failure is held. Full design: `docs/specs/scope/mask-pass-fail.md`.
 | Button | Action |
 |--------|--------|
 | **TRIGGER** | Cycle cursor mode: Off -> Vertical -> Horizontal -> Both -> Off |
-| **UP/DOWN** | Move active cursor |
-| **LEFT/RIGHT** | Switch between cursor pairs (V1/V2 or H1/H2) |
+| **UP/DOWN** | Move active cursor (Cursor stage) |
+| **LEFT/RIGHT** | Switch between cursor pairs (V1/V2 or H1/H2) (Cursor stage) |
 
-When cursors are active, UP/DOWN/LEFT/RIGHT control cursors instead of V/div and timebase. The cursor readout shows delta-time (dt), frequency (1/dt), and delta-voltage (dV).
+Switching cursors on puts the arrow keys in the Cursor stage; MOVE steps on to the others. The cursor readout shows delta-time (dt), frequency (1/dt), and delta-voltage (dV).
 
 ### FFT / Spectrum Views
 
 | Button | Action |
 |--------|--------|
-| **PRM** | Cycle view: Time -> FFT -> Split -> Waterfall -> Time |
+| **PRM** | Cycle view: Time -> FFT -> Split -> Waterfall -> Time (from the time view only until the measurement-selection item takes short PRM there; long PRM hides the measurement badges) |
 | **SELECT** | Cycle FFT window function (in FFT/Split/Waterfall views) |
 | **UP/DOWN** | Adjust reference level (+/- 5dB, in FFT views) |
 | **LEFT/RIGHT** | Zoom in/out frequency range (in FFT views) |
@@ -121,6 +158,10 @@ current value. Softkeys arrived with the softkey UI (2026-10-06; spec
 | **SELECT** | **Reset**: min/max/avg, chart, histogram | **Low**: arrows move it; press again = set to the reading | **Rating** (next, wrapping; arrows step). In Scan: **Draw if >** presets 0.1 / 0.2 / 0.5 / 1 / 2 mV |
 | **TRIGGER** | **Relative** on/off (zeros at the current reading). In Continuity: **Beep** threshold 10 / 30 / 50 / 100 Ohm | **High**, likewise | **Show**: Detail -> Table -> Scan -> Types |
 | **PRM** | **View**: Big -> Graph -> Stats -> Limits -> Fuse | View | View |
+
+The four softkeys act when you **release** them (a long press of MOVE, SELECT,
+TRIGGER is the quick switch to the oscilloscope, multimeter, signal generator,
+and a long press of MENU goes Home; see *Long presses* above).
 
 ### Other buttons
 

@@ -26,7 +26,9 @@
 /*
  * Initialize TMR3 at 500Hz and configure GPIO for matrix scanning.
  * Confirmed button presses are sent as button_id_t values to the
- * provided FreeRTOS queue.
+ * provided FreeRTOS queue. A long press is the same id with BTN_LONG_FLAG
+ * set (ui.h); keys that have a long action deliver their short press on
+ * release (see ui/key_model.h for the rules and thresholds).
  */
 void button_scan_init(QueueHandle_t button_queue);
 void button_scan_start(void);

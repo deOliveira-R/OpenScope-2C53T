@@ -642,6 +642,11 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
     char buf[16];
     scope_measure_t m1, m2;
 
+    /* Long PRM hides the readings (stock: "Hide measurement parameters"). The
+     * badge area is repainted by the full redraw that key sends. */
+    if (ss->prm_hidden)
+        return;
+
     const bool have1 = ss->ch1.enabled &&
                        measure_live_channel(fpga_get_ch1_buf(), &m1);
     const bool have2 = ss->ch2.enabled &&

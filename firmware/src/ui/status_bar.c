@@ -13,9 +13,19 @@
 #include "at32f403a_407.h"
 #include "fpga.h"
 #include <stdio.h>
+#include <string.h>
 
 /* Track whether status bar has been drawn once (first draw needs full clear) */
 static uint8_t status_bar_drawn = 0;
+
+/* The trigger summary slot of the top bar (scope mode only): right-aligned at
+ * x = TRIG_SLOT_RIGHT, clear of the mode name before it (ends ~162) and of
+ * "2C53T" after it (starts ~233). The widest text, "Norm F C2", is 60 px
+ * (font_small advances), the slot is 66. Redrawn only when it changes. */
+#define TRIG_SLOT_X      166
+#define TRIG_SLOT_W      66
+#define TRIG_SLOT_RIGHT  (TRIG_SLOT_X + TRIG_SLOT_W - 2)
+static char trig_slot_last[12];
 
 /* Draw the top status bar */
 void draw_status_bar(void)
@@ -29,12 +39,27 @@ void draw_status_bar(void)
         font_draw_string_right(LCD_WIDTH - 50, 2, "2C53T",
                                th->text_primary, th->status_bar_bg, &font_small);
         status_bar_drawn = 1;
+        trig_slot_last[0] = '\x01';          /* force the slot to repaint */
     }
 
     /* Mode indicator (pad to fixed width to overwrite old text) */
     const char *mode_names[] = { "SCOPE ", "METER ", "SIGGEN", "SETUP " };
     font_draw_string(120, 2, mode_names[current_mode],
                      th->success, th->status_bar_bg, &font_small);
+
+    /* Trigger mode / edge / source (stock's status line item 10). */
+    {
+        char t[12] = "";
+        if (current_mode == MODE_OSCILLOSCOPE)
+            scope_trigger_summary(scope_state_get(), t, sizeof(t));
+        if (strcmp(t, trig_slot_last) != 0) {
+            lcd_fill_rect(TRIG_SLOT_X, 0, TRIG_SLOT_W, 16, th->status_bar_bg);
+            if (t[0])
+                font_draw_string_right(TRIG_SLOT_RIGHT, 2, t, th->text_primary,
+                                       th->status_bar_bg, &font_small);
+            strcpy(trig_slot_last, t);
+        }
+    }
 
     /* Battery status */
     {
@@ -83,6 +108,21 @@ void status_bar_invalidate(void)
     status_bar_drawn = 0;
 }
 
+/* One channel's info-bar field: "<n>:<vdiv> <coupling>[ 10X]". The probe is
+ * shown only when it is not 1X (it scales every volts readout, so a silent
+ * 10X is the dangerous one). If the field would run off the screen the probe
+ * is dropped rather than wrapped. */
+static void draw_channel_field(uint16_t x, const char *n, const char *vdiv,
+                               const channel_state_t *c, uint16_t color, uint16_t bg)
+{
+    char buf[24];
+    snprintf(buf, sizeof(buf), "%s:%s %s%s", n, vdiv, coupling_labels[c->coupling],
+             c->probe == PROBE_10X ? " 10X" : "");
+    if (x + font_string_width(buf, &font_small) > LCD_WIDTH)
+        snprintf(buf, sizeof(buf), "%s:%s %s", n, vdiv, coupling_labels[c->coupling]);
+    font_draw_string(x, LCD_HEIGHT - 14, buf, color, bg, &font_small);
+}
+
 /* Draw the bottom info bar */
 void draw_info_bar(void)
 {
@@ -121,7 +161,7 @@ void draw_info_bar(void)
             char buf[24];
 
             /*
-             * CH1: volts/div + coupling.
+             * CH1: volts/div + coupling (+ probe when it is not 1X).
              *
              * The volts/div shown is DERIVED from the bench-measured gain for
              * this channel on this range (scope_cal.h), not read out of
@@ -130,19 +170,16 @@ void draw_info_bar(void)
              * ranges we have cross-validated, so a range labelled "2V" was
              * ruling a 2.8 V division. Uncalibrated ranges read "--", and
              * provisional ones carry a leading '~'.
+             *
+             * Layout (font_small advances, 320 px): the trigger summary moved
+             * to the top bar, which frees the middle. The channel fields are
+             * "1:..." / "2:..." (colour says which), at most ~102 px with the
+             * probe, so CH1 sits at x=2, the timebase at 128, CH2 at 216.
              */
             char vdiv1[12];
             scope_cal_range_label(1u, ss->ch1.vdiv_idx, vdiv1, sizeof(vdiv1));
-            snprintf(buf, sizeof(buf), "CH1:%s %s",
-                     vdiv1, coupling_labels[ss->ch1.coupling]);
-            font_draw_string(4, LCD_HEIGHT - 14, buf,
-                             ss->ch1.enabled ? th->ch1 : th->text_secondary,
-                             ib, &font_small);
-
-            /* Trigger mode */
-            font_draw_string(108, LCD_HEIGHT - 14,
-                             trigger_mode_labels[ss->trigger.mode],
-                             th->success, ib, &font_small);
+            draw_channel_field(2, "1", vdiv1, &ss->ch1,
+                               ss->ch1.enabled ? th->ch1 : th->text_secondary, ib);
 
             /*
              * Timebase, DERIVED from the measured sample rate and this
@@ -156,7 +193,7 @@ void draw_info_bar(void)
                                         fpga_acq_record_interleaved() ? 2u : 1u,
                                         tb, sizeof(tb));
             snprintf(buf, sizeof(buf), "H=%s", tb);
-            font_draw_string(155, LCD_HEIGHT - 14, buf,
+            font_draw_string(128, LCD_HEIGHT - 14, buf,
                              th->text_primary, ib, &font_small);
 
             /* CH2: volts/div + coupling. Per-channel by construction — CH2's
@@ -164,11 +201,8 @@ void draw_info_bar(void)
              * index, which is why the label cannot come from a shared table. */
             char vdiv2[12];
             scope_cal_range_label(2u, ss->ch2.vdiv_idx, vdiv2, sizeof(vdiv2));
-            snprintf(buf, sizeof(buf), "CH2:%s %s",
-                     vdiv2, coupling_labels[ss->ch2.coupling]);
-            font_draw_string(215, LCD_HEIGHT - 14, buf,
-                             ss->ch2.enabled ? th->ch2 : th->text_secondary,
-                             ib, &font_small);
+            draw_channel_field(216, "2", vdiv2, &ss->ch2,
+                               ss->ch2.enabled ? th->ch2 : th->text_secondary, ib);
         }
         break;
     case MODE_SIGNAL_GEN:

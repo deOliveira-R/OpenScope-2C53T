@@ -68,6 +68,12 @@ typedef enum {
     BTN_POWER,
 } button_id_t;
 
+/* Queue payload for a long press: the button id with this bit set. The scan
+ * driver (button_scan.c, via key_model.c's key_scan_tick) posts one of these
+ * when a key that has a long-press action is held to KEY_LONG_TICKS; the shell
+ * posts the same with `btn <name> long`. input_handle_button() strips it. */
+#define BTN_LONG_FLAG  0x80
+
 #ifdef FEATURE_FFT
 /* Oscilloscope sub-view (time domain vs FFT) */
 typedef enum {
@@ -151,15 +157,17 @@ extern volatile bool          persist_enabled;
 #include "shared_mem.h"   /* waterfall history is a sub-tenant of the FFT pool region */
 extern volatile scope_view_t scope_view;
 
-/* Scope time view: what UP/DOWN adjust. false = volts/div of the active
- * channel (the default), true = the hardware trigger level. Toggled by MOVE
- * (2026-09-22). Read by the renderer to highlight the level marker. */
+/* Scope time view: what the arrow keys adjust, cycled by MOVE (key_model.h:
+ * zoom -> channel move -> trigger move -> [cursor] -> [mask]). The three bools
+ * below are DERIVED from it by input_handler.c and kept because the renderer
+ * and the shell read them: */
+/* true in the trigger-move stage (UP/DOWN = trigger level); the renderer
+ * highlights the level marker. */
 extern volatile bool scope_trig_level_focus;
-
-/* Scope time view: LEFT/RIGHT move the trigger point on screen instead of
- * changing the timebase. MOVE cycles V/div -> Trig level -> Position. */
+/* true in the channel-move and trigger-move stages (LEFT/RIGHT = trigger
+ * column). */
 extern volatile bool scope_hpos_focus;
-/* MOVE's fourth stage (mask tolerance), only while a mask exists. */
+/* true in the mask stage, offered only while a mask exists. */
 extern volatile bool scope_mask_focus;
 /* Post a button press into the input queue (shell `btn`). */
 bool input_inject_button(button_id_t b);

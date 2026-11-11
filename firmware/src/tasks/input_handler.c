@@ -13,6 +13,7 @@
  */
 
 #include "../ui/scope_mask.h"
+#include "key_model.h"
 #include "input_handler.h"
 #include "ui.h"
 #include "softkey.h"
@@ -31,6 +32,7 @@
 #include "fft_live.h"
 #endif
 #include "fpga.h"
+#include "scope_vpos.h"
 #include "meter_autoselect.h"
 #include "at32f403a_407.h"
 #include "button_scan.h"
@@ -219,11 +221,24 @@ static void send_cmd(QueueHandle_t q, uint8_t cmd)
     xQueueSend(q, &cmd, 0);
 }
 
+/* What the arrow keys adjust in the scope time view (key_model.h). MOVE cycles
+ * it: zoom -> channel move -> trigger move -> [cursor] -> [mask]. The three
+ * bools are derived from it (set_focus) because the renderer and the shell
+ * read them. */
+volatile key_focus_t scope_key_focus = KF_ZOOM;
 volatile bool scope_trig_level_focus = false;
 volatile bool scope_hpos_focus = false;
-/* MOVE's fourth stage, offered only while a mask exists: UP/DOWN = vertical
+/* The mask stage, offered only while a mask exists: UP/DOWN = vertical
  * tolerance, LEFT/RIGHT = horizontal, SELECT = stop-on-fail. */
 volatile bool scope_mask_focus = false;
+
+static void set_focus(key_focus_t f)
+{
+    scope_key_focus        = f;
+    scope_trig_level_focus = (f == KF_TRIGMOVE);
+    scope_hpos_focus       = (f == KF_CHMOVE || f == KF_TRIGMOVE);
+    scope_mask_focus       = (f == KF_MASK);
+}
 
 /* Helper: show popup and send redraw */
 static void popup_and_redraw(QueueHandle_t q, const char *text)
@@ -266,13 +281,6 @@ static bool mask_req(scope_mask_req_t k, uint8_t a, uint8_t b, uint16_t n)
         vTaskDelay(pdMS_TO_TICKS(5));
     }
     return false;
-}
-
-static bool mask_focus_active(void)
-{
-    if (scope_mask_focus && scope_mask_state() == MASK_PF_EMPTY)
-        scope_mask_focus = false;          /* mask cleared under us */
-    return scope_mask_focus;
 }
 
 /* tol_v steps of 2 counts (1/16 division), tol_h steps of 1 sample. The
@@ -337,10 +345,303 @@ static void mask_auto_key(char *pb, size_t n)
         }
     } else {
         bool ok = mask_req(SCOPE_MASK_REQ_CLEAR, 0, 0, 0);
-        scope_mask_focus = false;
+        if (scope_key_focus == KF_MASK) set_focus(KF_ZOOM);   /* the stage went with the mask */
         snprintf(pb, n, "%s", !ok ? "MASK: NOT SET" :
                               st == MASK_PF_TEACHING ? "MASK: cancelled" : "MASK: off");
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Mode entry, long-press shortcuts and the scope key model
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* Enter a device mode: the one path for MENU's cycle and the long-press
+ * shortcuts, so a mode is never entered half-way (the FPGA posture, the
+ * settings list, the persistence flush). */
+static void enter_mode(device_mode_t m, QueueHandle_t dq)
+{
+    meter_autoselect_cancel();
+    current_mode = m;
+    if (current_mode == MODE_SETTINGS) {
+        settings_selected = 0;
+        settings_depth = 0;
+    }
+    /* Tell the FPGA which mode we're entering.
+     * Each mode needs different FPGA commands and analog MUX config. */
+    if (current_mode == MODE_MULTIMETER) {
+        fpga_request_meter_mode(meter_submode);   /* background: no frozen buttons */
+    } else if (current_mode == MODE_SIGNAL_GEN) {
+        fpga_enter_siggen_mode();
+    } else if (current_mode == MODE_OSCILLOSCOPE) {
+        fpga_enter_scope_mode();
+    } else {
+        GPIOC->clr = (1U << 11);  /* PC11 LOW — meter disable */
+    }
+    /* Leaving a mode, or backing out of the settings menu, is a deliberate
+     * boundary: commit now rather than waiting out the settle window. */
+    (void)settings_store_flush(settings_now_ms());
+    send_cmd(dq, DCMD_REDRAW_ALL);
+}
+
+/* Measurement selection (short PRM in the scope time view). The measurement
+ * item implements this; the default says "not handled", and input falls back
+ * to the older PRM meaning (the FFT view cycle). */
+__attribute__((weak)) bool scope_param_select(void)
+{
+    return false;
+}
+
+static key_ctx_t key_ctx_now(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    key_ctx_t c;
+    c.mode           = current_mode;
+    c.settings_depth = settings_depth;
+#ifdef FEATURE_FFT
+    c.scope_time_view = (current_mode == MODE_OSCILLOSCOPE && scope_view == SCOPE_VIEW_TIME);
+#else
+    c.scope_time_view = (current_mode == MODE_OSCILLOSCOPE);
+#endif
+    c.cursors_on     = (ss->cursor.mode != CURSOR_OFF);
+    c.mask_present   = (scope_mask_state() != MASK_PF_EMPTY);
+    /* A stage that no longer exists (mask cleared from the shell, cursors
+     * switched off) is dropped here, before it can steer an arrow press. */
+    const key_focus_t f = key_focus_sanitize(scope_key_focus, c.cursors_on, c.mask_present);
+    if (f != scope_key_focus) set_focus(f);
+    c.focus          = f;
+    c.active_channel = active_channel;
+    return c;
+}
+
+/* Long AUTO/OK/SAVE: stock's baseline correction, 50 % centre and screenshot
+ * gallery. Other parity items fill these in; until then say so. */
+static const char *long_unused_text(button_id_t b)
+{
+    switch (b) {
+    case BTN_AUTO: return "Long AUTO: not built";
+    case BTN_OK:   return "Long OK: not built";
+    default:       return "Long SAVE: not built";
+    }
+}
+
+/* Execute one answer of key_map(). Returns the display command sent. */
+static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
+{
+    scope_state_t *ss = scope_state_get();
+    uint8_t cmd = DCMD_REDRAW_ALL;
+    char pb[24];
+    channel_state_t *ach = (active_channel == 0) ? &ss->ch1 : &ss->ch2;
+    const int dir = k.arg;
+
+    switch (k.act) {
+    case KA_NONE:
+    case KA_LEGACY:
+        break;
+
+    /* -- long presses: mode shortcuts, from any mode -------------------- */
+    case KA_ENTER_HOME:
+        /* No home page exists in OpenScope; the settings list is the nearest
+         * thing to stock's "function selection page". From inside a settings
+         * page it goes back to the top of the list. */
+        if (current_mode == MODE_SETTINGS) {
+            settings_depth = 0;
+            settings_sub_selected = 0;
+            send_cmd(dq, cmd);
+        } else {
+            enter_mode(MODE_SETTINGS, dq);
+        }
+        break;
+    case KA_ENTER_METER:
+        if (current_mode != MODE_MULTIMETER) enter_mode(MODE_MULTIMETER, dq);
+        break;
+    case KA_ENTER_SCOPE:
+        if (current_mode != MODE_OSCILLOSCOPE) enter_mode(MODE_OSCILLOSCOPE, dq);
+        break;
+    case KA_ENTER_SIGGEN:
+        if (current_mode != MODE_SIGNAL_GEN) enter_mode(MODE_SIGNAL_GEN, dq);
+        break;
+
+    case KA_MEAS_HIDE_TOGGLE:
+        ss->prm_hidden = !ss->prm_hidden;
+        popup_and_redraw(dq, ss->prm_hidden ? "Measurements hidden" : "Measurements shown");
+        break;
+
+    case KA_CH_ENABLE_TOGGLE: {
+        /* Same path as the shell's `fpga scope ch`: flip, apply the converter
+         * routing, and put it back if the hardware refuses (both off). The
+         * popup reports the routing in force, not the request: CH2 off at a
+         * fast timebase is what gives the interleaved 250 MS/s record. */
+        channel_state_t *c = (dir == 0) ? &ss->ch1 : &ss->ch2;
+        const bool was = c->enabled;
+        c->enabled = !was;
+        if (!fpga_apply_channel_enables()) {
+            c->enabled = was;
+            popup_and_redraw(dq, "Keep one CH on");
+            break;
+        }
+        if (!c->enabled && (active_channel == (uint8_t)dir))
+            active_channel = (uint8_t)(1u - (uint8_t)dir);   /* the arrows follow the live one */
+        snprintf(pb, sizeof(pb), "CH%d %s%s", dir + 1, c->enabled ? "ON" : "OFF",
+                 fpga_interleave_active() ? " 250MS/s" : "");
+        popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_LONG_UNUSED:
+        popup_and_redraw(dq, long_unused_text((button_id_t)dir));
+        break;
+
+    /* -- short presses -------------------------------------------------- */
+    case KA_FOCUS_NEXT: {
+        const key_focus_t f = key_focus_next(
+            scope_key_focus, ss->cursor.mode != CURSOR_OFF,
+            scope_mask_state() != MASK_PF_EMPTY);
+        set_focus(f);
+        popup_and_redraw(dq, key_focus_popup(f));
+        break;
+    }
+
+    case KA_ADJ_CH_SWITCH: {
+        /* "Switch CH1/CH2 Adjustment": which channel UP/DOWN act on. A
+         * channel that is off is not offered: it has nothing to adjust. */
+        const uint8_t other = (uint8_t)(1u - active_channel);
+        const channel_state_t *oc = (other == 0) ? &ss->ch1 : &ss->ch2;
+        if (oc->enabled) {
+            active_channel = other;
+            snprintf(pb, sizeof(pb), "Adjust CH%d", other + 1);
+        } else {
+            snprintf(pb, sizeof(pb), "CH%d is off", other + 1);
+        }
+        popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_PARAM_SELECT:
+        /* Only reached when scope_param_select() took it (see the caller). */
+        send_cmd(dq, cmd);
+        break;
+
+    case KA_TB_STEP: {
+        scope_adjust_timebase(ss, dir);
+        /* Push it to the FPGA. Before 2026-08-19 this line did not exist
+         * and the button only relabelled the axis while the hardware kept
+         * sampling at whatever the arm block left in reg 0x01 — so the
+         * derived s/div below was a confident, wrong number. If the write
+         * fails the rate did NOT change, so say so rather than print a
+         * label for a rate that is not in force. */
+        const bool tb_ok = fpga_apply_timebase(ss->timebase_idx);
+        char tb[12];
+        scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
+        /* Short on purpose: pb is 24 bytes and a truncated warning is
+         * worse than a terse one. */
+        snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
+        popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_VDIV_STEP: {
+        scope_adjust_vdiv(ach, dir);
+        /* Push it to the RELAYS. Before 2026-08-20 (EXP-19) this line did
+         * not exist and the button only changed the label and the
+         * counts->volts k while the frontend stayed at the boot range —
+         * the decorative-timebase-button bug (EXP-17), on the axis where
+         * it prints a confidently wrong VOLTAGE. */
+        const bool vd_ok = fpga_apply_vdiv((uint8_t)(active_channel + 1), ach->vdiv_idx);
+        /* Same derived label the status bar shows — see scope_cal.h.
+         * Two different volts/div strings for one range would be worse
+         * than the wrong one we replaced. */
+        char vd[12];
+        scope_cal_range_label((uint8_t)(active_channel + 1), ach->vdiv_idx, vd, sizeof(vd));
+        snprintf(pb, sizeof(pb), vd_ok ? "CH%d %s/div" : "CH%d %s NOT SET",
+                 active_channel + 1, vd);
+        popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_CHPOS_STEP:
+        /* Stock's channel move: the vertical position drives the channel's
+         * offset DAC from the calibration page (scope_vpos, parity C4). With no
+         * usable page scope_vpos_set() is a no-op and only the ground marker
+         * moves. fpga.c keeps the 0x1B/0x1D offset bytes pinned at 128. */
+        scope_adjust_position(ach, dir);
+        scope_vpos_set((uint8_t)(active_channel + 1), ach->position);
+        snprintf(pb, sizeof(pb), "CH%d pos %+d", active_channel + 1, (int)ach->position);
+        popup_and_redraw(dq, pb);
+        break;
+
+    case KA_TRIGCOL_STEP: {
+        /* Move the trigger point across the screen, 16 px per press.
+         * The popup reports the column it was ASKED for; the marker at
+         * the top shows where it actually landed. */
+        int tx = ss->trig_x + dir * 16;
+        if (tx < 8) tx = 8;
+        if (tx > 312) tx = 312;
+        ss->trig_x = (int16_t)tx;
+        snprintf(pb, sizeof(pb), "Trig at x=%d", tx);
+        popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_TRIGLVL_STEP: {
+        scope_adjust_trigger_level(ss, dir);
+        /* Through the ONE writer of reg 0x08, so the register, the
+         * persisted level and the marker cannot diverge. The popup shows
+         * the code the firmware records as in force, not a recomputation:
+         * the inert-controls lesson is to report the wire, not the
+         * setter's intent. */
+        const bool lv_ok = fpga_apply_trigger_level(ss->trigger.level);
+        snprintf(pb, sizeof(pb), lv_ok ? "Trig %+d  code %u" : "Trig %+d  NOT SET",
+                 ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
+        popup_and_redraw(dq, pb);
+        break;
+    }
+
+    case KA_CURSOR_MOVE:
+        scope_cursor_move((int16_t)(dir * 4));
+        cmd = DCMD_DRAW_SCOPE;
+        send_cmd(dq, cmd);
+        break;
+
+    case KA_CURSOR_NEXT:
+        scope_cursor_next_sel();
+        cmd = DCMD_DRAW_SCOPE;
+        send_cmd(dq, cmd);
+        break;
+
+    case KA_MASK_TOL_V:
+        mask_adjust_tol(dir * 2, 0, pb, sizeof(pb));
+        popup_and_redraw(dq, pb);
+        break;
+
+    case KA_MASK_TOL_H:
+        mask_adjust_tol(0, dir, pb, sizeof(pb));
+        popup_and_redraw(dq, pb);
+        break;
+
+    case KA_MASK_STOPFAIL: {
+        scope_mask_summary_t m;
+        scope_mask_summary(&m);
+        bool ok = mask_req(SCOPE_MASK_REQ_STOPFAIL, m.stop_on_fail ? 0u : 1u, 0, 0);
+        scope_mask_summary(&m);
+        snprintf(pb, sizeof(pb), ok ? "Mask stop-on-fail %s" : "Mask stop NOT SET",
+                 m.stop_on_fail ? "ON" : "OFF");
+        popup_and_redraw(dq, pb);
+        break;
+    }
+    }
+    return cmd;
+}
+
+/* Settings persistence, once per button, after the handler has had its
+ * effect. note_change() is a struct compare — no flash access at all when
+ * nothing changed, which is the overwhelming majority of presses.
+ * service() writes only once a change has been quiet for the settle
+ * window, so holding an arrow key through ten values costs one record. */
+static void settings_after_button(void)
+{
+    uint32_t now = settings_now_ms();
+    settings_store_note_change(now);
+    (void)settings_store_service(now);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -352,6 +653,17 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
     char pb[24];
+
+    /* A long press arrives as the id with BTN_LONG_FLAG set. It is handled
+     * FIRST, before the meter's softkey catch below: long SELECT/MOVE/TRIGGER
+     * are the quick mode switches and must work from the meter too. */
+    if (((unsigned)button & BTN_LONG_FLAG) != 0u) {
+        const key_ctx_t kc = key_ctx_now();
+        const key_cmd_t k = key_map(&kc, (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG), true);
+        cmd = exec_key_cmd(k, dq);
+        settings_after_button();
+        return cmd;
+    }
 
     /* Softkeys (docs/specs/platform/softkey-ui.md): in the meter, the four
      * buttons under the screen do what the bar above them says. Caught here,
@@ -372,37 +684,35 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
     }
 
+    /* The scope time view's key meanings (zoom/move stages, channel switch,
+     * measurement selection): key_model.c decides, exec_key_cmd() acts.
+     * Anything it does not claim falls through to the per-mode handlers. */
+    {
+        const key_ctx_t kc = key_ctx_now();
+        key_cmd_t k = key_map(&kc, button, false);
+        if (k.act == KA_PARAM_SELECT && !scope_param_select())
+            k.act = KA_LEGACY;       /* nothing selects measurements yet: PRM keeps its old job */
+        if (k.act != KA_LEGACY) {
+            cmd = exec_key_cmd(k, dq);
+            settings_after_button();
+            return cmd;
+        }
+    }
+
     switch (button) {
 
     /* -- Mode / Navigation ---------------------------------------- */
 
     case BTN_MENU:
-        meter_autoselect_cancel();
         if (current_mode == MODE_SETTINGS && settings_depth > 0) {
+            meter_autoselect_cancel();
             settings_depth = 0;
             settings_sub_selected = 0;
+            (void)settings_store_flush(settings_now_ms());
+            send_cmd(dq, cmd);
         } else {
-            current_mode = (device_mode_t)((current_mode + 1) % MODE_COUNT);
-            if (current_mode == MODE_SETTINGS) {
-                settings_selected = 0;
-                settings_depth = 0;
-            }
-            /* Tell the FPGA which mode we're entering.
-             * Each mode needs different FPGA commands and analog MUX config. */
-            if (current_mode == MODE_MULTIMETER) {
-                fpga_request_meter_mode(meter_submode);   /* background: no frozen buttons */
-            } else if (current_mode == MODE_SIGNAL_GEN) {
-                fpga_enter_siggen_mode();
-            } else if (current_mode == MODE_OSCILLOSCOPE) {
-                fpga_enter_scope_mode();
-            } else {
-                GPIOC->clr = (1U << 11);  /* PC11 LOW — meter disable */
-            }
+            enter_mode((device_mode_t)((current_mode + 1) % MODE_COUNT), dq);
         }
-        /* Leaving a mode, or backing out of the settings menu, is a deliberate
-         * boundary: commit now rather than waiting out the settle window. */
-        (void)settings_store_flush(settings_now_ms());
-        send_cmd(dq, cmd);
         break;
 
     /* -- Channel buttons ------------------------------------------ */
@@ -437,6 +747,10 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             {
                 /* Toggle cursor mode in time view */
                 scope_cursor_cycle_mode();
+                /* Cursors on = the arrows move them, as before the key model;
+                 * cursors off = back to zoom. */
+                set_focus(key_focus_after_cursor_change(scope_key_focus,
+                                                        ss->cursor.mode != CURSOR_OFF));
                 send_cmd(dq, cmd);
                 break;
             }
@@ -451,38 +765,10 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         break;
 
     case BTN_MOVE:
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            /* MOVE switches what UP/DOWN adjust: volts/div <-> trigger level.
-             *
-             * Until 2026-09-22 the trigger level had NO control at all:
-             * scope_adjust_trigger_level() had zero callers, so reg 0x08 was
-             * whatever the boot reconcile or the shell last wrote and NORMAL
-             * mode could not be aimed. MOVE used to cycle the edge; the edge
-             * stays reachable in Settings -> Trigger Edge (it steers the
-             * display's soft trigger; the FPGA fires on either edge, EXP-55). */
-            /* Cycle: V/div -> Trig level (UP/DN) -> Position (LT/RT)
-             * -> Mask tolerance (only while a mask exists). */
-            if (mask_focus_active()) {
-                scope_mask_focus = false;
-                popup_and_redraw(dq, "UP/DN: V/div  LT/RT: Time");
-            } else if (!scope_trig_level_focus && !scope_hpos_focus) {
-                scope_trig_level_focus = true;
-                popup_and_redraw(dq, "UP/DN: Trig level");
-            } else if (scope_trig_level_focus) {
-                scope_trig_level_focus = false;
-                scope_hpos_focus = true;
-                popup_and_redraw(dq, "LT/RT: Position");
-            } else if (scope_mask_state() != MASK_PF_EMPTY) {
-                scope_hpos_focus = false;
-                scope_mask_focus = true;
-                popup_and_redraw(dq, "UD/LR:Mask tol SEL:stop");
-            } else {
-                scope_hpos_focus = false;
-                popup_and_redraw(dq, "UP/DN: V/div  LT/RT: Time");
-            }
-        } else {
-            send_cmd(dq, cmd);
-        }
+        /* Scope: key_model.c answers it (KA_FOCUS_NEXT, executed above). What
+         * is left is the other modes, where it only repaints; the meter's
+         * softkey meaning was caught at the top. */
+        send_cmd(dq, cmd);
         break;
 
     /* -- Save (screenshot) ---------------------------------------- */
@@ -670,23 +956,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             comp_test_cycle_type();
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, cmd);
-        } else if (current_mode == MODE_OSCILLOSCOPE && mask_focus_active()) {
-            scope_mask_summary_t m;
-            scope_mask_summary(&m);
-            bool ok = mask_req(SCOPE_MASK_REQ_STOPFAIL, m.stop_on_fail ? 0u : 1u, 0, 0);
-            scope_mask_summary(&m);
-            snprintf(pb, sizeof(pb), ok ? "Mask stop-on-fail %s" : "Mask stop NOT SET",
-                     m.stop_on_fail ? "ON" : "OFF");
-            popup_and_redraw(dq, pb);
-        } else if (current_mode == MODE_OSCILLOSCOPE) {
-            /* Probe 1X/10X: scales every volts readout (scope_cal applies
-             * it). Silent until 2026-10-03, when it also scaled nothing. */
-            channel_state_t *ch = (active_channel == 0) ? &ss->ch1 : &ss->ch2;
-            scope_cycle_probe(ch);
-            snprintf(pb, sizeof(pb), "CH%d probe %s", active_channel + 1,
-                     probe_labels[ch->probe]);
-            popup_and_redraw(dq, pb);
         }
+        /* Scope time view: SELECT switches the adjusted channel -- key_model.c */
         break;
 
     /* -- UP / DOWN ------------------------------------------------ */
@@ -705,13 +976,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, cmd);
         }
-        /* Cursor movement in scope time view */
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-                 ss->cursor.mode != CURSOR_OFF) {
-            scope_cursor_move(-4);
-            cmd = DCMD_DRAW_SCOPE;
-            send_cmd(dq, cmd);
-        }
 #ifdef FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
                  scope_view != SCOPE_VIEW_TIME) {
@@ -719,42 +983,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, cmd);
         }
 #endif
-        else if (current_mode == MODE_OSCILLOSCOPE && mask_focus_active()) {
-            mask_adjust_tol(+2, 0, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE && scope_trig_level_focus) {
-            scope_adjust_trigger_level(ss, 1);
-            /* Through the ONE writer of reg 0x08, so the register, the
-             * persisted level and the marker cannot diverge. The popup shows
-             * the code the firmware records as in force, not a recomputation:
-             * the inert-controls lesson is to report the wire, not the
-             * setter's intent. */
-            const bool lv_ok = fpga_apply_trigger_level(ss->trigger.level);
-            snprintf(pb, sizeof(pb), lv_ok ? "Trig %+d  code %u" : "Trig %+d  NOT SET",
-                     ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE) {
-            channel_state_t *ch = (active_channel == 0) ? &ss->ch1 : &ss->ch2;
-            scope_adjust_vdiv(ch, 1);
-            /* Push it to the RELAYS. Before 2026-08-20 (EXP-19) this line did
-             * not exist and the button only changed the label and the
-             * counts->volts k while the frontend stayed at the boot range —
-             * the decorative-timebase-button bug (EXP-17), on the axis where
-             * it prints a confidently wrong VOLTAGE. */
-            const bool vd_ok = fpga_apply_vdiv((uint8_t)(active_channel + 1),
-                                               ch->vdiv_idx);
-            /* Same derived label the status bar shows — see scope_cal.h.
-             * Two different volts/div strings for one range would be worse
-             * than the wrong one we replaced. */
-            char vd[12];
-            scope_cal_range_label((uint8_t)(active_channel + 1),
-                                  ch->vdiv_idx, vd, sizeof(vd));
-            snprintf(pb, sizeof(pb), vd_ok ? "CH%d %s/div" : "CH%d %s NOT SET",
-                     active_channel + 1, vd);
-            popup_and_redraw(dq, pb);
-        }
         else if (current_mode == MODE_MULTIMETER &&
                  meter_layout == METER_LAYOUT_FUSE) {
             fuse_next_rating();   /* UP = larger */
@@ -790,13 +1018,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, cmd);
         }
-        /* Cursor movement */
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-                 ss->cursor.mode != CURSOR_OFF) {
-            scope_cursor_move(4);
-            cmd = DCMD_DRAW_SCOPE;
-            send_cmd(dq, cmd);
-        }
 #ifdef FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
                  scope_view != SCOPE_VIEW_TIME) {
@@ -804,42 +1025,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, cmd);
         }
 #endif
-        else if (current_mode == MODE_OSCILLOSCOPE && mask_focus_active()) {
-            mask_adjust_tol(-2, 0, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE && scope_trig_level_focus) {
-            scope_adjust_trigger_level(ss, -1);
-            /* Through the ONE writer of reg 0x08, so the register, the
-             * persisted level and the marker cannot diverge. The popup shows
-             * the code the firmware records as in force, not a recomputation:
-             * the inert-controls lesson is to report the wire, not the
-             * setter's intent. */
-            const bool lv_ok = fpga_apply_trigger_level(ss->trigger.level);
-            snprintf(pb, sizeof(pb), lv_ok ? "Trig %+d  code %u" : "Trig %+d  NOT SET",
-                     ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE) {
-            channel_state_t *ch = (active_channel == 0) ? &ss->ch1 : &ss->ch2;
-            scope_adjust_vdiv(ch, -1);
-            /* Push it to the RELAYS. Before 2026-08-20 (EXP-19) this line did
-             * not exist and the button only changed the label and the
-             * counts->volts k while the frontend stayed at the boot range —
-             * the decorative-timebase-button bug (EXP-17), on the axis where
-             * it prints a confidently wrong VOLTAGE. */
-            const bool vd_ok = fpga_apply_vdiv((uint8_t)(active_channel + 1),
-                                               ch->vdiv_idx);
-            /* Same derived label the status bar shows — see scope_cal.h.
-             * Two different volts/div strings for one range would be worse
-             * than the wrong one we replaced. */
-            char vd[12];
-            scope_cal_range_label((uint8_t)(active_channel + 1),
-                                  ch->vdiv_idx, vd, sizeof(vd));
-            snprintf(pb, sizeof(pb), vd_ok ? "CH%d %s/div" : "CH%d %s NOT SET",
-                     active_channel + 1, vd);
-            popup_and_redraw(dq, pb);
-        }
         else if (current_mode == MODE_MULTIMETER &&
                  meter_layout == METER_LAYOUT_FUSE) {
             fuse_prev_rating();
@@ -880,13 +1065,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, cmd);
         }
-        /* Cursor: switch active cursor */
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-            ss->cursor.mode != CURSOR_OFF) {
-            scope_cursor_next_sel();
-            cmd = DCMD_DRAW_SCOPE;
-            send_cmd(dq, cmd);
-        }
         /* Meter: fuse type or previous sub-mode */
         else if (current_mode == MODE_MULTIMETER) {
             if (meter_layout == METER_LAYOUT_FUSE) {
@@ -907,37 +1085,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             siggen_duty_cycle_down();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE && mask_focus_active()) {
-            mask_adjust_tol(0, -1, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE && scope_hpos_focus) {
-            /* Move the trigger point across the screen, 16 px per press.
-             * The popup reports the column it was ASKED for; the marker at
-             * the top shows where it actually landed. */
-            int tx = ss->trig_x + (-16);
-            if (tx < 8) tx = 8;
-            if (tx > 312) tx = 312;
-            ss->trig_x = (int16_t)tx;
-            snprintf(pb, sizeof(pb), "Trig at x=%d", tx);
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE) {
-            scope_adjust_timebase(ss, -1);
-            /* Push it to the FPGA. Before 2026-08-19 this line did not exist
-             * and the button only relabelled the axis while the hardware kept
-             * sampling at whatever the arm block left in reg 0x01 — so the
-             * derived s/div below was a confident, wrong number. If the write
-             * fails the rate did NOT change, so say so rather than print a
-             * label for a rate that is not in force. */
-            const bool tb_ok = fpga_apply_timebase(ss->timebase_idx);
-            char tb[12];
-            scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
-            /* Short on purpose: pb is 24 bytes and a truncated warning is
-             * worse than a terse one. */
-            snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
-            popup_and_redraw(dq, pb);
         }
         break;
 
@@ -961,13 +1108,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, cmd);
         }
-        /* Cursor: switch active cursor */
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-            ss->cursor.mode != CURSOR_OFF) {
-            scope_cursor_next_sel();
-            cmd = DCMD_DRAW_SCOPE;
-            send_cmd(dq, cmd);
-        }
         /* Meter: fuse type or next sub-mode */
         else if (current_mode == MODE_MULTIMETER) {
             if (meter_layout == METER_LAYOUT_FUSE) {
@@ -988,37 +1128,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             siggen_duty_cycle_up();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, cmd);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE && mask_focus_active()) {
-            mask_adjust_tol(0, +1, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE && scope_hpos_focus) {
-            /* Move the trigger point across the screen, 16 px per press.
-             * The popup reports the column it was ASKED for; the marker at
-             * the top shows where it actually landed. */
-            int tx = ss->trig_x + (16);
-            if (tx < 8) tx = 8;
-            if (tx > 312) tx = 312;
-            ss->trig_x = (int16_t)tx;
-            snprintf(pb, sizeof(pb), "Trig at x=%d", tx);
-            popup_and_redraw(dq, pb);
-        }
-        else if (current_mode == MODE_OSCILLOSCOPE) {
-            scope_adjust_timebase(ss, 1);
-            /* Push it to the FPGA. Before 2026-08-19 this line did not exist
-             * and the button only relabelled the axis while the hardware kept
-             * sampling at whatever the arm block left in reg 0x01 — so the
-             * derived s/div below was a confident, wrong number. If the write
-             * fails the rate did NOT change, so say so rather than print a
-             * label for a rate that is not in force. */
-            const bool tb_ok = fpga_apply_timebase(ss->timebase_idx);
-            char tb[12];
-            scope_timebase_label(ss->timebase_idx, tb, sizeof(tb));
-            /* Short on purpose: pb is 24 bytes and a truncated warning is
-             * worse than a terse one. */
-            snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
-            popup_and_redraw(dq, pb);
         }
         break;
 
@@ -1134,16 +1243,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         break;
     }
 
-    /* Settings persistence, once per button, after the handler has had its
-     * effect. note_change() is a struct compare — no flash access at all when
-     * nothing changed, which is the overwhelming majority of presses.
-     * service() writes only once a change has been quiet for the settle
-     * window, so holding an arrow key through ten values costs one record. */
-    {
-        uint32_t now = settings_now_ms();
-        settings_store_note_change(now);
-        (void)settings_store_service(now);
-    }
+    settings_after_button();
 
     return cmd;
 }

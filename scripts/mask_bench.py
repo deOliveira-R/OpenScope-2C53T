@@ -211,7 +211,7 @@ def main():
     # H -- the same controls from the buttons
     sc.cmd("mask clear"); sc.cmd("mask stop off"); sc.cmd("mask tol 8 2")
     for _ in range(4):                               # normalise the MOVE stage
-        if status(sc)["focus"] == "vdiv":
+        if status(sc)["focus"] == "zoom":
             break
         sc.cmd("btn move")
     sc.cmd("btn auto")
@@ -222,11 +222,11 @@ def main():
         s = status(sc)
     h_ok = s["state"] == "READY"
     msg = ["auto->%s" % s["state"]]
-    sc.cmd("btn move 2")                            # vdiv -> trig -> position
+    sc.cmd("btn move 2")                            # zoom -> chmove -> trigmove (LEFT/RIGHT = trigger column in both)
     s = status(sc); x0 = hpos(sc)
     sc.cmd("btn right")
     s2 = status(sc); x1 = hpos(sc)
-    ctl = s["focus"] == "position" and x1 == (x0 or 0) + 16 and s2["tol"] == (8, 2)
+    ctl = s["focus"] == "trigmove" and x1 == (x0 or 0) + 16 and s2["tol"] == (8, 2)
     msg.append("position: col %s->%s tol %s" % (x0, x1, s2["tol"]))
     sc.cmd("btn left")                               # put the column back
     sc.cmd("btn move")

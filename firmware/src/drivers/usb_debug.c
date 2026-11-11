@@ -56,6 +56,8 @@
 #include "../ui/scope_measure.h"
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_mask.h"
+#include "../ui/key_model.h"
+#include "../tasks/input_handler.h"
 #include "../ui/meter_voltage_wave.h"
 
 #include "fpga_cal_table.h"
@@ -2795,6 +2797,30 @@ static void cmd_fpga_scope_ch(const char *args)
                      (unsigned)fpga.channel_mask,
                      ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u,
                      fpga_interleave_active() ? "ACTIVE (250 MS/s)" : "inactive");
+}
+
+/* `fpga scope probe <1|2> [1x|10x]` — the channel's probe setting from the
+ * shell. SELECT used to cycle it; SELECT now switches the adjusted channel
+ * (stock's key meaning), and the probe lives in Settings -> Oscilloscope
+ * Settings, so the bench needs its own path. Same state the key changed. */
+static void cmd_fpga_scope_probe(const char *args)
+{
+    while (*args == ' ') args++;
+    uint32_t ch = 0;
+    if (parse_int(args, &ch) != 0 || (ch != 1u && ch != 2u)) {
+        usb_send_str("usage: fpga scope probe <1|2> [1x|10x]\r\n");
+        return;
+    }
+    scope_state_t *ss = scope_state_get();
+    channel_state_t *c = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+    const char *v = strchr(args, ' ');
+    if (v) {
+        while (*v == ' ') v++;
+        if      (strncmp(v, "10x", 3) == 0) c->probe = PROBE_10X;
+        else if (strncmp(v, "1x", 2) == 0)  c->probe = PROBE_1X;
+        else { usb_send_str("usage: fpga scope probe <1|2> [1x|10x]\r\n"); return; }
+    }
+    usb_debug_printf("CH%u probe %s\r\n", (unsigned)ch, probe_labels[c->probe]);
 }
 
 /* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
@@ -8235,10 +8261,12 @@ static void cmd_fwapply(void)
     }
 }
 
-/* `btn <name> [n]` — inject a button press into the input queue, downstream
+/* `btn <name> [n|long]` — inject a button press into the input queue, downstream
  * of the TMR3 key scan, so a bench script can drive the UI exactly as the
- * buttons do. POWER is refused: its handlers shut the device down or reset
- * into the factory IAP bootloader. */
+ * buttons do. `long` posts the long-press event (the id with BTN_LONG_FLAG)
+ * for the keys that have one (ui/key_model.h KEY_LONG_MASK); for the others
+ * the queue takes it and the handler ignores it. POWER is refused: its
+ * handlers shut the device down or reset into the factory IAP bootloader. */
 static void cmd_btn(const char *args)
 {
     static const struct { const char *name; button_id_t id; } names[] = {
@@ -8251,24 +8279,55 @@ static void cmd_btn(const char *args)
     size_t len = 0;
     while (args[len] && args[len] != ' ') len++;
     uint32_t n = 1;
+    bool is_long = false;
     if (args[len] == ' ') {
         const char *p = args + len;
         while (*p == ' ') p++;
-        if (*p && (parse_int(p, &n) != 0 || n == 0 || n > 50)) n = 0;
+        if (strncmp(p, "long", 4) == 0 && (p[4] == '\0' || p[4] == ' '))
+            is_long = true;
+        else if (*p && (parse_int(p, &n) != 0 || n == 0 || n > 50))
+            n = 0;
     }
     for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         if (len == strlen(names[i].name) && strncmp(args, names[i].name, len) == 0 && n) {
             unsigned sent = 0;
+            const button_id_t id = is_long ? (button_id_t)((unsigned)names[i].id | BTN_LONG_FLAG)
+                                           : names[i].id;
             for (uint32_t k = 0; k < n; k++) {
-                if (input_inject_button(names[i].id)) sent++;
-                vTaskDelay(pdMS_TO_TICKS(150));   /* let each press be handled */
+                if (input_inject_button(id)) sent++;
+                /* let each press be handled; a long one may switch modes */
+                vTaskDelay(pdMS_TO_TICKS(is_long ? 400 : 150));
             }
-            usb_debug_printf("btn %s: %u/%lu queued\r\n", names[i].name, sent, (unsigned long)n);
+            usb_debug_printf("btn %s%s: %u/%lu queued\r\n", names[i].name,
+                             is_long ? " long" : "", sent, (unsigned long)n);
             return;
         }
     }
-    usb_send_str("usage: btn ch1|ch2|move|select|trigger|prm|auto|save|menu|up|down|left|right|ok [1..50]\r\n"
+    usb_send_str("usage: btn ch1|ch2|move|select|trigger|prm|auto|save|menu|up|down|left|right|ok [1..50|long]\r\n"
                  "(power is refused: it shuts down or enters IAP)\r\n");
+}
+
+/* `keys` — the key model's state, so a long-press or MOVE-cycle test over the
+ * shell has something to read back: the mode a long press switched to, the
+ * stage the arrows are in, which channel they adjust, the enables and routing. */
+static void cmd_keys(const char *args)
+{
+    (void)args;
+    static const char *const mode_names[MODE_COUNT] = { "scope", "meter", "siggen", "settings" };
+    const scope_state_t *ss = scope_state_get();
+    usb_debug_printf("mode %s (%u)  settings-depth %d\r\n",
+                     (unsigned)current_mode < (unsigned)MODE_COUNT ? mode_names[current_mode] : "?",
+                     (unsigned)current_mode, (int)settings_depth);
+    usb_debug_printf("arrows %s  adjust CH%u  meas %s\r\n", key_focus_name(scope_key_focus),
+                     (unsigned)active_channel + 1u, ss->prm_hidden ? "HIDDEN" : "shown");
+    usb_debug_printf("CH1 %s pos %d  CH2 %s pos %d  trigger CH%u %s %s  interleave %s\r\n",
+                     ss->ch1.enabled ? "on" : "off", (int)ss->ch1.position,
+                     ss->ch2.enabled ? "on" : "off", (int)ss->ch2.position,
+                     ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u,
+                     trigger_mode_labels[ss->trigger.mode], trigger_edge_labels[ss->trigger.edge],
+                     fpga_interleave_active() ? "ACTIVE" : "inactive");
+    usb_debug_printf("long press %u ms (%u ticks), short on release for the long-capable keys\r\n",
+                     (unsigned)(KEY_LONG_TICKS * 2u), (unsigned)KEY_LONG_TICKS);
 }
 
 /* ── `mask` — waveform pass/fail (docs/specs/scope/mask-pass-fail.md) ──────────
@@ -8358,8 +8417,7 @@ static void mask_print_status(void)
                          (int)s.last_fail.worst);
     usb_debug_printf("stop-on-fail %s%s\r\n", s.stop_on_fail ? "ON" : "OFF",
                      s.hold ? "  -- HOLDING a failed record (mask run / OK to resume)" : "");
-    usb_debug_printf("move-focus %s\r\n", scope_mask_focus ? "mask" : scope_hpos_focus ? "position" :
-                     scope_trig_level_focus ? "trig-level" : "vdiv");
+    usb_debug_printf("move-focus %s\r\n", key_focus_name(scope_key_focus));
     usb_debug_printf("heap free %lu (min ever %lu)\r\n", (unsigned long)xPortGetFreeHeapSize(),
                      (unsigned long)xPortGetMinimumEverFreeHeapSize());
 }
@@ -8629,7 +8687,9 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope edge", cmd_fpga_scope_edge, 0,
           "fpga scope edge [rising|falling] Trigger edge (display soft trigger + MCU edge filter)\r\n"),
     CMD_A("btn", cmd_btn, SC_NEEDARGS,
-          "btn <name> [n]                  Inject a button press (not power) into the UI\r\n"),
+          "btn <name> [n|long]             Inject a button press (not power) into the UI; long = the long-press event\r\n"),
+    CMD_A("keys", cmd_keys, 0,
+          "keys                            Key model: mode, arrow stage, active channel, enables, long-press time\r\n"),
     CMD_A("mask", cmd_mask, 0,
           "mask [status]                   Waveform pass/fail: state, counts, last verdict\r\n"
           "mask teach [n] [ch1|ch2|both]   Teach from the next n good records (default 8)\r\n"
@@ -8649,6 +8709,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga holdread                   Retired (EXP-54)\r\n"),
     CMD_A("fpga scope ch", cmd_fpga_scope_ch, SC_NEEDARGS,
           "fpga scope ch <1|2> [on|off]    Channel enable; CH2 off = mask 1 (250 MS/s at tb <= 3)\r\n"),
+    CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
+          "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
           "fpga interleave [on|off|corr g o]  Single-channel merge; B corr gain x1e4, offset x100\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,

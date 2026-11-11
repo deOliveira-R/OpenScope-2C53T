@@ -6,13 +6,15 @@
  * Hardware-confirmed on real FNIRSI 2C53T (2026-04-01).
  *
  * TMR3 ISR fires at 500Hz, scans all 15 buttons, debounces,
- * and sends confirmed presses to a FreeRTOS queue as button_id_t.
+ * and sends confirmed presses to a FreeRTOS queue as button_id_t
+ * (long presses carry BTN_LONG_FLAG).
  *
  * See: reverse_engineering/analysis_v120/button_map_confirmed.md
  *      reverse_engineering/analysis_v120/button_scan_algorithm.md
  */
 
 #include "button_scan.h"
+#include "key_model.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Hardware-confirmed button bit → button_id_t mapping
@@ -45,22 +47,14 @@ static const button_id_t bit_to_button[15] = {
  * State
  * ═══════════════════════════════════════════════════════════════════ */
 
-#define DEBOUNCE_CONFIRM  70   /* 140ms at 500Hz — short press */
-#define REPEAT_INITIAL   250   /* 500ms after confirm before first repeat */
-#define REPEAT_INTERVAL   75   /* 150ms between repeats (~6.7/sec) */
-#define NUM_BUTTONS       15
-
-/* Buttons that auto-repeat when held (directional navigation) */
-static const uint16_t repeat_mask =
-    (1 << 10) |  /* BTN_UP */
-    (1 << 11) |  /* BTN_DOWN */
-    (1 << 12) |  /* BTN_LEFT */
-    (1 << 13);   /* BTN_RIGHT */
+/* Timing and the press state machine live in ui/key_model.c (key_scan_tick),
+ * which has no hardware in it so a host test runs exactly what runs here:
+ * confirm at 70 ticks (140 ms, stock's cmp #70), arrow repeat from 500 ms, and
+ * a long press (KEY_LONG_TICKS) for the keys in KEY_LONG_MASK. */
 
 static QueueHandle_t  s_button_queue = NULL;
 static volatile uint16_t s_raw_state = 0;
-static uint8_t s_debounce[NUM_BUTTONS] = {0};
-static uint16_t s_repeat[NUM_BUTTONS] = {0};
+static key_scan_t s_keys;
 static uint8_t s_started = 0;
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -194,39 +188,21 @@ void TMR3_GLOBAL_IRQHandler(void) {
     uint16_t events = matrix_scan();
     s_raw_state = events;
 
-    /* Debounce + auto-repeat for directional buttons.
+    /* Debounce, auto-repeat and long press: key_scan_tick() (key_model.c).
+     * Short presses of keys with a long action arrive on release; a long press
+     * arrives once, as the button id with BTN_LONG_FLAG set.
      *
-     * Initial press fires at tick DEBOUNCE_CONFIRM (140ms).
-     * For UP/DOWN/LEFT/RIGHT only: after REPEAT_INITIAL more ticks (500ms),
-     * repeats fire every REPEAT_INTERVAL ticks (150ms, ~6.7/sec).
-     *
-     * POWER long-press is NOT handled here — the input task polls GPIO
+     * POWER long-press is NOT handled here -- the input task polls GPIO
      * directly for the 3-2-1 countdown (see input_handler.c BTN_POWER). */
     BaseType_t any_woken = pdFALSE;
+    key_scan_event_t ev[KEY_NUM];
+    const uint8_t n = key_scan_tick(&s_keys, events, ev);
 
-    for (int i = 0; i < NUM_BUTTONS; i++) {
-        uint16_t mask = (1 << i);
-        if (events & mask) {
-            if (s_debounce[i] < 0xFF) s_debounce[i]++;
-            if (s_debounce[i] == DEBOUNCE_CONFIRM) {
-                /* Confirmed press — send to queue from ISR */
-                button_id_t btn = bit_to_button[i];
-                xQueueSendFromISR(s_button_queue, &btn, &any_woken);
-                s_repeat[i] = 0;
-            } else if (s_debounce[i] > DEBOUNCE_CONFIRM && (repeat_mask & mask)) {
-                /* Auto-repeat for directional buttons */
-                if (s_repeat[i] < 0xFFFE) s_repeat[i]++;
-                if (s_repeat[i] == REPEAT_INITIAL ||
-                    (s_repeat[i] > REPEAT_INITIAL &&
-                     (s_repeat[i] - REPEAT_INITIAL) % REPEAT_INTERVAL == 0)) {
-                    button_id_t btn = bit_to_button[i];
-                    xQueueSendFromISR(s_button_queue, &btn, &any_woken);
-                }
-            }
-        } else {
-            s_debounce[i] = 0;
-            s_repeat[i] = 0;
-        }
+    for (uint8_t k = 0; k < n; k++) {
+        button_id_t btn = bit_to_button[ev[k].bit];
+        if (ev[k].is_long)
+            btn = (button_id_t)((unsigned)btn | BTN_LONG_FLAG);
+        xQueueSendFromISR(s_button_queue, &btn, &any_woken);
     }
 
     portYIELD_FROM_ISR(any_woken);
@@ -238,6 +214,7 @@ void TMR3_GLOBAL_IRQHandler(void) {
 
 void button_scan_init(QueueHandle_t button_queue) {
     s_button_queue = button_queue;
+    key_scan_init(&s_keys);
 
     /* Ensure all GPIO clocks are enabled (A, B, C, E used by matrix) */
     crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
