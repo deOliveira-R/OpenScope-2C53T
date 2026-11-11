@@ -184,21 +184,29 @@ C_SOURCES += $(AT32_USBD)/src/usbd_sdr.c
 C_SOURCES += $(AT32_CDC)/cdc_class.c
 C_SOURCES += $(AT32_CDC)/cdc_desc.c
 
-# USB Sharing (parity C16): the device enumerates as CDC (the shell, same
-# endpoints, VID:PID 2E3C:5740) + a read-only mass-storage LUN synthesised from
-# the screenshot gallery (src/util/gallery_vfat.c). The CDC half stays the
-# library's cdc_class.c above. USB_MSC=0 builds the CDC-only device of before,
-# e.g. to rule the composite descriptor out on a host that misbehaves.
-USB_MSC ?= 0   # default OFF: on unit #2 macOS rejected the composite configuration (device !registered, no interfaces) and the CDC shell vanished; enable with USB_MSC=1 only to test the fix
+# USB Sharing (parity C16). USB_MSC=1: the unit BOOTS AS THE PLAIN CDC DEVICE
+# (the library's cdc_desc.c: byte for byte the USB_MSC=0 device) and
+# re-enumerates as CDC + a read-only mass-storage LUN synthesised from the
+# screenshot gallery only when asked (`usb share on`, Settings "USB Sharing").
+# If the host does not configure the composite device within 3 s it comes back
+# CDC-only by itself (src/util/usb_mode_sm.h), so the shell cannot be lost.
+# USB_MSC=0 leaves the composite code out entirely.
+# (Was 0 after unit #2's macOS rejected the composite device that the unit
+# used to boot as; the boot device no longer changes with this switch.)
+USB_MSC ?= 1
 ifeq ($(USB_MSC),1)
 C_SOURCES += src/drivers/usb_composite.c
 C_SOURCES += src/drivers/usb_msc.c
 C_SOURCES += src/util/gallery_vfat.c
 C_SOURCES += src/util/msc_scsi.c
+C_SOURCES += src/util/usb_comp_desc.c
+C_SOURCES += src/util/usb_mode_sm.c
 USB_MSC_DEFS = -DUSB_MSC=1
 else
 USB_MSC_DEFS = -DUSB_MSC=0
 endif
+# Raw block receive for `logo blk` (both variants).
+C_SOURCES += src/util/raw_block.c
 
 # FreeRTOS kernel
 C_SOURCES += $(FREERTOS)/tasks.c
@@ -295,6 +303,19 @@ OBJECTS += $(addprefix $(BUILD_DIR)/,$(notdir $(ASM_SOURCES:.s=.o)))
 OBJECTS := $(OBJECTS:.S=.o)
 vpath %.s $(sort $(dir $(ASM_SOURCES)))
 vpath %.S $(sort $(dir $(ASM_SOURCES)))
+
+# Objects of both USB_MSC variants share build/: without this, switching
+# USB_MSC on the command line relinks objects compiled for the other one.
+# A stamp names the variant the objects were built for; a different (or no)
+# stamp deletes them while the Makefile is read, before any rule runs (a
+# timestamp prerequisite cannot do this: make's 1 s mtime resolution on macOS
+# misses a switch made within a second of the last compile).
+USB_MSC_STAMP = $(BUILD_DIR)/usb_msc_$(strip $(USB_MSC)).stamp
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+ifneq ($(wildcard $(BUILD_DIR)/usb_msc_*.stamp),$(USB_MSC_STAMP))
+$(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/usb_msc_*.stamp; mkdir -p $(BUILD_DIR); touch $(USB_MSC_STAMP))
+endif
+endif
 
 $(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
@@ -995,6 +1016,30 @@ $(BUILD_DIR)/test_msc: tests/test_msc.c src/util/gallery_vfat.c src/util/gallery
 .PHONY: test-msc
 test-msc: $(BUILD_DIR)/test_msc
 	$<
+
+# USB device layer (tests/test_usb.c): the composite descriptor bytes against a
+# strict structural checker (+ mutants), the usb_conf.h packet-memory layout,
+# the endpoint-register CTR race fix on an rc_w0 model, the USB mode / fallback
+# state machine and the `logo blk` raw receiver. Then the cross-compiler
+# preprocesses the AT32 library's usbd_int.c with the firmware's flags and
+# checks that the CTR clears it compiles are usb_conf.h's fixed ones.
+$(BUILD_DIR)/test_usb: tests/test_usb.c src/util/usb_comp_desc.c src/util/usb_comp_desc.h \
+                       src/util/usb_mode_sm.c src/util/usb_mode_sm.h src/util/raw_block.c \
+                       src/util/raw_block.h src/util/cal_backup_core.c src/usb_conf.h \
+                       tests/stubs_usb/at32f403a_407.h tests/stubs_usb/at32f403a_407_usb.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Itests/stubs_usb -Isrc/util -Isrc $< \
+		src/util/usb_comp_desc.c src/util/usb_mode_sm.c src/util/raw_block.c \
+		src/util/cal_backup_core.c -o $@
+
+.PHONY: test-usb
+test-usb: $(BUILD_DIR)/test_usb
+	$<
+	@$(CC) -E $(CFLAGS) $(AT32_USBD)/src/usbd_int.c -o $(BUILD_DIR)/usbd_int.i
+	@grep -q '0x7FFFu' $(BUILD_DIR)/usbd_int.i && grep -q '0xFF7Fu' $(BUILD_DIR)/usbd_int.i \
+		|| { echo "test-usb: usbd_int.c does not compile usb_conf.h's CTR clears"; exit 1; }
+	@! grep -Eq '&= *0x7FFF|&= *0xFF7F' $(BUILD_DIR)/usbd_int.i \
+		|| { echo "test-usb: usbd_int.c still compiles the library's racy CTR clears"; exit 1; }
+	@echo "test-usb: usbd_int.c compiles the fixed CTR clears"
 
 
 # OpenScope's persisted calibration corrections (baseline deltas + interleave

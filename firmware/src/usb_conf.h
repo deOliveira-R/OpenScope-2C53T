@@ -46,6 +46,35 @@
 #define EPT7_TX_ADDR                      0x00
 #define EPT7_RX_ADDR                      0x00
 
+/* ── Endpoint-register CTR race (AT32 library bug, fixed here) ──────────
+ * The endpoint registers' TXTC (bit 7) and RXTC (bit 15) are rc_w0:
+ * writing 0 clears them, writing 1 leaves them. The library clears one with
+ *     USB->ept[n] &= 0xFF7F & USB_EPT_BIT_MASK      (USB_CLEAR_TXTC)
+ *     USB->ept[n] &= 0x7FFF & USB_EPT_BIT_MASK      (USB_CLEAR_RXTC)
+ * i.e. a read-modify-write that writes the OTHER flag back as it was read.
+ * If the other transfer completes between the read and the write (EP1
+ * carries both the CDC bulk IN 0x81 and OUT 0x01), its flag is written 0
+ * and that completion is silently lost: an IN completion lost means
+ * cdc_struct.g_tx_completed never comes back (every send then times out:
+ * the bench's "logo upload stalls at 12 %, shell dead until replug"); an OUT
+ * completion lost leaves the OUT endpoint NAKing forever (the shell goes
+ * deaf). It takes simultaneous IN and OUT traffic on one endpoint, which the
+ * shell's per-character echo during a fast upload provides.
+ * ST's HAL writes 1 to the other flag; so do these. usbd_int.c (their only
+ * user) sees them through usbd_core.h -> usb_conf.h; `make test-usb`
+ * preprocesses usbd_int.c and checks that the fixed expansion is the one
+ * that compiles. */
+#ifdef USB_CLEAR_TXTC
+#undef USB_CLEAR_TXTC
+#endif
+#ifdef USB_CLEAR_RXTC
+#undef USB_CLEAR_RXTC
+#endif
+#define USB_CLEAR_TXTC(eptn) \
+    (USB->ept[eptn] = (USB->ept[eptn] & 0xFF7Fu & USB_EPT_BIT_MASK) | USB_RXTC)
+#define USB_CLEAR_RXTC(eptn) \
+    (USB->ept[eptn] = (USB->ept[eptn] & 0x7FFFu & USB_EPT_BIT_MASK) | USB_TXTC)
+
 /* WinUSB not needed */
 #define USBD_SUPPORT_WINUSB               0
 

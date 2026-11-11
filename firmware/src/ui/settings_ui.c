@@ -20,7 +20,7 @@
 #include "shared_mem.h"
 #include "sys_prefs.h"
 #if defined(USB_MSC) && USB_MSC
-#include "usb_msc.h"
+#include "usb_debug.h"
 #endif
 #include <stdio.h>
 
@@ -174,7 +174,7 @@ static void draw_settings_top(void)
         if (i == 10) value = "DFU";     /* Firmware Update: reboot to bootloader */
         if (i == 12) value = th->name;  /* Theme (was the Display Mode value) */
 #if defined(USB_MSC) && USB_MSC
-        if (i == 13) value = usb_msc_shared() ? "On" : "Off";   /* read-only gallery drive */
+        if (i == 13) value = usb_share_wanted() ? "On" : "Off";   /* CDC + read-only gallery drive */
 #else
         if (i == 13) value = "n/a";     /* built CDC-only (USB_MSC=0) */
 #endif

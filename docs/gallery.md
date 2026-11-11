@@ -4,7 +4,9 @@ Status 2026-11-11: **screenshot save, 3x3 gallery and the `screenshot` shell
 command are implemented** (host-tested; bench test pending). **USB Sharing is
 implemented** as a read-only mass-storage drive synthesised from the gallery
 (host-tested, macOS mounts the generated image; bench test pending, see the
-USB Sharing section). The **boot-logo upload is built** (last section; bench test pending).
+USB Sharing section; since 2026-11-11 the unit boots as the plain CDC device and
+re-enumerates on request with an automatic fallback). The **boot-logo upload is
+built** (last section; bench test pending).
 
 ## What stock does (V1.2.0)
 
@@ -88,9 +90,11 @@ screenshot save          screenshot: saved <n>.bmp
 screenshot get <n>       SHOTBIN name=<n>.bmp len=38518 crc32=XXXXXXXX\r\n <38518 raw bytes> \r\nSHOTBIN END crc32=XXXXXXXX
 screenshot check <n>     screenshot: <n>.bmp stored=XXXXXXXX read=XXXXXXXX OK
 screenshot delete <n>    screenshot: delete <n>.bmp: ok
-usb [status]             USB conf=1 msc=1 share=off files=.. blocks=1024x512 state=0 cmds=.. reads=.. sectors=..
-                           ioerr=0 badcbw=0 resets=0 wrref=0 rescans=.. last_op=.. last_lba=..
-usb share [on|off]       usb: share on
+usb [status]             USB: mode=cdc state=steady share=off last_switch=none switches=0 fallbacks=0 attach_ms=0
+                         CDC: conf=1 tx_heals=0 rx_heals=0 tx_timeouts=0 tx_drops=0
+                         MSC: conf=1 medium=in files=.. blocks=1024x512 ...   (only while mode=cdc+msc)
+usb share [on|off]       usb: share on: re-enumerating as CDC + read-only drive. This port closes now ...
+usb trace                usb trace: attach as CDC+MSC, N events / +  12 ms RESET / +  60 ms SETUP 80 06 wValue=0100 ...
 ```
 
 `<n>` may be `3` or `3.bmp`.
@@ -105,9 +109,55 @@ volume `2:` **writable**. Ours differs on purpose:
 |---|---|---|
 | what the PC sees | volume `2:` itself (FAT12, 4 KB sectors) | a FAT12 volume computed per sector from the gallery |
 | writes | allowed | refused (MODE SENSE write-protect; WRITE -> DATA PROTECT / WRITE PROTECTED) |
-| CDC shell | gone while sharing | keeps working: the device is always CDC + MSC |
-| enter / leave | re-enumeration | medium inserted / ejected, no re-enumeration |
+| CDC shell | gone while sharing | kept: while sharing the device is CDC + MSC |
+| enter / leave | re-enumeration | re-enumeration, with an automatic fallback to CDC-only |
 | scope while sharing | stopped | keeps running |
+
+**Boot = plain CDC; sharing = re-enumeration with a safety net**
+(2026-11-11, `src/util/usb_mode_sm.h`). The unit always boots as the CDC-only
+device: the AT32 library's `cdc_desc.c`, byte for byte the `USB_MSC=0` device
+(class 02, bcdDevice 2.00, 2 interfaces). `usb share on` or Settings "USB
+Sharing" -> On makes the shell task re-enumerate: 200 ms for the reply to
+leave, D+ pull-up off for 600 ms (the host sees an unplug), then the composite
+descriptors and pull-up on. If the host has not selected the configuration
+within **3 s**, the unit detaches again and comes back as the CDC-only device by
+itself; `usb` then reports `last_switch=FALLBACK ...` and `usb trace` lists the
+host's requests during the failed attach (bus resets and every SETUP packet,
+timestamped, with `-> STALL` where the device refused one). It does not retry by
+itself; a new `usb share on` does. `usb share off` (or the Settings row) goes
+back to CDC-only the same way. Sharing is off at every boot.
+
+Why: on unit #2 (macOS, Apple silicon) the previous design, which BOOTED as the
+composite device, enumerated with the right strings but was never configured
+(IOUSBHostDevice `!registered, !matched`, no interfaces), and the shell was
+gone until reflashing. A static check of everything the device sends found the
+descriptors valid (`make test-usb` validates the exact bytes, 98-byte
+configuration, against a strict checker; the CDC part is byte-identical to the
+library's CDC-only descriptor) and the AT32 control path sound (EP0 multi-packet
+IN for 98 bytes, wLength clamping, SET_CONFIGURATION opening EP1..EP3, packet
+memory exactly 512 B without overlap). See "Root cause status" below.
+
+**macOS port names.** macOS names a CDC ACM port `/dev/cu.usbmodem<serial><n>`
+where `<serial>` is the USB serial string (here the 12 hex digits from the MCU
+UID, e.g. `07B2D46E71C5`) and `<n>` comes from the CDC interface (here `1`):
+unit #2 is `/dev/cu.usbmodem07B2D46E71C51`. The composite device keeps the
+serial string and puts the CDC comm interface at 0, so the name is expected to
+stay the same; because a switch is an unplug + replug, the port **closes** on
+every switch (terminal programs report the device as gone) and reappears about
+a second later; reopen it. If macOS ever picks a different suffix for the
+composite device, look for `/dev/cu.usbmodem07B2D46E71C5*`. While the
+composite device is up, the drive mounts as `OPENSCOPE` (read-only).
+
+**Root cause status.** Not reproduced statically: the descriptor bytes, the
+EP0 data stage and the packet memory all check out, and the host-visible
+difference between the two devices is just the descriptors (and, before this
+change, where they were stored: the composite tables were `const` in flash at
+0x080B97F4, the library's in SRAM; they are now in SRAM too). One real
+library defect was found on the way and fixed (`usb_conf.h`: the endpoint
+register's CTR flags were cleared with a read-modify-write that could drop the
+other direction's completion; see "CDC stall fixed" in the boot-logo section) but it
+needs simultaneous IN and OUT traffic on one endpoint, which enumeration does
+not have. The bench answer is `usb trace` after a FALLBACK.
 
 **Device.** `src/drivers/usb_composite.c`: interfaces 0-1 are the CDC (one IAD,
 the same endpoints 0x82 / 0x81 / 0x01, the library's unmodified `cdc_class.c`
@@ -115,12 +165,11 @@ reached through its handler table), interface 2 is MSC SCSI/bulk-only on
 0x83 / 0x03 (class triple 08 06 50, as stock's). Device class EF/02/01 (IAD).
 VID:PID stays **2E3C:5740** (the host scripts key "app running" on it);
 `bcdDevice` is 2.01 instead of 2.00 so a host that caches descriptors per
-VID/PID/revision (Windows) treats it as a new device. The serial string is the
-library's MCU-UID algorithm, so macOS should keep naming the port
-`/dev/cu.usbmodem<serial>1` (CDC comm is still interface 0); confirm on the
-bench. Packet memory: EPT2's never-used RX slot went to EPT3, so the device
-fits the 512 bytes exactly (`usb_conf.h`). `make USB_MSC=0` builds the CDC-only
-device of before.
+VID/PID/revision (Windows) treats it as a new device. The bytes are
+`src/util/usb_comp_desc.c` (pure C, `_Static_assert`ed against the library's
+macros in `usb_composite.c`, validated by `make test-usb`). Packet memory:
+EPT2's never-used RX slot went to EPT3, so the device fits the 512 bytes
+exactly (`usb_conf.h`). `make USB_MSC=0` leaves the composite code out.
 
 **Volume** (`src/util/gallery_vfat.c`): 512 B sectors, 4 KB clusters, 1 reserved
 sector, 2 FATs of 1 sector, 32 root entries, 1024 sectors = 512 KB, 127 clusters
@@ -147,11 +196,11 @@ no longer links. Mismatched host/device data phases follow BOT 6.7 (zero fill
 up to the host's length where a short packet cannot end the phase; dropped
 data on host-to-device; phase error where the spec asks for one).
 
-**Sharing on/off** = medium present or not (removable LUN): Settings "USB
-Sharing" (the last row, On/Off) or `usb share on|off`. Off at boot like stock,
-and because a host warns "not ejected properly" every time a shared unit is
-unplugged or reflashed. Not persisted (stock's is not either). A host eject
-(START STOP UNIT) turns sharing off. Turning it on, and every gallery save or
+**Medium.** While the composite device is up the LUN has a medium (sharing on
+inserts it). Off at boot like stock, and because a host warns "not ejected
+properly" every time a shared unit is unplugged or reflashed. Not persisted
+(stock's is not either). A host eject (START STOP UNIT) removes the medium
+(the device stays CDC + MSC until `usb share off`). Inserting it, and every gallery save or
 delete while shared (`gallery_generation()`), raises UNIT ATTENTION / MEDIUM
 MAY HAVE CHANGED once, so the host drops its cached FAT and re-reads: a shot
 saved while the drive is mounted appears on the PC within the host's polling
@@ -177,11 +226,34 @@ image instead (no FAT, no JPEG decoder, no RAM): `firmware/src/util/logo_store.h
   +0 (magic `OSL1`, version, format, 320x240, length, payload CRC32, header
   CRC32; written LAST as the commit record) and 153,600 bytes of RGB565
   little-endian at +256.
-- **Upload** (`scripts/logo_put.py upload image.png`): `logo put 153600 <crc32>`
-  erases the slot (header sector first), `logo data <off> <hex>` sends 48 bytes
-  per line at strictly sequential offsets, `logo end` re-reads the payload from
-  flash, compares the CRC and only then writes the header. A failed or
-  interrupted upload leaves the slot empty and the built-in splash shows.
+- **Upload** (`scripts/logo_put.py upload image.png [--port ...]`):
+  `logo put 153600 <crc32>` erases the slot (header sector first; 2-15 s),
+  then 150 blocks of `logo blk <off> <n> <crc32>` (header ends in `\r` only) ->
+  `logo: ready` -> `n` <= 1024 raw bytes -> `logo: ok <received>` once the block
+  is CRC-checked and programmed; `logo end` re-reads the payload from flash,
+  compares the CRC and only then writes the header. A block whose reply is lost
+  or bad is retried from `logo pos` (the device drops a half-received block
+  after 2 s of silence); 8 failures in a row abort. A failed or interrupted
+  upload leaves the slot empty and the built-in splash shows. Expected time:
+  ~5-10 s in all (erase dominates). `--hex` keeps the old 48-byte
+  `logo data <off> <hex>` lines for older firmware (minutes per upload).
+  `scripts/test_logo_put.py` drives the retry logic through a model of the
+  firmware with a lost ack, a corrupted block, a stalled block and a lost
+  `ready`.
+- **CDC stall fixed (2026-11-11)**: the first bench upload stopped at 12 % and
+  the shell never answered again until a replug: the CDC IN completion had
+  been lost (`g_tx_completed` stuck at 0). Cause: the AT32 library clears an
+  endpoint register's TXTC/RXTC flags (rc_w0) with a read-modify-write that
+  writes the *other* flag back as read, so an IN completion landing during the
+  clear of an OUT completion on the same endpoint (EP1 carries both CDC bulk
+  directions) is erased, and vice versa. The shell's per-character echo of a
+  stream of `logo data` lines made that overlap frequent. Fixed three ways:
+  `usb_conf.h` overrides `USB_CLEAR_TXTC`/`USB_CLEAR_RXTC` with ST's
+  write-1-to-the-other-flag form (`make test-usb` checks usbd_int.c compiles
+  them); the shell recovers a lost completion from the endpoint's hardware
+  state (`usb`: `tx_heals`, `rx_heals`) and drops output at once while the
+  host is not reading; and echo goes out one packet per received chunk
+  instead of one IN transfer per character.
 - **Shell**: `logo info` (state, CRC re-check), `logo show [ms]` (preview over
   the running UI), `logo clear`.
 - **Boot**: after settings and the backlight PWM are up, `logo_ui_boot_show()`
