@@ -97,7 +97,7 @@ extern volatile int8_t        settings_selected;  /* Selected menu item index */
 extern volatile int8_t        settings_depth;      /* 0=top, 1=sub-menu, 2=about, 3=osc-math, 4=component */
 extern volatile int8_t        settings_sub_selected; /* Sub-menu selection */
 extern volatile uint8_t       active_channel;      /* 0=CH1, 1=CH2 (for scope adjustments) */
-extern volatile uint8_t       meter_submode;       /* 0-10: current meter sub-mode */
+extern volatile uint8_t       meter_submode;       /* 0-11: current meter sub-mode (11 = Auto) */
 extern volatile uint8_t       meter_layout;        /* 0=full, 1=chart, 2=stats, 3=fuse */
 extern volatile uint32_t      meter_screen_draw_count; /* Incremented by draw_meter_screen() */
 extern volatile uint32_t      meter_screen_full_clear_count;
@@ -132,7 +132,7 @@ extern volatile bool          persist_enabled;
 #define SETTINGS_ITEM_COUNT     13
 #define SETTINGS_OSC_ITEM_COUNT 8
 #define SETTINGS_ABOUT_LINES    5
-#define METER_SUBMODE_COUNT     11
+#define METER_SUBMODE_COUNT     12   /* 0-10 stock functions, 11 = Auto (word 0x14) */
 /* Meter views (softkey UI, 2026-10-06), cycled by the View softkey (PRM):
  * Big -> Graph -> Stats -> Limits -> Fuse. Numbering keeps saved settings
  * meaningful: 0 was "Full", now the big reading that replaced it. */
@@ -271,6 +271,10 @@ void fuse_prev_rating(void);
 void fuse_next_type(void);
 void fuse_prev_type(void);
 const char *meter_submode_name(uint8_t submode);
+/* Select a meter function as the keys do (resets stats/hold/REL, asks the
+ * SoC in the background). Submode 11 is stock's Auto; selecting it again
+ * re-sends the word, which is what stock's AUTO key does. */
+void meter_function_select(uint8_t submode);
 const char *startup_mode_name(startup_mode_t mode);
 void startup_mode_set(startup_mode_t mode);
 void startup_mode_adjust(int dir);

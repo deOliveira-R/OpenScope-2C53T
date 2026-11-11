@@ -24,6 +24,7 @@
 #include "theme.h"
 #include "meter_data.h"
 #include "meter_stock.h"
+#include "fpga_meter_plan.h"
 #include "meter_autoselect.h"
 #include "softkey.h"
 #include "fuse_table.h"
@@ -93,6 +94,8 @@ static const meter_mode_info_t meter_modes[METER_SUBMODE_COUNT] = {
     { "Capacitance", "nF",   "",   "Auto 200nF",  "103.4",  0.52f,  200.0f,  "200nF", ""  },
     /* 10: Temperature */
     { "Temperature", "C",    "",   "Thermo",      "24.8",   0.25f,  100.0f,  "100C",   ""  },
+    /* 11: Auto (the SoC picks V / Ohm / continuity and AC/DC) */
+    { "Auto",        "V",    "",   "Auto",        "3.300",  0.17f,  20.0f,   "Auto",   ""  },
 };
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -232,9 +235,26 @@ void meter_reset_minmaxavg(void)
 
 /* The reading arrives in `unit`; bring everything stored in the stats' unit
  * over to it. Unknown units are left alone (nothing sensible to scale by). */
+/* Quantity of a unit string: 1 volts, 2 ohms, 0 anything else. In Auto the
+ * SoC can change the function under the stats (volts -> ohms): that is not a
+ * prefix step to rescale across, it is a different quantity, and stock resets
+ * min/max/mean on a function change. */
+static uint8_t unit_quantity(const char *u)
+{
+    if (strstr(u, "Ohm")) return 2;
+    if (strcmp(u, "V") == 0 || strcmp(u, "mV") == 0) return 1;
+    return 0;
+}
+
 static void meter_stats_follow_unit(const char *unit)
 {
     if (!unit || !unit[0]) return;
+    if (meter_stats_valid && meter_stats_unit[0] &&
+        unit_quantity(meter_stats_unit) != 0 && unit_quantity(unit) != 0 &&
+        unit_quantity(meter_stats_unit) != unit_quantity(unit)) {
+        meter_reset_minmaxavg();
+        if (meter_rel_enabled) meter_toggle_relative();
+    }
     if (meter_stats_valid && meter_stats_unit[0] &&
         strcmp(meter_stats_unit, unit) != 0) {
         float from = meter_unit_factor(meter_stats_unit);
@@ -413,10 +433,22 @@ static bool live_voltage_auto_ac(const meter_reading_t *reading, uint8_t mode)
            reading->aux_freq_hz >= 1.0f;
 }
 
+/* Auto (submode 11): the SoC says which function this frame is
+ * (meter_reading_t.auto_fn); until then nothing is claimed. */
+static bool live_auto_is(const meter_reading_t *reading, uint8_t mode,
+                         meter_auto_fn_t fn)
+{
+    return mode == FPGA_METER_SUBMODE_AUTO &&
+           live_reading_for_mode(reading, mode) &&
+           reading->auto_fn == (uint8_t)fn;
+}
+
 static const char *live_ac_dc(const meter_mode_info_t *m,
                               const meter_reading_t *reading,
                               uint8_t mode)
 {
+    if (live_auto_is(reading, mode, METER_AUTO_FN_ACV)) return "AC";
+    if (live_auto_is(reading, mode, METER_AUTO_FN_DCV)) return "DC";
     return live_voltage_auto_ac(reading, mode) ? "AC" : m->ac_dc;
 }
 
@@ -424,6 +456,7 @@ static const char *live_symbol(const meter_mode_info_t *m,
                                const meter_reading_t *reading,
                                uint8_t mode)
 {
+    if (live_auto_is(reading, mode, METER_AUTO_FN_ACV)) return "~";
     return live_voltage_auto_ac(reading, mode) ? "~" : m->symbol;
 }
 
@@ -431,6 +464,15 @@ static const char *live_range_label(const meter_mode_info_t *m,
                                     const meter_reading_t *reading,
                                     uint8_t mode)
 {
+    if (mode == FPGA_METER_SUBMODE_AUTO && live_reading_for_mode(reading, mode)) {
+        switch (reading->auto_fn) {
+        case METER_AUTO_FN_DCV:  return "Auto DCV";
+        case METER_AUTO_FN_ACV:  return "Auto ACV";
+        case METER_AUTO_FN_OHM:  return "Auto Ohm";
+        case METER_AUTO_FN_CONT: return "Auto Cont";
+        default:                 break;
+        }
+    }
     return live_voltage_auto_ac(reading, mode) ? "Auto ACV" : m->range_label;
 }
 
@@ -903,7 +945,7 @@ static meter_ext_t *meter_ext(void)
 
 static const char *const meter_short_names[METER_SUBMODE_COUNT] = {
     "DC V", "AC V", "DC mA", "DC A", "AC mA", "AC A",
-    "Ohms", "Contin.", "Diode", "Cap.", "Temp",
+    "Ohms", "Contin.", "Diode", "Cap.", "Temp", "Auto",
 };
 
 static const char *const meter_view_names[METER_LAYOUT_COUNT] = {
@@ -1001,11 +1043,18 @@ void meter_hold_toggle_now(void)
 
 static void meter_function_set(uint8_t m)
 {
+    if (meter_autoselect_is_running()) meter_autoselect_cancel();
     meter_submode = m;
     meter_reset_minmaxavg();
     meter_hold_release();
     if (meter_rel_enabled) meter_toggle_relative();     /* a reference in another function means nothing */
     fpga_request_meter_mode(meter_submode);             /* in the background: the UI shows dashes meanwhile */
+}
+
+void meter_function_select(uint8_t submode)
+{
+    if (submode >= METER_SUBMODE_COUNT) return;
+    meter_function_set(submode);
 }
 
 void meter_function_step(int8_t dir)

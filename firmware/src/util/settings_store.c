@@ -18,6 +18,7 @@
 #include "math_channel.h"
 #include "ui.h"
 #include "signal_gen.h"
+#include "startup_policy.h"
 
 #include <string.h>
 
@@ -59,7 +60,8 @@ static void stamp(device_config_t *cfg)
  *
  * The two functions must stay symmetric: a field captured but not applied is a
  * setting that silently does not restore, which is the exact failure this
- * whole task was fixing. Fields NOT listed here (fft_*, brightness,
+ * whole task was fixing. Startup-on-Boot (startup_mode) is owned here since M6. Fields NOT listed
+ * here (fft_*, brightness,
  * language, auto-shutdown, sound) are carried through untouched — they are
  * stored and round-tripped but nothing in the firmware owns them yet, and
  * config.h says so.
@@ -113,6 +115,7 @@ void settings_store_capture(device_config_t *cfg)
      * make every run/stop cycle look like a change to write. */
     cfg->siggen_enabled   = (sg->start_on && sg->output_enabled) ? 1u : 0u;
     cfg->siggen_start_on  = sg->start_on ? 1u : 0u;
+    cfg->startup_mode = startup_mode_to_config(startup_mode);
 
     stamp(cfg);
 }
@@ -172,6 +175,7 @@ void settings_store_apply(const device_config_t *cfg)
         sg.output_enabled = sg.start_on && (cfg->siggen_enabled != 0u);
         siggen_init(&sg);
     }
+    startup_mode  = startup_mode_from_config(cfg->startup_mode);
 
     /* Deliberately NOT restored: ss->running (a scope always boots running),
      * the channel enables (an old config with CH2 off boots with both on),

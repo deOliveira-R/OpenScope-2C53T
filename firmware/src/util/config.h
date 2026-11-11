@@ -63,11 +63,11 @@
 /* All user-configurable settings.
  *
  * WHICH FIELDS ARE LIVE: settings_store.c captures and re-applies the scope
- * block, the theme, the math block and the meter block. The FFT, signal
+ * block, the theme, the math block, the meter block and startup_mode. The FFT, signal
  * generator (siggen_waveform, siggen_frequency, siggen_amplitude, siggen_duty,
  * siggen_enabled, siggen_start_on), brightness, language, auto-shutdown and sound fields are stored
  * and round-tripped. The generator IS captured and applied (settings_store.c,
- * parity G5); brightness, language, auto-shutdown, sound and the FFT fields
+ * parity G5) and startup_mode too (M6); brightness, language, auto-shutdown, sound and the FFT fields
  * are NOT yet applied at boot — nothing in the firmware currently owns them
  * (there is no backlight PWM). Do not read those back expecting them to mean
  * anything on hardware yet. */

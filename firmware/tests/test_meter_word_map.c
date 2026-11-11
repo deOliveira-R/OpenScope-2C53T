@@ -125,6 +125,7 @@ static const submode_expectation_t submode_expectations[] = {
     {  8, "Diode",       0x050Eu, "Diode"            },
     {  9, "Capacitance", 0x050Au, "Capacitance"      },
     { 10, "Temperature", 0x0512u, "Temperature"      },
+    { 11, "Auto",        0x0514u, "Auto"             },
 };
 #define SUBMODE_EXPECTATION_COUNT \
     (sizeof(submode_expectations) / sizeof(submode_expectations[0]))

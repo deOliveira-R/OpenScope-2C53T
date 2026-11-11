@@ -170,14 +170,14 @@ and a long press of MENU goes Home; see *Long presses* above).
 | **OK** | **Hold**: freeze the reading on screen now (HOLD badge); OK again = live |
 | **LEFT / RIGHT** | Previous / next function (Fuse view: fuse type) |
 | **UP / DOWN** | Limits view: move the highlighted limit. Fuse view: rating up/down (Scan: threshold ±0.1 mV) |
-| **AUTO** | Automatic function select (DC V / AC V) |
+| **AUTO** | Stock's Auto function: the meter chip picks the function itself (V or Ohm, AC or DC, continuity) and the screen follows (`Auto DCV`, `Auto ACV`, `Auto Ohm`, `Auto Cont`). A second press re-arms it. The old software scan is the shell command `meter auto` |
 | **SAVE** | Raw-frame debug overlay |
 
 Changing function is instant: the reading shows dashes while the meter chip
 switches in the background (~1.5 s in the `-meter` image). In the plain
 `coldtrace` image only DC volts is measured; other functions show `---`.
 
-### 11 Functions
+### 11 Functions (and Auto)
 
 ```
 0: DC Voltage       6: Resistance
@@ -284,7 +284,11 @@ Scope <-> Meter
 
 Fresh or erased settings default to `Meter`: the application starts in
 Multimeter mode and configures the DMM frontend immediately after FPGA
-initialization. Selecting `Scope` keeps the normal oscilloscope startup path.
+initialization. Selecting `Scope` keeps the normal oscilloscope startup path. The choice and the
+last meter function (including Auto) are saved with the other settings and
+restored at boot, in the plain image and in the `-meter` image alike (the other
+warm-handoff images are scope-only and always start in the scope). The `mode startup`
+shell command sets it, and it is saved with the next key press.
 
 ### Oscilloscope Settings Sub-menu (depth 1)
 

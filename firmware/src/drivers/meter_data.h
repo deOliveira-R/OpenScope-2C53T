@@ -111,6 +111,9 @@ typedef struct {
      * submode's function (meter_stock_range_index) and its short label. */
     uint8_t  range_index;
     char     range_label[8];
+    /* Auto (submode 11): the function the SoC's frame belongs to, as
+     * meter_auto_fn_t (0 = not decided / not Auto). `submode` stays 11. */
+    uint8_t  auto_fn;
 
     /* Validity */
     bool     valid;              /* At least one successful parse */

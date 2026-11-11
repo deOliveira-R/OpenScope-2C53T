@@ -2386,7 +2386,7 @@ static void cmd_meter_func(const char *args)
 
     while (*args == ' ') args++;
     if (!*args || parse_int(args, &sub) != 0 || sub >= METER_SUBMODE_COUNT) {
-        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp)\r\n",
+        usb_debug_printf("usage: meter func <0-%u>  (0 DCV 1 ACV 2 DCmA 3 DCA 4 ACmA 5 ACA 6 Ohm 7 Cont 8 Diode 9 Cap 10 Temp 11 Auto)\r\n",
                          (unsigned)(METER_SUBMODE_COUNT - 1));
         return;
     }
@@ -2529,10 +2529,12 @@ static void cmd_meter_state(void)
                      r.display_str, r.unit_suffix ? r.unit_suffix : "",
                      (int)r.value,
                      (int)((r.value < 0 ? -r.value : r.value) * 1000.0f) % 1000);
-    usb_debug_printf("  range: index=%u label=%s  f6=%02X f7=%02X f8=%02X  degF=%s\r\n",
+    usb_debug_printf("  range: index=%u label=%s  f6=%02X f7=%02X f8=%02X  degF=%s"
+                     "  auto_fn=%u (0 none,1 DCV,2 ACV,3 Ohm,4 Cont) f2=%02X\r\n",
                      (unsigned)r.range_index, r.range_label,
                      (unsigned)r.dbg_frame[6], (unsigned)r.dbg_frame[7], (unsigned)r.dbg_frame[8],
-                     onoff(meter_data_fahrenheit()));
+                     onoff(meter_data_fahrenheit()), (unsigned)r.auto_fn,
+                     (unsigned)r.dbg_frame[2]);
     for (int i = 0; i < 12; i++)
         snprintf(hex + i * 3, 4, "%02X ", (unsigned)r.dbg_frame[i]);
     usb_debug_printf("  frame: %s\r\n", hex);
@@ -4885,10 +4887,10 @@ static void cmd_mode(const char *args)
             usb_debug_printf("startup=%s\r\n", startup_mode_name(startup_mode));
         } else if (strcmp(value, "scope") == 0) {
             startup_mode_set(STARTUP_SCOPE);
-            usb_send_str("startup=Scope\r\n");
+            usb_send_str("startup=Scope (saved with the next key press)\r\n");
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
-            usb_send_str("startup=Meter\r\n");
+            usb_send_str("startup=Meter (saved with the next key press)\r\n");
         } else {
             usb_send_str("Usage: mode startup [scope|meter]\r\n");
         }
@@ -8937,7 +8939,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("meter hdr", cmd_meter_hdr, 0,
           "meter hdr [on|off]              Meter TX header AA 55 (default) vs 00 00 (EXP-25) + echo ladder\r\n"),
     CMD_A("meter func", cmd_meter_func, SC_NEEDARGS,
-          "meter func <0-10>               Change function (one word, no SoC restart) and time it\r\n"),
+          "meter func <0-11>               Change function (11 = Auto, word 0x14) (one word, no SoC restart) and time it\r\n"),
     CMD_V("meter state", cmd_meter_state, SC_EXACT,
           "meter state                     Decoded frame, range, status text, link, beep, cal guard\r\n"),
     CMD_A("meter fast", cmd_meter_fast, 0,

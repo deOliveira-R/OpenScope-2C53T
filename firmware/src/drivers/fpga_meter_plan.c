@@ -23,8 +23,11 @@
  * eleven submodes wrong, invisible for five months because the frames also
  * carried the wrong header and the SoC discarded every one of them.
  *
- * Words the SoC accepts that have no local submode: 0x14 Auto (the SoC's own
- * autorange-everything function), 0x13 LIVE (the NCV screen; its frame is the
+ * 0x14 Auto (the SoC's own pick-the-function mode: voltage DC/AC, resistance,
+ * continuity) is local submode 11 since parity M2; stock's AUTO key sends it
+ * (0x0800CB8A, word 0x0514) and its menu lists it first.
+ *
+ * Words the SoC accepts that have no local submode: 0x13 LIVE (the NCV screen; its frame is the
  * seven-segment text "L1uE", not a value), 0x0F (accepted, never sent by stock).
  */
 static const uint8_t
@@ -40,6 +43,7 @@ stock_meter_word_low_for_submode[FPGA_METER_LOCAL_SUBMODE_COUNT] = {
     0x0E, /*  8 diode            */
     0x0A, /*  9 capacitance      */
     0x12, /* 10 temperature      */
+    0x14, /* 11 auto             */
 };
 
 /*
@@ -68,6 +72,7 @@ logical_function_local_submode[FPGA_METER_LOGICAL_FUNCTION_COUNT] = {
     9,                                /* Capacitance */
     10,                               /* Temperature */
 };
+/* Auto (submode 11) has no logical function: it is a SoC mode, not a jack. */
 
 typedef struct {
     uint8_t pc12;
@@ -182,6 +187,10 @@ uint8_t fpga_meter_stock_mode_for_submode(uint8_t submode)
     case 9:  /* Capacitance */
     case 10: /* Temperature -- same formatter family, different wire word */
         return 5;
+    case 11: /* Auto: the voltage posture. Auto can land on a live lead, so the
+              * frontend keeps the arm every meter entry starts from (stock
+              * moves no frontend pin on a function change at all, EXP-205). */
+        return 0;
     default:
         return FPGA_METER_INVALID_STOCK_MODE;
     }
@@ -216,6 +225,8 @@ fpga_meter_frame_family_t fpga_meter_frame_family_for_submode(uint8_t submode)
     case 9:
     case 10:
         return FPGA_METER_FRAME_FAMILY_EXTENDED;
+    case 11:
+        return FPGA_METER_FRAME_FAMILY_AUTO;
     default:
         return FPGA_METER_FRAME_FAMILY_INVALID;
     }
@@ -234,7 +245,8 @@ bool fpga_meter_frame_family_is_recovered(uint8_t family)
            family == FPGA_METER_FRAME_FAMILY_RESISTANCE ||
            family == FPGA_METER_FRAME_FAMILY_CONTINUITY ||
            family == FPGA_METER_FRAME_FAMILY_DIODE ||
-           family == FPGA_METER_FRAME_FAMILY_EXTENDED;
+           family == FPGA_METER_FRAME_FAMILY_EXTENDED ||
+           family == FPGA_METER_FRAME_FAMILY_AUTO;
 }
 
 bool fpga_meter_frame_family_has_stock_marker(uint8_t family)
@@ -262,6 +274,17 @@ bool fpga_meter_frame_family_is_acceptable(uint8_t expected, uint8_t observed)
      * and extended payloads must not be relabeled into the active UI mode just
      * because their BCD digits would format cleanly.
      */
+    /*
+     * Auto is the one family that is not fixed by the function: stock has no
+     * family gate at all, its Auto state machine (0x0803E1F2) reads the
+     * function off each frame's own bits, so the SoC may legitimately send
+     * voltage, resistance or continuity frames to the same word. Any
+     * recovered family is acceptable there. (The parser then decodes the
+     * frame as the function it identified, and gates THAT function.)
+     */
+    if (expected == FPGA_METER_FRAME_FAMILY_AUTO) {
+        return fpga_meter_frame_family_is_recovered(observed);
+    }
     return fpga_meter_frame_family_is_recovered(expected) &&
            expected == observed;
 }
