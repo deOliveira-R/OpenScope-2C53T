@@ -20,6 +20,7 @@
 #include "signal_gen.h"
 #include "startup_policy.h"
 #include "sys_prefs.h"
+#include "meas_select.h"
 
 #include <string.h>
 
@@ -121,6 +122,8 @@ void settings_store_capture(device_config_t *cfg)
     cfg->sound_enabled       = sys_prefs_volume();      /* 0..10 since C15 (was 0/1) */
     cfg->auto_shutdown_mins  = sys_prefs_autooff_mins();
     cfg->sys_prefs_mark      = CONFIG_SYS_PREFS_MARK;
+    cfg->meas_ch1_mask       = meas_select_get(0);   /* v5: Parameter Measurement */
+    cfg->meas_ch2_mask       = meas_select_get(1);
 
     stamp(cfg);
 }
@@ -158,6 +161,10 @@ void settings_store_apply(const device_config_t *cfg)
 
     meter_submode = clamp_idx(cfg->meter_submode, METER_SUBMODE_COUNT, 0);
     meter_layout  = clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);
+
+    /* v5: the measurement selection (meas_select_set drops bits above 12). */
+    meas_select_set(0, cfg->meas_ch1_mask);
+    meas_select_set(1, cfg->meas_ch2_mask);
 
     /* Signal generator (parity G5). Clamped, NaN-safe: a float field that is
      * not a number or not in range falls back to stock's factory value

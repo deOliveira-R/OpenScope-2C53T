@@ -24,6 +24,11 @@
 _Static_assert(sizeof(device_config_t) <= FLASH_REGION_RECORD_MAX,
                "device_config_t no longer fits an append record");
 
+/* The v4 -> v5 upgrade relies on v5 being v4 with fields appended before the
+ * checksum: v4's checksum sat where v5's new block starts. */
+_Static_assert(offsetof(device_config_t, meas_ch1_mask) == CONFIG_V4_SIZE - 4u,
+               "v5 must extend v4 at its checksum offset (config_upgrade_v4)");
+
 /* The settings live in their own region. This is the ONLY place the storage
  * location is named, and it is named by id — not by address — so the region
  * table decides what is writable. Do not add a flash_regions_*_abs() call to
@@ -96,6 +101,13 @@ void config_init_defaults(device_config_t *cfg)
     cfg->math_op              = 0;
     cfg->meter_submode        = 0;  /* DCV */
     cfg->meter_layout         = 0;  /* Full */
+
+    /* v5 block: what the badges showed before the selection page existed
+     * (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT; scope_measure.h ids:
+     * Freq 0, Peri 1, Duty+ 2, Vp-p 8, Vrms 10). Literal here so config.c
+     * stays free of UI headers; test_config_persist checks they agree. */
+    cfg->meas_ch1_mask        = (uint16_t)((1u << 0) | (1u << 1) | (1u << 2) | (1u << 8) | (1u << 10));
+    cfg->meas_ch2_mask        = (uint16_t)(1u << 8);
 
 
     /* Compute and store checksum */
@@ -294,6 +306,31 @@ bool config_load(device_config_t *cfg)
     return true;
 }
 
+/* A v4 record (CONFIG_V4_SIZE bytes): its magic, version 4 and its own
+ * byte-sum checksum over the first CONFIG_V4_SIZE - 4 bytes must all hold.
+ * Then those bytes are v5's leading fields; the v5 block takes its defaults
+ * and the result is restamped as v5. False (out untouched) otherwise. */
+static bool config_upgrade_v4(device_config_t *out, const uint8_t *buf, uint32_t len)
+{
+    const uint32_t body = CONFIG_V4_SIZE - 4u;
+    uint32_t magic, sum = 0, stored;
+    uint16_t version;
+    if (len != CONFIG_V4_SIZE) return false;
+    memcpy(&magic, buf, sizeof magic);
+    memcpy(&version, buf + offsetof(device_config_t, version), sizeof version);
+    memcpy(&stored, buf + body, sizeof stored);
+    for (uint32_t i = 0; i < body; i++) sum += buf[i];
+    if (magic != CONFIG_MAGIC || version != 4u || stored != sum) return false;
+
+    device_config_t c;
+    config_init_defaults(&c);                 /* v5 defaults, zeroed padding */
+    memcpy(&c, buf, body);
+    c.version  = CONFIG_VERSION;
+    c.checksum = config_compute_checksum(&c);
+    *out = c;
+    return true;
+}
+
 /* Reads the newest record. Writes *cfg ONLY when it returns CONFIG_LOAD_OK,
  * so every failure path leaves the caller's struct as it found it. */
 static config_load_result_t config_try_load(device_config_t *cfg)
@@ -324,6 +361,13 @@ static config_load_result_t config_try_load(device_config_t *cfg)
     }
     if (st != FLASH_REGION_OK) {
         return CONFIG_LOAD_IO;
+    }
+    if (len == CONFIG_V4_SIZE) {
+        /* The previous layout: upgraded, so an update keeps the settings. */
+        device_config_t up;
+        if (!config_upgrade_v4(&up, buf, len)) return CONFIG_LOAD_INVALID;
+        *cfg = up;
+        return CONFIG_LOAD_OK;
     }
     if (len != sizeof(device_config_t)) {
         /* Right region, wrong shape — e.g. a record written by a build whose
