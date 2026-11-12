@@ -1158,7 +1158,7 @@ $(BUILD_DIR)/test_measure_strip: tests/test_measure_strip.c src/ui/measure_strip
                                  src/ui/plot_markers.c src/ui/plot_markers.h src/ui/scope_measure.c \
                                  src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c \
                                  src/fonts/font.c src/fonts/font_small.c | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -DMEASURE_STRIP_HOST -Isrc/ui -Isrc/fonts -Isrc/drivers $< \
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/fonts -Isrc/drivers $< \
 		src/ui/measure_strip.c src/ui/plot_markers.c src/ui/scope_measure.c src/ui/scope_cursor.c \
 		src/ui/scope_cal.c src/ui/scope_timebase.c src/fonts/font.c src/fonts/font_small.c -lm -o $@
 

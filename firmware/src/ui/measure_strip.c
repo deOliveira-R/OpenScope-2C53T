@@ -99,17 +99,3 @@ uint16_t measure_strip_dim(uint16_t fg, uint16_t bg)
     const unsigned b = (( fg        & 0x1Fu) + ( bg        & 0x1Fu)) / 2u;
     return (uint16_t)((r << 11) | (g << 5) | b);
 }
-
-#ifndef MEASURE_STRIP_HOST
-/* Weak stub until R1-A's meas_select.c is linked: today's displayed set, so
- * this branch shows what bench/parity showed (CH1 = the `prm` selection,
- * default Freq/Peri/Duty+/Vp-p/Vrms; CH2 = Vp-p). */
-#include "scope_state.h"
-#include "scope_measure.h"
-
-__attribute__((weak)) uint16_t meas_select_get(uint8_t ch)
-{
-    return ch == 0u ? scope_state_get()->prm_mask
-                    : (uint16_t)(1u << SCOPE_PRM_VPP);
-}
-#endif

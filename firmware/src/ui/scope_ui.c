@@ -40,6 +40,7 @@
 #include "trig_policy.h"
 #include "trig_menu.h"
 #include "osc_menu_model.h"
+#include "meas_select.h"
 #include "scope_mask.h"
 #ifdef FEATURE_FFT
 #include "fft_live.h"

@@ -93,8 +93,7 @@ bool measure_strip_place(uint16_t x, uint16_t label_w, uint16_t value_w,
  * (RGB565), so it reads as the channel's but steps back from the value. */
 uint16_t measure_strip_dim(uint16_t fg, uint16_t bg);
 
-/* R1-A's interface (src/ui/meas_select.h). measure_strip.c carries a weak
- * stub returning today's displayed set until meas_select.c is linked. */
-uint16_t meas_select_get(uint8_t ch);
+/* The masks come from meas_select_get() (src/ui/meas_select.h, R1-A); the
+ * strip takes them as arguments, so it stays pure. */
 
 #endif /* MEASURE_STRIP_H */
