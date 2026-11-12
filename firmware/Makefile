@@ -139,9 +139,22 @@ C_SOURCES += src/fonts/font_large.c
 C_SOURCES += src/fonts/font_xlarge.c
 C_SOURCES += src/fonts/font_huge.c
 C_SOURCES += src/fonts/font_unit.c
-# UI round 1, R1-K: weak Oscilloscope Settings page stand-in (R1-A's real
-# osc_menu_* override it; delete this line with the file after the merge).
-C_SOURCES += src/ui/osc_menu_stub.c
+
+# ── UI round 1, R1-A: Oscilloscope Settings page (one block, for the merge) ──
+# osc_menu_model.c (pure model), osc_menu_ui.c (apply + draw), menu_frame.c (the
+# two-pane widget System Settings reuses), meas_select.c (per-channel
+# measurement selection, persisted by settings_store.c). Host test:
+# make test-osc-menu. The persistence test links meas_select.c too.
+C_SOURCES += src/ui/osc_menu_model.c
+C_SOURCES += src/ui/osc_menu_ui.c
+C_SOURCES += src/ui/menu_frame.c
+C_SOURCES += src/ui/meas_select.c
+R1A_OSC_MENU_TEST_SRCS = src/ui/osc_menu_model.c src/ui/meas_select.c src/ui/scope_state.c \
+                         src/ui/scope_roll.c src/ui/scope_measure.c src/ui/scope_cursor.c \
+                         src/ui/scope_timebase.c src/ui/scope_cal.c \
+                         src/fonts/font_small.c src/fonts/font_medium.c
+R1A_CONFIG_PERSIST_EXTRA = src/ui/meas_select.c
+# ── end R1-A block ──
 
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
@@ -753,7 +766,8 @@ test-lcd-health: $(BUILD_DIR)/test_lcd_health
 # were fixed; they run in test_config_persist now.)
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
                       src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
-                      src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c
+                      src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c \
+                      $(R1A_CONFIG_PERSIST_EXTRA)
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
@@ -981,6 +995,17 @@ $(BUILD_DIR)/test_home_model: tests/test_home_model.c src/ui/home_model.c src/ui
 
 .PHONY: test-home-model
 test-home-model: $(BUILD_DIR)/test_home_model
+	$<
+
+# R1-A: the Oscilloscope Settings page model, meas_select and the menu_frame
+# scroll rule (tests/test_osc_menu.c); labels are measured in the real fonts.
+$(BUILD_DIR)/test_osc_menu: tests/test_osc_menu.c $(R1A_OSC_MENU_TEST_SRCS) src/ui/osc_menu_model.h \
+                            src/ui/meas_select.h src/ui/menu_frame.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp -Isrc/fonts $< \
+		$(R1A_OSC_MENU_TEST_SRCS) -lm -o $@
+
+.PHONY: test-osc-menu
+test-osc-menu: $(BUILD_DIR)/test_osc_menu
 	$<
 
 # Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point

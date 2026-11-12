@@ -62,6 +62,7 @@
 #include "signal_gen.h"
 #include "dac_output.h"
 #include "sys_prefs.h"
+#include "meas_select.h"
 #include "ui.h"        /* METER_SUBMODE_COUNT / METER_LAYOUT_* and the globals */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -452,6 +453,7 @@ static void power_cycle(void)
     sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
     sys_prefs_set_volume(SYS_VOL_DEFAULT);
     sys_prefs_set_autooff_mins(0);
+    meas_select_defaults();      /* CH2's mask is RAM too (CH1's is scope_state's) */
     siggen_init(NULL);           /* main.c does this before settings_store_init() */
     dac_running = false;
     if (flash_regions_bind_w25q() != FLASH_REGION_OK) {
@@ -1350,6 +1352,8 @@ static void test_corrupt_record_cannot_produce_an_out_of_range_index(void)
     cfg.meter_submode       = 200;
     cfg.meter_layout        = 60;
     cfg.scope_trigger_level = 30000;
+    cfg.meas_ch1_mask       = 0xFFFF;
+    cfg.meas_ch2_mask       = 0xF001;
     cfg.checksum = config_compute_checksum(&cfg);
     CHECK(config_validate(&cfg), "the forged record must be internally valid");
 
@@ -1374,6 +1378,10 @@ static void test_corrupt_record_cannot_produce_an_out_of_range_index(void)
     CHECK(math_op < MATH_COUNT, "math op out of range");
     CHECK(meter_submode < METER_SUBMODE_COUNT, "meter submode out of range");
     CHECK(meter_layout < METER_LAYOUT_COUNT, "meter layout out of range");
+    CHECK(meas_select_get(0) == SCOPE_PRM_ALL_MASK && meas_select_get(1) == 0x001u,
+          "measurement masks not cut to the 12 (0x%03X 0x%03X)", meas_select_get(0), meas_select_get(1));
+    CHECK(scope_state_get()->prm_mask == SCOPE_PRM_ALL_MASK,
+          "prm_mask (the badges' copy) holds 0x%04X", scope_state_get()->prm_mask);
     CHECK(ss->trigger.level <= 103 && ss->trigger.level >= -103,
           "trigger level %d not clamped", ss->trigger.level);
 
@@ -1482,6 +1490,106 @@ static void test_a_failing_write_is_not_retried_on_every_press(void)
     fresh_device();
 }
 
+/* UI round 1 (R1-A): the Parameter Measurement page's per-channel selection
+ * is a setting like any other. */
+static void test_measurement_selection_survives_a_power_cycle(void)
+{
+    device_config_t d;
+    config_init_defaults(&d);
+    CHECK(d.meas_ch1_mask == MEAS_SELECT_CH1_DEFAULT && d.meas_ch2_mask == MEAS_SELECT_CH2_DEFAULT,
+          "config defaults 0x%03X/0x%03X are not meas_select's 0x%03X/0x%03X",
+          d.meas_ch1_mask, d.meas_ch2_mask, MEAS_SELECT_CH1_DEFAULT, MEAS_SELECT_CH2_DEFAULT);
+
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    CHECK(meas_select_get(0) == MEAS_SELECT_CH1_DEFAULT && meas_select_get(1) == MEAS_SELECT_CH2_DEFAULT,
+          "a first boot shows 0x%03X/0x%03X, not the defaults", meas_select_get(0), meas_select_get(1));
+
+    meas_select_set(0, (uint16_t)((1u << SCOPE_PRM_VMAX) | (1u << SCOPE_PRM_VMIN)));
+    meas_select_set(1, SCOPE_PRM_ALL_MASK);
+    settings_store_note_change(1000);
+    CHECK(settings_store_service(4000), "a selection change was not written");
+
+    power_cycle();
+    CHECK(meas_select_get(1) == MEAS_SELECT_CH2_DEFAULT, "power_cycle() did not reset CH2's RAM copy");
+    settings_store_init();
+    CHECK(meas_select_get(0) == ((1u << SCOPE_PRM_VMAX) | (1u << SCOPE_PRM_VMIN)),
+          "CH1 selection not restored (0x%03X)", meas_select_get(0));
+    CHECK(meas_select_get(1) == SCOPE_PRM_ALL_MASK, "CH2 selection not restored (0x%03X)", meas_select_get(1));
+}
+
+/* A v4 record (the layout every device ran until v5) as v4 wrote it: v5's
+ * first CONFIG_V4_SIZE - 4 bytes, version 4, its byte-sum after them. */
+static void forge_v4_record(const device_config_t *v5, bool break_checksum)
+{
+    uint8_t p[CONFIG_V4_SIZE];
+    const uint32_t body = CONFIG_V4_SIZE - 4u;
+    memcpy(p, v5, body);
+    const uint16_t v4 = 4;
+    memcpy(p + offsetof(device_config_t, version), &v4, sizeof v4);
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < body; i++) sum += p[i];
+    if (break_checksum) sum ^= 1u;
+    memcpy(p + body, &sum, sizeof sum);
+    forge_record(0, p, (uint16_t)sizeof p, crc32_of(p, sizeof p));
+}
+
+static void test_a_v4_record_is_upgraded_not_dropped(void)
+{
+    CHECK(sizeof(device_config_t) == CONFIG_V4_SIZE + 4u, "v5 is v4 plus the two masks");
+
+    fresh_device();
+    device_config_t c;
+    config_init_defaults(&c);
+    c.scope_ch1_vdiv = 8;
+    c.theme = THEME_NIGHT_RED;
+    c.siggen_duty = 25;
+    c.meter_layout = METER_LAYOUT_STATS;
+    forge_v4_record(&c, false);
+
+    device_config_t loaded;
+    memset(&loaded, 0x5A, sizeof loaded);
+    CHECK_LOAD(config_load_or_defaults(&loaded), CONFIG_LOAD_OK);
+    CHECK(config_validate(&loaded), "the upgraded record must validate as v5");
+    CHECK(loaded.version == CONFIG_VERSION, "upgraded record says version %u", loaded.version);
+    CHECK(loaded.scope_ch1_vdiv == 8 && loaded.theme == THEME_NIGHT_RED &&
+          loaded.siggen_duty == 25 && loaded.meter_layout == METER_LAYOUT_STATS,
+          "v4 settings lost in the upgrade");
+    CHECK(loaded.meas_ch1_mask == MEAS_SELECT_CH1_DEFAULT && loaded.meas_ch2_mask == MEAS_SELECT_CH2_DEFAULT,
+          "the new fields must come up on their defaults (0x%03X/0x%03X)",
+          loaded.meas_ch1_mask, loaded.meas_ch2_mask);
+
+    /* Through the store, as at boot. */
+    power_cycle();
+    settings_store_init();
+    CHECK(scope_state_get()->ch1.vdiv_idx == 8 && theme_get_id() == THEME_NIGHT_RED,
+          "the store did not apply the upgraded v4 settings");
+
+    /* A damaged v4 record is still refused. */
+    fresh_device();
+    forge_v4_record(&c, true);
+    CHECK_LOAD(config_load_or_defaults(&loaded), CONFIG_LOAD_INVALID);
+    CHECK(loaded.scope_ch1_vdiv == 3, "a v4 record with a bad checksum was applied");
+
+    /* So is a 56-byte record that does not say version 4 (a v3 is a
+     * different layout of the same size). */
+    fresh_device();
+    {
+        uint8_t p[CONFIG_V4_SIZE];
+        const uint32_t body = CONFIG_V4_SIZE - 4u;
+        memcpy(p, &c, body);
+        const uint16_t v3 = 3;
+        memcpy(p + offsetof(device_config_t, version), &v3, sizeof v3);
+        uint32_t sum = 0;
+        for (uint32_t i = 0; i < body; i++) sum += p[i];
+        memcpy(p + body, &sum, sizeof sum);
+        forge_record(0, p, (uint16_t)sizeof p, crc32_of(p, sizeof p));
+    }
+    CHECK_LOAD(config_load_or_defaults(&loaded), CONFIG_LOAD_INVALID);
+    CHECK(loaded.scope_ch1_vdiv == 3, "a 56-byte v3 record was upgraded as if v4");
+}
+
 static void test_capture_apply_round_trip_is_symmetric(void)
 {
     /* Every field capture() writes must be one apply() restores; a field on
@@ -1510,6 +1618,8 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     math_op = MATH_SUB;
     meter_submode = 7;
     meter_layout = METER_LAYOUT_FUSE;
+    meas_select_set(0, 0x0A5Au & SCOPE_PRM_ALL_MASK);
+    meas_select_set(1, 0x0F00u);
 
     device_config_t cfg;
     config_init_defaults(&cfg);
@@ -1519,6 +1629,7 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     scope_state_init(scope_state_get());
     theme_init(THEME_DARK_BLUE);
     math_enabled = false; math_op = 0; meter_submode = 0; meter_layout = 0;
+    meas_select_defaults();
 
     settings_store_apply(&cfg);
 
@@ -1540,13 +1651,15 @@ static void test_capture_apply_round_trip_is_symmetric(void)
     CHECK(math_enabled && math_op == MATH_SUB, "math settings lost");
     CHECK(meter_submode == 7, "meter submode lost");
     CHECK(meter_layout == METER_LAYOUT_FUSE, "meter layout lost");
+    CHECK(meas_select_get(0) == (0x0A5Au & SCOPE_PRM_ALL_MASK), "CH1 measurement selection lost");
+    CHECK(meas_select_get(1) == 0x0F00u, "CH2 measurement selection lost");
 }
 
 /* ═══════════════════════════════════════════════════════════════════
  * Shared by sections 6-9
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* One record slot: header + config payload padded to 4 (64 B today). */
+/* One record slot: header + config payload padded to 4 (68 B at v5). */
 #define REC_SLOT  (REC_HDR_SIZE + ((uint32_t)(sizeof(device_config_t) + 3u) & ~3u))
 
 /* Header layout (flash_regions.c, "Append log"): magic u16, len u16, crc u32.
@@ -2578,6 +2691,9 @@ int main(void)
         run("a failing write is not retried on every press",
             test_a_failing_write_is_not_retried_on_every_press);
         run("capture/apply round trip is symmetric", test_capture_apply_round_trip_is_symmetric);
+        run("measurement selection survives a power cycle (v5)",
+            test_measurement_selection_survives_a_power_cycle);
+        run("a v4 record is upgraded, not dropped", test_a_v4_record_is_upgraded_not_dropped);
 
         run("damage mid-log is never applied", test_damage_mid_log_is_never_applied);
         run("damage at the end of the log is never applied",
