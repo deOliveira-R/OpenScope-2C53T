@@ -37,16 +37,12 @@ void input_request_settings_flush(void);
  * write really did. Returns false if the input task did not answer in time. */
 bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *out);
 
-/* What the scope time view's arrow keys adjust (MOVE cycles it). */
+/* What the scope time view's arrow keys adjust (short SELECT cycles it). */
 extern volatile key_focus_t scope_key_focus;
 
-/*
- * Measurement selection, the short-PRM action in the scope time view. A weak
- * default in input_handler.c returns false ("not handled"), and PRM then keeps
- * its older job (the FFT view cycle). The measurement item provides a strong
- * definition that opens its parameter selection and returns true.
- */
-bool scope_param_select(void);
+/* scope_view_select() (the view with the FFT pool lifecycle) moved to
+ * scope_apply.h at the UI round 1 merge, with the other shared glue. */
+#include "scope_apply.h"
 
 /*
  * Handle OK press in settings menu (top-level and sub-menus).

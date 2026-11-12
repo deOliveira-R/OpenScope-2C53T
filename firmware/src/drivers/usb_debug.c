@@ -69,6 +69,8 @@
 #include "../ui/scope_cal.h"
 #include "../ui/scope_freq.h"
 #include "../ui/scope_measure.h"
+#include "../ui/meas_select.h"
+#include "../ui/measure_strip.h"   /* MSTRIP_MAX_PER_CH */
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
 #include "../ui/scope_geom.h"
@@ -3267,6 +3269,16 @@ static void cmd_meter_degf(const char *args)
     usb_debug_printf("meter degF: %s\r\n", onoff(meter_data_fahrenheit()));
 }
 
+/* The meter's debug overlay. Short SAVE used to toggle it; since UI round 1
+ * SAVE is the screenshot in every mode (owner decision D1) and the overlay is
+ * here only. Toggles; the meter repaints on its own when it changes. */
+static void cmd_meter_overlay(const char *args)
+{
+    (void)args;
+    meter_toggle_debug_overlay();
+    usb_send_str("meter debug overlay toggled\r\n");
+}
+
 static void cmd_meter_beep(const char *args)
 {
     bool on, m_on, active;
@@ -4914,46 +4926,63 @@ static void cmd_fpga_scope_measure(const char *args)
     }
 }
 
-/* `fpga scope prm [mask|all|default|none|toggle <0-11>|hide|show]` — the C6
- * parameter selection (stock: short PRM chooses which of the 12 show, long PRM
- * hides them). With no argument, just reports. The mask is bit i = parameter i
- * in stock's order: Freq Peri Duty+ Duty- Wid+ Wid- Vmax Vmin Vp-p Amp Vrms
- * Avg. Only the first five selected appear (the five CH1 badge slots). */
+/* `fpga scope prm [ch1|ch2] [mask|all|default|none|toggle <0-11>|hide|show]`
+ * -- which of the 12 measurements each channel shows (stock's Parameter
+ * Measurement page, ours: the Oscilloscope Settings page's Measure pane), and
+ * long PRM's hide. The channel defaults to CH1 (the command's meaning before
+ * the per-channel selection). With no action, just reports both channels.
+ * The mask is bit i = parameter i in stock's order: Freq Peri Duty+ Duty-
+ * Wid+ Wid- Vmax Vmin Vp-p Amp Vrms Avg. Everything goes through
+ * meas_select.c, the page's own store, so the page, the strip and the
+ * persisted record see the change. The strip shows the first
+ * MSTRIP_MAX_PER_CH (6) selected, in that order. */
 static void cmd_fpga_scope_prm(const char *args)
 {
     scope_state_t *ss = scope_state_get();
     while (*args == ' ') args++;
+    uint8_t ch = 0u;
+    if ((args[0] == 'c' || args[0] == 'C') && (args[1] == 'h' || args[1] == 'H') &&
+        (args[2] == '1' || args[2] == '2') && (args[3] == ' ' || args[3] == '\0')) {
+        ch = (uint8_t)(args[2] - '1');
+        args += 3;
+        while (*args == ' ') args++;
+    }
 
     if (*args) {
         uint32_t v;
-        if (strncmp(args, "all", 3) == 0)          ss->prm_mask = SCOPE_PRM_ALL_MASK;
-        else if (strncmp(args, "default", 7) == 0) ss->prm_mask = SCOPE_PRM_DEFAULT_MASK;
-        else if (strncmp(args, "none", 4) == 0)    ss->prm_mask = 0u;
+        if (strncmp(args, "all", 3) == 0)          meas_select_set(ch, SCOPE_PRM_ALL_MASK);
+        else if (strncmp(args, "default", 7) == 0) meas_select_set(ch, ch ? MEAS_SELECT_CH2_DEFAULT
+                                                                          : MEAS_SELECT_CH1_DEFAULT);
+        else if (strncmp(args, "none", 4) == 0)    meas_select_set(ch, 0u);
         else if (strncmp(args, "hide", 4) == 0)    ss->prm_hidden = true;
         else if (strncmp(args, "show", 4) == 0)    ss->prm_hidden = false;
         else if (strncmp(args, "toggle", 6) == 0) {
             const char *a = args + 6;
             while (*a == ' ') a++;
             if (parse_int(a, &v) != 0 || v >= SCOPE_PRM_COUNT) {
-                usb_send_str("usage: fpga scope prm toggle <0-11>\r\n");
+                usb_send_str("usage: fpga scope prm [ch1|ch2] toggle <0-11>\r\n");
                 return;
             }
-            ss->prm_mask ^= (uint16_t)(1u << v);
+            meas_select_toggle(ch, (uint8_t)v);
         } else if (parse_int(args, &v) == 0) {
-            ss->prm_mask = (uint16_t)(v & SCOPE_PRM_ALL_MASK);
+            meas_select_set(ch, (uint16_t)(v & SCOPE_PRM_ALL_MASK));
         } else {
-            usb_send_str("usage: fpga scope prm [mask|all|default|none|toggle <0-11>|hide|show]\r\n");
+            usb_send_str("usage: fpga scope prm [ch1|ch2] [mask|all|default|none|toggle <0-11>|hide|show]\r\n");
             return;
         }
     }
 
-    usb_debug_printf("prm mask=0x%03X hidden=%u shown:", (unsigned)ss->prm_mask,
-                     (unsigned)ss->prm_hidden);
-    uint8_t ids[SCOPE_PRM_COUNT];
-    const unsigned n = scope_prm_select(ss->prm_mask, ids, SCOPE_PRM_COUNT);
-    for (unsigned i = 0; i < n; i++)
-        usb_debug_printf(" %s%s", scope_prm_label(ids[i]), i >= 5u ? "(no slot)" : "");
-    usb_send_str("\r\n");
+    usb_debug_printf("prm hidden=%u\r\n", (unsigned)ss->prm_hidden);
+    for (uint8_t c = 0; c < 2u; c++) {
+        const uint16_t m = meas_select_get(c);
+        usb_debug_printf("CH%u mask=0x%03X shown:", (unsigned)c + 1u, (unsigned)m);
+        uint8_t ids[SCOPE_PRM_COUNT];
+        const unsigned n = scope_prm_select(m, ids, SCOPE_PRM_COUNT);
+        for (unsigned i = 0; i < n; i++)
+            usb_debug_printf(" %s%s", scope_prm_label(ids[i]),
+                             i >= MSTRIP_MAX_PER_CH ? "(no slot)" : "");
+        usb_send_str("\r\n");
+    }
 }
 
 /* `fpga scope cursor` — the cursor readouts (C7) as the screen computes them:
@@ -10313,7 +10342,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope measure", cmd_fpga_scope_measure, 0,
           "fpga scope measure [reps]       Badge values raw (uV/permille/mHz) for bench validation\r\n"),
     CMD_A("fpga scope prm", cmd_fpga_scope_prm, 0,
-          "fpga scope prm [mask|all|default|none|toggle N|hide|show]  Parameter selection (12 measurements)\r\n"),
+          "fpga scope prm [ch1|ch2] [mask|all|default|none|toggle N|hide|show]  Measurement selection per channel (12)\r\n"),
     CMD_A("fpga scope cursor", cmd_fpga_scope_cursor, 0,
           "fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n"),
     CMD_A("fpga scope freq", cmd_fpga_scope_freq, 0,
@@ -10398,6 +10427,8 @@ static const shell_cmd_t shell_cmds[] = {
           "meter keepalive [on|off]        4 Hz unobeyed poll traffic (stock sends none)\r\n"),
     CMD_A("meter degf", cmd_meter_degf, 0,
           "meter degf [on|off]             Temperature in degF (stock MOVE key in Temp)\r\n"),
+    CMD_A("meter overlay", cmd_meter_overlay, 0,
+          "meter overlay                   Toggle the meter debug overlay (was short SAVE)\r\n"),
     CMD_A("meter beep", cmd_meter_beep, 0,
           "meter beep [on|off|src <c|d|e|off> [rise|fall|both] [pu|pd]|tick <ms>]  SoC-edge buzzer\r\n"),
     CMD_A("fpga autowait", cmd_fpga_autowait, 0,

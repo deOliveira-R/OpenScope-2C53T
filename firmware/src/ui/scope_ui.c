@@ -2,11 +2,13 @@
  * OpenScope 2C53T - Oscilloscope UI
  *
  * Waveform display with:
- *   - Trigger level arrow + dotted line
- *   - Ground reference markers (CH1/CH2 zero-volt arrows)
+ *   - Plot-edge markers (plot_markers.h): CH1/CH2 0 V tags at the left
+ *     edge, the trigger-level tag at the right edge + dotted line, the
+ *     trigger-position pointer at the top
  *   - Trigger status badge (Auto/Trig'd/Ready/Stop)
- *   - Run/Stop indicator
- *   - Auto-measurement badges (Freq, Vpp, Vrms, Duty, Period, Rise)
+ *   - Run/Stop box on the plot (SCOPE_PLOT_STOP_BOX)
+ *   - The measurement strip (measure_strip.h): stock's 12 per channel,
+ *     selected by meas_select_get(), 3 columns in the channel colour
  *   - Quick-change popup overlay
  */
 
@@ -16,6 +18,8 @@
 #include "theme.h"
 #include "scope_state.h"
 #include "scope_measure.h"
+#include "measure_strip.h"
+#include "plot_markers.h"
 #include "scope_cal.h"
 #include "scope_timebase.h"
 #include "scope_roll.h"
@@ -35,6 +39,8 @@
 #include "trig_edge.h"
 #include "trig_policy.h"
 #include "trig_menu.h"
+#include "osc_menu_model.h"
+#include "meas_select.h"
 #include "scope_mask.h"
 #ifdef FEATURE_FFT
 #include "fft_live.h"
@@ -59,11 +65,22 @@
 #define SCOPE_DBG_Y     (LCD_HEIGHT - 60)  /* top of the debug strip */
 #endif
 
-/* Measurement badge layout */
-#define BADGE_W         76
-#define BADGE_H         14
-#define BADGE_PAD       2
-/* Badge rows.
+/* The red STOP box on the plot (top centre). UI round 1: R1-B adds a RUN/STOP
+ * tab to the status bar; until that is merged this box is the only STOP
+ * indicator, so it defaults ON. Build with -DSCOPE_PLOT_STOP_BOX=0 once the
+ * bar's tab is in, so no build is ever without one. */
+#ifndef SCOPE_PLOT_STOP_BOX
+#define SCOPE_PLOT_STOP_BOX 1
+#endif
+#define STOP_BOX_W      40
+#define STOP_BOX_H      16
+#define STOP_BOX_X      ((LCD_WIDTH - STOP_BOX_W) / 2)
+#define STOP_BOX_Y      (SCOPE_TOP + PM_TPOS_H + 1)   /* under the trigger-position pointer */
+
+_Static_assert(MSTRIP_PRM_COUNT == SCOPE_PRM_COUNT,
+               "measure_strip's mask width must be stock's 12 measurements");
+
+/* Bottom of the measurement strip (measure_strip.h anchors its rows there).
  *
  * BENCH 2026-08-14: with SCOPE_DEBUG_OVERLAY the badges were INVISIBLE, and had
  * been in every build — `-DSCOPE_DEBUG_OVERLAY` is unconditional in the
@@ -71,15 +88,13 @@
  * overlay's four lines start at SCOPE_DBG_Y (=180) and run to ~219, painting
  * straight over rows that sat at 193 and 208.
  *
- * Debug builds therefore stack the badges ABOVE the debug strip. That costs
+ * Debug builds therefore stack the strip ABOVE the debug strip. That costs
  * waveform height, which is the right trade: an overlay build is a bench build,
  * and a measurement you cannot see is worth less than the pixels it hides. */
 #ifdef SCOPE_DEBUG_OVERLAY
-#define BADGE_ROW_Y     (SCOPE_DBG_Y - BADGE_H - 2)
-#define BADGE_ROW2_Y    (BADGE_ROW_Y - BADGE_H - 1)
+#define STRIP_BOTTOM    SCOPE_DBG_Y
 #else
-#define BADGE_ROW_Y     (SCOPE_BOT - BADGE_H - 2)
-#define BADGE_ROW2_Y    (BADGE_ROW_Y - BADGE_H - 1)
+#define STRIP_BOTTOM    SCOPE_BOT
 #endif
 
 /*
@@ -130,7 +145,10 @@ void scope_show_popup(const char *text)
         i++;
     }
     popup_text[i] = '\0';
-    if (current_mode == MODE_OSCILLOSCOPE) {
+    /* The scope's own popup rides on the plot; over the Oscilloscope Settings
+     * page there is no plot being drawn, so it takes the overlay path the
+     * other screens use (main.c services it while the page is up). */
+    if (current_mode == MODE_OSCILLOSCOPE && !osc_menu_is_open()) {
         popup_frames = POPUP_DURATION;
         popup_painted = false;
     } else {
@@ -220,165 +238,107 @@ void draw_scope_grid(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Trigger level indicator
+ * Trigger level line
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* trig_y comes from trigger_marker_y_*() below: the row where the HARDWARE
- * fires, not `level` pixels above centre (which is what this drew until
- * 2026-09-22, unrelated to an autofit trace). */
-static void draw_trigger_indicator(const scope_state_t *ss, const theme_t *th,
-                                   int16_t trig_y)
+/* The dotted line across the plot at the trigger level; denser while UP/DOWN
+ * are adjusting it, so the user can see which control the arrows own. The
+ * tags at the plot edges are drawn by draw_plot_markers() below. */
+static void draw_trigger_line(const theme_t *th, int16_t trig_y)
 {
     if (trig_y < SCOPE_TOP + 2) trig_y = SCOPE_TOP + 2;
     if (trig_y > SCOPE_BOT - 3) trig_y = SCOPE_BOT - 3;
-
-    /* Right-edge arrow: small triangle pointing left */
-    uint16_t ax = LCD_WIDTH - 1;
-    lcd_set_pixel(ax,     (uint16_t)trig_y, th->trigger);
-    lcd_set_pixel(ax - 1, (uint16_t)trig_y, th->trigger);
-    lcd_set_pixel(ax - 2, (uint16_t)trig_y, th->trigger);
-    lcd_set_pixel(ax - 3, (uint16_t)trig_y, th->trigger);
-    lcd_set_pixel(ax - 4, (uint16_t)trig_y, th->trigger);
-    lcd_set_pixel(ax - 1, (uint16_t)(trig_y - 1), th->trigger);
-    lcd_set_pixel(ax - 2, (uint16_t)(trig_y - 2), th->trigger);
-    lcd_set_pixel(ax - 1, (uint16_t)(trig_y + 1), th->trigger);
-    lcd_set_pixel(ax - 2, (uint16_t)(trig_y + 2), th->trigger);
-
-    /* Dotted horizontal line at trigger level; denser while UP/DOWN are
-     * adjusting it, so the user can see which control the arrows own. */
     for (uint16_t x = 0; x < LCD_WIDTH - 6; x += (scope_trig_level_focus ? 2u : 4u))
         lcd_set_pixel(x, (uint16_t)trig_y, th->trigger);
-
-    /* Trigger edge indicator (small arrow next to the trigger arrow) */
-    if (ss->trigger.edge == TRIG_RISING) {
-        /* Up arrow: rising edge */
-        lcd_set_pixel(ax - 6, (uint16_t)(trig_y + 2), th->trigger);
-        lcd_set_pixel(ax - 6, (uint16_t)(trig_y + 1), th->trigger);
-        lcd_set_pixel(ax - 6, (uint16_t)trig_y,       th->trigger);
-        lcd_set_pixel(ax - 6, (uint16_t)(trig_y - 1), th->trigger);
-        lcd_set_pixel(ax - 7, (uint16_t)trig_y,       th->trigger);
-        lcd_set_pixel(ax - 5, (uint16_t)trig_y,       th->trigger);
-    } else {
-        /* Down arrow: falling edge */
-        lcd_set_pixel(ax - 6, (uint16_t)(trig_y - 2), th->trigger);
-        lcd_set_pixel(ax - 6, (uint16_t)(trig_y - 1), th->trigger);
-        lcd_set_pixel(ax - 6, (uint16_t)trig_y,       th->trigger);
-        lcd_set_pixel(ax - 6, (uint16_t)(trig_y + 1), th->trigger);
-        lcd_set_pixel(ax - 7, (uint16_t)trig_y,       th->trigger);
-        lcd_set_pixel(ax - 5, (uint16_t)trig_y,       th->trigger);
-    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Ground reference markers (left edge)
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void draw_ground_markers(const scope_state_t *ss, const theme_t *th)
-{
-    /* CH1 ground marker — small right-pointing arrow with "1" */
-    if (ss->ch1.enabled) {
-        int16_t ch1_y = SCOPE_MID_Y - ss->ch1.position;
-        if (ch1_y >= SCOPE_TOP + 2 && ch1_y <= SCOPE_BOT - 3) {
-            lcd_set_pixel(0, (uint16_t)ch1_y, th->ch1);
-            lcd_set_pixel(1, (uint16_t)ch1_y, th->ch1);
-            lcd_set_pixel(2, (uint16_t)ch1_y, th->ch1);
-            lcd_set_pixel(3, (uint16_t)ch1_y, th->ch1);
-            lcd_set_pixel(1, (uint16_t)(ch1_y - 1), th->ch1);
-            lcd_set_pixel(2, (uint16_t)(ch1_y - 2), th->ch1);
-            lcd_set_pixel(1, (uint16_t)(ch1_y + 1), th->ch1);
-            lcd_set_pixel(2, (uint16_t)(ch1_y + 2), th->ch1);
-            font_draw_string(5, (uint16_t)(ch1_y - 5), "1",
-                             th->ch1, th->ch1, &font_small);
-        }
-    }
-
-    /* CH2 ground marker */
-    if (ss->ch2.enabled) {
-        int16_t ch2_y = SCOPE_MID_Y - ss->ch2.position;
-        if (ch2_y >= SCOPE_TOP + 2 && ch2_y <= SCOPE_BOT - 3) {
-            lcd_set_pixel(0, (uint16_t)ch2_y, th->ch2);
-            lcd_set_pixel(1, (uint16_t)ch2_y, th->ch2);
-            lcd_set_pixel(2, (uint16_t)ch2_y, th->ch2);
-            lcd_set_pixel(3, (uint16_t)ch2_y, th->ch2);
-            lcd_set_pixel(1, (uint16_t)(ch2_y - 1), th->ch2);
-            lcd_set_pixel(2, (uint16_t)(ch2_y - 2), th->ch2);
-            lcd_set_pixel(1, (uint16_t)(ch2_y + 1), th->ch2);
-            lcd_set_pixel(2, (uint16_t)(ch2_y + 2), th->ch2);
-            font_draw_string(5, (uint16_t)(ch2_y - 5), "2",
-                             th->ch2, th->ch2, &font_small);
-        }
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Trigger status badge
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* What the acquisition actually did, not what the mode is called (parity C3,
- * trig_policy.h): before C3 NORMAL said "Trig'd" with no signal at all and
- * AUTO said "Auto" while showing two non-simultaneous channels (#84). Now:
- * Trig'd / Wait / Auto / Auto* (free-run, CH1 and CH2 two moments) / Await
- * (SINGLE armed, stock's "Await Trigger...") / STOP (stopped, or SINGLE
- * captured, as stock). main.c hashes fpga_trigger_status() into the redraw
- * epoch, so the badge repaints when it changes. */
-#define TRIG_BADGE_W  44
-#define TRIG_BADGE_X  (LCD_WIDTH - TRIG_BADGE_W - 2)
-#define TRIG_BADGE_Y  (SCOPE_TOP + 2)
-#define TRIG_BADGE_H  14
-
-static void draw_trigger_status(const scope_state_t *ss, const theme_t *th)
-{
-    (void)ss;
-    const trig_status_t st = (trig_status_t)fpga_trigger_status();
-    const char *label = trig_status_label(st);
-    const trig_tone_t tone = trig_status_tone(st);
-    const uint16_t color = (tone == TRIG_TONE_OK)   ? th->success :
-                           (tone == TRIG_TONE_INFO) ? th->highlight : th->warning;
-
-    /* Draw badge at top-right of waveform area */
-    uint16_t bw = TRIG_BADGE_W;
-    uint16_t bx = TRIG_BADGE_X;
-    uint16_t by = TRIG_BADGE_Y;
-    lcd_fill_rect(bx, by, bw, TRIG_BADGE_H, th->background);
-    font_draw_string_right(LCD_WIDTH - 4, by + 1, label,
-                           color, th->background, &font_small);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Run/Stop indicator
+ * Run/Stop indicator (SCOPE_PLOT_STOP_BOX; R1-B's bar tab replaces it)
  * ═══════════════════════════════════════════════════════════════════ */
 
 static void draw_run_stop(const scope_state_t *ss, const theme_t *th)
 {
+#if SCOPE_PLOT_STOP_BOX
     if (!ss->running) {
-        /* Prominent STOP badge top-center */
-        uint16_t bw = 40;
-        uint16_t bx = (LCD_WIDTH - bw) / 2;
-        lcd_fill_rect(bx, SCOPE_TOP + 2, bw, 16, th->warning);
-        font_draw_string_center(LCD_WIDTH / 2, SCOPE_TOP + 4, "STOP",
+        lcd_fill_rect(STOP_BOX_X, STOP_BOX_Y, STOP_BOX_W, STOP_BOX_H, th->warning);
+        font_draw_string_center(LCD_WIDTH / 2, STOP_BOX_Y + 2, "STOP",
                                 th->text_primary, th->warning, &font_small);
     }
+#else
+    (void)ss; (void)th;
+#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Measurement badges
+ * Measurement strip (measure_strip.h)
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_one_badge(uint16_t x, uint16_t y, const char *label,
-                           const char *value, uint16_t color, const theme_t *th)
+/* The full-width AUX row (above the measurement rows) is reserved while the
+ * mask pass/fail readout or the CAN analyser's line has something to say. */
+static bool strip_aux(void)
 {
-    /* Semi-transparent background (just use dim background) */
-    lcd_fill_rect(x, y, BADGE_W, BADGE_H, th->background);
-
-    /* Label in dim color, value in bright channel color */
-    font_draw_string(x + BADGE_PAD, y + 1, label,
-                     th->text_secondary, th->background, &font_small);
-    font_draw_string_right(x + BADGE_W - BADGE_PAD, y + 1, value,
-                           color, th->background, &font_small);
+    return can_scope_screen_on() || scope_mask_state() != MASK_PF_EMPTY;
 }
 
-/* Shown wherever the instrument cannot measure the quantity today. */
-#define MEAS_NA  "--"
+/* Every user of the strip's geometry (the live band, the roll band, the mask
+ * strip, the cursor readout, the AUX row) reads this one function, so they
+ * cannot disagree about where the strip starts. */
+static uint16_t strip_top(const scope_state_t *ss)
+{
+    return measure_strip_top(meas_select_get(0), ss->ch1.enabled,
+                             meas_select_get(1), ss->ch2.enabled,
+                             ss->prm_hidden, strip_aux(), STRIP_BOTTOM);
+}
+
+static void strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
+{
+    measure_strip_layout(meas_select_get(0), ss->ch1.enabled,
+                         meas_select_get(1), ss->ch2.enabled,
+                         ss->prm_hidden, strip_aux(), STRIP_BOTTOM, L);
+}
+
+/* One cell: label left in the dimmed channel colour, value right in the
+ * channel colour (text_secondary "--" when refused). measure_strip_place()
+ * guarantees the two never overlap; when they would not fit it keeps the
+ * value only (the host test shows no stock label/value pair gets there). */
+static void draw_strip_cell(const mstrip_cell_t *c, const scope_prm_t *p,
+                            const theme_t *th)
+{
+    char buf[16];
+    const uint16_t chc = c->ch ? th->ch2 : th->ch1;
+    uint16_t vc = chc;
+    if (p == NULL || p->unit == SCOPE_PRM_UNIT_NONE) {
+        snprintf(buf, sizeof(buf), "--");   /* cannot measure it today */
+        vc = th->text_secondary;
+    } else {
+        scope_prm_format(p, buf, sizeof(buf));
+    }
+    const char *label = scope_prm_label(c->prm);
+    uint16_t lx, vx;
+    const bool both = measure_strip_place(c->x, font_string_width(label, &font_small),
+                                          font_string_width(buf, &font_small), &lx, &vx);
+    if (both)
+        font_draw_string(lx, (uint16_t)(c->y + 1), label,
+                         measure_strip_dim(chc, th->background), th->background, &font_small);
+    font_draw_string(vx, (uint16_t)(c->y + 1), buf, vc, th->background, &font_small);
+}
+
+/* Paint the measurement rows: clear them (full width, so the live band and
+ * the strip meet on one row edge), then every cell. p[ch] NULL = no record. */
+static void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
+                             const scope_params_t *p2, const theme_t *th)
+{
+    if (L->rows == 0u)
+        return;
+    const uint16_t y0 = (uint16_t)(L->bottom - L->rows * MSTRIP_ROW_H);
+    lcd_fill_rect(0, y0, LCD_WIDTH, (uint16_t)(L->rows * MSTRIP_ROW_H), th->background);
+    for (unsigned k = 0; k < L->n; k++) {
+        const mstrip_cell_t *c = &L->cell[k];
+        const scope_params_t *pp = c->ch ? p2 : p1;
+        draw_strip_cell(c, pp ? &pp->v[c->prm] : NULL, th);
+    }
+}
+
 
 /* Rate for anything timed off the record on screen (Freq, widths, cursors):
  * the PUBLISHED record's rate — doubled when it is the interleaved merge
@@ -460,11 +420,6 @@ static bool measure_live_channel(const volatile uint8_t *buf,
 /* No float formatting: the firmware links newlib-nano without
  * -u _printf_float, so "%f" prints nothing. Tenths are assembled by hand
  * here, and in scope_cursor.c for the cursor readout. */
-static void fmt_counts(char *b, size_t n, unsigned v)
-{
-    snprintf(b, n, "%ucnt", v);
-}
-
 __attribute__((unused))   /* the C6 params format via scope_prm_format */
 static void fmt_tenths(char *b, size_t n, float v, const char *unit)
 {
@@ -511,22 +466,6 @@ static void fmt_seconds(char *b, size_t n, float s)
     }
 }
 
-/*
- * Format a voltage with automatic mV/V ranging, integer math only (same
- * reason as fmt_tenths: newlib-nano's "%f" prints nothing). Sub-volt values
- * read as whole millivolts ("154mV"); at/above 1 V, two decimals ("1.66V").
- * Rounding is done once, in millivolts, so 0.9995 V shows "1.00V" rather than
- * the nonsense "1000mV".
- */
-static void fmt_volts(char *b, size_t n, float v)
-{
-    if (v < 0.0f) v = 0.0f;
-    unsigned mv = (unsigned)(v * 1000.0f + 0.5f);   /* millivolts, rounded */
-    if (mv < 1000u)
-        snprintf(b, n, "%umV", mv);
-    else
-        snprintf(b, n, "%u.%02uV", mv / 1000u, (mv % 1000u) / 10u);
-}
 
 /*
  * Vertical calibration now lives in scope_cal.c, per CHANNEL as well as per
@@ -578,15 +517,15 @@ _Static_assert(SCOPE_CURSOR_SAMPLES_PER_PIXEL == 1.0f,
                "cursor dt and 1/dt would be wrong");
 
 /*
- * Mask readout: the third slot of badge row 2 (where the legend sits when no
- * mask exists). Below the live band, so the compositor never paints over it,
+ * Mask readout: the strip's AUX row (measure_strip.h), reserved while a mask
+ * exists. Below the live band, so the compositor never paints over it,
  * and refreshed on its own epoch from main.c (scope_ui_mask_slot_refresh) --
  * the measurement badges' "stale until the next full repaint" is exactly the
  * defect a pass/fail counter must not have. A SKIP is shown as such: a
  * frozen PASS count over records that are no longer being judged would be
  * the project's signature stable-plausible-wrong number.
  */
-#define MASK_SLOT_X ((uint16_t)(2u + 2u * (BADGE_W + 2u)))
+#define MASK_SLOT_X 4u
 
 static const char *mask_skip_short(mask_pf_reason_t r)
 {
@@ -602,23 +541,13 @@ static const char *mask_skip_short(mask_pf_reason_t r)
     }
 }
 
-static void draw_legend_slot(const theme_t *th, bool live)
-{
-    const uint16_t x = MASK_SLOT_X, y = BADGE_ROW2_Y;
-    const char *note = live ? "cnt=ADC raw  --=no tb/cal" : "DEMO trace - no capture";
-    lcd_fill_rect(x, y, (uint16_t)(LCD_WIDTH - x), BADGE_H, th->background);
-    if (font_string_width(note, &font_small) > LCD_WIDTH - x)
-        note = live ? "--=no tb/cal" : "DEMO trace";
-    font_draw_string(x, y + 1, note, th->text_secondary, th->background, &font_small);
-}
-
 static void draw_mask_slot(const theme_t *th)
 {
     scope_mask_summary_t m;
     scope_mask_summary(&m);
     char b[32];
     uint16_t c = th->text_secondary;
-    const uint16_t x = MASK_SLOT_X, y = BADGE_ROW2_Y;
+    const uint16_t x = MASK_SLOT_X, y = strip_top(scope_state_get());   /* the AUX row */
 
     if (m.state == MASK_PF_TEACHING) {
         if (m.teach_last_reject != MASK_PF_R_OK)
@@ -643,33 +572,45 @@ static void draw_mask_slot(const theme_t *th)
                  (unsigned long)m.failed);
         c = (m.last.verdict == MASK_PF_V_FAIL) ? th->warning : th->success;
     }
-    lcd_fill_rect(x, y, (uint16_t)(LCD_WIDTH - x), BADGE_H, th->background);
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
     font_draw_string(x, y + 1, b, c, th->background, &font_small);
 }
 
-/* CAN readout: the whole of badge row 2 while `can screen on`. Below the live
- * band like the mask slot, refreshed from main.c at 5 Hz. Green = every frame
+/* CAN readout: the strip's AUX row while `can screen on` (it wins the row
+ * over the mask readout, as it won badge row 2 before). Below the live band
+ * like the mask slot, refreshed from main.c at 5 Hz. Green = every frame
  * acknowledged with a good CRC; warning colour = NAK, CRC failure or bus error. */
 void scope_ui_can_row_refresh(void)
 {
     const theme_t *th = theme_get();
     char line[56];
     int ok = can_scope_screen_line(line, sizeof(line));
-    lcd_fill_rect(0, BADGE_ROW2_Y, LCD_WIDTH, BADGE_H, th->background);
-    font_draw_string(4, (uint16_t)(BADGE_ROW2_Y + 1), line,
+    const uint16_t y = strip_top(scope_state_get());          /* the AUX row */
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
+    font_draw_string(4, (uint16_t)(y + 1), line,
                      ok ? th->success : th->warning, th->background, &font_small);
 }
 
 void scope_ui_mask_slot_refresh(void)
 {
-    if (scope_mask_state() == MASK_PF_EMPTY)
-        draw_legend_slot(theme_get(), fpga_data_ready());   /* mask just cleared */
-    else
+    if (can_scope_screen_on())
+        return;                                  /* the CAN line owns the AUX row */
+    if (scope_mask_state() == MASK_PF_EMPTY) {
+        /* Mask just cleared: the AUX row is released. Blank the row it had
+         * (the top row a strip WITH aux would have); the live band extends
+         * over it on its next frame, the next full repaint redraws the grid. */
+        const scope_state_t *ss = scope_state_get();
+        const uint16_t y = measure_strip_top(meas_select_get(0), ss->ch1.enabled,
+                                             meas_select_get(1), ss->ch2.enabled,
+                                             ss->prm_hidden, true, STRIP_BOTTOM);
+        lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, theme_get()->background);
+    } else {
         draw_mask_slot(theme_get());
+    }
 }
 
 /*
- * Measurement badges.
+ * Measurement strip (was: the measurement badges).
  *
  * Until 2026-08-13 this function printed the string literals "1.00kHz",
  * "707mV", "50.0%" and "1.00ms" — four numbers that had never touched an
@@ -702,163 +643,124 @@ void scope_ui_mask_slot_refresh(void)
  * quantities raw for the bench, from the same sources, so what EXP-19
  * validates is what the screen shows.
  */
+/* Freq for one channel, from the spectral estimator, HELD across a short run
+ * of refusals. `need` false (no Freq/Peri cell for that channel) skips the
+ * estimate and forgets the hold, so a later selection never shows an old
+ * reading. */
+/*
+ * Freq — spectral, not edge-counted, and it declines rather than guess.
+ *
+ * History, because it is the whole justification for the shape of this:
+ * Freq = fs / period_samples was wired up on 2026-08-18 and removed the
+ * same evening, measuring +1.6% to +112% against a known drive (EXP-13).
+ * The sample rate was never the problem; the rising-crossing period
+ * estimator found spurious crossings.
+ *
+ * EXP-16 then showed it was not the estimator either. Edge counting,
+ * autocorrelation and a spectral peak all failed on the SAME bench records
+ * and all succeeded on the same others: roughly a fifth to a half of
+ * capture records are TORN, with their spectral energy smeared over ~6
+ * bins. One record scored 0.380 coherence whole and 0.999 over its last
+ * half. Tearing does not track signal amplitude, so it cannot be screened
+ * out in advance — it has to be detected per record, which is exactly what
+ * scope_freq does. Against 72 bench captures it answers 54% of the time,
+ * is within 3.4% when it does, and is never wrong.
+ *
+ * The reading is HELD across a short run of refusals so the badge does not
+ * strobe at the tearing rate; after FREQ_HOLD_FRAMES consecutive refusals
+ * it blanks, because a stale number with no expiry is just a wrong number
+ * that used to be right.
+ */
+static float freq_held(uint8_t ch, bool need, bool have,
+                       const volatile uint8_t *buf, float fs)
+{
+    static float    freq_hz[2];
+    static uint16_t freq_stale[2];
+    if (ch > 1u)
+        return 0.0f;
+    if (!need) {
+        freq_hz[ch] = 0.0f;
+        freq_stale[ch] = FREQ_HOLD_FRAMES;
+        return 0.0f;
+    }
+    /* The acquisition buffer is `volatile` because the acq task fills it;
+     * the estimator only reads, and its coherence gate refuses torn
+     * records anyway — so an MCU-side tear was never able to produce a
+     * WRONG number here, only a refusal. The generation retry (P0.2)
+     * recovers those refusals: a commit landing mid-estimate re-runs the
+     * estimate on the settled frame instead of burning a hold frame. */
+    _Static_assert(FPGA_ADC_BUF_SIZE == SCOPE_FREQ_MAX_N,
+                   "estimator window must match the capture buffer");
+    scope_freq_t fr;
+    bool fe = false;
+    if (have && buf != NULL) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            uint32_t g0 = fpga_acq_frame_generation();
+            fe = scope_freq_estimate((const uint8_t *)buf, FPGA_ADC_BUF_SIZE, fs, &fr);
+            if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
+                break;
+        }
+    }
+    if (fe) {
+        freq_hz[ch] = fr.hz;
+        freq_stale[ch] = 0u;
+    } else if (freq_stale[ch] < FREQ_HOLD_FRAMES) {
+        freq_stale[ch]++;
+    } else {
+        freq_hz[ch] = 0.0f;
+    }
+    return freq_hz[ch];
+}
+
 static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
 {
-    char buf[16];
-    scope_measure_t m1, m2;
+    mstrip_layout_t L;
+    strip_layout(ss, &L);   /* long PRM (prm_hidden) = no rows; the AUX row stays */
 
-    /* Long PRM hides the readings (stock: "Hide measurement parameters"). The
-     * badge area is repainted by the full redraw that key sends. */
-    if (ss->prm_hidden)
-        return;
-
-    const bool have1 = ss->ch1.enabled &&
-                       measure_live_channel(fpga_get_ch1_buf(), &m1);
-    const bool have2 = ss->ch2.enabled &&
-                       measure_live_channel(fpga_get_ch2_buf(), &m2);
-    const uint16_t na = th->text_secondary;   /* dim: nothing to report */
-
-    /* ── Row 1 — CH1 ─────────────────────────────────────────────── */
-    uint16_t x = 2;
-    uint16_t y1 = BADGE_ROW_Y;
-    uint16_t y2 = BADGE_ROW2_Y;
-    float    rec_fs;          /* the published record's rate, for the C6 params */
-
-    /*
-     * Freq — spectral, not edge-counted, and it declines rather than guess.
-     *
-     * History, because it is the whole justification for the shape of this:
-     * Freq = fs / period_samples was wired up on 2026-08-18 and removed the
-     * same evening, measuring +1.6% to +112% against a known drive (EXP-13).
-     * The sample rate was never the problem; the rising-crossing period
-     * estimator found spurious crossings.
-     *
-     * EXP-16 then showed it was not the estimator either. Edge counting,
-     * autocorrelation and a spectral peak all failed on the SAME bench records
-     * and all succeeded on the same others: roughly a fifth to a half of
-     * capture records are TORN, with their spectral energy smeared over ~6
-     * bins. One record scored 0.380 coherence whole and 0.999 over its last
-     * half. Tearing does not track signal amplitude, so it cannot be screened
-     * out in advance — it has to be detected per record, which is exactly what
-     * scope_freq does. Against 72 bench captures it answers 54% of the time,
-     * is within 3.4% when it does, and is never wrong.
-     *
-     * The reading is HELD across a short run of refusals so the badge does not
-     * strobe at the tearing rate; after FREQ_HOLD_FRAMES consecutive refusals
-     * it blanks, because a stale number with no expiry is just a wrong number
-     * that used to be right.
-     */
-    static float    freq_hz;
-    static uint16_t freq_stale;
-    {
-        /* timebase_idx IS the reg-0x01 code — fpga_stock_timebase_byte()
-         * returns it unchanged, and status_bar.c reads it the same way. */
-        /* The PUBLISHED record's rate: doubled when it is the two-converter
-         * merge (fpga_record_sample_rate). Same code as timebase_idx otherwise. */
-        const float fs = record_rate_for_display(ss);
-        rec_fs = fs;
-        scope_freq_t fr;
-
-        /* The acquisition buffer is `volatile` because the acq task fills it;
-         * the estimator only reads, and its coherence gate refuses torn
-         * records anyway — so an MCU-side tear was never able to produce a
-         * WRONG number here, only a refusal. The generation retry (P0.2)
-         * recovers those refusals: a commit landing mid-estimate re-runs the
-         * estimate on the settled frame instead of burning a hold frame. */
-        _Static_assert(FPGA_ADC_BUF_SIZE == SCOPE_FREQ_MAX_N,
-                       "estimator window must match the capture buffer");
-
-        bool fe = false;
-        if (have1) {
-            for (int attempt = 0; attempt < 3; attempt++) {
-                uint32_t g0 = fpga_acq_frame_generation();
-                fe = scope_freq_estimate((const uint8_t *)fpga_get_ch1_buf(),
-                                         FPGA_ADC_BUF_SIZE, fs, &fr);
-                if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
-                    break;
-            }
+    if (L.rows > 0u) {
+        /* Which channels have cells, and whether any of them is time-based on
+         * the spectral estimate (Freq, Peri). */
+        bool cells[2] = { false, false }, need_f[2] = { false, false };
+        for (unsigned k = 0; k < L.n; k++) {
+            cells[L.cell[k].ch] = true;
+            if (L.cell[k].prm == SCOPE_PRM_FREQ || L.cell[k].prm == SCOPE_PRM_PERI)
+                need_f[L.cell[k].ch] = true;
         }
-        if (fe) {
-            freq_hz = fr.hz;
-            freq_stale = 0u;
-        } else if (freq_stale < FREQ_HOLD_FRAMES) {
-            freq_stale++;
-        } else {
-            freq_hz = 0.0f;
-        }
+        scope_measure_t m1, m2;
+        const volatile uint8_t *b1 = fpga_get_ch1_buf(), *b2 = fpga_get_ch2_buf();
+        const bool have1 = cells[0] && measure_live_channel(b1, &m1);
+        const bool have2 = cells[1] && measure_live_channel(b2, &m2);
 
-    }
-
-    /* ── The 12 measurements (C6) ──────────────────────────────────
-     *
-     * Stock's parameter set, chosen by ss->prm_mask (default = the five
-     * badges this instrument always showed for CH1: Freq, Per, Duty, Vpp,
-     * Vrms) and hidden wholesale by ss->prm_hidden (stock: long PRM). They
-     * fill the same five CH1 slots in stock's order. All arithmetic is in
-     * scope_params_compute(): time uses the PUBLISHED record's rate
-     * (rec_fs, doubled when interleaved), volts the scope_cal gain with k == 0
-     * meaning counts. Freq/Per still come only from the spectral estimate
-     * above, with its hold, and Per falls back to crossing SAMPLES. */
-    const float k1 = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
-
-    scope_params_t p1;
-    {
+        /* The 12 measurements (C6), per channel. All arithmetic is in
+         * scope_params_compute(): time uses the PUBLISHED record's rate
+         * (doubled when interleaved), volts the scope_cal gain with k == 0
+         * meaning counts, 0 V the channel's scope_measure_zero_for(). Freq/Per
+         * come only from the spectral estimate above, with its hold, and Per
+         * falls back to crossing SAMPLES. A channel with no record refuses
+         * all twelve ("--"). */
+        const float rec_fs = record_rate_for_display(ss);
+        scope_params_t p1, p2;
         scope_prm_ctx_t ctx;
         ctx.sample_rate     = rec_fs;
-        ctx.volts_per_count = k1;
-        ctx.freq_hz         = freq_hz;
+        ctx.volts_per_count = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
+        ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
         ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
         scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
+        ctx.volts_per_count = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
+        ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
+        ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
+        scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
+
+        draw_strip_cells(&L, &p1, &p2, th);
     }
 
-    if (!ss->prm_hidden) {
-        uint8_t sel[5];
-        /* The CAN readout owns row 2 when it is on: badges use row 1 only. */
-        const unsigned ns = scope_prm_select(ss->prm_mask, sel, can_scope_screen_on() ? 4u : 5u);
-        for (unsigned s = 0; s < ns; s++) {
-            const uint16_t bx = (s < 4u) ? (uint16_t)(2u + s * (BADGE_W + 2u)) : 2u;
-            const uint16_t by = (s < 4u) ? y1 : y2;
-            const scope_prm_t *p = &p1.v[sel[s]];
-            if (p->unit == SCOPE_PRM_UNIT_NONE) {
-                draw_one_badge(bx, by, scope_prm_label(sel[s]), MEAS_NA, na, th);
-            } else {
-                scope_prm_format(p, buf, sizeof(buf));
-                draw_one_badge(bx, by, scope_prm_label(sel[s]), buf, th->ch1, th);
-            }
-        }
+    /* The AUX row: the CAN analyser's line, else the mask readout. */
+    if (L.aux) {
+        if (can_scope_screen_on())
+            scope_ui_can_row_refresh();
+        else
+            draw_mask_slot(th);
     }
-
-    /* ── Row 2: the CAN analyser's line replaces CH2 and the legend ── */
-    if (can_scope_screen_on()) {
-        scope_ui_can_row_refresh();
-        return;
-    }
-
-    /* CH2: one slot, as before (Vp-p; hidden together with the rest). */
-    if (!ss->prm_hidden) {
-        const uint16_t x2 = 2u + (BADGE_W + 2u);
-        if (have2) {
-            const float k2 = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
-            if (k2 > 0.0f) fmt_volts(buf, sizeof(buf), (float)m2.pp_robust * k2);
-            else           fmt_counts(buf, sizeof(buf), m2.pp_robust);
-            draw_one_badge(x2, y2, "CH2pp", buf, th->ch2, th);
-        } else {
-            draw_one_badge(x2, y2, "CH2pp", MEAS_NA, na, th);
-        }
-    }
-    x = 2u + 2u * (BADGE_W + 2u);
-
-
-    /*
-     * The legend is what makes the "--" and the "cnt" suffix readable
-     * without the source: it says, on the instrument itself, whether the
-     * trace is real and why the missing values are missing.
-     */
-    (void)x; (void)na;
-    if (scope_mask_state() != MASK_PF_EMPTY)
-        draw_mask_slot(th);        /* the mask readout takes the legend's slot */
-    else
-        draw_legend_slot(th, have1 || have2);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1272,6 +1174,165 @@ static int16_t trigger_marker_y_full(const scope_state_t *ss)
     else if (src2 ? c2 : c1)
         autofit_prep(&a, src, SCOPE_TOP, SCOPE_BOT, src2 ? 1 : 0);
     return trigger_marker_y(ss, &a);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Plot-edge markers (plot_markers.h, UI_STUDY S10)
+ *
+ * Ground (0 V) tag per channel at the left edge, trigger-level tag at the
+ * right edge, both on the row where that level is ON THE TRACE: mapped through
+ * the same transform the band was drawn with (autofit, or the fixed true-scale
+ * slope in the full path), not `SCOPE_MID_Y - position`, which the autofit
+ * renderer ignores. Off the band, the tag sits on the band edge pointing up or
+ * down. Both renderers build the set with markers_build() and ask
+ * plot_marker_px() for every pixel, so the live frames keep the tags (before
+ * round 1 the compositor painted over them) and draw the same shapes.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+typedef struct {
+    bool       on;
+    pm_dir_t   dir;
+    pm_label_t label;
+    int16_t    x0, y0;          /* top-left of the 9x9 tag */
+    uint16_t   color;
+} pm_tag_t;
+
+/* Drawing priority: [0] the trigger tag, [1] the active channel's ground,
+ * [2] the other channel's ground (the active one wins an overlap). */
+typedef struct { pm_tag_t t[3]; } pm_set_t;
+
+/* autofit_y() without the clamp: where a code lands, on or off the band. */
+static inline int autofit_y_raw(const autofit_t *a, int v)
+{
+    return (int)(a->y_bot - 2) - ((v - (int)a->mn) * a->h) / a->span;
+}
+
+/* The two Y-T bands, prepared exactly as both renderers prepare them (from
+ * the window view_build() last filled into yt_cols). */
+static void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
+{
+    const autofit_t off = { false, 0, 0, 0, 8, 0 };
+    *a1 = off;
+    *a2 = off;
+    const bool en1 = ss->ch1.enabled, en2 = ss->ch2.enabled;
+    if (en1 && en2) {
+        autofit_prep(a1, yt_cols[0], SCOPE_TOP, SCOPE_MID_Y - 1, 0);
+        autofit_prep(a2, yt_cols[1], SCOPE_MID_Y + 1, SCOPE_BOT, 1);
+    } else if (en1) {
+        autofit_prep(a1, yt_cols[0], SCOPE_TOP, SCOPE_BOT, 0);
+    } else if (en2) {
+        autofit_prep(a2, yt_cols[1], SCOPE_TOP, SCOPE_BOT, 1);
+    }
+}
+
+static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
+                    int x0, pm_label_t label, uint16_t color)
+{
+    t->on = (bot - top) >= PM_TAG_H;
+    if (!t->on)
+        return;
+    int y0;
+    t->dir   = plot_marker_place(row, top, bot, horiz, &y0);
+    t->label = (t->dir == horiz) ? label : PM_LABEL_NONE;
+    t->x0    = (int16_t)x0;
+    t->y0    = (int16_t)y0;
+    t->color = color;
+}
+
+/* a1/a2: the bands as drawn (NULL = no record: the demo/no-data convention,
+ * position and level in pixels about the centre). fx1/fx2: that band was
+ * drawn true-scale (full path only). band_bot: the strip's top. */
+static void markers_build(const scope_state_t *ss, const theme_t *th,
+                          const autofit_t *a1, const autofit_t *a2,
+                          bool fx1, bool fx2, int band_bot, pm_set_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    const uint8_t act = active_channel ? 1u : 0u;
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        const channel_state_t *c = ch ? &ss->ch2 : &ss->ch1;
+        pm_tag_t *t = &m->t[(ch == act) ? 1 : 2];
+        if (!c->enabled)
+            continue;
+        const autofit_t *a = ch ? a2 : a1;
+        int top = SCOPE_TOP, bot = band_bot, row;
+        if (a != NULL && a->on) {
+            const int z = scope_measure_zero_for(scope_vpos_active(), c->position,
+                                                 (int)FPGA_ADC_OFFSET);
+            top = a->y_top;
+            if (a->y_bot < bot) bot = a->y_bot;
+            if (ch ? fx2 : fx1) {          /* draw_channel_fixed's transform */
+                const int y_mid = (a->y_top + a->y_bot) / 2;
+                row = y_mid - ((int)pv_vscale((uint8_t)z, 128u, (int8_t)ch) - 128) * SCOPE_H / 256;
+            } else {
+                row = autofit_y_raw(a, z);
+            }
+        } else {
+            row = SCOPE_MID_Y - c->position;
+        }
+        tag_put(t, row, top, bot, PM_POINT_RIGHT, 0,
+                ch ? PM_LABEL_2 : PM_LABEL_1, ch ? th->ch2 : th->ch1);
+    }
+
+    /* Trigger level: the record code where the hardware fires
+     * (trigger_marker_y), on the trigger source's band. */
+    const autofit_t *src = (ss->trigger.source == TRIG_SRC_CH2) ? a2 : a1;
+    int top = SCOPE_TOP, bot = band_bot, row;
+    if (src != NULL && src->on) {
+        int rec = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
+        if (rec < 0)   rec = 0;
+        if (rec > 255) rec = 255;
+        row = autofit_y_raw(src, rec);
+        top = src->y_top;
+        if (src->y_bot < bot) bot = src->y_bot;
+    } else {
+        row = SCOPE_MID_Y - ss->trigger.level;
+    }
+    tag_put(&m->t[0], row, top, bot, PM_POINT_LEFT, LCD_WIDTH - PM_TAG_W,
+            PM_LABEL_T, th->trigger);
+}
+
+/* Pixel colour of the marker set at (x, y), or false: tags in priority order. */
+static inline bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
+                              uint16_t *c)
+{
+    for (int i = 0; i < 3; i++) {
+        const pm_tag_t *t = &m->t[i];
+        if (!t->on || x < t->x0 || x >= t->x0 + PM_TAG_W ||
+            y < t->y0 || y >= t->y0 + PM_TAG_H)
+            continue;
+        const pm_px_t p = plot_marker_px(t->dir, t->label, x - t->x0, y - t->y0);
+        if (p == PM_PX_NONE)
+            continue;
+        *c = (p == PM_PX_KNOCK) ? bg : t->color;
+        return true;
+    }
+    return false;
+}
+
+/* Full path: paint the set (lowest priority first, so the order matches
+ * markers_px). */
+static void draw_plot_markers(const pm_set_t *m, const theme_t *th)
+{
+    for (int i = 2; i >= 0; i--) {
+        const pm_tag_t *t = &m->t[i];
+        if (!t->on)
+            continue;
+        for (int dy = 0; dy < PM_TAG_H; dy++)
+            for (int dx = 0; dx < PM_TAG_W; dx++) {
+                const pm_px_t p = plot_marker_px(t->dir, t->label, dx, dy);
+                if (p != PM_PX_NONE)
+                    lcd_set_pixel((uint16_t)(t->x0 + dx), (uint16_t)(t->y0 + dy),
+                                  (p == PM_PX_KNOCK) ? th->background : t->color);
+            }
+    }
+}
+
+/* The trigger-position pointer: over the column where the trigger point
+ * actually landed (g_trig_x_actual), at the top of the plot. */
+static inline bool tpos_px(int trig_x, int x, int y)
+{
+    return trig_x >= 0 &&
+           plot_marker_tpos_px(x - (trig_x - PM_TPOS_W / 2), y - SCOPE_TOP) == PM_PX_FILL;
 }
 
 /*
@@ -2009,7 +2070,10 @@ static void draw_cursors(void)
      * but left it disconnected from the tables that had just been measured.
      * The floats are gone; there is no second copy of either constant now.
      */
-    uint16_t badge_y = SCOPE_BOT - 28;
+    /* Above the measurement strip (round 1: its top moves with the
+     * selection; before, these rows sat under the badge rows). */
+    const uint16_t strip_y = strip_top(ss);
+    uint16_t badge_y = (uint16_t)(strip_y - 28);
     uint16_t badge_x = 4;
     char buf[24];
     char label[40];
@@ -2084,7 +2148,7 @@ static void draw_cursors(void)
         case CURSOR_BOTH:        mode_str = "CUR:TV"; break;
         default:                 mode_str = ""; break;
         }
-        font_draw_string_right(LCD_WIDTH - 4, SCOPE_BOT - 13,
+        font_draw_string_right(LCD_WIDTH - 4, (uint16_t)(strip_y - 13),
                                mode_str, th->highlight, th->highlight, &font_small);
     }
 }
@@ -2780,39 +2844,51 @@ void draw_scope_screen(uint32_t frame)
     /* Layer 2: Grid */
     draw_scope_grid();
 
-    /* Layer 3: Ground reference markers */
-    draw_ground_markers(ss, th);
+    /* The measurement strip's top: the live band, the mask strip and the
+     * tags all stop there. */
+    const uint16_t band_bot = strip_top(ss);
 
-    /* Layer 4: Trigger level indicator */
-    draw_trigger_indicator(ss, th, trigger_marker_y_full(ss));
+    /* Layer 3: Trigger level line (under the trace) */
+    draw_trigger_line(th, trigger_marker_y_full(ss));
 
     /* Layer 5: Waveform */
     draw_demo_waveform(frame);
 
     /* Mask strip at the bottom of the live band (the compositor paints the
      * same rows), only when draw_demo_waveform() armed the overlay. */
-    draw_mask_strip(th, BADGE_ROW2_Y);
-
-    /* Trigger-position marker: a small down-pointing triangle at the top of
-     * the scope area over the column where the trigger point actually landed
-     * (not where it was asked to land -- the fallback may not honour it). */
-    if (g_trig_x_actual >= 0) {
-        for (int r = 0; r < 4; r++)
-            for (int dx = -(3 - r); dx <= 3 - r; dx++) {
-                int x = g_trig_x_actual + dx;
-                if (x >= 0 && x < LCD_WIDTH)
-                    lcd_set_pixel((uint16_t)x, (uint16_t)(SCOPE_TOP + r), th->trigger);
-            }
-    }
+    draw_mask_strip(th, band_bot);
 
     /* Layer 6: Math channel overlay */
     draw_math_waveform();
 
+    /* Layer 6b: plot-edge markers over the traces, as stock: ground tags,
+     * trigger tag, and the trigger-position pointer over the column where the
+     * trigger point actually landed (not where it was asked to land -- the
+     * fallback may not honour it). Same builder and shapes as the compositor. */
+    {
+        pm_set_t pm;
+        if (fpga_data_ready()) {        /* draw_demo_waveform's own gate: yt_cols is this frame's */
+            autofit_t a1, a2;
+            yt_fits(ss, &a1, &a2);
+            markers_build(ss, th, &a1, &a2,
+                          ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
+                          ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx),
+                          band_bot, &pm);
+        } else {
+            markers_build(ss, th, NULL, NULL, false, false, band_bot, &pm);
+        }
+        draw_plot_markers(&pm, th);
+        for (int dy = 0; dy < PM_TPOS_H; dy++)
+            for (int x = g_trig_x_actual - PM_TPOS_W / 2; x <= g_trig_x_actual + PM_TPOS_W / 2; x++)
+                if (x >= 0 && x < LCD_WIDTH && tpos_px(g_trig_x_actual, x, SCOPE_TOP + dy))
+                    lcd_set_pixel((uint16_t)x, (uint16_t)(SCOPE_TOP + dy), th->trigger);
+    }
+
     /* Layer 7: Cursor lines */
     draw_cursors();
 
-    /* Layer 8: Trigger status badge */
-    draw_trigger_status(ss, th);
+    /* Layer 8 (the trigger status badge) is gone since the UI round 1 merge:
+     * the status bar's trigger dot and RUN/STOP/ARM tab carry it. */
 
     /* Layer 9: Run/Stop */
     draw_run_stop(ss, th);
@@ -2826,14 +2902,14 @@ void draw_scope_screen(uint32_t frame)
     /* Layer 11: Quick-change popup (on top of everything) */
     draw_popup(th);
 
-    /* Active channel indicator (top-left) */
-    const char *ch_label = (active_channel == 0) ? "CH1" : "CH2";
-    uint16_t ch_color = (active_channel == 0) ? th->ch1 : th->ch2;
-    font_draw_string(4, SCOPE_TOP + 2, ch_label, ch_color, ch_color, &font_small);
+    /* No "CH1"/"CH2" text top-left any more: the status bar's focus glyph
+     * shows the active channel in its colour (UI round 1). */
 
-#ifndef EMULATOR_BUILD
-    /* SPI3 acquisition diagnostic — small text overlay top-center.
-     * Shows probing status so we can see FPGA data flow without serial. */
+#if !defined(EMULATOR_BUILD) && defined(SCOPE_DEBUG_OVERLAY)
+    /* SPI3 acquisition diagnostic — small text overlay top-center. Developer
+     * text: debug-overlay builds only since UI round 1 (it is in the bottom
+     * strip of those builds anyway). Shows probing status so we can see
+     * FPGA data flow without serial. */
     {
         char spi3_buf[24];
         uint16_t spi3_color;
@@ -2878,8 +2954,9 @@ void draw_scope_screen(uint32_t frame)
  * (~13 us) per column + streamed pixel writes ≈ 6-8 ms per frame — 20 fps
  * capable, vs the full path's blank-flash at any rate.
  *
- * Decorations (badges, ground markers, cursors, popups, trigger arrow) are
- * NOT drawn here. main.c falls back to draw_scope_screen whenever a popup
+ * Decorations (the measurement strip, cursors, popups) are NOT drawn here;
+ * the plot-edge tags and the trigger-position pointer ARE (markers_build),
+ * because this band covers the plot edges they sit on. main.c falls back to draw_scope_screen whenever a popup
  * is active or cursors are on, and button DCMDs still force full redraws,
  * so those layers refresh exactly when they can change.
  * ═══════════════════════════════════════════════════════════════════ */
@@ -2907,14 +2984,14 @@ void draw_scope_live_frame(void)
      * themselves; streaming over them would z-fight at frame rate. */
     /* Always the badge rows: they are the topmost fixed furniture in BOTH
      * configurations. In overlay builds the badges now sit ABOVE the debug
-     * strip (see BADGE_ROW_Y), so stopping at SCOPE_DBG_Y — as this did until
+     * strip (see STRIP_BOTTOM), so stopping at SCOPE_DBG_Y — as this did until
      * 2026-08-14 — streamed the waveform straight over them at frame rate.
      * That was the second occlusion bug in a row here: first the debug strip
      * painted over the badges, then moving the badges up put them inside the
      * live band. Anchor to the badges and both cases are covered. */
-    const uint16_t band_bot = BADGE_ROW2_Y;
-    const uint16_t band_h = band_bot - SCOPE_TOP;
-    (void)band_h;
+    /* Round 1: the strip's top, which moves with the selection
+     * (measure_strip.h); strip_top() is the one copy every user reads. */
+    const uint16_t band_bot = strip_top(ss);
 
 
     /* Autofit exactly as the full path does, including its band split, so a
@@ -2927,19 +3004,12 @@ void draw_scope_live_frame(void)
      * The channel position offset is deliberately NOT applied. The full path
      * ignores it, and against an autoscaled trace it has no meaning — keeping
      * it here is what let the two paths disagree in the first place. */
-    const bool en1 = ss->ch1.enabled;
-    const bool en2 = ss->ch2.enabled;
+    autofit_t a1, a2;
+    yt_fits(ss, &a1, &a2);           /* b1/b2 ARE yt_cols: the one prep */
 
-    autofit_t a1 = { false, 0, 0, 0, 8, 0 };
-    autofit_t a2 = { false, 0, 0, 0, 8, 0 };
-    if (en1 && en2) {
-        autofit_prep(&a1, b1, SCOPE_TOP, SCOPE_MID_Y - 1, 0);
-        autofit_prep(&a2, b2, SCOPE_MID_Y + 1, SCOPE_BOT, 1);
-    } else if (en1) {
-        autofit_prep(&a1, b1, SCOPE_TOP, SCOPE_BOT, 0);
-    } else if (en2) {
-        autofit_prep(&a2, b2, SCOPE_TOP, SCOPE_BOT, 1);
-    }
+    /* The tags, on the same transform (the compositor is autofit-only). */
+    pm_set_t pm;
+    markers_build(ss, th, &a1, &a2, false, false, band_bot, &pm);
 
     /* Trigger dotted line, placed exactly as the full path places it: on the
      * trigger source's autofit, at the record code where the hardware fires. */
@@ -3008,18 +3078,18 @@ void draw_scope_live_frame(void)
          * When the countdown ends the hole closes and the very next live
          * frame paints the band back over it — no full repaint at either
          * end, which is the whole point of the change. */
+        /* Only the edge columns can carry a tag, and only the 9 columns
+         * round the trigger point the pointer: gate both per column, so the
+         * per-pixel shape calls (plot_markers.c) run inside their boxes only. */
+        const bool edge = (x < PM_TAG_W) || (x >= LCD_WIDTH - PM_TAG_W);
+        const bool tcol = g_trig_x_actual >= 0 &&
+                          (int)x + PM_TPOS_W / 2 >= (int)g_trig_x_actual &&
+                          (int)x <= (int)g_trig_x_actual + PM_TPOS_W / 2;
+
         uint16_t seg_top[2], seg_bot[2];
         uint8_t  nseg = 1;
         seg_top[0] = SCOPE_TOP;
         seg_bot[0] = band_bot;
-        /* The trigger status badge is a second, permanent hole (parity C3):
-         * it says whether the record on the glass was triggered, or is a
-         * two-moment free-run read (#84), so it must survive the live frames.
-         * Before C3 the first live frame painted over it. It changes only
-         * with the trigger status, which is in main.c's redraw epoch, so a
-         * change gets a full repaint that redraws it. */
-        if (x >= TRIG_BADGE_X)
-            seg_top[0] = TRIG_BADGE_Y + TRIG_BADGE_H;
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;
@@ -3034,10 +3104,11 @@ void draw_scope_live_frame(void)
             uint16_t c;
             /* Z-order matches the full path: CH2 painted after CH1 there,
              * so CH2 wins here; trace over trigger line over grid. */
-            int mr = (int)y - (int)SCOPE_TOP;          /* trigger-position marker */
-            int mdx = (int)x - (int)g_trig_x_actual; if (mdx < 0) mdx = -mdx;
-            if (g_trig_x_actual >= 0 && mr >= 0 && mr < 4 && mdx <= 3 - mr)
+            if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
+                tpos_px(g_trig_x_actual, (int)x, (int)y))  /* trigger-position pointer */
                 c = th->trigger;
+            else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))
+                ;                                      /* ground / trigger tags */
             else if (mstrip && y >= band_bot - MASK_STRIP_H &&
                      (!mdot || ((x + y) & 1u) == 0u))
                 c = mstrip;
@@ -3151,8 +3222,6 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
     last_step = ss->roll_step;
 
     scope_roll_fifo_linearize(&roll_snap);
-    const uint16_t na = th->text_secondary;
-    char buf[16];
     scope_params_t p1, p2;
     const uint8_t z1 = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
     const uint8_t z2 = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
@@ -3163,27 +3232,9 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
         scope_roll_measure(&roll_snap, 1u, nvis, ss->roll_step,
                            scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, NULL);
 
-    const uint16_t y1 = BADGE_ROW_Y, y2 = BADGE_ROW2_Y;
-    uint8_t sel[5];
-    const unsigned ns = scope_prm_select(ss->prm_mask, sel, 5u);
-    for (unsigned k = 0; k < ns; k++) {
-        const uint16_t bx = (k < 4u) ? (uint16_t)(2u + k * (BADGE_W + 2u)) : 2u;
-        const uint16_t by = (k < 4u) ? y1 : y2;
-        const scope_prm_t *p = &p1.v[sel[k]];
-        if (!have1 || p->unit == SCOPE_PRM_UNIT_NONE) {
-            draw_one_badge(bx, by, scope_prm_label(sel[k]), MEAS_NA, na, th);
-        } else {
-            scope_prm_format(p, buf, sizeof(buf));
-            draw_one_badge(bx, by, scope_prm_label(sel[k]), buf, th->ch1, th);
-        }
-    }
-    const uint16_t x2 = 2u + (BADGE_W + 2u);
-    if (have2) {
-        scope_prm_format(&p2.v[SCOPE_PRM_VPP], buf, sizeof(buf));
-        draw_one_badge(x2, y2, "CH2pp", buf, th->ch2, th);
-    } else {
-        draw_one_badge(x2, y2, "CH2pp", MEAS_NA, na, th);
-    }
+    mstrip_layout_t L;
+    strip_layout(ss, &L);
+    draw_strip_cells(&L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th);
 }
 
 void draw_roll_screen(bool full)
@@ -3205,6 +3256,8 @@ void draw_roll_screen(bool full)
     else on1 = on1 && scope_roll_fit(&roll_snap, 0u, nvis, &m1);
     if (ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx)) m2.fixed = true;
     else on2 = on2 && scope_roll_fit(&roll_snap, 1u, nvis, &m2);
+
+    const uint16_t band_bot = strip_top(ss);
 
     /* Popup hole: as the live compositor, never paint over the box. */
     bool     hole     = (popup_frames > 0);
@@ -3243,15 +3296,19 @@ void draw_roll_screen(bool full)
         uint8_t  nseg = 1;
         /* The fill label (top left) and the STOP badge (top centre) are
          * holes too, repainted opaque below, so they never strobe. */
-        const bool in_label = (x < ROLL_LABEL_W) ||
-                              (!ss->running && x >= (LCD_WIDTH - 40) / 2 &&
-                               x < (LCD_WIDTH + 40) / 2);
-        seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) : (uint16_t)SCOPE_TOP;
-        seg_bot[0] = BADGE_ROW2_Y;       /* the badge rows repaint themselves, as in Y-T */
+        const bool in_label = (x < ROLL_LABEL_W);
+#if SCOPE_PLOT_STOP_BOX
+        const bool in_stop = !ss->running && x >= STOP_BOX_X && x < STOP_BOX_X + STOP_BOX_W;
+#else
+        const bool in_stop = false;
+#endif
+        seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) :
+                     in_stop  ? (uint16_t)(STOP_BOX_Y + STOP_BOX_H) : (uint16_t)SCOPE_TOP;
+        seg_bot[0] = band_bot;           /* the strip repaints itself, as in Y-T */
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;
-            seg_bot[1] = BADGE_ROW2_Y;
+            seg_bot[1] = band_bot;
             nseg = 2;
         }
         for (uint8_t sg = 0; sg < nseg; sg++) {

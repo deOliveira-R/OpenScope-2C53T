@@ -56,6 +56,7 @@ C_SOURCES += src/ui/scope_freq_lock.c
 C_SOURCES += src/ui/key_model.c
 C_SOURCES += src/ui/scope_selfcal.c
 C_SOURCES += src/tasks/input_handler.c
+C_SOURCES += src/tasks/scope_apply.c
 C_SOURCES += src/drivers/flash_fs.c
 C_SOURCES += src/drivers/flash_regions.c
 C_SOURCES += src/drivers/flash_regions_w25q.c
@@ -123,6 +124,9 @@ C_SOURCES += src/ui/gallery_nav.c
 C_SOURCES += src/ui/gallery_ui.c
 C_SOURCES += src/util/logo_store.c
 C_SOURCES += src/ui/logo_ui.c
+# UI round 1, R1-C: measurement strip + plot-edge markers
+C_SOURCES += src/ui/measure_strip.c
+C_SOURCES += src/ui/plot_markers.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
 C_SOURCES += src/decode/decode_spi.c
@@ -139,6 +143,24 @@ C_SOURCES += src/fonts/font_large.c
 C_SOURCES += src/fonts/font_xlarge.c
 C_SOURCES += src/fonts/font_huge.c
 C_SOURCES += src/fonts/font_unit.c
+# UI round 1, R1-B: bar glyphs
+C_SOURCES += src/ui/icons.c
+
+# ── UI round 1, R1-A: Oscilloscope Settings page (one block, for the merge) ──
+# osc_menu_model.c (pure model), osc_menu_ui.c (apply + draw), menu_frame.c (the
+# two-pane widget System Settings reuses), meas_select.c (per-channel
+# measurement selection, persisted by settings_store.c). Host test:
+# make test-osc-menu. The persistence test links meas_select.c too.
+C_SOURCES += src/ui/osc_menu_model.c
+C_SOURCES += src/ui/osc_menu_ui.c
+C_SOURCES += src/ui/menu_frame.c
+C_SOURCES += src/ui/meas_select.c
+R1A_OSC_MENU_TEST_SRCS = src/ui/osc_menu_model.c src/ui/meas_select.c src/ui/scope_state.c \
+                         src/ui/scope_roll.c src/ui/scope_measure.c src/ui/scope_cursor.c \
+                         src/ui/scope_timebase.c src/ui/scope_cal.c \
+                         src/fonts/font_small.c src/fonts/font_medium.c
+R1A_CONFIG_PERSIST_EXTRA = src/ui/meas_select.c
+# ── end R1-A block ──
 
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
@@ -269,6 +291,9 @@ C_DEFS  = -DAT32F403AVGT7
 # the strip back.
 C_DEFS += $(FFT_DEFS)
 C_DEFS += $(USB_MSC_DEFS)
+# UI round 1: the status bar's RUN/STOP/ARM tab (R1-B) replaces the red STOP
+# box on the plot (R1-C, scope_ui.c).
+C_DEFS += -DSCOPE_PLOT_STOP_BOX=0
 C_INCLUDES += $(FFT_INCLUDES)
 
 # Compiler flags
@@ -750,7 +775,8 @@ test-lcd-health: $(BUILD_DIR)/test_lcd_health
 # were fixed; they run in test_config_persist now.)
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
                       src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
-                      src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c
+                      src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c \
+                      $(R1A_CONFIG_PERSIST_EXTRA)
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
@@ -980,6 +1006,30 @@ $(BUILD_DIR)/test_home_model: tests/test_home_model.c src/ui/home_model.c src/ui
 test-home-model: $(BUILD_DIR)/test_home_model
 	$<
 
+# R1-A: the Oscilloscope Settings page model, meas_select and the menu_frame
+# scroll rule (tests/test_osc_menu.c); labels are measured in the real fonts.
+$(BUILD_DIR)/test_osc_menu: tests/test_osc_menu.c $(R1A_OSC_MENU_TEST_SRCS) src/ui/osc_menu_model.h \
+                            src/ui/meas_select.h src/ui/menu_frame.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp -Isrc/fonts $< \
+		$(R1A_OSC_MENU_TEST_SRCS) -lm -o $@
+
+.PHONY: test-osc-menu
+test-osc-menu: $(BUILD_DIR)/test_osc_menu
+	$<
+
+# UI round 1, R1-B: bar glyphs (src/ui/icons.h): every glyph inside its box,
+# no row past its width, shapes (edge direction, battery bars, the 13 waves
+# from the DAC tables), and the status/info bar geometry of status_bar.h
+# (slots inside 320 px, no overlap, the widest strings fit in font_small).
+$(BUILD_DIR)/test_icons: tests/test_icons.c src/ui/icons.c src/ui/icons.h src/ui/status_bar.h \
+                         src/dsp/siggen_wave.c src/dsp/siggen_wave.h src/fonts/font_small.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp -Isrc/fonts $< \
+		src/ui/icons.c src/dsp/siggen_wave.c src/fonts/font_small.c -o $@
+
+.PHONY: test-icons
+test-icons: $(BUILD_DIR)/test_icons
+	$<
+
 # Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point
 # FIFO, the timebase ladder into roll and back, the 25-points-per-division
 # geometry, and the amplitude correction at /150 with no m >= 221 gate.
@@ -1099,6 +1149,21 @@ $(BUILD_DIR)/test_usercal: tests/test_usercal.c src/util/usercal_rec.c src/util/
 
 .PHONY: test-usercal
 test-usercal: $(BUILD_DIR)/test_usercal
+	$<
+
+# UI round 1, R1-C: the measurement strip (no cell overflows its box for the
+# widest value the real formatter prints, in the real font_small) and the
+# plot-edge marker shapes/placement.
+$(BUILD_DIR)/test_measure_strip: tests/test_measure_strip.c src/ui/measure_strip.c src/ui/measure_strip.h \
+                                 src/ui/plot_markers.c src/ui/plot_markers.h src/ui/scope_measure.c \
+                                 src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c \
+                                 src/fonts/font.c src/fonts/font_small.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/fonts -Isrc/drivers $< \
+		src/ui/measure_strip.c src/ui/plot_markers.c src/ui/scope_measure.c src/ui/scope_cursor.c \
+		src/ui/scope_cal.c src/ui/scope_timebase.c src/fonts/font.c src/fonts/font_small.c -lm -o $@
+
+.PHONY: test-measure-strip
+test-measure-strip: $(BUILD_DIR)/test_measure_strip
 	$<
 
 # ═══════════════════════════════════════════════════════════════════════════

@@ -56,6 +56,8 @@ extern void system_clock_config(void);
 #include "scope_mask.h"
 #include "can_scope.h"
 #include "trig_menu.h"
+#include "osc_menu_model.h"
+#include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
 
@@ -260,19 +262,13 @@ static uint32_t info_bar_epoch(void)
     uint32_t h = REDRAW_EPOCH_SEED;
     h = redraw_epoch_mix(h, (uint32_t)current_mode | ((uint32_t)theme_get_id() << 8));
     if (current_mode == MODE_OSCILLOSCOPE) {
-        const scope_state_t *s = scope_state_get();
-        h = redraw_epoch_mix(h, (uint32_t)scope_view);
-        h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode | ((uint32_t)s->timebase_idx << 8)
-                                | ((uint32_t)s->roll << 16) | ((uint32_t)s->roll_step << 20));
-        h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled | ((uint32_t)s->ch1.vdiv_idx << 1)
-                                | ((uint32_t)s->ch1.coupling << 8));
-        h = redraw_epoch_mix(h, (uint32_t)s->ch2.enabled | ((uint32_t)s->ch2.vdiv_idx << 1)
-                                | ((uint32_t)s->ch2.coupling << 8));
-        /* The info bar prints each channel's probe (the top bar's trigger
-         * edge/source repaint on their own, from draw_status_bar). */
-        h = redraw_epoch_mix(h, (uint32_t)s->ch1.probe | ((uint32_t)s->ch2.probe << 4)
-                                | ((uint32_t)s->trigger.edge << 8)
-                                | ((uint32_t)s->trigger.source << 12));
+        /* What draw_info_bar() prints in the time view, hashed by the bar's
+         * owner (status_bar.c): channel badges as drawn (measured volts/div,
+         * probe, coupling, on/off), the trigger badge including its level,
+         * and the scope view. The timebase moved to the top bar, which
+         * repaints its own slots. */
+        h = redraw_epoch_mix(h, status_bar_info_epoch());
+        /* The FFT view's own bar (window, averaging, max hold). */
 #ifdef FEATURE_FFT
         const fft_config_t *cfg = fft_get_config();
         if (cfg)
@@ -315,8 +311,10 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)s->trigger.source << 8));
     h = redraw_epoch_mix(h, (uint32_t)(uint16_t)s->trigger.level);
 
-    h = redraw_epoch_mix(h, (uint32_t)s->prm_mask
-                            | ((uint32_t)s->prm_hidden << 16));   /* C6 selection */
+    /* The measurement selection, both channels (meas_select.h: CH1's is
+     * prm_mask, CH2's lives in meas_select.c); prm_hidden is mixed below. */
+    h = redraw_epoch_mix(h, (uint32_t)meas_select_get(0)
+                            | ((uint32_t)meas_select_get(1) << 16));
 
     h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode
                             | ((uint32_t)s->cursor.active << 4));
@@ -328,11 +326,12 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
-    /* Parity C3: the trigger panel and the trigger status badge (which
-     * says Trig'd / Wait / Auto* ... from the acquisition, not the mode). */
+    /* Parity C3: the trigger panel. The trigger status (Trig'd / Wait /
+     * Auto* ...) left the plot at the UI round 1 merge: the status bar's dot
+     * and RUN tab show it and repaint their own slots, so it no longer
+     * forces a full plot repaint. */
     h = redraw_epoch_mix(h, (uint32_t)scope_trig_menu.open
-                            | ((uint32_t)scope_trig_menu.row << 1)
-                            | ((uint32_t)fpga_trigger_status() << 8));
+                            | ((uint32_t)scope_trig_menu.row << 1));
 
 #ifdef FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
@@ -421,6 +420,16 @@ static bool scope_incremental_available(const scope_state_t *s)
 
 /* Single scope render entry point, shared by the queue commands and the
  * periodic path so both always pick the same renderer for a given view. */
+/* The Oscilloscope Settings page (osc_menu_model.h) is up. It is a full page
+ * in scope mode: osc_menu_draw() owns y 16..223, between the two bars, so the
+ * scope's own paints (plot, badge rows, mask/CAN rows) stand aside while it
+ * is up; the bars keep repainting. Not ui_modal_active: that would drop DCMD_DRAW_OSC_MENU too. The
+ * acquisition keeps running behind it (UI_STUDY 2.3). */
+static bool osc_page_up(void)
+{
+    return current_mode == MODE_OSCILLOSCOPE && osc_menu_is_open();
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
     (void)action;
@@ -589,6 +598,16 @@ static void vDisplayTask(void *pvParameters)
                 draw_status_bar();
                 draw_info_bar();
                 g_info_bar_epoch = info_bar_epoch();
+                if (osc_page_up()) {
+                    /* The page covers y 16..223; both bars stay visible.
+                     * Also what repaints the page after the gallery or an
+                     * LCD-health reinit: the LCD was cleared under it, so
+                     * the page repaints its background too. */
+                    osc_menu_invalidate();
+                    osc_menu_draw();
+                    g_screen_painted = true;
+                    break;
+                }
                 /* Draw current mode's screen */
                 if (current_mode == MODE_OSCILLOSCOPE) {
                     scope_render(frame, REDRAW_FULL);
@@ -613,8 +632,9 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_SCOPE:
                 /* Always honoured: the sender changed scope state or
                  * raised a popup. Marking the gate stops the periodic
-                 * path from immediately repeating the same paint. */
-                if (current_mode == MODE_OSCILLOSCOPE) {
+                 * path from immediately repeating the same paint. Not while
+                 * the Oscilloscope Settings page covers the plot. */
+                if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     scope_render(frame, REDRAW_FULL);
                     redraw_gate_mark(&scope_gate,
                                      scope_ui_epoch(scope_state_get()),
@@ -656,9 +676,15 @@ static void vDisplayTask(void *pvParameters)
                     g_screen_painted = true;
                 }
                 break;
+            case DCMD_DRAW_OSC_MENU:
+                if (osc_page_up()) {
+                    osc_menu_draw();
+                    g_screen_painted = true;
+                }
+                break;
 #ifdef FEATURE_FFT
             case DCMD_DRAW_FFT:
-                if (current_mode == MODE_OSCILLOSCOPE) {
+                if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     ui_scope_full_draws++;
                     draw_fft_screen();
                     redraw_gate_mark(&scope_gate,
@@ -706,6 +732,9 @@ static void vDisplayTask(void *pvParameters)
             frame++;
             continue;
         }
+        /* The info bar shows under the Oscilloscope Settings page too, so a
+         * channel or trigger change made on the page shows in it at once. */
+        const bool page_up = osc_page_up();
         {
             uint32_t ib = info_bar_epoch();
             if (ib != g_info_bar_epoch) {
@@ -727,12 +756,12 @@ static void vDisplayTask(void *pvParameters)
 #else
                 const bool time_view = true;
 #endif
-                if (me != g_mask_slot_epoch && time_view) {
+                if (me != g_mask_slot_epoch && time_view && !page_up) {
                     scope_ui_mask_slot_refresh();
                     g_mask_slot_epoch = me;
                 }
                 /* CAN readout (`can screen on`): 5 Hz, its own row. */
-                if (time_view && can_scope_screen_on() && (frame & 3u) == 0u)
+                if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
                     scope_ui_can_row_refresh();
             }
             if (ss_anim->running) {
@@ -804,7 +833,8 @@ static void vDisplayTask(void *pvParameters)
                 q.idle_tick_frames = q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
                                                       : SCOPE_IDLE_FULL_FRAMES;
 
-                redraw_action_t act = redraw_gate_step(&scope_gate, &q);
+                redraw_action_t act = page_up ? REDRAW_SKIP
+                                              : redraw_gate_step(&scope_gate, &q);
                 if (act == REDRAW_SKIP)
                     ui_scope_skipped++;
                 else
@@ -842,10 +872,22 @@ static void vDisplayTask(void *pvParameters)
 
         /* Popups outside the scope (softkey UI P0, findings F15/F20): drawn
          * over the screen, re-drawn after any repaint, and the screen
-         * repainted under them when they expire. */
-        if (current_mode != MODE_OSCILLOSCOPE) {
+         * repainted under them when they expire. The Oscilloscope Settings
+         * page uses them too (scope_show_popup routes there while it is up,
+         * e.g. SAVE's "Saved 3.bmp"); one still up when the page closes is
+         * dropped, the scope's REDRAW_ALL has painted over it. */
+        {
+            static bool page_was_up;
+            if (page_was_up && !page_up)
+                ui_popup_overlay_cancel();
+            page_was_up = page_up;
+        }
+        if (current_mode != MODE_OSCILLOSCOPE || page_up) {
             if (ui_popup_overlay_service(g_screen_painted) == 2) {
-                if (current_mode == MODE_MULTIMETER) {
+                if (page_up) {
+                    osc_menu_invalidate();   /* the box covered part of the pane */
+                    osc_menu_draw();
+                } else if (current_mode == MODE_MULTIMETER) {
                     if (meter_layout != METER_LAYOUT_BIG &&
                         meter_layout != METER_LAYOUT_LIMITS)
                         meter_screen_invalidate();

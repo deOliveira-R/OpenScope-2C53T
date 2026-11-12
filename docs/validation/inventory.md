@@ -161,7 +161,7 @@ and the screen shows `---`.
 | TRIGGER | Auto-hold: grey `hold` → `HOLD` after 5 readings within 0.5 % | LIVE |
 | SELECT | Reset min/max/avg, chart, histogram, hold | LIVE |
 | AUTO | Automatic function pick between DC V and AC V (≥2.5 s per try). Manual says REL. | LIVE. REL is unreachable. |
-| SAVE | Raw-frame debug overlay on/off | LIVE (debug) |
+| SAVE | Screenshot (long: gallery), as in every mode; the raw-frame debug overlay is the shell's `meter overlay` | LIVE |
 | UP / DOWN / PRM / CH1 / CH2 / MOVE | Nothing | — |
 
 ### 3.3 What's on screen

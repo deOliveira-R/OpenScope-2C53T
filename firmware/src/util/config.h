@@ -49,11 +49,18 @@
  * math/meter block below. A v2 record on a device updated in the field fails
  * the version check and the device comes up on defaults — which is the whole
  * point of having the field. */
-#define CONFIG_VERSION  4
+#define CONFIG_VERSION  5
 /* Bumped to 4 on 2026-11-11 (parity G5): v4 gives the signal generator's
  * duty, enable and boot policy the four bytes of the old unused float
  * siggen_offset, so the record keeps its size. A v3 record fails the version
- * check once and the device comes up on defaults. */
+ * check once and the device comes up on defaults.
+ * Bumped to 5 on 2026-11-12 (UI round 1, R1-A): v5 appends the per-channel
+ * measurement selection (meas_ch1_mask, meas_ch2_mask; 56 -> 60 bytes). A v4
+ * record is UPGRADED on load, not dropped (config_upgrade_v4 in config.c):
+ * its first 52 bytes are v5's, so the saved settings survive the update and
+ * the two new fields come up on their defaults. Older versions still fall
+ * back to defaults. */
+#define CONFIG_V4_SIZE  56u   /* sizeof(device_config_t) at v4: checksum at 52 */
 
 /* device_config_t.sys_prefs_mark: brightness/volume/auto-off are real (C15). */
 #define CONFIG_SYS_PREFS_MARK  0xC1u
@@ -124,6 +131,11 @@ typedef struct {
     uint8_t  math_op;
     uint8_t  meter_submode;
     uint8_t  meter_layout;
+    /* v5 block (2026-11-12): stock's Parameter Measurement page, bit i =
+     * scope_prm_id_t i shown (meas_select.h). Bits above the 12 are dropped
+     * on apply. */
+    uint16_t meas_ch1_mask;
+    uint16_t meas_ch2_mask;
     /* Checksum */
     uint32_t checksum;           /* Sum of all bytes before this field */
 } device_config_t;

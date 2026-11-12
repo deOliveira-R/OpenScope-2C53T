@@ -100,7 +100,7 @@ const char *key_focus_popup(key_focus_t f)
     case KF_CHMOVE:   return "UP/DN: CH pos  LT/RT: Trig x";
     case KF_TRIGMOVE: return "UP/DN: Trig level  LT/RT: x";
     case KF_CURSOR:   return "Arrows: Cursor";
-    case KF_MASK:     return "UD/LR:Mask tol SEL:stop";
+    case KF_MASK:     return "UD/LR:Mask tol MOVE:stop";
     default:          return "";
     }
 }
@@ -115,6 +115,15 @@ static key_cmd_t cmd(key_action_t a, int8_t arg)
 
 static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
 {
+    /* While the Oscilloscope Settings page is up the plot is hidden, so the
+     * scope's own long presses (measurements, channel enable, baseline,
+     * 50 %) would act on something the user cannot see: ignored. The global
+     * ones below (mode shortcuts, gallery) keep their meaning. */
+    const bool page = (c->mode == MODE_OSCILLOSCOPE) && c->osc_menu_open;
+    if (page && (b == BTN_PRM || b == BTN_CH1 || b == BTN_CH2 ||
+                 b == BTN_OK || b == BTN_AUTO))
+        return cmd(KA_NONE, 0);
+
     switch (b) {
     /* The mode shortcuts work from ANY mode, the meter's softkeys and the
      * settings pages included (manual 1.1 / 2.1 / 3.1). */
@@ -148,8 +157,9 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
         if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_BOOT_TOGGLE, 0);
         return c->scope_time_view ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
 
+    /* Owner decision D1: the gallery from every mode (stock: scope only). */
     case BTN_SAVE:
-        return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_GALLERY_OPEN, 0) : cmd(KA_NONE, 0);
+        return cmd(KA_GALLERY_OPEN, 0);
 
     default:
         return cmd(KA_NONE, 0);
@@ -210,13 +220,61 @@ static key_cmd_t map_scope_arrow(const key_ctx_t *c, button_id_t b)
     return cmd(KA_LEGACY, 0);
 }
 
+/* The page's deep-link keys: the row each opens. MENU opens Display but is
+ * not a deep link once the page is up (it is BACK there). */
+static bool osc_deep_link_row(button_id_t b, osc_row_t *row)
+{
+    switch (b) {
+    case BTN_PRM:     *row = OSC_ROW_PARAM;   return true;
+    case BTN_TRIGGER: *row = OSC_ROW_TRIGGER; return true;
+    case BTN_CH1:     *row = OSC_ROW_CH1;     return true;
+    case BTN_CH2:     *row = OSC_ROW_CH2;     return true;
+    default:          return false;
+    }
+}
+
+/* Short keys while the Oscilloscope Settings page is up (UI_STUDY 1.4). */
+static key_cmd_t map_osc_menu(const key_ctx_t *c, button_id_t b)
+{
+    osc_row_t row;
+    switch (b) {
+    case BTN_UP:    return cmd(KA_OSCMENU_KEY, OSC_KEY_UP);
+    case BTN_DOWN:  return cmd(KA_OSCMENU_KEY, OSC_KEY_DOWN);
+    case BTN_LEFT:  return cmd(KA_OSCMENU_KEY, OSC_KEY_LEFT);
+    case BTN_RIGHT: return cmd(KA_OSCMENU_KEY, OSC_KEY_RIGHT);
+    case BTN_OK:    return cmd(KA_OSCMENU_KEY, OSC_KEY_OK);
+    case BTN_MENU:  return cmd(KA_OSCMENU_KEY, OSC_KEY_BACK);   /* up a level, or close */
+    case BTN_POWER: return cmd(KA_LEGACY, 0);                   /* shutdown always works */
+    default: break;
+    }
+    if (osc_deep_link_row(b, &row)) {
+        /* Stock: the same key that opened the page closes it (PRM, TRIGGER).
+         * Ours: another deep-link key jumps to its row, and then owns the
+         * close. */
+        if ((uint8_t)b == c->osc_menu_opener)
+            return cmd(KA_OSCMENU_CLOSE, 0);
+        return cmd(KA_OSCMENU_OPEN, (int8_t)row);
+    }
+    /* MOVE / SELECT / AUTO: their meanings are the plot's, which is hidden. */
+    return cmd(KA_NONE, 0);
+}
+
 key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
 {
     if (is_long)
         return map_long(c, btn);
 
+    /* Owner decision D1: short SAVE is a whole-screen screenshot in every
+     * mode and on every page (stock: the scope only; the meter's SAVE used to
+     * toggle a debug overlay, now the shell's `meter overlay`). */
+    if (btn == BTN_SAVE)
+        return cmd(KA_SCREENSHOT, 0);
+
     if (c->mode != MODE_OSCILLOSCOPE)
         return cmd(KA_LEGACY, 0);
+
+    if (c->osc_menu_open)
+        return map_osc_menu(c, btn);
 
     /* The trigger panel owns the arrows and OK while it is up (parity C3).
      * The keys that would change what the arrows mean close it instead, so
@@ -237,24 +295,34 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
     }
 
     switch (btn) {
+    /* Stock: short BACK in the scope opens the Oscilloscope Settings page at
+     * its first row, short PRM at Parameter Measurement (UI_STUDY 1.3). In
+     * every scope view: the page is also the way back from the FFT views,
+     * which PRM no longer cycles. */
+    case BTN_MENU:
+        return cmd(KA_OSCMENU_OPEN, OSC_ROW_DISPLAY);
+    case BTN_PRM:
+        return cmd(KA_OSCMENU_OPEN, OSC_ROW_PARAM);
+
     case BTN_TRIGGER:
-        /* Stock's TRIGGER = "Trigger Settings" (manual key table). The
-         * cursors it toggled before C3 are in Settings -> Oscilloscope, where
-         * stock keeps them (menu "Cursor Measurement"). FFT views: legacy. */
+        /* Our inline trigger panel (owner decision D3; the page's Trigger
+         * row has the same settings). The cursors it toggled before C3 are
+         * in the page's Cursors row. FFT views: legacy. */
         return c->scope_time_view ? cmd(KA_TRIGMENU_OPEN, 0) : cmd(KA_LEGACY, 0);
 
     case BTN_MOVE:
-        return cmd(KA_FOCUS_NEXT, 0);       /* every scope view, as before */
-
-    case BTN_SELECT:
-        if (!c->scope_time_view)
-            return cmd(KA_LEGACY, 0);       /* FFT window */
-        if (c->focus == KF_MASK && c->mask_present)
+        /* "Switch CH1/CH2 Adjustment" (m.p30), every scope view. The mask
+         * stage has no channel to switch: there MOVE is stop-on-fail. */
+        if (c->scope_time_view && c->focus == KF_MASK && c->mask_present)
             return cmd(KA_MASK_STOPFAIL, 0);
         return cmd(KA_ADJ_CH_SWITCH, 0);
 
-    case BTN_PRM:
-        return c->scope_time_view ? cmd(KA_PARAM_SELECT, 0) : cmd(KA_LEGACY, 0);
+    case BTN_SELECT:
+        /* "Select Function for Directional Keys" (m.p30). FFT views keep
+         * their window cycle on this key. */
+        if (!c->scope_time_view)
+            return cmd(KA_LEGACY, 0);
+        return cmd(KA_FOCUS_NEXT, 0);
 
     case BTN_UP: case BTN_DOWN: case BTN_LEFT: case BTN_RIGHT:
         if (!c->scope_time_view)

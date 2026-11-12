@@ -49,6 +49,7 @@ typedef enum {
     DCMD_DRAW_FFT,
 #endif
     DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
+    DCMD_DRAW_OSC_MENU, /* scope: the Oscilloscope Settings page (osc_menu_draw) */
     /* Not a real command: what the display task rewrites a received command
      * to while ui_modal_active, so it falls through to `default:` untouched.
      * Never send this. */
@@ -224,10 +225,9 @@ extern fft_result_t     fft_result;
  * UI Drawing Function Prototypes
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* status_bar.c */
-void draw_status_bar(void);
-void status_bar_invalidate(void);
-void draw_info_bar(void);
+/* status_bar.c: draw_status_bar, status_bar_invalidate, draw_info_bar,
+ * status_bar_set_title, status_bar_info_epoch (and the bar geometry) */
+#include "status_bar.h"
 void draw_splash(void);
 
 /* scope_ui.c */
