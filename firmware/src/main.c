@@ -262,19 +262,13 @@ static uint32_t info_bar_epoch(void)
     uint32_t h = REDRAW_EPOCH_SEED;
     h = redraw_epoch_mix(h, (uint32_t)current_mode | ((uint32_t)theme_get_id() << 8));
     if (current_mode == MODE_OSCILLOSCOPE) {
-        const scope_state_t *s = scope_state_get();
-        h = redraw_epoch_mix(h, (uint32_t)scope_view);
-        h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode | ((uint32_t)s->timebase_idx << 8)
-                                | ((uint32_t)s->roll << 16) | ((uint32_t)s->roll_step << 20));
-        h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled | ((uint32_t)s->ch1.vdiv_idx << 1)
-                                | ((uint32_t)s->ch1.coupling << 8));
-        h = redraw_epoch_mix(h, (uint32_t)s->ch2.enabled | ((uint32_t)s->ch2.vdiv_idx << 1)
-                                | ((uint32_t)s->ch2.coupling << 8));
-        /* The info bar prints each channel's probe (the top bar's trigger
-         * edge/source repaint on their own, from draw_status_bar). */
-        h = redraw_epoch_mix(h, (uint32_t)s->ch1.probe | ((uint32_t)s->ch2.probe << 4)
-                                | ((uint32_t)s->trigger.edge << 8)
-                                | ((uint32_t)s->trigger.source << 12));
+        /* What draw_info_bar() prints in the time view, hashed by the bar's
+         * owner (status_bar.c): channel badges as drawn (measured volts/div,
+         * probe, coupling, on/off), the trigger badge including its level,
+         * and the scope view. The timebase moved to the top bar, which
+         * repaints its own slots. */
+        h = redraw_epoch_mix(h, status_bar_info_epoch());
+        /* The FFT view's own bar (window, averaging, max hold). */
 #ifdef FEATURE_FFT
         const fft_config_t *cfg = fft_get_config();
         if (cfg)
