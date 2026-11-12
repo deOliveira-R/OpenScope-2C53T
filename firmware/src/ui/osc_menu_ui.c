@@ -26,6 +26,7 @@
 #include "osc_menu_model.h"
 #include "menu_frame.h"
 #include "meas_select.h"
+#include "measure_strip.h"   /* MSTRIP_MAX_PER_CH */
 #include "ui.h"
 #include "lcd.h"
 #include "font.h"
@@ -402,7 +403,7 @@ static void draw_chips(const osc_menu_state_t *s)
 
 static void draw_footer(const osc_menu_state_t *s)
 {
-    char buf[40];
+    char buf[48];
     const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)s->row);
     const char *t;
     if (g_note[0] && g_note_opens == s->opens) {
@@ -410,8 +411,16 @@ static void draw_footer(const osc_menu_state_t *s)
     } else if (!s->in_pane) {
         t = "OK: open   MENU: close";
     } else if (s->row == OSC_ROW_PARAM) {
-        snprintf(buf, sizeof buf, "CH%u: %u of 12 on   %s", (unsigned)s->meas_ch + 1u,
-                 meas_select_count(s->meas_ch), s->meas_ch ? "UP: CH1" : "DOWN: CH2");
+        /* The strip shows at most MSTRIP_MAX_PER_CH per channel, the first
+         * ones in stock order (measure_strip.h); the selection itself keeps
+         * all 12 (All = A-on), so say how many show. */
+        const unsigned on = meas_select_count(s->meas_ch);
+        if (on > MSTRIP_MAX_PER_CH)
+            snprintf(buf, sizeof buf, "CH%u: %u on, %u shown   %s", (unsigned)s->meas_ch + 1u,
+                     on, (unsigned)MSTRIP_MAX_PER_CH, s->meas_ch ? "UP: CH1" : "DOWN: CH2");
+        else
+            snprintf(buf, sizeof buf, "CH%u: %u of 12 on   %s", (unsigned)s->meas_ch + 1u,
+                     on, s->meas_ch ? "UP: CH1" : "DOWN: CH2");
         t = buf;
     } else if (l->kind == OSC_PANE_VALUES) {
         t = "LEFT/RIGHT: change   MENU: back";
