@@ -225,10 +225,9 @@ extern fft_result_t     fft_result;
  * UI Drawing Function Prototypes
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* status_bar.c */
-void draw_status_bar(void);
-void status_bar_invalidate(void);
-void draw_info_bar(void);
+/* status_bar.c: draw_status_bar, status_bar_invalidate, draw_info_bar,
+ * status_bar_set_title, status_bar_info_epoch (and the bar geometry) */
+#include "status_bar.h"
 void draw_splash(void);
 
 /* scope_ui.c */
