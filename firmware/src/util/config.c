@@ -102,12 +102,13 @@ void config_init_defaults(device_config_t *cfg)
     cfg->meter_submode        = 0;  /* DCV */
     cfg->meter_layout         = 0;  /* Full */
 
-    /* v5 block: what the badges showed before the selection page existed
-     * (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT; scope_measure.h ids:
-     * Freq 0, Peri 1, Duty+ 2, Vp-p 8, Vrms 10). Literal here so config.c
-     * stays free of UI headers; test_config_persist checks they agree. */
+    /* v5 block: the same five on both channels, CH1's badges before the
+     * selection page existed (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT;
+     * scope_measure.h ids: Freq 0, Peri 1, Duty+ 2, Vp-p 8, Vrms 10). Literal
+     * here so config.c stays free of UI headers; test_config_persist checks
+     * they agree. A saved record keeps its own CH2 set. */
     cfg->meas_ch1_mask        = (uint16_t)((1u << 0) | (1u << 1) | (1u << 2) | (1u << 8) | (1u << 10));
-    cfg->meas_ch2_mask        = (uint16_t)(1u << 8);
+    cfg->meas_ch2_mask        = cfg->meas_ch1_mask;
 
 
     /* Compute and store checksum */

@@ -2,6 +2,30 @@
  * Measurement strip layout. See measure_strip.h. Pure: no LCD, no FPGA.
  */
 #include "measure_strip.h"
+#include "scope_measure.h"   /* SCOPE_PRM_* ids */
+
+/* Which measurements win the MSTRIP_MAX_PER_CH slots when more are on: this
+ * order, best first. Owner (2026-11-12): automotive work wants the levels
+ * first (CAN dominant/recessive, sensor voltages), then the PWM's frequency
+ * and duty; the rest in stock order. Change the order here and nowhere else;
+ * the shown ones still sit in stock order on the screen. */
+const uint8_t mstrip_show_priority[MSTRIP_PRM_COUNT] = {
+    SCOPE_PRM_VPP, SCOPE_PRM_VMAX, SCOPE_PRM_VMIN, SCOPE_PRM_FREQ, SCOPE_PRM_DUTY_POS, SCOPE_PRM_VRMS,
+    /* the rest, stock order */
+    SCOPE_PRM_PERI, SCOPE_PRM_DUTY_NEG, SCOPE_PRM_WID_POS, SCOPE_PRM_WID_NEG, SCOPE_PRM_AMP, SCOPE_PRM_AVG,
+};
+
+uint16_t measure_strip_shown(uint16_t mask)
+{
+    mask = (uint16_t)(mask & ((1u << MSTRIP_PRM_COUNT) - 1u));
+    uint16_t shown = 0;
+    unsigned n = 0;
+    for (unsigned r = 0; r < MSTRIP_PRM_COUNT && n < MSTRIP_MAX_PER_CH; r++) {
+        const uint16_t bit = (uint16_t)(1u << mstrip_show_priority[r]);
+        if (mask & bit) { shown |= bit; n++; }
+    }
+    return shown;
+}
 
 static unsigned popcount_capped(uint16_t mask, unsigned cap)
 {
@@ -56,11 +80,11 @@ void measure_strip_layout(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
         const bool en = ch ? en2 : en1;
         if (!en || hidden)
             continue;
-        unsigned taken = 0;
-        for (unsigned i = 0; i < MSTRIP_PRM_COUNT; i++) {
+        const uint16_t shown = measure_strip_shown(m);   /* by priority ... */
+        for (unsigned i = 0; i < MSTRIP_PRM_COUNT; i++) { /* ... drawn in stock order */
             if (!(m & (1u << i)))
                 continue;
-            if (taken >= MSTRIP_MAX_PER_CH || out->n >= MSTRIP_MAX_CELLS) {
+            if (!(shown & (1u << i)) || out->n >= MSTRIP_MAX_CELLS) {
                 out->dropped++;
                 continue;
             }
@@ -70,7 +94,6 @@ void measure_strip_layout(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
             c->x   = (uint16_t)(MSTRIP_X0 + (out->n % MSTRIP_COLS) * MSTRIP_CELL_W);
             c->y   = (uint16_t)(first_row + (out->n / MSTRIP_COLS) * MSTRIP_ROW_H);
             out->n++;
-            taken++;
         }
     }
 }

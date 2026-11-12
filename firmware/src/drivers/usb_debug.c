@@ -70,7 +70,7 @@
 #include "../ui/scope_freq.h"
 #include "../ui/scope_measure.h"
 #include "../ui/meas_select.h"
-#include "../ui/measure_strip.h"   /* MSTRIP_MAX_PER_CH */
+#include "../ui/measure_strip.h"   /* measure_strip_shown */
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
 #include "../ui/scope_geom.h"
@@ -4934,8 +4934,9 @@ static void cmd_fpga_scope_measure(const char *args)
  * The mask is bit i = parameter i in stock's order: Freq Peri Duty+ Duty-
  * Wid+ Wid- Vmax Vmin Vp-p Amp Vrms Avg. Everything goes through
  * meas_select.c, the page's own store, so the page, the strip and the
- * persisted record see the change. The strip shows the first
- * MSTRIP_MAX_PER_CH (6) selected, in that order. */
+ * persisted record see the change. With more than MSTRIP_MAX_PER_CH (6) on,
+ * the strip shows the 6 measure_strip_shown() picks (levels first); the
+ * others are listed "(no slot)". */
 static void cmd_fpga_scope_prm(const char *args)
 {
     scope_state_t *ss = scope_state_get();
@@ -4978,9 +4979,10 @@ static void cmd_fpga_scope_prm(const char *args)
         usb_debug_printf("CH%u mask=0x%03X shown:", (unsigned)c + 1u, (unsigned)m);
         uint8_t ids[SCOPE_PRM_COUNT];
         const unsigned n = scope_prm_select(m, ids, SCOPE_PRM_COUNT);
+        const uint16_t shown = measure_strip_shown(m);
         for (unsigned i = 0; i < n; i++)
             usb_debug_printf(" %s%s", scope_prm_label(ids[i]),
-                             i >= MSTRIP_MAX_PER_CH ? "(no slot)" : "");
+                             (shown >> ids[i]) & 1u ? "" : "(no slot)");
         usb_send_str("\r\n");
     }
 }

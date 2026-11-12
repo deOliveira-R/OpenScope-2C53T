@@ -411,9 +411,9 @@ static void draw_footer(const osc_menu_state_t *s)
     } else if (!s->in_pane) {
         t = "OK: open   MENU: close";
     } else if (s->row == OSC_ROW_PARAM) {
-        /* The strip shows at most MSTRIP_MAX_PER_CH per channel, the first
-         * ones in stock order (measure_strip.h); the selection itself keeps
-         * all 12 (All = A-on), so say how many show. */
+        /* The strip shows at most MSTRIP_MAX_PER_CH per channel, picked by
+         * measure_strip.c's priority table (levels first); the selection
+         * itself keeps all 12 (All = A-on), so say how many show. */
         const unsigned on = meas_select_count(s->meas_ch);
         if (on > MSTRIP_MAX_PER_CH)
             snprintf(buf, sizeof buf, "CH%u: %u on, %u shown   %s", (unsigned)s->meas_ch + 1u,

@@ -68,11 +68,19 @@ typedef struct {
  * Place the cells. mask1/mask2: the selection per channel; a disabled channel
  * contributes nothing. hidden: stock's "hide measurement parameters" (long PRM)
  * - no cells, but the AUX row is still placed when `aux`. Each channel shows at
- * most MSTRIP_MAX_PER_CH, in stock order; the rest are counted in `dropped`.
+ * most MSTRIP_MAX_PER_CH, the ones measure_strip_shown() picks, in stock order
+ * on the screen; the rest are counted in `dropped`.
  */
 void measure_strip_layout(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
                           bool hidden, bool aux, uint16_t bottom,
                           mstrip_layout_t *out);
+
+/* When more than MSTRIP_MAX_PER_CH are on, which ones show: the first
+ * MSTRIP_MAX_PER_CH of mstrip_show_priority[] (measure_strip.c: Vp-p Vmax
+ * Vmin Freq Duty+ Vrms, then the rest in stock order) that are in `mask`.
+ * A mask of 6 or fewer comes back whole. Bit i = scope_prm_id_t i. */
+extern const uint8_t mstrip_show_priority[MSTRIP_PRM_COUNT];
+uint16_t measure_strip_shown(uint16_t mask);
 
 /* The `top` measure_strip_layout() would return, without filling cells: what
  * the live compositor calls every frame. */

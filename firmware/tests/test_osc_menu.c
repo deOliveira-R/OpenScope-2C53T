@@ -227,15 +227,15 @@ static void test_measure(void)
 {
     printf("Measure pane (stock's per-channel A-on / A-off lists)\n");
     fresh();
-    CHECK("defaults: CH1 = the five badges, CH2 = its Vp-p badge",
-          meas_select_get(0) == SCOPE_PRM_DEFAULT_MASK && meas_select_get(1) == (1u << SCOPE_PRM_VPP));
+    CHECK("defaults: CH1 and CH2 = the five badges",
+          meas_select_get(0) == SCOPE_PRM_DEFAULT_MASK && meas_select_get(1) == SCOPE_PRM_DEFAULT_MASK);
     osc_menu_open(OSC_ROW_PARAM);
     key(OSC_KEY_RIGHT);
     CHECK("entering lands on Freq of CH1", S()->in_pane && S()->item == OSC_PRM_CHIP0 && S()->meas_ch == 0 &&
           A.kind == OSC_ACT_ENTER);
     key(OSC_KEY_OK);
     CHECK("OK on Freq turns it off in CH1 only", !(meas_select_get(0) & (1u << SCOPE_PRM_FREQ)) &&
-          meas_select_get(1) == (1u << SCOPE_PRM_VPP));
+          meas_select_get(1) == SCOPE_PRM_DEFAULT_MASK);
     key(OSC_KEY_OK);
     CHECK("OK again turns it back on", meas_select_get(0) == SCOPE_PRM_DEFAULT_MASK);
     key(OSC_KEY_RIGHT); key(OSC_KEY_OK);
@@ -325,6 +325,8 @@ static void test_meas_select(void)
     CHECK("defaults restore both", meas_select_get(0) == MEAS_SELECT_CH1_DEFAULT &&
           meas_select_get(1) == MEAS_SELECT_CH2_DEFAULT);
     CHECK("scope_state_init's CH1 default is the same set", MEAS_SELECT_CH1_DEFAULT == SCOPE_PRM_DEFAULT_MASK);
+    CHECK("CH2's default is CH1's (Freq, Peri, Duty+, Vp-p, Vrms)",
+          MEAS_SELECT_CH2_DEFAULT == MEAS_SELECT_CH1_DEFAULT);
 }
 
 /* ── menu_frame scroll ──────────────────────────────────────────────── */

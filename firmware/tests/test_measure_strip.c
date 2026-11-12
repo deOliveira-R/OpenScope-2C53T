@@ -170,6 +170,25 @@ static void check_layout(uint16_t m1, bool e1, uint16_t m2, bool e2, bool hid, b
     if (aux)
         CHECK(L.aux_y == L.top && L.aux_y + MSTRIP_ROW_H <= BOTTOM, "aux row placement");
 
+    /* Which ones show: the priority pick, per channel, independent of the
+     * code's table walk -- no dropped one outranks a shown one. */
+    for (unsigned ch = 0; ch < 2u; ch++) {
+        const uint16_t m = ch ? m2 : m1;
+        if (!(ch ? e2 : e1) || hid) continue;
+        uint16_t got = 0;
+        for (unsigned k = 0; k < L.n; k++)
+            if (L.cell[k].ch == ch) got |= (uint16_t)(1u << L.cell[k].prm);
+        int worst_shown = -1, best_dropped = 99;
+        for (unsigned r = 0; r < 12u; r++) {
+            const unsigned p = mstrip_show_priority[r];
+            if (got & (1u << p)) worst_shown = (int)r;
+            else if ((m & (1u << p)) && best_dropped == 99) best_dropped = (int)r;
+        }
+        CHECK(worst_shown < best_dropped, "ch%u mask %03x: a dropped prm outranks a shown one", ch, m);
+        CHECK(got == measure_strip_shown(m), "ch%u mask %03x: cells %03x != shown %03x", ch, m, got,
+              measure_strip_shown(m));
+    }
+
     int prev_ch = -1, prev_prm = -1;
     for (unsigned k = 0; k < L.n; k++) {
         const mstrip_cell_t *c = &L.cell[k];
@@ -200,9 +219,9 @@ static void test_layout(void)
             for (unsigned f = 0; f < 16u; f++)
                 check_layout((uint16_t)m1, f & 1u, m2s[j], (f >> 1) & 1u, (f >> 2) & 1u, (f >> 3) & 1u);
 
-    /* Today's default (CH1 Freq Peri Duty+ Vp-p Vrms, CH2 Vp-p): two rows, as
-     * the two badge rows before; CH2's Vp-p in the third column of row 2,
-     * where stock puts CH2's first measurement after CH1's. */
+    /* CH1's default (Freq Peri Duty+ Vp-p Vrms) with CH2 on Vp-p alone (its
+     * default until 2026-11-12): two rows; CH2's Vp-p in the third column of
+     * row 2, where stock puts CH2's first measurement after CH1's. */
     mstrip_layout_t L;
     measure_strip_layout(SCOPE_PRM_DEFAULT_MASK, true, 1u << SCOPE_PRM_VPP, true, false, false, BOTTOM, &L);
     CHECK(L.n == 6 && L.rows == 2, "default: %u cells %u rows", L.n, L.rows);
@@ -218,6 +237,29 @@ static void test_layout(void)
     /* Everything on: capped at 6 + 6 = 4 rows. */
     measure_strip_layout(0xFFF, true, 0xFFF, true, false, true, BOTTOM, &L);
     CHECK(L.rows == 4 && L.n == 12 && L.dropped == 12, "all-on: rows %u n %u dropped %u", L.rows, L.n, L.dropped);
+    /* ... and the six are the owner's priority (levels first), drawn in
+     * stock order: Freq Duty+ Vmax Vmin Vp-p Vrms. */
+    {
+        static const uint8_t want[6] = { SCOPE_PRM_FREQ, SCOPE_PRM_DUTY_POS, SCOPE_PRM_VMAX,
+                                         SCOPE_PRM_VMIN, SCOPE_PRM_VPP, SCOPE_PRM_VRMS };
+        int ok = 1;
+        for (unsigned k = 0; k < 6; k++)
+            ok &= L.cell[k].ch == 0 && L.cell[k].prm == want[k] && L.cell[k + 6].ch == 1 &&
+                  L.cell[k + 6].prm == want[k];
+        CHECK(ok, "all-on: not Freq Duty+ Vmax Vmin Vp-p Vrms on both channels");
+    }
+    /* 7 on, Vp-p not among them: the 7th in priority (Peri, stock order
+     * after the six) fills the slot and Avg (last) is dropped. */
+    {
+        const uint16_t m = (uint16_t)((1u << SCOPE_PRM_VMAX) | (1u << SCOPE_PRM_VMIN) | (1u << SCOPE_PRM_FREQ) |
+                                      (1u << SCOPE_PRM_DUTY_POS) | (1u << SCOPE_PRM_VRMS) |
+                                      (1u << SCOPE_PRM_PERI) | (1u << SCOPE_PRM_AVG));
+        CHECK(measure_strip_shown(m) == (uint16_t)(m & ~(1u << SCOPE_PRM_AVG)), "7 on: shown %03x",
+              measure_strip_shown(m));
+        CHECK(measure_strip_shown(0x0FFu) == 0x0FFu - (1u << SCOPE_PRM_WID_POS) - (1u << SCOPE_PRM_WID_NEG),
+              "8 on (ids 0-7): shown %03x", measure_strip_shown(0x0FFu));
+        CHECK(measure_strip_shown(SCOPE_PRM_DEFAULT_MASK) == SCOPE_PRM_DEFAULT_MASK, "5 on: not all shown");
+    }
     /* A channel that is off contributes nothing, even selected. */
     measure_strip_layout(0x001, false, 0x001, true, false, false, BOTTOM, &L);
     CHECK(L.n == 1 && L.cell[0].ch == 1, "disabled CH1 still placed");
