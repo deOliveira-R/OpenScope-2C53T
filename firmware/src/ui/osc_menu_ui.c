@@ -56,8 +56,12 @@ static const menu_frame_t k_frame = {
     .label = rail_label, .icon = NULL,   /* 12x12 icons: R1-B's icons.c, at the merge */
 };
 
-/* A one-line result of the last key ("Keep one CH on"); "" = show the hint. */
-static char g_note[28];
+/* A one-line result of the last key ("Keep one CH on"); "" = show the hint.
+ * g_note_opens: the osc_menu_state()->opens it was written under. A note
+ * from an earlier visit (or from before a deep-link jump) is not shown: the
+ * input task writes both, the display task only compares. */
+static char    g_note[28];
+static uint8_t g_note_opens;
 
 /* ═══════════════════════════════════════════════════════════════════
  * Live values
@@ -320,7 +324,9 @@ osc_result_t osc_menu_key(osc_key_t k)
 {
     osc_action_t a;
     const osc_result_t r = osc_menu_step(k, &a);
-    if (r != OSC_RES_NONE) g_note[0] = '\0';   /* a key that redraws nothing keeps the note on screen */
+    /* A key that redraws nothing keeps the note on screen (this visit's). */
+    if (r != OSC_RES_NONE || g_note_opens != osc_menu_state()->opens) g_note[0] = '\0';
+    g_note_opens = osc_menu_state()->opens;
     const osc_row_t row = (osc_row_t)a.row;
 
     switch (a.kind) {
@@ -451,7 +457,7 @@ static void draw_footer(const osc_menu_state_t *s)
     char buf[40];
     const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)s->row);
     const char *t;
-    if (g_note[0]) {
+    if (g_note[0] && g_note_opens == s->opens) {
         t = g_note;
     } else if (!s->in_pane) {
         t = "OK: open   MENU: close";
