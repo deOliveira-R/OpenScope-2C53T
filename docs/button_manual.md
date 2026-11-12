@@ -245,9 +245,6 @@ Vp-p, Vmax, Vmin, Freq, Duty+, Vrms, then the rest in stock order
 (`mstrip_show_priority[]`, firmware/src/ui/measure_strip.c). They are drawn
 in stock order.
 
-The page itself (its rows and panes) is UI round 1's item R1-A; until it is
-merged, a placeholder page "Oscilloscope Settings (coming)" stands in for it.
-
 ---
 
 ## Multimeter Mode
