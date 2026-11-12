@@ -68,8 +68,8 @@ DAMAGED and drops out of the gallery.
 
 | where | key | does |
 |---|---|---|
-| scope, signal generator, settings | SAVE | save the screen; popup "Saved N.bmp" / "Gallery full: delete" / "Save failed" (the meter keeps SAVE = debug overlay) |
-| scope | long SAVE | open the gallery (3x3, newest first) |
+| every mode (scope and its settings page, meter, signal generator, settings, home) | SAVE | save the screen; popup "Saved N.bmp" / "Gallery full: delete" / "Save failed" (UI round 1, owner decision D1; the meter's old SAVE = debug overlay is the shell's `meter overlay`) |
+| every mode | long SAVE | open the gallery (3x3, newest first) |
 | gallery grid | arrows | move; LEFT/RIGHT wrap |
 | gallery grid | OK | view the selected shot full screen |
 | gallery (both views) | SAVE | arm delete ("SAVE again: delete N.bmp"); SAVE again deletes; any other key disarms |

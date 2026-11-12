@@ -49,6 +49,7 @@ typedef enum {
     DCMD_DRAW_FFT,
 #endif
     DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
+    DCMD_DRAW_OSC_MENU, /* scope: the Oscilloscope Settings page (osc_menu_draw) */
     /* Not a real command: what the display task rewrites a received command
      * to while ui_modal_active, so it falls through to `default:` untouched.
      * Never send this. */

@@ -16,6 +16,7 @@
 #include "../ui/scope_mask.h"
 #include "key_model.h"
 #include "trig_menu.h"
+#include "osc_menu_model.h"
 #include "input_handler.h"
 #include "ui.h"
 #include "softkey.h"
@@ -460,8 +461,8 @@ static void send_cmd(QueueHandle_t q, uint8_t cmd)
     xQueueSend(q, &cmd, 0);
 }
 
-/* What the arrow keys adjust in the scope time view (key_model.h). MOVE cycles
- * it: zoom -> channel move -> trigger move -> [cursor] -> [mask]. The three
+/* What the arrow keys adjust in the scope time view (key_model.h). Short
+ * SELECT cycles it: zoom -> channel move -> trigger move -> [cursor] -> [mask]. The three
  * bools are derived from it (set_focus) because the renderer and the shell
  * read them. */
 volatile key_focus_t scope_key_focus = KF_ZOOM;
@@ -478,6 +479,14 @@ static void set_focus(key_focus_t f)
     scope_hpos_focus       = (f == KF_CHMOVE || f == KF_TRIGMOVE);
     scope_mask_focus       = (f == KF_MASK);
 }
+
+/* key_model.h: read-only views for the status bar. */
+uint8_t key_focus_get(void)          { return (uint8_t)scope_key_focus; }
+uint8_t key_active_channel_get(void) { return active_channel; }
+
+/* The key that opened the Oscilloscope Settings page (or last jumped in it):
+ * pressing it again closes the page (key_model.c map_osc_menu). */
+static uint8_t osc_menu_opener = BTN_NONE;
 
 /* Helper: show popup and send redraw */
 static void popup_and_redraw(QueueHandle_t q, const char *text)
@@ -602,6 +611,7 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
     meter_autoselect_cancel();
     siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
     trig_menu_close(&scope_trig_menu);   /* never reappears over another mode's return */
+    osc_menu_close();                    /* nor does the Oscilloscope Settings page */
     if (m == MODE_HOME)
         home_enter(home_ui_model(), current_mode);   /* preselect where we came from (stock 0x0800D834) */
     current_mode = m;
@@ -628,12 +638,109 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
     send_cmd(dq, DCMD_REDRAW_ALL);
 }
 
-/* Measurement selection (short PRM in the scope time view). The measurement
- * item implements this; the default says "not handled", and input falls back
- * to the older PRM meaning (the FFT view cycle). */
-__attribute__((weak)) bool scope_param_select(void)
+#ifdef FEATURE_FFT
+void scope_view_select(scope_view_t v)
 {
-    return false;
+    if ((unsigned)v >= (unsigned)SCOPE_VIEW_COUNT || v == scope_view) return;
+    const scope_view_t prev_view = scope_view;
+    scope_view = v;
+
+    /* Pool lifecycle: claim FFT pool when entering FFT views,
+     * release when returning to time-domain */
+    if (prev_view == SCOPE_VIEW_TIME && scope_view != SCOPE_VIEW_TIME) {
+        /* Entering FFT view — claim pool */
+        fft_config_t fft_cfg;
+        fft_cfg.window         = FFT_WINDOW_HANNING;
+        fft_cfg.sample_rate_hz = 44100.0f;
+        fft_cfg.ref_level_db   = 0.0f;
+        fft_cfg.db_range       = 80.0f;
+        fft_cfg.peak_count     = 4;
+        fft_cfg.avg_count      = 0;
+        fft_cfg.max_hold       = false;
+        fft_cfg.zoom_start_bin = 1;
+        fft_cfg.zoom_end_bin   = FFT_BINS - 1;
+        fft_init(&fft_cfg);
+    } else if (prev_view != SCOPE_VIEW_TIME && scope_view == SCOPE_VIEW_TIME) {
+        /* Returning to time-domain — release pool */
+        fft_deinit();
+    }
+}
+#endif
+
+/* Short SAVE, every mode (owner decision D1). */
+static void save_key_short(QueueHandle_t dq)
+{
+#if defined(FPGA_BENCH_SAVE_PC12) && FPGA_BENCH_SAVE_PC12
+    /* BENCH IMAGES ONLY (guest-warmtest*). Until 2026-10-03 this was gated
+     * on FPGA_WARM_HANDOFF_TEST, which the release image (guest-coldtrace)
+     * also defines -- so in v0.4.0 SAVE silently flipped CH1's input PATH
+     * relay (PC12: direct vs ~30x attenuated, set per range by the range
+     * table), leaving the volts/div calibration wrong until the next range
+     * change. It now needs its own flag.
+     *
+     * Warm-handoff bench build: SAVE toggles the input-routing relay
+     * PC12 for a live A/B. Bench run 4 (2026-08-12) showed the input
+     * path connected but AC-coupled — finger noise passes, DC blocked —
+     * and PC12 (driven LOW by our approximate range table) is the
+     * suspected coupling/routing select. Pure GPIO relay write (Exp C:
+     * signal relay, not a config strap); costs nothing to flip live. */
+    if (current_mode == MODE_OSCILLOSCOPE) {
+        if (GPIOC->odt & (1U << 12)) {
+            GPIOC->clr = (1U << 12);
+            scope_show_popup("PC12: LOW");
+        } else {
+            GPIOC->scr = (1U << 12);
+            scope_show_popup("PC12: HIGH");
+        }
+        send_cmd(dq, DCMD_REDRAW_ALL);
+        return;
+    }
+#endif
+#if defined(FPGA_PIN_SWEEP_BUILD) && FPGA_PIN_SWEEP_BUILD
+    /* Bench build: SAVE runs the RECONFIG_N candidate pin sweep instead of
+     * its normal action. Gated to a button and run from here — NOT from
+     * fpga_init — so a bad pulse costs a power-cycle rather than a failed
+     * boot; three failed boots latch the bootloader into SAFE MODE, which
+     * this unit has already done twice. Re-runnable without a reflash. */
+    if (current_mode == MODE_OSCILLOSCOPE) {
+        scope_show_popup("PIN SWEEP...");
+        fpga_reconfig_pin_sweep();
+        send_cmd(dq, DCMD_REDRAW_ALL);
+        return;
+    }
+#endif
+    /* Screenshot (parity C16): stock writes 2:/Screenshot file/%d.bmp
+     * and pops "Saved"/"Save failed" (ms[0xE10] 2/3). Ours writes
+     * <n>.bmp into our own W25Q scratch slots (gallery_store.h), never
+     * stock's FAT. The capture freezes rendering for the ~0.5 s write,
+     * so the popup comes after it and is not in the picture. The
+     * result is only reported once the region layer has read every
+     * page back (until 2026-10-03 this said "SAVED #n" and wrote
+     * nothing). Every mode since UI round 1: home, meter, generator,
+     * settings and the Oscilloscope Settings page included. */
+    uint32_t seq = 0;
+    const gallery_status_t gst = gallery_ui_capture(&seq);
+    char msg[28];
+    gallery_ui_result_text(gst, seq, msg, sizeof msg);
+    scope_show_popup(msg);
+    if (current_mode == MODE_HOME) {
+        /* Home repaints only its selection on key presses; the popup
+         * overlay (main.c) draws itself and asks for the repaint when it
+         * expires. */
+        send_cmd(dq, DCMD_DRAW_HOME);
+    } else {
+        send_cmd(dq, DCMD_REDRAW_ALL);
+    }
+}
+
+/* After the page applied a change: the cursors switched on from its Cursors
+ * row put the arrows on the cursor stage, as TRIGGER's old cursor cycle did
+ * (stock behaviour [inferred], UI_STUDY 2.3). */
+static void osc_menu_after_key(cursor_mode_t was)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->cursor.mode != was)
+        set_focus(key_focus_after_cursor_change(scope_key_focus, ss->cursor.mode != CURSOR_OFF));
 }
 
 /* Frequency digit editor (parity G4). While it is open the arrows move the
@@ -694,11 +801,13 @@ static key_ctx_t key_ctx_now(void)
     c.focus          = f;
     c.active_channel = active_channel;
     c.trig_menu_open = scope_trig_menu.open;
+    c.osc_menu_open  = (current_mode == MODE_OSCILLOSCOPE) && osc_menu_is_open();
+    c.osc_menu_opener = osc_menu_opener;
     return c;
 }
 
-/* Execute one answer of key_map(). Returns the display command sent. */
-static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
+/* Execute one answer of key_map() for key `btn`. Returns the display command sent. */
+static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
 {
     scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
@@ -771,8 +880,10 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
     }
 
-    /* Long SAVE (parity C16): stock's 3x3 screenshot gallery. It owns the
-     * screen (ui_modal_active) and every key until it closes itself. */
+    /* Long SAVE (parity C16): stock's 3x3 screenshot gallery, from every
+     * mode (D1). It owns the screen (ui_modal_active) and every key until it
+     * closes itself; its closing DCMD_REDRAW_ALL repaints whatever was under
+     * it, the Oscilloscope Settings page included. */
     case KA_GALLERY_OPEN:
         gallery_ui_open(dq);
         cmd = DCMD_NONE_MODAL_DROP;
@@ -814,9 +925,8 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         break;
     }
 
-    case KA_PARAM_SELECT:
-        /* Only reached when scope_param_select() took it (see the caller). */
-        send_cmd(dq, cmd);
+    case KA_SCREENSHOT:
+        save_key_short(dq);
         break;
 
     case KA_TB_STEP: {
@@ -955,6 +1065,38 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
         popup_and_redraw(dq, pb);
         break;
 
+    /* -- the Oscilloscope Settings page (osc_menu_model.h) -------------- */
+    case KA_OSCMENU_OPEN:
+        /* From the plot, or a deep-link key jumping to its row while the
+         * page is up. The inline trigger panel never stays under it. */
+        trig_menu_close(&scope_trig_menu);
+        osc_menu_open((osc_row_t)dir);
+        osc_menu_opener = (uint8_t)btn;
+        cmd = DCMD_DRAW_OSC_MENU;
+        send_cmd(dq, cmd);
+        break;
+    case KA_OSCMENU_KEY: {
+        const cursor_mode_t was = ss->cursor.mode;
+        const osc_result_t r = osc_menu_key((osc_key_t)dir);
+        osc_menu_after_key(was);
+        if (r == OSC_RES_REDRAW) {
+            cmd = DCMD_DRAW_OSC_MENU;
+            send_cmd(dq, cmd);
+        } else if (r == OSC_RES_CLOSE) {
+            osc_menu_close();               /* idempotent: the model may have closed already */
+            osc_menu_opener = BTN_NONE;
+            send_cmd(dq, cmd);              /* REDRAW_ALL: the scope, in whatever view is now set */
+        } else {
+            cmd = DCMD_NONE_MODAL_DROP;     /* nothing changed on screen */
+        }
+        break;
+    }
+    case KA_OSCMENU_CLOSE:
+        osc_menu_close();
+        osc_menu_opener = BTN_NONE;
+        send_cmd(dq, cmd);
+        break;
+
     case KA_MASK_STOPFAIL: {
         scope_mask_summary_t m;
         scope_mask_summary(&m);
@@ -1023,10 +1165,27 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
      * are the quick mode switches and must work from the meter too. */
     if (((unsigned)button & BTN_LONG_FLAG) != 0u) {
         const key_ctx_t kc = key_ctx_now();
-        const key_cmd_t k = key_map(&kc, (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG), true);
-        cmd = exec_key_cmd(k, dq);
+        const button_id_t base = (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG);
+        const key_cmd_t k = key_map(&kc, base, true);
+        cmd = exec_key_cmd(k, base, dq);
         settings_after_button();
         return cmd;
+    }
+
+    /* The key model's short meanings (key_model.c decides, exec_key_cmd()
+     * acts): SAVE in every mode, and in the scope the arrow stages, the
+     * channel switch, the trigger panel and the Oscilloscope Settings page.
+     * Anything it does not claim falls through to the per-mode handlers.
+     * Before the home page and the meter's softkeys, so SAVE is the
+     * screenshot there too; key_map() claims nothing else outside the scope. */
+    {
+        const key_ctx_t kc = key_ctx_now();
+        const key_cmd_t k = key_map(&kc, button, false);
+        if (k.act != KA_LEGACY) {
+            cmd = exec_key_cmd(k, button, dq);
+            settings_after_button();
+            return cmd;
+        }
     }
 
     /* The home page takes every key but POWER (shutdown must always work):
@@ -1075,21 +1234,6 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         }
     }
 
-    /* The scope time view's key meanings (zoom/move stages, channel switch,
-     * measurement selection): key_model.c decides, exec_key_cmd() acts.
-     * Anything it does not claim falls through to the per-mode handlers. */
-    {
-        const key_ctx_t kc = key_ctx_now();
-        key_cmd_t k = key_map(&kc, button, false);
-        if (k.act == KA_PARAM_SELECT && !scope_param_select())
-            k.act = KA_LEGACY;       /* nothing selects measurements yet: PRM keeps its old job */
-        if (k.act != KA_LEGACY) {
-            cmd = exec_key_cmd(k, dq);
-            settings_after_button();
-            return cmd;
-        }
-    }
-
     if (siggen_edit_input(button, dq)) {
         settings_after_button();
         return DCMD_DRAW_SIGGEN;
@@ -1105,10 +1249,11 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
          * panel and the frequency editor are closed earlier, by key_map()
          * and siggen_edit_input()). At a mode's top level it opens the home
          * page. That is ours where stock differs: stock's short BACK does
-         * nothing at the top of the meter, generator and settings, and in
-         * the scope opens the "Oscilloscope Settings" page (ms[0xF68] = 9),
-         * which here is Home -> Settings -> Oscilloscope Settings. Until
-         * 2026-11 this cycled scope -> meter -> generator -> settings. */
+         * nothing at the top of the meter, generator and settings (owner
+         * decision D2 keeps ours). The scope never reaches here: its short
+         * MENU opens the Oscilloscope Settings page (key_model.c, stock
+         * ms[0xF68] = 9). Until 2026-11 this cycled scope -> meter ->
+         * generator -> settings. */
         if (current_mode == MODE_SETTINGS && settings_depth > 0) {
             meter_autoselect_cancel();
             settings_depth = 0;
@@ -1158,7 +1303,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         break;
 
     case BTN_MOVE:
-        /* Scope: key_model.c answers it (KA_FOCUS_NEXT, executed above). What
+        /* Scope: key_model.c answers it (KA_ADJ_CH_SWITCH, executed above). What
          * is left is the other modes, where it only repaints; the meter's
          * softkey meaning was caught at the top. */
         send_cmd(dq, cmd);
@@ -1166,66 +1311,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     /* -- Save (screenshot) ---------------------------------------- */
 
-    case BTN_SAVE:
-#if defined(FPGA_BENCH_SAVE_PC12) && FPGA_BENCH_SAVE_PC12
-        /* BENCH IMAGES ONLY (guest-warmtest*). Until 2026-10-03 this was gated
-         * on FPGA_WARM_HANDOFF_TEST, which the release image (guest-coldtrace)
-         * also defines -- so in v0.4.0 SAVE silently flipped CH1's input PATH
-         * relay (PC12: direct vs ~30x attenuated, set per range by the range
-         * table), leaving the volts/div calibration wrong until the next range
-         * change. It now needs its own flag.
-         *
-         * Warm-handoff bench build: SAVE toggles the input-routing relay
-         * PC12 for a live A/B. Bench run 4 (2026-08-12) showed the input
-         * path connected but AC-coupled — finger noise passes, DC blocked —
-         * and PC12 (driven LOW by our approximate range table) is the
-         * suspected coupling/routing select. Pure GPIO relay write (Exp C:
-         * signal relay, not a config strap); costs nothing to flip live. */
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            if (GPIOC->odt & (1U << 12)) {
-                GPIOC->clr = (1U << 12);
-                scope_show_popup("PC12: LOW");
-            } else {
-                GPIOC->scr = (1U << 12);
-                scope_show_popup("PC12: HIGH");
-            }
-            send_cmd(dq, cmd);
-            break;
-        }
-#endif
-#if defined(FPGA_PIN_SWEEP_BUILD) && FPGA_PIN_SWEEP_BUILD
-        /* Bench build: SAVE runs the RECONFIG_N candidate pin sweep instead of
-         * its normal action. Gated to a button and run from here — NOT from
-         * fpga_init — so a bad pulse costs a power-cycle rather than a failed
-         * boot; three failed boots latch the bootloader into SAFE MODE, which
-         * this unit has already done twice. Re-runnable without a reflash. */
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            scope_show_popup("PIN SWEEP...");
-            fpga_reconfig_pin_sweep();
-            send_cmd(dq, cmd);
-            break;
-        }
-#endif
-        if (current_mode == MODE_MULTIMETER) {
-            meter_toggle_debug_overlay();
-            send_cmd(dq, cmd);
-        } else {
-            /* Screenshot (parity C16): stock writes 2:/Screenshot file/%d.bmp
-             * and pops "Saved"/"Save failed" (ms[0xE10] 2/3). Ours writes
-             * <n>.bmp into our own W25Q scratch slots (gallery_store.h), never
-             * stock's FAT. The capture freezes rendering for the ~0.5 s write,
-             * so the popup comes after it and is not in the picture. The
-             * result is only reported once the region layer has read every
-             * page back (until 2026-10-03 this said "SAVED #n" and wrote
-             * nothing). */
-            uint32_t seq = 0;
-            const gallery_status_t gst = gallery_ui_capture(&seq);
-            char msg[28];
-            gallery_ui_result_text(gst, seq, msg, sizeof msg);
-            scope_show_popup(msg);
-            send_cmd(dq, cmd);
-        }
-        break;
+    /* BTN_SAVE never reaches here: key_map() claims it in every mode
+     * (KA_SCREENSHOT -> save_key_short(), the bench-image hooks included). */
 
     /* -- Auto ----------------------------------------------------- */
 
@@ -1285,36 +1372,14 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 
     /* -- PRM / SELECT --------------------------------------------- */
 
-#ifdef FEATURE_FFT
-    case BTN_PRM:
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            scope_view_t prev_view = scope_view;
-            scope_view = (scope_view_t)((scope_view + 1) % SCOPE_VIEW_COUNT);
-
-            /* Pool lifecycle: claim FFT pool when entering FFT views,
-             * release when returning to time-domain */
-            if (prev_view == SCOPE_VIEW_TIME && scope_view != SCOPE_VIEW_TIME) {
-                /* Entering FFT view — claim pool */
-                fft_config_t fft_cfg;
-                fft_cfg.window         = FFT_WINDOW_HANNING;
-                fft_cfg.sample_rate_hz = 44100.0f;
-                fft_cfg.ref_level_db   = 0.0f;
-                fft_cfg.db_range       = 80.0f;
-                fft_cfg.peak_count     = 4;
-                fft_cfg.avg_count      = 0;
-                fft_cfg.max_hold       = false;
-                fft_cfg.zoom_start_bin = 1;
-                fft_cfg.zoom_end_bin   = FFT_BINS - 1;
-                fft_init(&fft_cfg);
-            } else if (prev_view != SCOPE_VIEW_TIME && scope_view == SCOPE_VIEW_TIME) {
-                /* Returning to time-domain — release pool */
-                fft_deinit();
-            }
-            send_cmd(dq, cmd);
-        }
-        break;
+    /* BTN_PRM: in the scope key_map() claims it (the Oscilloscope Settings
+     * page at Parameter Measurement; the FFT views it used to cycle are
+     * chosen on that page, through scope_view_select()). The meter's
+     * softkey and the generator's frequency editor took it above; anywhere
+     * else it does nothing. */
 
     case BTN_SELECT:
+#ifdef FEATURE_FFT
         if (current_mode == MODE_OSCILLOSCOPE &&
             scope_view != SCOPE_VIEW_TIME) {
             fft_cycle_window();
@@ -1338,7 +1403,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, cmd);
         }
-        /* Scope time view: SELECT switches the adjusted channel -- key_model.c */
+        /* Scope time view: SELECT cycles the arrow stage -- key_model.c */
         break;
 
     /* -- UP / DOWN ------------------------------------------------ */

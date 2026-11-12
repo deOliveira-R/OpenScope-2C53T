@@ -33,7 +33,7 @@ predicted defects ([findings.md](../findings.md)).
 | MT-21 | TRIGGER with a steady reading | Grey `hold`, then `HOLD` within ~5 s; the reading freezes. The same number of decimals as live (**F42**). | | |
 | MT-22 | SELECT | Min/max/avg and chart reset | | |
 | MT-23 | AUTO | A message that auto-select started; it ends on a function and says so (**F15**: popups predicted invisible here) | | |
-| MT-24 | SAVE | Toggles a raw-data debug overlay (expected for now), or says what it does | | |
+| MT-24 | SAVE | Saves a screenshot ("Saved N.bmp"); long SAVE opens the gallery. The raw-data debug overlay is the shell's `meter overlay` | | |
 | MT-25 | UP, DOWN, PRM, CH1, CH2, MOVE | Nothing happens. Should anything? Note ideas. | | |
 
 ## 4. Reading the screen (an AA cell on DC V, tier 1)

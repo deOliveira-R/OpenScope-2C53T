@@ -3267,6 +3267,16 @@ static void cmd_meter_degf(const char *args)
     usb_debug_printf("meter degF: %s\r\n", onoff(meter_data_fahrenheit()));
 }
 
+/* The meter's debug overlay. Short SAVE used to toggle it; since UI round 1
+ * SAVE is the screenshot in every mode (owner decision D1) and the overlay is
+ * here only. Toggles; the meter repaints on its own when it changes. */
+static void cmd_meter_overlay(const char *args)
+{
+    (void)args;
+    meter_toggle_debug_overlay();
+    usb_send_str("meter debug overlay toggled\r\n");
+}
+
 static void cmd_meter_beep(const char *args)
 {
     bool on, m_on, active;
@@ -10398,6 +10408,8 @@ static const shell_cmd_t shell_cmds[] = {
           "meter keepalive [on|off]        4 Hz unobeyed poll traffic (stock sends none)\r\n"),
     CMD_A("meter degf", cmd_meter_degf, 0,
           "meter degf [on|off]             Temperature in degF (stock MOVE key in Temp)\r\n"),
+    CMD_A("meter overlay", cmd_meter_overlay, 0,
+          "meter overlay                   Toggle the meter debug overlay (was short SAVE)\r\n"),
     CMD_A("meter beep", cmd_meter_beep, 0,
           "meter beep [on|off|src <c|d|e|off> [rise|fall|both] [pu|pd]|tick <ms>]  SoC-edge buzzer\r\n"),
     CMD_A("fpga autowait", cmd_fpga_autowait, 0,

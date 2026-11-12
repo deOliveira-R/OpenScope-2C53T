@@ -20,11 +20,16 @@ came from highlighted.
 | **POWER** | As everywhere (hold to power off) |
 
 Elsewhere: inside a level (a Settings sub-page, the trigger panel, the
-generator's frequency editor) **MENU** goes back one level; at the top of a
-mode it opens home. **Long MENU** opens home from anywhere, as stock's long
-BACK does. Long MOVE / SELECT / TRIGGER still jump straight to meter / scope /
-generator. Stock's short BACK in the scope opens "Oscilloscope Settings"; here
-that page is Home -> Settings -> Oscilloscope Settings.
+Oscilloscope Settings page, the generator's frequency editor) **MENU** goes
+back one level. At the top of the meter, generator and settings it opens home
+(ours; owner decision D2). In the scope, short MENU opens the **Oscilloscope
+Settings** page, as stock's short BACK does (see *Oscilloscope Settings page*
+below). **Long MENU** opens home from anywhere, as stock's long BACK does.
+Long MOVE / SELECT / TRIGGER jump straight to meter / scope / generator.
+
+**SAVE** works the same in every mode (owner decision D1): short SAVE saves a
+screenshot of the whole screen to the gallery (`Saved <n>.bmp`), long SAVE
+opens the gallery. Stock does both in the scope only.
 
 Settings -> **Startup on Boot** offers stock's four choices: Home (stock calls
 it "None"), Meter, Scope, Signal Gen.
@@ -40,16 +45,17 @@ it "None"), Meter, Scope, Signal Gen.
 | **CH1** | Select CH1 as active channel + toggle coupling (DC <-> AC, on the relay) |
 | **CH2** | Select CH2 as active channel + toggle coupling (DC <-> AC, on the relay) |
 | **CH1 / CH2, long** | Channel on/off. At least one stays on. CH2 off at a fast timebase (code 3 and below) gives the single-channel 250 MS/s record; the popup says `250MS/s` when that routing is in force |
-| **SELECT** | **Switch CH1/CH2 adjustment**: which channel UP/DOWN act on (stock's key meaning; a channel that is off is skipped). Mask stage: stop-on-fail. FFT views: window function |
+| **MOVE** | **Switch CH1/CH2 adjustment**: which channel UP/DOWN act on (stock's "Switch CH1/CH2 Adjustment", manual p.30; a channel that is off is skipped). Mask stage: stop-on-fail |
 
 The probe (1X/10X) is in Settings -> Oscilloscope Settings, and on the bench
-shell as `fpga scope probe <1|2> [1x|10x]`. SELECT used to cycle it; stock's
-SELECT switches the adjusted channel, so it does that now. A 10X probe shows
-as `10X` after the coupling in the bottom bar.
+shell as `fpga scope probe <1|2> [1x|10x]`. A 10X probe shows as `10X` after
+the coupling in the bottom bar. Until UI round 1 (2026-11) the short meanings
+of MOVE and SELECT were the other way round from stock's; the long ones were
+already right.
 
 ### Vertical / Horizontal
 
-In the Zoom stage (the default, see MOVE below):
+In the Zoom stage (the default, see SELECT below):
 
 | Button | Action |
 |--------|--------|
@@ -62,10 +68,11 @@ V/div steps: 5mV, 10mV, 20mV, 50mV, 100mV, 200mV, 500mV, 1V, 2V, 5V
 
 Timebase steps: 5ns, 10ns, 20ns, 50ns, 100ns, 200ns, 500ns, 1us, 2us, 5us, 10us, 20us, 50us, 100us, 200us, 500us, 1ms, 2ms, 5ms, 10ms, 20ms
 
-### What the arrow keys adjust (MOVE)
+### What the arrow keys adjust (SELECT)
 
-**MOVE** cycles the arrow keys' function, as stock's "Select Function for
-Directional Keys" does. A popup names the stage:
+**SELECT** cycles the arrow keys' function, as stock's "Select Function for
+Directional Keys" does (manual p.30). A popup names the stage. In the FFT
+views SELECT keeps its window-function cycle.
 
 | Stage | UP/DOWN | LEFT/RIGHT |
 |-------|---------|------------|
@@ -73,19 +80,20 @@ Directional Keys" does. A popup names the stage:
 | Channel move | Vertical position of the adjusted channel (+-100 px, 5 per press) | Trigger point across the screen |
 | Trigger move | Trigger level (the dotted line) | Trigger point across the screen |
 | Cursor (only while cursors are on) | Move the active cursor | Switch cursor |
-| Mask (only while a mask exists) | Mask vertical tolerance +-2 counts | Mask horizontal tolerance +-1 sample (SELECT = stop-on-fail) |
+| Mask (only while a mask exists) | Mask vertical tolerance +-2 counts | Mask horizontal tolerance +-1 sample (MOVE = stop-on-fail) |
 
 Order: Zoom -> Channel move -> Trigger move -> [Cursor] -> [Mask] -> Zoom.
-Switching cursors on (Settings -> Oscilloscope -> Cursors) selects the Cursor stage straight away; MOVE
-leaves it. Channel position moves only the channel's ground-reference marker
+Switching cursors on (Settings -> Oscilloscope -> Cursors, or the Oscilloscope
+Settings page) selects the Cursor stage straight away; SELECT leaves it. Channel position moves only the channel's ground-reference marker
 for now: the live trace is autoscaled and ignores it, and it drives neither the
 offset DAC nor the FPGA offset bytes (the calibration item adds that). Until 2026-11 the stages were V/div -> Trig level ->
 Position -> Mask, and cursors took the arrows whenever they were on.
 
 ### Trigger (TRIGGER)
 
-**TRIGGER** opens the trigger panel, as stock's TRIGGER opens "Trigger
-Settings": three rows, `Mode:` Auto / Normal / Single, `Edge:` Rising /
+**TRIGGER** opens the inline trigger panel over the plot (ours; stock's
+TRIGGER opens the "Trigger Settings" row of its settings page, and the
+Oscilloscope Settings page has that row too; owner decision D3): three rows, `Mode:` Auto / Normal / Single, `Edge:` Rising /
 Falling, `Channel:` CH1 / CH2 (the source; a channel that is off is refused).
 
 | Key (panel open) | Action |
@@ -97,7 +105,7 @@ Falling, `Channel:` CH1 / CH2 (the source; a channel that is off is refused).
 The same three are in Settings -> Oscilloscope Settings (Trigger Mode / Edge /
 Source), and on the shell (`fpga scope trigmode`, `fpga scope edge`,
 `fpga scope source`, `fpga scope trigger` for the status). The trigger level
-is the Trigger move stage (MOVE, then UP/DOWN); the dotted line and the arrow
+is the Trigger move stage (SELECT, then UP/DOWN); the dotted line and the arrow
 at the right edge show where the hardware fires, the small triangle at the
 top the column where the trigger point landed.
 
@@ -148,7 +156,13 @@ where they have no long action. POWER is unchanged (its own countdown).
 | **TRIGGER** | Signal generator (from any mode) |
 | **PRM** (scope time view) | Hide / show the measurement badges |
 | **CH1 / CH2** (scope) | Channel on/off (see above; stock has no long CH1/CH2) |
-| **AUTO / OK / SAVE** (scope) | Popup `not built`: stock's baseline correction, 50 % centre and gallery are later parity items |
+| **AUTO** (scope time view) | Baseline correction (stock) |
+| **OK** (scope time view) | 50 % centre (stock) |
+| **SAVE** (every mode) | Screenshot gallery (stock: scope only) |
+
+While the Oscilloscope Settings page is up, the scope's own long presses
+(PRM, CH1, CH2, AUTO, OK) do nothing: they act on the plot, which the page
+hides. Long MENU / MOVE / SELECT / TRIGGER / SAVE keep their meaning.
 
 The shell's `btn <name> long` injects the same event, and `keys` prints the
 mode, the arrow stage, the adjusted channel and the channel enables.
@@ -158,7 +172,7 @@ mode, the arrow stage, the adjusted channel and the channel enables.
 | Button | Action |
 |--------|--------|
 | **AUTO** | No mask: teach one from the next 8 good captures. Teaching: cancel. Mask ready: turn it off |
-| **MOVE** -> *Mask* | Adjust tolerances and stop-on-fail (table above) |
+| **SELECT** -> *Mask* | Adjust tolerances; MOVE = stop-on-fail (table above) |
 | **OK** | Resume after a held failure |
 
 Every capture is then judged PASS / FAIL, or skipped with a reason (for example,
@@ -175,13 +189,14 @@ failure is held. Full design: `docs/specs/scope/mask-pass-fail.md`.
 | **UP/DOWN** | Move active cursor (Cursor stage) |
 | **LEFT/RIGHT** | Switch between cursor pairs (V1/V2 or H1/H2) (Cursor stage) |
 
-Switching cursors on puts the arrow keys in the Cursor stage; MOVE steps on to the others. The cursor readout shows delta-time (dt), frequency (1/dt), and delta-voltage (dV).
+Switching cursors on puts the arrow keys in the Cursor stage; SELECT steps on to the others. The cursor readout shows delta-time (dt), frequency (1/dt), and delta-voltage (dV).
 
 ### FFT / Spectrum Views
 
 | Button | Action |
 |--------|--------|
-| **PRM** | Cycle view: Time -> FFT -> Split -> Waterfall -> Time (from the time view only until the measurement-selection item takes short PRM there; long PRM hides the measurement badges) |
+| Oscilloscope Settings page | The views are chosen on the page (CH panes "FFT: ON/OFF", Display), as on stock. Short PRM cycled them until UI round 1; it now opens the page |
+| **MENU** / **PRM** | Open the Oscilloscope Settings page, as in the time view (the way back to it) |
 | **SELECT** | Cycle FFT window function (in FFT/Split/Waterfall views) |
 | **UP/DOWN** | Adjust reference level (+/- 5dB, in FFT views) |
 | **LEFT/RIGHT** | Zoom in/out frequency range (in FFT views) |
@@ -194,6 +209,28 @@ Note: Entering an FFT view claims the shared memory pool (88KB). Returning to ti
 | Button | Action |
 |--------|--------|
 | **OK** | Toggle acquisition Run / Stop (shows popup) |
+
+### Oscilloscope Settings page
+
+Stock's settings page for the scope (stock state 9): a rail of rows on the
+left (Display, Cursors, Measure, CH1, CH2, Trigger, Persist, Math), the
+selected row's settings on the right. The plot is hidden while it is up; the
+acquisition keeps running behind it.
+
+| Key | Action |
+|-----|--------|
+| **MENU** (short, scope) | Open the page at Display |
+| **PRM** (short, scope) | Open the page at Measure (stock: "Parameter Measurement") |
+| **UP / DOWN / LEFT / RIGHT / OK** (page up) | Move and change on the page |
+| **MENU** (page up) | Back one level; from the rail, close the page |
+| the key that opened it (PRM, ...) | Close the page (stock: PRM again goes back) |
+| **PRM / TRIGGER / CH1 / CH2** (page up, not the opener) | Jump to Measure / Trigger / CH1 / CH2 (ours); that key then closes it |
+| **MOVE / SELECT / AUTO** (page up) | Nothing |
+| **SAVE** | Screenshot of the page; long SAVE = gallery |
+| long **MENU / MOVE / SELECT / TRIGGER** | Home / meter / scope / generator, as everywhere (the page closes) |
+
+The page itself (its rows and panes) is UI round 1's item R1-A; until it is
+merged, a placeholder page "Oscilloscope Settings (coming)" stands in for it.
 
 ---
 
@@ -225,7 +262,7 @@ and a long press of MENU goes Home; see *Long presses* above).
 | **LEFT / RIGHT** | Previous / next function (Fuse view: fuse type) |
 | **UP / DOWN** | Limits view: move the highlighted limit. Fuse view: rating up/down (Scan: threshold ±0.1 mV) |
 | **AUTO** | Stock's Auto function: the meter chip picks the function itself (V or Ohm, AC or DC, continuity) and the screen follows (`Auto DCV`, `Auto ACV`, `Auto Ohm`, `Auto Cont`). A second press re-arms it. The old software scan is the shell command `meter auto` |
-| **SAVE** | Raw-frame debug overlay |
+| **SAVE** | Screenshot (long SAVE: gallery), as in every mode. The raw-frame debug overlay it used to toggle is the shell's `meter overlay` |
 
 Changing function is instant: the reading shows dashes while the meter chip
 switches in the background (~1.5 s in the `-meter` image). In the plain
@@ -405,7 +442,7 @@ Shows device info, pool status, heap free, license. **MENU** or **OK** to go bac
 +--------+------------------+------------------+------------------+------------------+
 |  Key   |   Oscilloscope   |    Multimeter    |    Signal Gen    |     Settings     |
 +--------+------------------+------------------+------------------+------------------+
-| MENU   | -> Multimeter    | -> Signal Gen    | -> Settings      | Back / -> Scope  |
+| MENU   | Osc Settings page| -> Home          | -> Home          | Back / -> Home   |
 | CH1    | Coupling DC/AC   |        -         |        -         |        -         |
 | CH2    | Coupling DC/AC   |        -         |        -         |        -         |
 | UP     | V/div up         |        -         | Amplitude up     | Selection up     |
@@ -413,14 +450,16 @@ Shows device info, pool status, heap free, license. **MENU** or **OK** to go bac
 | LEFT   | Timebase down    | Prev function    | Duty cycle down  |        -         |
 | RIGHT  | Timebase up      | Next function    | Duty cycle up    |        -         |
 | OK     | Run/Stop         | Hold             | Output on/off    | Enter / Toggle   |
-| PRM    | Cycle FFT views  | Softkey: View    | Freq presets     |        -         |
-| SELECT | Probe 1X/10X     | Softkey (Reset)  | Cycle waveform   | Cycle comp type  |
-| MOVE   | Trigger edge     | Softkey (Func.)  |        -         |        -         |
+| PRM    | Page at Measure  | Softkey: View    | Freq editor      |        -         |
+| SELECT | Arrow stage      | Softkey (Reset)  | Cycle waveform   | Cycle comp type  |
+| MOVE   | CH1/CH2 adjust   | Softkey (Func.)  |        -         |        -         |
 | TRIGGER| Trigger panel    | Softkey (Rel.)   |        -         |        -         |
-| AUTO   | FFT auto-config  | Auto function    |        -         |        -         |
-| SAVE   | Screenshot       | Debug overlay    | Screenshot       | Screenshot       |
+| AUTO   | Autoset          | Auto function    |        -         |        -         |
+| SAVE   | Screenshot       | Screenshot       | Screenshot       | Screenshot       |
+| SAVE L | Gallery          | Gallery          | Gallery          | Gallery          |
 +--------+------------------+------------------+------------------+------------------+
 
-Note: When cursors are active in Oscilloscope mode, UP/DOWN moves the cursor
-and LEFT/RIGHT switches cursor selection (overrides V/div and timebase).
+Note: in the scope the arrows follow the stage SELECT picked (Zoom by
+default: V/div and timebase); in the Cursor stage UP/DOWN moves the cursor and
+LEFT/RIGHT switches it. Home: SAVE is a screenshot there too.
 ```
