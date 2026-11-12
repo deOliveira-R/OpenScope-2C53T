@@ -3543,7 +3543,7 @@ static long x100(float v) { return (long)(v * 100.0f + (v < 0.0f ? -0.5f : 0.5f)
 #define F2(v)  (x100(v) < 0 ? "-" : ""), (long)((x100(v) < 0 ? -x100(v) : x100(v)) / 100), \
                (long)((x100(v) < 0 ? -x100(v) : x100(v)) % 100)
 
-static void cmd_fpga_interleave_cal(void)
+static void cmd_fpga_interleave_cal(bool piecewise)
 {
     scope_state_t *ss = scope_state_get();
     if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
@@ -3559,6 +3559,12 @@ static void cmd_fpga_interleave_cal(void)
     }
     static il_cal_point_t pt[5];
     unsigned got = 0;
+    /* Park the trigger level above every sweep level for the sweep. At the
+     * user's level (0 = mid-screen) the middle level sat on it: noise crossing
+     * it got those records triggered and biased, ~8 counts of record-to-record
+     * drift on both converters, refused every time (unit #2, 2026-11-11). The
+     * UI's level is untouched and written back after the sweep. */
+    const bool parked = fpga_apply_trigger_level(100);
     usb_send_str("interleave cal: keep CH1 quiet (shorted or a steady DC); sweeping the CH1 offset DAC\r\n");
     for (unsigned i = 0; i < 5u; i++) {
         if (!scope_vpos_ch1_raw(codes[i])) break;
@@ -3576,6 +3582,9 @@ static void cmd_fpga_interleave_cal(void)
                          pt[i].clipped ? "  CLIPPED (not used)" : "");
     }
     scope_vpos_apply_ch(1u, ss->ch1.vdiv_idx);     /* DAC back to the position code */
+    if (parked && !fpga_apply_trigger_level(ss->trigger.level))
+        usb_debug_printf("  WARNING: trigger level not restored (reg 0x08); `fpga scope level %d`\r\n",
+                         ss->trigger.level);
     {   /* apply_ch is silent when it cannot write (generator started, no clean
          * bank after a range change): say so rather than leave a sweep code. */
         uint16_t pos_code = 0;
@@ -3612,8 +3621,13 @@ static void cmd_fpga_interleave_cal(void)
     /* The line, then the knots through the levels (parity ilplus): the line
      * is what gated the fit; the knots are what removes unit #2's ~1 count
      * level-dependent odd-even step. Setting the line clears old knots. */
+    /* The line by default. The knots pass exactly through the five DC levels
+     * and so keep their ~0.5-count static errors: on unit #2 (2026-11-11,
+     * skew on, 10 MHz) the image was -52.0 dBc with the line and -45.2 dBc
+     * with the knots. `cal piecewise` still applies them, for comparison. */
     fpga_interleave_corr_set(fit.gain, fit.offset);
-    if (fit.n_knots >= 2u && fpga_interleave_knots_set(fit.n_knots, fit.knot_a, fit.knot_b))
+    if (piecewise && fit.n_knots >= 2u &&
+        fpga_interleave_knots_set(fit.n_knots, fit.knot_a, fit.knot_b))
         usb_debug_printf("interleave cal: applied, piecewise through %u levels (RAM; `cal user save` "
                          "keeps it). Skew: `fpga interleave skew measure` with a tone.\r\n",
                          (unsigned)fit.n_knots);
@@ -3759,7 +3773,7 @@ static void cmd_fpga_interleave(const char *args)
 {
     while (*args == ' ') args++;
     if (strncmp(args, "cal", 3) == 0) {
-        cmd_fpga_interleave_cal();
+        cmd_fpga_interleave_cal(strstr(args + 3, "piecewise") != NULL);
         /* fall through to the status line below */
     } else if (strncmp(args, "skew", 4) == 0) {
         cmd_fpga_interleave_skew(args + 4);
@@ -10111,7 +10125,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
           "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
-          "fpga interleave [on|off|corr g o|cal]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B\r\n"
+          "fpga interleave [on|off|corr g o|cal [piecewise]]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B (line; piecewise = through the 5 levels)\r\n"
           "fpga interleave skew [measure|set <ppm>|off]  B timing skew (ppm of a period from 0.5); measure needs a 5-50 MHz tone\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
