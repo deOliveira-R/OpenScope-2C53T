@@ -39,6 +39,7 @@
 #include "trig_edge.h"
 #include "trig_policy.h"
 #include "trig_menu.h"
+#include "osc_menu_model.h"
 #include "scope_mask.h"
 #ifdef FEATURE_FFT
 #include "fft_live.h"
@@ -143,7 +144,10 @@ void scope_show_popup(const char *text)
         i++;
     }
     popup_text[i] = '\0';
-    if (current_mode == MODE_OSCILLOSCOPE) {
+    /* The scope's own popup rides on the plot; over the Oscilloscope Settings
+     * page there is no plot being drawn, so it takes the overlay path the
+     * other screens use (main.c services it while the page is up). */
+    if (current_mode == MODE_OSCILLOSCOPE && !osc_menu_is_open()) {
         popup_frames = POPUP_DURATION;
         popup_painted = false;
     } else {

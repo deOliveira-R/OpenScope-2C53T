@@ -872,10 +872,22 @@ static void vDisplayTask(void *pvParameters)
 
         /* Popups outside the scope (softkey UI P0, findings F15/F20): drawn
          * over the screen, re-drawn after any repaint, and the screen
-         * repainted under them when they expire. */
-        if (current_mode != MODE_OSCILLOSCOPE) {
+         * repainted under them when they expire. The Oscilloscope Settings
+         * page uses them too (scope_show_popup routes there while it is up,
+         * e.g. SAVE's "Saved 3.bmp"); one still up when the page closes is
+         * dropped, the scope's REDRAW_ALL has painted over it. */
+        {
+            static bool page_was_up;
+            if (page_was_up && !page_up)
+                ui_popup_overlay_cancel();
+            page_was_up = page_up;
+        }
+        if (current_mode != MODE_OSCILLOSCOPE || page_up) {
             if (ui_popup_overlay_service(g_screen_painted) == 2) {
-                if (current_mode == MODE_MULTIMETER) {
+                if (page_up) {
+                    osc_menu_invalidate();   /* the box covered part of the pane */
+                    osc_menu_draw();
+                } else if (current_mode == MODE_MULTIMETER) {
                     if (meter_layout != METER_LAYOUT_BIG &&
                         meter_layout != METER_LAYOUT_LIMITS)
                         meter_screen_invalidate();
