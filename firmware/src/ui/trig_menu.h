@@ -1,20 +1,20 @@
 /*
- * OpenScope 2C53T - the trigger panel (parity C3)
+ * OpenScope 2C53T - the trigger settings model (parity C3)
  *
  * Stock's TRIGGER key opens "Trigger Settings" (menu table 0x0804C824) with
  * three entries: "Mode:" Normal/Auto/Single (0x0804C7F0..F8), "Edge:" and
- * "Channel:" CH1/CH2 (0x0804C7FC/C800). Before C3 OpenScope had the mode and
- * edge only in Settings -> Oscilloscope and no way to pick the source; the
- * TRIGGER key cycled the cursors (stock reaches its cursors from the menu, so
- * they move to Settings -> Oscilloscope -> Cursors).
+ * "Channel:" CH1/CH2 (0x0804C7FC/C800).
  *
- * This is the panel's model, pure (no LCD, no FPGA), so tests/test_key_model.c
- * runs the code the input task runs. scope_ui.c draws it; input_handler.c
- * applies the hardware side of a change (reg 0x06 for the source, the SINGLE
- * re-arm for the mode) from the bits trig_menu_change() returns.
+ * Pure (no LCD, no FPGA): tests/test_key_model.c runs the code the input task
+ * runs. Its users are the Oscilloscope Settings page's Trigger pane
+ * (osc_menu_ui.c; TRIGGER in the scope opens the page locked there, stock
+ * V1.2.0 as the owner saw it, 2026-11-12), the Settings list and the shell.
+ * They apply the hardware side (reg 0x06 for the source, the SINGLE re-arm)
+ * from the bits trig_menu_change() returns, through scope_apply.c.
  *
- * Keys while open (key_model.c): UP/DOWN pick the row, LEFT/RIGHT change it
- * (OK = RIGHT), TRIGGER or MENU close, MOVE/SELECT/PRM close too.
+ * History: until 2026-11-12 TRIGGER opened an inline panel over the plot
+ * (scope_trig_menu, drawn by scope_ui.c, with its own keys); it forced the
+ * full clear-and-repaint path while up and was removed with its key path.
  */
 #ifndef TRIG_MENU_H
 #define TRIG_MENU_H
@@ -31,21 +31,13 @@ typedef enum {
 } trig_menu_row_t;
 
 typedef struct {
-    bool    open;
-    uint8_t row;            /* trig_menu_row_t */
+    uint8_t row;            /* trig_menu_row_t: the row a change applies to */
 } trig_menu_t;
 
 #define TM_CHANGED_MODE    0x01u
 #define TM_CHANGED_EDGE    0x02u
 #define TM_CHANGED_SOURCE  0x04u
 #define TM_REFUSED_OFF     0x80u    /* the source asked for is a channel that is off */
-
-/* The one panel: the input task writes it, the display task reads it. */
-extern trig_menu_t scope_trig_menu;
-
-void trig_menu_open(trig_menu_t *m);       /* opens on the Mode row, as stock */
-void trig_menu_close(trig_menu_t *m);
-void trig_menu_row_step(trig_menu_t *m, int dir);    /* wraps */
 
 /* Change the selected row by dir (+1/-1, wraps). Returns TM_CHANGED_* for
  * what moved, or TM_REFUSED_OFF (nothing changed) when the source would land

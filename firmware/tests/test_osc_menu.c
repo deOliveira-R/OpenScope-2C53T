@@ -302,6 +302,58 @@ static void test_math(void)
     CHECK("LEFT at column 0 returns to the rail", key(OSC_KEY_LEFT) == OSC_RES_REDRAW && !S()->in_pane);
 }
 
+/* ── locked pane (PRM / TRIGGER, stock V1.2.0 on unit #2) ───────────── */
+static void test_locked(void)
+{
+    printf("locked pane (PRM and TRIGGER open inside their pane)\n");
+    fresh();
+    osc_menu_open_locked(OSC_ROW_PARAM);
+    CHECK("opens inside Measure, on Freq of CH1, locked",
+          S()->open && S()->in_pane && S()->locked && osc_menu_is_locked() &&
+          S()->row == OSC_ROW_PARAM && S()->item == OSC_PRM_CHIP0 && S()->meas_ch == 0);
+    key(OSC_KEY_OK);
+    CHECK("OK toggles the chip as on the full page", !(meas_select_get(0) & (1u << SCOPE_PRM_FREQ)));
+    key(OSC_KEY_OK);
+    osc_result_t r = key(OSC_KEY_LEFT);
+    CHECK("LEFT at the left edge: nothing, still in the pane", r == OSC_RES_NONE && S()->in_pane && S()->open);
+    key(OSC_KEY_RIGHT);
+    CHECK("RIGHT still moves inside the grid", S()->item == OSC_PRM_CHIP0 + 1u);
+    key(OSC_KEY_LEFT);
+    CHECK("... and LEFT back, inside the grid", S()->item == OSC_PRM_CHIP0 && S()->in_pane);
+    for (int i = 0; i < 8; i++) key(OSC_KEY_DOWN);
+    CHECK("DOWN still scrolls on into CH2's panel", S()->meas_ch == 1 && S()->in_pane && S()->locked);
+    for (int i = 0; i < 12; i++) key(OSC_KEY_UP);
+    CHECK("UP back into CH1 and up to the tab row, never the rail",
+          S()->meas_ch == 0 && S()->in_pane && S()->row == OSC_ROW_PARAM);
+    r = key(OSC_KEY_BACK);
+    CHECK("BACK closes the page (no rail to go to)", r == OSC_RES_CLOSE && !S()->open && !osc_menu_is_locked());
+
+    osc_menu_open_locked(OSC_ROW_TRIGGER);
+    CHECK("TRIGGER's pane: inside Trigger, on Mode, locked",
+          S()->in_pane && S()->locked && S()->row == OSC_ROW_TRIGGER && S()->item == OSC_TRIG_MODE);
+    r = key(OSC_KEY_LEFT);
+    CHECK("LEFT changes the value (VALUES pane), stays put",
+          r == OSC_RES_REDRAW && A.kind == OSC_ACT_CHANGE && A.dir == -1 && A.row == OSC_ROW_TRIGGER && S()->in_pane);
+    key(OSC_KEY_UP);
+    CHECK("UP wraps inside the pane", S()->item == OSC_TRIG_SOURCE && S()->row == OSC_ROW_TRIGGER);
+    osc_menu_open_locked(OSC_ROW_PARAM);
+    CHECK("opening another locked pane while open switches to it, locked",
+          S()->row == OSC_ROW_PARAM && S()->in_pane && S()->locked && S()->item == OSC_PRM_CHIP0);
+    const uint8_t o = S()->opens;
+    osc_menu_open(OSC_ROW_DISPLAY);
+    CHECK("osc_menu_open (MENU) is the full page: rail focus, unlocked, repainted",
+          S()->open && !S()->in_pane && !S()->locked && S()->opens != o);
+    key(OSC_KEY_DOWN); key(OSC_KEY_DOWN); key(OSC_KEY_RIGHT);
+    r = key(OSC_KEY_BACK);
+    CHECK("unlocked, BACK in a pane still goes to the rail", r == OSC_RES_REDRAW && S()->open && !S()->in_pane);
+    osc_menu_open_locked(OSC_ROW_PARAM);
+    osc_menu_close();
+    CHECK("close clears the lock", !S()->locked && !osc_menu_is_locked());
+    osc_menu_open_locked(OSC_ROW_TRIGGER);
+    CHECK("a locked open bumps opens (the drawer repaints the pane)", S()->opens != o);
+    osc_menu_close();
+}
+
 /* ── meas_select ────────────────────────────────────────────────────── */
 static void test_meas_select(void)
 {
@@ -354,6 +406,7 @@ int main(void)
     test_values();
     test_measure();
     test_math();
+    test_locked();
     test_meas_select();
     test_frame_scroll();
     printf("\n%d/%d passed\n", passed, run);

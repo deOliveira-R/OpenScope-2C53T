@@ -30,10 +30,14 @@
  * other way round; the long ones were fixed in ccea90b).
  *
  * UI round 1 (research/ui/ROUND1_BRIEF.md): short MENU in the scope opens the
- * Oscilloscope Settings page (osc_menu_model.h) at Display, short PRM at
- * Parameter Measurement; while the page is up it owns the arrows and OK, the
- * key that opened it closes it and MENU goes back a level. Short SAVE is a
- * screenshot and long SAVE the gallery in every mode (owner decision D1).
+ * Oscilloscope Settings page (osc_menu_model.h) at Display; while the page is
+ * up it owns the arrows and OK, the key that opened it closes it and MENU
+ * goes back a level. Short PRM and short TRIGGER open it LOCKED inside their
+ * pane (Parameter Measurement, Trigger Settings): stock V1.2.0 as the owner
+ * saw it on unit #2 (2026-11-12); there MENU closes the page, as the opener
+ * does, and nothing leads to the rail. This replaced the inline trigger panel
+ * (parity C3) on TRIGGER. Short SAVE is a screenshot and long SAVE the
+ * gallery in every mode (owner decision D1).
  */
 
 #ifndef KEY_MODEL_H
@@ -134,8 +138,8 @@ typedef struct {
     bool          cursors_on;
     bool          mask_present;
     uint8_t       active_channel;    /* 0 = CH1, 1 = CH2 */
-    bool          trig_menu_open;    /* the trigger panel (trig_menu.h) is up */
     bool          osc_menu_open;     /* the Oscilloscope Settings page is up */
+    bool          osc_menu_locked;   /* ... locked to one pane (PRM / TRIGGER) */
     uint8_t       osc_menu_opener;   /* button_id_t that opened (or last deep-linked) it */
 } key_ctx_t;
 
@@ -166,12 +170,9 @@ typedef enum {
     KA_MASK_TOL_V,        /* arg = +1 UP */
     KA_MASK_TOL_H,        /* arg = +1 right */
     KA_MASK_STOPFAIL,     /* short MOVE in the mask stage (no channel to switch there) */
-    KA_TRIGMENU_OPEN,     /* short TRIGGER (time view): stock's "Trigger Settings" */
-    KA_TRIGMENU_CLOSE,    /* TRIGGER/MENU/MOVE/SELECT/PRM while it is open */
-    KA_TRIGMENU_ROW,      /* UP/DOWN while open: arg = -1 up, +1 down */
-    KA_TRIGMENU_CHANGE,   /* LEFT/RIGHT/OK while open: arg = -1 / +1 */
     /* The Oscilloscope Settings page (osc_menu_model.h), any scope view. */
     KA_OSCMENU_OPEN,      /* arg = osc_row_t: open it there, or jump there while open */
+    KA_OSCMENU_PANE,      /* arg = osc_row_t: open it locked inside that pane (PRM, TRIGGER) */
     KA_OSCMENU_KEY,       /* arg = osc_key_t: arrows/OK, MENU = OSC_KEY_BACK */
     KA_OSCMENU_CLOSE      /* the key that opened it, pressed again */
 } key_action_t;

@@ -55,7 +55,6 @@ extern void system_clock_config(void);
 #include "redraw_gate.h"
 #include "scope_mask.h"
 #include "can_scope.h"
-#include "trig_menu.h"
 #include "osc_menu_model.h"
 #include "meas_select.h"
 #include "sys_pwm.h"
@@ -326,12 +325,9 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
-    /* Parity C3: the trigger panel. The trigger status (Trig'd / Wait /
-     * Auto* ...) left the plot at the UI round 1 merge: the status bar's dot
-     * and RUN tab show it and repaint their own slots, so it no longer
-     * forces a full plot repaint. */
-    h = redraw_epoch_mix(h, (uint32_t)scope_trig_menu.open
-                            | ((uint32_t)scope_trig_menu.row << 1));
+    /* The trigger status (Trig'd / Wait / Auto* ...) left the plot at the UI
+     * round 1 merge: the status bar's dot and RUN tab show it and repaint
+     * their own slots, so it does not force a full plot repaint. */
 
 #ifdef FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
@@ -413,8 +409,7 @@ static bool scope_incremental_available(const scope_state_t *s)
      * columns included. */
     return scope_acquisition_ready()
            && s->cursor.mode == CURSOR_OFF
-           && !math_enabled && !persist_enabled
-           && !scope_trig_menu.open;      /* the trigger panel: full path only, as cursors */
+           && !math_enabled && !persist_enabled;
 #endif
 }
 

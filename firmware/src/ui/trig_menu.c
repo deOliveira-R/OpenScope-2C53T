@@ -1,26 +1,5 @@
-/* See trig_menu.h (parity C3). */
+/* See trig_menu.h (parity C3; the Trigger pane's model since UI direct). */
 #include "trig_menu.h"
-
-trig_menu_t scope_trig_menu;
-
-void trig_menu_open(trig_menu_t *m)
-{
-    m->open = true;
-    m->row = TM_ROW_MODE;
-}
-
-void trig_menu_close(trig_menu_t *m)
-{
-    m->open = false;
-}
-
-void trig_menu_row_step(trig_menu_t *m, int dir)
-{
-    int r = (int)m->row + (dir < 0 ? -1 : 1);
-    if (r < 0) r = TM_ROW_COUNT - 1;
-    if (r >= TM_ROW_COUNT) r = 0;
-    m->row = (uint8_t)r;
-}
 
 static int wrap(int v, int n) { return ((v % n) + n) % n; }
 

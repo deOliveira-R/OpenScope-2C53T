@@ -4069,7 +4069,7 @@ static void cmd_fpga_scope_source(const char *args)
         else if (strncmp(args, "ch2", 3) == 0) want = TRIG_SRC_CH2;
         else { usb_send_str("usage: fpga scope source [ch1|ch2]\r\n"); return; }
         if (want != ss->trigger.source) {
-            trig_menu_t m = { false, TM_ROW_SOURCE };
+            trig_menu_t m = { TM_ROW_SOURCE };
             if (trig_menu_change(&m, ss, +1) & TM_REFUSED_OFF) {
                 usb_debug_printf("trigger source %s refused: that channel is off\r\n",
                                  trigger_source_labels[want]);

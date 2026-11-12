@@ -261,7 +261,7 @@ static void channel_change(uint8_t ch, uint8_t item, int dir)
 
 static void trigger_change(uint8_t item, int dir)
 {
-    trig_menu_t m = { false, item };
+    trig_menu_t m = { item };
     char t[sizeof g_note];
     /* The row shows the new value; the note only what it cannot (a refusal,
      * NOT SET, the SINGLE arm). */
@@ -423,9 +423,10 @@ static void draw_footer(const osc_menu_state_t *s)
                      on, s->meas_ch ? "UP: CH1" : "DOWN: CH2");
         t = buf;
     } else if (l->kind == OSC_PANE_VALUES) {
-        t = "LEFT/RIGHT: change   MENU: back";
+        /* Locked (TRIGGER's pane): MENU closes, there is no rail to go back to. */
+        t = s->locked ? "LEFT/RIGHT: change   MENU: close" : "LEFT/RIGHT: change   MENU: back";
     } else {
-        t = "OK: select   MENU: back";
+        t = s->locked ? "OK: select   MENU: close" : "OK: select   MENU: back";
     }
     menu_frame_draw_footer(&k_frame, t);
 }

@@ -34,6 +34,13 @@
  *            scrolls one long list of both panels).
  *   osc_menu_open(row) while open jumps to that row, rail focus (another
  *   deep-link key pressed on the page goes to its row).
+ *
+ * LOCKED PANE (osc_menu_open_locked; owner on stock V1.2.0, unit #2,
+ * 2026-11-12): PRM and TRIGGER in the scope open the page directly inside
+ * their pane (Measure, Trigger) and keep it there. The pane's keys work as
+ * above, but nothing leads to the rail or another row: LEFT at the pane's
+ * edge does nothing and BACK closes the page (the opener key closes it too,
+ * key_model.c). Only short MENU opens the full page (osc_menu_open).
  */
 #ifndef OSC_MENU_MODEL_H
 #define OSC_MENU_MODEL_H
@@ -55,6 +62,12 @@ void         osc_menu_close(void);
  * DCMD_REDRAW_ALL's lcd_clear), so the next osc_menu_draw() repaints all of
  * it, not just the elements (osc_menu_ui.c). */
 void         osc_menu_invalidate(void);
+/* Open the page inside `row`'s pane, locked to it (see LOCKED PANE above).
+ * While open it switches to that pane, locked. The pane cursor starts on its
+ * first item (Measure: Freq of CH1); no OSC_ACT_ENTER is issued, so it is
+ * for panes that need no live-value start (PRM's Measure, TRIGGER's Trigger). */
+void         osc_menu_open_locked(osc_row_t row);
+bool         osc_menu_is_locked(void);
 
 /* ── Pane layouts ───────────────────────────────────────────────────── */
 typedef enum { OSC_PANE_RADIO = 0, OSC_PANE_VALUES, OSC_PANE_CHIPS } osc_pane_kind_t;
@@ -86,7 +99,8 @@ typedef struct {
     bool    in_pane;     /* false = rail focus */
     uint8_t item;        /* pane item under the cursor */
     uint8_t meas_ch;     /* Measure pane: 0 = CH1 page, 1 = CH2 */
-    uint8_t opens;       /* bumped on every osc_menu_open(): the drawer repaints all */
+    uint8_t opens;       /* bumped on every osc_menu_open*(): the drawer repaints all */
+    bool    locked;      /* osc_menu_open_locked(): pane only, no rail */
 } osc_menu_state_t;
 
 const osc_menu_state_t *osc_menu_state(void);

@@ -246,8 +246,10 @@ static void test_short_map(void)
           key_map(&fv, BTN_LEFT, false).act == KA_LEGACY &&
           key_map(&fv, BTN_SELECT, false).act == KA_LEGACY &&
           key_map(&fv, BTN_MOVE, false).act == KA_ADJ_CH_SWITCH);
-    CHECK("FFT view: PRM no longer cycles the views, it opens the page at Measure",
-          is(key_map(&fv, BTN_PRM, false), KA_OSCMENU_OPEN, OSC_ROW_PARAM));
+    CHECK("FFT view: PRM no longer cycles the views, it opens the Measure pane",
+          is(key_map(&fv, BTN_PRM, false), KA_OSCMENU_PANE, OSC_ROW_PARAM));
+    CHECK("FFT view: TRIGGER opens the Trigger pane (no more trigger-mode cycle)",
+          is(key_map(&fv, BTN_TRIGGER, false), KA_OSCMENU_PANE, OSC_ROW_TRIGGER));
     int leg = 1;
     const device_mode_t others[] = { MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS, MODE_HOME };
     const button_id_t keys[] = { BTN_MOVE, BTN_SELECT, BTN_PRM, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT,
@@ -277,9 +279,10 @@ static void test_save(void)
     }
     CHECK("short SAVE = screenshot in every mode (the meter's overlay is the shell's now)", ok);
     key_ctx_t fv = ctx(MODE_OSCILLOSCOPE, KF_ZOOM); fv.scope_time_view = false;
-    key_ctx_t tp = ctx(MODE_OSCILLOSCOPE, KF_ZOOM); tp.trig_menu_open = true;
+    key_ctx_t tp = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
+    tp.osc_menu_open = true; tp.osc_menu_locked = true; tp.osc_menu_opener = BTN_TRIGGER;
     key_ctx_t pg = ctx(MODE_OSCILLOSCOPE, KF_ZOOM); pg.osc_menu_open = true; pg.osc_menu_opener = BTN_MENU;
-    CHECK("short SAVE = screenshot in the FFT views, over the trigger panel and on the page",
+    CHECK("short SAVE = screenshot in the FFT views, in a locked pane and on the page",
           is(key_map(&fv, BTN_SAVE, false), KA_SCREENSHOT, 0) &&
           is(key_map(&tp, BTN_SAVE, false), KA_SCREENSHOT, 0) &&
           is(key_map(&pg, BTN_SAVE, false), KA_SCREENSHOT, 0));
@@ -291,13 +294,51 @@ static void test_osc_menu(void)
     key_ctx_t z = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
     CHECK("scope short MENU opens the page at Display (stock BACK)",
           is(key_map(&z, BTN_MENU, false), KA_OSCMENU_OPEN, OSC_ROW_DISPLAY));
-    CHECK("scope short PRM opens the page at Parameter Measurement",
-          is(key_map(&z, BTN_PRM, false), KA_OSCMENU_OPEN, OSC_ROW_PARAM));
+    CHECK("scope short PRM opens the page locked inside Parameter Measurement",
+          is(key_map(&z, BTN_PRM, false), KA_OSCMENU_PANE, OSC_ROW_PARAM));
     key_ctx_t fv = z; fv.scope_time_view = false;
     CHECK("FFT views: MENU opens the page too (the way back to the time view)",
           is(key_map(&fv, BTN_MENU, false), KA_OSCMENU_OPEN, OSC_ROW_DISPLAY));
-    CHECK("TRIGGER short still opens the inline trigger panel (D3)",
-          is(key_map(&z, BTN_TRIGGER, false), KA_TRIGMENU_OPEN, 0));
+    CHECK("scope short TRIGGER opens the page locked inside Trigger Settings (no inline panel)",
+          is(key_map(&z, BTN_TRIGGER, false), KA_OSCMENU_PANE, OSC_ROW_TRIGGER));
+    key_ctx_t zc = z; zc.focus = KF_CURSOR; zc.cursors_on = true;
+    CHECK("... whatever the arrows adjust", is(key_map(&zc, BTN_TRIGGER, false), KA_OSCMENU_PANE, OSC_ROW_TRIGGER) &&
+          is(key_map(&zc, BTN_PRM, false), KA_OSCMENU_PANE, OSC_ROW_PARAM));
+    key_ctx_t mt = ctx(MODE_MULTIMETER, KF_ZOOM);
+    CHECK("TRIGGER outside the scope stays legacy (meter softkey)",
+          key_map(&mt, BTN_TRIGGER, false).act == KA_LEGACY);
+
+    /* Locked (stock V1.2.0, owner on unit #2, 2026-11-12). */
+    key_ctx_t lp = z; lp.osc_menu_open = true; lp.osc_menu_locked = true; lp.osc_menu_opener = BTN_PRM;
+    lp.focus = KF_CURSOR; lp.cursors_on = true;
+    CHECK("locked: arrows and OK go to the pane",
+          is(key_map(&lp, BTN_UP, false),    KA_OSCMENU_KEY, OSC_KEY_UP) &&
+          is(key_map(&lp, BTN_DOWN, false),  KA_OSCMENU_KEY, OSC_KEY_DOWN) &&
+          is(key_map(&lp, BTN_LEFT, false),  KA_OSCMENU_KEY, OSC_KEY_LEFT) &&
+          is(key_map(&lp, BTN_RIGHT, false), KA_OSCMENU_KEY, OSC_KEY_RIGHT) &&
+          is(key_map(&lp, BTN_OK, false),    KA_OSCMENU_KEY, OSC_KEY_OK));
+    CHECK("locked: MENU closes the page (not BACK to the rail)",
+          is(key_map(&lp, BTN_MENU, false), KA_OSCMENU_CLOSE, 0));
+    CHECK("locked from PRM: PRM again closes it",
+          is(key_map(&lp, BTN_PRM, false), KA_OSCMENU_CLOSE, 0));
+    CHECK("locked from PRM: TRIGGER moves the lock to the Trigger pane",
+          is(key_map(&lp, BTN_TRIGGER, false), KA_OSCMENU_PANE, OSC_ROW_TRIGGER));
+    key_ctx_t lt = lp; lt.osc_menu_opener = BTN_TRIGGER;
+    CHECK("locked from TRIGGER: TRIGGER closes, PRM moves the lock to Measure",
+          is(key_map(&lt, BTN_TRIGGER, false), KA_OSCMENU_CLOSE, 0) &&
+          is(key_map(&lt, BTN_PRM, false), KA_OSCMENU_PANE, OSC_ROW_PARAM) &&
+          is(key_map(&lt, BTN_MENU, false), KA_OSCMENU_CLOSE, 0));
+    CHECK("locked: CH1 / CH2 / MOVE / SELECT / AUTO lead nowhere (no other row)",
+          is(key_map(&lp, BTN_CH1, false), KA_NONE, 0) &&
+          is(key_map(&lp, BTN_CH2, false), KA_NONE, 0) &&
+          is(key_map(&lp, BTN_MOVE, false), KA_NONE, 0) &&
+          is(key_map(&lp, BTN_SELECT, false), KA_NONE, 0) &&
+          is(key_map(&lp, BTN_AUTO, false), KA_NONE, 0));
+    CHECK("locked: POWER stays with its own handler; SAVE is a screenshot; long keys global",
+          key_map(&lp, BTN_POWER, false).act == KA_LEGACY &&
+          is(key_map(&lp, BTN_SAVE, false), KA_SCREENSHOT, 0) &&
+          is(key_map(&lp, BTN_MENU, true), KA_ENTER_HOME, 0) &&
+          is(key_map(&lp, BTN_PRM, true), KA_NONE, 0));
     key_ctx_t me = ctx(MODE_MULTIMETER, KF_ZOOM);
     CHECK("meter short MENU / PRM are not the page (home peek, softkey: D2)",
           key_map(&me, BTN_MENU, false).act == KA_LEGACY &&
@@ -357,40 +398,14 @@ static void test_osc_menu(void)
 
 static void test_trig_menu(void)
 {
-    printf("trigger panel (C3)\n");
+    printf("trigger settings model (C3; the Trigger pane's)\n");
     key_ctx_t z = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
-    CHECK("time view: TRIGGER short opens the trigger panel (stock Trigger Settings)",
-          is(key_map(&z, BTN_TRIGGER, false), KA_TRIGMENU_OPEN, 0));
-    key_ctx_t fv = z; fv.scope_time_view = false;
-    CHECK("FFT views: TRIGGER short stays legacy", key_map(&fv, BTN_TRIGGER, false).act == KA_LEGACY);
     CHECK("TRIGGER long is still the signal generator", is(key_map(&z, BTN_TRIGGER, true), KA_ENTER_SIGGEN, 0));
 
-    key_ctx_t o = z; o.trig_menu_open = true;
-    o.focus = KF_CURSOR; o.cursors_on = true;     /* the panel wins over any stage */
-    CHECK("open: UP/DOWN pick the row, LEFT/RIGHT/OK change it",
-          is(key_map(&o, BTN_UP, false), KA_TRIGMENU_ROW, -1) &&
-          is(key_map(&o, BTN_DOWN, false), KA_TRIGMENU_ROW, +1) &&
-          is(key_map(&o, BTN_LEFT, false), KA_TRIGMENU_CHANGE, -1) &&
-          is(key_map(&o, BTN_RIGHT, false), KA_TRIGMENU_CHANGE, +1) &&
-          is(key_map(&o, BTN_OK, false), KA_TRIGMENU_CHANGE, +1));
-    CHECK("open: TRIGGER/MENU/MOVE/SELECT/PRM close it",
-          is(key_map(&o, BTN_TRIGGER, false), KA_TRIGMENU_CLOSE, 0) &&
-          is(key_map(&o, BTN_MENU, false), KA_TRIGMENU_CLOSE, 0) &&
-          is(key_map(&o, BTN_MOVE, false), KA_TRIGMENU_CLOSE, 0) &&
-          is(key_map(&o, BTN_SELECT, false), KA_TRIGMENU_CLOSE, 0) &&
-          is(key_map(&o, BTN_PRM, false), KA_TRIGMENU_CLOSE, 0));
-    CHECK("open: CH1/AUTO keep their meaning; long presses still switch modes",
-          key_map(&o, BTN_CH1, false).act == KA_LEGACY &&
-          key_map(&o, BTN_AUTO, false).act == KA_LEGACY &&
-          is(key_map(&o, BTN_MOVE, true), KA_ENTER_METER, 0));
-
     scope_state_t s; scope_state_init(&s);
-    trig_menu_t m; trig_menu_open(&m);
-    int a = m.open && m.row == TM_ROW_MODE && strcmp(trig_menu_row_label(m.row), "Mode:") == 0;
-    trig_menu_row_step(&m, -1);
-    int b = m.row == TM_ROW_SOURCE;
-    trig_menu_row_step(&m, +1);
-    CHECK("opens on Mode:, rows wrap", a && b && m.row == TM_ROW_MODE);
+    trig_menu_t m = { TM_ROW_MODE };
+    CHECK("row labels", strcmp(trig_menu_row_label(TM_ROW_MODE), "Mode:") == 0 &&
+          strcmp(trig_menu_row_label(TM_ROW_EDGE), "Edge:") == 0 && trig_menu_row_label(TM_ROW_COUNT)[0] == '\0');
 
     uint8_t r = trig_menu_change(&m, &s, +1);
     int c1 = (r == TM_CHANGED_MODE) && s.trigger.mode == TRIG_NORMAL &&
@@ -417,8 +432,6 @@ static void test_trig_menu(void)
     r = trig_menu_change(&m, &s, +1);
     CHECK("Channel: CH1 <-> CH2; refused onto a channel that is off",
           d1 && r == TM_REFUSED_OFF && s.trigger.source == TRIG_SRC_CH1);
-    trig_menu_close(&m);
-    CHECK("closes", !m.open);
 }
 
 static void test_focus(void)

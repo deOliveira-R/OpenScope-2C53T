@@ -233,10 +233,47 @@ static bool osc_deep_link_row(button_id_t b, osc_row_t *row)
     }
 }
 
+/* The keys that open the page locked inside a pane, and the pane. */
+static bool osc_pane_key_row(button_id_t b, osc_row_t *row)
+{
+    switch (b) {
+    case BTN_PRM:     *row = OSC_ROW_PARAM;   return true;
+    case BTN_TRIGGER: *row = OSC_ROW_TRIGGER; return true;
+    default:          return false;
+    }
+}
+
+/* Short keys while the page is up locked to one pane (PRM / TRIGGER). The
+ * arrows and OK act in the pane only; MENU or the opener closes the page;
+ * the other pane key moves the lock to its pane (as from the plot); the
+ * rest, CH1/CH2 included, do nothing: no way to another row. */
+static key_cmd_t map_osc_locked(const key_ctx_t *c, button_id_t b)
+{
+    osc_row_t row;
+    switch (b) {
+    case BTN_UP:    return cmd(KA_OSCMENU_KEY, OSC_KEY_UP);
+    case BTN_DOWN:  return cmd(KA_OSCMENU_KEY, OSC_KEY_DOWN);
+    case BTN_LEFT:  return cmd(KA_OSCMENU_KEY, OSC_KEY_LEFT);
+    case BTN_RIGHT: return cmd(KA_OSCMENU_KEY, OSC_KEY_RIGHT);
+    case BTN_OK:    return cmd(KA_OSCMENU_KEY, OSC_KEY_OK);
+    case BTN_MENU:  return cmd(KA_OSCMENU_CLOSE, 0);
+    case BTN_POWER: return cmd(KA_LEGACY, 0);                   /* shutdown always works */
+    default: break;
+    }
+    if (osc_pane_key_row(b, &row)) {
+        if ((uint8_t)b == c->osc_menu_opener)
+            return cmd(KA_OSCMENU_CLOSE, 0);
+        return cmd(KA_OSCMENU_PANE, (int8_t)row);
+    }
+    return cmd(KA_NONE, 0);
+}
+
 /* Short keys while the Oscilloscope Settings page is up (UI_STUDY 1.4). */
 static key_cmd_t map_osc_menu(const key_ctx_t *c, button_id_t b)
 {
     osc_row_t row;
+    if (c->osc_menu_locked)
+        return map_osc_locked(c, b);
     switch (b) {
     case BTN_UP:    return cmd(KA_OSCMENU_KEY, OSC_KEY_UP);
     case BTN_DOWN:  return cmd(KA_OSCMENU_KEY, OSC_KEY_DOWN);
@@ -276,39 +313,23 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
     if (c->osc_menu_open)
         return map_osc_menu(c, btn);
 
-    /* The trigger panel owns the arrows and OK while it is up (parity C3).
-     * The keys that would change what the arrows mean close it instead, so
-     * the panel can never be left up under a different stage. CH1/CH2/AUTO/
-     * SAVE keep their own meaning and leave it open. */
-    if (c->trig_menu_open && c->scope_time_view) {
-        switch (btn) {
-        case BTN_UP:      return cmd(KA_TRIGMENU_ROW, -1);
-        case BTN_DOWN:    return cmd(KA_TRIGMENU_ROW, +1);
-        case BTN_LEFT:    return cmd(KA_TRIGMENU_CHANGE, -1);
-        case BTN_RIGHT:
-        case BTN_OK:      return cmd(KA_TRIGMENU_CHANGE, +1);
-        case BTN_TRIGGER: case BTN_MENU:
-        case BTN_MOVE: case BTN_SELECT: case BTN_PRM:
-                          return cmd(KA_TRIGMENU_CLOSE, 0);
-        default:          return cmd(KA_LEGACY, 0);
-        }
-    }
-
     switch (btn) {
     /* Stock: short BACK in the scope opens the Oscilloscope Settings page at
-     * its first row, short PRM at Parameter Measurement (UI_STUDY 1.3). In
-     * every scope view: the page is also the way back from the FFT views,
-     * which PRM no longer cycles. */
+     * its first row (UI_STUDY 1.3), the full page. In every scope view: the
+     * page is also the way back from the FFT views, which PRM no longer
+     * cycles. */
     case BTN_MENU:
         return cmd(KA_OSCMENU_OPEN, OSC_ROW_DISPLAY);
+    /* Stock V1.2.0 (owner, unit #2, 2026-11-12): PRM opens the page inside
+     * Parameter Measurement and TRIGGER inside Trigger Settings, locked
+     * there. Every scope view. TRIGGER's inline panel (parity C3, D3) and
+     * the FFT views' trigger-mode cycle are gone. */
     case BTN_PRM:
-        return cmd(KA_OSCMENU_OPEN, OSC_ROW_PARAM);
-
-    case BTN_TRIGGER:
-        /* Our inline trigger panel (owner decision D3; the page's Trigger
-         * row has the same settings). The cursors it toggled before C3 are
-         * in the page's Cursors row. FFT views: legacy. */
-        return c->scope_time_view ? cmd(KA_TRIGMENU_OPEN, 0) : cmd(KA_LEGACY, 0);
+    case BTN_TRIGGER: {
+        osc_row_t row;
+        (void)osc_pane_key_row(btn, &row);
+        return cmd(KA_OSCMENU_PANE, (int8_t)row);
+    }
 
     case BTN_MOVE:
         /* "Switch CH1/CH2 Adjustment" (m.p30), every scope view. The mask

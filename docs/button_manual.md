@@ -19,9 +19,9 @@ came from highlighted.
 | **MENU** | Back to the mode you opened home from (ours; stock does nothing) |
 | **POWER** | As everywhere (hold to power off) |
 
-Elsewhere: inside a level (a Settings sub-page, the trigger panel, the
-Oscilloscope Settings page, the generator's frequency editor) **MENU** goes
-back one level. At the top of the meter, generator and settings it opens home
+Elsewhere: inside a level (a Settings sub-page, the Oscilloscope Settings
+page, the generator's frequency editor) **MENU** goes back one level (in the
+page's locked Measure / Trigger pane it closes the page). At the top of the meter, generator and settings it opens home
 (ours; owner decision D2). In the scope, short MENU opens the **Oscilloscope
 Settings** page, as stock's short BACK does (see *Oscilloscope Settings page*
 below). **Long MENU** opens home from anywhere, as stock's long BACK does.
@@ -91,16 +91,22 @@ Position -> Mask, and cursors took the arrows whenever they were on.
 
 ### Trigger (TRIGGER)
 
-**TRIGGER** opens the inline trigger panel over the plot (ours; stock's
-TRIGGER opens the "Trigger Settings" row of its settings page, and the
-Oscilloscope Settings page has that row too; owner decision D3): three rows, `Mode:` Auto / Normal / Single, `Edge:` Rising /
-Falling, `Channel:` CH1 / CH2 (the source; a channel that is off is refused).
+**TRIGGER** opens the Oscilloscope Settings page directly inside its
+**Trigger Settings** pane, locked there, as stock V1.2.0 does (owner on unit
+#2, 2026-11-12; in every scope view): three rows, `Mode:` Auto / Normal /
+Single, `Edge:` Rising / Falling, `Channel:` CH1 / CH2 (the source; a channel
+that is off is refused).
 
-| Key (panel open) | Action |
+| Key (Trigger pane, locked) | Action |
 |------------------|--------|
 | **UP/DOWN** | Pick the row |
 | **LEFT/RIGHT**, **OK** | Change it (OK = RIGHT) |
-| **TRIGGER**, **MENU**, **MOVE**, **SELECT**, **PRM** | Close the panel |
+| **TRIGGER** or **MENU** | Close the page, back to the plot |
+| **PRM** | Switch to the locked Measure pane |
+| **CH1 / CH2 / MOVE / SELECT / AUTO** | Nothing (no way to the rail or other rows) |
+
+Until 2026-11-12 TRIGGER opened an inline panel over the plot (parity C3); it
+is gone (it kept the plot on the full clear-and-repaint path, which flashed).
 
 The same three are in Settings -> Oscilloscope Settings (Trigger Mode / Edge /
 Source), and on the shell (`fpga scope trigmode`, `fpga scope edge`,
@@ -219,15 +225,25 @@ acquisition keeps running behind it.
 
 | Key | Action |
 |-----|--------|
-| **MENU** (short, scope) | Open the page at Display |
-| **PRM** (short, scope) | Open the page at Measure (stock: "Parameter Measurement") |
-| **UP / DOWN / LEFT / RIGHT / OK** (page up) | Move and change on the page |
-| **MENU** (page up) | Back one level; from the rail, close the page |
-| the key that opened it (PRM, ...) | Close the page (stock: PRM again goes back) |
-| **PRM / TRIGGER / CH1 / CH2** (page up, not the opener) | Jump to Measure / Trigger / CH1 / CH2 (ours); that key then closes it |
+| **MENU** (short, scope) | Open the full page at Display (rail focus: every row) |
+| **PRM** (short, scope) | Open the page inside Measure ("Parameter Measurement"), **locked** to that pane |
+| **TRIGGER** (short, scope) | Open the page inside Trigger ("Trigger Settings"), **locked** to that pane |
+| **UP / DOWN / LEFT / RIGHT / OK** (page up) | Move and change on the page (locked: in the pane only; LEFT at its edge does nothing) |
+| **MENU** (page up) | Full page: back one level; from the rail, close. Locked pane: close |
+| the key that opened it (PRM, TRIGGER, ...) | Close the page (stock: PRM again goes back) |
+| **PRM / TRIGGER** (locked pane, not the opener) | Switch to the other locked pane |
+| **PRM / TRIGGER / CH1 / CH2** (full page, not the opener) | Jump to Measure / Trigger / CH1 / CH2 (ours); that key then closes it |
+| **CH1 / CH2** (locked pane) | Nothing |
 | **MOVE / SELECT / AUTO** (page up) | Nothing |
 | **SAVE** | Screenshot of the page; long SAVE = gallery |
 | long **MENU / MOVE / SELECT / TRIGGER** | Home / meter / scope / generator, as everywhere (the page closes) |
+
+Measure pane: each channel picks any of stock's 12 measurements (both default
+to Freq, Peri, Duty+, Vp-p, Vrms). The plot's strip shows at most 6 per
+channel; with more on, the 6 shown are chosen by priority, levels first:
+Vp-p, Vmax, Vmin, Freq, Duty+, Vrms, then the rest in stock order
+(`mstrip_show_priority[]`, firmware/src/ui/measure_strip.c). They are drawn
+in stock order.
 
 The page itself (its rows and panes) is UI round 1's item R1-A; until it is
 merged, a placeholder page "Oscilloscope Settings (coming)" stands in for it.
@@ -450,10 +466,10 @@ Shows device info, pool status, heap free, license. **MENU** or **OK** to go bac
 | LEFT   | Timebase down    | Prev function    | Duty cycle down  |        -         |
 | RIGHT  | Timebase up      | Next function    | Duty cycle up    |        -         |
 | OK     | Run/Stop         | Hold             | Output on/off    | Enter / Toggle   |
-| PRM    | Page at Measure  | Softkey: View    | Freq editor      |        -         |
+| PRM    | Measure pane     | Softkey: View    | Freq editor      |        -         |
 | SELECT | Arrow stage      | Softkey (Reset)  | Cycle waveform   | Cycle comp type  |
 | MOVE   | CH1/CH2 adjust   | Softkey (Func.)  |        -         |        -         |
-| TRIGGER| Trigger panel    | Softkey (Rel.)   |        -         |        -         |
+| TRIGGER| Trigger pane     | Softkey (Rel.)   |        -         |        -         |
 | AUTO   | Autoset          | Auto function    |        -         |        -         |
 | SAVE   | Screenshot       | Screenshot       | Screenshot       | Screenshot       |
 | SAVE L | Gallery          | Gallery          | Gallery          | Gallery          |

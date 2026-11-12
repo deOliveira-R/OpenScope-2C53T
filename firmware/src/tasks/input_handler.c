@@ -6,8 +6,8 @@
  * then calls input_handle_button() for the actual logic.
  *
  * Integrated features from 4 agent worktrees:
- *   - Cursor measurement mode (Settings -> Oscilloscope -> Cursors since
- *     parity C3; TRIGGER is stock's trigger panel, trig_menu.h)
+ *   - Cursor measurement mode (the Oscilloscope Settings page's Cursors
+ *     row; TRIGGER opens its Trigger pane, osc_menu_model.h)
  *   - Meter sub-modes (LEFT/RIGHT cycle, SELECT resets min/max/avg)
  *   - Signal gen: amplitude stepping, duty cycle, frequency presets
  *   - Math channel, persistence, component tester (settings sub-menus)
@@ -265,7 +265,7 @@ static void osc_settings_adjust(int dir)
         /* The panel's model, so Settings and the panel cannot disagree on
          * what a change means (or on refusing a source that is off). */
         static const uint8_t row[3] = { TM_ROW_MODE, TM_ROW_EDGE, TM_ROW_SOURCE };
-        trig_menu_t m = { false, row[settings_sub_selected - 4] };
+        trig_menu_t m = { row[settings_sub_selected - 4] };
         char t[24];
         (void)scope_apply_trigger_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
         break;
@@ -551,8 +551,7 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
 {
     meter_autoselect_cancel();
     siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
-    trig_menu_close(&scope_trig_menu);   /* never reappears over another mode's return */
-    osc_menu_close();                    /* nor does the Oscilloscope Settings page */
+    osc_menu_close();                    /* never reappears over another mode's return */
     if (m == MODE_HOME)
         home_enter(home_ui_model(), current_mode);   /* preselect where we came from (stock 0x0800D834) */
     current_mode = m;
@@ -712,8 +711,8 @@ static key_ctx_t key_ctx_now(void)
     if (f != scope_key_focus) set_focus(f);
     c.focus          = f;
     c.active_channel = active_channel;
-    c.trig_menu_open = scope_trig_menu.open;
     c.osc_menu_open  = (current_mode == MODE_OSCILLOSCOPE) && osc_menu_is_open();
+    c.osc_menu_locked = c.osc_menu_open && osc_menu_is_locked();
     c.osc_menu_opener = osc_menu_opener;
     return c;
 }
@@ -957,32 +956,19 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         popup_and_redraw(dq, pb);
         break;
 
-    /* -- the trigger panel (parity C3, trig_menu.h) --------------------- */
-    case KA_TRIGMENU_OPEN:
-        trig_menu_open(&scope_trig_menu);
-        cmd = DCMD_DRAW_SCOPE;
-        send_cmd(dq, cmd);
-        break;
-    case KA_TRIGMENU_CLOSE:
-        trig_menu_close(&scope_trig_menu);
-        send_cmd(dq, cmd);
-        break;
-    case KA_TRIGMENU_ROW:
-        trig_menu_row_step(&scope_trig_menu, dir);
-        cmd = DCMD_DRAW_SCOPE;
-        send_cmd(dq, cmd);
-        break;
-    case KA_TRIGMENU_CHANGE:
-        (void)scope_apply_trigger_change(trig_menu_change(&scope_trig_menu, ss, dir), pb, sizeof(pb));
-        popup_and_redraw(dq, pb);
-        break;
-
     /* -- the Oscilloscope Settings page (osc_menu_model.h) -------------- */
     case KA_OSCMENU_OPEN:
-        /* From the plot, or a deep-link key jumping to its row while the
-         * page is up. The inline trigger panel never stays under it. */
-        trig_menu_close(&scope_trig_menu);
+        /* From the plot (MENU), or a deep-link key jumping to its row while
+         * the full page is up. */
         osc_menu_open((osc_row_t)dir);
+        osc_menu_opener = (uint8_t)btn;
+        cmd = DCMD_DRAW_OSC_MENU;
+        send_cmd(dq, cmd);
+        break;
+    case KA_OSCMENU_PANE:
+        /* PRM / TRIGGER: the page locked inside their pane (stock V1.2.0);
+         * that key, or MENU, closes it. */
+        osc_menu_open_locked((osc_row_t)dir);
         osc_menu_opener = (uint8_t)btn;
         cmd = DCMD_DRAW_OSC_MENU;
         send_cmd(dq, cmd);
@@ -1202,16 +1188,9 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     /* -- Trigger -------------------------------------------------- */
 
     case BTN_TRIGGER:
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            /* The time view's TRIGGER is the trigger panel (key_model.c,
-             * claimed above). What reaches here is the FFT views: cycle the
-             * trigger mode, through the same hardware path as the panel. */
-            scope_cycle_trigger_mode(ss);
-            (void)scope_apply_trigger_change(TM_CHANGED_MODE, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        } else {
-            send_cmd(dq, cmd);
-        }
+        /* Scope: key_model.c claims it in every view (KA_OSCMENU_PANE,
+         * the Trigger pane). What is left is the other modes. */
+        send_cmd(dq, cmd);
         break;
 
     case BTN_MOVE:

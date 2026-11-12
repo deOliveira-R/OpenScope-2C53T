@@ -154,15 +154,26 @@ void osc_menu_open(osc_row_t row)
     g_m.in_pane = false;
     g_m.item    = 0;
     g_m.meas_ch = 0;
+    g_m.locked  = false;
     g_m.opens++;
 }
 
+void osc_menu_open_locked(osc_row_t row)
+{
+    osc_menu_open(row);
+    g_m.in_pane = true;
+    g_m.locked  = true;
+    if (g_m.row == OSC_ROW_PARAM) g_m.item = OSC_PRM_CHIP0;   /* on Freq, as entering from the rail */
+}
+
 bool osc_menu_is_open(void) { return g_m.open; }
+bool osc_menu_is_locked(void) { return g_m.open && g_m.locked; }
 
 void osc_menu_close(void)
 {
     g_m.open    = false;
     g_m.in_pane = false;
+    g_m.locked  = false;
 }
 
 void osc_menu_set_item(uint8_t item)
@@ -175,6 +186,20 @@ static osc_result_t to_rail(void)
 {
     g_m.in_pane = false;
     return OSC_RES_REDRAW;
+}
+
+/* BACK in a pane: up to the rail, or, locked, close the page. */
+static osc_result_t pane_back(void)
+{
+    if (!g_m.locked) return to_rail();
+    osc_menu_close();
+    return OSC_RES_CLOSE;
+}
+
+/* LEFT off the pane's left edge: the rail, or, locked, nothing. */
+static osc_result_t pane_left_edge(void)
+{
+    return g_m.locked ? OSC_RES_NONE : to_rail();
 }
 
 /* Measure pane OK: the tab flips the page, All/None and the chips edit the
@@ -198,7 +223,7 @@ static osc_result_t chips_key(osc_key_t k, osc_action_t *act)
 
     switch (k) {
     case OSC_KEY_LEFT:
-        if (c == 0u) return to_rail();
+        if (c == 0u) return pane_left_edge();
         g_m.item = chip_item(l, r, (uint8_t)(c - 1u));
         return OSC_RES_REDRAW;
     case OSC_KEY_RIGHT:
@@ -237,7 +262,7 @@ static osc_result_t chips_key(osc_key_t k, osc_action_t *act)
         act->item = g_m.item;
         return OSC_RES_REDRAW;
     case OSC_KEY_BACK:
-        return to_rail();
+        return pane_back();
     default:
         return OSC_RES_NONE;
     }
@@ -258,9 +283,9 @@ static osc_result_t pane_key(osc_key_t k, osc_action_t *act)
         g_m.item = (uint8_t)((g_m.item + 1u) % n);
         return OSC_RES_REDRAW;
     case OSC_KEY_BACK:
-        return to_rail();
+        return pane_back();
     case OSC_KEY_LEFT:
-        if (l->kind == OSC_PANE_RADIO) return to_rail();
+        if (l->kind == OSC_PANE_RADIO) return pane_left_edge();
         act->kind = OSC_ACT_CHANGE; act->item = g_m.item; act->dir = -1;
         return OSC_RES_REDRAW;
     case OSC_KEY_RIGHT:

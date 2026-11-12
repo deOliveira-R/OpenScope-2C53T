@@ -38,7 +38,6 @@
 #include "scope_trigger.h"
 #include "trig_edge.h"
 #include "trig_policy.h"
-#include "trig_menu.h"
 #include "osc_menu_model.h"
 #include "meas_select.h"
 #include "scope_mask.h"
@@ -760,43 +759,6 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
             scope_ui_can_row_refresh();
         else
             draw_mask_slot(th);
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Trigger panel (parity C3, trig_menu.h): stock's "Trigger Settings"
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* Top-left, clear of the centred popup (POPUP_Y) and the status badge at the
- * top right, so a change's popup and the panel are both readable. Drawn by
- * the full path only; main.c keeps the compositor off while it is open, as
- * for cursors. */
-#define TPANEL_X   6
-#define TPANEL_Y   (SCOPE_TOP + 6)
-#define TPANEL_W   124
-#define TPANEL_ROW 14
-#define TPANEL_H   (16 + TM_ROW_COUNT * TPANEL_ROW + 3)
-
-static void draw_trigger_panel(const scope_state_t *ss, const theme_t *th)
-{
-    if (!scope_trig_menu.open)
-        return;
-    lcd_fill_rect(TPANEL_X, TPANEL_Y, TPANEL_W, TPANEL_H, th->background);
-    lcd_fill_rect(TPANEL_X, TPANEL_Y, TPANEL_W, 1, th->trigger);
-    lcd_fill_rect(TPANEL_X, TPANEL_Y + TPANEL_H - 1, TPANEL_W, 1, th->trigger);
-    lcd_fill_rect(TPANEL_X, TPANEL_Y, 1, TPANEL_H, th->trigger);
-    lcd_fill_rect(TPANEL_X + TPANEL_W - 1, TPANEL_Y, 1, TPANEL_H, th->trigger);
-    font_draw_string(TPANEL_X + 5, TPANEL_Y + 3, "Trigger", th->trigger, th->background, &font_small);
-    for (uint8_t r = 0; r < TM_ROW_COUNT; r++) {
-        const bool sel = (r == scope_trig_menu.row);
-        const uint16_t y = (uint16_t)(TPANEL_Y + 16 + r * TPANEL_ROW);
-        const uint16_t bg = sel ? th->menu_selected_bg : th->background;
-        if (sel)
-            lcd_fill_rect(TPANEL_X + 2, y, TPANEL_W - 4, TPANEL_ROW, bg);
-        font_draw_string(TPANEL_X + 5, y + 1, trig_menu_row_label(r),
-                         sel ? th->text_primary : th->text_secondary, bg, &font_small);
-        font_draw_string_right(TPANEL_X + TPANEL_W - 6, y + 1, trig_menu_row_value(ss, r),
-                               th->highlight, bg, &font_small);
     }
 }
 
@@ -2895,9 +2857,6 @@ void draw_scope_screen(uint32_t frame)
 
     /* Layer 10: Measurement badges */
     draw_measurement_badges(ss, th);
-
-    /* Layer 10b: the trigger panel, under the popup that reports a change */
-    draw_trigger_panel(ss, th);
 
     /* Layer 11: Quick-change popup (on top of everything) */
     draw_popup(th);
