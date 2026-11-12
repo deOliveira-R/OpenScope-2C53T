@@ -420,9 +420,9 @@ static bool scope_incremental_available(const scope_state_t *s)
 /* Single scope render entry point, shared by the queue commands and the
  * periodic path so both always pick the same renderer for a given view. */
 /* The Oscilloscope Settings page (osc_menu_model.h) is up. It is a full page
- * in scope mode: osc_menu_draw() owns everything below the status bar, so the
- * scope's own paints (plot, info bar, badge rows) stand aside while it is
- * up. Not ui_modal_active: that would drop DCMD_DRAW_OSC_MENU too. The
+ * in scope mode: osc_menu_draw() owns y 16..223, between the two bars, so the
+ * scope's own paints (plot, badge rows, mask/CAN rows) stand aside while it
+ * is up; the bars keep repainting. Not ui_modal_active: that would drop DCMD_DRAW_OSC_MENU too. The
  * acquisition keeps running behind it (UI_STUDY 2.3). */
 static bool osc_page_up(void)
 {
@@ -595,15 +595,18 @@ static void vDisplayTask(void *pvParameters)
                 lcd_clear(COLOR_BLACK);
                 status_bar_invalidate();
                 draw_status_bar();
+                draw_info_bar();
+                g_info_bar_epoch = info_bar_epoch();
                 if (osc_page_up()) {
-                    /* Also what repaints the page after the gallery or an
-                     * LCD-health reinit. */
+                    /* The page covers y 16..223; both bars stay visible.
+                     * Also what repaints the page after the gallery or an
+                     * LCD-health reinit: the LCD was cleared under it, so
+                     * the page repaints its background too. */
+                    osc_menu_invalidate();
                     osc_menu_draw();
                     g_screen_painted = true;
                     break;
                 }
-                draw_info_bar();
-                g_info_bar_epoch = info_bar_epoch();
                 /* Draw current mode's screen */
                 if (current_mode == MODE_OSCILLOSCOPE) {
                     scope_render(frame, REDRAW_FULL);
@@ -728,8 +731,10 @@ static void vDisplayTask(void *pvParameters)
             frame++;
             continue;
         }
+        /* The info bar shows under the Oscilloscope Settings page too, so a
+         * channel or trigger change made on the page shows in it at once. */
         const bool page_up = osc_page_up();
-        if (!page_up) {
+        {
             uint32_t ib = info_bar_epoch();
             if (ib != g_info_bar_epoch) {
                 draw_info_bar();
