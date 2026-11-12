@@ -57,6 +57,7 @@ extern void system_clock_config(void);
 #include "can_scope.h"
 #include "trig_menu.h"
 #include "osc_menu_model.h"
+#include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
 
@@ -316,8 +317,10 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)s->trigger.source << 8));
     h = redraw_epoch_mix(h, (uint32_t)(uint16_t)s->trigger.level);
 
-    h = redraw_epoch_mix(h, (uint32_t)s->prm_mask
-                            | ((uint32_t)s->prm_hidden << 16));   /* C6 selection */
+    /* The measurement selection, both channels (meas_select.h: CH1's is
+     * prm_mask, CH2's lives in meas_select.c); prm_hidden is mixed below. */
+    h = redraw_epoch_mix(h, (uint32_t)meas_select_get(0)
+                            | ((uint32_t)meas_select_get(1) << 16));
 
     h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode
                             | ((uint32_t)s->cursor.active << 4));
