@@ -78,6 +78,7 @@
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
 #include "../util/shell_persist.h"
+#include "../util/lcd_health.h"
 #include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
 #include "../util/gallery_store.h"
@@ -6135,6 +6136,32 @@ static void cmd_persist(const char *args)
     usb_debug_printf("\r\n");
 }
 
+/* lcd [selftest]: panel health (util/lcd_health.h). selftest sends the
+ * ST7789 a software reset (0x01), the state seen once on unit #2, so the
+ * display task's check has to find it and recover within ~2 s. */
+static void cmd_lcd(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "selftest", 8) == 0) {
+        taskENTER_CRITICAL();
+        lcd_write_cmd(0x01);
+        taskEXIT_CRITICAL();
+        usb_debug_printf("lcd: software reset sent; the health check should repaint within ~2 s\r\n");
+        return;
+    }
+    taskENTER_CRITICAL();
+    const uint8_t pm = lcd_read_power_mode();
+    taskEXIT_CRITICAL();
+    const lcd_health_t h = g_lcd_health;
+    usb_debug_printf("lcd: power mode now 0x%02X (%s) | checks %lu bad %lu re-inits %lu",
+                     pm, lcd_health_pm_ok(pm) ? "ok" : "NOT ok",
+                     (unsigned long)h.checks, (unsigned long)h.bad_reads, (unsigned long)h.events);
+    if (h.events)
+        usb_debug_printf(" | last at %lu ms, pm 0x%02X, mode %u",
+                         (unsigned long)h.last_event_ms, h.event_pm, h.event_mode);
+    usb_debug_printf("\r\n");
+}
+
 static void cmd_mode(const char *args)
 {
     /* Numeric aliases for the mode keywords.
@@ -10341,6 +10368,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope trig <4 bytes>       Send 0x07/0x0A,0x16..0x19\r\n"),
     CMD_A("persist", cmd_persist, 0,
           "persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n"),
+    CMD_A("lcd", cmd_lcd, 0,
+          "lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n"),
     CMD_A("mode", cmd_mode, 0,
           "mode meter [submode] [layout]   Switch UI + FPGA to DMM frontend ('mode 1' = same)\r\n" "mode scope                      Switch UI + FPGA to scope frontend ('mode 0' = same)\r\n" "mode startup [scope|meter]      Get/set Settings > Startup on Boot\r\n"),
     CMD_A("meter dump", cmd_meter_dump, 0,

@@ -172,6 +172,8 @@ uint16_t lcd_read_data(void);
 
 /* LCD controller initialization */
 void lcd_init(void);            /* Full init: GPIO + FSMC + ST7789 sequence */
+void lcd_panel_init(void);      /* ST7789 sequence only (EXMC already set up) */
+uint8_t lcd_read_power_mode(void); /* RDDPM: 0x9C healthy, 0x08 after a reset */
 void lcd_reset(void);           /* Hardware reset via GPIO (if RST pin wired) */
 
 /* Drawing window control */

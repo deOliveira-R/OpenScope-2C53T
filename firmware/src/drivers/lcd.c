@@ -412,7 +412,14 @@ void lcd_init(void)
     /* Step 1: Configure hardware interface */
     lcd_gpio_init();
     lcd_fsmc_init();
+    lcd_panel_init();
+}
 
+/* The ST7789 command sequence alone, on an EXMC that is already set up: the
+ * recovery path when the panel has reset itself under a running MCU (see
+ * util/lcd_health.h). Busy-waits ~220 ms. */
+void lcd_panel_init(void)
+{
     /* Step 2: Software reset and wake from sleep */
     lcd_write_cmd(ST7789_SLPOUT);   /* 0x11: Sleep Out */
     delay_ms(120);                   /* Firmware uses timer-based delay ~120ms */
@@ -691,6 +698,15 @@ void lcd_draw_string(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint1
 /* ========================================================================
  * Display control
  * ======================================================================== */
+
+/* RDDPM (0x0A): dummy read, then the power-mode byte. Healthy = 0x9C
+ * (booster on, sleep out, normal, display on); 0x08 after a panel reset. */
+uint8_t lcd_read_power_mode(void)
+{
+    lcd_write_cmd(0x0A);
+    (void)*LCD_DATA_ADDR;
+    return (uint8_t)*LCD_DATA_ADDR;
+}
 
 void lcd_display_on(void)
 {
