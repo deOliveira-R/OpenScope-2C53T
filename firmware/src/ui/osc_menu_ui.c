@@ -6,9 +6,8 @@
  * applies what it asks through the scope code that already exists, and
  * osc_menu_draw() paints the page with the menu_frame widget.
  *
- * WHAT IS APPLIED, AND HOW (nothing reimplemented, the same calls the keys and
- * the Settings list make; input_handler.c keeps its own static copies of the
- * glue, so the few lines of it are repeated here; merge request: hoist both):
+ * WHAT IS APPLIED, AND HOW (nothing reimplemented: the glue the keys and the
+ * Settings list use is shared, src/tasks/scope_apply.c, since the merge):
  *   Display   scope_view (+ the FFT pool, as the old PRM cycle did) and
  *             ss->roll + fpga_apply_roll(), reverted if refused
  *   Cursors   ss->cursor.mode / .active (scope_state.c's per-mode rule)
@@ -37,6 +36,7 @@
 #include "persistence.h"
 #include "math_channel.h"
 #include "fpga.h"
+#include "scope_apply.h"
 #ifdef FEATURE_FFT
 #include "fft.h"
 #endif
@@ -146,36 +146,13 @@ static channel_state_t *chan(uint8_t ch)
  * Apply
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Scope view with the FFT pool lifecycle of the old PRM cycle: claim on the
- * way into a spectrum view, release on the way out. Persistence holds the
- * same pool, so it is switched off first. */
+/* The view, the pool and Roll go through scope_apply.c, the code the keys
+ * use (scope_view_select(): spectrum views claim the FFT pool, persistence
+ * is switched off first; leaving them releases it). */
 static void view_set(int v)
 {
 #ifdef FEATURE_FFT
-    const bool want = (v == SCOPE_VIEW_FFT || v == SCOPE_VIEW_SPLIT || v == SCOPE_VIEW_WATERFALL);
-    if (!want) {
-        scope_view = (scope_view_t)v;          /* stop drawing it before the pool goes */
-        if (fft_is_initialized()) fft_deinit();
-        return;
-    }
-    if (!fft_is_initialized()) {
-        if (persist_enabled) {
-            persist_enabled = false;
-            persist_deinit();
-        }
-        fft_config_t c;
-        c.window         = FFT_WINDOW_HANNING;
-        c.sample_rate_hz = 44100.0f;
-        c.ref_level_db   = 0.0f;
-        c.db_range       = 80.0f;
-        c.peak_count     = 4;
-        c.avg_count      = 0;
-        c.max_hold       = false;
-        c.zoom_start_bin = 1;
-        c.zoom_end_bin   = FFT_BINS - 1;
-        fft_init(&c);
-    }
-    scope_view = (scope_view_t)v;
+    scope_view_select((scope_view_t)v);
 #else
     (void)v;
 #endif
@@ -184,15 +161,9 @@ static void view_set(int v)
 /* Roll on/off through the FPGA; false (and the old mode kept) if refused. */
 static bool roll_set(bool want)
 {
-    scope_state_t *ss = scope_state_get();
-    if (want == ss->roll) return true;
-    ss->roll = want;
-    if (!fpga_apply_roll()) {
-        ss->roll = !want;
-        snprintf(g_note, sizeof g_note, "Roll NOT SET");
-        return false;
-    }
-    return true;
+    if (scope_apply_roll(want)) return true;
+    snprintf(g_note, sizeof g_note, "Roll NOT SET");
+    return false;
 }
 
 static void display_select(uint8_t item)
@@ -223,27 +194,11 @@ static void cursor_select(uint8_t item)
 static void persist_select(uint8_t item)
 {
     if (item == OSC_PERS_OFF) {
-        if (persist_enabled) {
-            persist_enabled = false;
-            persist_deinit();
-        }
+        scope_apply_persist_off();
         return;
     }
-    if (!persist_enabled) {
-        if (view_is_fft()) view_set(SCOPE_VIEW_TIME);   /* the pool is shared */
-#ifdef FEATURE_FFT
-        if (fft_is_initialized()) fft_deinit();
-#endif
-        persist_init();
-        if (!persist_is_initialized()) {
-            snprintf(g_note, sizeof g_note, "No memory for persistence");
-            return;
-        }
-        persist_set_mode(k_pers_mode[item]);
-        persist_enabled = true;
-    } else {
-        persist_set_mode(k_pers_mode[item]);
-    }
+    if (!scope_apply_persist_on(k_pers_mode[item]))   /* leaves a spectrum view first */
+        snprintf(g_note, sizeof g_note, "No memory for persistence");
 }
 
 static void math_select(uint8_t item)
@@ -280,9 +235,9 @@ static void channel_change(uint8_t ch, uint8_t item, int dir)
         break;
     case OSC_CH_COUPLING: {
         /* DC <-> AC on the relay; GND is not offered (no ground path known). */
-        const coupling_t next = (c->coupling == COUPLING_DC) ? COUPLING_AC : COUPLING_DC;
-        if (fpga_apply_coupling(ch, (uint8_t)next)) c->coupling = next;
-        else snprintf(g_note, sizeof g_note, "CH%u %s NOT SET", (unsigned)ch + 1u, coupling_labels[next]);
+        char t[sizeof g_note];
+        if (!scope_apply_coupling_toggle(ch, t, sizeof t))
+            snprintf(g_note, sizeof g_note, "%s", t);
         break;
     }
     case OSC_CH_FFT:
@@ -305,19 +260,12 @@ static void channel_change(uint8_t ch, uint8_t item, int dir)
 
 static void trigger_change(uint8_t item, int dir)
 {
-    scope_state_t *ss = scope_state_get();
     trig_menu_t m = { false, item };
-    const uint8_t what = trig_menu_change(&m, ss, dir);
-    if (what & TM_REFUSED_OFF) {
-        snprintf(g_note, sizeof g_note, "CH%d is off", ss->trigger.source == TRIG_SRC_CH2 ? 1 : 2);
-    } else if (what & TM_CHANGED_SOURCE) {
-        if (!fpga_apply_trigger_source())
-            snprintf(g_note, sizeof g_note, "Trig %s NOT SET", trigger_source_labels[ss->trigger.source]);
-    } else if ((what & TM_CHANGED_MODE) && ss->trigger.mode == TRIG_SINGLE) {
-        ss->running = true;                 /* stock: Single arms the one-shot */
-        fpga_acq_single_rearm();
-        snprintf(g_note, sizeof g_note, "Await Trigger...");
-    }
+    char t[sizeof g_note];
+    /* The row shows the new value; the note only what it cannot (a refusal,
+     * NOT SET, the SINGLE arm). */
+    if (scope_apply_trigger_change(trig_menu_change(&m, scope_state_get(), dir), t, sizeof t))
+        snprintf(g_note, sizeof g_note, "%s", t);
 }
 
 osc_result_t osc_menu_key(osc_key_t k)

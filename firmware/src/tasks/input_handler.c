@@ -18,6 +18,7 @@
 #include "trig_menu.h"
 #include "osc_menu_model.h"
 #include "input_handler.h"
+#include "scope_apply.h"
 #include "ui.h"
 #include "softkey.h"
 #include "lcd.h"
@@ -206,39 +207,10 @@ static void sound_light_adjust(int dir, bool wrap)
  * Oscilloscope settings Left/Right handler
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void channel_cycle_coupling(uint8_t ch, channel_state_t *c, const char *name,
-                                   char *pb, size_t n);
 static void set_focus(key_focus_t f);
 
-/* The hardware side of a trigger change, wherever it came from (the
- * trigger panel, Settings, the shell has its own): reg 0x06 for the source,
- * the SINGLE arm for the mode (stock: selecting Single arms the one-shot and
- * shows "Await Trigger...", 0x0801C8C2). The edge is the MCU filter and the
- * soft trigger only -- no register selects it (EXP-55/73). Writes the popup
- * text to pb. */
-static void trigger_after_change(uint8_t what, char *pb, size_t n)
-{
-    scope_state_t *ss = scope_state_get();
-    if (what & TM_REFUSED_OFF) {
-        snprintf(pb, n, "CH%d is off", ss->trigger.source == TRIG_SRC_CH2 ? 1 : 2);
-    } else if (what & TM_CHANGED_SOURCE) {
-        const bool ok = fpga_apply_trigger_source();
-        snprintf(pb, n, ok ? "Trig source %s" : "Trig %s NOT SET",
-                 trigger_source_labels[ss->trigger.source]);
-    } else if (what & TM_CHANGED_MODE) {
-        if (ss->trigger.mode == TRIG_SINGLE) {
-            ss->running = true;
-            fpga_acq_single_rearm();
-            snprintf(pb, n, "Await Trigger...");
-        } else {
-            snprintf(pb, n, "Trig: %s", trigger_mode_labels[ss->trigger.mode]);
-        }
-    } else if (what & TM_CHANGED_EDGE) {
-        snprintf(pb, n, "Edge: %s", trigger_edge_labels[ss->trigger.edge]);
-    } else if (n) {
-        pb[0] = '\0';
-    }
-}
+/* The hardware side of coupling, trigger, Roll, view and persistence
+ * changes is scope_apply.c, shared with the Oscilloscope Settings page. */
 
 /* Settings -> Oscilloscope -> Cursors: what TRIGGER did before C3. */
 static void cursor_mode_cycle(void)
@@ -255,30 +227,19 @@ static void cursor_mode_cycle(void)
  * Roll is the C11 MCU-paced mode (re-applied to the FPGA here, so the menu
  * and the timebase keys reach the same state); X-Y is the existing Lissajous
  * view, so it needs the FEATURE_FFT build that carries it and is skipped
- * otherwise. Leaving X-Y releases the FFT pool exactly as the PRM cycle does
- * on its way back to the time view (fft_deinit is a no-op if unclaimed). */
+ * otherwise. The view goes through scope_view_select() (scope_apply.c), which
+ * releases the FFT pool on the way out of a spectrum view. */
 static void display_mode_step(int dir)
 {
-    scope_state_t *ss = scope_state_get();
     const scope_disp_mode_t cur = (scope_disp_mode_t)scope_display_mode();
     scope_disp_mode_t next = scope_disp_mode_cycle(cur, dir);
 #ifndef FEATURE_FFT
     if (next == SCOPE_DISP_XY)
         next = scope_disp_mode_cycle(next, dir);
 #else
-    if (next == SCOPE_DISP_XY) {
-        scope_view = SCOPE_VIEW_XY;
-    } else if (scope_view != SCOPE_VIEW_TIME) {
-        scope_view = SCOPE_VIEW_TIME;
-        fft_deinit();
-    }
+    scope_view_select(next == SCOPE_DISP_XY ? SCOPE_VIEW_XY : SCOPE_VIEW_TIME);
 #endif
-    const bool want_roll = (next == SCOPE_DISP_ROLL);
-    if (want_roll != ss->roll) {
-        ss->roll = want_roll;
-        if (!fpga_apply_roll())
-            ss->roll = !want_roll;  /* nothing was written: keep the old mode */
-    }
+    (void)scope_apply_roll(next == SCOPE_DISP_ROLL);   /* refused: the old mode stays */
 }
 
 static void osc_settings_adjust(int dir)
@@ -286,13 +247,13 @@ static void osc_settings_adjust(int dir)
     scope_state_t *ss = scope_state_get();
     switch (settings_sub_selected) {
     case 0: /* CH1 Coupling -- the relay, DC <-> AC; two states, so dir is moot */
-        { char t[24]; channel_cycle_coupling(0, &ss->ch1, "CH1", t, sizeof(t)); }
+        { char t[24]; (void)scope_apply_coupling_toggle(0, t, sizeof(t)); }
         break;
     case 1: /* CH1 Probe */
         ss->ch1.probe = (probe_t)((ss->ch1.probe + PROBE_COUNT + dir) % PROBE_COUNT);
         break;
     case 2: /* CH2 Coupling -- the relay, DC <-> AC; two states, so dir is moot */
-        { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); }
+        { char t[24]; (void)scope_apply_coupling_toggle(1, t, sizeof(t)); }
         break;
     case 3: /* CH2 Probe */
         ss->ch2.probe = (probe_t)((ss->ch2.probe + PROBE_COUNT + dir) % PROBE_COUNT);
@@ -306,7 +267,7 @@ static void osc_settings_adjust(int dir)
         static const uint8_t row[3] = { TM_ROW_MODE, TM_ROW_EDGE, TM_ROW_SOURCE };
         trig_menu_t m = { false, row[settings_sub_selected - 4] };
         char t[24];
-        trigger_after_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
+        (void)scope_apply_trigger_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
         break;
     }
     case 7: /* Cursors */
@@ -392,9 +353,9 @@ void input_handle_settings_ok(void)
         /* Coupling through the relay, as on the CH1/CH2 buttons; the popup
          * text is discarded here -- the menu redraw shows the label, which
          * only changes when the relay did. */
-        case 0: { char t[24]; channel_cycle_coupling(0, &ss->ch1, "CH1", t, sizeof(t)); } break;
+        case 0: { char t[24]; (void)scope_apply_coupling_toggle(0, t, sizeof(t)); } break;
         case 1: scope_cycle_probe(&ss->ch1); break;
-        case 2: { char t[24]; channel_cycle_coupling(1, &ss->ch2, "CH2", t, sizeof(t)); } break;
+        case 2: { char t[24]; (void)scope_apply_coupling_toggle(1, t, sizeof(t)); } break;
         case 3: scope_cycle_probe(&ss->ch2); break;
         case 4: case 5: case 6: case 7: osc_settings_adjust(+1); break;
         default: break;
@@ -421,19 +382,16 @@ void input_handle_settings_ok(void)
             /* Persistence: Off -> 500ms -> 1s -> Inf -> Off (stock's menu,
              * manual p.30), with the pool lifecycle. */
             if (!persist_enabled) {
-                /* Persistence needs the pool -- evicts FFT if active */
-                if (fft_is_initialized())
-                    fft_deinit();
-                persist_init();
-                persist_set_mode(PERSIST_LOW);
-                persist_enabled = true;
+                /* Persistence needs the pool: a spectrum view gives it up
+                 * (scope_apply.c; until the merge the FFT was evicted but
+                 * its view left selected). */
+                (void)scope_apply_persist_on(PERSIST_LOW);
             } else if (persist_get_mode() == PERSIST_LOW) {
                 persist_set_mode(PERSIST_MEDIUM);
             } else if (persist_get_mode() == PERSIST_MEDIUM) {
                 persist_set_mode(PERSIST_INFINITE);
             } else {
-                persist_enabled = false;
-                persist_deinit();
+                scope_apply_persist_off();
             }
         } else if (settings_sub_selected == 2) {
             /* Back */
@@ -494,23 +452,6 @@ static void popup_and_redraw(QueueHandle_t q, const char *text)
     scope_show_popup(text);
     uint8_t cmd = DCMD_REDRAW_ALL;
     send_cmd(q, cmd);
-}
-
-/* CH1/CH2: DC <-> AC on the real relay. The label changes only if the relay
- * did (fpga_apply_coupling verifies by readback), so the popup and the info
- * bar can no longer say "AC" over a DC-coupled input -- which they did, on
- * every build, until 2026-10-03. GND is out of the cycle: no hardware ground
- * path is known, and a GND label over a live input would be the same lie. */
-static void channel_cycle_coupling(uint8_t ch, channel_state_t *c, const char *name,
-                                   char *pb, size_t n)
-{
-    coupling_t next = (c->coupling == COUPLING_DC) ? COUPLING_AC : COUPLING_DC;
-    if (fpga_apply_coupling(ch, (uint8_t)next)) {
-        c->coupling = next;
-        snprintf(pb, n, "%s %s", name, coupling_labels[next]);
-    } else {
-        snprintf(pb, n, "%s %s NOT SET", name, coupling_labels[next]);
-    }
 }
 
 /* ── Mask pass/fail from the buttons (docs/specs/scope/mask-pass-fail.md) ──
@@ -637,35 +578,6 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
     (void)settings_store_flush(settings_now_ms());
     send_cmd(dq, DCMD_REDRAW_ALL);
 }
-
-#ifdef FEATURE_FFT
-void scope_view_select(scope_view_t v)
-{
-    if ((unsigned)v >= (unsigned)SCOPE_VIEW_COUNT || v == scope_view) return;
-    const scope_view_t prev_view = scope_view;
-    scope_view = v;
-
-    /* Pool lifecycle: claim FFT pool when entering FFT views,
-     * release when returning to time-domain */
-    if (prev_view == SCOPE_VIEW_TIME && scope_view != SCOPE_VIEW_TIME) {
-        /* Entering FFT view — claim pool */
-        fft_config_t fft_cfg;
-        fft_cfg.window         = FFT_WINDOW_HANNING;
-        fft_cfg.sample_rate_hz = 44100.0f;
-        fft_cfg.ref_level_db   = 0.0f;
-        fft_cfg.db_range       = 80.0f;
-        fft_cfg.peak_count     = 4;
-        fft_cfg.avg_count      = 0;
-        fft_cfg.max_hold       = false;
-        fft_cfg.zoom_start_bin = 1;
-        fft_cfg.zoom_end_bin   = FFT_BINS - 1;
-        fft_init(&fft_cfg);
-    } else if (prev_view != SCOPE_VIEW_TIME && scope_view == SCOPE_VIEW_TIME) {
-        /* Returning to time-domain — release pool */
-        fft_deinit();
-    }
-}
-#endif
 
 /* Short SAVE, every mode (owner decision D1). */
 static void save_key_short(QueueHandle_t dq)
@@ -1061,7 +973,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         send_cmd(dq, cmd);
         break;
     case KA_TRIGMENU_CHANGE:
-        trigger_after_change(trig_menu_change(&scope_trig_menu, ss, dir), pb, sizeof(pb));
+        (void)scope_apply_trigger_change(trig_menu_change(&scope_trig_menu, ss, dir), pb, sizeof(pb));
         popup_and_redraw(dq, pb);
         break;
 
@@ -1270,7 +1182,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     case BTN_CH1:
         if (current_mode == MODE_OSCILLOSCOPE) {
             active_channel = 0;
-            channel_cycle_coupling(0, &ss->ch1, "CH1", pb, sizeof(pb));
+            (void)scope_apply_coupling_toggle(0, pb, sizeof(pb));
             popup_and_redraw(dq, pb);
         } else {
             send_cmd(dq, cmd);
@@ -1280,7 +1192,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     case BTN_CH2:
         if (current_mode == MODE_OSCILLOSCOPE) {
             active_channel = 1;
-            channel_cycle_coupling(1, &ss->ch2, "CH2", pb, sizeof(pb));
+            (void)scope_apply_coupling_toggle(1, pb, sizeof(pb));
             popup_and_redraw(dq, pb);
         } else {
             send_cmd(dq, cmd);
@@ -1295,7 +1207,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
              * claimed above). What reaches here is the FFT views: cycle the
              * trigger mode, through the same hardware path as the panel. */
             scope_cycle_trigger_mode(ss);
-            trigger_after_change(TM_CHANGED_MODE, pb, sizeof(pb));
+            (void)scope_apply_trigger_change(TM_CHANGED_MODE, pb, sizeof(pb));
             popup_and_redraw(dq, pb);
         } else {
             send_cmd(dq, cmd);

@@ -56,6 +56,7 @@ C_SOURCES += src/ui/scope_freq_lock.c
 C_SOURCES += src/ui/key_model.c
 C_SOURCES += src/ui/scope_selfcal.c
 C_SOURCES += src/tasks/input_handler.c
+C_SOURCES += src/tasks/scope_apply.c
 C_SOURCES += src/drivers/flash_fs.c
 C_SOURCES += src/drivers/flash_regions.c
 C_SOURCES += src/drivers/flash_regions_w25q.c

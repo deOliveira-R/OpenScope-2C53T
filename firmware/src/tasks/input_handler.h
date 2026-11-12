@@ -40,16 +40,9 @@ bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *ou
 /* What the scope time view's arrow keys adjust (short SELECT cycles it). */
 extern volatile key_focus_t scope_key_focus;
 
-#ifdef FEATURE_FFT
-/*
- * Switch the scope's view (time / FFT / split / waterfall / X-Y) with the FFT
- * pool lifecycle: the pool is claimed on leaving the time-domain view and
- * released on returning to it. Short PRM used to cycle the views through
- * this; since UI round 1 the views are chosen on the Oscilloscope Settings
- * page (CH panes "FFT: ON/OFF", Display), which calls this. Input task only.
- */
-void scope_view_select(scope_view_t v);
-#endif
+/* scope_view_select() (the view with the FFT pool lifecycle) moved to
+ * scope_apply.h at the UI round 1 merge, with the other shared glue. */
+#include "scope_apply.h"
 
 /*
  * Handle OK press in settings menu (top-level and sub-menus).
