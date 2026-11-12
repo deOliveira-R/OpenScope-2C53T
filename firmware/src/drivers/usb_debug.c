@@ -6012,8 +6012,10 @@ static void cmd_lcd(const char *args)
                      pm, lcd_health_pm_ok(pm) ? "ok" : "NOT ok",
                      (unsigned long)h.checks, (unsigned long)h.bad_reads, (unsigned long)h.events);
     if (h.events)
-        usb_debug_printf(" | last at %lu ms, pm 0x%02X, mode %u",
-                         (unsigned long)h.last_event_ms, h.event_pm, h.event_mode);
+        usb_debug_printf(" | last at %lu ms, pm 0x%02X, mode %u, %lu ms after key 0x%X, buzzer %u, backlight %u",
+                         (unsigned long)h.last_event_ms, h.event_pm, h.event_mode,
+                         (unsigned long)h.event_since_key_ms, (unsigned)h.event_key,
+                         (unsigned)h.event_buzzer, (unsigned)h.event_backlight);
     usb_debug_printf("\r\n");
 }
 

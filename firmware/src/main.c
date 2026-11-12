@@ -154,6 +154,9 @@ fft_result_t fft_result;
 static TaskHandle_t  xDisplayTaskHandle = NULL;
 static TaskHandle_t  xInputTaskHandle   = NULL;
 static QueueHandle_t xDisplayQueue      = NULL;
+/* Last key event (input task), for the LCD health log. */
+static volatile TickType_t g_last_key_tick;
+static volatile uint16_t   g_last_key_id;
 static QueueHandle_t xInputQueue        = NULL;
 
 /* Health monitor slots (assigned in main, used in task loops) */
@@ -521,13 +524,30 @@ static void vDisplayTask(void *pvParameters)
         {
             static TickType_t last_lcd_check;
             const TickType_t now = xTaskGetTickCount();
-            if (!ui_modal_active && (now - last_lcd_check) >= pdMS_TO_TICKS(1000)) {
+            if (!ui_modal_active && (now - last_lcd_check) >= pdMS_TO_TICKS(500)) {
                 last_lcd_check = now;
                 taskENTER_CRITICAL();
-                const uint8_t pm = lcd_read_power_mode();
+                uint8_t pm = lcd_read_power_mode();
                 taskEXIT_CRITICAL();
-                if (lcd_health_step(&g_lcd_health, pm, (uint32_t)(now * portTICK_PERIOD_MS),
-                                    (uint8_t)current_mode)) {
+                bool reinit = lcd_health_step(&g_lcd_health, pm, (uint32_t)(now * portTICK_PERIOD_MS),
+                                              (uint8_t)current_mode);
+                if (!reinit && !lcd_health_pm_ok(pm)) {
+                    /* Confirm a bad read 10 ms later instead of on the next
+                     * check: the white screen lasts well under a second. */
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    taskENTER_CRITICAL();
+                    pm = lcd_read_power_mode();
+                    taskEXIT_CRITICAL();
+                    reinit = lcd_health_step(&g_lcd_health, pm,
+                                             (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+                                             (uint8_t)current_mode);
+                }
+                if (reinit) {
+                    g_lcd_health.event_since_key_ms =
+                        (uint32_t)((xTaskGetTickCount() - g_last_key_tick) * portTICK_PERIOD_MS);
+                    g_lcd_health.event_key = g_last_key_id;
+                    g_lcd_health.event_buzzer = (uint8_t)TMR11->c1dt;
+                    g_lcd_health.event_backlight = (uint8_t)TMR10->c1dt;
                     lcd_panel_init();
                     const uint8_t redraw = DCMD_REDRAW_ALL;
                     (void)xQueueSend(xDisplayQueue, &redraw, 0);
@@ -868,6 +888,8 @@ static void vInputTask(void *pvParameters)
 
         /* Block until TMR3 ISR confirms a debounced button press */
         if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE) {
+            g_last_key_tick = xTaskGetTickCount();
+            g_last_key_id = (uint16_t)pressed;
             input_handle_button(pressed, xDisplayQueue);
         }
         input_autooff_poll();   /* idle power-off (C15); no-op while "Off" */
