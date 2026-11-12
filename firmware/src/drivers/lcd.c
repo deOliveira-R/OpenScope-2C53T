@@ -755,3 +755,38 @@ void lcd_resx_hold_high(void)
     GPIOD_CRL = (GPIOD_CRL & ~(0xFu << (LCD_RESX_PIN * 4u)))
               | (0x3u << (LCD_RESX_PIN * 4u));                     /* push-pull, 50 MHz */
 }
+
+/*
+ * The panel command sequence the app runs at boot (main.c), on an EXMC that
+ * is already set up. Also the recovery path when the panel has reset itself
+ * under the running app (util/lcd_health.h): it leaves the panel exactly as
+ * boot does (MADCTL 0xA0, COLMOD 0x55, display on). GRAM is lost, so the
+ * caller repaints. Busy-waits ~470 ms.
+ */
+void lcd_panel_init(void)
+{
+    lcd_write_cmd(0x01);  /* Software reset */
+    delay_ms(200);
+    lcd_write_cmd(0x11);  /* Sleep out */
+    delay_ms(200);
+    lcd_write_cmd(0x36);  /* MADCTL — landscape, flipped */
+    delay_ms(1);
+    lcd_write_data8(0xA0);
+    delay_ms(10);
+    lcd_write_cmd(0x3A);  /* Pixel format 16-bit */
+    delay_ms(1);
+    lcd_write_data8(0x55);
+    delay_ms(10);
+    lcd_write_cmd(0x29);  /* Display on */
+    delay_ms(50);
+}
+
+/* RDDPM (0x0A): dummy read, then the power-mode byte. Healthy = 0x9C
+ * (booster on, sleep out, normal mode, display on); 0x08 after a panel
+ * reset. Needs LCD_EXMC_READ_TIMING. */
+uint8_t lcd_read_power_mode(void)
+{
+    lcd_write_cmd(0x0A);
+    (void)*LCD_DATA_ADDR;
+    return (uint8_t)*LCD_DATA_ADDR;
+}

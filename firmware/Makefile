@@ -91,6 +91,7 @@ C_SOURCES += src/util/cal_backup_core.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
 C_SOURCES += src/util/settings_store.c
+C_SOURCES += src/util/lcd_health.c
 C_SOURCES += src/util/screenshot.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
@@ -490,6 +491,14 @@ soak-test: emu
 # Quick soak — 30-second smoke test with fuzzing
 soak-quick: emu
 	python3 ../scripts/soak_test.py --no-build --duration 30 --seed $(SOAK_SEED) --verbose
+
+# LCD panel health (detect an ST7789V that reset itself, re-init it).
+.PHONY: test-lcd-health
+$(BUILD_DIR)/test_lcd_health: tests/test_lcd_health.c src/util/lcd_health.c src/util/lcd_health.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/lcd_health.c -o $@
+
+test-lcd-health: $(BUILD_DIR)/test_lcd_health
+	./$<
 
 $(BUILD_DIR)/test_meter_data: tests/test_meter_data.c src/drivers/meter_data.c src/drivers/meter_data.h src/drivers/fpga_meter_plan.c src/drivers/fpga_meter_plan.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -DMETER_DATA_HOST_TESTS -Isrc/drivers $< src/drivers/meter_data.c src/drivers/fpga_meter_plan.c -lm -pthread -o $@

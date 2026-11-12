@@ -21,6 +21,7 @@ extern void system_clock_config(void);
 
 /* Include our drivers and UI */
 #include "lcd.h"
+#include "lcd_health.h"
 #include "ui.h"
 #include "signal_gen.h"
 #include "watchdog.h"
@@ -189,6 +190,9 @@ fft_result_t fft_result;
 static TaskHandle_t  xDisplayTaskHandle = NULL;
 static TaskHandle_t  xInputTaskHandle   = NULL;
 static QueueHandle_t xDisplayQueue      = NULL;
+/* Last key event (input task), for the LCD health log. */
+static volatile TickType_t g_last_key_tick;
+static volatile uint16_t   g_last_key_id;
 static QueueHandle_t xInputQueue        = NULL;
 
 /* Health monitor slots (assigned in main, used in task loops) */
@@ -491,6 +495,43 @@ static void vDisplayTask(void *pvParameters)
             redraw_gate_invalidate(&siggen_gate);
             last_rendered_mode = current_mode;
         }
+
+#ifndef EMULATOR_BUILD
+        /* LCD panel health (util/lcd_health.h): every 500 ms read the panel's
+         * power mode; a panel that reset itself under the running app is
+         * re-initialised and repainted instead of staying white. */
+        {
+            static TickType_t last_lcd_check;
+            const TickType_t now = xTaskGetTickCount();
+            if (!ui_modal_active && (now - last_lcd_check) >= pdMS_TO_TICKS(500)) {
+                last_lcd_check = now;
+                taskENTER_CRITICAL();
+                uint8_t pm = lcd_read_power_mode();
+                taskEXIT_CRITICAL();
+                bool reinit = lcd_health_step(&g_lcd_health, pm, (uint32_t)(now * portTICK_PERIOD_MS),
+                                              (uint8_t)current_mode);
+                if (!reinit && !lcd_health_pm_ok(pm)) {
+                    /* Confirm a bad read 10 ms later rather than at the next
+                     * check, so a reset panel is back in well under a second. */
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                    taskENTER_CRITICAL();
+                    pm = lcd_read_power_mode();
+                    taskEXIT_CRITICAL();
+                    reinit = lcd_health_step(&g_lcd_health, pm,
+                                             (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+                                             (uint8_t)current_mode);
+                }
+                if (reinit) {
+                    g_lcd_health.event_since_key_ms =
+                        (uint32_t)((xTaskGetTickCount() - g_last_key_tick) * portTICK_PERIOD_MS);
+                    g_lcd_health.event_key = g_last_key_id;
+                    lcd_panel_init();
+                    const uint8_t redraw = DCMD_REDRAW_ALL;
+                    (void)xQueueSend(xDisplayQueue, &redraw, 0);
+                }
+            }
+        }
+#endif
 
         /* Check for commands (non-blocking with short timeout for animation).
          * While a modal overlay owns the screen (ui_modal_active), commands
@@ -822,6 +863,8 @@ static void vInputTask(void *pvParameters)
 
         /* Block until TMR3 ISR confirms a debounced button press */
         if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE) {
+            g_last_key_tick = xTaskGetTickCount();
+            g_last_key_id = (uint16_t)pressed;
             input_handle_button(pressed, xDisplayQueue);
         }
 
@@ -1010,26 +1053,14 @@ int main(void)
         /* EXMC config. Write timing: stock's 0x202 is a 17 ns write at
          * HCLK 240 MHz, the ST7789V needs >= 66 ns (LCD_EXMC_WRITE_TIMING). */
         *(volatile uint32_t *)0xA0000000 = 0x00005010;
-        *(volatile uint32_t *)0xA0000004 = 0x02020424;
+        *(volatile uint32_t *)0xA0000004 = LCD_EXMC_READ_TIMING;  /* RDDPM reads */
         *(volatile uint32_t *)0xA0000104 = LCD_EXMC_WRITE_TIMING;
         *(volatile uint32_t *)0xA0000000 |= 0x0001;
         delay_ms(50);
 
-        /* LCD init — proven working sequence from hwtest */
-        lcd_write_cmd(0x01);  /* Software reset */
-        delay_ms(200);
-        lcd_write_cmd(0x11);  /* Sleep out */
-        delay_ms(200);
-        lcd_write_cmd(0x36);  /* MADCTL — landscape, flipped */
-        delay_ms(1);
-        lcd_write_data8(0xA0);
-        delay_ms(10);
-        lcd_write_cmd(0x3A);  /* Pixel format 16-bit */
-        delay_ms(1);
-        lcd_write_data8(0x55);
-        delay_ms(10);
-        lcd_write_cmd(0x29);  /* Display on */
-        delay_ms(50);
+        /* LCD init — proven working sequence from hwtest, now in lcd.c so the
+         * health check's recovery replays exactly this. */
+        lcd_panel_init();
 
         #undef _GPIO_CFG
     }

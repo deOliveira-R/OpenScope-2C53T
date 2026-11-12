@@ -45,6 +45,14 @@
  * = 16 HCLK = 67 ns per write. */
 #define LCD_EXMC_WRITE_TIMING  0x00000A06u
 
+/* Read timing for the panel health check (RDDPM, a register read). ST7789V:
+ * read cycle >= 160 ns, RDX low >= 45 ns, RDX high >= 90 ns. Stock's
+ * 0x02020424 is a 17 ns strobe at 240 MHz. 0x020F181F = ADDSET 15 (62 ns) +
+ * DATAST 24 (RDX low, 100 ns) + bus turnaround 15 (62 ns): ~225 ns per read,
+ * RDX high ~125 ns between the dummy read and the data read. Same mode and
+ * latency bits as stock. Only the occasional health read uses it. */
+#define LCD_EXMC_READ_TIMING   0x020F181Fu
+
 /* ST7789V RESX (active low) is on PD6. Stock drives it high-low-high at boot
  * and then holds it as a push-pull output, high. */
 #define LCD_RESX_PIN    6u
@@ -187,6 +195,8 @@ uint16_t lcd_read_data(void);
 void lcd_init(void);            /* Full init: GPIO + FSMC + ST7789 sequence */
 void lcd_reset(void);           /* Hardware reset via GPIO (if RST pin wired) */
 void lcd_resx_hold_high(void);  /* PD6 (RESX) push-pull high, as stock holds it */
+void lcd_panel_init(void);      /* main.c's boot command sequence (EXMC already set up) */
+uint8_t lcd_read_power_mode(void); /* RDDPM: 0x9C healthy, 0x08 after a panel reset */
 
 /* Drawing window control */
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
