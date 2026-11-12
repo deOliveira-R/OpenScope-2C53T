@@ -3773,18 +3773,19 @@ static void print_skew_line(const char *what, int32_t dev)
  * the residual, which is added: a second `measure` should read ~0.500. */
 #define SKEW_RECORDS   16u
 #define SKEW_MIN_OK     8u
-static void cmd_fpga_interleave_skew_measure(void)
+static bool cmd_fpga_interleave_skew_measure(bool with_gain)
 {
     scope_state_t *ss = scope_state_get();
     if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
         usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
                      "(fpga scope ch 2 off; fpga scope tb <= 3)\r\n");
-        return;
+        return false;
     }
     const volatile uint8_t *c1 = fpga_get_ch1_buf();
-    if (!c1) { usb_send_str("FPGA not initialized\r\n"); return; }
+    if (!c1) { usb_send_str("FPGA not initialized\r\n"); return false; }
     const int32_t cur = fpga_interleave_skew_get();
     float tau[SKEW_RECORDS];
+    float gr[SKEW_RECORDS];             /* B'/A amplitude per usable record */
     unsigned ok = 0;
     uint8_t *rec = shell_bus_scratch;
     usb_send_str("interleave skew: keep a steady 5..50 MHz tone on CH1, triggering\r\n");
@@ -3815,12 +3816,15 @@ static void cmd_fpga_interleave_skew_measure(void)
                          r, st == IL_SKEW_OK ? "ok" : "refused", khz / 1000, khz % 1000,
                          F2(e.amp_a), F2(e.amp_b), (long)(tdev + (tdev < 0.0f ? -0.5f : 0.5f)),
                          st == IL_SKEW_OK ? "" : "  ", st == IL_SKEW_OK ? "" : il_skew_status_str(st));
-        if (st == IL_SKEW_OK) tau[ok++] = e.tau;
+        if (st == IL_SKEW_OK) {
+            gr[ok] = (e.amp_a > 1.0f) ? e.amp_b / e.amp_a : 0.0f;
+            tau[ok++] = e.tau;
+        }
     }
     if (ok < SKEW_MIN_OK) {
         usb_debug_printf("interleave skew: REFUSED, %u of %u records usable (need %u); skew unchanged\r\n",
                          ok, SKEW_RECORDS, SKEW_MIN_OK);
-        return;
+        return false;
     }
     for (unsigned i = 1; i < ok; i++)                    /* insertion sort, <= 16 */
         for (unsigned j = i; j > 0 && tau[j - 1] > tau[j]; j--) { float t = tau[j]; tau[j] = tau[j - 1]; tau[j - 1] = t; }
@@ -3834,20 +3838,43 @@ static void cmd_fpga_interleave_skew_measure(void)
                      (long)(iqr * 1e6f + 0.5f), ok, (long)cur);
     if (iqr > 0.02f) {
         usb_send_str("interleave skew: REFUSED, records disagree (not a steady tone); skew unchanged\r\n");
-        return;
+        return false;
     }
     if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active() ||
         fpga_interleave_skew_get() != cur) {
         usb_send_str("interleave skew: REFUSED, channel/timebase/skew changed during the measurement; "
                      "skew unchanged\r\n");
-        return;
+        return false;
     }
     if (!fpga_interleave_skew_set(cur + dev)) {
         usb_debug_printf("interleave skew: REFUSED, %ld ppm is beyond +-%ld; skew unchanged\r\n",
                          (long)(cur + dev), (long)IL_SKEW_PPM_MAX);
-        return;
+        return false;
     }
     usb_send_str("interleave skew: applied (RAM; `cal user save` keeps it)\r\n");
+    if (!with_gain) return true;
+
+    /* Converter B's gain at the tone. The records are already corrected,
+     * B' = (B - off) / g, so the true B/A ratio is g x median(B'/A). On unit
+     * #2 (2026-11-11, 10 MHz) the image is lowest at 0.982..0.986 while the DC
+     * sweep gives 0.980; the tone's own ratio read 0.984. */
+    for (unsigned i = 1; i < ok; i++)
+        for (unsigned k = i; k > 0 && gr[k - 1] > gr[k]; k--) { float t = gr[k]; gr[k] = gr[k - 1]; gr[k - 1] = t; }
+    const float gmed = (ok & 1u) ? gr[ok / 2u] : 0.5f * (gr[ok / 2u - 1u] + gr[ok / 2u]);
+    const float gspread = gr[(3u * ok) / 4u] - gr[ok / 4u];
+    float g_cur = 1.0f, o_cur = 0.0f;
+    fpga_interleave_corr_get(&g_cur, &o_cur);
+    const float g_new = g_cur * gmed;
+    usb_debug_printf("  gain: B'/A median %ld/10000 (spread %ld/10000) -> B gain %ld/10000 (was %ld), offset kept %ld/100\r\n",
+                     (long)(gmed * 10000.0f + 0.5f), (long)(gspread * 10000.0f + 0.5f),
+                     (long)(g_new * 10000.0f + 0.5f), (long)(g_cur * 10000.0f + 0.5f), x100(o_cur));
+    if (gspread > 0.01f || g_new < 0.90f || g_new > 1.10f) {
+        usb_send_str("interleave gain: REFUSED (records disagree or out of 0.90..1.10); gain unchanged\r\n");
+        return false;
+    }
+    fpga_interleave_corr_set(g_new, o_cur);     /* line; clears knots, keeps skew */
+    usb_send_str("interleave gain: applied (RAM; `cal user save` keeps it)\r\n");
+    return true;
 }
 
 /* `fpga interleave skew [measure|set <ppm>|off]` — converter-B timing skew.
@@ -3860,7 +3887,7 @@ static void cmd_fpga_interleave_skew(const char *args)
         "converter period, ppm of a period (B at 0.451 -> -49000), |ppm| <= 150000\r\n";
     while (*args == ' ') args++;
     if (strncmp(args, "measure", 7) == 0) {
-        cmd_fpga_interleave_skew_measure();
+        (void)cmd_fpga_interleave_skew_measure(false);
     } else if (strncmp(args, "set", 3) == 0) {
         const char *p = args + 3;
         while (*p == ' ') p++;
@@ -3895,6 +3922,15 @@ static void cmd_fpga_interleave(const char *args)
     } else if (strncmp(args, "skew", 4) == 0) {
         cmd_fpga_interleave_skew(args + 4);
         return;
+    } else if (strncmp(args, "tone", 4) == 0) {
+        /* Skew and B's gain from a 5..50 MHz tone, twice: the gain error
+         * biases the skew estimate and the skew the amplitudes. The offset
+         * stays the DC sweep's (`cal`). */
+        for (unsigned pass = 1; pass <= 2u; pass++) {
+            usb_debug_printf("interleave tone: pass %u of 2\r\n", pass);
+            if (!cmd_fpga_interleave_skew_measure(true)) break;
+        }
+        /* fall through to the status line below */
     } else if (strncmp(args, "corr", 4) == 0) {
         const char *p = args + 4;
         while (*p == ' ') p++;
@@ -10314,7 +10350,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
           "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
-          "fpga interleave [on|off|corr g o|cal [piecewise]]  Single-channel merge; B corr gain x1e4, offset x100; cal = self-calibrate B (line; piecewise = through the 5 levels)\r\n"
+          "fpga interleave [on|off|corr g o|cal [piecewise]|tone]  Single-channel merge; B corr gain x1e4, offset x100; cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
           "fpga interleave skew [measure|set <ppm>|off]  B timing skew (ppm of a period from 0.5); measure needs a 5-50 MHz tone\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
