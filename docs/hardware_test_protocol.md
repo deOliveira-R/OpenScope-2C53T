@@ -48,9 +48,9 @@ First power-on with custom firmware. Nothing connected, just verify the basics.
 - [ ] Uptime counter increments in status bar (shows time ticking)
 
 ### 1.2 Mode switching (MENU button)
-- [ ] MENU cycles: Scope → Meter → SigGen → Settings → Scope
+- [ ] MENU opens the home page with the current mode highlighted; LEFT/RIGHT wrap through Multimeter / Oscilloscope / Signal Generator / Settings; OK enters; MENU on home returns
 - [ ] Each mode screen draws correctly (no garbage pixels, no freezing)
-- [ ] Status bar updates mode name (SCOPE / METER / SIGGEN / SETTINGS)
+- [ ] Status bar updates mode name (SCOPE / METER / SIGGEN / SETUP / HOME)
 
 ### 1.3 Theme switching
 - [ ] Settings > Display Mode > OK cycles themes

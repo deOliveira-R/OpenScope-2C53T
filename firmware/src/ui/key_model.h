@@ -132,7 +132,7 @@ typedef struct {
 typedef enum {
     KA_LEGACY = 0,        /* not part of the model: the per-mode handlers decide */
     KA_NONE,              /* claimed, nothing to do */
-    KA_ENTER_HOME,        /* long BACK: the settings list stands in for the home page */
+    KA_ENTER_HOME,        /* long BACK: the home page (home_model.h) */
     KA_ENTER_METER,       /* long SELECT */
     KA_ENTER_SCOPE,       /* long MOVE */
     KA_ENTER_SIGGEN,      /* long TRIGGER */

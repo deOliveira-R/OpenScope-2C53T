@@ -112,9 +112,11 @@ volatile bool          persist_enabled = false;
 const char *startup_mode_name(startup_mode_t mode)
 {
     switch (mode) {
-    case STARTUP_SCOPE: return "Scope";
-    case STARTUP_METER: return "Meter";
-    default:            return "?";
+    case STARTUP_SCOPE:  return "Scope";
+    case STARTUP_METER:  return "Meter";
+    case STARTUP_HOME:   return "Home";       /* stock's "None" */
+    case STARTUP_SIGGEN: return "Signal Gen";
+    default:             return "?";
     }
 }
 
@@ -126,9 +128,7 @@ void startup_mode_set(startup_mode_t mode)
 
 void startup_mode_adjust(int dir)
 {
-    int next = (int)startup_mode + dir;
-    while (next < 0) next += STARTUP_COUNT;
-    startup_mode_set((startup_mode_t)(next % STARTUP_COUNT));
+    startup_mode_set(startup_mode_step(startup_mode, dir));   /* stock's row order */
 }
 
 #ifndef FPGA_WARM_HANDOFF_TEST
@@ -483,6 +483,8 @@ static void vDisplayTask(void *pvParameters)
         draw_info_bar();
         if (current_mode == MODE_MULTIMETER) {
             draw_meter_screen();
+        } else if (current_mode == MODE_HOME) {
+            draw_home_screen();
         } else {
             draw_scope_screen(0);
         }
@@ -557,6 +559,8 @@ static void vDisplayTask(void *pvParameters)
                                      frame, REDRAW_FULL);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
+                } else if (current_mode == MODE_HOME) {
+                    draw_home_screen();
                 }
                 g_screen_painted = true;
                 break;
@@ -599,6 +603,12 @@ static void vDisplayTask(void *pvParameters)
                 break;
             case DCMD_DRAW_STATUS_BAR:
                 draw_status_bar();
+                break;
+            case DCMD_DRAW_HOME:
+                if (current_mode == MODE_HOME) {
+                    draw_home_selection();
+                    g_screen_painted = true;
+                }
                 break;
 #ifdef FEATURE_FFT
             case DCMD_DRAW_FFT:
@@ -797,6 +807,8 @@ static void vDisplayTask(void *pvParameters)
                                      frame, REDRAW_FULL);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
+                } else if (current_mode == MODE_HOME) {
+                    draw_home_screen();
                 }
             }
         }
@@ -1257,7 +1269,13 @@ int main(void)
 #else
         fpga_set_meter_mode(meter_submode);
 #endif
+    } else if (current_mode == MODE_SIGNAL_GEN) {
+        /* Startup on Boot = Signal Generator. GPIO only (fpga.c), no USART,
+         * so it is safe before the scheduler, like the scope entry below. */
+        fpga_enter_siggen_mode();
     } else {
+        /* Scope, and home (stock "None"): home keeps the scope posture, as
+         * the settings page does. */
         fpga_enter_scope_mode();
     }
 #endif
