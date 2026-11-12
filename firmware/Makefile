@@ -109,6 +109,7 @@ C_SOURCES += src/util/calpage.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
 C_SOURCES += src/util/settings_store.c
+C_SOURCES += src/util/lcd_health.c
 C_SOURCES += src/util/usercal_rec.c
 C_SOURCES += src/util/usercal.c
 C_SOURCES += src/util/sys_prefs.c
@@ -701,6 +702,14 @@ $(BUILD_DIR)/test_scope_freq_lock: tests/test_scope_freq_lock.c src/ui/scope_fre
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui $< src/ui/scope_freq.c -lm -o $@
 
 test-scope-freq-lock: $(BUILD_DIR)/test_scope_freq_lock
+	./$<
+
+# LCD panel health (detect an ST7789 that reset itself, re-init it).
+.PHONY: test-lcd-health
+$(BUILD_DIR)/test_lcd_health: tests/test_lcd_health.c src/util/lcd_health.c src/util/lcd_health.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/lcd_health.c -o $@
+
+test-lcd-health: $(BUILD_DIR)/test_lcd_health
 	./$<
 
 # Settings persistence: config.c + settings_store.c against a NOR flash model

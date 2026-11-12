@@ -21,6 +21,7 @@ extern void system_clock_config(void);
 
 /* Include our drivers and UI */
 #include "lcd.h"
+#include "lcd_health.h"
 #include "ui.h"
 #include "signal_gen.h"
 #include "ui/siggen_edit.h"
@@ -512,6 +513,28 @@ static void vDisplayTask(void *pvParameters)
             redraw_gate_invalidate(&siggen_gate);
             last_rendered_mode = current_mode;
         }
+
+#ifndef EMULATOR_BUILD
+        /* LCD panel health (util/lcd_health.h): about once a second read the
+         * ST7789's power mode; a panel that reset itself under the running MCU
+         * is re-initialised and repainted instead of staying white. */
+        {
+            static TickType_t last_lcd_check;
+            const TickType_t now = xTaskGetTickCount();
+            if (!ui_modal_active && (now - last_lcd_check) >= pdMS_TO_TICKS(1000)) {
+                last_lcd_check = now;
+                taskENTER_CRITICAL();
+                const uint8_t pm = lcd_read_power_mode();
+                taskEXIT_CRITICAL();
+                if (lcd_health_step(&g_lcd_health, pm, (uint32_t)(now * portTICK_PERIOD_MS),
+                                    (uint8_t)current_mode)) {
+                    lcd_panel_init();
+                    const uint8_t redraw = DCMD_REDRAW_ALL;
+                    (void)xQueueSend(xDisplayQueue, &redraw, 0);
+                }
+            }
+        }
+#endif
 
         /* Check for commands (non-blocking with short timeout for animation).
          * While a modal overlay owns the screen (ui_modal_active), commands
