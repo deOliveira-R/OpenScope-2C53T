@@ -119,6 +119,13 @@ static void buzzer_task(void *arg)
      * scheduler nothing would end it, and main() can still busy-wait for
      * seconds (the cold meter transition) after the beep had started. */
     sys_pwm_boot_beep();
+    /* Stock's beep source by default: the SoC's buzzer line is PC3 (EXTI3).
+     * Unit #2, 2026-11-11: shorted leads in Auto give 4480 edges/s on PC3
+     * (a 2.24 kHz tone), open leads 0; PD3/PE3 stay silent. With it, Auto
+     * beeps on a short as stock does (the software beep never ran there).
+     * `meter beep src|off` still overrides it. */
+    if (continuity_buzzer_soc_edge_config(2, 2, true))
+        continuity_buzzer_soc_edge_mode_set(true);
     for (;;) {
         TickType_t now = xTaskGetTickCount();
         bool force_active = buzzer_force_until_tick != 0 &&
