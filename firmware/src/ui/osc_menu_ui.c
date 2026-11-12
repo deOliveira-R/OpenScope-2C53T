@@ -319,8 +319,8 @@ static void trigger_change(uint8_t item, int dir)
 osc_result_t osc_menu_key(osc_key_t k)
 {
     osc_action_t a;
-    g_note[0] = '\0';
     const osc_result_t r = osc_menu_step(k, &a);
+    if (r != OSC_RES_NONE) g_note[0] = '\0';   /* a key that redraws nothing keeps the note on screen */
     const osc_row_t row = (osc_row_t)a.row;
 
     switch (a.kind) {
@@ -467,9 +467,15 @@ static void draw_footer(const osc_menu_state_t *s)
     menu_frame_draw_footer(&k_frame, t);
 }
 
+static uint8_t drawn_opens = 0xFFu, drawn_row = 0xFFu, drawn_ch = 0xFFu;
+
+void osc_menu_invalidate(void)
+{
+    drawn_row = 0xFFu;      /* the next osc_menu_draw() repaints the pane background */
+}
+
 void osc_menu_draw(void)
 {
-    static uint8_t drawn_opens = 0xFFu, drawn_row = 0xFFu, drawn_ch = 0xFFu;
     static uint8_t first = 0;
     const osc_menu_state_t s = *osc_menu_state();   /* the input task writes it */
     if (!s.open) return;

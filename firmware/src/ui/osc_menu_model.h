@@ -51,6 +51,10 @@ bool         osc_menu_is_open(void);
 osc_result_t osc_menu_key(osc_key_t k);      /* model step + apply (osc_menu_ui.c) */
 void         osc_menu_draw(void);            /* full draw (osc_menu_ui.c), DCMD_DRAW_OSC_MENU */
 void         osc_menu_close(void);
+/* Not in the brief, additive: the screen was cleared behind the page (e.g.
+ * DCMD_REDRAW_ALL's lcd_clear), so the next osc_menu_draw() repaints all of
+ * it, not just the elements (osc_menu_ui.c). */
+void         osc_menu_invalidate(void);
 
 /* ── Pane layouts ───────────────────────────────────────────────────── */
 typedef enum { OSC_PANE_RADIO = 0, OSC_PANE_VALUES, OSC_PANE_CHIPS } osc_pane_kind_t;
