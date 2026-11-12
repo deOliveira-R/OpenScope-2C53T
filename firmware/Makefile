@@ -139,6 +139,8 @@ C_SOURCES += src/fonts/font_large.c
 C_SOURCES += src/fonts/font_xlarge.c
 C_SOURCES += src/fonts/font_huge.c
 C_SOURCES += src/fonts/font_unit.c
+# UI round 1, R1-B: bar glyphs
+C_SOURCES += src/ui/icons.c
 
 # ── UI round 1, R1-A: Oscilloscope Settings page (one block, for the merge) ──
 # osc_menu_model.c (pure model), osc_menu_ui.c (apply + draw), menu_frame.c (the
@@ -1006,6 +1008,19 @@ $(BUILD_DIR)/test_osc_menu: tests/test_osc_menu.c $(R1A_OSC_MENU_TEST_SRCS) src/
 
 .PHONY: test-osc-menu
 test-osc-menu: $(BUILD_DIR)/test_osc_menu
+	$<
+
+# UI round 1, R1-B: bar glyphs (src/ui/icons.h): every glyph inside its box,
+# no row past its width, shapes (edge direction, battery bars, the 13 waves
+# from the DAC tables), and the status/info bar geometry of status_bar.h
+# (slots inside 320 px, no overlap, the widest strings fit in font_small).
+$(BUILD_DIR)/test_icons: tests/test_icons.c src/ui/icons.c src/ui/icons.h src/ui/status_bar.h \
+                         src/dsp/siggen_wave.c src/dsp/siggen_wave.h src/fonts/font_small.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp -Isrc/fonts $< \
+		src/ui/icons.c src/dsp/siggen_wave.c src/fonts/font_small.c -o $@
+
+.PHONY: test-icons
+test-icons: $(BUILD_DIR)/test_icons
 	$<
 
 # Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point
