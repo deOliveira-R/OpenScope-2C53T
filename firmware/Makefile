@@ -123,6 +123,9 @@ C_SOURCES += src/ui/gallery_nav.c
 C_SOURCES += src/ui/gallery_ui.c
 C_SOURCES += src/util/logo_store.c
 C_SOURCES += src/ui/logo_ui.c
+# UI round 1, R1-C: measurement strip + plot-edge markers
+C_SOURCES += src/ui/measure_strip.c
+C_SOURCES += src/ui/plot_markers.c
 C_SOURCES += src/decode/decode_uart.c
 C_SOURCES += src/decode/decode_i2c.c
 C_SOURCES += src/decode/decode_spi.c
@@ -1142,6 +1145,21 @@ $(BUILD_DIR)/test_usercal: tests/test_usercal.c src/util/usercal_rec.c src/util/
 
 .PHONY: test-usercal
 test-usercal: $(BUILD_DIR)/test_usercal
+	$<
+
+# UI round 1, R1-C: the measurement strip (no cell overflows its box for the
+# widest value the real formatter prints, in the real font_small) and the
+# plot-edge marker shapes/placement.
+$(BUILD_DIR)/test_measure_strip: tests/test_measure_strip.c src/ui/measure_strip.c src/ui/measure_strip.h \
+                                 src/ui/plot_markers.c src/ui/plot_markers.h src/ui/scope_measure.c \
+                                 src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c \
+                                 src/fonts/font.c src/fonts/font_small.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -DMEASURE_STRIP_HOST -Isrc/ui -Isrc/fonts -Isrc/drivers $< \
+		src/ui/measure_strip.c src/ui/plot_markers.c src/ui/scope_measure.c src/ui/scope_cursor.c \
+		src/ui/scope_cal.c src/ui/scope_timebase.c src/fonts/font.c src/fonts/font_small.c -lm -o $@
+
+.PHONY: test-measure-strip
+test-measure-strip: $(BUILD_DIR)/test_measure_strip
 	$<
 
 # ═══════════════════════════════════════════════════════════════════════════
