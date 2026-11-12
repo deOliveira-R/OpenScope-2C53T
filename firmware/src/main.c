@@ -987,9 +987,6 @@ int main(void)
 
     /* Clock init to 240MHz */
     system_clock_config();
-#ifndef EMULATOR_BUILD
-    lcd_bus_timing_spec();   /* the bootloader's LCD bus timing is 4x too fast for the ST7789V */
-#endif
 
     wdt_counter_reload();
 
@@ -1096,6 +1093,11 @@ int main(void)
      * Drawing the splash HERE — not in the display task — also means the
      * multi-second FPGA config sequence below runs behind the logo instead of
      * behind garbage. The display task takes over rendering from this point. */
+#ifndef EMULATOR_BUILD
+    /* Here, not right after the clock setup: writes to the EXMC before its
+     * clock is back on are dropped (bench, unit #2). */
+    lcd_bus_timing_spec();   /* the bootloader's LCD bus timing is 4x too fast for the ST7789V */
+#endif
     draw_splash();
 #ifndef EMULATOR_BUILD
     GPIOB->scr = (1 << 8);  /* PB8 = backlight ON, panel already showing splash */
