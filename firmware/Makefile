@@ -291,6 +291,9 @@ C_DEFS  = -DAT32F403AVGT7
 # the strip back.
 C_DEFS += $(FFT_DEFS)
 C_DEFS += $(USB_MSC_DEFS)
+# UI round 1: the status bar's RUN/STOP/ARM tab (R1-B) replaces the red STOP
+# box on the plot (R1-C, scope_ui.c).
+C_DEFS += -DSCOPE_PLOT_STOP_BOX=0
 C_INCLUDES += $(FFT_INCLUDES)
 
 # Compiler flags

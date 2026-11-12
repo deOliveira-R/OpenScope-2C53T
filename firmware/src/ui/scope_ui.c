@@ -248,40 +248,6 @@ static void draw_trigger_line(const theme_t *th, int16_t trig_y)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Trigger status badge
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* What the acquisition actually did, not what the mode is called (parity C3,
- * trig_policy.h): before C3 NORMAL said "Trig'd" with no signal at all and
- * AUTO said "Auto" while showing two non-simultaneous channels (#84). Now:
- * Trig'd / Wait / Auto / Auto* (free-run, CH1 and CH2 two moments) / Await
- * (SINGLE armed, stock's "Await Trigger...") / STOP (stopped, or SINGLE
- * captured, as stock). main.c hashes fpga_trigger_status() into the redraw
- * epoch, so the badge repaints when it changes. */
-#define TRIG_BADGE_W  44
-#define TRIG_BADGE_X  (LCD_WIDTH - TRIG_BADGE_W - 2)
-#define TRIG_BADGE_Y  (SCOPE_TOP + 2)
-#define TRIG_BADGE_H  14
-
-static void draw_trigger_status(const scope_state_t *ss, const theme_t *th)
-{
-    (void)ss;
-    const trig_status_t st = (trig_status_t)fpga_trigger_status();
-    const char *label = trig_status_label(st);
-    const trig_tone_t tone = trig_status_tone(st);
-    const uint16_t color = (tone == TRIG_TONE_OK)   ? th->success :
-                           (tone == TRIG_TONE_INFO) ? th->highlight : th->warning;
-
-    /* Draw badge at top-right of waveform area */
-    uint16_t bw = TRIG_BADGE_W;
-    uint16_t bx = TRIG_BADGE_X;
-    uint16_t by = TRIG_BADGE_Y;
-    lcd_fill_rect(bx, by, bw, TRIG_BADGE_H, th->background);
-    font_draw_string_right(LCD_WIDTH - 4, by + 1, label,
-                           color, th->background, &font_small);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
  * Run/Stop indicator (SCOPE_PLOT_STOP_BOX; R1-B's bar tab replaces it)
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -2916,8 +2882,8 @@ void draw_scope_screen(uint32_t frame)
     /* Layer 7: Cursor lines */
     draw_cursors();
 
-    /* Layer 8: Trigger status badge */
-    draw_trigger_status(ss, th);
+    /* Layer 8 (the trigger status badge) is gone since the UI round 1 merge:
+     * the status bar's trigger dot and RUN/STOP/ARM tab carry it. */
 
     /* Layer 9: Run/Stop */
     draw_run_stop(ss, th);
@@ -2931,10 +2897,8 @@ void draw_scope_screen(uint32_t frame)
     /* Layer 11: Quick-change popup (on top of everything) */
     draw_popup(th);
 
-    /* Active channel indicator (top-left) */
-    const char *ch_label = (active_channel == 0) ? "CH1" : "CH2";
-    uint16_t ch_color = (active_channel == 0) ? th->ch1 : th->ch2;
-    font_draw_string(4, SCOPE_TOP + 2, ch_label, ch_color, ch_color, &font_small);
+    /* No "CH1"/"CH2" text top-left any more: the status bar's focus glyph
+     * shows the active channel in its colour (UI round 1). */
 
 #if !defined(EMULATOR_BUILD) && defined(SCOPE_DEBUG_OVERLAY)
     /* SPI3 acquisition diagnostic — small text overlay top-center. Developer
@@ -3121,14 +3085,6 @@ void draw_scope_live_frame(void)
         uint8_t  nseg = 1;
         seg_top[0] = SCOPE_TOP;
         seg_bot[0] = band_bot;
-        /* The trigger status badge is a second, permanent hole (parity C3):
-         * it says whether the record on the glass was triggered, or is a
-         * two-moment free-run read (#84), so it must survive the live frames.
-         * Before C3 the first live frame painted over it. It changes only
-         * with the trigger status, which is in main.c's redraw epoch, so a
-         * change gets a full repaint that redraws it. */
-        if (x >= TRIG_BADGE_X)
-            seg_top[0] = TRIG_BADGE_Y + TRIG_BADGE_H;
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
             seg_top[1] = hole_bot;

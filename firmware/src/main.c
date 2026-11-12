@@ -326,11 +326,12 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
-    /* Parity C3: the trigger panel and the trigger status badge (which
-     * says Trig'd / Wait / Auto* ... from the acquisition, not the mode). */
+    /* Parity C3: the trigger panel. The trigger status (Trig'd / Wait /
+     * Auto* ...) left the plot at the UI round 1 merge: the status bar's dot
+     * and RUN tab show it and repaint their own slots, so it no longer
+     * forces a full plot repaint. */
     h = redraw_epoch_mix(h, (uint32_t)scope_trig_menu.open
-                            | ((uint32_t)scope_trig_menu.row << 1)
-                            | ((uint32_t)fpga_trigger_status() << 8));
+                            | ((uint32_t)scope_trig_menu.row << 1));
 
 #ifdef FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
