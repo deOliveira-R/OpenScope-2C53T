@@ -2623,6 +2623,7 @@ static void fpga_usart_rx_task(void *pv)
          * frame family/range rules, and keep H2/MISO counts in status/trace for
          * the still-unresolved calibration/frontend investigation.
          */
+        meter_data_set_function_confirmed(fpga_meter_soc_live() && fpga.meter_selector_confirmed);
         meter_data_process_frame(event.frame, parse_submode);
 
         /*

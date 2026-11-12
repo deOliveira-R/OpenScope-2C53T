@@ -3108,11 +3108,52 @@ static int test_continuity_threshold_rule(void)
     return 1;
 }
 
+
+/* ACV on unit #2 (2026-11-11), the SoC confirmed on 0x050D. 60 Hz and 1 kHz
+ * 0-3.3 V squares from a G431 (Fluke 87-class: ~1.59 V AC). Both carry the
+ * leading 1 (frame[2].3) and the frequency in rx[10..11]. Before: "---". */
+static int test_acv_confirmed_function_real_frames(void)
+{
+    static const uint8_t f60[12] = { 0x5A,0xA5,0xED,0x87,0xAF,0xED,0x0B,0x00,0x82,0x00,0x00,0x3C };
+    static const uint8_t f1k[12] = { 0x5A,0xA5,0xCD,0x87,0xEF,0x0B,0x0A,0x00,0x82,0x00,0x03,0xE9 };
+
+    meter_data_init();
+    meter_data_set_function_confirmed(true);
+    process_frame(f60, 1);
+    printf("    60 Hz: dp=%u bcd=%u digits=%u%u%u%u f2=%02X\n", meter_reading.decimal_pos, (unsigned)meter_reading.bcd_value, meter_reading.digits[0], meter_reading.digits[1], meter_reading.digits[2], meter_reading.digits[3], f60[2]);
+    printf("    60 Hz: valid=%d '%s' %s value=%.4f f=%.0f reject=%d\n", meter_reading.valid,
+           meter_reading.display_str, meter_reading.unit_suffix, (double)meter_reading.value,
+           (double)meter_reading.aux_freq_hz, meter_reading.reject_reason);
+    ASSERT(meter_reading.valid);
+    ASSERT(close_to(meter_reading.value, 1.632f, 0.0005f));
+    ASSERT(strcmp(meter_reading.display_str, "1.6320") == 0);
+    ASSERT(close_to(meter_reading.aux_freq_hz, 60.0f, 0.001f));
+
+    meter_data_init();
+    meter_data_set_function_confirmed(true);
+    process_frame(f1k, 1);
+    printf("    1 kHz: valid=%d '%s' %s value=%.4f f=%.0f reject=%d\n", meter_reading.valid,
+           meter_reading.display_str, meter_reading.unit_suffix, (double)meter_reading.value,
+           (double)meter_reading.aux_freq_hz, meter_reading.reject_reason);
+    ASSERT(meter_reading.valid);
+    ASSERT(close_to(meter_reading.aux_freq_hz, 1001.0f, 0.001f));
+    ASSERT(close_to(meter_reading.value, 1.5301f, 0.0005f));
+
+    /* Without the echo the old guard stands: 1 kHz is not line frequency. */
+    meter_data_init();
+    meter_data_set_function_confirmed(false);
+    process_frame(f1k, 1);
+    ASSERT(!meter_reading.valid);
+    ASSERT(meter_reading.reject_reason == METER_REJECT_MISSING_AC_EVIDENCE);
+    return 1;
+}
+
 int main(void)
 {
     printf("Meter data frame tests\n");
 
     TEST(segment_frame_builder_exercises_cross_byte_lookup);
+    TEST(acv_confirmed_function_real_frames);
     TEST(dcv_5v_frame_keeps_verified_decimal_and_unit);
     TEST(dcv_live_5v_frame_uses_stock_range_hint);
     TEST(dcv_live_32v_frame_uses_stock_range_hint);
