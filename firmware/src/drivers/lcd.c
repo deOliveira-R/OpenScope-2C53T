@@ -702,7 +702,7 @@ void lcd_draw_string(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint1
 
 /* RDDPM (0x0A): dummy read, then the power-mode byte. Healthy = 0x9C
  * (booster on, sleep out, normal, display on); 0x08 after a panel reset. */
-/* ST7789V 8080 bus timing at HCLK = 240 MHz (4.17 ns per cycle; HCLK is not
+/* Hold the panel's reset line high, and the ST7789V 8080 bus timing at HCLK = 240 MHz (4.17 ns per cycle; HCLK is not
  * divided, CRM_CFG AHBDIV = 0). The bootloader (and stock) program
  * write = ADDSET 2 + DATAST 2 = 4 cycles = 17 ns per write; the datasheet's
  * write cycle is >= 66 ns (WR low >= 15 ns, high >= 15 ns). A mis-latched
@@ -713,6 +713,15 @@ void lcd_draw_string(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint1
  * (49.7 -> 49.5 ms): drawing is CPU-bound. Bus-turnaround/mode bits kept. */
 void lcd_bus_timing_spec(void)
 {
+    /* PD6 = the panel's RESX (system map: stock pulses it high-low-high at boot
+     * and then holds it as a push-pull output HIGH; 0x0802AC5A/ACB2/AD0A).
+     * OpenScope never drove it: unit #2 read it as a floating input / AF with
+     * no driver, so a relay or key transient could reset the panel (two white
+     * screens on 2026-11-11/12, both right after a key press). Hold it HIGH:
+     * ODR first, then the push-pull output mode, so it never glitches low. */
+    *(volatile uint32_t *)0x40011410u = 1u << 6;                 /* GPIOD SCR/BSRR: PD6 high */
+    GPIOD_CRL = (GPIOD_CRL & ~(0xFu << 24)) | (0x3u << 24);     /* PD6 output push-pull 50 MHz */
+
     EXMC_SNWTCFG0 = (EXMC_SNWTCFG0 & ~0xFFFFu) | 0x0A06u;
     EXMC_SNTCFG0  = (EXMC_SNTCFG0  & ~0xFFFFu) | 0x1026u;
 }
