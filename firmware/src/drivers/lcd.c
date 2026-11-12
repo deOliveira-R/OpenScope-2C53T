@@ -395,6 +395,7 @@ void lcd_fsmc_init(void)
      * Write is faster than read, matching ST7789V timing specs.
      */
     EXMC_SNWTCFG0 = 0x00000202;
+    lcd_bus_timing_spec();          /* the values above, slowed to the datasheet */
 
     /* Enable EXMC Bank 0 */
     EXMC_SNCTL0 |= 0x0001;
@@ -701,6 +702,21 @@ void lcd_draw_string(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint1
 
 /* RDDPM (0x0A): dummy read, then the power-mode byte. Healthy = 0x9C
  * (booster on, sleep out, normal, display on); 0x08 after a panel reset. */
+/* ST7789V 8080 bus timing at HCLK = 240 MHz (4.17 ns per cycle; HCLK is not
+ * divided, CRM_CFG AHBDIV = 0). The bootloader (and stock) program
+ * write = ADDSET 2 + DATAST 2 = 4 cycles = 17 ns per write; the datasheet's
+ * write cycle is >= 66 ns (WR low >= 15 ns, high >= 15 ns). A mis-latched
+ * command byte is one way the panel reset itself under a running MCU
+ * (unit #2, 2026-11-11: SWRESET state). Now: write ADDSET 6 + DATAST 10 =
+ * 16 cycles = 67 ns; read ADDSET 6, ADDHLD 2, DATAST 16 (67 ns strobe; the
+ * health check's RDDPM is the only read). Meter screen draw time unchanged
+ * (49.7 -> 49.5 ms): drawing is CPU-bound. Bus-turnaround/mode bits kept. */
+void lcd_bus_timing_spec(void)
+{
+    EXMC_SNWTCFG0 = (EXMC_SNWTCFG0 & ~0xFFFFu) | 0x0A06u;
+    EXMC_SNTCFG0  = (EXMC_SNTCFG0  & ~0xFFFFu) | 0x1026u;
+}
+
 uint8_t lcd_read_power_mode(void)
 {
     lcd_write_cmd(0x0A);

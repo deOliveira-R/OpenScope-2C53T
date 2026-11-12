@@ -1005,6 +1005,9 @@ int main(void)
 
     /* Clock init to 240MHz */
     system_clock_config();
+#ifndef EMULATOR_BUILD
+    lcd_bus_timing_spec();   /* the bootloader's LCD bus timing is 4x too fast for the ST7789V */
+#endif
 
     wdt_counter_reload();
 
