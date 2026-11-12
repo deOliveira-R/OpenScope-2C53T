@@ -6284,8 +6284,14 @@ static void cmd_mode(const char *args)
         } else if (strcmp(value, "meter") == 0) {
             startup_mode_set(STARTUP_METER);
             report_startup_save("Meter");
+        } else if (strcmp(value, "home") == 0) {
+            startup_mode_set(STARTUP_HOME);
+            report_startup_save("Home");
+        } else if (strcmp(value, "siggen") == 0) {
+            startup_mode_set(STARTUP_SIGGEN);
+            report_startup_save("Signal Gen");
         } else {
-            usb_send_str("Usage: mode startup [scope|meter]\r\n");
+            usb_send_str("Usage: mode startup [home|meter|scope|siggen]\r\n");
         }
         return;
     }
@@ -9919,7 +9925,7 @@ static void cmd_btn(const char *args)
 static void cmd_keys(const char *args)
 {
     (void)args;
-    static const char *const mode_names[MODE_COUNT] = { "scope", "meter", "siggen", "settings" };
+    static const char *const mode_names[MODE_COUNT] = { "scope", "meter", "siggen", "settings", "home" };
     const scope_state_t *ss = scope_state_get();
     usb_debug_printf("mode %s (%u)  settings-depth %d\r\n",
                      (unsigned)current_mode < (unsigned)MODE_COUNT ? mode_names[current_mode] : "?",

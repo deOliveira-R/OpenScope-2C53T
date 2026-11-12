@@ -8,15 +8,26 @@ Emulator keys: `M`=MENU, `A`=AUTO, `S`=SAVE, `1`=CH1, `2`=CH2, `P`=PRM, `Space`=
 
 ## Mode Switching
 
-The device has 4 modes, cycled by pressing **MENU**:
+**MENU** opens the **home page** (stock's mode-selection screen): four items in
+a row, Multimeter, Oscilloscope, Signal Generator, Settings, with the one you
+came from highlighted.
 
-```
-Oscilloscope  -->  Multimeter  -->  Signal Generator  -->  Settings
-      ^                                                       |
-      +-------------------------------------------------------+
-```
+| On the home page | Action |
+|--------|--------|
+| **LEFT / RIGHT** | Move the selection (wraps around) |
+| **OK** | Enter the selected mode |
+| **MENU** | Back to the mode you opened home from (ours; stock does nothing) |
+| **POWER** | As everywhere (hold to power off) |
 
-If you're inside a Settings sub-menu, **MENU** goes back to the top-level Settings list first, then cycles to Oscilloscope on the next press.
+Elsewhere: inside a level (a Settings sub-page, the trigger panel, the
+generator's frequency editor) **MENU** goes back one level; at the top of a
+mode it opens home. **Long MENU** opens home from anywhere, as stock's long
+BACK does. Long SELECT / MOVE / TRIGGER still jump straight to meter / scope /
+generator. Stock's short BACK in the scope opens "Oscilloscope Settings"; here
+that page is Home -> Settings -> Oscilloscope Settings.
+
+Settings -> **Startup on Boot** offers stock's four choices: Home (stock calls
+it "None"), Meter, Scope, Signal Gen.
 
 ---
 
@@ -311,7 +322,7 @@ Sine -> Square -> Triangle -> Sawtooth -> Full-Rect Sine -> Half-Rect Sine -> Pu
 | **UP** | Move selection up |
 | **DOWN** | Move selection down |
 | **OK** | Enter sub-menu or toggle selected option |
-| **MENU** | Back to top-level (from sub-menu) or cycle to Oscilloscope mode |
+| **MENU** | Back to top-level (from sub-menu), or to the home page from the top level |
 
 ### Display Mode (OK to cycle)
 

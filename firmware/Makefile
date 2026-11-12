@@ -40,6 +40,8 @@ C_SOURCES += src/ui/fuse_model.c
 C_SOURCES += src/ui/siggen_ui.c
 C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
+C_SOURCES += src/ui/home_model.c
+C_SOURCES += src/ui/home_ui.c
 C_SOURCES += src/ui/component_ui.c
 C_SOURCES += src/ui/resistor_calc_ui.c
 C_SOURCES += src/ui/bode_ui.c
@@ -964,6 +966,18 @@ $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/ke
 
 .PHONY: test-key-model
 test-key-model: $(BUILD_DIR)/test_key_model
+	$<
+
+# Home screen (stock's mode-selection page, ms[0xF68] == 0): the pure model
+# the input task drives (src/ui/home_model.h): stock's item order, LEFT/RIGHT
+# wrap, OK -> mode, the preselection on entry, BACK, and the startup policy's
+# home/siggen choices (startup_policy.h).
+$(BUILD_DIR)/test_home_model: tests/test_home_model.c src/ui/home_model.c src/ui/home_model.h \
+                              src/ui/startup_policy.h src/ui/ui.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/util $< src/ui/home_model.c -o $@
+
+.PHONY: test-home-model
+test-home-model: $(BUILD_DIR)/test_home_model
 	$<
 
 # Roll mode (parity C11): stock's step table (ARR 0x080465A4), the 301-point

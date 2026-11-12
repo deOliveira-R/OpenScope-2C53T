@@ -21,12 +21,18 @@ typedef enum {
     MODE_MULTIMETER,
     MODE_SIGNAL_GEN,
     MODE_SETTINGS,
+    MODE_HOME,          /* stock's mode-selection page (ms[0xF68] == 0), home_model.h */
     MODE_COUNT
 } device_mode_t;
 
+/* Startup on Boot. Stock offers four (0x0804C208: None, Multimeter,
+ * Oscilloscope, Signal Generator; "None" boots to home). The values are RAM
+ * only: the record stores CONFIG_MODE_* (startup_policy.h). */
 typedef enum {
     STARTUP_SCOPE = 0,
     STARTUP_METER,
+    STARTUP_HOME,       /* stock "None" */
+    STARTUP_SIGGEN,
     STARTUP_COUNT
 } startup_mode_t;
 
@@ -42,6 +48,7 @@ typedef enum {
 #ifdef FEATURE_FFT
     DCMD_DRAW_FFT,
 #endif
+    DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
     /* Not a real command: what the display task rewrites a received command
      * to while ui_modal_active, so it falls through to `default:` untouched.
      * Never send this. */
@@ -305,6 +312,8 @@ void draw_siggen_screen(uint32_t frame);
 
 /* settings_ui.c */
 void draw_settings_screen(void);
+void draw_home_screen(void);       /* home_ui.c: the whole page */
+void draw_home_selection(void);    /* home_ui.c: the parts that follow the selection */
 void draw_health_panel(uint16_t y_start);
 
 /* component_ui.c */

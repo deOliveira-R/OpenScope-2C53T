@@ -44,8 +44,8 @@ void draw_status_bar(void)
     }
 
     /* Mode indicator (pad to fixed width to overwrite old text) */
-    const char *mode_names[] = { "SCOPE ", "METER ", "SIGGEN", "SETUP " };
-    font_draw_string(120, 2, mode_names[current_mode],
+    static const char *const mode_names[MODE_COUNT] = { "SCOPE ", "METER ", "SIGGEN", "SETUP ", "HOME  " };
+    font_draw_string(120, 2, (unsigned)current_mode < (unsigned)MODE_COUNT ? mode_names[current_mode] : "      ",
                      th->success, th->status_bar_bg, &font_small);
 
     /* Trigger mode / edge / source (stock's status line item 10). */
@@ -220,6 +220,10 @@ void draw_info_bar(void)
         break;
     case MODE_SETTINGS:
         font_draw_string(4, LCD_HEIGHT - 14, "MENU/SELECT to navigate",
+                         th->text_secondary, ib, &font_small);
+        break;
+    case MODE_HOME:
+        font_draw_string(4, LCD_HEIGHT - 14, "LEFT/RIGHT select  OK enter  MENU back",
                          th->text_secondary, ib, &font_small);
         break;
     default:

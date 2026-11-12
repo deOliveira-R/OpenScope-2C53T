@@ -62,6 +62,7 @@
 #define CONFIG_MODE_MULTIMETER    1
 #define CONFIG_MODE_SIGNAL_GEN     2
 #define CONFIG_MODE_SETTINGS       3
+#define CONFIG_MODE_HOME           4   /* startup only: stock "None" boots to home */
 
 /* All user-configurable settings.
  *

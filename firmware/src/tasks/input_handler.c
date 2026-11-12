@@ -28,6 +28,7 @@
 #include "../ui/scope_geom.h"
 #include "signal_gen.h"
 #include "../ui/siggen_edit.h"
+#include "../ui/home_model.h"
 #include "theme.h"
 #include "math_channel.h"
 #include "component_test.h"
@@ -593,14 +594,16 @@ static void mask_auto_key(char *pb, size_t n)
  * Mode entry, long-press shortcuts and the scope key model
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Enter a device mode: the one path for MENU's cycle and the long-press
- * shortcuts, so a mode is never entered half-way (the FPGA posture, the
- * settings list, the persistence flush). */
+/* Enter a device mode: the one path for MENU, the home page's OK and the
+ * long-press shortcuts, so a mode is never entered half-way (the FPGA
+ * posture, the settings list, the persistence flush). */
 static void enter_mode(device_mode_t m, QueueHandle_t dq)
 {
     meter_autoselect_cancel();
     siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
     trig_menu_close(&scope_trig_menu);   /* never reappears over another mode's return */
+    if (m == MODE_HOME)
+        home_enter(home_ui_model(), current_mode);   /* preselect where we came from (stock 0x0800D834) */
     current_mode = m;
     if (current_mode == MODE_SETTINGS) {
         settings_selected = 0;
@@ -615,6 +618,8 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
     } else if (current_mode == MODE_OSCILLOSCOPE) {
         fpga_enter_scope_mode();
     } else {
+        /* Settings and home: the FPGA keeps the posture it had; the meter
+         * SoC is switched off as stock's exit to home does (0x0800D874). */
         GPIOC->clr = (1U << 11);  /* PC11 LOW — meter disable */
     }
     /* Leaving a mode, or backing out of the settings menu, is a deliberate
@@ -708,16 +713,10 @@ static uint8_t exec_key_cmd(key_cmd_t k, QueueHandle_t dq)
 
     /* -- long presses: mode shortcuts, from any mode -------------------- */
     case KA_ENTER_HOME:
-        /* No home page exists in OpenScope; the settings list is the nearest
-         * thing to stock's "function selection page". From inside a settings
-         * page it goes back to the top of the list. */
-        if (current_mode == MODE_SETTINGS) {
-            settings_depth = 0;
-            settings_sub_selected = 0;
-            send_cmd(dq, cmd);
-        } else {
-            enter_mode(MODE_SETTINGS, dq);
-        }
+        /* Long BACK: stock's mode-selection page from any mode, with the mode
+         * left preselected (0x0800D834). On home itself it does nothing, as
+         * in stock (the handler exits on ms[0xF68] == 0). */
+        if (current_mode != MODE_HOME) enter_mode(MODE_HOME, dq);
         break;
     case KA_ENTER_METER:
         if (current_mode != MODE_MULTIMETER) enter_mode(MODE_MULTIMETER, dq);
@@ -1030,6 +1029,33 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         return cmd;
     }
 
+    /* The home page takes every key but POWER (shutdown must always work):
+     * LEFT/RIGHT move, OK enters, MENU goes back (home_model.h). Before the
+     * meter softkeys and the generator editor, which must never see them. */
+    if (current_mode == MODE_HOME && button != BTN_POWER) {
+        home_key_t hk;
+        switch (button) {
+        case BTN_LEFT:  hk = HOME_KEY_LEFT;  break;
+        case BTN_RIGHT: hk = HOME_KEY_RIGHT; break;
+        case BTN_UP:    hk = HOME_KEY_UP;    break;
+        case BTN_DOWN:  hk = HOME_KEY_DOWN;  break;
+        case BTN_OK:    hk = HOME_KEY_OK;    break;
+        case BTN_MENU:  hk = HOME_KEY_BACK;  break;
+        default:        hk = HOME_KEY_OTHER; break;
+        }
+        const home_result_t r = home_key(home_ui_model(), hk);
+        if (r.act == HOME_MOVED) {
+            cmd = DCMD_DRAW_HOME;
+            send_cmd(dq, cmd);
+        } else if (r.act == HOME_ENTER) {
+            enter_mode(r.mode, dq);
+        } else {
+            cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
+        }
+        settings_after_button();
+        return cmd;
+    }
+
     /* Softkeys (docs/specs/platform/softkey-ui.md): in the meter, the four
      * buttons under the screen do what the bar above them says. Caught here,
      * before the per-button cases, so the meter never falls into another
@@ -1074,6 +1100,15 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     /* -- Mode / Navigation ---------------------------------------- */
 
     case BTN_MENU:
+        /* Short MENU (stock's BACK). Inside a level it goes up one, as in
+         * stock (0x08009FE8: settings / generator sub-levels; the trigger
+         * panel and the frequency editor are closed earlier, by key_map()
+         * and siggen_edit_input()). At a mode's top level it opens the home
+         * page. That is ours where stock differs: stock's short BACK does
+         * nothing at the top of the meter, generator and settings, and in
+         * the scope opens the "Oscilloscope Settings" page (ms[0xF68] = 9),
+         * which here is Home -> Settings -> Oscilloscope Settings. Until
+         * 2026-11 this cycled scope -> meter -> generator -> settings. */
         if (current_mode == MODE_SETTINGS && settings_depth > 0) {
             meter_autoselect_cancel();
             settings_depth = 0;
@@ -1081,7 +1116,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             (void)settings_store_flush(settings_now_ms());
             send_cmd(dq, cmd);
         } else {
-            enter_mode((device_mode_t)((current_mode + 1) % MODE_COUNT), dq);
+            enter_mode(MODE_HOME, dq);
         }
         break;
 

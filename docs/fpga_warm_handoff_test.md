@@ -181,7 +181,7 @@ minimal build's bench result says it's needed.
   normal builds are unchanged).
 - Nothing here is destructive — power-cycle and the FPGA reloads its NV design
   as always; reflash anything via the factory IAP.
-- MENU still cycles UI modes, but every FPGA-side mode transition
+- MENU still switches UI modes (via the home page), but every FPGA-side mode transition
   (`fpga_set_meter_mode`, `fpga_enter_siggen_mode`, `fpga_scope_reinit`,
   heartbeat) is compiled out. ⚠ The meter screen falls back to its built-in
   **DEMO readings** (canned plausible values — e.g. `13.82` V DCV, `4.700`

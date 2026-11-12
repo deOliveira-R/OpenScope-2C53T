@@ -128,9 +128,10 @@ static int is(key_cmd_t k, key_action_t a, int arg)
 static void test_long_map(void)
 {
     printf("long-press map\n");
-    const device_mode_t modes[] = { MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS };
+    const device_mode_t modes[] = { MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS,
+                                    MODE_HOME };
     int ok = 1;
-    for (unsigned i = 0; i < 4; i++) {
+    for (unsigned i = 0; i < sizeof modes / sizeof modes[0]; i++) {
         key_ctx_t c = ctx(modes[i], KF_ZOOM);
         ok &= is(key_map(&c, BTN_MENU, true),    KA_ENTER_HOME, 0);
         ok &= is(key_map(&c, BTN_SELECT, true),  KA_ENTER_METER, 0);

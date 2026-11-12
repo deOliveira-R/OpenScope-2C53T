@@ -1163,6 +1163,20 @@ static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
     settings_store_init();
     CHECK(startup_mode == STARTUP_METER, "meter startup not restored");
     CHECK(startup_boot_mode(startup_mode, false, false) == MODE_MULTIMETER, "boot mode meter");
+
+    /* Stock's other two rows: None (home) and Signal Generator. */
+    startup_mode = STARTUP_HOME;
+    CHECK(settings_store_flush(9000), "home startup not written");
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_HOME, "home startup not restored (%d)", (int)startup_mode);
+    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_HOME, "boot mode home");
+    startup_mode = STARTUP_SIGGEN;
+    CHECK(settings_store_flush(13000), "siggen startup not written");
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_SIGGEN, "siggen startup not restored (%d)", (int)startup_mode);
+    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_SIGNAL_GEN, "boot mode siggen");
 }
 
 static void test_system_prefs_survive_a_power_cycle(void)
@@ -1222,7 +1236,10 @@ static void test_startup_mode_from_a_foreign_record_is_the_default(void)
 
     CHECK(startup_mode_from_config(CONFIG_MODE_OSCILLOSCOPE) == STARTUP_SCOPE, "scope");
     CHECK(startup_mode_from_config(CONFIG_MODE_MULTIMETER) == STARTUP_METER, "meter");
-    CHECK(startup_mode_from_config(CONFIG_MODE_SIGNAL_GEN) == STARTUP_METER, "siggen -> default");
+    CHECK(startup_mode_from_config(CONFIG_MODE_SIGNAL_GEN) == STARTUP_SIGGEN, "siggen (stock row 3)");
+    CHECK(startup_mode_from_config(CONFIG_MODE_HOME) == STARTUP_HOME, "home (stock None)");
+    CHECK(startup_mode_to_config(STARTUP_HOME) == CONFIG_MODE_HOME, "to config home");
+    CHECK(startup_mode_to_config(STARTUP_SIGGEN) == CONFIG_MODE_SIGNAL_GEN, "to config siggen");
     CHECK(startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER, "settings -> default");
     CHECK(startup_mode_from_config(250) == STARTUP_METER, "garbage -> default");
 
