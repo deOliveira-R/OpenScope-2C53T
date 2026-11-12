@@ -160,8 +160,16 @@ static void test_long_map(void)
     CHECK("long AUTO/OK in an FFT view or the meter do nothing",
           is(key_map(&fv, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&fv, BTN_OK, true), KA_NONE, 0) &&
           is(key_map(&me, BTN_AUTO, true), KA_NONE, 0) && is(key_map(&me, BTN_OK, true), KA_NONE, 0));
-    CHECK("long SAVE in the scope opens the screenshot gallery (parity C16)",
-          is(key_map(&sc, BTN_SAVE, true), KA_GALLERY_OPEN, 0));
+    {
+        int g = 1;
+        for (unsigned i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+            key_ctx_t c = ctx(modes[i], KF_ZOOM);
+            g &= is(key_map(&c, BTN_SAVE, true), KA_GALLERY_OPEN, 0);
+        }
+        key_ctx_t pg = sc; pg.osc_menu_open = true;
+        g &= is(key_map(&pg, BTN_SAVE, true), KA_GALLERY_OPEN, 0);
+        CHECK("long SAVE opens the gallery from EVERY mode and the page (D1)", g);
+    }
     CHECK("long UP is not a thing", is(key_map(&sc, BTN_UP, true), KA_NONE, 0));
 
     /* Parity G5: long OK in the generator is Run/Stop (manual 2.1); long AUTO
@@ -172,8 +180,6 @@ static void test_long_map(void)
               is(key_map(&sg, BTN_OK, true), KA_SIGGEN_RUNSTOP, 0));
         CHECK("long AUTO in the generator is the boot policy toggle",
               is(key_map(&sg, BTN_AUTO, true), KA_SIGGEN_BOOT_TOGGLE, 0));
-        CHECK("long SAVE in the generator stays unclaimed",
-              is(key_map(&sg, BTN_SAVE, true), KA_NONE, 0));
         CHECK("long OK in the meter does nothing; in the scope it is the 50 % centre",
               is(key_map(&me, BTN_OK, true), KA_NONE, 0) &&
               key_map(&sc, BTN_OK, true).act == KA_CENTER50);
@@ -208,41 +214,145 @@ static void test_short_map(void)
           key_map(&cu, BTN_LEFT, false).act == KA_CURSOR_NEXT &&
           key_map(&cu, BTN_RIGHT, false).act == KA_CURSOR_NEXT);
     key_ctx_t mk = ctx(MODE_OSCILLOSCOPE, KF_MASK); mk.mask_present = true;
-    CHECK("mask stage: tolerances, and SELECT = stop-on-fail",
+    CHECK("mask stage: tolerances, and MOVE = stop-on-fail (no channel to switch)",
           is(key_map(&mk, BTN_UP, false),    KA_MASK_TOL_V, +1) &&
           is(key_map(&mk, BTN_RIGHT, false), KA_MASK_TOL_H, +1) &&
-          key_map(&mk, BTN_SELECT, false).act == KA_MASK_STOPFAIL);
+          key_map(&mk, BTN_MOVE, false).act == KA_MASK_STOPFAIL &&
+          key_map(&mk, BTN_SELECT, false).act == KA_FOCUS_NEXT);
+    key_ctx_t mg = mk; mg.mask_present = false;
+    CHECK("mask stage without a mask: MOVE is the channel switch again",
+          key_map(&mg, BTN_MOVE, false).act == KA_ADJ_CH_SWITCH);
 
-    CHECK("SELECT (not in the mask stage) = switch CH1/CH2 adjustment",
-          key_map(&z, BTN_SELECT, false).act == KA_ADJ_CH_SWITCH &&
-          key_map(&tm, BTN_SELECT, false).act == KA_ADJ_CH_SWITCH);
-    CHECK("PRM short = measurement selection hook", key_map(&z, BTN_PRM, false).act == KA_PARAM_SELECT);
-    CHECK("MOVE short = next stage", key_map(&z, BTN_MOVE, false).act == KA_FOCUS_NEXT);
+    /* Stock manual m.p30: MOVE = "Switch CH1/CH2 Adjustment", SELECT =
+     * "Select Function for Directional Keys" (UI round 1 swapped them). */
+    int sw = 1;
+    for (int f = KF_ZOOM; f <= KF_CURSOR; f++) {
+        key_ctx_t c = ctx(MODE_OSCILLOSCOPE, (key_focus_t)f); c.cursors_on = true;
+        sw &= key_map(&c, BTN_MOVE, false).act == KA_ADJ_CH_SWITCH;
+        sw &= key_map(&c, BTN_SELECT, false).act == KA_FOCUS_NEXT;
+    }
+    CHECK("MOVE short = switch CH1/CH2 adjustment, in every non-mask stage", sw);
+    CHECK("SELECT short = next arrow stage (zoom, cursor ...)", sw &&
+          key_map(&z, BTN_SELECT, false).act == KA_FOCUS_NEXT &&
+          key_map(&cu, BTN_SELECT, false).act == KA_FOCUS_NEXT);
+    CHECK("the focus popup names MOVE, not SEL, as the mask stop key",
+          strstr(key_focus_popup(KF_MASK), "MOVE:stop") != NULL &&
+          strstr(key_focus_popup(KF_MASK), "SEL") == NULL);
 
-    printf("short-press map (everything else is left to the legacy handlers)\n");
+    printf("short-press map (FFT views, other modes)\n");
     key_ctx_t fv = z; fv.scope_time_view = false;
-    CHECK("FFT view: arrows, SELECT, PRM stay legacy; MOVE still cycles",
+    CHECK("FFT view: arrows and SELECT (window) stay legacy; MOVE switches the channel",
           key_map(&fv, BTN_UP, false).act == KA_LEGACY &&
           key_map(&fv, BTN_LEFT, false).act == KA_LEGACY &&
           key_map(&fv, BTN_SELECT, false).act == KA_LEGACY &&
-          key_map(&fv, BTN_PRM, false).act == KA_LEGACY &&
-          key_map(&fv, BTN_MOVE, false).act == KA_FOCUS_NEXT);
+          key_map(&fv, BTN_MOVE, false).act == KA_ADJ_CH_SWITCH);
+    CHECK("FFT view: PRM no longer cycles the views, it opens the page at Measure",
+          is(key_map(&fv, BTN_PRM, false), KA_OSCMENU_OPEN, OSC_ROW_PARAM));
     int leg = 1;
-    const device_mode_t others[] = { MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS };
+    const device_mode_t others[] = { MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS, MODE_HOME };
     const button_id_t keys[] = { BTN_MOVE, BTN_SELECT, BTN_PRM, BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT,
-                                 BTN_TRIGGER, BTN_CH1, BTN_OK, BTN_AUTO, BTN_MENU, BTN_SAVE };
-    for (unsigned m = 0; m < 3; m++)
+                                 BTN_TRIGGER, BTN_CH1, BTN_OK, BTN_AUTO, BTN_MENU };
+    for (unsigned m = 0; m < sizeof others / sizeof others[0]; m++)
         for (unsigned k = 0; k < sizeof keys / sizeof keys[0]; k++) {
             key_ctx_t c = ctx(others[m], KF_ZOOM);
+            c.osc_menu_open = true;   /* a stale flag outside the scope changes nothing */
             leg &= key_map(&c, keys[k], false).act == KA_LEGACY;
         }
-    CHECK("meter / siggen / settings: every short press is legacy (softkeys etc.)", leg);
-    CHECK("scope CH1/OK/AUTO/MENU/SAVE short stay legacy",
+    CHECK("meter / siggen / settings / home: every short press but SAVE is legacy", leg);
+    CHECK("scope CH1/OK/AUTO short stay legacy",
           key_map(&z, BTN_CH1, false).act == KA_LEGACY &&
           key_map(&z, BTN_OK, false).act == KA_LEGACY &&
-          key_map(&z, BTN_AUTO, false).act == KA_LEGACY &&
-          key_map(&z, BTN_MENU, false).act == KA_LEGACY &&
-          key_map(&z, BTN_SAVE, false).act == KA_LEGACY);
+          key_map(&z, BTN_AUTO, false).act == KA_LEGACY);
+}
+
+static void test_save(void)
+{
+    printf("SAVE everywhere (owner decision D1)\n");
+    const device_mode_t modes[] = { MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS,
+                                    MODE_HOME };
+    int ok = 1;
+    for (unsigned i = 0; i < sizeof modes / sizeof modes[0]; i++) {
+        key_ctx_t c = ctx(modes[i], KF_ZOOM);
+        ok &= is(key_map(&c, BTN_SAVE, false), KA_SCREENSHOT, 0);
+    }
+    CHECK("short SAVE = screenshot in every mode (the meter's overlay is the shell's now)", ok);
+    key_ctx_t fv = ctx(MODE_OSCILLOSCOPE, KF_ZOOM); fv.scope_time_view = false;
+    key_ctx_t tp = ctx(MODE_OSCILLOSCOPE, KF_ZOOM); tp.trig_menu_open = true;
+    key_ctx_t pg = ctx(MODE_OSCILLOSCOPE, KF_ZOOM); pg.osc_menu_open = true; pg.osc_menu_opener = BTN_MENU;
+    CHECK("short SAVE = screenshot in the FFT views, over the trigger panel and on the page",
+          is(key_map(&fv, BTN_SAVE, false), KA_SCREENSHOT, 0) &&
+          is(key_map(&tp, BTN_SAVE, false), KA_SCREENSHOT, 0) &&
+          is(key_map(&pg, BTN_SAVE, false), KA_SCREENSHOT, 0));
+}
+
+static void test_osc_menu(void)
+{
+    printf("Oscilloscope Settings page (UI round 1)\n");
+    key_ctx_t z = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
+    CHECK("scope short MENU opens the page at Display (stock BACK)",
+          is(key_map(&z, BTN_MENU, false), KA_OSCMENU_OPEN, OSC_ROW_DISPLAY));
+    CHECK("scope short PRM opens the page at Parameter Measurement",
+          is(key_map(&z, BTN_PRM, false), KA_OSCMENU_OPEN, OSC_ROW_PARAM));
+    key_ctx_t fv = z; fv.scope_time_view = false;
+    CHECK("FFT views: MENU opens the page too (the way back to the time view)",
+          is(key_map(&fv, BTN_MENU, false), KA_OSCMENU_OPEN, OSC_ROW_DISPLAY));
+    CHECK("TRIGGER short still opens the inline trigger panel (D3)",
+          is(key_map(&z, BTN_TRIGGER, false), KA_TRIGMENU_OPEN, 0));
+    key_ctx_t me = ctx(MODE_MULTIMETER, KF_ZOOM);
+    CHECK("meter short MENU / PRM are not the page (home peek, softkey: D2)",
+          key_map(&me, BTN_MENU, false).act == KA_LEGACY &&
+          key_map(&me, BTN_PRM, false).act == KA_LEGACY);
+
+    key_ctx_t o = z; o.osc_menu_open = true; o.osc_menu_opener = BTN_PRM;
+    o.focus = KF_CURSOR; o.cursors_on = true;   /* the page wins over any stage */
+    CHECK("open: arrows and OK go to the page",
+          is(key_map(&o, BTN_UP, false),    KA_OSCMENU_KEY, OSC_KEY_UP) &&
+          is(key_map(&o, BTN_DOWN, false),  KA_OSCMENU_KEY, OSC_KEY_DOWN) &&
+          is(key_map(&o, BTN_LEFT, false),  KA_OSCMENU_KEY, OSC_KEY_LEFT) &&
+          is(key_map(&o, BTN_RIGHT, false), KA_OSCMENU_KEY, OSC_KEY_RIGHT) &&
+          is(key_map(&o, BTN_OK, false),    KA_OSCMENU_KEY, OSC_KEY_OK));
+    CHECK("open: MENU is BACK on the page (up a level, or close)",
+          is(key_map(&o, BTN_MENU, false), KA_OSCMENU_KEY, OSC_KEY_BACK));
+    CHECK("open from PRM: PRM again closes it",
+          is(key_map(&o, BTN_PRM, false), KA_OSCMENU_CLOSE, 0));
+    key_ctx_t om = o; om.osc_menu_opener = BTN_MENU;
+    CHECK("open from MENU: PRM jumps to Measure instead",
+          is(key_map(&om, BTN_PRM, false), KA_OSCMENU_OPEN, OSC_ROW_PARAM));
+    CHECK("open: TRIGGER / CH1 / CH2 jump to their rows (ours) ...",
+          is(key_map(&om, BTN_TRIGGER, false), KA_OSCMENU_OPEN, OSC_ROW_TRIGGER) &&
+          is(key_map(&om, BTN_CH1, false), KA_OSCMENU_OPEN, OSC_ROW_CH1) &&
+          is(key_map(&om, BTN_CH2, false), KA_OSCMENU_OPEN, OSC_ROW_CH2));
+    key_ctx_t ot = o; ot.osc_menu_opener = BTN_TRIGGER;
+    key_ctx_t o1 = o; o1.osc_menu_opener = BTN_CH1;
+    CHECK("... and then, being the opener, close it",
+          is(key_map(&ot, BTN_TRIGGER, false), KA_OSCMENU_CLOSE, 0) &&
+          is(key_map(&o1, BTN_CH1, false), KA_OSCMENU_CLOSE, 0) &&
+          is(key_map(&o1, BTN_CH2, false), KA_OSCMENU_OPEN, OSC_ROW_CH2));
+    CHECK("open: MOVE / SELECT / AUTO do nothing (their plot is hidden)",
+          is(key_map(&o, BTN_MOVE, false), KA_NONE, 0) &&
+          is(key_map(&o, BTN_SELECT, false), KA_NONE, 0) &&
+          is(key_map(&o, BTN_AUTO, false), KA_NONE, 0));
+    CHECK("open: POWER stays with its own handler",
+          key_map(&o, BTN_POWER, false).act == KA_LEGACY);
+    key_ctx_t ofv = o; ofv.scope_time_view = false;
+    CHECK("open over an FFT view: the page still owns the arrows",
+          is(key_map(&ofv, BTN_LEFT, false), KA_OSCMENU_KEY, OSC_KEY_LEFT));
+
+    CHECK("open: long MENU/MOVE/SELECT/TRIGGER keep their global meaning",
+          is(key_map(&o, BTN_MENU, true), KA_ENTER_HOME, 0) &&
+          is(key_map(&o, BTN_MOVE, true), KA_ENTER_METER, 0) &&
+          is(key_map(&o, BTN_SELECT, true), KA_ENTER_SCOPE, 0) &&
+          is(key_map(&o, BTN_TRIGGER, true), KA_ENTER_SIGGEN, 0));
+    CHECK("open: the scope's own long presses are ignored",
+          is(key_map(&o, BTN_PRM, true), KA_NONE, 0) &&
+          is(key_map(&o, BTN_CH1, true), KA_NONE, 0) &&
+          is(key_map(&o, BTN_CH2, true), KA_NONE, 0) &&
+          is(key_map(&o, BTN_AUTO, true), KA_NONE, 0) &&
+          is(key_map(&o, BTN_OK, true), KA_NONE, 0));
+    key_ctx_t sg = ctx(MODE_SIGNAL_GEN, KF_ZOOM); sg.osc_menu_open = true;
+    CHECK("a stale page flag does not reach the generator's long OK / AUTO",
+          is(key_map(&sg, BTN_OK, true), KA_SIGGEN_RUNSTOP, 0) &&
+          is(key_map(&sg, BTN_AUTO, true), KA_SIGGEN_BOOT_TOGGLE, 0));
 }
 
 static void test_trig_menu(void)
@@ -385,6 +495,8 @@ int main(void)
     test_long_map();
     test_short_map();
     test_trig_menu();
+    test_save();
+    test_osc_menu();
     test_focus();
     test_state();
     printf("\n%d/%d passed\n", passed, run);

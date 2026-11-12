@@ -23,9 +23,17 @@
  * image, the 2026-04-08 re-audit), is why KEY_LONG_TICKS below is OUR value,
  * not a stock constant. TODO(bench): time stock's long BACK with a stopwatch.
  *
- * Stock's key meanings are in the manual's key tables (section 1.1/2.1/3.1);
- * the key names there are BACK = our MENU and "Switch CH1/CH2 Adjustment" =
- * our SELECT, "Select Function for Directional Keys" = our MOVE.
+ * Stock's key meanings are in the manual's key tables (section 1.1/2.1/3.1,
+ * m.p30); the key names there are BACK = our MENU. The scope's short MOVE is
+ * "Switch CH1/CH2 Adjustment" and short SELECT "Select Function for
+ * Directional Keys" (UI round 1: until then the two short meanings were the
+ * other way round; the long ones were fixed in ccea90b).
+ *
+ * UI round 1 (research/ui/ROUND1_BRIEF.md): short MENU in the scope opens the
+ * Oscilloscope Settings page (osc_menu_model.h) at Display, short PRM at
+ * Parameter Measurement; while the page is up it owns the arrows and OK, the
+ * key that opened it closes it and MENU goes back a level. Short SAVE is a
+ * screenshot and long SAVE the gallery in every mode (owner decision D1).
  */
 
 #ifndef KEY_MODEL_H
@@ -34,6 +42,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include "ui.h"          /* button_id_t, device_mode_t, BTN_LONG_FLAG */
+#include "osc_menu_model.h"   /* osc_row_t / osc_key_t: the args of KA_OSCMENU_* */
 
 /* ── Scan timing (ticks of the 500 Hz scan = 2 ms) ────────────────── */
 #define KEY_NUM              15
@@ -69,9 +78,8 @@
  * itself for the shutdown countdown.
  *
  * AUTO/OK/SAVE are in the set because stock gives them long actions (baseline
- * correction, 50 % centre, gallery). Long AUTO and long OK are built (C10,
- * scope_selfcal); long SAVE still answers with a "not in this build" popup
- * rather than a surprise short action. */
+ * correction, 50 % centre, gallery). All three are built (C10 scope_selfcal,
+ * C16 gallery). */
 #define KEY_LONG_MASK  ((1u << KEYBIT_AUTO)   | (1u << KEYBIT_CH1)    | \
                         (1u << KEYBIT_MOVE)   | (1u << KEYBIT_SELECT) | \
                         (1u << KEYBIT_TRIGGER)| (1u << KEYBIT_PRM)    | \
@@ -98,7 +106,7 @@ void key_scan_init(key_scan_t *s);
  * tick to out[] (room for KEY_NUM) and returns how many. */
 uint8_t key_scan_tick(key_scan_t *s, uint16_t raw, key_scan_event_t out[KEY_NUM]);
 
-/* ── What the arrows adjust (MOVE cycles it) ──────────────────────── */
+/* ── What the arrows adjust (short SELECT cycles it) ──────────────── */
 typedef enum {
     KF_ZOOM = 0,    /* LEFT/RIGHT timebase, UP/DOWN volts/div */
     KF_CHMOVE,      /* LEFT/RIGHT trigger column, UP/DOWN channel vertical position */
@@ -127,6 +135,8 @@ typedef struct {
     bool          mask_present;
     uint8_t       active_channel;    /* 0 = CH1, 1 = CH2 */
     bool          trig_menu_open;    /* the trigger panel (trig_menu.h) is up */
+    bool          osc_menu_open;     /* the Oscilloscope Settings page is up */
+    uint8_t       osc_menu_opener;   /* button_id_t that opened (or last deep-linked) it */
 } key_ctx_t;
 
 typedef enum {
@@ -140,12 +150,12 @@ typedef enum {
     KA_CH_ENABLE_TOGGLE,  /* long CH1/CH2: arg = channel (0/1) */
     KA_SIGGEN_BOOT_TOGGLE,/* long AUTO in the generator: output-at-boot policy (ours) */
     KA_SIGGEN_RUNSTOP,    /* long OK in the generator: output Run/Stop (manual 2.1) */
-    KA_GALLERY_OPEN,      /* long SAVE in the scope: screenshot gallery (stock "nine palace grid") */
+    KA_GALLERY_OPEN,      /* long SAVE, every mode: screenshot gallery (stock "nine palace grid", D1) */
+    KA_SCREENSHOT,        /* short SAVE, every mode: whole-screen capture to the gallery (D1) */
     KA_BASECAL,           /* long AUTO in the scope: baseline correction (stock 0x0800DF58) */
     KA_CENTER50,          /* long OK in the scope: 50 % centre (stock 0x0800DA3A) */
-    KA_FOCUS_NEXT,        /* short MOVE */
-    KA_ADJ_CH_SWITCH,     /* short SELECT: which channel the arrows act on */
-    KA_PARAM_SELECT,      /* short PRM: measurement selection (hook; content is another item) */
+    KA_FOCUS_NEXT,        /* short SELECT (time view): "Select Function for Directional Keys" */
+    KA_ADJ_CH_SWITCH,     /* short MOVE: "Switch CH1/CH2 Adjustment" */
     KA_TB_STEP,           /* arg = -1 faster, +1 slower */
     KA_VDIV_STEP,         /* arg = +1 UP */
     KA_CHPOS_STEP,        /* arg = +1 UP */
@@ -155,11 +165,15 @@ typedef enum {
     KA_CURSOR_NEXT,
     KA_MASK_TOL_V,        /* arg = +1 UP */
     KA_MASK_TOL_H,        /* arg = +1 right */
-    KA_MASK_STOPFAIL,     /* short SELECT in the mask stage */
+    KA_MASK_STOPFAIL,     /* short MOVE in the mask stage (no channel to switch there) */
     KA_TRIGMENU_OPEN,     /* short TRIGGER (time view): stock's "Trigger Settings" */
     KA_TRIGMENU_CLOSE,    /* TRIGGER/MENU/MOVE/SELECT/PRM while it is open */
     KA_TRIGMENU_ROW,      /* UP/DOWN while open: arg = -1 up, +1 down */
-    KA_TRIGMENU_CHANGE    /* LEFT/RIGHT/OK while open: arg = -1 / +1 */
+    KA_TRIGMENU_CHANGE,   /* LEFT/RIGHT/OK while open: arg = -1 / +1 */
+    /* The Oscilloscope Settings page (osc_menu_model.h), any scope view. */
+    KA_OSCMENU_OPEN,      /* arg = osc_row_t: open it there, or jump there while open */
+    KA_OSCMENU_KEY,       /* arg = osc_key_t: arrows/OK, MENU = OSC_KEY_BACK */
+    KA_OSCMENU_CLOSE      /* the key that opened it, pressed again */
 } key_action_t;
 
 typedef struct {
@@ -168,5 +182,11 @@ typedef struct {
 } key_cmd_t;
 
 key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long);
+
+/* Read-only views of the input task's state, for the status bar (R1-B).
+ * Defined in input_handler.c (the state lives there and in main.c), not in
+ * key_model.c, so the host test links without them. */
+uint8_t key_focus_get(void);             /* key_focus_t: what the arrows adjust */
+uint8_t key_active_channel_get(void);    /* 0 = CH1, 1 = CH2 */
 
 #endif /* KEY_MODEL_H */

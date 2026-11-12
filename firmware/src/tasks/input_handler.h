@@ -37,16 +37,19 @@ void input_request_settings_flush(void);
  * write really did. Returns false if the input task did not answer in time. */
 bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *out);
 
-/* What the scope time view's arrow keys adjust (MOVE cycles it). */
+/* What the scope time view's arrow keys adjust (short SELECT cycles it). */
 extern volatile key_focus_t scope_key_focus;
 
+#ifdef FEATURE_FFT
 /*
- * Measurement selection, the short-PRM action in the scope time view. A weak
- * default in input_handler.c returns false ("not handled"), and PRM then keeps
- * its older job (the FFT view cycle). The measurement item provides a strong
- * definition that opens its parameter selection and returns true.
+ * Switch the scope's view (time / FFT / split / waterfall / X-Y) with the FFT
+ * pool lifecycle: the pool is claimed on leaving the time-domain view and
+ * released on returning to it. Short PRM used to cycle the views through
+ * this; since UI round 1 the views are chosen on the Oscilloscope Settings
+ * page (CH panes "FFT: ON/OFF", Display), which calls this. Input task only.
  */
-bool scope_param_select(void);
+void scope_view_select(scope_view_t v);
+#endif
 
 /*
  * Handle OK press in settings menu (top-level and sub-menus).

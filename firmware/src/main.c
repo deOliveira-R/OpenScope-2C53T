@@ -56,6 +56,7 @@ extern void system_clock_config(void);
 #include "scope_mask.h"
 #include "can_scope.h"
 #include "trig_menu.h"
+#include "osc_menu_model.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
 
@@ -421,6 +422,16 @@ static bool scope_incremental_available(const scope_state_t *s)
 
 /* Single scope render entry point, shared by the queue commands and the
  * periodic path so both always pick the same renderer for a given view. */
+/* The Oscilloscope Settings page (osc_menu_model.h) is up. It is a full page
+ * in scope mode: osc_menu_draw() owns everything below the status bar, so the
+ * scope's own paints (plot, info bar, badge rows) stand aside while it is
+ * up. Not ui_modal_active: that would drop DCMD_DRAW_OSC_MENU too. The
+ * acquisition keeps running behind it (UI_STUDY 2.3). */
+static bool osc_page_up(void)
+{
+    return current_mode == MODE_OSCILLOSCOPE && osc_menu_is_open();
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
     (void)action;
@@ -587,6 +598,13 @@ static void vDisplayTask(void *pvParameters)
                 lcd_clear(COLOR_BLACK);
                 status_bar_invalidate();
                 draw_status_bar();
+                if (osc_page_up()) {
+                    /* Also what repaints the page after the gallery or an
+                     * LCD-health reinit. */
+                    osc_menu_draw();
+                    g_screen_painted = true;
+                    break;
+                }
                 draw_info_bar();
                 g_info_bar_epoch = info_bar_epoch();
                 /* Draw current mode's screen */
@@ -613,8 +631,9 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_SCOPE:
                 /* Always honoured: the sender changed scope state or
                  * raised a popup. Marking the gate stops the periodic
-                 * path from immediately repeating the same paint. */
-                if (current_mode == MODE_OSCILLOSCOPE) {
+                 * path from immediately repeating the same paint. Not while
+                 * the Oscilloscope Settings page covers the plot. */
+                if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     scope_render(frame, REDRAW_FULL);
                     redraw_gate_mark(&scope_gate,
                                      scope_ui_epoch(scope_state_get()),
@@ -656,9 +675,15 @@ static void vDisplayTask(void *pvParameters)
                     g_screen_painted = true;
                 }
                 break;
+            case DCMD_DRAW_OSC_MENU:
+                if (osc_page_up()) {
+                    osc_menu_draw();
+                    g_screen_painted = true;
+                }
+                break;
 #ifdef FEATURE_FFT
             case DCMD_DRAW_FFT:
-                if (current_mode == MODE_OSCILLOSCOPE) {
+                if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     ui_scope_full_draws++;
                     draw_fft_screen();
                     redraw_gate_mark(&scope_gate,
@@ -706,7 +731,8 @@ static void vDisplayTask(void *pvParameters)
             frame++;
             continue;
         }
-        {
+        const bool page_up = osc_page_up();
+        if (!page_up) {
             uint32_t ib = info_bar_epoch();
             if (ib != g_info_bar_epoch) {
                 draw_info_bar();
@@ -727,12 +753,12 @@ static void vDisplayTask(void *pvParameters)
 #else
                 const bool time_view = true;
 #endif
-                if (me != g_mask_slot_epoch && time_view) {
+                if (me != g_mask_slot_epoch && time_view && !page_up) {
                     scope_ui_mask_slot_refresh();
                     g_mask_slot_epoch = me;
                 }
                 /* CAN readout (`can screen on`): 5 Hz, its own row. */
-                if (time_view && can_scope_screen_on() && (frame & 3u) == 0u)
+                if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
                     scope_ui_can_row_refresh();
             }
             if (ss_anim->running) {
@@ -804,7 +830,8 @@ static void vDisplayTask(void *pvParameters)
                 q.idle_tick_frames = q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
                                                       : SCOPE_IDLE_FULL_FRAMES;
 
-                redraw_action_t act = redraw_gate_step(&scope_gate, &q);
+                redraw_action_t act = page_up ? REDRAW_SKIP
+                                              : redraw_gate_step(&scope_gate, &q);
                 if (act == REDRAW_SKIP)
                     ui_scope_skipped++;
                 else

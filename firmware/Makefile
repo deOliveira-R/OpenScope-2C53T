@@ -139,6 +139,9 @@ C_SOURCES += src/fonts/font_large.c
 C_SOURCES += src/fonts/font_xlarge.c
 C_SOURCES += src/fonts/font_huge.c
 C_SOURCES += src/fonts/font_unit.c
+# UI round 1, R1-K: weak Oscilloscope Settings page stand-in (R1-A's real
+# osc_menu_* override it; delete this line with the file after the merge).
+C_SOURCES += src/ui/osc_menu_stub.c
 
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
