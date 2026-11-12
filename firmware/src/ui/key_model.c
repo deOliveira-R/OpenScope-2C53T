@@ -119,8 +119,10 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     /* The mode shortcuts work from ANY mode, the meter's softkeys and the
      * settings pages included (manual 1.1 / 2.1 / 3.1). */
     case BTN_MENU:    return cmd(KA_ENTER_HOME, 0);
-    case BTN_SELECT:  return cmd(KA_ENTER_METER, 0);
-    case BTN_MOVE:    return cmd(KA_ENTER_SCOPE, 0);
+    /* Owner, stock V1.2.0 on unit #2 (2026-11-11): long MOVE -> multimeter,
+     * long SELECT -> scope, long TRIGGER -> generator. */
+    case BTN_MOVE:    return cmd(KA_ENTER_METER, 0);
+    case BTN_SELECT:  return cmd(KA_ENTER_SCOPE, 0);
     case BTN_TRIGGER: return cmd(KA_ENTER_SIGGEN, 0);
 
     case BTN_PRM:

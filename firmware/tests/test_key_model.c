@@ -134,8 +134,8 @@ static void test_long_map(void)
     for (unsigned i = 0; i < sizeof modes / sizeof modes[0]; i++) {
         key_ctx_t c = ctx(modes[i], KF_ZOOM);
         ok &= is(key_map(&c, BTN_MENU, true),    KA_ENTER_HOME, 0);
-        ok &= is(key_map(&c, BTN_SELECT, true),  KA_ENTER_METER, 0);
-        ok &= is(key_map(&c, BTN_MOVE, true),    KA_ENTER_SCOPE, 0);
+        ok &= is(key_map(&c, BTN_MOVE, true),    KA_ENTER_METER, 0);
+        ok &= is(key_map(&c, BTN_SELECT, true),  KA_ENTER_SCOPE, 0);
         ok &= is(key_map(&c, BTN_TRIGGER, true), KA_ENTER_SIGGEN, 0);
     }
     CHECK("long BACK/SELECT/MOVE/TRIGGER = Home/Meter/Scope/Siggen from ANY mode", ok);
@@ -272,7 +272,7 @@ static void test_trig_menu(void)
     CHECK("open: CH1/AUTO keep their meaning; long presses still switch modes",
           key_map(&o, BTN_CH1, false).act == KA_LEGACY &&
           key_map(&o, BTN_AUTO, false).act == KA_LEGACY &&
-          is(key_map(&o, BTN_SELECT, true), KA_ENTER_METER, 0));
+          is(key_map(&o, BTN_MOVE, true), KA_ENTER_METER, 0));
 
     scope_state_t s; scope_state_init(&s);
     trig_menu_t m; trig_menu_open(&m);

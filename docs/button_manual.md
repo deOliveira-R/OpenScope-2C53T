@@ -22,7 +22,7 @@ came from highlighted.
 Elsewhere: inside a level (a Settings sub-page, the trigger panel, the
 generator's frequency editor) **MENU** goes back one level; at the top of a
 mode it opens home. **Long MENU** opens home from anywhere, as stock's long
-BACK does. Long SELECT / MOVE / TRIGGER still jump straight to meter / scope /
+BACK does. Long MOVE / SELECT / TRIGGER still jump straight to meter / scope /
 generator. Stock's short BACK in the scope opens "Oscilloscope Settings"; here
 that page is Home -> Settings -> Oscilloscope Settings.
 
@@ -142,9 +142,9 @@ where they have no long action. POWER is unchanged (its own countdown).
 
 | Long press | Action |
 |------------|--------|
-| **MENU** (stock: BACK) | Home. OpenScope has no home page; the Settings list stands in (from inside a settings page it goes to the top of the list) |
-| **SELECT** | Multimeter (from any mode) |
-| **MOVE** | Oscilloscope (from any mode) |
+| **MENU** (stock: BACK) | Home: the mode-selection page, from any mode |
+| **MOVE** | Multimeter (from any mode) |
+| **SELECT** | Oscilloscope (from any mode) |
 | **TRIGGER** | Signal generator (from any mode) |
 | **PRM** (scope time view) | Hide / show the measurement badges |
 | **CH1 / CH2** (scope) | Channel on/off (see above; stock has no long CH1/CH2) |
