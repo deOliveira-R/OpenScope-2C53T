@@ -552,7 +552,7 @@ void draw_info_bar(void)
             if (cfg->max_hold)
                 font_draw_string(150, LCD_HEIGHT - 14, "MH",
                                  th->warning, ib, &font_small);
-            font_draw_string(220, LCD_HEIGHT - 14, "PRM:View",
+            font_draw_string(220, LCD_HEIGHT - 14, "SEL:Window",
                              th->text_secondary, ib, &font_small);
         } else
 #endif
