@@ -485,6 +485,8 @@ static void vDisplayTask(void *pvParameters)
             draw_meter_screen();
         } else if (current_mode == MODE_HOME) {
             draw_home_screen();
+        } else if (current_mode == MODE_SIGNAL_GEN) {
+            draw_siggen_screen(0);        /* Startup on Boot = Signal Gen */
         } else {
             draw_scope_screen(0);
         }
