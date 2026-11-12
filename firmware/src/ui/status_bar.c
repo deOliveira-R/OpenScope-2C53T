@@ -5,8 +5,9 @@
  * the brand text is gone (the boot screen and About say OpenScope, the case
  * says 2C53T); the bar carries what stock's does, plus the trigger state.
  *
- * Flicker: draw_status_bar() runs every second (main.c's 1 s timer) and on
- * every full redraw. Each slot keeps a key of what it last painted and is
+ * Flicker: draw_status_bar() runs every second (main.c's 1 s timer), on
+ * every full redraw and when status_bar_live_key() changes (the RUN tab and
+ * the trigger dot, polled by the display loop). Each slot keeps a key of what it last painted and is
  * repainted only when that changes; status_bar_invalidate() (theme or mode
  * change, DCMD_REDRAW_ALL) forgets them all.
  */
@@ -366,6 +367,24 @@ static void slot_battery(const theme_t *th)
 static uint32_t s_info_drawn_epoch;
 static bool s_info_drawn;
 
+/* Seconds of critical battery so far (the timer service task writes, the
+ * display task reads). Like the counter it replaces, it never counts back
+ * down when the battery recovers. */
+static volatile uint8_t s_critical_seconds;
+
+void status_bar_second_tick(void)
+{
+    if (battery_is_critical() && s_critical_seconds < 0xFFu)
+        s_critical_seconds++;
+}
+
+uint32_t status_bar_live_key(void)
+{
+    if (current_mode != MODE_OSCILLOSCOPE)
+        return 0u;
+    return (uint32_t)fpga_trigger_status() | ((uint32_t)scope_state_get()->running << 8) | 0x10000u;
+}
+
 /* Draw the top status bar */
 void draw_status_bar(void)
 {
@@ -400,11 +419,10 @@ void draw_status_bar(void)
     }
     slot_battery(th);
 
-    /* Auto-shutdown at critical battery — protect the LiPo cell */
+    /* Auto-shutdown at critical battery — protect the LiPo cell. The seconds
+     * are counted by status_bar_second_tick() (the 1 s timer), not per draw. */
     if (battery_is_critical()) {
-        static uint8_t shutdown_timer = 0;
-        shutdown_timer++;
-        if (shutdown_timer >= 30) {  /* 30 seconds of critical = shutdown */
+        if (s_critical_seconds >= 30u) {  /* 30 seconds of critical = shutdown */
             lcd_fill_rect(40, 80, 240, 80, 0x0000);
             font_draw_string_center(160, 95, "Battery Critical",
                                     th->warning, 0x0000, &font_large);

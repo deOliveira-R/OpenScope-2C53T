@@ -96,4 +96,16 @@ void status_bar_set_title(const char *title);
  * shell-driven change shows within a second; main.c may poll it per tick. */
 uint32_t status_bar_info_epoch(void);
 
+/* What the RUN/STOP/ARM tab and the trigger dot show (fpga_trigger_status()
+ * and the run state), as one key. main.c's display loop calls
+ * draw_status_bar() when it changes, so they follow at the loop's 50 ms, not
+ * the 1 s timer's pace; the bar repaints only the slots that changed. */
+uint32_t status_bar_live_key(void);
+
+/* Once a second, from main.c's 1 s timer: counts the seconds of critical
+ * battery. draw_status_bar() (display task: the LCD is its alone) shows the
+ * shutdown and powers off at 30, so drawing the bar more often than once a
+ * second does not shorten the countdown. */
+void status_bar_second_tick(void);
+
 #endif /* STATUS_BAR_H */

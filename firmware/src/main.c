@@ -736,6 +736,17 @@ static void vDisplayTask(void *pvParameters)
          * channel or trigger change made on the page shows in it at once. */
         const bool page_up = osc_page_up();
         {
+            /* RUN/STOP/ARM tab and trigger dot: repaint the bar when what
+             * they show changes, not on the next 1 s tick (the slots that
+             * did not change are not touched). Under the page too. */
+            static uint32_t g_status_live_key;
+            const uint32_t sk = status_bar_live_key();
+            if (sk != g_status_live_key) {
+                draw_status_bar();
+                g_status_live_key = sk;
+            }
+        }
+        {
             uint32_t ib = info_bar_epoch();
             if (ib != g_info_bar_epoch) {
                 draw_info_bar();
@@ -994,6 +1005,7 @@ static void vOneSecondTimerCallback(TimerHandle_t xTimer)
     (void)xTimer;
     uptime_seconds++;
     battery_update();
+    status_bar_second_tick();     /* the critical-battery countdown: per second, not per draw */
     uint8_t cmd = DCMD_DRAW_STATUS_BAR;
     /* Zero timeout is intentional: timer service task is highest priority,
      * so blocking here would stall all timers including the health check.
