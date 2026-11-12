@@ -6271,6 +6271,17 @@ static void cmd_mode(const char *args)
 
 static void cmd_meter_dump(const char *args)
 {
+    {
+        uint8_t f[12];
+        const uint32_t n = meter_data_acv_l1_get(99u, f);
+        usb_debug_printf("acv leading-1 frames: %lu logged\r\n", (unsigned long)n);
+        for (unsigned k = 0; k < 8u && k < n; k++) {
+            (void)meter_data_acv_l1_get(k, f);
+            usb_debug_printf("  L1#%u", k);
+            for (unsigned b = 0; b < 12u; b++) usb_debug_printf(" %02X", f[b]);
+            usb_debug_printf("\r\n");
+        }
+    }
     uint32_t delay = 0;
     meter_autoselect_status_t auto_st;
     meter_reading_t snap;

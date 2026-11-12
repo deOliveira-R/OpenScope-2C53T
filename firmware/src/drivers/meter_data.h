@@ -231,6 +231,10 @@ void meter_data_invalidate(uint8_t submode);
  * submode: current meter sub-mode for decimal point placement
  */
 void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode);
+/* The SoC echoed the commanded function word (see meter_data.c). */
+void meter_data_set_function_confirmed(bool confirmed);
+/* idx 0 = newest ACV frame with the leading 1; returns the total logged. */
+uint32_t meter_data_acv_l1_get(unsigned idx, uint8_t out[12]);
 
 /*
  * Check if valid meter data is available.
