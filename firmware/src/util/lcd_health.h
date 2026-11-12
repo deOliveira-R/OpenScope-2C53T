@@ -25,6 +25,11 @@ typedef struct {
     uint8_t  event_pm;      /* RDDPM that triggered the last re-init */
     uint8_t  event_mode;    /* UI mode at the last re-init */
     uint8_t  streak;        /* consecutive bad reads */
+    /* Context of the last event, for the cause hunt (set by the caller). */
+    uint32_t event_since_key_ms; /* time since the last key event */
+    uint16_t event_key;          /* that key's id (BTN_LONG_FLAG included) */
+    uint8_t  event_buzzer;       /* TMR11 C1DT: buzzer duty (0 = silent) */
+    uint8_t  event_backlight;    /* TMR10 C1DT: backlight duty */
 } lcd_health_t;
 
 extern lcd_health_t g_lcd_health;
