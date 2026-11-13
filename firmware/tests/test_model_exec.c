@@ -94,11 +94,15 @@ static void f_gen_freq(uint32_t f)            { logf_("gen_freq(%u);", (unsigned
 static void f_gen_amp(uint8_t a)              { logf_("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
 static void f_gen_out(bool on)                { logf_("gen_out(%d);", on); siggen_enable(on); }
 static bool f_busy(void)                      { return g_busy; }
+static bool     g_shell_persist = true;      /* `persist off` for bench sweeps when false */
+static unsigned g_notes;                     /* settings_store_note_change calls */
+static bool f_shell_persist(void)             { return g_shell_persist; }
+static void f_note_change(void)               { g_notes++; }
 
 static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .timebase = f_timebase,
     .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out,
-    .selfcal_busy = f_busy,
+    .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note_change,
 };
 
 /* ═══ the single-threaded host port ═════════════════════════════════ */
@@ -107,9 +111,13 @@ static unsigned q_head, q_count;
 static unsigned n_wakes, n_sleeps, n_checkins, n_changed, n_service;
 static bool     responsive = true;     /* a sleep lets the "input task" run the drain */
 static bool     in_exec;               /* the drain is running (on_executor)          */
+static int      last_origin = -1;      /* origin of the last request queued            */
+static unsigned n_sent;
 
 static bool tp_send(const model_req_t *r)
 {
+    last_origin = r->origin;
+    n_sent++;
     if (q_count == MODEL_EXEC_QUEUE_LEN) return false;
     q[(q_head + q_count) % MODEL_EXEC_QUEUE_LEN] = *r;
     q_count++;
@@ -156,12 +164,16 @@ static void fresh_state(void)
     g_fail = g_busy = false;
     g_fail_at = g_calls = 0;
     g_block_vdiv = false;
+    g_shell_persist = true;
+    g_notes = 0;
 }
 
 static void fresh(uint32_t first_seq)
 {
     fresh_state();
     q_head = q_count = 0;
+    last_origin = -1;
+    n_sent = 0;
     n_wakes = n_sleeps = n_checkins = n_changed = n_service = 0;
     responsive = true;
     in_exec = false;
@@ -519,6 +531,29 @@ static void test_shell_get_roundtrip(void)
     for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strlen(out[i]) < 128);
 }
 
+/* The shell set queues ORIGIN_SHELL: that origin is what `persist off`
+ * (shell_persist) silences, so a bench sweep never wears the W25Q. */
+static void test_shell_origin(void)
+{
+    fresh(1);
+    g_shell_persist = false;
+    sh_reset(); model_shell_set("ch1.coupling 1", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK ch1.coupling=AC") == 0, "%s", out[0]);
+    CHECK(last_origin == ORIGIN_SHELL && n_sent == 1);
+    CHECK(prop_get(P(CH1_COUPLING)) == 1 && g_notes == 0);        /* changed, not noted */
+    sh_reset(); model_shell_set("ch1.coupling=DC ch1.probe=10x", collect);
+    CHECK(last_origin == ORIGIN_SHELL && g_notes == 0 && prop_get(P(CH1_COUPLING)) == 0);
+    /* control: persist on, the same set is noted once */
+    g_shell_persist = true;
+    sh_reset(); model_shell_set("ch1.coupling 1", collect);
+    CHECK(last_origin == ORIGIN_SHELL && g_notes == 1);
+    /* and a key-origin request is noted even under persist off */
+    g_shell_persist = false;
+    model_result_t r;
+    prop_pair_t p = pr(PROP_ID_CH1_COUPLING, 0);
+    CHECK(prop_request(&p, 1, ORIGIN_KEY, 600, &r) == PS_OK && g_notes == 2);
+}
+
 int main(void)
 {
     test_not_up();
@@ -534,6 +569,7 @@ int main(void)
     test_threaded_in_progress();
     test_shell_set();
     test_shell_get_roundtrip();
+    test_shell_origin();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
