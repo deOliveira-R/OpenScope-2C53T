@@ -42,6 +42,7 @@ void usb_debug_init(void);
  * Call after usb_debug_init() and before vTaskStartScheduler().
  */
 void usb_debug_create_task(void);
+void usb_debug_pinlog_tick(void);   /* 1 s timer: bench pin log (pinlog) */
 
 /*
  * Send a formatted string to the USB debug console.

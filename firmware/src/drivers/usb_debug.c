@@ -6217,6 +6217,59 @@ static void cmd_persist(const char *args)
     usb_debug_printf("\r\n");
 }
 
+/* pinlog [start]: bench tool. Once a second (usb_debug_pinlog_tick, from the
+ * 1 s timer) store every GPIO port's input word and the last battery ADC
+ * result, so a pin that follows "USB attached" can be found: start it,
+ * unplug the cable for ~10 s, plug it back, then `pinlog` prints the rows. */
+#define PINLOG_N 90
+static struct { uint16_t t; uint16_t idt[5]; uint16_t adc; } s_pinlog[PINLOG_N];
+static volatile uint8_t s_pinlog_n;
+static volatile uint8_t s_pinlog_on;
+static uint16_t s_pinlog_t;
+
+/* Rows are stored only on a change: a quiet pin flips (the LCD bus on D/E,
+ * PA6/PB4 PWM and PC0 strobe are masked out) or the battery ADC moves by 6
+ * counts (~10 mV). So the log can stay armed for hours. */
+void usb_debug_pinlog_tick(void)
+{
+    if (!s_pinlog_on) return;
+    s_pinlog_t++;
+    if (s_pinlog_n >= PINLOG_N) return;
+    const uint16_t a = (uint16_t)GPIOA->idt, b = (uint16_t)GPIOB->idt, c = (uint16_t)GPIOC->idt;
+    const uint16_t adc = (uint16_t)(ADC1->odt & 0xFFFu);
+    const uint8_t i = s_pinlog_n;
+    if (i > 0) {
+        const int d = (int)adc - (int)s_pinlog[i - 1].adc;
+        if (((a ^ s_pinlog[i - 1].idt[0]) & (uint16_t)~(1u << 6)) == 0 &&
+            ((b ^ s_pinlog[i - 1].idt[1]) & (uint16_t)~(1u << 4)) == 0 &&
+            ((c ^ s_pinlog[i - 1].idt[2]) & (uint16_t)~(1u << 0)) == 0 &&
+            d > -6 && d < 6)
+            return;
+    }
+    s_pinlog[i].t = s_pinlog_t;
+    s_pinlog[i].idt[0] = a; s_pinlog[i].idt[1] = b; s_pinlog[i].idt[2] = c;
+    s_pinlog[i].idt[3] = (uint16_t)GPIOD->idt;
+    s_pinlog[i].idt[4] = (uint16_t)GPIOE->idt;
+    s_pinlog[i].adc    = adc;
+    s_pinlog_n = (uint8_t)(i + 1u);
+}
+
+static void cmd_pinlog(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "start", 5) == 0) {
+        s_pinlog_on = 0; s_pinlog_n = 0; s_pinlog_t = 0; s_pinlog_on = 1;
+        usb_debug_printf("pinlog: armed, %d change rows\r\n", PINLOG_N);
+        return;
+    }
+    const uint8_t n = s_pinlog_n;
+    usb_debug_printf("pinlog: %u rows at %u s (s: A B C D E adc)\r\n", (unsigned)n, (unsigned)s_pinlog_t);
+    for (uint8_t i = 0; i < n; i++)
+        usb_debug_printf("%u: %04X %04X %04X %04X %04X %u\r\n", (unsigned)s_pinlog[i].t,
+                         s_pinlog[i].idt[0], s_pinlog[i].idt[1], s_pinlog[i].idt[2],
+                         s_pinlog[i].idt[3], s_pinlog[i].idt[4], (unsigned)s_pinlog[i].adc);
+}
+
 /* lcd [selftest]: panel health (util/lcd_health.h). selftest sends the
  * ST7789 a software reset (0x01), the state seen once on unit #2, so the
  * display task's check has to find it and recover within ~2 s. */
@@ -10459,6 +10512,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope trig <4 bytes>       Send 0x07/0x0A,0x16..0x19\r\n"),
     CMD_A("persist", cmd_persist, 0,
           "persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n"),
+    CMD_A("pinlog", cmd_pinlog, 0,
+          "pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n"),
     CMD_A("lcd", cmd_lcd, 0,
           "lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n"),
     CMD_A("mode", cmd_mode, 0,
