@@ -196,6 +196,13 @@ static const struct { uint16_t id; const char *why; } k_unwired[] = {
     { PROP_ID_VIEW_RUN,       "RUN/STOP: OK key (B7)" },     /* STOP latches the paused ranges inline   */
     { PROP_ID_METER_LAYOUT,   "View softkey (B6)" },         /* Fuse forces DC V, Limits inits: inline  */
     { PROP_ID_METER_FUSETYPE, "fuse type keys (B6)" },       /* keeps the rating in amps: static helper */
+    /* Stored only: their record fields are carried by settings_store.c's own
+     * image until M3 moves them onto the model, so a set here would neither
+     * be saved nor read back from the record. */
+    { PROP_ID_SYS_LANG,       "stored only until M3" },
+    { PROP_ID_FFT_WINDOW,     "stored only until M3" },
+    { PROP_ID_FFT_AVG,        "stored only until M3" },
+    { PROP_ID_FFT_MAXHOLD,    "stored only until M3" },
 };
 
 static const char *fw_unwired(uint16_t id)

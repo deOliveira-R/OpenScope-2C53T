@@ -367,7 +367,13 @@ static volatile bool exec_stop;
 
 static bool th_send(const model_req_t *r)  { pthread_mutex_lock(&mx); bool b = tp_send(r); pthread_mutex_unlock(&mx); return b; }
 static bool th_receive(model_req_t *r)     { pthread_mutex_lock(&mx); bool b = tp_receive(r); pthread_mutex_unlock(&mx); return b; }
-static void th_sleep(uint32_t ms)          { usleep(ms * 1000u); }
+/* While the owner call is held, the caller's clock waits for the executor
+ * to be inside it, so "in progress" does not depend on host scheduling. */
+static void th_sleep(uint32_t ms)
+{
+    usleep(ms * 1000u);
+    while (g_block_vdiv && !g_in_vdiv) usleep(1000);
+}
 static bool th_on_exec(void)               { return pthread_equal(pthread_self(), exec_thread); }
 static void th_nop(void)                   {}
 
@@ -458,6 +464,10 @@ static void test_shell_set(void)
     CHECKF(n_out == 1 && starts(0, "INVALID ch1.coupling=2 (read only/out of range); nothing applied"), "%s", out[0]);
     sh_reset(); model_shell_set("sys.mode meter", collect);
     CHECKF(n_out == 1 && starts(0, "REFUSED sys.mode (mode switch: keys (B1)); old value kept: scope"), "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.vdiv=4 sys.mode=meter", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED sys.mode (mode switch: keys (B1)); old value kept: scope; nothing applied"),
+           "%s", out[0]);
+    CHECK(prop_get(P(CH1_VDIV)) == 1);   /* unchanged by the refused pair set */
     sh_reset(); model_shell_set("ch1.vdiv", collect);
     CHECKF(n_out == 1 && starts(0, "INVALID ch1.vdiv= (bad value"), "%s", out[0]);
     responsive = false;

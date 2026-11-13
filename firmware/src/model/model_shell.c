@@ -295,6 +295,13 @@ void model_shell_set(const char *args, model_emit_fn emit)
     value_text(fp, prop_get(fp), t, sizeof t);
     join(line, sizeof line, prop_status_name(st), " ", fp->name, " (",
          res.note.text[0] ? res.note.text : "no reason given", "); old value kept: ", t, NULL);
+    if (res.applied < res.failed) {
+        /* Refused before anything was queued (the not-wired list): the
+         * pairs before it were not applied either. */
+        cat(line, sizeof line, "; nothing applied");
+        emit(line);
+        return;
+    }
     emit(line);
     emit_not_applied(&r, (uint8_t)(res.failed + 1u), emit);
 }
