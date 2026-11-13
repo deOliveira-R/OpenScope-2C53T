@@ -122,19 +122,31 @@ def scan_file(path, rel, aliases_global, LIB):
             ptrvars[pm.group(1)] = ('raw', periph_of_addr(int(pm.group(2).rstrip('uUlL'), 16)))
     hits = []
     func, depth = '<file>', 0
+    macro = None                     # inside a multi-line #define: its name
     for n, (code, raw) in enumerate(lines, 1):
-        if depth == 0:
-            fm = FUNC_RE.match(code)
-            if fm and not code.lstrip().startswith('#'):
-                func = fm.group(1)
-        depth = max(0, depth + code.count('{') - code.count('}'))
-        where = func
-        if code.lstrip().startswith('#'):
-            # A macro body is scanned where it is defined (its uses are not expanded). Other directives hold no writes.
-            dm = re.match(r'\s*#\s*define\s+(\w+)(?:\([^)]*\))?(.*)$', code)
-            if not dm:
-                continue
-            where, code = '#define ' + dm.group(1), dm.group(2)
+        if macro:
+            # A continuation line of a #define body: judged under the macro, never a function boundary.
+            where = macro
+            if not raw.rstrip().endswith('\\'):
+                macro = None
+        else:
+            directive = code.lstrip().startswith('#')
+            if depth == 0 and not directive:
+                fm = FUNC_RE.match(code)
+                if fm:
+                    func = fm.group(1)
+            if not directive:        # braces in a macro body do not open or close a function
+                depth = max(0, depth + code.count('{') - code.count('}'))
+            where = func
+            if code.lstrip().startswith('#'):
+                # A macro body is scanned where it is defined (its uses are not expanded). Other directives hold no
+                # writes.
+                dm = re.match(r'\s*#\s*define\s+(\w+)(?:\([^)]*\))?(.*)$', code)
+                if not dm:
+                    continue
+                where, code = '#define ' + dm.group(1), dm.group(2)
+                if raw.rstrip().endswith('\\'):
+                    macro = where
         ex = EXEMPT_RE.search(raw)
         def add(periph, what):
             hits.append((rel, n, where, periph, what, ex.group(1) if ex else None, raw.strip()))
@@ -220,7 +232,7 @@ def violations(hits, owners):
     return viol
 
 # (file, code, must be flagged). The owners below: drivers/own.c owns GPIO*, drivers/dac.c owns DAC.
-SELF_OWNERS = 'src/model/   -\nGPIO*.*  drivers/own.c\nDAC  drivers/dac.c\n'
+SELF_OWNERS = 'src/model/   -\nGPIOD.*  drivers/fn.c:g\nGPIO*.*  drivers/own.c\nDAC  drivers/dac.c\n'
 SELF_CASES = [
     ('drivers/x.c', 'void f(void) { GPIOC->odt++; }', True),
     ('drivers/x.c', 'void f(void) { ++GPIOC->odt; }', True),
@@ -251,6 +263,9 @@ SELF_CASES = [
     # clean: the owner, reads, comparisons, an exemption outside a no-write dir, a plain counter
     ('drivers/own.c', 'void f(void) { GPIOC->odt++; GPIOC->scr = 1; }', False),
     ('drivers/own.c', '#define W() do { GPIOC->scr = 1; } while (0)', False),
+    # a continuation line belongs to the macro, not to the function before it (GPIOD: owned by drivers/fn.c:g only)
+    ('drivers/fn.c', 'void g(void)\n{\n    GPIOD->scr = 1;\n}\n#define W() \\\n    do { GPIOD->scr = 1; } while (0)', True),
+    ('drivers/fn.c', 'void g(void)\n{\n    GPIOD->scr = 1;\n}', False),
     ('drivers/x.c', 'int f(void) { int a = GPIOC->idt; if (GPIOC->odt >= 1 || GPIOC->odt <= 2) a++; '
                     'return a + (GPIOC->odt == 3) + (GPIOC->odt != 4); }', False),
     ('drivers/x.c', 'void f(void) { GPIOC->scr = 1; /* REG-OWNER-EXEMPT(reviewed boot) */ }', False),
