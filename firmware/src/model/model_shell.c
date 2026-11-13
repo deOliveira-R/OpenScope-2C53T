@@ -174,8 +174,9 @@ static void range_text(const prop_desc_t *p, char *out, size_t n);
 static bool add_pair(set_req_t *r, const char *name, const char *val, model_emit_fn emit)
 {
     char line[LINE_MAX_];
-    if (r->n >= MODEL_MAX_PAIRS) {
-        emit("INVALID (more than 8 pairs); nothing applied");
+    if (r->n >= MODEL_MAX_PAIRS) {           /* r has 8 slots: refused before any write */
+        snprintf(line, sizeof line, "INVALID %s (more than 8 pairs); nothing applied", name);
+        emit(line);
         return false;
     }
     const prop_desc_t *p = prop_find(name);

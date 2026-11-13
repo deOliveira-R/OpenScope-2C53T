@@ -554,6 +554,31 @@ static void test_shell_origin(void)
     CHECK(prop_request(&p, 1, ORIGIN_KEY, 600, &r) == PS_OK && g_notes == 2);
 }
 
+/* More than 8 pairs never reaches the queue (set_req_t has 8 slots); more
+ * than 4 hardware pairs is refused with its own note. */
+static void test_shell_pair_limits(void)
+{
+    fresh(1);
+    sh_reset();
+    model_shell_set("ch1.probe=10x ch2.probe=10x ch1.bwlimit=on ch2.bwlimit=on trig.edge=1 "
+                    "view.truescale=1 gen.wave=1 ch2.meas=0 ch1.meas=0", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "INVALID ch1.meas (more than 8 pairs); nothing applied") == 0, "%s", out[0]);
+    CHECK(n_sent == 0 && q_count == 0 && n_wakes == 0);
+    CHECK(prop_get(P(CH1_PROBE)) == 0 && prop_get(P(CH2_MEAS)) != 0);
+    /* exactly 8: applied */
+    sh_reset();
+    model_shell_set("ch1.probe=10x ch2.probe=10x ch1.bwlimit=on ch2.bwlimit=on trig.edge=1 "
+                    "view.truescale=1 gen.wave=1 ch2.meas=0", collect);
+    CHECKF(n_out == 8 && starts(0, "OK ch1.probe=10X") && starts(7, "OK ch2.meas="), "%u %s", n_out, out[7]);
+    CHECK(n_sent == 1);
+    /* 5 PF_HW pairs: the HW note */
+    sh_reset();
+    model_shell_set("ch1.vdiv=1 ch2.vdiv=1 tb.code=4 ch1.coupling=1 ch2.coupling=1", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "INVALID (more than 4 HW pairs); nothing applied") == 0,
+           "%s", out[0]);
+    CHECK(n_sent == 1 && g_log[0] == '\0' && prop_get(P(CH1_VDIV)) == 3);
+}
+
 int main(void)
 {
     test_not_up();
@@ -570,6 +595,7 @@ int main(void)
     test_shell_set();
     test_shell_get_roundtrip();
     test_shell_origin();
+    test_shell_pair_limits();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

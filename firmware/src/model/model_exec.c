@@ -71,7 +71,7 @@ static prop_status_t check_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t *f
     prop_status_t s = prop_validate_pairs(pairs, n, failed);
     if (s != PS_OK) {
         if (n > MODEL_MAX_PAIRS)             note_set(note, "more than 8 pairs");
-        else if (*failed >= n)               note_set(note, "more than 4 HW pairs: split it");
+        else if (*failed >= n)               note_set(note, "more than 4 HW pairs"); /* split the set */
         else                                 note_set(note, "read only/out of range");
         return s;
     }
