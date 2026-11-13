@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """check_reg_owners.py - one owner per peripheral register (OpenScope ARCH round, rule (a)).
 
-Scans firmware/src/**/*.c (not attic/, vendor libs) for WRITES to peripheral
+Scans firmware/src/**/*.{c,h} (not attic/, vendor libs) for WRITES to peripheral
 registers and fails if a peripheral is written outside its owner(s).
 
-What counts as a write:
-  1. struct access on an instance:      GPIOC->scr = ..., TMR7->pr = ..., DAC->ctrl |= ...
+What counts as a write (every assignment form: = |= &= ^= += -= *= /= %= <<= >>=, and ++/-- before or after):
+  1. struct access on an instance:      GPIOC->scr = ..., TMR7->pr = ..., DAC->ctrl |= ..., GPIOC->odt++
   2. struct access through an alias:    #define FPGA_SPI SPI3   /  ((spi_type *)SPI2_BASE)
   3. struct access through a typed ptr: gpio_type *port = ...; port->clr = ...
-  4. raw address writes:                *(volatile uint32_t *)0x40007400 = ...
+  4. raw address writes:                *(volatile uint32_t *)0x40007400 = ...,  *((uint32_t *)0x40007400) = ...
                                         #define DAC_CTRL (*(volatile uint32_t *)0x40007400)  then DAC_CTRL = ...
   5. vendor-library / CMSIS write calls: gpio_init(GPIOB, ...), tmr_channel_value_set(TMR10, ...),
                                         wdt_counter_reload(), NVIC_EnableIRQ(...), flash_sector_erase(...)
+  Any of these in a #define body counts where the macro is defined (function "#define NAME").
 Register reads are never violations.
 
 Owners:      scripts/reg_owners.txt     "<PERIPH>  <file>[:<function>] ..."   (PERIPH may be GPIOC.cfg, GPIOC.out, ...)
@@ -20,15 +21,21 @@ Baseline:    scripts/reg_owners_baseline.txt  "<file>\t<function>\t<PERIPH>\t<co
              Fails on any violation not covered by the baseline (new file/function/periph, or a higher count).
              --update-baseline rewrites it; a stale baseline entry (fixed) is reported and, with --strict, fails,
              so the baseline only ever shrinks.
-No-write dirs: a row "src/<dir>/  -" (e.g. src/model/) means nothing in that directory may write a register.
+No-write dirs: a row "src/<dir>/  -" (e.g. src/model/) means nothing in that directory may write a register;
+             REG-OWNER-EXEMPT is not honoured there.
+--self-test: runs the checker on injected snippets (each write form, a macro body, a header, an exemption in a
+             no-write dir) and on clean controls; exit 1 if any is misjudged. `make check-owners` runs it first.
 Exit: 0 ok, 1 violations, 2 usage.
 """
-import os, re, sys, argparse, collections
+import os, re, sys, argparse, collections, tempfile
 
 INSTANCE = r'(?:GPIO[A-F]|TMR\d{1,2}|DAC|ADC[123]|DMA[12](?:_CHANNEL[1-7])?|SPI[1-4]|USART[1-3]|UART[4-8]|' \
            r'CRM|FLASH|WDT|WWDT|EXINT|IOMUX|XMC_BANK\w*|OTGFS1|USBD|PWC|BPR|ERTC|SCB|SysTick|NVIC|CAN[12]|I2C[12]|SDIO1?|CRC)'
 PTR_TYPES = r'(?:gpio_type|tmr_type|dma_channel_type|dma_type|spi_type|usart_type|dac_type|adc_type|exint_type|crm_type)'
-ASSIGN = r'\s*(?:\[[^\]]*\])?\s*([|&^]?=)(?!=)'
+ASSIGN = r'\s*(?:\[[^\]]*\])?\s*(?:((?:<<|>>|[-+*/%|&^])?=)(?!=)|(\+\+|--))'
+PREINC = r'(?:\+\+|--)\s*'
+# *(volatile uint32_t *)0x...  /  *((uint32_t *)0x...)  /  (*(volatile uint16_t *)(0x...))
+RAWADDR = r'\*\s*\(\s*\(?\s*(?:volatile\s+)?(?:const\s+)?uint(?:8|16|32)_t\s*(?:volatile\s*)?\*\s*\)\s*\(?\s*(0x[0-9A-Fa-f]+)[uUlL]*\s*\)?\s*\)?'
 
 # raw address -> peripheral (AT32F403A memory map, RM 2.2)
 ADDR_MAP = [
@@ -105,7 +112,7 @@ def scan_file(path, rel, aliases_global, LIB):
         if m: aliases[m.group(1)] = m.group(2)
         m = re.match(r'\s*#\s*define\s+(\w+)\s+(' + INSTANCE + r')\s*$', code)
         if m: aliases[m.group(1)] = m.group(2)
-        m = re.match(r'\s*#\s*define\s+(\w+)(?:\([^)]*\))?\s+\(\s*\*\s*\(\s*volatile\s+uint(?:8|16|32)_t\s*\*\s*\)\s*\(?\s*(0x[0-9A-Fa-f]+)', code)
+        m = re.match(r'\s*#\s*define\s+(\w+)(?:\([^)]*\))?\s+\(\s*\*\s*\(\s*(?:volatile\s+)?uint(?:8|16|32)_t\s*(?:volatile\s*)?\*\s*\)\s*\(?\s*(0x[0-9A-Fa-f]+)', code)
         if m: aliases[m.group(1)] = ('raw', periph_of_addr(int(m.group(2).rstrip('uUlL'), 16)))
         for pm in re.finditer(PTR_TYPES + r'\s*\*\s*(\w+)\s*=\s*(?:\([^)]*\)\s*)?(' + INSTANCE + r'|\w+)?', code):
             ptrvars[pm.group(1)] = pm.group(2) if pm.group(2) and re.fullmatch(INSTANCE, pm.group(2)) else '?PTR'
@@ -121,21 +128,30 @@ def scan_file(path, rel, aliases_global, LIB):
             if fm and not code.lstrip().startswith('#'):
                 func = fm.group(1)
         depth = max(0, depth + code.count('{') - code.count('}'))
+        where = func
         if code.lstrip().startswith('#'):
-            continue
+            # A macro body is scanned where it is defined (its uses are not expanded). Other directives hold no writes.
+            dm = re.match(r'\s*#\s*define\s+(\w+)(?:\([^)]*\))?(.*)$', code)
+            if not dm:
+                continue
+            where, code = '#define ' + dm.group(1), dm.group(2)
         ex = EXEMPT_RE.search(raw)
         def add(periph, what):
-            hits.append((rel, n, func, periph, what, ex.group(1) if ex else None, raw.strip()))
-        for m in re.finditer(r'\b(' + INSTANCE + r'|\w+)->([a-z_0-9]+)(?:_bit\.\w+|\.\w+)?' + ASSIGN, code):
+            hits.append((rel, n, where, periph, what, ex.group(1) if ex else None, raw.strip()))
+        struct_w = r'\b(' + INSTANCE + r'|\w+)->([a-z_0-9]+)(?:_bit\.\w+|\.\w+)?'
+        sites = [m for m in re.finditer(struct_w + ASSIGN, code)]
+        sites += [m for m in re.finditer(PREINC + struct_w, code)]
+        for m in sites:
             base, field = m.group(1), m.group(2)
             if re.fullmatch(INSTANCE, base): add(gpio_class(base, field), 'struct')
             elif base in aliases and not isinstance(aliases[base], tuple): add(gpio_class(aliases[base], field), 'alias')
             elif base in ptrvars:
                 p = ptrvars[base]
                 add(gpio_class(p, field) if isinstance(p, str) else p[1], 'ptr')
-        for m in re.finditer(r'\*\s*\(\s*volatile\s+uint(?:8|16|32)_t\s*\*\s*\)\s*(0x[0-9A-Fa-f]+)[uUlL]*' + ASSIGN, code):
+        for m in list(re.finditer(RAWADDR + ASSIGN, code)) + list(re.finditer(PREINC + r'\(?\s*' + RAWADDR, code)):
             add(periph_of_addr(int(m.group(1), 16)), 'raw')
-        for m in re.finditer(r'(?<![\w>.])(\*\s*)?(\w+)(?:\([^)]*\))?' + ASSIGN, code):
+        rawname = r'(?<![\w>.])(\*\s*)?(\w+)(?:\([^)]*\))?'
+        for m in list(re.finditer(rawname + ASSIGN, code)) + list(re.finditer(PREINC + rawname, code)):
             name = m.group(2)
             if re.search(r'(?:_t|int|char|volatile|const)\s*$', code[:m.start()]):   # a declaration, not a store
                 continue
@@ -178,6 +194,90 @@ def owned(owners, periph, rel, func):
                 return True
     return False
 
+def collect_hits(src, lib):
+    skip = ('attic', 'at32f403a_lib', 'FreeRTOS', 'CMSIS', 'CMSIS-DSP')
+    hits = []
+    for d, dirs, fs in os.walk(src):
+        dirs[:] = sorted(x for x in dirs if x not in skip)
+        for f in sorted(fs):
+            if f.endswith(('.c', '.h')):
+                p = os.path.join(d, f)
+                hits += scan_file(p, os.path.relpath(p, src), {}, lib)
+    return hits
+
+def violations(hits, owners):
+    viol = collections.Counter()
+    # "src/model/  -" rows: a directory that owns no peripheral. Any write in it is a violation, whoever owns the
+    # register, and an exemption does not apply there.
+    nowrite = [k[len('src/'):] for k, v in owners.items() if k.startswith('src/') and k.endswith('/') and v == ['-']]
+    for rel, n, func, periph, what, ex, raw in hits:
+        if any(rel.startswith(d) for d in nowrite):
+            viol[(rel, func, periph)] += 1
+            continue
+        if ex or owned(owners, periph, rel, func):
+            continue
+        viol[(rel, func, periph)] += 1
+    return viol
+
+# (file, code, must be flagged). The owners below: drivers/own.c owns GPIO*, drivers/dac.c owns DAC.
+SELF_OWNERS = 'src/model/   -\nGPIO*.*  drivers/own.c\nDAC  drivers/dac.c\n'
+SELF_CASES = [
+    ('drivers/x.c', 'void f(void) { GPIOC->odt++; }', True),
+    ('drivers/x.c', 'void f(void) { ++GPIOC->odt; }', True),
+    ('drivers/x.c', 'void f(void) { GPIOC->odt--; }', True),
+    ('drivers/x.c', 'void f(void) { GPIOC->odt <<= 1; }', True),
+    ('drivers/x.c', 'void f(void) { GPIOC->odt >>= 1; }', True),
+    ('drivers/x.c', 'void f(void) { GPIOC->odt += 2; }', True),
+    ('drivers/x.c', 'void f(void) { GPIOC->odt -= 2; }', True),
+    ('drivers/x.c', 'void f(void) { GPIOC->odt *= 2; }', True),
+    ('drivers/x.c', '#define W() do { GPIOC->scr = 1; } while (0)', True),
+    ('drivers/x.c', '#define W() \\\n    do { GPIOC->scr = 1; } while (0)', True),
+    ('drivers/x.c', '#define LED() gpio_bits_set(GPIOC, 1)', True),
+    ('model/model.c', 'void f(void) { GPIOC->scr = 1; /* REG-OWNER-EXEMPT(x) */ }', True),
+    ('model/model.h', 'static inline void f(void) { GPIOC->scr = 1; }', True),
+    ('drivers/x.h', 'static inline void f(void) { DAC->ctrl |= 1; }', True),
+    ('drivers/x.c', 'void f(void) { *((uint32_t *)0x40007400) = 1; }', True),
+    ('drivers/x.c', 'void f(void) { (*(volatile uint32_t *)(0x40007400)) |= 1; }', True),
+    ('drivers/x.c', 'void f(void) { ++*(volatile uint32_t *)0x40007400; }', True),
+    ('drivers/x.c', '#define R (*(uint32_t *)0x40007400)\nvoid f(void) { R = 1; }', True),
+    ('drivers/x.c', '#define R (*(volatile uint32_t *)0x40007400)\nvoid f(void) { R++; }', True),
+    # already caught before: struct, alias, typed pointer, raw volatile, library call, model/ write
+    ('drivers/x.c', 'void f(void) { GPIOC->scr = 1; }', True),
+    ('drivers/x.c', '#define P GPIOC\nvoid f(void) { P->clr = 1; }', True),
+    ('drivers/x.c', 'void f(gpio_type *g) { g->clr = 1; }', True),
+    ('drivers/x.c', 'void f(void) { *(volatile uint32_t *)0x40007400 = 1; }', True),
+    ('drivers/x.c', 'void f(void) { gpio_bits_set(GPIOC, 1); }', True),
+    ('model/model.c', 'void f(void) { DAC->ctrl = 1; }', True),
+    # clean: the owner, reads, comparisons, an exemption outside a no-write dir, a plain counter
+    ('drivers/own.c', 'void f(void) { GPIOC->odt++; GPIOC->scr = 1; }', False),
+    ('drivers/own.c', '#define W() do { GPIOC->scr = 1; } while (0)', False),
+    ('drivers/x.c', 'int f(void) { int a = GPIOC->idt; if (GPIOC->odt >= 1 || GPIOC->odt <= 2) a++; '
+                    'return a + (GPIOC->odt == 3) + (GPIOC->odt != 4); }', False),
+    ('drivers/x.c', 'void f(void) { GPIOC->scr = 1; /* REG-OWNER-EXEMPT(reviewed boot) */ }', False),
+    ('drivers/x.c', 'static int n; void f(void) { n++; ++n; n <<= 1; }', False),
+    ('drivers/x.c', '#define LIMIT 5\n#include <stdint.h>', False),
+    ('model/model.c', 'int f(void) { return GPIOC->idt; }', False),
+]
+
+def self_test(lib_inc):
+    lib = load_lib(lib_inc) if os.path.isdir(lib_inc) else dict(CMSIS_WRITES, gpio_bits_set=None)
+    bad = 0
+    with tempfile.TemporaryDirectory() as td:
+        owners_p = os.path.join(td, 'owners.txt')
+        with open(owners_p, 'w') as fh: fh.write(SELF_OWNERS)
+        owners = load_owners(owners_p)
+        for i, (rel, code, want) in enumerate(SELF_CASES):
+            src = os.path.join(td, 'src%d' % i)
+            os.makedirs(os.path.join(src, os.path.dirname(rel)))
+            with open(os.path.join(src, rel), 'w') as fh: fh.write(code + '\n')
+            got = sum(violations(collect_hits(src, lib), owners).values()) > 0
+            if got != want:
+                bad += 1
+                print('SELF-TEST FAIL (%s expected, %s): %s: %s' % ('flagged' if want else 'clean',
+                      'flagged' if got else 'clean', rel, code.replace('\n', ' | ')))
+    print('reg owners self-test: %d cases, %d misjudged' % (len(SELF_CASES), bad))
+    return 1 if bad else 0
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--src', default='firmware/src')
@@ -187,29 +287,17 @@ def main():
     ap.add_argument('--update-baseline', action='store_true')
     ap.add_argument('--strict', action='store_true')
     ap.add_argument('--census', action='store_true', help='print every write, owned or not')
+    ap.add_argument('--self-test', action='store_true', help='check the checker on injected snippets')
     a = ap.parse_args()
+    if a.self_test:
+        return self_test(a.lib_inc)
     lib = load_lib(a.lib_inc)
-    skip = ('attic', 'at32f403a_lib', 'FreeRTOS', 'CMSIS', 'CMSIS-DSP')
-    hits = []
-    for d, dirs, fs in os.walk(a.src):
-        dirs[:] = [x for x in dirs if x not in skip]
-        for f in sorted(fs):
-            if f.endswith('.c'):
-                p = os.path.join(d, f)
-                hits += scan_file(p, os.path.relpath(p, a.src), {}, lib)
+    hits = collect_hits(a.src, lib)
     if a.census:
         for h in hits: print('\t'.join(str(x) for x in h))
         return 0
     owners = load_owners(a.owners)
-    viol = collections.Counter()
-    # "src/model/  -" rows: a directory that owns no peripheral. Any write in it is a violation, whoever owns the register.
-    nowrite = [k[len('src/'):] for k, v in owners.items() if k.startswith('src/') and k.endswith('/') and v == ['-']]
-    for rel, n, func, periph, what, ex, raw in hits:
-        if ex:
-            continue
-        if not any(rel.startswith(d) for d in nowrite) and owned(owners, periph, rel, func):
-            continue
-        viol[(rel, func, periph)] += 1
+    viol = violations(hits, owners)
     if a.update_baseline:
         with open(a.baseline, 'w') as fh:
             for k in sorted(viol): fh.write('%s\t%s\t%s\t%d\n' % (k + (viol[k],)))

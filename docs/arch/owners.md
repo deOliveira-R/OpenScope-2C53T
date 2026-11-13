@@ -8,11 +8,16 @@ device; two of them writing the same register (especially read-modify-write ones
 or a GPIO configuration nibble) can undo each other's change.
 
 Reads are never a problem. Only writes count: struct stores (`GPIOC->scr = ...`), stores through aliases and
-typed pointers, raw-address stores, calls into the vendor driver library that change hardware (`gpio_init`,
-`tmr_channel_value_set`, `wdt_counter_reload`, ...), CMSIS `NVIC_*` calls and `__disable_irq`.
+typed pointers, raw-address stores (volatile or not), calls into the vendor driver library that change hardware
+(`gpio_init`, `tmr_channel_value_set`, `wdt_counter_reload`, ...), CMSIS `NVIC_*` calls and `__disable_irq`.
+Every assignment form counts (`=`, `|=`, `&=`, `^=`, `+=`, `-=`, `*=`, `/=`, `%=`, `<<=`, `>>=`, and `++`/`--`
+before or after). Both `.c` and `.h` files are scanned (inline functions in headers count). A write in a
+`#define` body counts where the macro is defined, under the function name `#define NAME`; the uses of the macro
+are not expanded.
 
 `src/model/` owns no peripheral at all. It holds user-settings state only and reaches hardware through the
-owner drivers, so any write there is a violation, whoever owns the register.
+owner drivers, so any write there is a violation, whoever owns the register. `REG-OWNER-EXEMPT` does not apply
+in a no-write directory.
 
 ## Files
 
@@ -49,6 +54,9 @@ It works as a ratchet:
 - Exit 0 means no new violations.
 
 Useful options: `--census` prints every write found, owned or not (file, line, function, peripheral).
+`--self-test` runs the checker on injected snippets (each write form, a macro body, a header, an exemption in
+`src/model/`, non-volatile raw casts) and on clean controls (the owner, reads, comparisons, plain counters), and
+fails if any is misjudged. `make check-owners` runs it before the scan.
 
 ## Updating the baseline
 
@@ -65,9 +73,12 @@ add its row to `scripts/reg_owners.txt` in the same commit.
 ## Exemptions
 
 A line comment `REG-OWNER-EXEMPT(<reason>)` on the write line excludes it, for reviewed cases such as the
-pre-scheduler boot sequence or the RAM flash installer. Give a real reason.
+pre-scheduler boot sequence or the RAM flash installer. Give a real reason. It is ignored in a no-write
+directory (`src/model/`).
 
 ## Blind spots
 
 The scanner is text-based. It cannot see addresses computed at run time or pointer-typed address macros (for
-example the GPIOD/GPIOE address built inside `main.c`'s `_GPIO_CFG`); those are reviewed by hand.
+example the GPIOD/GPIOE address built inside `main.c`'s `_GPIO_CFG`); those are reviewed by hand. A macro is
+judged where it is defined, not where it is used: a write macro defined in an owner file and used elsewhere is
+not seen at the use.

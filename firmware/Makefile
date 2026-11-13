@@ -1889,6 +1889,8 @@ guest-faulttest: clean all
 # the baseline does not cover. See docs/arch/owners.md. Not part of `all`.
 .PHONY: check-owners
 check-owners:
+	cd .. && python3 -I scripts/check_reg_owners.py --self-test \
+		--lib-inc firmware/at32f403a_lib/libraries/drivers/inc
 	cd .. && python3 -I scripts/check_reg_owners.py --src firmware/src \
 		--lib-inc firmware/at32f403a_lib/libraries/drivers/inc
 

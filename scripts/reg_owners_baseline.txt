@@ -3,6 +3,8 @@ drivers/dac_output.c	dac_output_init	DAC	1
 drivers/dac_output.c	dac_output_stop	DAC	2
 drivers/fpga.c	fpga_reconfig_pin_sweep	WDT	1
 drivers/fpga.c	fpga_spi3_config_sequence	WDT	1
+drivers/fpga_scanner.c	#define SCAN_CS_HI	GPIOB.out	1
+drivers/fpga_scanner.c	#define SCAN_CS_LO	GPIOB.out	1
 drivers/fpga_scanner.c	fpga_scanner_run	WDT	1
 drivers/fpga_scanner.c	scan_keepalive	WDT	1
 drivers/fpga_scanner.c	scan_set_spi_mode	SPI3	3
