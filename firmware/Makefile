@@ -1810,3 +1810,11 @@ guest-rtt: clean all
 guest-faulttest: CFLAGS += -DGUEST_BUILD -DFAULT_SELFTEST=1
 guest-faulttest: LDSCRIPT = ld/at32f403a_guest.ld
 guest-faulttest: clean all
+
+# Register-owner gate (ARCH round, task A0). Host-only: scans src/**/*.c for writes to
+# peripheral registers outside their owner (scripts/reg_owners.txt) and fails on any write
+# the baseline does not cover. See docs/arch/owners.md. Not part of `all`.
+.PHONY: check-owners
+check-owners:
+	cd .. && python3 -I scripts/check_reg_owners.py --src firmware/src \
+		--lib-inc firmware/at32f403a_lib/libraries/drivers/inc
