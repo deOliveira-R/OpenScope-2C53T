@@ -1,0 +1,43 @@
+# scripts/reg_owners.txt - who may WRITE each peripheral (ARCH round rule (a)).
+# <PERIPH> <owner> ...      owner = file (relative to firmware/src), dir/ (any file in it), or file:function
+# src/model/ owns no peripheral: user-settings state only. It must never write a register; the model reaches
+# hardware through the owner drivers.
+src/model/   -
+# GPIO: per-port .cfg (CFGLR/CFGHR, read-modify-write) and .out (SCR/CLR/ODT). Pin ownership: src/drivers/pins.h (review).
+GPIO*.*      drivers/fpga.c drivers/button_scan.c drivers/lcd.c drivers/sys_pwm.c drivers/flash_fs.c
+             drivers/power.c drivers/dac.c drivers/dac_output.c drivers/scope_trigger.c drivers/battery.c drivers/continuity_buzzer.c
+             drivers/usb_debug.c:usb_debug_init
+?PTR         drivers/fpga.c drivers/button_scan.c drivers/sys_pwm.c drivers/continuity_buzzer.c
+DAC          drivers/dac.c
+TMR7         drivers/dac_output.c
+DMA2         drivers/dac_output.c
+DMA2_CHANNEL4 drivers/dac_output.c
+TMR13        drivers/scope_trigger.c
+TMR3         drivers/button_scan.c
+TMR10        drivers/sys_pwm.c
+TMR11        drivers/sys_pwm.c
+ADC1         drivers/battery.c
+SPI3         drivers/fpga.c
+USART2       drivers/fpga.c
+EXINT        drivers/fpga.c drivers/continuity_buzzer.c
+IOMUX        drivers/fpga.c drivers/continuity_buzzer.c
+SPI2         drivers/flash_fs.c
+XMC          drivers/lcd.c
+LCDBUS       drivers/lcd.c
+WDT          drivers/watchdog.c
+CRM          drivers/ at32f403a_407_clock.c        # each driver enables its own clocks in its init
+NVIC         drivers/                              # each driver its own IRQ line
+PRIMASK      drivers/
+FLASH        drivers/mcu_flash.c
+SCS          main.c:SystemInit drivers/fault.c drivers/watchdog.c drivers/dfu_boot.c drivers/power.c
+USB          drivers/usb_debug.c drivers/usb_msc.c drivers/usb_composite.c
+ACC          drivers/usb_debug.c:usb_debug_init
+BPR          drivers/fw_loader.c drivers/dfu_boot.c
+PWC          drivers/fw_loader.c drivers/dfu_boot.c
+# RAM installer: interrupts off, flash being erased, nothing else runs; it may not call flash-resident drivers.
+GPIOB.*      drivers/fw_loader.c:rf_w25q_read_raw drivers/fw_loader.c:fwl_ram_install drivers/fw_loader.c:rf_spi2_xfer
+GPIOC.*      drivers/fw_loader.c:fwl_ram_install
+SPI2         drivers/fw_loader.c:rf_spi2_xfer drivers/fw_loader.c:rf_w25q_read_raw drivers/fw_loader.c:fwl_ram_install
+FLASH        drivers/fw_loader.c:fwl_ram_install
+CRM          drivers/fw_loader.c
+SCS          drivers/fw_loader.c:fwl_ram_install
