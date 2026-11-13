@@ -288,6 +288,26 @@ static void test_parse_format(void)
     CHECK(prop_parse(P(TRIG_LEVEL), "-5", &v) == PS_OK && v == -5);      /* signed: absolute */
     CHECK(prop_parse(P(TRIG_LEVEL), "+=5", &v) == PS_OK && v == 5);      /* relative spelled out */
     CHECK(prop_parse(P(IL_OFFSET), "-0.05", &v) == PS_OK && v == -5);
+    /* Steps and signs from a non-zero current value (from 0 an absolute -5
+     * and a step of -5 are the same number and prove nothing). */
+    {
+        prop_note_t nn;
+        CHECK(prop_set_local(P(CH1_POS), 50, ORIGIN_KEY, &nn) == PS_OK && prop_get(P(CH1_POS)) == 50);
+        CHECK(prop_set_local(P(TRIG_LEVEL), 30, ORIGIN_KEY, &nn) == PS_OK && prop_get(P(TRIG_LEVEL)) == 30);
+        CHECK(prop_parse(P(CH1_POS), "-20", &v) == PS_OK && v == -20);      /* signed min: absolute */
+        CHECK(prop_parse(P(CH1_POS), "+20", &v) == PS_OK && v == 20);
+        CHECK(prop_parse(P(CH1_POS), "-=5", &v) == PS_OK && v == 45);       /* 50 - 5 */
+        CHECK(prop_parse(P(CH1_POS), "+=5", &v) == PS_OK && v == 55);
+        CHECK(prop_parse(P(CH1_POS), "-=200", &v) == PS_OK && v == -150);   /* an int: the set clamps it */
+        CHECK(prop_parse(P(TRIG_LEVEL), "+5", &v) == PS_OK && v == 5);      /* not a step */
+        CHECK(prop_parse(P(TRIG_LEVEL), "-5", &v) == PS_OK && v == -5);
+        CHECK(prop_parse(P(TRIG_LEVEL), "-=5", &v) == PS_OK && v == 25);
+        CHECK(prop_parse(P(CH1_VDIV), "-=2", &v) == PS_OK && v == 1);       /* 3 - 2 on an enum */
+        CHECK(prop_parse(P(GEN_FREQ), "-=100", &v) == PS_OK && v == prop_get(P(GEN_FREQ)) - 100);
+        CHECK(prop_parse(P(GEN_FREQ), "-100", &v) == PS_OK && v == prop_get(P(GEN_FREQ)) - 100);  /* min >= 0: a step */
+        CHECK(prop_set_local(P(CH1_POS), 0, ORIGIN_KEY, &nn) == PS_OK);
+        CHECK(prop_set_local(P(TRIG_LEVEL), 0, ORIGIN_KEY, &nn) == PS_OK);
+    }
     CHECK(prop_parse(P(IL_GAIN), "1.0025", &v) == PS_OK && v == 1002500);
     CHECK(prop_parse(P(VIEW_MATH), "-A", &v) == PS_OK && v == 5);        /* a label, not a step */
     CHECK(prop_parse(P(VIEW_MATH), "off", &v) == PS_OK && v == 0);
