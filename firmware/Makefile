@@ -831,6 +831,27 @@ test-units-negative: tests/test_units_negative.c src/util/units.h | $(BUILD_DIR)
 	if [ $$bad -ne 0 ]; then exit 1; fi; \
 	echo "units-negative: control compiles, all $(words $(UNITS_NEG_CASES)) mixing cases rejected"
 
+# Property model (src/model/, ARCH-1 M0): the registry core, host only, not
+# linked into the firmware yet. The table, lookup/glob, parse/format with
+# units, clamp/step/wrap, all-or-nothing multi-set validation, epochs, RO
+# refusal, NOT_SET keeps the old value (every PF_HW property), profile lines,
+# defaults and instruments, on the real pure modules with fake hardware ops.
+MODEL_SRCS      = src/model/model.c src/model/props_scope.c src/model/props_gen.c \
+                  src/model/props_meter.c src/model/props_sys.c
+MODEL_TEST_LINK = src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
+                  src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/meas_select.c src/ui/theme.c \
+                  src/ui/key_model.c src/ui/trig_menu.c src/ui/osc_menu_model.c \
+                  src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c
+
+$(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/model/model_table.h \
+                         src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -Isrc/model -Isrc/util \
+		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-model
+test-model: $(BUILD_DIR)/test_model
+	$<
+
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens
 # against a transcription of the pre-B2 logic. See tests/test_redraw_gate.c.
 $(BUILD_DIR)/test_redraw_gate: tests/test_redraw_gate.c src/ui/redraw_gate.h | $(BUILD_DIR)
