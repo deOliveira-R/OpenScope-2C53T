@@ -807,6 +807,30 @@ test-stock-meter-literals:
 
 test-meter: test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-meter-stock test-stock-meter-literals
 
+# Typed units (src/util/units.h). test-units: conversions, clamps, rounding,
+# cursor sign, fmt_fixed/parse_fixed. test-units-negative: the same header must
+# REJECT unit mixing; each numbered case in tests/test_units_negative.c is
+# compiled on its own and must fail, and case 0 (correct use) must compile.
+UNITS_NEG_CASES = 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
+
+$(BUILD_DIR)/test_units: tests/test_units.c src/util/units.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -lm -o $@
+
+.PHONY: test-units test-units-negative
+test-units: $(BUILD_DIR)/test_units
+	$<
+
+test-units-negative: tests/test_units_negative.c src/util/units.h | $(BUILD_DIR)
+	@$(HOST_CC) -std=gnu11 -Wall -Wextra -Werror -fsyntax-only -DCASE=0 $< \
+		|| { echo "units-negative: positive control (CASE 0) does not compile"; exit 1; }
+	@bad=0; for n in $(UNITS_NEG_CASES); do \
+		if $(HOST_CC) -std=gnu11 -Wall -Wextra -Werror -fsyntax-only -DCASE=$$n $< 2>/dev/null; then \
+			echo "units-negative: CASE $$n COMPILED (must fail)"; bad=1; \
+		fi; \
+	done; \
+	if [ $$bad -ne 0 ]; then exit 1; fi; \
+	echo "units-negative: control compiles, all $(words $(UNITS_NEG_CASES)) mixing cases rejected"
+
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens
 # against a transcription of the pre-B2 logic. See tests/test_redraw_gate.c.
 $(BUILD_DIR)/test_redraw_gate: tests/test_redraw_gate.c src/ui/redraw_gate.h | $(BUILD_DIR)
