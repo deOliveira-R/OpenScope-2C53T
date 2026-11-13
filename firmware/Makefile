@@ -1810,3 +1810,34 @@ guest-rtt: clean all
 guest-faulttest: CFLAGS += -DGUEST_BUILD -DFAULT_SELFTEST=1
 guest-faulttest: LDSCRIPT = ld/at32f403a_guest.ld
 guest-faulttest: clean all
+
+# Screen core (src/ui/screen.h): the router order, overlays over a base, modal
+# capture, close/switch and the `ui screen` snapshot. Pure; not linked into the
+# firmware yet.
+$(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
+                                 src/ui/ui.h src/ui/redraw_gate.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< src/ui/screen.c -o $@
+
+.PHONY: test-screen-router
+test-screen-router: $(BUILD_DIR)/test_screen_router
+	$<
+
+# test-all: every host test, from scratch. Stale binaries are removed first so
+# a test that no longer builds cannot pass on an old executable. All tests run
+# even after a failure; the target fails if any did, and names them.
+# Left out on purpose: the aggregates (test-meter runs targets listed here) and
+# test-meter-word-map (documented above as expected to fail until the issue
+# #15 word-table correction lands).
+TEST_ALL_SKIP := test-all test-meter test-meter-word-map
+TEST_ALL_TARGETS = $(filter-out $(TEST_ALL_SKIP),$(sort $(shell sed -n 's/^\(test-[a-z0-9-]*\):.*/\1/p' $(firstword $(MAKEFILE_LIST)))))
+
+.PHONY: test-all
+test-all:
+	@rm -f $(BUILD_DIR)/test_*
+	@fail=""; n=0; \
+	for t in $(TEST_ALL_TARGETS); do \
+	  n=$$((n+1)); echo "=== $$t"; \
+	  $(MAKE) --no-print-directory $$t || fail="$$fail $$t"; \
+	done; \
+	if [ -n "$$fail" ]; then echo "test-all: FAILED:$$fail"; exit 1; fi; \
+	echo "test-all: $$n targets passed"
