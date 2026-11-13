@@ -6228,8 +6228,8 @@ static volatile uint8_t s_pinlog_on;
 static uint16_t s_pinlog_t;
 
 /* Rows are stored only on a change: a quiet pin flips (the LCD bus on D/E,
- * PA6/PB4 PWM and PC0 strobe are masked out) or the battery ADC moves by 6
- * counts (~10 mV). So the log can stay armed for hours. */
+ * PA6/PB4 PWM and PC0 strobe are masked out) or the battery ADC moves by 12
+ * counts (~20 mV). So the log can stay armed for hours. */
 void usb_debug_pinlog_tick(void)
 {
     if (!s_pinlog_on) return;
@@ -6243,7 +6243,7 @@ void usb_debug_pinlog_tick(void)
         if (((a ^ s_pinlog[i - 1].idt[0]) & (uint16_t)~(1u << 6)) == 0 &&
             ((b ^ s_pinlog[i - 1].idt[1]) & (uint16_t)~(1u << 4)) == 0 &&
             ((c ^ s_pinlog[i - 1].idt[2]) & (uint16_t)~(1u << 0)) == 0 &&
-            d > -6 && d < 6)
+            d > -12 && d < 12)
             return;
     }
     s_pinlog[i].t = s_pinlog_t;
