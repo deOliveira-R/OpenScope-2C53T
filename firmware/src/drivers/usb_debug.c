@@ -96,6 +96,7 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdlib.h>
+#include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
 
 /* ═══════════════════════════════════════════════════════════════════
  * USB Device Instance
@@ -10408,6 +10409,16 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope softtrig [on|off|toggle]      Lock trace to trigger crossing vs free-run\r\n"),
     CMD_V("settings", cmd_settings, SC_EXACT,
           "settings                        Persistence status: bound, load result, writes, failures\r\n"),
+    /* The property model's raw route (src/model/model_shell.c): the same
+     * setters as the keys, applied by the input task. */
+    CMD_A("get", cmd_model_get, SC_NEEDARGS,
+          "get <prop|glob> [...]           Property values: get ch1.vdiv, get ch1.*, get *\r\n"),
+    CMD_A("set", cmd_model_set, SC_NEEDARGS,
+          "set <prop> <value> | set p=v .. Set through the input task (label, number, +N/-N)\r\n"),
+    CMD_A("list", cmd_model_list, 0,
+          "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"),
+    CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
+          "describe <prop>                 Range/labels, default, unit, saved where, owner\r\n"),
     CMD_A("fpga postedge", cmd_fpga_postedge, 0,
           "fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n"),
     CMD_A("fpga scope hpos", cmd_fpga_scope_hpos, 0,

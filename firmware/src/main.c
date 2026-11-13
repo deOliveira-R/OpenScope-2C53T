@@ -933,11 +933,21 @@ static void vDisplayTask(void *pvParameters)
 volatile uint8_t g_emu_key __attribute__((used)) = 0;
 #endif
 
+/* The property model's executor (src/model/model_exec.h): other tasks queue
+ * property sets and this task applies them, after the key it just handled.
+ * A request's wake is a BTN_NONE posted into the key queue. */
+#include "model_exec.h"
+
+volatile uint32_t input_events_done;   /* keys handled (the wake is not one) */
+
 static void vInputTask(void *pvParameters)
 {
     (void)pvParameters;
     button_scan_start();
     logo_ui_boot_hold(xInputQueue, xDisplayQueue, 1000u);   /* boot logo, any key skips */
+    /* After the logo: its "any key skips" would take a wake for a key. Until
+     * here a shell `set` answers BUSY. */
+    model_fw_start(xDisplayQueue);
 
     for (;;) {
         button_id_t pressed;
@@ -953,11 +963,16 @@ static void vInputTask(void *pvParameters)
 #endif
 
         /* Block until TMR3 ISR confirms a debounced button press */
-        if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE) {
+        if (xQueueReceive(xInputQueue, &pressed, pdMS_TO_TICKS(100)) == pdTRUE &&
+            pressed != BTN_NONE) {      /* BTN_NONE = a model request's wake: no key */
             g_last_key_tick = xTaskGetTickCount();
             g_last_key_id = (uint16_t)pressed;
             input_handle_button(pressed, xDisplayQueue);
+            input_events_done++;
         }
+        /* Property sets queued by other tasks (the shell's `set`), after the
+         * key: the two never interleave. No-op when the queue is empty. */
+        (void)model_exec_drain();
         input_autooff_poll();   /* idle power-off (C15); no-op while "Off" */
         /* Backstop: the buzzer task ends a key click, but if it failed to
          * start a click would sound forever; this bounds it to <= ~210 ms. */

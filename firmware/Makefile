@@ -162,6 +162,16 @@ R1A_OSC_MENU_TEST_SRCS = src/ui/osc_menu_model.c src/ui/meas_select.c src/ui/sco
 R1A_CONFIG_PERSIST_EXTRA = src/ui/meas_select.c
 # ── end R1-A block ──
 
+# ── ARCH-1 M1: the property model, live (one block, for the merge) ──
+# The registry core (M0) plus the executor (model_exec.c: the queue the input
+# task drains), the real hardware ops (model_hw_fw.c) and the shell's
+# get/set/list/describe (model_shell.c). Host test: make test-model-exec.
+C_SOURCES += src/model/model.c src/model/props_scope.c src/model/props_gen.c
+C_SOURCES += src/model/props_meter.c src/model/props_sys.c
+C_SOURCES += src/model/model_exec.c src/model/model_hw_fw.c src/model/model_shell.c
+C_INCLUDES_M1 = -Isrc/model
+# ── end M1 block ──
+
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
   C_SOURCES += src/dsp/fft.c
@@ -265,6 +275,7 @@ C_INCLUDES += -Isrc/decode
 C_INCLUDES += -Isrc/modules
 C_INCLUDES += -Isrc/fonts
 C_INCLUDES += -Isrc
+C_INCLUDES += $(C_INCLUDES_M1)
 C_INCLUDES += -I$(AT32_DRV)/inc
 C_INCLUDES += -I$(AT32_CMSIS)/device_support
 C_INCLUDES += -I$(AT32_CMSIS)/core_support
@@ -850,6 +861,23 @@ $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/
 
 .PHONY: test-model
 test-model: $(BUILD_DIR)/test_model
+	$<
+
+# Executor (ARCH-1 M1, src/model/model_exec.c) behind a host port: queue
+# order, seq-tagged result slots, timeout and withdrawal, a late answer never
+# read as the next one's, seq wrap, all-or-nothing multi-set, the not-wired
+# list, and the shell's get/set lines (every get line parses back as a profile
+# line). One case runs a real executor thread (pthreads) for "in progress".
+MODEL_EXEC_SRCS = src/model/model_exec.c src/model/model_shell.c
+$(BUILD_DIR)/test_model_exec: tests/test_model_exec.c $(MODEL_SRCS) $(MODEL_EXEC_SRCS) \
+                              src/model/model.h src/model/model_table.h src/model/model_exec.h \
+                              src/model/model_shell.h src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -DMODEL_EXEC_TEST -Isrc/model \
+		-Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) $(MODEL_EXEC_SRCS) \
+		$(MODEL_TEST_LINK) -lm -lpthread -o $@
+
+.PHONY: test-model-exec
+test-model-exec: $(BUILD_DIR)/test_model_exec
 	$<
 
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens
