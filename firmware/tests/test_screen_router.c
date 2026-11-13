@@ -261,6 +261,37 @@ static void test_grab(void)
     CHECK("after the pop the base gets keys again", screen_route_key(BTN_UP) == SCR_HANDLED && F[SCR_SCOPE].keys == 1);
 }
 
+static void test_layer_close(void)
+{
+    printf("CLOSE from an ordinary layer and from a base\n");
+    setup(SCR_SCOPE);
+    screen_push(SCR_LOGO);                      /* not a grab: reached in the layer walk */
+    F[SCR_LOGO].key_res = SCR_CLOSE;
+    clear_log();
+    CHECK("a plain layer's CLOSE pops it and asks for a full redraw",
+          screen_route_key(BTN_OK) == SCR_DRAW_FULL && screen_top() == SCR_SCOPE &&
+          screen_snapshot().n == 1 && F[SCR_LOGO].closes == 1);
+    CHECK("its close(to) names the base", F[SCR_LOGO].last_close_to == SCR_SCOPE);
+    CHECK("the base never saw the key", F[SCR_SCOPE].keys == 0);
+    CHECK("after_key got DRAW_FULL", g_after_last == SCR_DRAW_FULL);
+
+    setup(SCR_SCOPE);
+    screen_push(SCR_SET_OSC); screen_push(SCR_LOGO);
+    F[SCR_LOGO].key_res = SCR_UNHANDLED; F[SCR_SET_OSC].key_res = SCR_CLOSE;
+    CHECK("a lower layer's CLOSE (key passed down) pops it and the one above",
+          screen_route_key(BTN_OK) == SCR_DRAW_FULL && screen_top() == SCR_SCOPE &&
+          F[SCR_SET_OSC].closes == 1 && F[SCR_LOGO].closes == 1);
+
+    setup(SCR_SCOPE);
+    F[SCR_SCOPE].key_res = SCR_CLOSE;
+    uint32_t gen = screen_snapshot().gen;
+    CHECK("a base cannot close: CLOSE reads as HANDLED",
+          screen_route_key(BTN_OK) == SCR_HANDLED && g_after_last == SCR_HANDLED);
+    CHECK("the base stays, nothing closed, the stack unchanged",
+          screen_top() == SCR_SCOPE && screen_snapshot().n == 1 && F[SCR_SCOPE].closes == 0 &&
+          screen_snapshot().gen == gen && g_stack_posts == 0);
+}
+
 static void test_close_and_pop(void)
 {
     printf("close, pop, push\n");
@@ -438,6 +469,7 @@ int main(void)
     test_order_base();
     test_overlay_over_base();
     test_grab();
+    test_layer_close();
     test_close_and_pop();
     test_switch();
     test_opaque_ticks_draw();
