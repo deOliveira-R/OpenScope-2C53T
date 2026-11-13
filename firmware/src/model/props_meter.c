@@ -67,11 +67,21 @@ void    meter_fusetype_store(const prop_desc_t *p, int32_t v)
     fuse_type = (uint8_t)v;
     if (fuse_rating_idx >= rating_count(fuse_type)) fuse_rating_idx = 0;
 }
-/* A new type keeps the rating index when the type has it, else the first. */
+/* The load hook above keeps the index (a snapshot restores the rating right
+ * after the type). A set is a user's type change: like the TYPE keys
+ * (fuse_ui.c keep_rating, lifted) it keeps the rating in amps when the new
+ * type has it, else the largest below it, else the smallest. */
 prop_status_t meter_fusetype_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin; (void)note;
-    meter_fusetype_store(p, v);
+    (void)p; (void)origin; (void)note;
+    const fuse_table_t *ot = &fuse_tables[fuse_type < FUSE_TYPE_COUNT ? fuse_type : 0];
+    const uint8_t amps = ot->entries[fuse_rating_idx < ot->count ? fuse_rating_idx : 0].rating_amps;
+    const fuse_table_t *nt = &fuse_tables[(uint8_t)v < FUSE_TYPE_COUNT ? (uint8_t)v : 0];
+    uint8_t best = 0;
+    for (uint8_t i = 0; i < nt->count; i++)
+        if (nt->entries[i].rating_amps <= amps) best = i;
+    fuse_type = (uint8_t)v;
+    fuse_rating_idx = best;
     return PS_OK;
 }
 

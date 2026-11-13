@@ -492,6 +492,26 @@ static void test_rules(void)
     CHECK(prop_set_local(P(METER_FUNC), 4, ORIGIN_KEY, &n) == PS_OK && !g_keep_auto);
     CHECK(meter_submode == 4 && strcmp(n.text, "posture posted") == 0);
 
+    /* fuse type: a set keeps the rating in amps, like the TYPE keys */
+    {
+        const uint8_t amps0 = fuse_tables[0].entries[6].rating_amps;          /* ATO idx 6 */
+        CHECK(fuse_type == 0 && fuse_rating_idx == 6 && amps0 == 10);
+        CHECK(prop_set_local(P(METER_FUSETYPE), 2, ORIGIN_SHELL, &n) == PS_OK);  /* micro2 */
+        CHECKF(fuse_tables[2].entries[fuse_rating_idx].rating_amps == 10, "idx %u", fuse_rating_idx);
+        CHECK(fuse_rating_idx == 3);
+        CHECK(prop_set_local(P(METER_FUSETYPE), 0, ORIGIN_SHELL, &n) == PS_OK);  /* back: 10 A */
+        CHECK(fuse_rating_idx == 6);
+        CHECK(prop_set_local(P(METER_FUSETYPE), 3, ORIGIN_SHELL, &n) == PS_OK);  /* maxi: none <= 10 A */
+        CHECK(fuse_rating_idx == 0 && fuse_tables[3].entries[0].rating_amps == 20);
+        CHECK(prop_set_local(P(METER_FUSERATING), 6, ORIGIN_KEY, &n) == PS_OK);  /* 60 A */
+        CHECK(prop_set_local(P(METER_FUSETYPE), 4, ORIGIN_SHELL, &n) == PS_OK);  /* jcase: 60 A */
+        CHECK(fuse_tables[4].entries[fuse_rating_idx].rating_amps == 60);
+        CHECK(prop_set_local(P(METER_FUSETYPE), 1, ORIGIN_SHELL, &n) == PS_OK);  /* mini: 30 A, the top */
+        CHECK(fuse_tables[1].entries[fuse_rating_idx].rating_amps == 30);
+        CHECK(prop_set_local(P(METER_FUSETYPE), 0, ORIGIN_SHELL, &n) == PS_OK);
+        CHECK(prop_set_local(P(METER_FUSERATING), 6, ORIGIN_SHELL, &n) == PS_OK);
+    }
+
     /* fuse rating: a shorter table clamps */
     CHECK(prop_set_local(P(METER_FUSETYPE), 4, ORIGIN_KEY, &n) == PS_OK);      /* J-Case: 7 */
     CHECK(prop_set_local(P(METER_FUSERATING), 12, ORIGIN_KEY, &n) == PS_CLAMPED);
