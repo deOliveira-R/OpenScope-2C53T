@@ -66,6 +66,9 @@ static int32_t  g_il_gain = 1000000, g_il_off = 0, g_il_skew = 0;
 static uint8_t  g_tolv = 8, g_tolh = 2, g_pmode;
 static bool     g_stopfail = true, g_keep_auto;
 
+static unsigned g_fail_at, g_calls;   /* g_fail_at = n: the n-th bool owner call says no */
+static bool nok(void) { return g_fail || (g_fail_at && ++g_calls == g_fail_at); }
+
 static void logf_(const char *fmt, ...)
 {
     char t[64];
@@ -77,39 +80,39 @@ static void logf_(const char *fmt, ...)
 }
 static void log_clear(void) { g_log[0] = '\0'; }
 
-static bool f_vdiv(uint8_t ch, uint8_t i)        { logf_("vdiv(%u,%u);", ch, i); return !g_fail; }
-static bool f_coupling(uint8_t ch, uint8_t c)    { logf_("coupling(%u,%u);", ch, c); return !g_fail; }
-static bool f_enables(void)                      { logf_("enables;"); return !g_fail; }
+static bool f_vdiv(uint8_t ch, uint8_t i)        { logf_("vdiv(%u,%u);", ch, i); return !nok(); }
+static bool f_coupling(uint8_t ch, uint8_t c)    { logf_("coupling(%u,%u);", ch, c); return !nok(); }
+static bool f_enables(void)                      { logf_("enables;"); return !nok(); }
 static bool f_il_active(void)                    { return false; }
-static bool f_vpos(uint8_t ch, int16_t p)        { logf_("vpos(%u,%d);", ch, p); return !g_fail; }
-static bool f_timebase(uint8_t c)                { logf_("tb(%u);", c); return !g_fail; }
-static bool f_roll(void)                         { logf_("roll;"); return !g_fail; }
-static bool f_trig_src(void)                     { logf_("trigsrc;"); return !g_fail; }
-static bool f_trig_lvl(int16_t l)                { logf_("triglvl(%d);", l); return !g_fail; }
+static bool f_vpos(uint8_t ch, int16_t p)        { logf_("vpos(%u,%d);", ch, p); return !nok(); }
+static bool f_timebase(uint8_t c)                { logf_("tb(%u);", c); return !nok(); }
+static bool f_roll(void)                         { logf_("roll;"); return !nok(); }
+static bool f_trig_src(void)                     { logf_("trigsrc;"); return !nok(); }
+static bool f_trig_lvl(int16_t l)                { logf_("triglvl(%d);", l); return !nok(); }
 static void f_rearm(void)                        { logf_("rearm;"); }
-static bool f_view(uint8_t v)                    { logf_("view(%u);", v); if (g_fail) return false; scope_view = (scope_view_t)v; return true; }
-static bool f_pers_on(uint8_t m)                 { logf_("pers_on(%u);", m); if (g_fail) return false; persist_enabled = true; g_pmode = m; return true; }
+static bool f_view(uint8_t v)                    { logf_("view(%u);", v); if (nok()) return false; scope_view = (scope_view_t)v; return true; }
+static bool f_pers_on(uint8_t m)                 { logf_("pers_on(%u);", m); if (nok()) return false; persist_enabled = true; g_pmode = m; return true; }
 static void f_pers_off(void)                     { logf_("pers_off;"); persist_enabled = false; }
 static uint8_t f_pers_mode(void)                 { return g_pmode; }
 static bool f_mask_present(void)                 { return true; }
 static void f_mask_get(uint8_t *v, uint8_t *h, bool *s) { *v = g_tolv; *h = g_tolh; *s = g_stopfail; }
-static bool f_mask_tol(uint8_t v, uint8_t h)     { logf_("mask_tol(%u,%u);", v, h); if (g_fail) return false; g_tolv = v; g_tolh = h; return true; }
-static bool f_mask_sf(bool on)                   { logf_("mask_sf(%d);", on); if (g_fail) return false; g_stopfail = on; return true; }
+static bool f_mask_tol(uint8_t v, uint8_t h)     { logf_("mask_tol(%u,%u);", v, h); if (nok()) return false; g_tolv = v; g_tolh = h; return true; }
+static bool f_mask_sf(bool on)                   { logf_("mask_sf(%d);", on); if (nok()) return false; g_stopfail = on; return true; }
 static void f_gen_wave(uint8_t w)                { logf_("gen_wave(%u);", w); siggen_set_waveform(w); }
 static void f_gen_freq(uint32_t f)               { logf_("gen_freq(%u);", (unsigned)f); siggen_set_frequency(f); }
 static void f_gen_amp(uint8_t a)                 { logf_("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
 static void f_gen_duty(percent_t d)              { logf_("gen_duty(%u);", d.pct); siggen_set_duty(d.pct); }
 static void f_gen_out(bool on)                   { logf_("gen_out(%d);", on); siggen_enable(on); }
 static void f_gen_boot(bool on)                  { logf_("gen_boot(%d);", on); siggen_set_start_on(on); }
-static bool f_meter(uint8_t m, bool keep)        { logf_("meter(%u,%d);", m, keep); g_keep_auto = keep; return !g_fail; }
-static bool f_mode(uint8_t m)                    { logf_("mode(%u);", m); if (g_fail) return false; current_mode = (device_mode_t)m; return true; }
+static bool f_meter(uint8_t m, bool keep)        { logf_("meter(%u,%d);", m, keep); g_keep_auto = keep; return !nok(); }
+static bool f_mode(uint8_t m)                    { logf_("mode(%u);", m); if (nok()) return false; current_mode = (device_mode_t)m; return true; }
 static void f_backlight(uint8_t p)               { logf_("backlight(%u);", p); }
 static void f_autooff(uint8_t m)                 { logf_("autooff(%u);", m); }
-static bool f_il_en(bool on)                     { logf_("il_en(%d);", on); if (g_fail) return false; g_il_en = on; return true; }
+static bool f_il_en(bool on)                     { logf_("il_en(%d);", on); if (nok()) return false; g_il_en = on; return true; }
 static bool f_il_enabled(void)                   { return g_il_en; }
-static bool f_il_corr_set(gain_e6_t g, int32_t o){ logf_("il_corr(%ld,%ld);", (long)g.e6, (long)o); if (g_fail) return false; g_il_gain = g.e6; g_il_off = o; return true; }
+static bool f_il_corr_set(gain_e6_t g, int32_t o){ logf_("il_corr(%ld,%ld);", (long)g.e6, (long)o); if (nok()) return false; g_il_gain = g.e6; g_il_off = o; return true; }
 static void f_il_corr_get(gain_e6_t *g, int32_t *o) { g->e6 = g_il_gain; *o = g_il_off; }
-static bool f_il_skew_set(ppm_period_t s)        { logf_("il_skew(%ld);", (long)s.ppm); if (g_fail) return false; g_il_skew = s.ppm; return true; }
+static bool f_il_skew_set(ppm_period_t s)        { logf_("il_skew(%ld);", (long)s.ppm); if (nok()) return false; g_il_skew = s.ppm; return true; }
 static ppm_period_t f_il_skew_get(void)          { ppm_period_t s = { g_il_skew }; return s; }
 static bool f_busy(void)                         { return g_busy; }
 static bool f_shell_persist(void)                { return g_shell_persist; }
@@ -144,7 +147,7 @@ static void fresh(void)
     meter_submode = 0; meter_layout = 0; math_enabled = false; math_op = 0;
     persist_enabled = false; scope_view = SCOPE_VIEW_TIME; g_pmode = 0;
     fuse_type = 0; fuse_rating_idx = 6; fuse_scan_threshold_mv = 0.1f; g_focus = 0;
-    g_fail = false; g_busy = false; g_shell_persist = true; g_notes = 0;
+    g_fail = false; g_fail_at = 0; g_calls = 0; g_busy = false; g_shell_persist = true; g_notes = 0;
     g_il_en = true; g_il_gain = 1000000; g_il_off = 0; g_il_skew = 0;
     g_tolv = 8; g_tolh = 2; g_stopfail = true;
     model_bind_hw(&k_fake);
@@ -555,6 +558,80 @@ static void test_not_set_keeps_old(void)
     CHECK(tried >= 30);
 }
 
+/* Each owner call failing in turn (the first, the second, ...): a setter
+ * with several calls must undo the ones before, so a non-OK status always
+ * leaves the old value and the epoch alone. */
+static void test_fail_each_call(void)
+{
+    unsigned cases = 0;
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        if (!(p->flags & PF_HW) || !prop_is_settable(p)) continue;
+        for (int32_t want = p->min; want <= p->max && want <= p->min + 6; want++) {
+            for (unsigned k = 1; k <= 4; k++) {
+                fresh();
+                const int32_t old = prop_get(p);
+                if (want == old) continue;
+                const uint32_t e = prop_group_epoch(p->group);
+                g_fail_at = k;
+                const prop_status_t s = prop_set_local(p, want, ORIGIN_KEY, NULL);
+                g_fail_at = 0;
+                cases++;
+                if (s == PS_OK || s == PS_CLAMPED) continue;
+                CHECKF(prop_get(p) == old && prop_group_epoch(p->group) == e,
+                       "%s %ld->%ld, call %u failed: now %ld", p->name, (long)old, (long)want, k,
+                       (long)prop_get(p));
+            }
+        }
+    }
+    CHECK(cases > 200);
+
+    /* the two-step view changes, by hand: fft -> roll with Roll refused,
+     * roll -> split with the view refused */
+    prop_note_t n;
+    fresh();
+    CHECK(prop_set_local(P(VIEW_MODE), 3, ORIGIN_KEY, &n) == PS_OK && scope_view == SCOPE_VIEW_FFT);
+    g_fail_at = 2; g_calls = 0;                       /* view(0) ok, roll refused */
+    CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, &n) == PS_NOT_SET);
+    g_fail_at = 0;
+    CHECK(prop_get(P(VIEW_MODE)) == 3 && scope_view == SCOPE_VIEW_FFT && !scope_state_get()->roll);
+    fresh();
+    CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, &n) == PS_OK && scope_state_get()->roll);
+    log_clear();
+    g_fail_at = 2; g_calls = 0;                       /* roll off ok, view refused */
+    CHECK(prop_set_local(P(VIEW_MODE), 4, ORIGIN_KEY, &n) == PS_NOT_SET);
+    g_fail_at = 0;
+    CHECK(prop_get(P(VIEW_MODE)) == 1 && scope_state_get()->roll && scope_view == SCOPE_VIEW_TIME);
+    CHECK(strcmp(g_log, "roll;view(2);roll;") == 0);
+}
+
+/* A setter's change in another group bumps that group too. */
+static void test_cross_group(void)
+{
+    fresh();
+    uint32_t e = prop_group_epoch(PG_UI);
+    CHECK(prop_set_local(P(CH1_ENABLED), 0, ORIGIN_KEY, NULL) == PS_OK && active_channel == 1);
+    CHECK(prop_group_epoch(PG_UI) == e + 1);                      /* ui.ach moved */
+    scope_state_get()->running = false;
+    e = prop_group_epoch(PG_VIEW);
+    CHECK(prop_set_local(P(TRIG_SOURCE), TRIG_SRC_CH2, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_set_local(P(TRIG_MODE), TRIG_SINGLE, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_group_epoch(PG_VIEW) == e + 1 && prop_get(P(VIEW_RUN)) == 1);   /* view.run */
+    e = prop_group_epoch(PG_VIEW);
+    uint32_t t = prop_group_epoch(PG_TB);
+    CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_group_epoch(PG_VIEW) > e && prop_group_epoch(PG_TB) > t);       /* view.mode = roll */
+    CHECK(prop_get(P(VIEW_MODE)) == 1);
+    t = prop_group_epoch(PG_TB);
+    CHECK(prop_set_local(P(VIEW_MODE), 0, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_group_epoch(PG_TB) > t && prop_get(P(TB_ROLL)) == 0);           /* tb.roll */
+    /* a posted change lands later: the owner bumps (model_touch) */
+    e = prop_group_epoch(PG_SYS);
+    model_touch(PG_SYS);
+    CHECK(prop_group_epoch(PG_SYS) == e + 1);
+    model_touch(PG_COUNT);                                        /* out of range: ignored */
+}
+
 /* ═══ save forms, profile lines, defaults, instruments ══════════════ */
 
 static void test_save_forms(void)
@@ -589,6 +666,8 @@ static void test_profile_lines(void)
     CHECK(strcmp(line, "ch1.meas = Freq,Peri,Duty+,Vp-p,Vrms") == 0);
     prop_line_format(P(IL_SKEW), -1500, line, sizeof line);
     CHECK(strcmp(line, "il.skew = -1500 ppm") == 0);
+    prop_line_format(P(IL_GAIN), 1002500, line, sizeof line);
+    CHECK(strcmp(line, "il.gain = 1.002500") == 0);                /* the decimals are the scale */
 
     /* every settable property at min, max and default: format -> parse -> same */
     unsigned rt = 0;
@@ -708,9 +787,13 @@ static void test_instruments(void)
     CHECK(prop_instrument_default(P(CH2_VDIV), &can) == 5);       /* no override: built in */
     CHECK(prop_set_local(P(TB_CODE), 4, ORIGIN_KEY, NULL) == PS_OK);
     CHECK(prop_set_local(P(GEN_AMP), 5, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_set_local(P(SYS_THEME), 2, ORIGIN_KEY, NULL) == PS_OK);
     CHECK(model_load_defaults(PF_PERSIST, &can, false) == 3);    /* tb.code, ch1.vdiv, trig.mode */
     CHECK(prop_get(P(TB_CODE)) == 0x0A && prop_get(P(CH1_VDIV)) == 6 && prop_get(P(TRIG_MODE)) == TRIG_NORMAL);
     CHECK(prop_get(P(GEN_AMP)) == 5);                            /* not one of its properties */
+    CHECK(prop_get(P(SYS_THEME)) == 2);                          /* system-wide: left alone */
+    CHECK(model_load_defaults(PF_PERSIST | PF_SESSION, sc, false) > 0);
+    CHECK(prop_get(P(SYS_THEME)) == 2 && prop_get(P(TB_CODE)) == 10 && prop_get(P(CH1_VDIV)) == 3);
 }
 
 static void test_sizes(void)
@@ -731,6 +814,8 @@ int main(void)
     test_epochs_notes();
     test_rules();
     test_not_set_keeps_old();
+    test_fail_each_call();
+    test_cross_group();
     test_save_forms();
     test_profile_lines();
     test_profile_write_and_defaults();

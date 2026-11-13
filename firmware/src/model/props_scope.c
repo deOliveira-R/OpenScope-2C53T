@@ -65,7 +65,10 @@ prop_status_t ch_enabled_set(const prop_desc_t *p, int32_t v, uint8_t origin, pr
         model_note(note, "Keep one CH on");
         return PS_REFUSED;
     }
-    if (!want && active_channel == p->arg) active_channel = (uint8_t)(1u - p->arg);
+    if (!want && active_channel == p->arg) {
+        active_channel = (uint8_t)(1u - p->arg);
+        model_touch(PG_UI);                          /* ui.ach */
+    }
     if (HW->interleave_active && HW->interleave_active()) {
         char t[24];
         snprintf(t, sizeof t, "CH%u alone: 250 MS/s", (unsigned)(2u - p->arg));
@@ -204,6 +207,7 @@ static prop_status_t roll_apply(bool want, uint8_t step, prop_note_t *note)
         model_note(note, "Roll NOT SET");
         return PS_NOT_SET;
     }
+    if (want != was) { model_touch(PG_TB); model_touch(PG_VIEW); }   /* tb.roll and view.mode */
     return PS_OK;
 }
 
@@ -239,6 +243,7 @@ prop_status_t trig_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
     scope_state_t *ss = scope_state_get();
     trig_mode_store(p, v);
     if (v == TRIG_SINGLE) {
+        if (!ss->running) model_touch(PG_VIEW);      /* view.run */
         ss->running = true;
         if (HW->single_rearm) HW->single_rearm();
         model_note(note, "Await Trigger...");
@@ -353,28 +358,46 @@ void view_mode_store(const prop_desc_t *p, int32_t v)
     scope_state_get()->roll = (v == VM_ROLL);
 }
 
-/* display_select (+ the CH1 pane's FFT row for split): the view first
- * (scope_view_select claims or releases the pool), then Roll. Split needs
- * Roll off first, as channel_change does. */
+/* The scope view through its owner (scope_view_select claims or releases
+ * the shared pool); with no owner bound, the pure part. */
+static bool view_switch(uint8_t view)
+{
+    if (HW->view_select) return HW->view_select(view);
+#ifdef FEATURE_FFT
+    scope_view = (scope_view_t)view;
+    return true;
+#else
+    return view == 0u;
+#endif
+}
+
+/* display_select (+ the CH1 pane's FFT row for split), in three steps, each
+ * undone if a later one is refused, so a failure leaves the old view:
+ * Roll off first when the target is not Roll (split needs it off, as
+ * channel_change does), then the view, then Roll on for Roll. */
 prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)p; (void)origin;
+    (void)origin;
 #ifndef FEATURE_FFT
     if (v != VM_YT && v != VM_ROLL) { model_note(note, "Not in this build"); return PS_REFUSED; }
 #endif
-    if (v == VM_SPLIT && roll_apply(false, scope_state_get()->roll_step, note) != PS_OK)
+    scope_state_t *ss = scope_state_get();
+    const int32_t was = view_mode_get(p);
+    if (v == was) return PS_OK;
+    const bool was_roll = ss->roll, want_roll = (v == VM_ROLL);
+    const uint8_t was_view = VIEW_OF(was), want_view = VIEW_OF(v);
+
+    if (was_roll && !want_roll && roll_apply(false, ss->roll_step, note) != PS_OK)
         return PS_NOT_SET;
-    if (HW->view_select && !HW->view_select(VIEW_OF(v))) {
-        model_note(note, "Not in this build");
-        return PS_REFUSED;
+    if (want_view != was_view && !view_switch(want_view)) {
+        if (was_roll && !want_roll) (void)roll_apply(true, ss->roll_step, NULL);
+        model_note(note, "view NOT SET");
+        return PS_NOT_SET;
     }
-#ifdef FEATURE_FFT
-    if (!HW->view_select) scope_view = (scope_view_t)VIEW_OF(v);   /* no owner bound */
-#endif
-    const bool want_roll = (v == VM_ROLL);
-    if (want_roll != scope_state_get()->roll &&
-        roll_apply(want_roll, scope_state_get()->roll_step, note) != PS_OK)
+    if (want_roll && !ss->roll && roll_apply(true, ss->roll_step, note) != PS_OK) {
+        if (want_view != was_view) (void)view_switch(was_view);
         return PS_NOT_SET;
+    }
     return PS_OK;
 }
 

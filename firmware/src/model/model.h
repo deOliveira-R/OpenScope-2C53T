@@ -123,8 +123,8 @@ typedef struct prop_desc {
     prop_label_fn       label;          /* computed / measured text, or NULL               */
     prop_get_fn         get;
     prop_set_fn         set;            /* validate rules, apply, store on success; NULL = RO */
-    prop_store_fn       store;          /* backing store only, no hardware, no rules: boot
-                                         * load, defaults, resume. NULL = RO                */
+    prop_store_fn       store;          /* the backing state, no rules, no note: boot load,
+                                         * defaults, resume (see STORE below). NULL = RO     */
     int32_t             min, max, def;  /* def = built-in default (see prop_default)       */
     uint16_t            id;             /* stable, never reused: (group + 1) << 8 | n        */
     uint16_t            flags;
@@ -163,7 +163,7 @@ const char        *prop_group_prefix(uint8_t group);  /* "ch1", ..., "ui"       
 const char        *prop_unit_symbol(uint8_t unit);    /* "V", "Hz", "%", "" ...      */
 const char        *prop_type_name(uint8_t type);      /* "bool", "enum", "int", "mask" */
 const char        *prop_status_name(uint8_t s);       /* "OK", "CLAMPED", ...        */
-/* A property whose state is saved by none of the save forms. */
+/* Not PF_RO: it has a setter and a store hook. */
 bool               prop_is_settable(const prop_desc_t *p);
 
 /* Text of value v as a person reads it: "on", "AC", "1.00V" (a measured
@@ -244,11 +244,22 @@ prop_status_t prop_validate_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t *
 prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t origin,
                                    prop_note_t *note, uint8_t *failed);
 
-/* Built-in defaults into the backing variables through each store hook
- * (no hardware, no rules) for the properties whose flags include one of
- * `want` (PF_PERSIST for "Start with defaults", PF_PERSIST | PF_SESSION for
- * a full reset). `in` != NULL uses that instrument's overrides. Bumps the
- * epochs that changed; note_change once if `note` and a persisted value
+/* STORE. A store hook writes the backing state with no rules and no
+ * settings note. Where the model can reach the variable (scope_state_t,
+ * main.c globals, sys_prefs, theme, meas_select, the stored-only block) it
+ * moves no hardware: at boot the owners' inits push it, as today. Where an
+ * owner keeps the state in its own file (gen.* in signal_gen.c, il.* in
+ * fpga.c, mask.* in scope_mask.c) the store IS that owner's setter through
+ * model_hw(), and does nothing while the ops are unbound. view.persist's is
+ * a no-op: a load never claims the shared pool (settings_store.c's rule).
+ * So a store is a boot / start-up tool, not a runtime apply: at run time
+ * "Reset to defaults" goes through prop_set_pairs_local (the setters).
+ *
+ * Built-in defaults through each store hook for the properties whose flags
+ * include one of `want` (PF_PERSIST for "Start with defaults", PF_PERSIST |
+ * PF_SESSION for a full reset). `in` != NULL: that instrument's members only
+ * (system properties, inst == 0, are left alone), with its overrides. Bumps
+ * the epochs that changed; note_change once if `note` and a persisted value
  * changed ("Reset to defaults" copies the defaults into the user profile).
  * Returns the number of values that changed. */
 unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool note);
@@ -256,6 +267,12 @@ unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool no
 /* ── Change notification ─────────────────────────────────────────────── */
 extern volatile uint32_t prop_epoch[PG_COUNT];   /* bumped by the executor on a change */
 uint32_t prop_group_epoch(uint8_t g);
+/* Bump group g's epoch (executor only). prop_set_local bumps the property's
+ * own group; a setter calls this for what it changes in another group
+ * (ch.enabled moves ui.ach, Single sets view.run, Roll is in tb and view),
+ * and an owner that lands a POSTED change later (the mode switch, a mask
+ * request) calls it when the change is in force. */
+void     model_touch(uint8_t g);
 
 /* ── Hardware ops (bound once at boot; fake in the host tests) ───────── */
 /* Each is the owner API the setter calls (model_hw_fw.c binds the real ones
@@ -296,7 +313,8 @@ typedef struct {
      * meter posture). false = not posted. */
     bool    (*meter_func)(uint8_t submode, bool keep_autoselect);
     /* system */
-    bool    (*mode)(uint8_t device_mode);              /* posts the mode switch (enter_mode)    */
+    bool    (*mode)(uint8_t device_mode);              /* posts the mode switch (enter_mode);
+                                                        * model_touch(PG_SYS / PG_UI) on landing */
     void    (*backlight)(uint8_t pct);                 /* sys_pwm                               */
     void    (*autooff)(uint8_t mins);                  /* re-arm the input task's idle timer    */
     /* interleave (fpga.c keeps float gain/offset; typed ints at this boundary) */

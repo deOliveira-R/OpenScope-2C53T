@@ -50,7 +50,7 @@ static const char *const k_group_prefix[PG_COUNT] = {
     "ch1", "ch2", "tb", "trig", "view", "gen", "meter", "sys", "fft", "il", "mask", "ui",
 };
 static const char *const k_unit_symbol[UNIT_COUNT] = {
-    "", "V", "mV", "Hz", "%", "permille", "px", "ms", "min", "ppm", "e-6", "counts",
+    "", "V", "mV", "Hz", "%", "permille", "px", "ms", "min", "ppm", "", "counts",
 };
 static const char *const k_type_name[PT_COUNT] = { "bool", "enum", "int", "mask" };
 static const char *const k_status_name[PS_COUNT] = {
@@ -74,6 +74,7 @@ const model_hw_ops_t *model_hw(void) { return g_ops; }
 
 volatile uint32_t prop_epoch[PG_COUNT];
 uint32_t prop_group_epoch(uint8_t g) { return g < PG_COUNT ? prop_epoch[g] : 0u; }
+void     model_touch(uint8_t g)       { if (g < PG_COUNT) prop_epoch[g]++; }
 
 void model_note(prop_note_t *note, const char *text)
 {
@@ -246,7 +247,7 @@ void prop_format(const prop_desc_t *p, int32_t v, char *out, size_t n)
     if (!p) return;
     if ((p->type == PT_ENUM || p->type == PT_INT) && p->label && label_of(p, v, out, n)) return;
     prop_format_value(p, v, out, n);
-    if (p->type == PT_INT && p->unit != UNIT_NONE) {
+    if (p->type == PT_INT && prop_unit_symbol(p->unit)[0]) {
         cat(out, n, " ");
         cat(out, n, prop_unit_symbol(p->unit));
     }
@@ -416,7 +417,7 @@ int prop_line_format(const prop_desc_t *p, int32_t v, char *out, size_t n)
     cat(out, n, p->name);
     cat(out, n, " = ");
     cat(out, n, val);
-    if (p->type == PT_INT && p->unit != UNIT_NONE) {
+    if (p->type == PT_INT && prop_unit_symbol(p->unit)[0]) {
         cat(out, n, " ");
         cat(out, n, prop_unit_symbol(p->unit));
     }
@@ -549,9 +550,11 @@ prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, pr
 
     const int32_t old = prop_get(p);
     prop_status_t s = p->set(p, v, origin, note);
-    if (s != PS_OK && s != PS_CLAMPED) return s;           /* the setter kept the old value */
-    if (range == PS_CLAMPED) s = PS_CLAMPED;
+    const bool ok = (s == PS_OK || s == PS_CLAMPED);
+    if (ok && range == PS_CLAMPED) s = PS_CLAMPED;
 
+    /* A failing setter keeps the old value; if one did not (a two-step
+     * apply whose undo failed too), the change is still announced. */
     if (prop_get(p) != old) {
         prop_epoch[p->group]++;
         if (may_note(p, origin) && g_ops->note_change) g_ops->note_change();
@@ -624,7 +627,7 @@ unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool no
     for (uint16_t i = 0; i < PROP_IX_COUNT; i++) {
         const prop_desc_t *p = &prop_table[i];
         if (!prop_is_settable(p) || (p->flags & PF_ALIAS) || !(p->flags & want)) continue;
-        if (in && p->inst && !(p->inst & in->member)) continue;
+        if (in && !(p->inst & in->member)) continue;
         const int32_t old = prop_get(p);
         p->store(p, in ? prop_instrument_default(p, in) : prop_default(p));
         if (prop_get(p) != old) {
