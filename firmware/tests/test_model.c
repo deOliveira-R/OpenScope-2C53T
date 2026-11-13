@@ -63,6 +63,7 @@ static bool     g_busy, g_shell_persist = true;
 static unsigned g_notes;
 static bool     g_il_en = true;
 static int32_t  g_il_gain = 1000000, g_il_off = 0, g_il_skew = 0;
+static uint8_t  g_il_knots;            /* piecewise knots in the level map (fpga.c) */
 static uint8_t  g_tolv = 8, g_tolh = 2, g_pmode;
 static bool     g_stopfail = true, g_keep_auto;
 
@@ -110,7 +111,9 @@ static void f_backlight(uint8_t p)               { logf_("backlight(%u);", p); }
 static void f_autooff(uint8_t m)                 { logf_("autooff(%u);", m); }
 static bool f_il_en(bool on)                     { logf_("il_en(%d);", on); if (nok()) return false; g_il_en = on; return true; }
 static bool f_il_enabled(void)                   { return g_il_en; }
-static bool f_il_corr_set(gain_e6_t g, int32_t o){ logf_("il_corr(%ld,%ld);", (long)g.e6, (long)o); if (nok()) return false; g_il_gain = g.e6; g_il_off = o; return true; }
+/* like fpga_interleave_corr_set: the line replaces the map, knots and all */
+static bool f_il_corr_set(gain_e6_t g, int32_t o){ logf_("il_corr(%ld,%ld);", (long)g.e6, (long)o); if (nok()) return false; g_il_gain = g.e6; g_il_off = o; g_il_knots = 0; return true; }
+static uint8_t f_il_knots(void)                  { return g_il_knots; }
 static void f_il_corr_get(gain_e6_t *g, int32_t *o) { g->e6 = g_il_gain; *o = g_il_off; }
 static bool f_il_skew_set(ppm_period_t s)        { logf_("il_skew(%ld);", (long)s.ppm); if (nok()) return false; g_il_skew = s.ppm; return true; }
 static ppm_period_t f_il_skew_get(void)          { ppm_period_t s = { g_il_skew }; return s; }
@@ -128,7 +131,7 @@ static const model_hw_ops_t k_fake = {
     .gen_wave = f_gen_wave, .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_duty = f_gen_duty,
     .gen_out = f_gen_out, .gen_bootout = f_gen_boot, .meter_func = f_meter, .mode = f_mode,
     .backlight = f_backlight, .autooff = f_autooff, .il_enable = f_il_en, .il_enabled = f_il_enabled,
-    .il_corr_set = f_il_corr_set, .il_corr_get = f_il_corr_get, .il_skew_set = f_il_skew_set,
+    .il_corr_set = f_il_corr_set, .il_corr_get = f_il_corr_get, .il_knots = f_il_knots, .il_skew_set = f_il_skew_set,
     .il_skew_get = f_il_skew_get, .selfcal_busy = f_busy, .shell_persist = f_shell_persist,
     .note_change = f_note,
 };
@@ -148,7 +151,7 @@ static void fresh(void)
     persist_enabled = false; scope_view = SCOPE_VIEW_TIME; g_pmode = 0;
     fuse_type = 0; fuse_rating_idx = 6; fuse_scan_threshold_mv = 0.1f; g_focus = 0;
     g_fail = false; g_fail_at = 0; g_calls = 0; g_busy = false; g_shell_persist = true; g_notes = 0;
-    g_il_en = true; g_il_gain = 1000000; g_il_off = 0; g_il_skew = 0;
+    g_il_en = true; g_il_gain = 1000000; g_il_off = 0; g_il_skew = 0; g_il_knots = 0;
     g_tolv = 8; g_tolh = 2; g_stopfail = true;
     model_bind_hw(&k_fake);
     /* the persisted defaults on top (config_init_defaults differs from
@@ -508,6 +511,32 @@ static void test_rules(void)
     CHECK(prop_set_local(P(IL_OFFSET), -60, ORIGIN_SHELL, &n) == PS_OK);
     CHECK(prop_set_local(P(IL_GAIN), 1002500, ORIGIN_SHELL, &n) == PS_OK);
     CHECK(g_il_gain == 1002500 && g_il_off == -60);
+
+    /* A piecewise map is active: the same value is the identity (no owner
+     * call, the knots stay), a new one is refused, never a silent line. */
+    g_il_knots = 5;
+    log_clear();
+    CHECK(prop_set_local(P(IL_GAIN), 1002500, ORIGIN_SHELL, &n) == PS_OK);
+    CHECK(prop_set_local(P(IL_OFFSET), -60, ORIGIN_SHELL, &n) == PS_OK);
+    CHECKF(g_log[0] == '\0' && g_il_knots == 5, "%s knots %u", g_log, g_il_knots);
+    P(IL_GAIN)->store(P(IL_GAIN), prop_get(P(IL_GAIN)));      /* the load hook too */
+    P(IL_OFFSET)->store(P(IL_OFFSET), prop_get(P(IL_OFFSET)));
+    CHECK(g_log[0] == '\0' && g_il_knots == 5);
+    {   /* get then set, through the readable profile line */
+        char line[PROP_LINE_MAX];
+        const prop_desc_t *q = NULL;
+        int32_t v = 0;
+        prop_line_format(P(IL_GAIN), prop_get(P(IL_GAIN)), line, sizeof line);
+        CHECK(prop_line_parse(line, &q, &v) == PS_OK && q == P(IL_GAIN));
+        CHECK(prop_set_local(q, v, ORIGIN_SHELL, &n) == PS_OK && g_il_knots == 5 && g_log[0] == '\0');
+    }
+    CHECK(prop_set_local(P(IL_GAIN), 1003000, ORIGIN_SHELL, &n) == PS_REFUSED);
+    CHECK(strcmp(n.text, "piecewise cal: clear it") == 0);
+    CHECK(prop_set_local(P(IL_OFFSET), -50, ORIGIN_SHELL, &n) == PS_REFUSED);
+    P(IL_GAIN)->store(P(IL_GAIN), 1003000);
+    CHECK(g_il_gain == 1002500 && g_il_off == -60 && g_il_knots == 5 && g_log[0] == '\0');
+    g_il_knots = 0;                    /* linear again: a change goes through */
+    CHECK(prop_set_local(P(IL_GAIN), 1003000, ORIGIN_SHELL, &n) == PS_OK && g_il_gain == 1003000);
 }
 
 /* ═══ every hardware property: a failed owner call keeps the old value ═ */

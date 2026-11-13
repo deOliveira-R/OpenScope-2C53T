@@ -322,6 +322,8 @@ typedef struct {
     bool    (*il_enabled)(void);
     bool    (*il_corr_set)(gain_e6_t gain, int32_t offset_x100);
     void    (*il_corr_get)(gain_e6_t *gain, int32_t *offset_x100);
+    uint8_t (*il_knots)(void);                         /* knots in the level map (0 = linear only);
+                                                        * il_corr_set drops them (fpga.c)       */
     bool    (*il_skew_set)(ppm_period_t skew);
     ppm_period_t (*il_skew_get)(void);
     /* executor services */

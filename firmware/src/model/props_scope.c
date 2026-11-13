@@ -516,8 +516,18 @@ static void il_corr(gain_e6_t *g, int32_t *o)
 int32_t il_gain_get(const prop_desc_t *p)   { (void)p; gain_e6_t g; int32_t o; il_corr(&g, &o); return g.e6; }
 int32_t il_offset_get(const prop_desc_t *p) { (void)p; gain_e6_t g; int32_t o; il_corr(&g, &o); return o; }
 
+/* fpga_interleave_corr_set replaces the whole level map: it drops the
+ * piecewise knots (`fpga interleave cal piecewise`, a usercal record). So a
+ * set never calls it for the value the pair already has (get then set is the
+ * identity, a readable profile round-trips), and a change is refused while
+ * knots are active rather than reducing the map to a line without a word:
+ * `cal user clear` (or `fpga interleave corr`) first. */
 static prop_status_t il_corr_apply(gain_e6_t g, int32_t o, prop_note_t *note)
 {
+    gain_e6_t g0; int32_t o0;
+    il_corr(&g0, &o0);
+    if (g.e6 == g0.e6 && o == o0) return PS_OK;
+    if (HW->il_knots && HW->il_knots()) { model_note(note, "piecewise cal: clear it"); return PS_REFUSED; }
     if (!HW->il_corr_set || !HW->il_corr_set(g, o)) { model_note(note, "correction NOT SET"); return PS_NOT_SET; }
     return PS_OK;
 }

@@ -155,6 +155,7 @@ static void op_il_corr_get(gain_e6_t *g, int32_t *offset_x100)
     g->e6 = round_i32(gain * 1000000.0f);
     *offset_x100 = round_i32(off * 100.0f);
 }
+static uint8_t op_il_knots(void)         { return fpga_interleave_knots_get(NULL, NULL); }
 static bool op_il_skew_set(ppm_period_t s) { CTX(); return fpga_interleave_skew_set(s.ppm); }
 static ppm_period_t op_il_skew_get(void)   { ppm_period_t s = { fpga_interleave_skew_get() }; return s; }
 
@@ -181,7 +182,7 @@ static const model_hw_ops_t k_fw_ops = {
     .meter_func = op_meter_func,
     .mode = op_mode, .backlight = op_backlight, .autooff = op_autooff,
     .il_enable = op_il_enable, .il_enabled = op_il_enabled, .il_corr_set = op_il_corr_set,
-    .il_corr_get = op_il_corr_get, .il_skew_set = op_il_skew_set, .il_skew_get = op_il_skew_get,
+    .il_corr_get = op_il_corr_get, .il_knots = op_il_knots, .il_skew_set = op_il_skew_set, .il_skew_get = op_il_skew_get,
     .selfcal_busy = op_selfcal_busy, .shell_persist = op_shell_persist,
     .note_change = op_note_change,
 };
