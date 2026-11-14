@@ -45,7 +45,7 @@ typedef enum {
     DCMD_DRAW_SETTINGS,
     DCMD_DRAW_STATUS_BAR,
     DCMD_REDRAW_ALL,
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     DCMD_DRAW_FFT,
 #endif
     DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
@@ -90,7 +90,7 @@ typedef enum {
  * posts the same with `btn <name> long`. input_handle_button() strips it. */
 #define BTN_LONG_FLAG  0x80
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 /* Oscilloscope sub-view (time domain vs FFT) */
 typedef enum {
     SCOPE_VIEW_TIME = 0,
@@ -207,7 +207,7 @@ enum { SET_SOUND_ROW_VOLUME = 0, SET_SOUND_ROW_BRIGHTNESS, SET_SOUND_ROWS };
 #define FUSE_VIEW_TYPES         3   /* "Which fuse is this?" reference page */
 #define FUSE_VIEW_COUNT         4
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 #include "fft.h"
 #include "fft_test_signals.h"
 #include "shared_mem.h"   /* waterfall history is a sub-tenant of the FFT pool region */
@@ -252,7 +252,7 @@ uint32_t scope_ui_view_ratio(void);
  * the range now selected; -100 when nothing limits it. */
 int16_t  scope_ui_lowest_visible_pos(uint8_t ch);
 bool     scope_ui_view_merged(void);
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 /* The record the spectrum views analyse (the active channel's), NULL when
  * there is none: no capture yet, or that channel is off (dsp/fft_source.h). */
 const volatile uint8_t *scope_ui_fft_record(void);
@@ -310,7 +310,7 @@ uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf);
  * it is up and the band restores itself once the countdown ends. Only the
  * incremental path needs this; the full path's draw_popup() does both jobs. */
 void scope_popup_overlay_tick(void);
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 /* The other views compose every pixel and never blank; `full` adds what
  * changes only on entry or a setting (margins, titles). */
 void draw_fft_screen(bool full);

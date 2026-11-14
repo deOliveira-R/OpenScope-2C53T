@@ -8050,7 +8050,7 @@ static void cmd_ui_dump(void)
         usb_debug_printf("draws scope_full=%lu scope_live=%lu redraw_all=%lu\r\n",
                          (unsigned long)ui_scope_full_draws, (unsigned long)ui_scope_live_draws,
                          (unsigned long)ui_redraw_all_count);
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         static const char *const wfs[] = { "never drawn", "drawn", "no FFT", "waiting for capture",
                                            "pool not FFT's" };
         const uint8_t w = scope_ui_waterfall_status();

@@ -21,7 +21,7 @@
 #include "sys_prefs.h"
 #include "model.h"
 #include "meter_link_policy.h"
-#if defined(USB_MSC) && USB_MSC
+#if FEATURE_USBDRIVE
 #include "usb_debug.h"
 #endif
 #include <stdio.h>
@@ -126,7 +126,7 @@ static void draw_settings_top(void)
         /* With a USB host the meter runs whatever this says (meter_link_policy.h). */
         case SET_ITEM_METER_LINK:   value = prop_get(P(METER_LINK)) == METER_LINK_ALWAYS ? "Always" : "With Screen"; break;
         case SET_ITEM_THEME:        value = th->name; break;                /* sys.theme: the theme in force */
-#if defined(USB_MSC) && USB_MSC
+#if FEATURE_USBDRIVE
         case SET_ITEM_USB_SHARE:    value = usb_share_label(); break;   /* CDC + read-only gallery drive */
 #else
         case SET_ITEM_USB_SHARE:    value = "n/a"; break;               /* built CDC-only (USB_MSC=0) */

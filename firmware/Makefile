@@ -26,8 +26,8 @@ FREERTOS   = FreeRTOS
 # Source files
 ######################################################################
 
-# Feature flags (FFT enabled by default)
-FEATURES ?= FFT
+# Features: firmware/features.mk is the manifest (included below, where the
+# feature sources join C_SOURCES). `make features` lists it.
 
 # Application
 C_SOURCES  = src/main.c
@@ -193,7 +193,7 @@ M3_PERSIST_SRCS  = src/model/model_persist_v5.c src/model/model.c src/model/prop
 M3_PERSIST_LINK  = src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/key_model.c \
                    src/ui/trig_menu.c src/ui/osc_menu_model.c
 M3_CONFIG_PERSIST_EXTRA = $(M3_PERSIST_SRCS) $(M3_PERSIST_LINK)
-M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT -Isrc/model
+M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT=1 -Isrc/model
 # ── end M3 block ──
 
 # ── ARCH-1 M2: the UI route (one block, for the merge) ──
@@ -204,59 +204,16 @@ M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT -Isrc/model
 C_SOURCES += src/model/ui_shell.c
 # ── end M2 block ──
 
-# ── FEATURE_STREAM: binary frames on the shell's CDC channel (one block) ──
-# src/stream/ (docs/stream_protocol.md): `stream on|off|status`, sent by the
-# shell task between commands. Both files are whole-file `#if FEATURE_STREAM`,
-# so with the switch off they compile to nothing and the image is the one
-# without the feature. On in the bench image; `make app-coldtrace-meter
-# STREAM_BENCH=0` builds it without. Host test: make test-stream.
-C_SOURCES += src/stream/stream.c src/stream/stream_frame.c
-C_INCLUDES_STREAM = -Isrc/stream
-STREAM_BENCH ?= 1
-app-coldtrace-meter: CFLAGS += -DFEATURE_STREAM=$(STREAM_BENCH)
-# ── end FEATURE_STREAM block ──
-
-# FFT / DSP module
-ifneq ($(findstring FFT,$(FEATURES)),)
-  C_SOURCES += src/dsp/fft.c
-  C_SOURCES += src/dsp/fft_live.c
-  C_SOURCES += src/dsp/fft_source.c
-  C_SOURCES += src/dsp/fft_test_signals.c
-  FFT_DEFS = -DFEATURE_FFT
-  # CMSIS-DSP (optional optimization — auto-detected)
-  CMSIS_DSP = CMSIS-DSP
-  ifneq ($(wildcard $(CMSIS_DSP)/Include/arm_math.h),)
-    C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_f32.c
-    C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_init_f32.c
-    C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_f32.c
-    C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_init_f32.c
-    C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c
-    C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c
-    C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_radix8_f32.c
-    C_SOURCES += $(CMSIS_DSP)/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c
-    C_SOURCES += $(CMSIS_DSP)/Source/BasicMathFunctions/arm_scale_f32.c
-    FFT_INCLUDES = -I$(CMSIS_DSP)/Include
-    FFT_DEFS += -DUSE_CMSIS_DSP -DARM_MATH_CM4
-    # Only the tables the one transform size needs. FFT_SIZE is a compile-time
-    # 4096 (src/dsp/fft.h), but arm_rfft_fast_init_f32() picks its tables with
-    # a run-time switch over 32..4096, so without this every size's tables are
-    # linked (about 80 KB that no code path reaches). With ARM_DSP_CONFIG_TABLES
-    # CMSIS builds only what is named:
-    #   ARM_FFT_ALLOW_TABLES                  opens the table blocks at all
-    #                                         (arm_common_tables.c, arm_const_structs.c)
-    #   ARM_TABLE_TWIDDLECOEF_F32_2048   \    the 2048-point complex FFT inside a
-    #   ARM_TABLE_BITREVIDX_FLT_2048     /    4096-point real one (arm_cfft_init_f32.c)
-    #   ARM_TABLE_TWIDDLECOEF_RFFT_F32_4096   the real FFT's own twiddles
-    # which is exactly the guard of the 4096 case in arm_rfft_fast_init_f32.c.
-    # Any other length now makes the init return ARM_MATH_ARGUMENT_ERROR, which
-    # fft_init() checks (fft_engine_ok). Host test on these tables:
-    # make test-fft-cmsis-tables.
-    FFT_TABLE_DEFS = -DARM_DSP_CONFIG_TABLES -DARM_FFT_ALLOW_TABLES \
-                     -DARM_TABLE_TWIDDLECOEF_F32_2048 -DARM_TABLE_BITREVIDX_FLT_2048 \
-                     -DARM_TABLE_TWIDDLECOEF_RFFT_F32_4096
-    FFT_DEFS += $(FFT_TABLE_DEFS)
-  endif
-endif
+# ── Features (features.mk: the manifest) ──
+# Which features this image has is decided here, once, while the Makefile is
+# read: every FEATURE_<NAME> becomes -DFEATURE_<NAME>=0 or =1 (FEATURE_DEFS),
+# and only the sources of the features that are on are compiled. Stream:
+# src/stream/ (docs/stream_protocol.md), on in the bench image
+# (app-coldtrace-meter), host test `make test-stream`. Old spellings still
+# accepted: STREAM_BENCH=0, USB_MSC=0, FEATURES= (see features.mk).
+include features.mk
+C_SOURCES += $(FEATURE_SRCS)
+# ── end features block ──
 
 # AT32 CMSIS + clock config
 C_SOURCES += $(AT32_CMSIS)/device_support/system_at32f403a_407.c
@@ -285,27 +242,8 @@ C_SOURCES += $(AT32_USBD)/src/usbd_sdr.c
 C_SOURCES += $(AT32_CDC)/cdc_class.c
 C_SOURCES += $(AT32_CDC)/cdc_desc.c
 
-# USB Sharing (parity C16). USB_MSC=1: the unit BOOTS AS THE PLAIN CDC DEVICE
-# (the library's cdc_desc.c: byte for byte the USB_MSC=0 device) and
-# re-enumerates as CDC + a read-only mass-storage LUN synthesised from the
-# screenshot gallery only when asked (`usb share on`, Settings "USB Sharing").
-# If the host does not configure the composite device within 3 s it comes back
-# CDC-only by itself (src/util/usb_mode_sm.h), so the shell cannot be lost.
-# USB_MSC=0 leaves the composite code out entirely.
-# (Was 0 after unit #2's macOS rejected the composite device that the unit
-# used to boot as; the boot device no longer changes with this switch.)
-USB_MSC ?= 1
-ifeq ($(USB_MSC),1)
-C_SOURCES += src/drivers/usb_composite.c
-C_SOURCES += src/drivers/usb_msc.c
-C_SOURCES += src/util/gallery_vfat.c
-C_SOURCES += src/util/msc_scsi.c
-C_SOURCES += src/util/usb_comp_desc.c
-C_SOURCES += src/util/usb_mode_sm.c
-USB_MSC_DEFS = -DUSB_MSC=1
-else
-USB_MSC_DEFS = -DUSB_MSC=0
-endif
+# USB Sharing (the composite CDC + mass-storage device): feature USBDRIVE in
+# features.mk.
 # Raw block receive for `logo blk` (both variants).
 C_SOURCES += src/util/raw_block.c
 
@@ -339,7 +277,7 @@ C_INCLUDES += -Isrc/modules
 C_INCLUDES += -Isrc/fonts
 C_INCLUDES += -Isrc
 C_INCLUDES += $(C_INCLUDES_M1)
-C_INCLUDES += $(C_INCLUDES_STREAM)
+C_INCLUDES += $(FEATURE_INCS)
 C_INCLUDES += -I$(AT32_DRV)/inc
 C_INCLUDES += -I$(AT32_CMSIS)/device_support
 C_INCLUDES += -I$(AT32_CMSIS)/core_support
@@ -364,16 +302,14 @@ C_DEFS  = -DAT32F403AVGT7
 # area (rows 180-219). Useful for bench diagnostics, but it sits on top of the
 # trace — disabled for a clean display. Re-add `-DSCOPE_DEBUG_OVERLAY` to bring
 # the strip back.
-C_DEFS += $(FFT_DEFS)
-C_DEFS += $(USB_MSC_DEFS)
+C_DEFS += $(FEATURE_DEFS)
 # UI round 1: the status bar's RUN/STOP/ARM tab (R1-B) replaces the red STOP
 # box on the plot (R1-C, scope_ui.c).
 C_DEFS += -DSCOPE_PLOT_STOP_BOX=0
-C_INCLUDES += $(FFT_INCLUDES)
 
 # Compiler flags
 CFLAGS  = $(MCU) $(C_DEFS) $(C_INCLUDES)
-CFLAGS += -Wall -Wextra -Wno-unused-parameter
+CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wundef
 CFLAGS += -fdata-sections -ffunction-sections
 CFLAGS += -std=gnu11
 CFLAGS += -Os -g
@@ -410,31 +346,39 @@ OBJECTS := $(OBJECTS:.S=.o)
 vpath %.s $(sort $(dir $(ASM_SOURCES)))
 vpath %.S $(sort $(dir $(ASM_SOURCES)))
 
-# Objects of both USB_MSC variants share build/: without this, switching
-# USB_MSC on the command line relinks objects compiled for the other one.
-# A stamp names the variant the objects were built for; a different (or no)
-# stamp deletes them while the Makefile is read, before any rule runs (a
+# Objects of different feature sets share build/: without this, changing the
+# set on the command line (WITH=, WITHOUT=) relinks objects compiled for the
+# other one. A stamp names the set the objects were built for; a different (or
+# no) stamp deletes them while the Makefile is read, before any rule runs (a
 # timestamp prerequisite cannot do this: make's 1 s mtime resolution on macOS
-# misses a switch made within a second of the last compile).
-USB_MSC_STAMP = $(BUILD_DIR)/usb_msc_$(strip $(USB_MSC)).stamp
+# misses a switch made within a second of the last compile). The stamp names
+# the set without the profile (FEATURES_STAMP_KEY): a named image target
+# cleans first, and a later plain `make flash` must not rebuild its image.
+# Goals that build no image (tests, checks, the feature tools) never touch it.
+FEATURES_STAMP = $(BUILD_DIR)/features_$(FEATURES_STAMP_KEY).stamp
+NO_IMAGE_GOALS = clean test-% check-% features features-%
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
-ifneq ($(wildcard $(BUILD_DIR)/usb_msc_*.stamp),$(USB_MSC_STAMP))
-$(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/usb_msc_*.stamp; mkdir -p $(BUILD_DIR); touch $(USB_MSC_STAMP))
+ifneq ($(if $(MAKECMDGOALS),$(filter-out $(NO_IMAGE_GOALS),$(MAKECMDGOALS)),all),)
+ifneq ($(wildcard $(BUILD_DIR)/features_*.stamp),$(FEATURES_STAMP))
+$(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/features_*.stamp; mkdir -p $(BUILD_DIR); touch $(FEATURES_STAMP))
+endif
 endif
 endif
 
-$(BUILD_DIR)/%.o: %.c Makefile | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: %.c Makefile features.mk | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
-$(BUILD_DIR)/%.o: %.S Makefile | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: %.S Makefile features.mk | $(BUILD_DIR)
 	$(AS) -c $(ASFLAGS) $< -o $@
 
-$(BUILD_DIR)/%.o: %.s Makefile | $(BUILD_DIR)
+$(BUILD_DIR)/%.o: %.s Makefile features.mk | $(BUILD_DIR)
 	$(AS) -c $(ASFLAGS) $< -o $@
 
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile $(LDSCRIPT)
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile features.mk $(LDSCRIPT)
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	$(SZ) $@
+	@{ printf 'profile\t%s\n' '$(PROFILE)'; $(foreach f,$(FEATURE_LIST),printf 'feature\t%s\t%s\t%s\t%s\t%s\t%s\n' '$($(f)_name)' '$(FEATURE_$(f))' '$($(f)_bit)' '$(strip $(notdir $(patsubst %.c,%.o,$($(f)_srcs))))' '$(strip $($(f)_shared))' '$(strip $($(f)_desc))';) } > $(BUILD_DIR)/features.built
+	@echo "Features: $(if $(FEATURES_ON),$(FEATURES_ON),(none)) (profile $(PROFILE))"
 
 $(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/option_bytes48.bin
 	$(CP) -O binary --gap-fill 0xFF $< $@
@@ -485,6 +429,73 @@ disasm: $(BUILD_DIR)/$(TARGET).elf
 
 size: $(BUILD_DIR)/$(TARGET).elf
 	$(SZ) --format=berkeley $<
+
+# ── Feature tools (features.mk is the manifest) ──
+# features         the manifest and what THIS invocation would build
+#                  (`make features PROFILE=bench`, `make features WITHOUT=fft`)
+# features-report  what the image in $(BUILD_DIR) contains, per feature, from
+#                  its map and the record the link wrote (features.built);
+#                  fails unless the totals equal arm-none-eabi-size
+# features-ab      FEATURE=name: builds AB_TARGET with and without that one
+#                  feature (in $(BUILD_DIR)/ab_on and ab_off; the image in
+#                  $(BUILD_DIR) itself is left alone) and prints the true
+#                  difference
+define _fm_nl
+
+
+endef
+# In-band `fwload` ceiling (src/drivers/fw_loader.c: FWL_DATA_MAX).
+FWLOAD_MAX ?= 757760
+AB_TARGET  ?= app-coldtrace-meter
+_ab_feature = $(call _fm_lc,$(FEATURE))
+
+.PHONY: features features-report features-ab
+features:
+	@echo "profile: $(PROFILE)$(if $(strip $(WITH)), WITH=$(strip $(WITH)))$(if $(strip $(_fm_cmd_without)), WITHOUT=$(strip $(_fm_cmd_without)))"
+	@printf '%-10s %-5s %-4s %-8s %-12s %-10s %s\n' feature state bit default requires conflicts description
+	$(foreach f,$(FEATURE_LIST),@printf '%-10s %-5s %-4s %-8s %-12s %-10s %s\n' '$($(f)_name)' '$(if $(filter 1,$(FEATURE_$(f))),on,off)' '$(strip $($(f)_bit))' '$(strip $($(f)_default))' '$(if $(strip $($(f)_requires)),$(call _fm_lc,$(strip $($(f)_requires))),-)' '$(if $(strip $($(f)_conflicts)),$(call _fm_lc,$(strip $($(f)_conflicts))),-)' '$(strip $($(f)_desc))'$(_fm_nl))
+	@printf 'on: %s\nmask: 0x%08x\n' '$(if $(FEATURES_ON),$(FEATURES_ON),(none))' "$$(( $(FEATURES_MASK_EXPR) ))"
+	@echo "profiles: $(patsubst PROFILE_%_with,%,$(filter PROFILE_%_with,$(.VARIABLES)))   targets with a profile: $(foreach v,$(filter PROFILE_OF_%,$(.VARIABLES)),$(patsubst PROFILE_OF_%,%,$(v))=$($(v)))"
+
+features-report:
+	@python3 -I ../scripts/features_report.py --build-dir $(BUILD_DIR) --size-tool $(SZ) --fwload-max $(FWLOAD_MAX)
+
+features-ab:
+	@test -n "$(_ab_feature)" || { echo "usage: make features-ab FEATURE=name [AB_TARGET=$(AB_TARGET)]"; exit 2; }
+	@test -n "$(filter $(_ab_feature),$(_fm_names))" || { echo "features-ab: unknown feature '$(_ab_feature)' (known: $(_fm_names))"; exit 2; }
+	@mkdir -p $(BUILD_DIR)
+	@echo "features-ab: building $(AB_TARGET) with $(_ab_feature) ..."
+	@$(MAKE) --no-print-directory $(AB_TARGET) BUILD_DIR=$(BUILD_DIR)/ab_on FEATURE= \
+		WITH="$(strip $(_fm_cmd_with) $(_ab_feature))" WITHOUT="$(strip $(filter-out $(_ab_feature),$(_fm_cmd_without)))" \
+		> $(BUILD_DIR)/ab_on.log 2>&1 || { tail -20 $(BUILD_DIR)/ab_on.log; echo "features-ab: the build WITH $(_ab_feature) failed ($(BUILD_DIR)/ab_on.log)"; exit 1; }
+	@echo "features-ab: building $(AB_TARGET) without $(_ab_feature) ..."
+	@$(MAKE) --no-print-directory $(AB_TARGET) BUILD_DIR=$(BUILD_DIR)/ab_off FEATURE= \
+		WITH="$(strip $(filter-out $(_ab_feature),$(_fm_cmd_with)))" WITHOUT="$(strip $(_fm_cmd_without) $(_ab_feature))" \
+		> $(BUILD_DIR)/ab_off.log 2>&1 || { tail -20 $(BUILD_DIR)/ab_off.log; echo "features-ab: the build WITHOUT $(_ab_feature) failed ($(BUILD_DIR)/ab_off.log)"; exit 1; }
+	@python3 -I ../scripts/features_report.py --ab $(BUILD_DIR)/ab_on $(BUILD_DIR)/ab_off --feature $(_ab_feature) --size-tool $(SZ)
+
+# Host test of the feature tools: the report's map reader against a synthetic
+# map (sums, the unattributed line, a mismatch is refused), and the manifest's
+# own rules (profile, WITH/WITHOUT, the old spellings, unknown names, both
+# WITH and WITHOUT, requires, conflicts, a bit used twice).
+_ft = $(MAKE) --no-print-directory -s features
+.PHONY: test-features
+test-features:
+	python3 -I ../scripts/features_report.py --self-test
+	@$(_ft) | grep '^on: fft usbdrive$$' >/dev/null || { echo "FAIL: default set"; exit 1; }
+	@$(_ft) PROFILE=bench | grep '^mask: 0x00000007$$' >/dev/null || { echo "FAIL: bench mask"; exit 1; }
+	@$(_ft) PROFILE=bench WITHOUT=STREAM | grep '^on: fft usbdrive$$' >/dev/null || { echo "FAIL: WITHOUT over profile"; exit 1; }
+	@$(_ft) WITH=stream USB_MSC=0 | grep '^on: stream fft$$' >/dev/null || { echo "FAIL: WITH + USB_MSC=0"; exit 1; }
+	@$(_ft) PROFILE=bench STREAM_BENCH=0 FEATURES= | grep '^on: usbdrive$$' >/dev/null || { echo "FAIL: old spellings"; exit 1; }
+	@! $(_ft) WITH=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown feature accepted"; exit 1; }
+	@! $(_ft) PROFILE=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown profile accepted"; exit 1; }
+	@! $(_ft) WITH=stream WITHOUT=stream >/dev/null 2>&1 || { echo "FAIL: WITH and WITHOUT accepted"; exit 1; }
+	@! $(_ft) USBDRIVE_requires=STREAM >/dev/null 2>&1 || { echo "FAIL: requires not enforced"; exit 1; }
+	@$(_ft) USBDRIVE_requires=STREAM WITH=stream >/dev/null 2>&1 || { echo "FAIL: requires met but refused"; exit 1; }
+	@! $(_ft) USBDRIVE_conflicts=FFT >/dev/null 2>&1 || { echo "FAIL: conflicts not enforced"; exit 1; }
+	@! $(_ft) FFT_bit=0 >/dev/null 2>&1 || { echo "FAIL: a bit used twice accepted"; exit 1; }
+	@echo "features manifest: rules OK"
+# ── end feature tools ──
 
 # Build for emulator (skips HAL clock init that hangs without real hardware).
 # main.c provides stub overrides for SystemInit/system_clock_config when
@@ -940,7 +951,7 @@ MODEL_TEST_LINK = src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c sr
 
 $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/model/model_table.h \
                          src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -Isrc/model -Isrc/util \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-model
@@ -967,7 +978,7 @@ MODEL_EXEC_SRCS = src/model/model_exec.c src/model/model_shell.c
 $(BUILD_DIR)/test_model_exec: tests/test_model_exec.c $(MODEL_SRCS) $(MODEL_EXEC_SRCS) \
                               src/model/model.h src/model/model_table.h src/model/model_exec.h \
                               src/model/model_shell.h src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -DMODEL_EXEC_TEST -Isrc/model \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DMODEL_EXEC_TEST -Isrc/model \
 		-Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) $(MODEL_EXEC_SRCS) \
 		$(MODEL_TEST_LINK) -lm -lpthread -o $@
 
@@ -985,7 +996,7 @@ $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/mo
                                  src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
                                  src/util/config.c src/util/config.h src/util/settings_store.c \
                                  src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -Isrc/model -Isrc/util \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
 		src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
 		$(MODEL_TEST_LINK) -lm -o $@

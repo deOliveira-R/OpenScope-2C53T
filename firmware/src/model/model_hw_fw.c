@@ -243,7 +243,7 @@ static void op_single_rearm(void)                     { CTX(); fpga_acq_single_r
 static bool op_view_select(uint8_t view)
 {
     CTX();
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     if (view >= (uint8_t)SCOPE_VIEW_COUNT) return false;
     scope_view_select((scope_view_t)view);
     return scope_view == (scope_view_t)view;

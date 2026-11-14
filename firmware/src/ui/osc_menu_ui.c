@@ -75,7 +75,7 @@ static uint8_t display_current(void)
 
 static bool display_available(uint8_t item)
 {
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     (void)item;
     return true;
 #else

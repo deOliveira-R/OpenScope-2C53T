@@ -46,6 +46,12 @@
 #ifndef CAL_DUMP_H
 #define CAL_DUMP_H
 
+/* Build switch of the one-shot dump image (`make guest-caldump`); main.c
+ * tests it. 0 unless that target sets it. */
+#ifndef CAL_DUMP_MODE
+#define CAL_DUMP_MODE 0
+#endif
+
 /* Base and length of the MCU-internal saved-config sector under inspection. */
 #define CAL_DUMP_BASE   0x08006000u
 #define CAL_DUMP_LEN    0x00001000u   /* 4 KB */

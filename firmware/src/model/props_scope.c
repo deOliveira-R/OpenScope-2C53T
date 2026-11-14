@@ -340,7 +340,7 @@ const char *const lbl_view_mode[VM_COUNT] = { "yt", "roll", "xy", "fft", "split"
 int32_t view_mode_get(const prop_desc_t *p)
 {
     (void)p;
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     switch (scope_view) {
     case SCOPE_VIEW_XY:        return VM_XY;
     case SCOPE_VIEW_FFT:       return VM_FFT;
@@ -352,7 +352,7 @@ int32_t view_mode_get(const prop_desc_t *p)
     return scope_state_get()->roll ? VM_ROLL : VM_YT;
 }
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 /* view.mode -> scope_view_t (scope_view exists only in an FFT build). */
 static const uint8_t k_view_of[VM_COUNT] = {
     SCOPE_VIEW_TIME, SCOPE_VIEW_TIME, SCOPE_VIEW_XY, SCOPE_VIEW_FFT, SCOPE_VIEW_SPLIT,
@@ -366,7 +366,7 @@ static const uint8_t k_view_of[VM_COUNT] = {
 void view_mode_store(const prop_desc_t *p, int32_t v)
 {
     (void)p;
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     scope_view = (scope_view_t)VIEW_OF(v);
 #endif
     scope_state_get()->roll = (v == VM_ROLL);
@@ -377,7 +377,7 @@ void view_mode_store(const prop_desc_t *p, int32_t v)
 static bool view_switch(uint8_t view)
 {
     if (HW->view_select) return HW->view_select(view);
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     scope_view = (scope_view_t)view;
     return true;
 #else
@@ -393,7 +393,7 @@ static bool view_switch(uint8_t view)
 prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)origin;
-#ifndef FEATURE_FFT
+#if !FEATURE_FFT
     if (v != VM_YT && v != VM_ROLL) { model_note(note, "Not in this build"); return PS_REFUSED; }
 #endif
     scope_state_t *ss = scope_state_get();
