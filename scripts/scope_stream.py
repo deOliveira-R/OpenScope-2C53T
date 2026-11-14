@@ -253,7 +253,8 @@ def encode_payload(d):
         for c in d["ch"]:
             out += struct.pack("<BBBBhHff", c["id"], c["vdiv_idx"], c["zero_code"], c["coupling"], c["position"],
                                c["probe_x"], c["volts_per_count"], c["volts_per_div"])
-        return out + b"".join(bytes(c["codes"]) for c in d["ch"]) + struct.pack("<I", d.get("gen_end", d["gen"]))
+        out += b"".join(bytes(c["codes"]) for c in d["ch"]) + struct.pack("<I", d.get("gen_end", d["gen"]))
+        return out
     if t == T_METER:
         return struct.pack("<IIfiBBBBBBB", d["update_count"], d["t_ms"], d["value"], d["bcd"], d["func"],
                            d["auto_fn"], d["result_class"], d["status_code"], d["decimal_pos"], d["range_index"],
@@ -330,7 +331,7 @@ class Stats:
             self.count[ftype] = self.count.get(ftype, 0) + 1
         try:
             d = decode(ftype, payload)
-        except struct.error:
+        except Exception:  # noqa: BLE001 -- a bad payload is counted, never fatal
             self.decode_errors += 1
             return None
         if "t_ms" in d:
@@ -594,10 +595,30 @@ GEOMETRY_PROPS = ("ch1.enabled", "ch1.vdiv", "ch1.pos", "ch1.probe", "ch1.coupli
                   "trig.level", "trig.x", "il.enabled")
 
 
-def trig_settings(props):
+def trig_settings(props, rec=None):
     """(level_px, rising, source channel 0/1) from PROPS by name."""
     p = props or {}
     return p.get("trig.level", 0), p.get("trig.edge", 0) == 0, p.get("trig.source", 0)
+
+
+def rate_per_s(times, window=2.0, now=None):
+    """Events per second over the last `window` seconds of `times`. Safe for
+    equal, out-of-order or backwards timestamps (a burst after the display
+    was held, a coarse clock): 0 when the span is not positive."""
+    if now is not None:
+        times = [t for t in times if abs(now - t) < window]
+    if len(times) < 2:
+        return 0.0
+    span = max(times) - min(times)
+    return (len(times) - 1) / span if span > 0 else 0.0
+
+
+def record_usable(rec):
+    """(ok, why): a record to draw and accumulate: not one with no channels
+    or no samples."""
+    if not rec.get("ch") or rec.get("n", 0) < 2:
+        return False, "no channels / samples"
+    return True, ""
 
 
 def record_reference(rec, props=None):
@@ -607,7 +628,7 @@ def record_reference(rec, props=None):
     is not time-ordered, e.g. a fast periodic signal: the screen aligns it the
     same way); "centre" nothing to lock to."""
     n = rec["n"]
-    level_px, rising, src = trig_settings(props)
+    level_px, rising, src = trig_settings(props, rec)
     chans = rec["ch"]
     if rec["trig_idx"] != TRIG_NONE:
         # the screen's hardware anchor (trig_edge_anchor): the crossing of the
@@ -661,7 +682,7 @@ def fold_record(rec, props=None, half=None):
     """Fold every enabled channel at the trigger source's crossings.
     Returns (crossings, half window in samples, {channel id: [(xs s, ys V), ...]}),
     one piece per crossing."""
-    level_px, rising, src = trig_settings(props)
+    level_px, rising, src = trig_settings(props, rec)
     chans = rec["ch"]
     s = next((c for c in chans if c["id"] == src), chans[0] if chans else None)
     if s is None:
@@ -772,6 +793,10 @@ class Plot:
         self.wf_times = []
         self.last_reply = ""
         self.last_rec = None
+        self.errors = {}
+        self.error_line = ""
+        self.ignored = 0
+        self.ignored_why = ""
 
     # -- layout --
     def _build(self, names):
@@ -803,8 +828,35 @@ class Plot:
         self.layout = tuple(names)
         self.hists = {}
 
+    # -- errors: a live window never dies of one bad frame, key or redraw --
+    def _guard(self, what, fn, *a, **kw):
+        try:
+            return fn(*a, **kw)
+        except Exception as e:  # noqa: BLE001 -- log once, carry on
+            msg = "%s: %s: %s" % (what, type(e).__name__, e)
+            n = self.errors.get(msg, 0) + 1
+            self.errors[msg] = n
+            if n == 1:
+                import traceback
+                print("scope_stream: " + msg, file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
+            self.error_line = "error (%dx): %s" % (n, msg)
+            try:
+                if self.fig is not None and getattr(self, "status", None) is not None:
+                    self.status.set_text(self.error_line)
+                    self.fig.canvas.draw_idle()
+            except Exception:  # noqa: BLE001
+                pass
+            return None
+
+    def update(self, rec, now, redraw_only=False):
+        return self._guard("record", self._update, rec, now, redraw_only)
+
     # -- keys --
     def _on_key(self, ev):
+        return self._guard("key", self._key, ev)
+
+    def _key(self, ev):
         key = ev.key
         if key in ("1", "2"):
             self.active = int(key) - 1
@@ -824,16 +876,20 @@ class Plot:
         self.redraw()
 
     def reply(self, text):
-        line = [l for l in text.replace("\r", "").split("\n") if l.strip() and l.strip() != ">"]
-        if line:
-            self.last_reply = line[-1][-90:]
-            self.redraw()
+        def f():
+            line = [l for l in text.replace("\r", "").split("\n") if l.strip() and l.strip() != ">"]
+            if line:
+                self.last_reply = line[-1][-90:]
+                self.redraw()
+        return self._guard("text", f)
 
     def set_props(self, props):
         """Follow the scope's state: also when no record comes (stopped), so
         a change made with the scope's own keys shows at once."""
-        self.props = dict(props)
-        self.redraw()
+        def f():
+            self.props = dict(props)
+            self.redraw()
+        return self._guard("props", f)
 
     def redraw(self):
         if self.last_rec is not None:
@@ -847,8 +903,17 @@ class Plot:
             h = self.hists[nm] = Hist(HIST_NX, HIST_NY, xlim[0], xlim[1], ylim[0], ylim[1], tau)
         return h
 
-    def update(self, rec, now, redraw_only=False):
+    def _update(self, rec, now, redraw_only=False):
         np = self.np
+        ok, why = record_usable(rec)
+        if not ok:
+            if not redraw_only:
+                self.ignored += 1
+            self.ignored_why = why
+            if self.fig is not None and getattr(self, "status", None) is not None:
+                self.status.set_text("ignored %d record(s): %s" % (self.ignored, why))
+                self.fig.canvas.draw_idle()
+            return
         tr = record_traces(rec, self.props)
         names = [t["name"] for t in tr]
         if self.layout != tuple(names):
@@ -858,15 +923,15 @@ class Plot:
             self.geom, self.hists = g, {}
         if not redraw_only:
             self.last_rec = rec
-            self.times = [t for t in self.times if now - t < 2.0] + [now]
-        fps = (len(self.times) - 1) / (self.times[-1] - self.times[0]) if len(self.times) > 1 else 0.0
+            self.times = [t for t in self.times if abs(now - t) < 2.0] + [now]
+        fps = rate_per_s(self.times)
         k, tu = time_scale(tr[0]["xdiv"])
         folded, ncross = None, 1
         if self.fold:
             xs, half, folded = fold_record(rec, self.props)
             ncross = len(xs)
             if not redraw_only:
-                self.wf_times = [t for t in self.wf_times if now - t[0] < 2.0] + [(now, len(xs))]
+                self.wf_times = [t for t in self.wf_times if abs(now - t[0]) < 2.0] + [(now, len(xs))]
             dt = 1.0 / rec["fs_hz"] if rec["fs_hz"] > 0 else 1.0
             xlim = (-half * dt, half * dt)
         else:
@@ -937,14 +1002,20 @@ class Plot:
         mode = []
         if self.fold:
             n = sum(c for _t, c in self.wf_times)
-            span = (self.wf_times[-1][0] - self.wf_times[0][0]) if len(self.wf_times) > 1 else 0
+            ts = [t for t, _c in self.wf_times]
+            span = (max(ts) - min(ts)) if len(ts) > 1 else 0
             wf = max([h.waveforms for h in self.hists.values()] or [0])
             mode.append("fold: %d waveforms accumulated, %s/s (%d in this record)" % (
                 wf, "%.0f" % (n / span) if span > 0 else "--", self.wf_times[-1][1] if self.wf_times else 0))
         if self.persist_on or self.fold:
             mode.append("persistence %s" % ("infinite" if self.persist in (None, "inf")
                                             else "%gs decay" % float(self.persist)))
-        self.status.set_text("   ".join(mode + ([self.last_reply] if self.last_reply else [])))
+        extra = []
+        if self.ignored:
+            extra.append("ignored %d: %s" % (self.ignored, self.ignored_why))
+        if self.error_line:
+            extra.append(self.error_line)
+        self.status.set_text("   ".join(mode + extra + ([self.last_reply] if self.last_reply else [])))
         self.keytext.set_text("keys\n" + "\n".join("%-6s %s" % ("space" if a == " " else a, b)
                                                     for a, b in KEYMAP))
         self.fig.canvas.draw_idle()
@@ -1010,7 +1081,11 @@ def run_device(a):
                     dump.write(data)
                 st.add_bytes(len(data), now)
                 for ev in dm.feed(data):
-                    d = st.event(ev, now)
+                    try:
+                        d = st.event(ev, now)
+                    except Exception:  # noqa: BLE001 -- counted, never fatal
+                        st.decode_errors += 1
+                        continue
                     if plot:
                         if ev[0] == "text":
                             plot.reply(ev[1].decode("utf-8", "replace"))
@@ -1061,7 +1136,11 @@ def run_replay(a):
         chunk = data[o:o + step]
         st.add_bytes(len(chunk), 0.0)       # no wall clock in a dump: rates come from device t_ms
         for ev in dm.feed(chunk, final=(o + step >= len(data))):
-            d = st.event(ev, None)
+            try:
+                d = st.event(ev, None)
+            except Exception:  # noqa: BLE001
+                st.decode_errors += 1
+                continue
             if plot and d and d["type"] == T_PROPS:
                 plot.set_props(st.props_by_name())
             if plot and d and d["type"] == T_RECORD:
@@ -1331,6 +1410,24 @@ def numeric_selftest(fail):
     if geometry_key(r1, {"tb.code": 10}) != geometry_key(synth_record(list(codes)), {"tb.code": 10}):
         fail("geometry_key depends on the samples")
 
+    # rates: identical, backwards, burst
+    if rate_per_s([5.0, 5.0, 5.0]) != 0.0 or rate_per_s([5.0]) != 0.0 or rate_per_s([]) != 0.0:
+        fail("rate_per_s with equal timestamps")
+    if abs(rate_per_s([3.0, 2.0, 1.0]) - 1.0) > 1e-12:
+        fail("rate_per_s backwards: %r" % rate_per_s([3.0, 2.0, 1.0]))
+    if abs(rate_per_s([1.0] * 10 + [1.5]) - 20.0) > 1e-9:
+        fail("rate_per_s burst: %r" % rate_per_s([1.0] * 10 + [1.5]))
+    if rate_per_s([0.0, 10.0, 10.5], now=10.5) != 2.0:
+        fail("rate_per_s window")
+
+    # usable records: empty ones are not drawn
+    if not record_usable(synth_record(codes))[0]:
+        fail("record_usable refuses a good record")
+    empty = synth_record(codes)
+    empty["ch"], empty["nch"] = [], 0
+    if record_usable(empty)[0]:
+        fail("record_usable accepts a record with no channels")
+
     # keys
     p = {"view.run": 1, "ch2.enabled": 1}
     want = {("up", 0): "set ch1.vdiv +=1", ("down", 1): "set ch2.vdiv -=1", ("right", 0): "set tb.code +=1",
@@ -1370,6 +1467,49 @@ def demo_stream(n_records=12, seed=3):
         out += encode_frame(T_RECORD, seq, encode_payload(rec))
         seq += 1
     return out
+
+
+def live_robustness(fail):
+    """The live window against what crashed it on the bench and its kin:
+    identical and backwards timestamps, a burst, a record with no channels,
+    PROPS between records of different channel counts, and a handler that
+    raises. Nothing may escape; errors show in the footer."""
+    codes, _e = square(phase=3)
+    p = Plot("Agg", persist="inf", fold=True)
+    two = synth_record(codes, [200 - v for v in codes])
+    one = synth_record(codes)
+    for t in (1.0, 1.0, 1.0):                       # identical timestamps (the bench crash)
+        p.update(two, t)
+    for t in (2.0, 1.5, 0.5):                       # going backwards
+        p.update(two, t)
+    for _k in range(20):                            # a burst at one instant
+        p.update(one, 3.0)
+    empty = synth_record(codes)
+    empty["ch"], empty["nch"] = [], 0
+    p.update(empty, 3.1)
+    p.update(two, 3.2)
+    p.set_props({"ch2.enabled": 0})                 # PROPS between different channel counts
+    p.update(one, 3.3)
+    p.set_props({"ch2.enabled": 1})
+    p.update(two, 3.4)
+    if p.ignored < 1:
+        fail("the record with no channels was not ignored")
+    if p.errors:
+        fail("live path raised: %s" % list(p.errors))
+    bad = dict(two)
+    bad["fs_hz"] = "x"                              # a handler that raises: logged, not fatal
+    import io
+    old, sys.stderr = sys.stderr, io.StringIO()
+    try:
+        p.update(bad, 3.6)
+        p.update(bad, 3.7)
+    finally:
+        sys.stderr = old
+    if len(p.errors) != 1 or list(p.errors.values())[0] != 2 or "error (2x)" not in p.status.get_text():
+        fail("an exception in the live path is not logged once and counted: %s" % p.errors)
+    p.update(two, 3.8)                              # and the window carries on
+    if p.last_rec is not two:
+        fail("the window did not carry on after an error")
 
 
 def persist_demo(png, fold=True, persist="inf"):
@@ -1518,6 +1658,7 @@ def selftest():
             if "OK view.run=off" not in pd.status.get_text():
                 fail("reply line not shown: %r" % pd.status.get_text())
             persist_demo(os.path.join(d, "p2.png"), fold=False, persist=2.0)
+            live_robustness(fail)
         p = Plot("Agg")
         p.update(rec, 0.0)
         p.update(decode(T_RECORD, [f for f in frames if f[1] == T_RECORD][1][4]), 0.2)
