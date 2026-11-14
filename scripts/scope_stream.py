@@ -12,7 +12,15 @@ script separates the two (demux), decodes the frames, and:
                   as received) to FILE; --replay reads it back
   --plot          live window: CH1 / CH2 in volts against seconds from the
                   trigger, grid at the scope's V/div and time/div, frame
-                  rate in the title (matplotlib, imported only here)
+                  rate in the title (matplotlib, imported only here).
+                  Keys (shown in the window): up/down V/div of the active
+                  channel, left/right time/div, 1/2 active channel, e its
+                  enable, space run/stop, a autoset, p persistence, f fold,
+                  c clear. They are sent as `set` / `ui press` on the same
+                  connection; the window follows the PROPS frames.
+  --persist [S|inf] colour-graded persistence (decay S seconds, or infinite)
+  --fold          overlay every trigger crossing of each record (N periods
+                  in a record = N waveforms)
   --replay FILE   run --stats (default) or --plot from a dump, no device
   --selftest      demultiplexer and decoders against the C encoder's
                   vectors (firmware/tests/fixtures/stream/), no device
@@ -20,11 +28,13 @@ script separates the two (demux), decodes the frames, and:
   python3 scripts/scope_stream.py --port /dev/cu.usbmodemXXXX --stats 20
   python3 scripts/scope_stream.py --port /dev/cu.usbmodemXXXX --plot --dump cap.bin
   python3 scripts/scope_stream.py --replay cap.bin --plot
+  python3 scripts/scope_stream.py --port socket://127.0.0.1:7321 --plot --persist 2 --fold   # via scope_broker.py
 
 pyserial is needed only to talk to a device; it is imported lazily.
 """
 import argparse
 import binascii
+import math
 import os
 import random
 import struct
@@ -42,6 +52,8 @@ TYPE_NAMES = {1: "HELLO", 2: "PROPS", 3: "RECORD", 4: "METER", 5: "STATS", 6: "P
 
 REC_INTERLEAVED, REC_TIME_ORDERED, REC_ROLL = 1, 2, 4
 REC_COHERENT, REC_RUNNING, REC_TRUE_SCALE = 8, 16, 32
+FLAG_REPLAY = 0x01          # header flags: a copy re-sent from a broker's cache
+FLAG_FILTERED = 0x02        # a broker left other types out of this client's stream: seq gaps expected
 TRIG_NONE = 0xFFFF
 
 
@@ -52,6 +64,17 @@ def crc16(data):
 
 def crc32(data):
     return zlib.crc32(bytes(data)) & 0xFFFFFFFF
+
+
+def encode_frame(ftype, seq, payload, flags=0):
+    """One frame on the wire (stream_frame.c's layout, pad byte included)."""
+    payload = bytes(payload)
+    h = struct.pack("<BBBBHH", SOF0, SOF1, ftype, flags, seq & 0xFFFF, len(payload))
+    h += struct.pack("<H", crc16(h))
+    out = h + payload + struct.pack("<I", crc32(h[2:] + payload))
+    if len(out) % 64 == 0:
+        out += b"\x00"
+    return out
 
 
 # ── demultiplexer (pure) ────────────────────────────────────────────────────
@@ -206,6 +229,42 @@ def decode(ftype, payload):
     return d
 
 
+# ── payload encoders (the decoders' inverse: fake devices, synthetic tests) ──
+def _pstr(v):
+    b = v.encode("latin-1") if isinstance(v, str) else bytes(v)
+    return bytes([len(b)]) + b
+
+
+def encode_payload(d):
+    """Payload bytes for a decoded dict (the types this host decodes)."""
+    t = d["type"]
+    if t == T_HELLO:
+        return struct.pack("<BBBBHHHI", d["proto_major"], d["proto_minor"], d["caps"], d["on"], d["max_payload"],
+                           d["rec_samples"], d["n_props"], d["table_crc"]) + _pstr(d["fw"])
+    if t == T_PROPDESC:
+        return struct.pack("<HBBBBHiii", d["id"], d["type_"], d["unit"], d["decimals"], d["group"], d["flags"],
+                           d["min"], d["max"], d["def"]) + _pstr(d["name"]) + _pstr(d["unit_sym"])
+    if t == T_PROPS:
+        out = struct.pack("<IB", d["table_crc"], len(d["epochs"])) + b"".join(struct.pack("<I", e) for e in d["epochs"])
+        return out + struct.pack("<H", len(d["props"])) + b"".join(struct.pack("<Hi", i, v) for i, v in d["props"])
+    if t == T_RECORD:
+        out = struct.pack("<IIffHHBBBB", d["gen"], d["t_ms"], d["fs_hz"], d["s_per_div"], d["n"], d["trig_idx"],
+                          d["flags"], d["kind"], d["tb_code"], len(d["ch"]))
+        for c in d["ch"]:
+            out += struct.pack("<BBBBhHff", c["id"], c["vdiv_idx"], c["zero_code"], c["coupling"], c["position"],
+                               c["probe_x"], c["volts_per_count"], c["volts_per_div"])
+        return out + b"".join(bytes(c["codes"]) for c in d["ch"]) + struct.pack("<I", d.get("gen_end", d["gen"]))
+    if t == T_METER:
+        return struct.pack("<IIfiBBBBBBB", d["update_count"], d["t_ms"], d["value"], d["bcd"], d["func"],
+                           d["auto_fn"], d["result_class"], d["status_code"], d["decimal_pos"], d["range_index"],
+                           d["flags"]) + _pstr(d["unit"]) + _pstr(d["display"]) + _pstr(d["range_label"])
+    if t == T_STATS:
+        out = struct.pack("<IIIII", d["t_ms"], d["bytes"], d["rec_missed"], d["rec_torn"], d["aborts"])
+        ts = sorted(d["sent"])
+        return out + bytes([len(ts)]) + b"".join(struct.pack("<BII", k, d["sent"][k], d["dropped"][k]) for k in ts)
+    raise ValueError("no encoder for type %d" % t)
+
+
 # ── statistics ──────────────────────────────────────────────────────────────
 class Stats:
     def __init__(self):
@@ -230,6 +289,12 @@ class Stats:
         self.records = 0
         self.rec_times = []
         self.dev_t = None          # (first, last) device t_ms seen
+        self.replayed = 0
+        self.filtered = 0
+
+    def props_by_name(self):
+        """Latest PROPS as {name: value} (names from PROPDESC)."""
+        return {self.names[i]["name"]: v for i, v in self.props.items() if i in self.names}
 
     def add_bytes(self, n, now):
         if self.t0 is None:
@@ -248,12 +313,20 @@ class Stats:
             else:
                 self.truncated += 1
             return None
-        _, ftype, seq, _flags, payload = ev
-        self.frame_bytes += HDR_LEN + len(payload) + CRC_LEN
-        if self.last_seq is not None and ftype != T_HELLO:
-            self.seq_gaps += (seq - self.last_seq - 1) & 0xFFFF
-        self.last_seq = seq
-        self.count[ftype] = self.count.get(ftype, 0) + 1
+        _, ftype, seq, flags, payload = ev
+        if flags & FLAG_REPLAY:
+            # a broker's cached copy for a late joiner: not part of the live
+            # sequence, so neither a gap nor a rate
+            self.replayed += 1
+            self.last_seq = None
+        else:
+            self.frame_bytes += HDR_LEN + len(payload) + CRC_LEN
+            if flags & FLAG_FILTERED:
+                self.filtered += 1
+            elif self.last_seq is not None and ftype != T_HELLO:
+                self.seq_gaps += (seq - self.last_seq - 1) & 0xFFFF
+            self.last_seq = seq
+            self.count[ftype] = self.count.get(ftype, 0) + 1
         try:
             d = decode(ftype, payload)
         except struct.error:
@@ -296,8 +369,9 @@ class Stats:
           % (dt, self.total_bytes, rate(self.total_bytes), rate(self.frame_bytes)))
         for t in sorted(self.count):
             p("  %-8s frames=%6d per_s=%7.2f" % (TYPE_NAMES.get(t, "0x%02x" % t), self.count[t], rate(self.count[t])))
-        p("seq_gaps=%d crc_errors=%d truncated=%d decode_errors=%d" % (
-            self.seq_gaps, self.crc_errors, self.truncated, self.decode_errors))
+        p("seq_gaps=%s crc_errors=%d truncated=%d decode_errors=%d replayed=%d" % (
+            "n/a (broker-filtered stream; see !broker status)" if self.filtered else self.seq_gaps,
+            self.crc_errors, self.truncated, self.decode_errors, self.replayed))
         p("records=%d torn=%d gen_missed=%d (records published but not received)" % (
             self.records, self.torn, self.gen_missed))
         if self.fw_stats:
@@ -309,33 +383,273 @@ class Stats:
                 for t in sorted(s["sent"]) if s["sent"][t] or s["dropped"][t]))
 
 
-# ── plotting helpers (pure part, tested without matplotlib) ─────────────────
+# ── trigger, folding and persistence: the numeric core (pure) ───────────────
 SCREEN_DIVS_X, SCREEN_DIVS_Y = 12, 8
+HEAD_SKIP = 128          # the record's unreliable head (firmware scope_record.h)
+TRIG_PX_SPAN = 206       # trig.level is in screen pixels; 206 px = 256 codes (scope_ui.c)
+KIND_NAMES = {0: "held", 1: "Trig'd", 2: "Auto (free-run)", 3: "Auto (free-run, split)"}
 
 
-def record_traces(rec):
-    """RECORD dict -> per-channel dicts with x (s from trigger), y (V or codes),
-    unit, volts/div, the y window (8 divisions around the screen centre) and
-    the x grid step (time/div)."""
+def robust_span(codes, lo=HEAD_SKIP, trim=0.02):
+    """(low, high) of codes[lo:] with the extreme `trim` fraction cut on each
+    side, so one-sample outliers at the edges do not move the midline."""
+    s = sorted(codes[lo:]) if len(codes) > lo else sorted(codes)
+    if not s:
+        return 0, 0
+    k = int(len(s) * trim)
+    return s[k], s[len(s) - 1 - k]
+
+
+def soft_level(codes, level_px=0, lo=HEAD_SKIP):
+    """The scope's soft-trigger threshold (scope_ui.c): the signal's midline
+    plus trig.level converted to codes, kept inside the signal. None when the
+    record is flat (span < 8 codes), as on the screen."""
+    mn, mx = robust_span(codes, lo)
+    if mx - mn < 8:
+        return None
+    thr = (mn + mx) / 2.0 + level_px * 256.0 / TRIG_PX_SPAN
+    return min(max(thr, mn + 1), mx - 1)
+
+
+def find_crossings(codes, level, rising=True, hyst=3, confirm=2, lo=HEAD_SKIP):
+    """Every crossing of `level` in the chosen direction, as a fractional
+    sample index (linear interpolation between the two samples around it).
+
+    Schmitt-armed: after a crossing, the signal must go back past level -/+
+    hyst before the next one counts. A crossing whose next `confirm` samples
+    fall back is a spike and does not count (the scope's three-point
+    confirm), so one-sample outliers at a square's edges give one crossing
+    per edge."""
+    n = len(codes)
+    out = []
+    if level is None or n < 3:
+        return out
+    lo = max(lo, 1)
+    arm_at = level - hyst if rising else level + hyst
+    p = codes[lo - 1]
+    armed = p <= arm_at if rising else p >= arm_at
+    for i in range(lo, n - confirm):
+        a, b = codes[i - 1], codes[i]
+        if armed and ((a < level <= b) if rising else (a > level >= b)):
+            ok = all((codes[i + k] >= level) if rising else (codes[i + k] <= level)
+                     for k in range(1, confirm + 1))
+            if ok:
+                out.append(i - 1 + (level - a) / float(b - a))
+                armed = False
+        if (b <= arm_at) if rising else (b >= arm_at):
+            armed = True
+    return out
+
+
+def median_period(crossings):
+    if len(crossings) < 2:
+        return None
+    d = sorted(b - a for a, b in zip(crossings, crossings[1:]))
+    return d[len(d) // 2]
+
+
+def fold_pieces(codes, crossings, half, lo=HEAD_SKIP):
+    """Every piece [c - half, c + half] of the record around each crossing c,
+    aligned at the crossing: a list of (offsets in samples, codes), one per
+    crossing. A record with N crossings contributes N waveforms."""
+    out = []
+    n = len(codes)
+    for c in crossings:
+        a = max(lo, int(c - half) + 1)
+        b = min(n - 1, int(c + half))
+        out.append(([i - c for i in range(a, b + 1)], [codes[i] for i in range(a, b + 1)]))
+    return out
+
+
+def fold_points(codes, crossings, half, lo=HEAD_SKIP):
+    """fold_pieces flattened: (offsets, codes) of all pieces together."""
+    xs, ys = [], []
+    for px, py in fold_pieces(codes, crossings, half, lo):
+        xs += px
+        ys += py
+    return xs, ys
+
+
+class Hist:
+    """2-D histogram (x across, y up) with exponential decay or infinite
+    accumulation, in a flat array of doubles (numpy reads it without a copy).
+
+    Decay without touching every cell: a sample added at time t weighs
+    exp((t - t0) / tau); the value shown at time `now` is the stored count
+    times exp(-(now - t0) / tau). When the weights grow large, everything is
+    renormalised once (t0 moves to now)."""
+
+    def __init__(self, nx, ny, x0, x1, y0, y1, tau=None):
+        from array import array
+        self.nx, self.ny = nx, ny
+        self.x0, self.x1, self.y0, self.y1 = x0, x1, y0, y1
+        self.tau = tau
+        self.t0 = None
+        self.cells = array("d", bytes(8 * nx * ny))
+        self.waveforms = 0
+
+    def clear(self):
+        for i in range(len(self.cells)):
+            self.cells[i] = 0.0
+        self.t0 = None
+        self.waveforms = 0
+
+    def _weight(self, t):
+        if self.tau is None:
+            return 1.0
+        if self.t0 is None:
+            self.t0 = t
+        e = (t - self.t0) / self.tau
+        if e > 30.0:                          # renormalise: weights ~1e13
+            k = math.exp(-e)
+            for i in range(len(self.cells)):
+                self.cells[i] *= k
+            self.t0, e = t, 0.0
+        return math.exp(e)
+
+    def add(self, xs, ys, t=0.0, waveforms=1):
+        w = self._weight(t)
+        sx = self.nx / float(self.x1 - self.x0)
+        sy = self.ny / float(self.y1 - self.y0)
+        c, nx, ny = self.cells, self.nx, self.ny
+        for x, y in zip(xs, ys):
+            ix = int((x - self.x0) * sx)
+            iy = int((y - self.y0) * sy)
+            if 0 <= ix < nx and 0 <= iy < ny:
+                c[iy * nx + ix] += w
+        self.waveforms += waveforms
+
+    def add_pieces(self, pieces, t=0.0, waveforms=1):
+        """Each piece is (xs, ys): draw it as a line through its samples, as
+        a scope's vector display does (a steep edge fills the cells it
+        crosses), one count per cell per segment."""
+        w = self._weight(t)
+        sx = self.nx / float(self.x1 - self.x0)
+        sy = self.ny / float(self.y1 - self.y0)
+        c, nx, ny = self.cells, self.nx, self.ny
+        for xs, ys in pieces:
+            px = py = None
+            for x, y in zip(xs, ys):
+                fx, fy = (x - self.x0) * sx, (y - self.y0) * sy
+                if px is None:
+                    steps = 0
+                else:
+                    steps = int(max(abs(fx - px), abs(fy - py)))
+                if steps <= 1:
+                    ix, iy = int(fx), int(fy)
+                    if 0 <= ix < nx and 0 <= iy < ny:
+                        c[iy * nx + ix] += w
+                else:
+                    for k in range(1, steps + 1):
+                        u = k / float(steps)
+                        ix, iy = int(px + (fx - px) * u), int(py + (fy - py) * u)
+                        if 0 <= ix < nx and 0 <= iy < ny:
+                            c[iy * nx + ix] += w
+                px, py = fx, fy
+        self.waveforms += waveforms
+
+    def scale(self, now):
+        """Multiply stored cells by this to get counts as of `now`."""
+        if self.tau is None or self.t0 is None:
+            return 1.0
+        return math.exp(-(now - self.t0) / self.tau)
+
+    def value(self, ix, iy, now=0.0):
+        return self.cells[iy * self.nx + ix] * self.scale(now)
+
+
+def geometry_key(rec, props=None):
+    """What must stay the same for accumulated pictures to stay valid: from
+    the record (rate, channels, scale, zero) and, when known, the properties
+    (V/div, position, timebase, trigger, probe, coupling, enables)."""
+    k = [rec["fs_hz"], rec["nch"], rec["trig_idx"] == TRIG_NONE]
+    for c in rec["ch"]:
+        k += [c["id"], c["vdiv_idx"], c["zero_code"], c["probe_x"], c["coupling"], c["volts_per_count"]]
+    if props:
+        for nm in GEOMETRY_PROPS:
+            k.append(props.get(nm))
+    return tuple(k)
+
+
+GEOMETRY_PROPS = ("ch1.enabled", "ch1.vdiv", "ch1.pos", "ch1.probe", "ch1.coupling",
+                  "ch2.enabled", "ch2.vdiv", "ch2.pos", "ch2.probe", "ch2.coupling",
+                  "tb.code", "tb.roll", "tb.rollstep", "trig.mode", "trig.edge", "trig.source",
+                  "trig.level", "trig.x", "il.enabled")
+
+
+def trig_settings(props):
+    """(level_px, rising, source channel 0/1) from PROPS by name."""
+    p = props or {}
+    return p.get("trig.level", 0), p.get("trig.edge", 0) == 0, p.get("trig.source", 0)
+
+
+def record_reference(rec, props=None):
+    """Sample index to put at t = 0, and how it was found:
+    "hw" the hardware trigger of a time-ordered record; "soft" the scope's
+    soft-trigger crossing nearest the record centre (a triggered record that
+    is not time-ordered, e.g. a fast periodic signal: the screen aligns it the
+    same way); "centre" nothing to lock to."""
+    n = rec["n"]
+    if rec["trig_idx"] != TRIG_NONE:
+        return rec["trig_idx"], "hw"
+    level_px, rising, src = trig_settings(props)
+    chans = rec["ch"]
+    c = next((c for c in chans if c["id"] == src), chans[0] if chans else None)
+    if c is not None:
+        xs = find_crossings(c["codes"], soft_level(c["codes"], level_px), rising)
+        if xs:
+            return min(xs, key=lambda v: abs(v - n / 2.0)), "soft"
+    return n // 2, "centre"
+
+
+def channel_scale(c):
+    """(volts per code, zero code, unit, step per division, y window)."""
+    vpc, vpd, z = c["volts_per_count"], c["volts_per_div"], c["zero_code"]
+    if vpc > 0 and vpd > 0:
+        centre = (100 - z) * vpc              # screen centre code 100 (true scale)
+        return vpc, z, "V", vpd, (centre - SCREEN_DIVS_Y / 2 * vpd, centre + SCREEN_DIVS_Y / 2 * vpd)
+    return 1.0, 0, "code", 25.0, (128.0 - 100.0, 128.0 + 100.0)
+
+
+def record_traces(rec, props=None, ref=None):
+    """RECORD dict -> per-channel dicts with x (s from the reference), y (V or
+    codes), unit, volts/div, the y window (8 divisions around the screen
+    centre) and the x grid step (time/div)."""
     n, fs = rec["n"], rec["fs_hz"]
-    ref = rec["trig_idx"] if rec["trig_idx"] != TRIG_NONE else n // 2
+    if ref is None:
+        ref, _ = record_reference(rec, props)
     dt = 1.0 / fs if fs > 0 else 1.0
     x = [(i - ref) * dt for i in range(n)]
     spd = rec["s_per_div"] if rec["s_per_div"] > 0 else 25 * dt
     out = []
     for c in rec["ch"]:
-        vpc, vpd, z = c["volts_per_count"], c["volts_per_div"], c["zero_code"]
-        if vpc > 0 and vpd > 0:
-            y = [(v - z) * vpc for v in c["codes"]]
-            centre = (100 - z) * vpc          # screen centre code 100 (true scale)
-            unit, step = "V", vpd
-        else:
-            y = list(c["codes"])
-            centre, unit, step = 128.0, "code", 25.0
+        k, z, unit, step, ylim = channel_scale(c)
+        y = [(v - z) * k for v in c["codes"]]
         out.append({"name": "CH%d" % (c["id"] + 1), "x": x, "y": y, "unit": unit, "ydiv": step,
-                    "ylim": (centre - SCREEN_DIVS_Y / 2 * step, centre + SCREEN_DIVS_Y / 2 * step),
-                    "xdiv": spd})
+                    "ylim": ylim, "xdiv": spd})
     return out
+
+
+def fold_record(rec, props=None, half=None):
+    """Fold every enabled channel at the trigger source's crossings.
+    Returns (crossings, half window in samples, {channel id: [(xs s, ys V), ...]}),
+    one piece per crossing."""
+    level_px, rising, src = trig_settings(props)
+    chans = rec["ch"]
+    s = next((c for c in chans if c["id"] == src), chans[0] if chans else None)
+    if s is None:
+        return [], 0, {}
+    xs = find_crossings(s["codes"], soft_level(s["codes"], level_px), rising)
+    if half is None:
+        p = median_period(xs)
+        half = min(150.0, p) if p else 150.0     # two periods, or the screen's 300 samples
+    dt = 1.0 / rec["fs_hz"] if rec["fs_hz"] > 0 else 1.0
+    out = {}
+    for c in chans:
+        k, z, _u, _s, _yl = channel_scale(c)
+        out[c["id"]] = [([v * dt for v in px], [(v - z) * k for v in py])
+                        for px, py in fold_pieces(c["codes"], xs, half)]
+    return xs, half, out
 
 
 def time_scale(step):
@@ -354,81 +668,251 @@ def eng(v, unit):
     return "%g %s" % (v, unit)
 
 
+# ── keyboard controls: key -> shell command (pure) ──────────────────────────
+KEYMAP = (
+    ("up", "V/div up (active ch)"),
+    ("down", "V/div down"),
+    ("right", "time/div slower"),
+    ("left", "time/div faster"),
+    ("1 / 2", "active channel"),
+    ("e", "active ch on/off"),
+    (" ", "run / stop"),
+    ("a", "autoset"),
+    ("p", "persistence on/off"),
+    ("f", "fold at trigger"),
+    ("c", "clear persistence"),
+)
+
+
+def key_command(key, active, props):
+    """Shell command for a key, or None (local keys are handled by the plot).
+    `active` is 0/1; props the latest PROPS by name."""
+    p = props or {}
+    ch = "ch%d" % (active + 1)
+    if key == "up":
+        return "set %s.vdiv +=1" % ch
+    if key == "down":
+        return "set %s.vdiv -=1" % ch
+    if key == "right":
+        return "set tb.code +=1"
+    if key == "left":
+        return "set tb.code -=1"
+    if key == " ":
+        return "set view.run %s" % ("off" if p.get("view.run", 1) else "on")
+    if key == "e":
+        return "set %s.enabled %s" % (ch, "off" if p.get(ch + ".enabled", 1) else "on")
+    if key == "a":
+        return "ui press AUTO"
+    return None
+
+
+# ── live window ─────────────────────────────────────────────────────────────
 COLORS = {"CH1": "#2a78d6", "CH2": "#eb6834"}   # categorical slots 1, 2
 SURFACE, INK, INK2, GRID = "#fcfcfb", "#0b0b0b", "#52514e", "#e4e3df"
+# Colour grading (rare -> frequent), the oscilloscope convention the owner
+# asked for: blue, cyan, yellow, red.
+GRADE = ("#1f3fbf", "#19a7c9", "#f2d22e", "#d8312b")
+HIST_NX, HIST_NY = 400, 200
 
 
 class Plot:
     """Live window: one panel per channel (each with its own V/div grid; no
-    shared second y-axis), shared time axis with the time/div grid."""
+    shared second y-axis), shared time axis with the time/div grid, optional
+    colour-graded persistence under the latest trace, optional folding."""
 
-    def __init__(self, backend=None):
+    def __init__(self, backend=None, send=None, persist=None, fold=False):
         import matplotlib
         if backend:
             matplotlib.use(backend)
         import matplotlib.pyplot as plt
+        from matplotlib.colors import LinearSegmentedColormap, LogNorm
         from matplotlib.ticker import MultipleLocator
-        self.plt, self.ML = plt, MultipleLocator
+        import numpy as np
+        self.np, self.plt, self.ML, self.LogNorm = np, plt, MultipleLocator, LogNorm
+        self.cmap = LinearSegmentedColormap.from_list("grade", GRADE)
+        self.cmap.set_bad(alpha=0.0)
+        self.send = send
+        self.persist = persist            # None = off, float = decay seconds, "inf"
+        self.persist_on = persist is not None
+        self.fold = fold
+        self.active = 0
+        self.props = {}
         self.fig = None
-        self.axes = {}
-        self.lines = {}
         self.layout = None
+        self.geom = None
+        self.hists = {}
         self.times = []
+        self.wf_times = []
+        self.last_reply = ""
+        self.last_rec = None
 
+    # -- layout --
     def _build(self, names):
         plt = self.plt
         if self.fig is None:
             plt.ion()
-            self.fig = plt.figure(figsize=(10, 6), facecolor=SURFACE)
+            self.fig = plt.figure(figsize=(11, 7), facecolor=SURFACE)
+            self.fig.canvas.mpl_connect("key_press_event", self._on_key)
+            for k in [k for k in plt.rcParams if k.startswith("keymap.")]:
+                plt.rcParams[k] = []            # our keys, not matplotlib's
         self.fig.clf()
-        self.axes, self.lines = {}, {}
+        self.axes, self.lines, self.images = {}, {}, {}
         first = None
         for k, nm in enumerate(names):
-            ax = self.fig.add_subplot(len(names), 1, k + 1, sharex=first)
+            ax = self.fig.add_axes([0.08, 0.16 + (len(names) - 1 - k) * 0.74 / len(names),
+                                    0.68, 0.74 / len(names) - 0.04], sharex=first)
             first = first or ax
             ax.set_facecolor(SURFACE)
-            ax.grid(True, which="both", color=GRID, linewidth=0.8)
+            ax.grid(True, which="both", color=GRID, linewidth=0.8, zorder=0)
             ax.tick_params(colors=INK2, labelsize=8)
             for s in ax.spines.values():
                 s.set_color(GRID)
-            (ln,) = ax.plot([], [], color=COLORS.get(nm, INK), linewidth=1.5)
+            self.images[nm] = None
+            (ln,) = ax.plot([], [], color=COLORS.get(nm, INK), linewidth=1.5, zorder=3)
             self.axes[nm], self.lines[nm] = ax, ln
+        self.keytext = self.fig.text(0.79, 0.90, "", va="top", ha="left", fontsize=8, color=INK2,
+                                     family="monospace")
+        self.status = self.fig.text(0.08, 0.04, "", va="bottom", ha="left", fontsize=9, color=INK)
         self.layout = tuple(names)
+        self.hists = {}
 
-    def update(self, rec, now):
-        tr = record_traces(rec)
+    # -- keys --
+    def _on_key(self, ev):
+        key = ev.key
+        if key in ("1", "2"):
+            self.active = int(key) - 1
+        elif key == "p":
+            self.persist_on = not self.persist_on
+            self.hists = {}
+        elif key == "f":
+            self.fold = not self.fold
+            self.hists = {}
+        elif key == "c":
+            self.hists = {}
+        else:
+            cmd = key_command(key, self.active, self.props)
+            if cmd and self.send:
+                self.send(cmd)
+                self.last_reply = "> " + cmd
+        if self.last_rec is not None:
+            self.update(self.last_rec, time.monotonic(), redraw_only=True)
+
+    def reply(self, text):
+        line = [l for l in text.replace("\r", "").split("\n") if l.strip() and l.strip() != ">"]
+        if line:
+            self.last_reply = line[-1][-90:]
+
+    def set_props(self, props):
+        self.props = dict(props)
+
+    # -- drawing --
+    def _hist_for(self, nm, xlim, ylim):
+        h = self.hists.get(nm)
+        if h is None:
+            tau = None if self.persist in (None, "inf") else float(self.persist)
+            h = self.hists[nm] = Hist(HIST_NX, HIST_NY, xlim[0], xlim[1], ylim[0], ylim[1], tau)
+        return h
+
+    def update(self, rec, now, redraw_only=False):
+        np = self.np
+        tr = record_traces(rec, self.props)
         names = [t["name"] for t in tr]
         if self.layout != tuple(names):
             self._build(names)
-        self.times = [t for t in self.times if now - t < 2.0] + [now]
+        g = geometry_key(rec, self.props)
+        if g != self.geom:
+            self.geom, self.hists = g, {}
+        if not redraw_only:
+            self.last_rec = rec
+            self.times = [t for t in self.times if now - t < 2.0] + [now]
         fps = (len(self.times) - 1) / (self.times[-1] - self.times[0]) if len(self.times) > 1 else 0.0
         k, tu = time_scale(tr[0]["xdiv"])
-        for t in tr:
-            ax, ln = self.axes[t["name"]], self.lines[t["name"]]
-            ln.set_data([v * k for v in t["x"]], t["y"])
+        folded, ncross = None, 1
+        if self.fold:
+            xs, half, folded = fold_record(rec, self.props)
+            ncross = len(xs)
+            if not redraw_only:
+                self.wf_times = [t for t in self.wf_times if now - t[0] < 2.0] + [(now, len(xs))]
+            dt = 1.0 / rec["fs_hz"] if rec["fs_hz"] > 0 else 1.0
+            xlim = (-half * dt, half * dt)
+        else:
+            xlim = (tr[0]["x"][0], tr[0]["x"][-1])
+        for t, c in zip(tr, rec["ch"]):
+            nm = t["name"]
+            ax, ln = self.axes[nm], self.lines[nm]
+            if folded is not None:
+                pieces = folded.get(c["id"], [])
+                ln.set_data([], [])
+                ln.set_visible(False)
+            else:
+                pieces = [(t["x"], t["y"])]
+                ln.set_visible(True)
+                ln.set_data([v * k for v in t["x"]], t["y"])
             ax.set_ylim(*t["ylim"])
             ax.yaxis.set_major_locator(self.ML(t["ydiv"]))
-            span_divs = (t["x"][-1] - t["x"][0]) / t["xdiv"] if t["xdiv"] > 0 else 0
-            # one grid line per division; labels every 5 when the record is
-            # much wider than the screen's 12 divisions
+            span_divs = (xlim[1] - xlim[0]) / t["xdiv"] if t["xdiv"] > 0 else 0
+            # one grid line per division; labels every 5 when the view is much
+            # wider than the screen's 12 divisions
             ax.xaxis.set_minor_locator(self.ML(t["xdiv"] * k))
             ax.xaxis.set_major_locator(self.ML(t["xdiv"] * k * (5 if span_divs > 2 * SCREEN_DIVS_X else 1)))
+            ax.set_xlim(xlim[0] * k, xlim[1] * k)
             ax.tick_params(axis="x", labelbottom=(t is tr[-1]))
-            ax.set_xlim(t["x"][0] * k, t["x"][-1] * k)
-            ax.set_ylabel("%s  %s/div" % (t["name"], eng(t["ydiv"], t["unit"]) if t["unit"] == "V"
-                                          else "%g code" % t["ydiv"]), color=INK, fontsize=9)
+            ax.set_ylabel("%s  %s/div%s" % (nm, eng(t["ydiv"], t["unit"]) if t["unit"] == "V"
+                                            else "%g code" % t["ydiv"],
+                                            "  [active]" if c["id"] == self.active else ""),
+                          color=INK, fontsize=9)
+            show_hist = self.persist_on or folded is not None
+            img = self.images.get(nm)
+            if show_hist:
+                h = self._hist_for(nm, xlim, t["ylim"])
+                if not redraw_only:
+                    h.add_pieces(pieces, now, waveforms=ncross)
+                a = np.frombuffer(h.cells, dtype=np.float64).reshape(h.ny, h.nx) * h.scale(now)
+                m = np.ma.masked_less_equal(a, 0.0)
+                vmax = float(m.max()) if m.count() else 1.0
+                norm = self.LogNorm(vmin=max(vmax * 1e-3, 1e-12), vmax=max(vmax, 1e-12))
+                ext = (h.x0 * k, h.x1 * k, h.y0, h.y1)
+                if img is None:
+                    img = ax.imshow(m, origin="lower", extent=ext, aspect="auto", cmap=self.cmap,
+                                    norm=norm, interpolation="nearest", zorder=2)
+                    self.images[nm] = img
+                else:
+                    img.set_data(m)
+                    img.set_extent(ext)
+                    img.set_norm(norm)
+                img.set_visible(True)
+            elif img is not None:
+                img.set_visible(False)
         last = self.axes[names[-1]]
-        last.set_xlabel("time from trigger (%s), grid %s/div" % (tu, eng(tr[0]["xdiv"], "s")), color=INK2, fontsize=9)
+        last.set_xlabel("time from trigger (%s), grid %s/div" % (tu, eng(tr[0]["xdiv"], "s")), color=INK2,
+                        fontsize=9)
+        _ref, how = record_reference(rec, self.props)
+        trig = KIND_NAMES.get(rec["kind"], "kind %d" % rec["kind"])
+        if rec["kind"] == 1:
+            trig += {"hw": "", "soft": " (soft-aligned)", "centre": " (no crossing)"}[how]
         flags = []
         if rec["torn"]:
             flags.append("TORN")
-        if rec["trig_idx"] == TRIG_NONE:
-            flags.append("untriggered")
         if rec["flags"] & REC_INTERLEAVED:
             flags.append("interleaved")
-        self.fig.suptitle("OpenScope stream  %.1f records/s  gen %d  fs %s %s"
-                          % (fps, rec["gen"], eng(rec["fs_hz"], "Sa/s"), " ".join(flags)),
+        if not rec["flags"] & REC_RUNNING:
+            flags.append("STOP")
+        self.fig.suptitle("OpenScope stream  %.1f records/s  %s  fs %s  gen %d %s"
+                          % (fps, trig, eng(rec["fs_hz"], "Sa/s"), rec["gen"], " ".join(flags)),
                           color=INK, fontsize=11)
+        mode = []
+        if self.fold:
+            n = sum(c for _t, c in self.wf_times)
+            span = (self.wf_times[-1][0] - self.wf_times[0][0]) if len(self.wf_times) > 1 else 0
+            wf = max([h.waveforms for h in self.hists.values()] or [0])
+            mode.append("fold: %d waveforms accumulated, %s/s (%d in this record)" % (
+                wf, "%.0f" % (n / span) if span > 0 else "--", self.wf_times[-1][1] if self.wf_times else 0))
+        if self.persist_on or self.fold:
+            mode.append("persistence %s" % ("infinite" if self.persist in (None, "inf")
+                                            else "%gs decay" % float(self.persist)))
+        self.status.set_text("   ".join(mode + ([self.last_reply] if self.last_reply else [])))
+        self.keytext.set_text("keys\n" + "\n".join("%-6s %s" % ("space" if a == " " else a, b)
+                                                    for a, b in KEYMAP))
         self.fig.canvas.draw_idle()
         self.fig.canvas.flush_events()
 
@@ -441,20 +925,35 @@ class Plot:
 
 # ── device / replay loops ───────────────────────────────────────────────────
 def open_port(port):
+    """A serial device, or any pyserial URL: socket://127.0.0.1:PORT reaches
+    scripts/scope_broker.py, which shares one scope between several tools."""
     try:
         import serial
     except ImportError:
         sys.exit("pyserial is needed to talk to the device (pip install pyserial)")
-    s = serial.Serial(port, 115200, timeout=0.02)
-    s.reset_input_buffer()
+    s = serial.serial_for_url(port, baudrate=115200, timeout=0.02)
+    try:
+        s.reset_input_buffer()
+    except Exception:
+        pass
     return s
+
+
+def _persist_arg(v):
+    if v is None:
+        return None
+    return "inf" if v == "inf" else float(v)
 
 
 def run_device(a):
     ser = open_port(a.port)
     dump = open(a.dump, "wb") if a.dump else None
     dm, st = Demuxer(), Stats()
-    plot = Plot() if a.plot else None
+
+    def send(cmd):
+        ser.write(cmd.encode() + b"\r")
+
+    plot = Plot(send=send, persist=_persist_arg(a.persist), fold=a.fold) if a.plot else None
     cmd = "stream on" + ("" if not a.what else " " + " ".join(a.what)) + (" fast" if a.fast else "")
     ser.write(b"\r\n" + cmd.encode() + b"\r\n")
     t_start = time.monotonic()
@@ -478,8 +977,13 @@ def run_device(a):
                 st.add_bytes(len(data), now)
                 for ev in dm.feed(data):
                     d = st.event(ev, now)
-                    if plot and d and d["type"] == T_RECORD:
-                        plot.update(d, now)
+                    if plot:
+                        if ev[0] == "text":
+                            plot.reply(ev[1].decode("utf-8", "replace"))
+                        elif d and d["type"] == T_PROPS:
+                            plot.set_props(st.props_by_name())
+                        elif d and d["type"] == T_RECORD:
+                            plot.update(d, now)
             if ver_sent is not None and ver_seen is None and b"OpenScope 2C53T" in st.text[text_mark:]:
                 ver_seen = time.monotonic()
             if plot:
@@ -516,15 +1020,19 @@ def run_replay(a):
     with open(a.replay, "rb") as f:
         data = f.read()
     dm, st = Demuxer(), Stats()
-    plot = Plot("Agg" if a.png else None) if a.plot else None
+    plot = Plot("Agg" if a.png else None, persist=_persist_arg(a.persist), fold=a.fold) if a.plot else None
     step = 4096
+    t_fake = 0.0
     for o in range(0, len(data), step):
         chunk = data[o:o + step]
-        st.add_bytes(len(chunk), o)
+        st.add_bytes(len(chunk), 0.0)       # no wall clock in a dump: rates come from device t_ms
         for ev in dm.feed(chunk, final=(o + step >= len(data))):
             d = st.event(ev, None)
+            if plot and d and d["type"] == T_PROPS:
+                plot.set_props(st.props_by_name())
             if plot and d and d["type"] == T_RECORD:
-                plot.update(d, time.monotonic())
+                t_fake += a.replay_delay if not a.png else 0.2
+                plot.update(d, t_fake)
                 if a.png:
                     plot.fig.savefig(a.png, facecolor=SURFACE)
                 else:
@@ -641,6 +1149,199 @@ def shape(evs):
     return out
 
 
+def synth_record(ch1, ch2=None, fs=5e6, trig_idx=TRIG_NONE, kind=1, vdiv=3, zero=100, vpc=0.04):
+    chans = []
+    for i, codes in enumerate([ch1, ch2]):
+        if codes is None:
+            continue
+        chans.append({"id": i, "vdiv_idx": vdiv, "zero_code": zero, "coupling": 0, "position": 0, "probe_x": 1,
+                      "volts_per_count": vpc, "volts_per_div": vpc * 25, "codes": bytes(codes)})
+    return {"type": T_RECORD, "gen": 2, "gen_end": 2, "torn": False, "t_ms": 0, "fs_hz": fs, "s_per_div": 5e-6,
+            "n": len(ch1), "trig_idx": trig_idx, "flags": REC_RUNNING, "kind": kind, "tb_code": 10,
+            "nch": len(chans), "ch": chans}
+
+
+def square(n=1024, period=50, lo=60, hi=160, phase=0, outliers=False):
+    """A square; with outliers, a one-sample spike at every edge, alternating
+    overshoot (255 just after a rising edge), a dip (0 just before one),
+    and a sample stuck on the wrong side just after a falling edge."""
+    out = []
+    for i in range(n):
+        out.append(hi if ((i + phase) % period) < period // 2 else lo)
+    edges = [i for i in range(1, n) if out[i - 1] == lo and out[i] == hi]
+    if outliers:
+        for k, e in enumerate(edges):
+            if k % 3 == 0 and e + 1 < n:
+                out[e + 1] = 255
+            elif k % 3 == 1 and e - 1 >= 0:
+                out[e - 1] = 0
+            elif k % 3 == 2 and e - 2 >= 0:
+                out[e - 2] = 255                 # a spike above the level before the edge
+    return out, edges
+
+
+def numeric_selftest(fail):
+    # square, clean: one crossing per rising edge past the head, at the edge
+    codes, edges = square()
+    want = [e for e in edges if e >= HEAD_SKIP + 1]
+    lvl = soft_level(codes)
+    if lvl is None or abs(lvl - 110) > 1:
+        fail("soft_level of a 60/160 square = %r, expected 110" % lvl)
+    xs = find_crossings(codes, lvl, True)
+    if len(xs) != len(want) or any(abs(x - (e - 0.5)) > 0.51 for x, e in zip(xs, want)):
+        fail("clean square: crossings %s, expected near %s" % ([round(x, 2) for x in xs[:4]], want[:4]))
+    if abs(median_period(xs) - 50) > 1e-9:
+        fail("median period %r, expected 50" % median_period(xs))
+    fx = find_crossings(codes, lvl, False)
+    if len(fx) != len([i for i in range(HEAD_SKIP + 1, 1024) if codes[i - 1] == 160 and codes[i] == 60]):
+        fail("falling crossings %d" % len(fx))
+
+    # square with one-sample outliers at the edges: still one crossing per
+    # edge, within 2 samples, and the midline does not move
+    codes, edges = square(outliers=True)
+    lvl2 = soft_level(codes)
+    if lvl2 is None or abs(lvl2 - 110) > 1:
+        fail("soft_level with outliers = %r, expected 110" % lvl2)
+    xs = find_crossings(codes, lvl2, True)
+    want = [e for e in edges if e >= HEAD_SKIP + 2]
+    got = [x for x in xs if x >= HEAD_SKIP + 1]
+    if len(got) != len(want) or any(abs(x - e) > 2.0 for x, e in zip(got, want)):
+        fail("square with outliers: %d crossings %s, expected %d near %s"
+             % (len(got), [round(x, 1) for x in got[:6]], len(want), want[:6]))
+
+    # a record with a single edge: one crossing, one waveform, the default
+    # window (the screen's 300 samples)
+    step = [60] * 600 + [160] * 424
+    rec = synth_record(step)
+    xs, half, out = fold_record(rec)
+    if len(xs) != 1 or abs(xs[0] - 599.5) > 0.01 or half != 150.0:
+        fail("single edge: crossings %s half %s" % (xs, half))
+    fxs, fys = [v for pc in out[0] for v in pc[0]], [v for pc in out[0] for v in pc[1]]
+    if len(out[0]) != 1 or len(fxs) != 300 or any((y > 0) != (x > 0) for x, y in zip(fxs, fys)):
+        fail("single edge fold: %d points, sides wrong" % len(fxs))
+    ref, how = record_reference(rec)
+    if how != "soft" or abs(ref - 599.5) > 0.01:
+        fail("record_reference: %s %s (a triggered record without an index aligns soft)" % (ref, how))
+    if record_reference(synth_record(step, trig_idx=512))[1] != "hw":
+        fail("record_reference ignores the hardware index")
+    if record_reference(synth_record([100] * 1024))[1] != "centre":
+        fail("record_reference on a flat record")
+
+    # folding a 20-period square: N waveforms, aligned at the crossing
+    codes, edges = square(phase=7)
+    rec = synth_record(codes, codes)
+    xs, half, out = fold_record(rec)
+    if len(xs) < 17 or half != 50:
+        fail("fold: %d crossings, half %s" % (len(xs), half))
+    dt = 1 / 5e6
+    for cid in (0, 1):
+        if len(out[cid]) != len(xs):
+            fail("fold ch%d: %d pieces for %d crossings" % (cid, len(out[cid]), len(xs)))
+        fxs, fys = [v for pc in out[cid] for v in pc[0]], [v for pc in out[cid] for v in pc[1]]
+        after = [y for x, y in zip(fxs, fys) if 0.5 * dt < x < 20 * dt]
+        before = [y for x, y in zip(fxs, fys) if -20 * dt < x < -0.5 * dt]
+        if not after or not before or min(after) <= 0 or max(before) >= 0:
+            fail("fold ch%d: not aligned (after %s, before %s)" % (cid, after[:3], before[:3]))
+    # trigger level shifts the threshold; edge selects the direction
+    p = {"trig.level": 50, "trig.edge": 1, "trig.source": 1}
+    if abs(soft_level(codes, 20) - (110 + 20 * 256 / 206)) > 1e-9 or soft_level(codes, 100) != 159:
+        fail("soft_level with trig.level")
+    if trig_settings(p) != (50, False, 1):
+        fail("trig_settings %r" % (trig_settings(p),))
+
+    # histogram: binning, infinite accumulation, decay, renormalisation
+    h = Hist(10, 10, 0.0, 1.0, 0.0, 1.0)
+    h.add([0.05, 0.05, 0.95, 1.5, -0.1], [0.05, 0.05, 0.95, 0.5, 0.5])
+    if h.value(0, 0) != 2 or h.value(9, 9) != 1 or sum(h.cells) != 3:
+        fail("Hist binning: %s" % [h.value(0, 0), h.value(9, 9), sum(h.cells)])
+    h.add([0.05], [0.05], t=100.0)
+    if h.value(0, 0, now=1e6) != 3:
+        fail("Hist infinite accumulation decays")
+    h = Hist(4, 4, 0, 1, 0, 1, tau=2.0)
+    h.add([0.1], [0.1], t=10.0)
+    if abs(h.value(0, 0, now=12.0) - math.exp(-1)) > 1e-12:
+        fail("Hist decay after one tau: %r" % h.value(0, 0, now=12.0))
+    h.add([0.1], [0.1], t=12.0)
+    if abs(h.value(0, 0, now=12.0) - (1 + math.exp(-1))) > 1e-12:
+        fail("Hist decay: new sample weight")
+    h.add([0.9], [0.9], t=12.0 + 2.0 * 40)          # forces a renormalisation
+    if abs(h.value(3, 3, now=92.0) - 1.0) > 1e-9 or h.value(0, 0, now=92.0) > 1e-15 or h.t0 != 92.0:
+        fail("Hist renormalisation: %r %r %r" % (h.value(3, 3, now=92.0), h.value(0, 0, now=92.0), h.t0))
+    h = Hist(10, 10, 0.0, 10.0, 0.0, 10.0)
+    h.add_pieces([([0.5, 0.5], [0.5, 9.5])], waveforms=1)       # a vertical edge fills its column
+    if [h.value(0, j) for j in range(10)] != [1.0] * 10 or sum(h.cells) != 10 or h.waveforms != 1:
+        fail("Hist.add_pieces vertical edge: %s" % [h.value(0, j) for j in range(10)])
+    h.clear()
+    if sum(h.cells) != 0 or h.waveforms != 0:
+        fail("Hist clear")
+
+    # geometry: a V/div change or a timebase change invalidates the picture
+    r1 = synth_record(codes)
+    r2 = synth_record(codes, vdiv=4)
+    if geometry_key(r1) == geometry_key(r2):
+        fail("geometry_key ignores V/div")
+    if geometry_key(r1, {"tb.code": 10}) == geometry_key(r1, {"tb.code": 11}):
+        fail("geometry_key ignores tb.code")
+    if geometry_key(r1, {"tb.code": 10}) != geometry_key(synth_record(list(codes)), {"tb.code": 10}):
+        fail("geometry_key depends on the samples")
+
+    # keys
+    p = {"view.run": 1, "ch2.enabled": 1}
+    want = {("up", 0): "set ch1.vdiv +=1", ("down", 1): "set ch2.vdiv -=1", ("right", 0): "set tb.code +=1",
+            ("left", 0): "set tb.code -=1", (" ", 0): "set view.run off", ("e", 1): "set ch2.enabled off",
+            ("a", 0): "ui press AUTO", ("p", 0): None}
+    for (k, act), cmd in want.items():
+        if key_command(k, act, p) != cmd:
+            fail("key %r -> %r, expected %r" % (k, key_command(k, act, p), cmd))
+
+
+def demo_stream(n_records=12, seed=3):
+    """Bytes of a synthetic session: HELLO, PROPDESC, PROPS and noisy 100 kHz
+    squares (both channels, CH2 inverted), triggered but not time-ordered."""
+    rnd = random.Random(seed)
+    names = [(0x0101, "ch1.enabled"), (0x0102, "ch1.vdiv"), (0x0201, "ch2.enabled"), (0x0301, "tb.code"),
+             (0x0402, "trig.edge"), (0x0403, "trig.source"), (0x0404, "trig.level"), (0x0507, "view.run")]
+    out = encode_frame(T_HELLO, 0, encode_payload({"type": T_HELLO, "proto_major": 1, "proto_minor": 0, "caps": 7,
+                                                   "on": 7, "max_payload": 4096, "rec_samples": 1024,
+                                                   "n_props": len(names), "table_crc": 1, "fw": "demo"}))
+    seq = 1
+    for i, nm in names:
+        out += encode_frame(T_PROPDESC, seq, encode_payload({"type": T_PROPDESC, "id": i, "type_": 1, "unit": 0,
+                                                             "decimals": 0, "group": 0, "flags": 0, "min": 0,
+                                                             "max": 9, "def": 0, "name": nm, "unit_sym": ""}))
+        seq += 1
+    vals = {0x0101: 1, 0x0102: 3, 0x0201: 1, 0x0301: 10, 0x0402: 0, 0x0403: 0, 0x0404: 0, 0x0507: 1}
+    out += encode_frame(T_PROPS, seq, encode_payload({"type": T_PROPS, "table_crc": 1, "epochs": [0] * 12,
+                                                      "props": sorted(vals.items())}))
+    seq += 1
+    for r in range(n_records):
+        ph = rnd.randrange(50)
+        c1 = [max(0, min(255, int((150 if ((i + ph) % 50) < 25 else 50) + rnd.gauss(0, 3)
+                               + (12 if ((i + ph) % 50) in (0, 25) else 0)))) for i in range(1024)]
+        c2 = [200 - v for v in c1]
+        rec = synth_record(c1, c2)
+        rec["gen"] = rec["gen_end"] = 2 * (r + 1)
+        out += encode_frame(T_RECORD, seq, encode_payload(rec))
+        seq += 1
+    return out
+
+
+def persist_demo(png, fold=True, persist="inf"):
+    """Render the demo session with persistence (and folding) to a PNG."""
+    dm, st = Demuxer(), Stats()
+    p = Plot("Agg", persist=persist, fold=fold)
+    t = 0.0
+    for e in dm.feed(demo_stream(), final=True):
+        d = st.event(e)
+        if d and d["type"] == T_PROPS:
+            p.set_props(st.props_by_name())
+        if d and d["type"] == T_RECORD:
+            t += 0.22
+            p.update(d, t)
+    p.fig.savefig(png, facecolor=SURFACE)
+    return p
+
+
 def selftest():
     fails = []
     fail = fails.append
@@ -746,11 +1447,50 @@ def selftest():
         have_mpl = False
     if have_mpl:
         import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            pd = persist_demo(os.path.join(d, "persist.png"))
+            if not pd.hists or min(h.waveforms for h in pd.hists.values()) < 12 * 15:
+                fail("persist demo: folded waveforms %s" % [h.waveforms for h in pd.hists.values()])
+            sent = []
+            pd.send = sent.append
+
+            class Ev:
+                def __init__(self, k):
+                    self.key = k
+            for k in ("2", "up", "left", " ", "a", "1", "e", "f", "p", "c"):
+                pd._on_key(Ev(k))
+            if sent != ["set ch2.vdiv +=1", "set tb.code -=1", "set view.run off", "ui press AUTO",
+                        "set ch1.enabled off"]:
+                fail("plot keys sent %s" % sent)
+            if pd.fold or pd.persist_on or pd.hists:
+                fail("plot keys f/p/c did not toggle and clear")
+            pd.set_props({"ch1.vdiv": 4})
+            persist_demo(os.path.join(d, "p2.png"), fold=False, persist=2.0)
         p = Plot("Agg")
         p.update(rec, 0.0)
         p.update(decode(T_RECORD, [f for f in frames if f[1] == T_RECORD][1][4]), 0.2)
         with tempfile.TemporaryDirectory() as d:
             p.fig.savefig(os.path.join(d, "plot.png"))
+
+    # 8. the host encoder rebuilds every frame of the C vectors byte for byte
+    o = 0
+    for k, fr in enumerate(frames):
+        b = encode_frame(fr[1], fr[2], fr[4], fr[3])
+        if vec[offs[k]:offs[k] + len(b)] != b:
+            fail("encode_frame differs from the C encoder on frame %d (type %d)" % (k, fr[1]))
+    for k, fr in enumerate(frames):
+        if fr[1] in (T_HELLO, T_PROPDESC, T_PROPS, T_RECORD, T_METER, T_STATS):
+            if encode_payload(decode(fr[1], fr[4])) != fr[4]:
+                fail("encode_payload(decode(x)) != x for type %d" % fr[1])
+    st3 = Stats()
+    rep_frame = encode_frame(T_HELLO, 9, frames[0][4], FLAG_REPLAY)
+    for e in collect([rep_frame + vec]):
+        st3.event(e)
+    if st3.replayed != 1 or st3.seq_gaps != 0:
+        fail("replayed frame: replayed=%d gaps=%d (expected 1, 0)" % (st3.replayed, st3.seq_gaps))
+
+    # 9. the numeric core on synthetic records
+    numeric_selftest(fail)
 
     print("scope_stream selftest: %d frames, %d bytes of vectors, plot %s: %s"
           % (n_frames, len(vec), "rendered (Agg)" if have_mpl else "skipped (no matplotlib)",
@@ -771,6 +1511,9 @@ def main():
     ap.add_argument("--replay-delay", type=float, default=0.2, help="seconds between replayed records")
     ap.add_argument("--what", nargs="*", choices=["scope", "meter", "props"], help="streams to ask for")
     ap.add_argument("--fast", action="store_true", help="ask for spin-paced packets (stream on ... fast)")
+    ap.add_argument("--persist", nargs="?", const="inf", metavar="SECONDS|inf",
+                    help="colour-graded persistence: decay time in seconds, or inf (key p toggles)")
+    ap.add_argument("--fold", action="store_true", help="fold each record at its trigger crossings (key f)")
     ap.add_argument("--selftest", action="store_true", help="check the demux/decoders against the C vectors")
     a = ap.parse_args()
     if a.selftest:
