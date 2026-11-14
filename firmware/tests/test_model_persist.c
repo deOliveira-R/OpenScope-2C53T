@@ -609,7 +609,7 @@ static void test_defaults_identical(void)
 
 static void test_random_states_capture_identical(void)
 {
-    unsigned bad = 0;
+    unsigned bad = 0, bad_state = 0;
     for (unsigned n = 0; n < N_STATES; n++) {
         /* The image a capture starts from is settings_store's last one: the
          * carried bytes (stored-only, display_persist_mode, padding) come
@@ -625,9 +625,23 @@ static void test_random_states_capture_identical(void)
         if (memcmp(&a, &b, sizeof a) != 0) {
             if (bad++ < 3) { printf("  state %u:\n", n); diff_rec(&a, &b); }
         }
+
+        /* and each record loads to the same state from another live state */
+        random_state();
+        snap_t pre, s1, s2;
+        snap(&pre);
+        ref_apply(&a);
+        snap(&s1);
+        restore(&pre);
+        settings_store_apply(&b);
+        snap(&s2);
+        if (memcmp(&s1, &s2, sizeof s1) != 0) {
+            if (bad_state++ < 3) { printf("  state %u loaded back:\n", n); diff_snap(&s1, &s2); }
+        }
     }
     CHECKF(bad == 0, "%u of %u random states captured differently", bad, N_STATES);
-    printf("  %u random live states: records byte-identical\n", N_STATES);
+    CHECKF(bad_state == 0, "%u of %u captured states loaded differently", bad_state, N_STATES);
+    printf("  %u random live states: records byte-identical, identical state loaded back\n", N_STATES);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
