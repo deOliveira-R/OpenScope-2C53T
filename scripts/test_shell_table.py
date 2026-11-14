@@ -20,7 +20,13 @@ import re
 import unittest
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parent.parent / "firmware/src/drivers/usb_debug.c"
+DRIVERS = Path(__file__).resolve().parent.parent / "firmware/src/drivers"
+# The table is in usb_debug.c; since the feature manifest's F3 the rows and
+# handlers of the bench shell and of the meter diagnostics are in their own
+# files (FEATURE_BENCHSHELL, FEATURE_METERDEBUG). The invariants hold over
+# all of them, whatever a given image is built with.
+SRCS = [DRIVERS / n for n in ("usb_debug.c", "shell_bench.h", "shell_bench.c",
+                              "shell_meterdebug.h", "shell_meterdebug.c")]
 
 ROW_RE = re.compile(
     r'CMD_([AV])\("(?P<name>[^"]+)",\s*(?P<fn>\w+),\s*(?P<flags>[^,]+),\s*'
@@ -29,7 +35,8 @@ ROW_RE = re.compile(
 
 
 def parse():
-    text = SRC.read_text()
+    # The row macros in the headers end their lines with a backslash.
+    text = "\n".join(re.sub(r"[ \t]*\\\n", "\n", p.read_text()) for p in SRCS)
     rows = []
     for m in re.finditer(
             r'CMD_([AV])\(\s*"([^"]+)",\s*(\w+),\s*([A-Z0-9_ |]+?),\s*(NULL|")',
@@ -50,11 +57,16 @@ class ShellTableInvariants(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.text, cls.rows = parse()
-        assert len(cls.rows) > 90, f"table parse broke: {len(cls.rows)} rows"
+        assert len(cls.rows) > 180, f"table parse broke: {len(cls.rows)} rows"
 
     def test_handlers_defined(self):
+        # The property and UI routes have their handlers in src/model/.
+        model = DRIVERS.parent / "model"
+        text = self.text + "".join((model / n).read_text()
+                                   for n in ("model_shell.c", "ui_shell.c"))
         missing = [r["fn"] for r in self.rows
-                   if not re.search(r"static void %s\(" % r["fn"], self.text)]
+                   if not re.search(r"^(?:static )?void %s\([^;{]*\)\s*\{" % r["fn"],
+                                    text, re.M)]
         self.assertEqual(missing, [])
 
     def test_help_present_on_non_alias_rows(self):
@@ -70,7 +82,8 @@ class ShellTableInvariants(unittest.TestCase):
         self.assertEqual(dupes, [])
 
     def _bodies(self):
-        """fn name -> body text, for every static function in the file.
+        """fn name -> body text, for every function in the files (the moved
+        handlers are not static: their rows are placed from a header).
         Function bodies end at the first close-brace in column 0, which
         holds for this file's uniform style."""
         if not hasattr(self, "_body_cache"):
@@ -78,7 +91,7 @@ class ShellTableInvariants(unittest.TestCase):
             # Lazy prefix so the captured word is the identifier directly
             # before '(' — a greedy [\w ]+ here backtracks to single letters.
             for m in re.finditer(
-                    r"^static [^(\n]*?(\w+)\(([^;{)]*)\)\s*\n\{(.*?)\n\}",
+                    r"^(?:static |void |int |bool |uint\w+ |const )[^(\n]*?(\w+)\(([^;{)]*)\)\s*\n\{(.*?)\n\}",
                     self.text, re.S | re.M):
                 self._body_cache[m.group(1)] = m.group(3)
         return self._body_cache
