@@ -31,8 +31,8 @@
  * `btn` and `keys` are aliases kept for old bench scripts: they print
  * exactly the lines they printed before (ui_shell_btn / ui_shell_keys).
  *
- * The token parser is pure (tests/test_ui_shell.c, make test-ui-shell); the
- * rest is firmware only.
+ * The token parser and the one-press wait (ui_press_one) are pure
+ * (tests/test_ui_shell.c, make test-ui-shell); the rest is firmware only.
  */
 #ifndef UI_SHELL_H
 #define UI_SHELL_H
@@ -43,8 +43,12 @@
 
 #define UI_SEQ_MAX_REPEAT     50u     /* KEY*n and `ui press KEY n`: 1..50, as `btn`      */
 #define UI_SEQ_MAX_WAIT_MS    5000u   /* wait:<ms>: 0..5000; longer settles go host-side */
-/* One press: a long MENU (mode switch) flushes the settings to the W25Q. */
+/* One press, whole: a long MENU (mode switch) flushes the settings to the
+ * W25Q (plan 2.8: 2 s per press). The budget covers the wait for an earlier
+ * press that timed out AND this press's own wait, so a press never holds
+ * the shell longer than this (plus one poll step). */
 #define UI_PRESS_TIMEOUT_MS   2000u
+#define UI_PRESS_POLL_MS      2u
 
 typedef enum { UI_TOK_PRESS = 0, UI_TOK_LONG, UI_TOK_WAIT } ui_tok_kind_t;
 
@@ -85,6 +89,28 @@ ui_parse_t  ui_seq_check(const char *s, unsigned *ntok, unsigned *events, unsign
 
 /* Message for a parse result: "unknown key", ... */
 const char *ui_parse_text(ui_parse_t r);
+
+/* ── one press (pure; the firmware binds FreeRTOS and the key queue) ── */
+
+typedef struct {
+    uint32_t (*now_ms)(void);
+    uint32_t (*done)(void);              /* input_events_done: keys handled   */
+    bool     (*inject)(uint8_t id);      /* into the key queue; false = full  */
+    void     (*sleep_ms)(uint32_t ms);
+} ui_press_port_t;
+
+/* DONE: sent and handled. FULL: not sent (queue full). TIMEOUT: sent, not
+ * handled in time. STALE: not sent, an earlier press is still unhandled. */
+typedef enum { UI_PRESS_DONE = 0, UI_PRESS_FULL, UI_PRESS_TIMEOUT, UI_PRESS_STALE } ui_press_t;
+
+/* One event in, handled, within UI_PRESS_TIMEOUT_MS in all. *target is the
+ * handled count the last press waited for (modular): it stays ahead of
+ * done() after a TIMEOUT, so the late completion of that press cannot
+ * satisfy this one's wait. An earlier press still unhandled is waited for
+ * first, out of the same budget; if it does not finish the count is
+ * resynchronised (a press the boot logo swallowed is never counted) and
+ * this one is not sent (STALE). */
+ui_press_t  ui_press_one(const ui_press_port_t *port, uint32_t *target, uint8_t id);
 
 /* usb_debug.c's rows and the two legacy handler bodies (firmware only). */
 void cmd_ui_press(const char *args);

@@ -168,6 +168,30 @@ const char *ui_parse_text(ui_parse_t r)
     }
 }
 
+/* ═══ one press (pure) ═══════════════════════════════════════════════ */
+
+static bool press_reached(const ui_press_port_t *p, uint32_t target)
+{
+    return (int32_t)(p->done() - target) >= 0;
+}
+
+ui_press_t ui_press_one(const ui_press_port_t *p, uint32_t *target, uint8_t id)
+{
+    const uint32_t t0 = p->now_ms();
+    while (!press_reached(p, *target)) {             /* an earlier press still owed */
+        if (p->now_ms() - t0 >= UI_PRESS_TIMEOUT_MS) { *target = p->done(); return UI_PRESS_STALE; }
+        p->sleep_ms(UI_PRESS_POLL_MS);
+    }
+    *target = p->done();
+    if (!p->inject(id)) return UI_PRESS_FULL;
+    (*target)++;
+    while (!press_reached(p, *target)) {             /* the rest of the same budget */
+        if (p->now_ms() - t0 >= UI_PRESS_TIMEOUT_MS) return UI_PRESS_TIMEOUT;
+        p->sleep_ms(UI_PRESS_POLL_MS);
+    }
+    return UI_PRESS_DONE;
+}
+
 /* ═══ firmware: the presses, the waits, the lines ═══════════════════ */
 
 #ifndef UI_SHELL_TEST
@@ -191,46 +215,23 @@ const char *ui_parse_text(ui_parse_t r)
 /* ui.h declares it only with FEATURE_FFT; main.c defines it in every build. */
 bool input_inject_button(button_id_t b);
 
-#define POLL_MS 2u
-
-/* The handled count the last press made us wait for (modular, like the
- * executor's seq). It stays ahead of input_events_done after a TIMEOUT, so
- * the late completion of that press cannot satisfy the next press's wait.
- * 4 bytes: the only static state of the route. */
+/* The handled count the last press made us wait for (ui_press_one). 4
+ * bytes: the only static state of the route. */
 static uint32_t g_target;
 
 static uint32_t ms_now(void) { return (uint32_t)xTaskGetTickCount() * (1000u / configTICK_RATE_HZ); }
-
-static bool reached(uint32_t target) { return (int32_t)(input_events_done - target) >= 0; }
-
-static bool wait_target(uint32_t timeout_ms)
+static uint32_t fw_done(void) { return input_events_done; }
+static bool     fw_inject(uint8_t id) { return input_inject_button((button_id_t)id); }
+static void     fw_sleep(uint32_t ms)
 {
-    const uint32_t t0 = ms_now();
-    while (!reached(g_target)) {
-        if (ms_now() - t0 >= timeout_ms) return false;
-        vTaskDelay(pdMS_TO_TICKS(POLL_MS) ? pdMS_TO_TICKS(POLL_MS) : 1);
-    }
-    return true;
+    vTaskDelay(pdMS_TO_TICKS(ms) ? pdMS_TO_TICKS(ms) : 1);
 }
 
-/* DONE: sent and handled. FULL: not sent (queue full). TIMEOUT: sent, not
- * handled in time. STALE: not sent, an earlier press is still unhandled. */
-typedef enum { PRESS_DONE = 0, PRESS_FULL, PRESS_TIMEOUT, PRESS_STALE } press_t;
+static const ui_press_port_t k_press_port = {
+    .now_ms = ms_now, .done = fw_done, .inject = fw_inject, .sleep_ms = fw_sleep,
+};
 
-/* One event in, handled. An earlier press that timed out is first given its
- * own budget to finish; if it still has not, the count is resynchronised
- * (a press the boot logo swallowed is never counted) and this one is not
- * sent. */
-static press_t press_one(uint8_t id)
-{
-    if (!reached(g_target)) {
-        if (!wait_target(UI_PRESS_TIMEOUT_MS)) { g_target = input_events_done; return PRESS_STALE; }
-    }
-    g_target = input_events_done;
-    if (!input_inject_button((button_id_t)id)) return PRESS_FULL;
-    g_target++;
-    return wait_target(UI_PRESS_TIMEOUT_MS) ? PRESS_DONE : PRESS_TIMEOUT;
-}
+static ui_press_t press_one(uint8_t id) { return ui_press_one(&k_press_port, &g_target, id); }
 
 /* ── ui screen ─────────────────────────────────────────────────────── */
 
@@ -337,14 +338,14 @@ static void run_seq(const char *s, unsigned events)
         if (t.kind == UI_TOK_WAIT) { if (t.ms) vTaskDelay(pdMS_TO_TICKS(t.ms)); continue; }
         const uint8_t id = (uint8_t)(t.key | (t.kind == UI_TOK_LONG ? BTN_LONG_FLAG : 0u));
         for (unsigned i = 0; i < t.count; i++) {
-            const press_t r = press_one(id);
-            if (r == PRESS_FULL) {
+            const ui_press_t r = press_one(id);
+            if (r == UI_PRESS_FULL) {
                 usb_debug_printf("BUSY at token %u (%s): key queue full; %u of %u events handled\r\n",
                                  k, ui_key_name(t.key), handled, events);
                 screen_line();
                 return;
             }
-            if (r == PRESS_TIMEOUT || r == PRESS_STALE) {
+            if (r == UI_PRESS_TIMEOUT || r == UI_PRESS_STALE) {
                 usb_debug_printf("TIMEOUT at token %u (%s): input task busy (gallery/countdown/selfcal?); "
                                  "%u of %u events handled\r\n", k, ui_key_name(t.key), handled, events);
                 screen_line();
@@ -443,9 +444,9 @@ void ui_shell_btn(const char *args)
         const uint8_t id = (uint8_t)(is_long ? (k_keys[i].id | BTN_LONG_FLAG) : k_keys[i].id);
         for (uint32_t k = 0; k < n; k++) {
             if (timed_out) break;
-            const press_t r = press_one(id);
-            if (r == PRESS_DONE || r == PRESS_TIMEOUT) sent++;
-            if (r == PRESS_TIMEOUT || r == PRESS_STALE) timed_out = true;
+            const ui_press_t r = press_one(id);
+            if (r == UI_PRESS_DONE || r == UI_PRESS_TIMEOUT) sent++;
+            if (r == UI_PRESS_TIMEOUT || r == UI_PRESS_STALE) timed_out = true;
         }
         usb_debug_printf("btn %s%s: %u/%lu queued\r\n", lname, is_long ? " long" : "", sent,
                          (unsigned long)n);

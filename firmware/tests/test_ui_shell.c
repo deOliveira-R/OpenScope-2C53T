@@ -131,8 +131,91 @@ static void test_line(void)
     for (int r = UI_PARSE_OK; r <= UI_PARSE_NO_LONG; r++) CHECK(strcmp(ui_parse_text((ui_parse_t)r), "?") != 0);
 }
 
+/* ═══ one press: the 2 s budget (ui_press_one) ══════════════════════
+ * A fake input task on a fake clock: the clock moves only in sleep_ms, the
+ * handled count moves when the clock reaches each queued key's finish time. */
+static uint32_t f_now, f_done, f_sent;
+static uint32_t f_finish[8];       /* clock time each sent key is handled at (0 = never) */
+static unsigned f_q;               /* keys sent and not handled yet, in order */
+static bool     f_full;
+static uint32_t f_next_finish;     /* the finish time the next sent key gets */
+
+static void f_advance(void)
+{
+    while (f_q && f_finish[0] && f_now >= f_finish[0]) {
+        f_done++;
+        memmove(f_finish, f_finish + 1, sizeof f_finish - sizeof f_finish[0]);
+        f_q--;
+    }
+}
+static uint32_t f_now_ms(void)        { return f_now; }
+static uint32_t f_done_fn(void)       { f_advance(); return f_done; }
+static bool     f_inject(uint8_t id)  { (void)id; if (f_full || f_q == 8) return false; f_finish[f_q++] = f_next_finish; f_sent++; return true; }
+static void     f_sleep(uint32_t ms)  { f_now += ms; f_advance(); }
+static const ui_press_port_t k_fport = { f_now_ms, f_done_fn, f_inject, f_sleep };
+
+static void f_reset(void)
+{
+    f_now = 1000u; f_done = 0u; f_sent = 0u; f_q = 0u; f_full = false; f_next_finish = 0u;
+    memset(f_finish, 0, sizeof f_finish);
+}
+
+static void test_press_budget(void)
+{
+    uint32_t target = 0, t0;
+    f_reset();
+    /* a press the input task handles at once: DONE, one sent */
+    f_next_finish = f_now + 10u;
+    CHECK(ui_press_one(&k_fport, &target, BTN_UP) == UI_PRESS_DONE && f_sent == 1 && target == 1);
+
+    /* a press that is never handled: TIMEOUT at the 2 s budget */
+    f_next_finish = 0u;
+    t0 = f_now;
+    CHECK(ui_press_one(&k_fport, &target, BTN_MENU) == UI_PRESS_TIMEOUT);
+    CHECK(f_now - t0 >= UI_PRESS_TIMEOUT_MS && f_now - t0 <= UI_PRESS_TIMEOUT_MS + UI_PRESS_POLL_MS);
+
+    /* The case that held the shell ~4 s: the timed-out press finishes late
+     * (1.9 s into the next press), and the next press is slow too. Its own
+     * wait gets only what is left of the same 2 s. */
+    f_finish[0] = f_now + 1900u;                    /* the earlier MENU, handled late */
+    f_next_finish = f_now + 5000u;                  /* this press: slower than any budget */
+    t0 = f_now;
+    const ui_press_t r = ui_press_one(&k_fport, &target, BTN_OK);
+    CHECK(r == UI_PRESS_TIMEOUT && f_sent == 3);
+    CHECK(f_now - t0 <= UI_PRESS_TIMEOUT_MS + UI_PRESS_POLL_MS);
+    printf("    late earlier press + slow press: %u ms (was up to %u)\n", (unsigned)(f_now - t0),
+           (unsigned)(1900u + UI_PRESS_TIMEOUT_MS));
+
+    /* the earlier press never finishes: STALE at 2 s, nothing sent, the
+     * count resynchronised so the next press is not blocked by it */
+    f_reset();
+    target = 5;                                     /* ahead of done(): a press is owed */
+    t0 = f_now;
+    CHECK(ui_press_one(&k_fport, &target, BTN_UP) == UI_PRESS_STALE && f_sent == 0);
+    CHECK(f_now - t0 <= UI_PRESS_TIMEOUT_MS + UI_PRESS_POLL_MS && target == 0);
+    f_next_finish = f_now + 4u;
+    CHECK(ui_press_one(&k_fport, &target, BTN_UP) == UI_PRESS_DONE && target == 1);
+
+    /* a late completion of a timed-out press never satisfies the next wait */
+    f_reset();
+    target = 0;
+    f_next_finish = 0u;
+    CHECK(ui_press_one(&k_fport, &target, BTN_DOWN) == UI_PRESS_TIMEOUT && target == 1);
+    f_finish[0] = f_now + 3u;                       /* it lands just after */
+    f_next_finish = 0u;                             /* the next is never handled */
+    CHECK(ui_press_one(&k_fport, &target, BTN_DOWN) == UI_PRESS_TIMEOUT && target == 2 && f_done == 1);
+
+    /* queue full: FULL, nothing sent, no wait */
+    f_reset();
+    target = 0;
+    f_full = true;
+    t0 = f_now;
+    CHECK(ui_press_one(&k_fport, &target, BTN_UP) == UI_PRESS_FULL && f_now == t0 && f_sent == 0);
+}
+
 int main(void)
 {
+    test_press_budget();
     test_names();
     test_tokens();
     test_line();
