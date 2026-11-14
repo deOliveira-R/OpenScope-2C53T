@@ -182,6 +182,8 @@ const char *ui_parse_text(ui_parse_t r)
 #include "scope_state.h"
 #include "input_handler.h"    /* scope_key_focus */
 #include "fpga.h"             /* fpga_interleave_active (keys) */
+#include "screen.h"           /* the router's snapshot (`ui screen`) */
+#include "legacy_screens.h"   /* the describe hooks below */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -242,52 +244,74 @@ static void fmt_prop(char *out, size_t n, const prop_desc_t *p)
     prop_format_value(p, prop_get(p), out, n);
 }
 
+/* ── describe hooks of the legacy screens (ui/legacy_screens.c) ─────── */
+
+void ui_describe_osc_menu(char *out, size_t n)
+{
+    const osc_menu_state_t *om = osc_menu_state();
+    char item[6];
+    snprintf(item, sizeof item, "%u", (unsigned)om->item);
+    snprintf(out, n, "row=%s pane=%s item=%s",
+             om->row < OSC_ROW_COUNT ? k_row_name[om->row] : "?",
+             om->locked ? "locked" : om->in_pane ? "pane" : "rail", item);
+}
+
+void ui_describe_settings(char *out, size_t n)
+{
+    snprintf(out, n, "settings=%d/%d/%d", (int)settings_depth, (int)settings_selected,
+             (int)settings_sub_selected);
+}
+
+void ui_describe_home(char *out, size_t n)
+{
+    const uint8_t s = home_ui_model()->sel;
+    snprintf(out, n, "home=%s", s < HOME_ITEM_COUNT ? k_home_name[s] : "?");
+}
+
 /* One line, fixed keys in a fixed order, "-" where a key does not apply:
  *   screen=scope instrument=scope overlay=osc_menu row=ch1 pane=pane item=2
  *   settings=- home=- focus=zoom ach=CH1 run=run view=yt meter=- popup=0
- * B1 replaces the body with screen_snapshot() + each screen's describe(). */
+ *   stack=scope>osc_menu
+ * From the screen router's snapshot (ui/screen.h): `screen` is its base,
+ * `overlay` its top layer, `stack` every screen bottom-up; row/pane/item,
+ * settings and home are the describe() of the osc page (when on top), the
+ * settings base and the home base. The rest are properties. The stack
+ * mirrors the legacy state on the input task (legacy_screens_sync), so right
+ * after a shell `mode` it can lag by one input pass (<= 100 ms). */
 static void screen_line(void)
 {
-    char scr[12], inst[12], focus[12], view[16], meter[16], row[12], pane[8], item[6], set[16], home[12];
-    const device_mode_t m = current_mode;
-    const osc_menu_state_t *om = osc_menu_state();
+    char inst[12], focus[12], view[16], meter[16];
+    char osc[48] = "row=- pane=- item=-", set[24] = "settings=-", home[16] = "home=-";
+    char stack[64] = "";
+    const screen_stack_t st = screen_snapshot();
+    const screen_t *base = st.n ? screen_get(st.id[0]) : NULL;
+    const screen_t *top  = st.n ? screen_get(st.id[st.n - 1]) : NULL;
 
-    fmt_prop(scr, sizeof scr, P(SYS_MODE));
     fmt_prop(inst, sizeof inst, P(SYS_INSTRUMENT));
     fmt_prop(view, sizeof view, P(VIEW_MODE));
     prop_format(P(UI_FOCUS), prop_get(P(UI_FOCUS)), focus, sizeof focus);
-    if (m == MODE_MULTIMETER) fmt_prop(meter, sizeof meter, P(METER_FUNC));
+    if (base && base->id == SCR_METER) fmt_prop(meter, sizeof meter, P(METER_FUNC));
     else strcpy(meter, "-");
 
     const char *overlay = "none";
-    if (!model_exec_ready())            overlay = "logo";     /* boot: the logo holds the keys */
-    else if (gallery_ui_is_open())      overlay = "gallery";
-    else if (om->open)                  overlay = "osc_menu";
-    else if (ui_modal_active)           overlay = "modal";
-    if (om->open && !gallery_ui_is_open()) {
-        strcpy(row, om->row < OSC_ROW_COUNT ? k_row_name[om->row] : "?");
-        strcpy(pane, om->locked ? "locked" : om->in_pane ? "pane" : "rail");
-        snprintf(item, sizeof item, "%u", (unsigned)om->item);
-    } else {
-        strcpy(row, "-"); strcpy(pane, "-"); strcpy(item, "-");
+    if (!model_exec_ready())                       overlay = "logo";   /* boot: the logo holds the keys */
+    else if (st.n > 1 && top && top->id == SCR_GALLERY)  overlay = "gallery";
+    else if (st.n > 1 && top && top->id == SCR_OSC_MENU) overlay = "osc_menu";
+    else if (ui_modal_active)                      overlay = "modal";
+    if (top && top->id == SCR_OSC_MENU && top->describe) top->describe(osc, sizeof osc);
+    if (base && base->id == SCR_SETTINGS && base->describe) base->describe(set, sizeof set);
+    if (base && base->id == SCR_HOME && base->describe) base->describe(home, sizeof home);
+    for (uint8_t i = 0; i < st.n; i++) {
+        const screen_t *sc = screen_get(st.id[i]);
+        const size_t o = strlen(stack);
+        snprintf(stack + o, sizeof stack - o, "%s%s", i ? ">" : "", sc && sc->name ? sc->name : "?");
     }
-    if (m == MODE_SETTINGS)
-        snprintf(set, sizeof set, "%d/%d/%d", (int)settings_depth, (int)settings_selected,
-                 (int)settings_sub_selected);
-    else
-        strcpy(set, "-");
-    if (m == MODE_HOME) {
-        const uint8_t s = home_ui_model()->sel;
-        strcpy(home, s < HOME_ITEM_COUNT ? k_home_name[s] : "?");
-    } else {
-        strcpy(home, "-");
-    }
-    usb_debug_printf("screen=%s instrument=%s overlay=%s row=%s pane=%s item=%s settings=%s home=%s "
-                     "focus=%s ach=CH%u run=%s view=%s meter=%s popup=%u\r\n",
-                     scr, inst, overlay,
-                     row, pane, item, set, home, focus, (unsigned)active_channel + 1u,
+    usb_debug_printf("screen=%s instrument=%s overlay=%s %s %s %s "
+                     "focus=%s ach=CH%u run=%s view=%s meter=%s popup=%u stack=%s\r\n",
+                     base && base->name ? base->name : "?", inst, overlay,
+                     osc, set, home, focus, (unsigned)active_channel + 1u,
                      prop_get(P(VIEW_RUN)) ? "run" : "stop", view, meter,
-                     scope_popup_active() ? 1u : 0u);
+                     scope_popup_active() ? 1u : 0u, stack[0] ? stack : "-");
 }
 
 void cmd_ui_screen(void) { screen_line(); }

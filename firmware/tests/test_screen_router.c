@@ -461,6 +461,351 @@ static void test_locking_and_reentry(void)
           screen_route_key(BTN_UP) == SCR_UNHANDLED && (screen_pop(), screen_top() == SCR_SCOPE));
 }
 
+/* ═══ the legacy screens (ARCH-1 B1): the firmware's table and hooks ═══════
+ *
+ * src/ui/legacy_screens.c and the key model are compiled into this test as
+ * they are; their environment (the lgc_* handlers input_handler.c provides)
+ * is faked below and logs which pre-router handler a key reached. The
+ * expectation is old_route(): the dispatch order of input_handle_button() as
+ * it was before the router (base 6a8c2ba), transcribed step by step. Every key,
+ * short and long, in every mode, settings page and overlay must reach the same
+ * handler with the same action in both. */
+
+#include "../src/ui/key_model.c"
+#include "../src/ui/legacy_screens.c"
+
+typedef struct {
+    device_mode_t mode;
+    int8_t        depth;
+    bool          osc_open, osc_locked;
+    uint8_t       opener;
+    bool          gallery, busy, editor, tv, cursors, mask;
+    key_focus_t   focus;
+    uint8_t       ach;
+} lw_t;
+
+static lw_t W;
+static char LG[256];
+static int  lg_lock;
+static uint8_t gallery_close_key = 0xFF;   /* raw key the fake gallery closes on */
+
+static void lg(const char *fmt, int a, int b, int c)
+{
+    char t[40];
+    snprintf(t, sizeof t, fmt, a, b, c);
+    if (strlen(LG) + strlen(t) + 2 < sizeof LG) { strcat(LG, t); strcat(LG, " "); }
+}
+
+/* Two handler-side facts the order depends on, the same for both paths:
+ * softkey_slot_for_button() (softkey.c) and siggen_edit_input()'s claim. */
+static bool softkey_takes(button_id_t b)
+{
+    return b == BTN_MOVE || b == BTN_SELECT || b == BTN_TRIGGER || b == BTN_PRM;
+}
+static bool editor_takes(button_id_t b)
+{
+    if (W.mode != MODE_SIGNAL_GEN) return false;
+    if (!W.editor) return b == BTN_PRM;
+    switch (b) {
+    case BTN_LEFT: case BTN_RIGHT: case BTN_UP: case BTN_DOWN:
+    case BTN_OK: case BTN_PRM: case BTN_MENU: return true;
+    default: return false;
+    }
+}
+
+static key_ctx_t w_ctx(void)
+{
+    key_ctx_t c;
+    memset(&c, 0, sizeof c);
+    c.mode = W.mode; c.settings_depth = W.depth;
+    c.scope_time_view = (W.mode == MODE_OSCILLOSCOPE) && W.tv;
+    c.cursors_on = W.cursors; c.mask_present = W.mask;
+    c.focus = key_focus_sanitize(W.focus, W.cursors, W.mask);
+    c.active_channel = W.ach;
+    c.osc_menu_open = (W.mode == MODE_OSCILLOSCOPE) && W.osc_open;
+    c.osc_menu_locked = c.osc_menu_open && W.osc_locked;
+    c.osc_menu_opener = W.opener;
+    return c;
+}
+
+void lgc_state(lgc_state_t *s)
+{
+    s->mode = W.mode; s->settings_depth = W.depth; s->osc_open = W.osc_open; s->gallery_open = W.gallery;
+}
+key_ctx_t lgc_ctx(void)                      { return w_ctx(); }
+void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
+void lgc_home(button_id_t b)                 { lg("home:%d", b, 0, 0); }
+bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return false; lg("softkey:%d", b, 0, 0); return true; }
+bool lgc_siggen_edit(button_id_t b)          { if (!editor_takes(b)) return false; lg("edit:%d", b, 0, 0); return true; }
+void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
+void lgc_gallery_key(uint8_t raw)
+{
+    lg("gallery:%d", raw, 0, 0);
+    if ((raw & (uint8_t)~BTN_LONG_FLAG) == BTN_POWER || raw == gallery_close_key) W.gallery = false;
+}
+bool lgc_selfcal_busy(void)   { return W.busy; }
+void lgc_selfcal_cancel(void) { lg("cancel", 0, 0, 0); }
+void lgc_selfcal_refuse(void) { lg("busy", 0, 0, 0); }
+void lgc_touch(void)          { lg("touch", 0, 0, 0); }
+void lgc_click(void)          { lg("click", 0, 0, 0); }
+void lgc_lock(void)           { lg_lock++; }
+void lgc_unlock(void)         { lg_lock--; }
+void ui_describe_osc_menu(char *out, size_t n) { snprintf(out, n, "row=ch1 pane=rail item=0"); }
+void ui_describe_settings(char *out, size_t n) { snprintf(out, n, "settings=%d/0/0", (int)W.depth); }
+void ui_describe_home(char *out, size_t n)     { snprintf(out, n, "home=scope"); }
+
+/* input_handle_button() before the router (base 6a8c2ba), step by step. */
+static void old_route(uint8_t raw)
+{
+    const button_id_t b = (button_id_t)(raw & (uint8_t)~BTN_LONG_FLAG);
+    const bool lng = (raw & BTN_LONG_FLAG) != 0;
+    lg("touch", 0, 0, 0); lg("click", 0, 0, 0);                 /* autooff_touch, sys_pwm_click */
+    if (W.gallery) {                                             /* gallery_ui_key: all but POWER */
+        lgc_gallery_key(raw);
+        if (b != BTN_POWER) return;
+    }
+    if (W.busy) {                                                /* scope_selfcal_busy() */
+        if (b == BTN_AUTO || b == BTN_MENU) { lg("cancel", 0, 0, 0); return; }
+        if (b != BTN_POWER) { lg("busy", 0, 0, 0); return; }
+    }
+    const key_ctx_t c = w_ctx();
+    if (lng) { lgc_exec(key_map(&c, b, true), b); return; }      /* every long key */
+    const key_cmd_t k = key_map(&c, b, false);
+    if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
+    if (W.mode == MODE_HOME && b != BTN_POWER) { lgc_home(b); return; }
+    if (W.mode == MODE_MULTIMETER && softkey_takes(b)) { lg("softkey:%d", b, 0, 0); return; }
+    if (editor_takes(b)) { lg("edit:%d", b, 0, 0); return; }    /* siggen_edit_input */
+    lgc_mode_key(b);                                             /* switch (button) */
+}
+
+static void new_route(uint8_t raw)
+{
+    legacy_screens_sync();
+    (void)screen_route_key((button_id_t)raw);
+    legacy_screens_sync();
+}
+
+/* Does the stack mirror W? */
+static bool stack_mirrors(void)
+{
+    screen_stack_t st = screen_snapshot();
+    screen_id_t want[SCR_STACK_MAX];
+    uint8_t n = 0;
+    want[n++] = screen_base_for_mode(W.mode);
+    if (W.mode == MODE_SETTINGS && W.depth > 0) want[n++] = legacy_settings_page(W.depth);
+    if (W.mode == MODE_OSCILLOSCOPE && W.osc_open) want[n++] = SCR_OSC_MENU;
+    if (W.gallery) want[n++] = SCR_GALLERY;
+    if (st.n != n) return false;
+    for (uint8_t i = 0; i < n; i++) if (st.id[i] != want[i]) return false;
+    return true;
+}
+
+static int compare_one(uint8_t raw, char *why, size_t nwhy)
+{
+    const lw_t saved = W;
+    LG[0] = '\0';
+    old_route(raw);
+    char want[sizeof LG];
+    strcpy(want, LG);
+    const lw_t after_old = W;
+    W = saved;
+    legacy_screens_sync();
+    LG[0] = '\0';
+    new_route(raw);
+    const bool ok = strcmp(want, LG) == 0 && W.gallery == after_old.gallery && stack_mirrors();
+    if (!ok && why[0] == '\0')
+        snprintf(why, nwhy, "mode %d depth %d osc %d/%d op %d gal %d busy %d ed %d tv %d key %u: want [%s] got [%s]",
+                 saved.mode, saved.depth, saved.osc_open, saved.osc_locked, saved.opener, saved.gallery,
+                 saved.busy, saved.editor, saved.tv, raw, want, LG);
+    W = saved;
+    return ok ? 0 : 1;
+}
+
+/* Every key: 15 short, and long for the keys the scan gives a long to. */
+static int all_keys(int *cases, char *why, size_t nwhy)
+{
+    int bad = 0;
+    for (int b = BTN_CH1; b <= BTN_POWER; b++) {
+        bad += compare_one((uint8_t)b, why, nwhy); (*cases)++;
+        static const uint8_t long_keys[] = { BTN_AUTO, BTN_CH1, BTN_MOVE, BTN_SELECT, BTN_TRIGGER,
+                                             BTN_PRM, BTN_CH2, BTN_SAVE, BTN_MENU, BTN_OK };
+        for (unsigned i = 0; i < sizeof long_keys; i++)
+            if (long_keys[i] == b) { bad += compare_one((uint8_t)(b | BTN_LONG_FLAG), why, nwhy); (*cases)++; }
+    }
+    return bad;
+}
+
+static void test_legacy_equivalence(void)
+{
+    printf("legacy screens: every key routed as before the router\n");
+    screen_reset();
+    memset(&W, 0, sizeof W);
+    W.mode = MODE_OSCILLOSCOPE; W.tv = true; W.opener = BTN_NONE;
+    legacy_screens_init();
+    CHECK("init: the base of the current mode", screen_base() == SCR_SCOPE && screen_top() == SCR_SCOPE);
+
+    /* The page as the keys can leave it (opener and lock come in pairs). */
+    static const struct { bool open, locked; uint8_t opener; } osc[] = {
+        { false, false, BTN_NONE }, { true, false, BTN_MENU }, { true, false, BTN_CH1 },
+        { true, true, BTN_PRM }, { true, true, BTN_TRIGGER },
+    };
+    static const struct { key_focus_t f; bool cursors, mask; } foc[] = {
+        { KF_ZOOM, false, false }, { KF_TRIGMOVE, false, false }, { KF_CURSOR, true, false },
+        { KF_MASK, false, true },
+    };
+    int bad = 0, cases = 0;
+    char why[400] = "";
+    for (int mode = 0; mode < MODE_COUNT; mode++)
+    for (int depth = 0; depth < (mode == MODE_SETTINGS ? 8 : 1); depth++)
+    for (unsigned o = 0; o < sizeof osc / sizeof osc[0]; o++)
+    for (int gal = 0; gal < 2; gal++)
+    for (int busy = 0; busy < 2; busy++)
+    for (int ed = 0; ed < (mode == MODE_SIGNAL_GEN ? 2 : 1); ed++)
+    for (int tv = 0; tv < (mode == MODE_OSCILLOSCOPE ? 2 : 1); tv++)
+    for (unsigned f = 0; f < (mode == MODE_OSCILLOSCOPE ? sizeof foc / sizeof foc[0] : 1u); f++) {
+        /* Outside the scope only "closed" and a page left open by a shell
+         * mode switch (it is not the scope's, so not on the stack). */
+        if (mode != MODE_OSCILLOSCOPE && o > 1) continue;
+        memset(&W, 0, sizeof W);
+        W.mode = (device_mode_t)mode; W.depth = (int8_t)depth;
+        W.osc_open = osc[o].open; W.osc_locked = osc[o].locked; W.opener = osc[o].opener;
+        W.gallery = gal; W.busy = busy; W.editor = ed; W.tv = tv;
+        W.focus = foc[f].f; W.cursors = foc[f].cursors; W.mask = foc[f].mask;
+        bad += all_keys(&cases, why, sizeof why);
+    }
+    printf("    %d cases\n", cases);
+    if (bad) printf("    first difference: %s\n", why);
+    CHECK("every key, short and long, every mode/page/overlay: same handler, same action",
+          bad == 0 && cases > 5000);
+    CHECK("the injected lock is balanced", lg_lock == 0);
+}
+
+/* A table to read: one row per meaning that moved in the router (globals,
+ * grab, lock), with the handler log it must produce. */
+static void test_legacy_table(void)
+{
+    printf("legacy screens: the expectation table\n");
+    static const struct {
+        const char *what; device_mode_t mode; int8_t depth; bool osc, locked, gal, busy, ed;
+        uint8_t raw; const char *want;
+    } T[] = {
+        { "long MOVE in the scope -> meter (global)",     MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click exec:3:0:3" },
+        { "long SELECT in the meter -> scope (global)",   MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_SELECT | BTN_LONG_FLAG,  "touch click exec:4:0:4" },
+        { "long TRIGGER on home -> generator (global)",   MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click exec:5:0:5" },
+        { "long MENU on a settings page -> home",         MODE_SETTINGS,     3, 0, 0, 0, 0, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click exec:2:0:9" },
+        { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click exec:3:0:3" },
+        { "long SAVE in the generator -> gallery",        MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_SAVE | BTN_LONG_FLAG,    "touch click exec:10:0:8" },
+        { "short SAVE on home -> screenshot",             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click exec:11:0:8" },
+        { "long OK in the scope -> 50 % centre",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click exec:13:0:14" },
+        { "long AUTO in the scope -> baseline",           MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click exec:12:0:7" },
+        { "long CH2 in the scope -> CH2 on/off",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,     "touch click exec:7:1:2" },
+        { "long CH1 under the osc page: nothing",         MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,     "touch click exec:1:0:1" },
+        { "long OK in the generator -> run/stop",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click exec:9:0:14" },
+        { "POWER in the meter -> the countdown",          MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click switch:15" },
+        { "POWER on home -> the countdown",               MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click switch:15" },
+        { "POWER with the gallery up: closes it, then",   MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_POWER,                   "touch click gallery:15 switch:15" },
+        { "long MOVE with the gallery up: the gallery's", MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click gallery:131" },
+        { "long MOVE during autoset: Busy",               MODE_OSCILLOSCOPE, 0, 1, 0, 0, 1, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click busy" },
+        { "long MENU during autoset: cancel",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click cancel" },
+        { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click switch:15" },
+        { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click exec:28:0:10" },
+        { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click exec:26:0:9" },
+        { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click softkey:3" },
+        { "LEFT in the meter: the switch",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click switch:12" },
+        { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click edit:6" },
+        { "UP in the generator, editor closed: switch",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click switch:10" },
+        { "UP in the generator, editor open: editor",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click edit:10" },
+        { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click home:14" },
+        { "MENU on Settings > Oscilloscope: switch",      MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click switch:9" },
+        { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click switch:3" },
+    };
+    _Static_assert(KA_ENTER_HOME == 2 && KA_ENTER_METER == 3 && KA_ENTER_SCOPE == 4 && KA_ENTER_SIGGEN == 5 &&
+                   KA_CH_ENABLE_TOGGLE == 7 && KA_SIGGEN_RUNSTOP == 9 && KA_GALLERY_OPEN == 10 &&
+                   KA_SCREENSHOT == 11 && KA_BASECAL == 12 && KA_CENTER50 == 13 && KA_OSCMENU_OPEN == 26 &&
+                   KA_OSCMENU_KEY == 28 && KA_NONE == 1, "the action numbers the table spells");
+    int bad = 0;
+    for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+        memset(&W, 0, sizeof W);
+        W.mode = T[i].mode; W.depth = T[i].depth; W.osc_open = T[i].osc; W.osc_locked = T[i].locked;
+        W.opener = T[i].osc ? BTN_MENU : BTN_NONE; W.gallery = T[i].gal; W.busy = T[i].busy;
+        W.editor = T[i].ed; W.tv = true;
+        const lw_t saved = W;
+        LG[0] = '\0'; old_route(T[i].raw);
+        char o[sizeof LG]; strcpy(o, LG);
+        W = saved; legacy_screens_sync();
+        LG[0] = '\0'; new_route(T[i].raw);
+        char want[80]; snprintf(want, sizeof want, "%s ", T[i].want);
+        if (strcmp(o, want) != 0 || strcmp(LG, want) != 0) {
+            bad++;
+            printf("    %s: want [%s] old [%s] new [%s]\n", T[i].what, T[i].want, o, LG);
+        }
+    }
+    CHECK("each row: the old order and the router give the logged handler", bad == 0);
+}
+
+static void test_legacy_mirror(void)
+{
+    printf("legacy screens: the stack mirrors the legacy state\n");
+    memset(&W, 0, sizeof W);
+    W.mode = MODE_OSCILLOSCOPE; W.tv = true;
+    legacy_screens_init();
+    const uint32_t g0 = screen_snapshot().gen;
+    legacy_screens_sync();
+    CHECK("sync with nothing changed leaves the stack (gen) alone", screen_snapshot().gen == g0);
+
+    W.osc_open = true; W.opener = BTN_MENU; legacy_screens_sync();
+    CHECK("page open -> scope > osc_menu", stack_mirrors() && screen_top() == SCR_OSC_MENU);
+    W.gallery = true; legacy_screens_sync();
+    CHECK("gallery over the page -> scope > osc_menu > gallery", stack_mirrors() && screen_top() == SCR_GALLERY);
+    W.mode = MODE_MULTIMETER; W.gallery = false; legacy_screens_sync();   /* shell `mode meter` */
+    CHECK("shell mode switch + gallery close -> meter alone (stale page not shown)",
+          stack_mirrors() && screen_base() == SCR_METER && screen_top() == SCR_METER);
+    W.mode = MODE_SETTINGS; W.depth = 3; W.osc_open = false; legacy_screens_sync();
+    CHECK("settings depth 3 -> settings > set_math", stack_mirrors() && screen_top() == SCR_SET_MATH);
+    W.depth = 7; legacy_screens_sync();
+    CHECK("depth 3 -> 7 swaps the page", stack_mirrors() && screen_top() == SCR_SET_SOUND);
+    W.depth = 0; legacy_screens_sync();
+    CHECK("depth 0 -> the settings base", stack_mirrors() && screen_top() == SCR_SETTINGS);
+    W.depth = 5;
+    CHECK("depth 4 and 5 are both the component page",
+          legacy_settings_page(4) == SCR_SET_COMPONENT && legacy_settings_page(5) == SCR_SET_COMPONENT);
+
+    /* The gallery closing itself pops its layer within the same key. */
+    W.mode = MODE_OSCILLOSCOPE; W.depth = 0; W.gallery = true; legacy_screens_sync();
+    gallery_close_key = BTN_MENU;
+    (void)screen_route_key(BTN_MENU);
+    CHECK("gallery closes on its key -> its layer is popped by the router",
+          !W.gallery && screen_top() == SCR_SCOPE);
+    gallery_close_key = 0xFF;
+
+    /* Instruments: a base's instrument id is the sys.instrument value. */
+    CHECK("bases by instrument: 0 scope, 1 meter, 2 generator; home/settings none",
+          screen_base_for_instrument(0) == SCR_SCOPE && screen_base_for_instrument(1) == SCR_METER &&
+          screen_base_for_instrument(2) == SCR_SIGGEN && screen_base_for_instrument(3) == SCR_COUNT &&
+          screen_get(SCR_HOME)->instrument == SCR_INSTRUMENT_NONE &&
+          screen_get(SCR_SETTINGS)->instrument == SCR_INSTRUMENT_NONE);
+    CHECK("names are the sys.mode labels", strcmp(screen_get(SCR_SCOPE)->name, "scope") == 0 &&
+          strcmp(screen_get(SCR_SIGGEN)->name, "siggen") == 0 && strcmp(screen_get(SCR_HOME)->name, "home") == 0);
+
+    /* DCMD_DRAW_ACTIVE: each screen's in-place paint. */
+    CHECK("DRAW_ACTIVE -> the screen's own draw command",
+          legacy_screens_update_cmd(SCR_SCOPE) == DCMD_DRAW_SCOPE &&
+          legacy_screens_update_cmd(SCR_METER) == DCMD_DRAW_METER &&
+          legacy_screens_update_cmd(SCR_SIGGEN) == DCMD_DRAW_SIGGEN &&
+          legacy_screens_update_cmd(SCR_HOME) == DCMD_DRAW_HOME &&
+          legacy_screens_update_cmd(SCR_OSC_MENU) == DCMD_DRAW_OSC_MENU &&
+          legacy_screens_update_cmd(SCR_SET_SOUND) == DCMD_DRAW_SETTINGS &&
+          legacy_screens_update_cmd(SCR_SETTINGS) == DCMD_DRAW_SETTINGS &&
+          legacy_screens_update_cmd(SCR_GALLERY) == DCMD_NONE_MODAL_DROP);
+
+    char t[160];
+    W.osc_open = true; W.gallery = false; legacy_screens_sync();
+    screen_snapshot_text(t, sizeof t);
+    CHECK("snapshot text: base > page, and the page's describe", strstr(t, "scope > osc_menu gen=") == t &&
+          strstr(t, "| row=ch1 pane=rail item=0") != NULL);
+    screen_reset();
+}
+
 int main(void)
 {
     printf("screen router\n");
@@ -475,6 +820,9 @@ int main(void)
     test_opaque_ticks_draw();
     test_snapshot();
     test_locking_and_reentry();
+    test_legacy_equivalence();
+    test_legacy_table();
+    test_legacy_mirror();
     printf("\n%d/%d passed\n", passed, run);
     return passed == run ? 0 : 1;
 }

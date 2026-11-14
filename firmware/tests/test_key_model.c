@@ -502,6 +502,100 @@ static void test_state(void)
     CHECK("measurements start shown", s.prm_hidden == false);
 }
 
+/* ── key_map_global (ARCH-1 B1): the keys every screen shares ──────── */
+
+/* key_map over every context key_ctx_t can express (mode, settings depth
+ * 0/3/6, view, focus, cursors, mask, channel, page open/locked, opener) x 15
+ * keys x short/long: an FNV-1a hash of the (act, arg) answers in a fixed
+ * order. */
+static uint32_t km_grid(key_cmd_t (*fn)(const key_ctx_t *, button_id_t, bool), unsigned *count)
+{
+    static const uint8_t openers[] = { BTN_NONE, BTN_PRM, BTN_TRIGGER, BTN_CH1, BTN_CH2, BTN_MENU };
+    uint32_t h = 2166136261u;
+    unsigned n = 0;
+    for (int mode = 0; mode < MODE_COUNT; mode++)
+    for (int depth = 0; depth < 8; depth += 3)
+    for (int tv = 0; tv < 2; tv++)
+    for (int f = 0; f < KF_COUNT; f++)
+    for (int cur = 0; cur < 2; cur++)
+    for (int mk = 0; mk < 2; mk++)
+    for (int ach = 0; ach < 2; ach++)
+    for (int op = 0; op < 2; op++)
+    for (int lk = 0; lk < 2; lk++)
+    for (unsigned o = 0; o < sizeof openers; o++)
+    for (int b = BTN_CH1; b <= BTN_POWER; b++)
+    for (int lng = 0; lng < 2; lng++) {
+        key_ctx_t c;
+        memset(&c, 0, sizeof c);
+        c.mode = (device_mode_t)mode; c.settings_depth = (int8_t)depth; c.scope_time_view = tv;
+        c.focus = (key_focus_t)f; c.cursors_on = cur; c.mask_present = mk; c.active_channel = (uint8_t)ach;
+        c.osc_menu_open = op; c.osc_menu_locked = lk; c.osc_menu_opener = openers[o];
+        const key_cmd_t k = fn(&c, (button_id_t)b, lng != 0);
+        const uint8_t bytes[2] = { (uint8_t)k.act, (uint8_t)k.arg };
+        for (int i = 0; i < 2; i++) { h ^= bytes[i]; h *= 16777619u; }
+        n++;
+    }
+    *count = n;
+    return h;
+}
+
+/* The same grid run over key_map() as it was before key_map_global was split
+ * out of it (base 6a8c2ba, the tree the router was wired on): compiled from
+ * that commit's key_model.c with this very km_grid(). key_map's answers must
+ * not move. */
+#define KM_GRID_PRE_B1_HASH   0x7C31BE65u
+#define KM_GRID_PRE_B1_COUNT  864000u
+
+static void test_global(void)
+{
+    printf("key_map_global (router step 4)\n");
+
+    unsigned n = 0;
+    const uint32_t h = km_grid(key_map, &n);
+    CHECK("key_map: every answer over the whole context grid as before the split",
+          h == KM_GRID_PRE_B1_HASH && n == KM_GRID_PRE_B1_COUNT);
+
+    /* Exactly these are global, with these actions, in every context. */
+    static const struct { button_id_t b; bool lng; key_action_t a; } glob[] = {
+        { BTN_MENU, true, KA_ENTER_HOME },     { BTN_MOVE, true, KA_ENTER_METER },
+        { BTN_SELECT, true, KA_ENTER_SCOPE },  { BTN_TRIGGER, true, KA_ENTER_SIGGEN },
+        { BTN_SAVE, true, KA_GALLERY_OPEN },   { BTN_SAVE, false, KA_SCREENSHOT },
+        { BTN_POWER, false, KA_POWER_PROMPT },
+    };
+    int bad = 0, agree = 0;
+    for (int mode = 0; mode < MODE_COUNT; mode++)
+    for (int op = 0; op < 2; op++)
+    for (int lk = 0; lk < 2; lk++)
+    for (int tv = 0; tv < 2; tv++)
+    for (int b = BTN_CH1; b <= BTN_POWER; b++)
+    for (int lng = 0; lng < 2; lng++) {
+        key_ctx_t c = ctx((device_mode_t)mode, KF_ZOOM);
+        c.osc_menu_open = op; c.osc_menu_locked = lk; c.scope_time_view = tv;
+        c.osc_menu_opener = BTN_PRM;
+        key_action_t want = KA_LEGACY;
+        for (unsigned i = 0; i < sizeof glob / sizeof glob[0]; i++)
+            if (glob[i].b == (button_id_t)b && glob[i].lng == (lng != 0)) want = glob[i].a;
+        const key_cmd_t g = key_map_global(&c, (button_id_t)b, lng != 0);
+        if (g.act != want || g.arg != 0) bad++;
+        if (key_map_global(NULL, (button_id_t)b, lng != 0).act != g.act) bad++;
+        /* key_map gives the global answer first, POWER aside (KA_LEGACY). */
+        const key_cmd_t m = key_map(&c, (button_id_t)b, lng != 0);
+        if (want != KA_LEGACY && b != BTN_POWER) agree += (m.act == want);
+        if (b == BTN_POWER && !lng && m.act != KA_LEGACY) bad++;
+    }
+    CHECK("globals: long MENU/MOVE/SELECT/TRIGGER/SAVE, short SAVE/POWER, any context", bad == 0);
+    CHECK("key_map returns the global answer for every global key (POWER stays LEGACY)",
+          agree == MODE_COUNT * 2 * 2 * 2 * 6);
+    CHECK("no other key is global (arrows, OK, CH1/CH2, PRM, AUTO, short mode keys)",
+          key_map_global(NULL, BTN_UP, false).act == KA_LEGACY &&
+          key_map_global(NULL, BTN_OK, true).act == KA_LEGACY &&
+          key_map_global(NULL, BTN_PRM, true).act == KA_LEGACY &&
+          key_map_global(NULL, BTN_CH1, true).act == KA_LEGACY &&
+          key_map_global(NULL, BTN_AUTO, true).act == KA_LEGACY &&
+          key_map_global(NULL, BTN_MENU, false).act == KA_LEGACY &&
+          key_map_global(NULL, BTN_MOVE, false).act == KA_LEGACY);
+}
+
 int main(void)
 {
     test_scan();
@@ -512,6 +606,7 @@ int main(void)
     test_osc_menu();
     test_focus();
     test_state();
+    test_global();
     printf("\n%d/%d passed\n", passed, run);
     return passed == run ? 0 : 1;
 }

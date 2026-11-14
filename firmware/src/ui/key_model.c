@@ -118,22 +118,14 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     /* While the Oscilloscope Settings page is up the plot is hidden, so the
      * scope's own long presses (measurements, channel enable, baseline,
      * 50 %) would act on something the user cannot see: ignored. The global
-     * ones below (mode shortcuts, gallery) keep their meaning. */
+     * ones (mode shortcuts, gallery: key_map_global) keep their meaning. */
     const bool page = (c->mode == MODE_OSCILLOSCOPE) && c->osc_menu_open;
     if (page && (b == BTN_PRM || b == BTN_CH1 || b == BTN_CH2 ||
                  b == BTN_OK || b == BTN_AUTO))
         return cmd(KA_NONE, 0);
 
     switch (b) {
-    /* The mode shortcuts work from ANY mode, the meter's softkeys and the
-     * settings pages included (manual 1.1 / 2.1 / 3.1). */
-    case BTN_MENU:    return cmd(KA_ENTER_HOME, 0);
-    /* Owner, stock V1.2.0 on unit #2 (2026-11-11): long MOVE -> multimeter,
-     * long SELECT -> scope, long TRIGGER -> generator. */
-    case BTN_MOVE:    return cmd(KA_ENTER_METER, 0);
-    case BTN_SELECT:  return cmd(KA_ENTER_SCOPE, 0);
-    case BTN_TRIGGER: return cmd(KA_ENTER_SIGGEN, 0);
-
+    /* Long MENU/MOVE/SELECT/TRIGGER/SAVE are global (key_map_global). */
     case BTN_PRM:
         return c->scope_time_view ? cmd(KA_MEAS_HIDE_TOGGLE, 0) : cmd(KA_NONE, 0);
 
@@ -157,12 +149,38 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
         if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_BOOT_TOGGLE, 0);
         return c->scope_time_view ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
 
-    /* Owner decision D1: the gallery from every mode (stock: scope only). */
-    case BTN_SAVE:
-        return cmd(KA_GALLERY_OPEN, 0);
-
     default:
         return cmd(KA_NONE, 0);
+    }
+}
+
+key_cmd_t key_map_global(const key_ctx_t *c, button_id_t btn, bool is_long)
+{
+    (void)c;
+    if (is_long) {
+        switch (btn) {
+        /* The mode shortcuts work from ANY mode, the meter's softkeys, the
+         * settings pages and the Oscilloscope Settings page included
+         * (manual 1.1 / 2.1 / 3.1). */
+        case BTN_MENU:    return cmd(KA_ENTER_HOME, 0);
+        /* Owner, stock V1.2.0 on unit #2 (2026-11-11): long MOVE ->
+         * multimeter, long SELECT -> scope, long TRIGGER -> generator. */
+        case BTN_MOVE:    return cmd(KA_ENTER_METER, 0);
+        case BTN_SELECT:  return cmd(KA_ENTER_SCOPE, 0);
+        case BTN_TRIGGER: return cmd(KA_ENTER_SIGGEN, 0);
+        /* Owner decision D1: the gallery from every mode (stock: scope only). */
+        case BTN_SAVE:    return cmd(KA_GALLERY_OPEN, 0);
+        default:          return cmd(KA_LEGACY, 0);
+        }
+    }
+    switch (btn) {
+    /* Owner decision D1: short SAVE is a whole-screen screenshot in every
+     * mode and on every page (stock: the scope only; the meter's SAVE used
+     * to toggle a debug overlay, now the shell's `meter overlay`). */
+    case BTN_SAVE:  return cmd(KA_SCREENSHOT, 0);
+    /* Shutdown must always work, whatever is up. */
+    case BTN_POWER: return cmd(KA_POWER_PROMPT, 0);
+    default:        return cmd(KA_LEGACY, 0);
     }
 }
 
@@ -298,14 +316,13 @@ static key_cmd_t map_osc_menu(const key_ctx_t *c, button_id_t b)
 
 key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
 {
+    /* The globals first (long mode keys, SAVE); POWER stays KA_LEGACY here. */
+    if (btn != BTN_POWER) {
+        const key_cmd_t g = key_map_global(c, btn, is_long);
+        if (g.act != KA_LEGACY) return g;
+    }
     if (is_long)
         return map_long(c, btn);
-
-    /* Owner decision D1: short SAVE is a whole-screen screenshot in every
-     * mode and on every page (stock: the scope only; the meter's SAVE used to
-     * toggle a debug overlay, now the shell's `meter overlay`). */
-    if (btn == BTN_SAVE)
-        return cmd(KA_SCREENSHOT, 0);
 
     if (c->mode != MODE_OSCILLOSCOPE)
         return cmd(KA_LEGACY, 0);

@@ -50,6 +50,8 @@
 #include "sys_prefs.h"
 #include "sys_pwm.h"
 #include "../ui/gallery_ui.h"
+#include "../ui/screen.h"
+#include "../ui/legacy_screens.h"
 #if defined(USB_MSC) && USB_MSC
 #include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
@@ -419,6 +421,8 @@ static void send_cmd(QueueHandle_t q, uint8_t cmd)
     xQueueSend(q, &cmd, 0);
 }
 
+static uint8_t mode_key(button_id_t button, QueueHandle_t dq);
+
 /* What the arrow keys adjust in the scope time view (key_model.h). Short
  * SELECT cycles it: zoom -> channel move -> trigger move -> [cursor] -> [mask]. The three
  * bools are derived from it (set_focus) because the renderer and the shell
@@ -559,6 +563,7 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
         settings_selected = 0;
         settings_depth = 0;
     }
+    legacy_screens_sync();               /* the router's base follows the mode (sys.instrument) */
     /* Tell the FPGA which mode we're entering.
      * Each mode needs different FPGA commands and analog MUX config. */
     if (current_mode == MODE_MULTIMETER) {
@@ -638,7 +643,7 @@ static void save_key_short(QueueHandle_t dq)
         /* Home repaints only its selection on key presses; the popup
          * overlay (main.c) draws itself and asks for the repaint when it
          * expires. */
-        send_cmd(dq, DCMD_DRAW_HOME);
+        send_cmd(dq, DCMD_DRAW_ACTIVE);   /* the home page: DCMD_DRAW_HOME */
     } else {
         send_cmd(dq, DCMD_REDRAW_ALL);
     }
@@ -687,8 +692,7 @@ static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
         if (r == SGE_CHANGED || r == SGE_CANCELLED)
             siggen_set_frequency(ed->value);
     }
-    uint8_t cmd = DCMD_DRAW_SIGGEN;
-    send_cmd(dq, cmd);
+    send_cmd(dq, DCMD_DRAW_ACTIVE);       /* the generator: DCMD_DRAW_SIGGEN */
     return true;
 }
 
@@ -729,6 +733,9 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
     switch (k.act) {
     case KA_NONE:
     case KA_LEGACY:
+    /* Not executed here: the router's POWER global runs the per-key switch
+     * (mode_key) itself, after the gallery handed POWER back. */
+    case KA_POWER_PROMPT:
         break;
 
     /* -- long presses: mode shortcuts, from any mode -------------------- */
@@ -780,14 +787,14 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
          * interrupted: its value is already live. */
         siggen_enable(!siggen_get_config()->output_enabled);
         cmd = DCMD_DRAW_SIGGEN;
-        send_cmd(dq, cmd);
+        send_cmd(dq, DCMD_DRAW_ACTIVE);
         break;
     }
 
     case KA_SIGGEN_BOOT_TOGGLE: {
         siggen_set_start_on(!siggen_get_config()->start_on);
         cmd = DCMD_DRAW_SIGGEN;
-        send_cmd(dq, cmd);
+        send_cmd(dq, DCMD_DRAW_ACTIVE);
         break;
     }
 
@@ -985,7 +992,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         osc_menu_after_key(was);
         if (r == OSC_RES_REDRAW) {
             cmd = DCMD_DRAW_OSC_MENU;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);  /* the page stays up: DCMD_DRAW_OSC_MENU */
         } else if (r == OSC_RES_CLOSE) {
             osc_menu_close();               /* idempotent: the model may have closed already */
             osc_menu_opener = BTN_NONE;
@@ -1028,120 +1035,173 @@ static void settings_after_button(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Main button dispatcher
+ * The handlers the legacy screens forward to (ui/legacy_screens.h)
+ *
+ * Until the screen router (ARCH-1 B1) these were the steps of one function,
+ * input_handle_button(), asked in a fixed order. They are the same code; the
+ * router (ui/screen.c) now decides which one a key reaches, in that same
+ * order, and legacy_screens.c says which screen forwards to which.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* The display queue of the key being handled: the router's callbacks take no
+ * argument for it. Set before the first key (input_router_init). */
+static QueueHandle_t g_dq;
+/* The display command the last handler sent (input_handle_button's answer). */
+static uint8_t g_cmd;
+
+void lgc_state(lgc_state_t *s)
+{
+    s->mode           = current_mode;
+    s->settings_depth = settings_depth;
+    s->osc_open       = osc_menu_is_open();
+    s->gallery_open   = gallery_ui_is_open();
+}
+
+key_ctx_t lgc_ctx(void) { return key_ctx_now(); }
+
+void lgc_exec(key_cmd_t k, button_id_t btn)
+{
+    g_cmd = exec_key_cmd(k, btn, g_dq);
+    settings_after_button();
+}
+
+/* The home page takes every key but POWER (shutdown must always work):
+ * LEFT/RIGHT move, OK enters, MENU goes back (home_model.h). Before the
+ * meter softkeys and the generator editor, which must never see them. */
+void lgc_home(button_id_t button)
+{
+    home_key_t hk;
+    uint8_t cmd = DCMD_REDRAW_ALL;
+    switch (button) {
+    case BTN_LEFT:  hk = HOME_KEY_LEFT;  break;
+    case BTN_RIGHT: hk = HOME_KEY_RIGHT; break;
+    case BTN_UP:    hk = HOME_KEY_UP;    break;
+    case BTN_DOWN:  hk = HOME_KEY_DOWN;  break;
+    case BTN_OK:    hk = HOME_KEY_OK;    break;
+    case BTN_MENU:  hk = HOME_KEY_BACK;  break;
+    default:        hk = HOME_KEY_OTHER; break;
+    }
+    const home_result_t r = home_key(home_ui_model(), hk);
+    if (r.act == HOME_MOVED) {
+        cmd = DCMD_DRAW_HOME;
+        send_cmd(g_dq, DCMD_DRAW_ACTIVE);      /* the home page: DCMD_DRAW_HOME */
+    } else if (r.act == HOME_ENTER) {
+        enter_mode(r.mode, g_dq);
+    } else {
+        cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
+    }
+    g_cmd = cmd;
+    settings_after_button();
+}
+
+/* Softkeys (docs/specs/platform/softkey-ui.md): in the meter, the four
+ * buttons under the screen do what the bar above them says. Asked before the
+ * per-button cases, so the meter never falls into another mode's meaning for
+ * MOVE/SELECT/TRIGGER/PRM. */
+bool lgc_meter_softkey(button_id_t button)
+{
+    int8_t sk = softkey_slot_for_button(button);
+    if (sk < 0) return false;
+    (void)meter_softkey_press(sk);
+    g_cmd = DCMD_DRAW_METER;
+    send_cmd(g_dq, DCMD_DRAW_ACTIVE);          /* the meter: DCMD_DRAW_METER */
+    /* Same settings hook as every other key: a softkey changes saved state
+     * (function, view) like any other button. */
+    settings_after_button();
+    return true;
+}
+
+bool lgc_siggen_edit(button_id_t button)
+{
+    if (!siggen_edit_input(button, g_dq)) return false;
+    g_cmd = DCMD_DRAW_SIGGEN;
+    settings_after_button();
+    return true;
+}
+
+void lgc_mode_key(button_id_t button) { g_cmd = mode_key(button, g_dq); }
+
+/* The screenshot gallery (long SAVE) takes every key while it is open; it
+ * hands POWER back after closing itself so power-off always works. No
+ * settings hook, as before the router. */
+void lgc_gallery_key(uint8_t raw)
+{
+    (void)gallery_ui_key(raw, g_dq);
+    g_cmd = DCMD_NONE_MODAL_DROP;
+}
+
+/* While autoset or the baseline correction runs the keys are locked, as
+ * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
+ * timebase press would pull the front end out from under the servo.
+ * AUTO and MENU (short or long) cancel and restore; POWER still works (the
+ * router never asks about it). No settings hook, as before the router. */
+bool lgc_selfcal_busy(void)    { return scope_selfcal_busy(); }
+void lgc_selfcal_cancel(void)  { scope_selfcal_request_cancel(); g_cmd = DCMD_REDRAW_ALL; }
+void lgc_selfcal_refuse(void)  { popup_and_redraw(g_dq, "Busy: AUTO cancels"); g_cmd = DCMD_REDRAW_ALL; }
+
+/* Every key event: restart the auto power-off count and click at the stored
+ * volume (stock does both for each key the key task handles, 0x08040038; a
+ * volume of 0 is silent). */
+void lgc_touch(void) { autooff_touch(); }
+void lgc_click(void) { sys_pwm_click(); }
+void lgc_lock(void)   { taskENTER_CRITICAL(); }
+void lgc_unlock(void) { taskEXIT_CRITICAL(); }
+
+void input_router_init(void *display_queue)
+{
+    g_dq = (QueueHandle_t)display_queue;
+    legacy_screens_init();
+}
+
+bool input_mode_switch(device_mode_t m)
+{
+    if ((unsigned)m >= (unsigned)MODE_COUNT || g_dq == NULL) return false;
+    if (current_mode != m) enter_mode(m, g_dq);
+    return true;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Main button dispatcher: the screen router
  * ═══════════════════════════════════════════════════════════════════ */
 
 uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 {
+    /* MENU + POWER → clean handoff to the factory IAP bootloader.
+     * The FNIRSI bootloader at 0x08000000 checks the MENU key at
+     * reset; the user is holding it, so a plain reset (NOT the DFU
+     * magic-word path — that was for our retired HID bootloader)
+     * lands in stock upgrade mode. Replaces the old behavior where
+     * POWER alone hit the shutdown countdown and MENU+POWER froze.
+     * The bootloader draws its own "firmware upgrade" screen, so no
+     * delay/message here — reset immediately while MENU is still down.
+     * Until the router this sat at the top of the POWER case; it is taken
+     * first now, before any screen sees the key. What it skips (the key
+     * click, the auto-off restart, a gallery closing itself) is RAM state
+     * the reset discards anyway; the settings flush is the same. */
+    if (button == BTN_POWER && (button_scan_get_raw() & BTN_SCAN_MENU_MASK)) {
+        /* Reboot boundary — same reasoning as the DFU entry above. */
+        (void)settings_store_flush(settings_now_ms());
+        __DSB();
+        NVIC_SystemReset();
+        while (1) { }
+    }
+
+    g_dq = dq;
+    g_cmd = DCMD_REDRAW_ALL;
+    legacy_screens_sync();             /* the shell may have changed the mode or closed the gallery */
+    (void)screen_route_key(button);
+    legacy_screens_sync();             /* what the key opened or closed */
+    return g_cmd;
+}
+
+/* The per-key cases: what a key does in a mode when nothing before it (the
+ * key model, home, softkeys, the frequency editor) took it. POWER comes here
+ * from the router's globals. */
+static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
+{
     scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
     char pb[24];
-
-    /* Every key event: restart the auto power-off count and click at the
-     * stored volume (stock does both for each key the key task handles,
-     * 0x08040038; a volume of 0 is silent). */
-    autooff_touch();
-    sys_pwm_click();
-
-    /* The screenshot gallery (long SAVE) takes every key while it is open;
-     * it hands POWER back after closing itself so power-off always works. */
-    if (gallery_ui_is_open() && gallery_ui_key((uint8_t)button, dq))
-        return DCMD_NONE_MODAL_DROP;
-
-    /* While autoset or the baseline correction runs the keys are locked, as
-     * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
-     * timebase press would pull the front end out from under the servo.
-     * AUTO and MENU (short or long) cancel and restore; POWER still works. */
-    if (scope_selfcal_busy()) {
-        const button_id_t base = (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG);
-        if (base == BTN_AUTO || base == BTN_MENU) {
-            scope_selfcal_request_cancel();
-            return cmd;
-        }
-        if (base != BTN_POWER) {
-            popup_and_redraw(dq, "Busy: AUTO cancels");
-            return cmd;
-        }
-    }
-
-    /* A long press arrives as the id with BTN_LONG_FLAG set. It is handled
-     * FIRST, before the meter's softkey catch below: long SELECT/MOVE/TRIGGER
-     * are the quick mode switches and must work from the meter too. */
-    if (((unsigned)button & BTN_LONG_FLAG) != 0u) {
-        const key_ctx_t kc = key_ctx_now();
-        const button_id_t base = (button_id_t)((unsigned)button & ~(unsigned)BTN_LONG_FLAG);
-        const key_cmd_t k = key_map(&kc, base, true);
-        cmd = exec_key_cmd(k, base, dq);
-        settings_after_button();
-        return cmd;
-    }
-
-    /* The key model's short meanings (key_model.c decides, exec_key_cmd()
-     * acts): SAVE in every mode, and in the scope the arrow stages, the
-     * channel switch, the trigger panel and the Oscilloscope Settings page.
-     * Anything it does not claim falls through to the per-mode handlers.
-     * Before the home page and the meter's softkeys, so SAVE is the
-     * screenshot there too; key_map() claims nothing else outside the scope. */
-    {
-        const key_ctx_t kc = key_ctx_now();
-        const key_cmd_t k = key_map(&kc, button, false);
-        if (k.act != KA_LEGACY) {
-            cmd = exec_key_cmd(k, button, dq);
-            settings_after_button();
-            return cmd;
-        }
-    }
-
-    /* The home page takes every key but POWER (shutdown must always work):
-     * LEFT/RIGHT move, OK enters, MENU goes back (home_model.h). Before the
-     * meter softkeys and the generator editor, which must never see them. */
-    if (current_mode == MODE_HOME && button != BTN_POWER) {
-        home_key_t hk;
-        switch (button) {
-        case BTN_LEFT:  hk = HOME_KEY_LEFT;  break;
-        case BTN_RIGHT: hk = HOME_KEY_RIGHT; break;
-        case BTN_UP:    hk = HOME_KEY_UP;    break;
-        case BTN_DOWN:  hk = HOME_KEY_DOWN;  break;
-        case BTN_OK:    hk = HOME_KEY_OK;    break;
-        case BTN_MENU:  hk = HOME_KEY_BACK;  break;
-        default:        hk = HOME_KEY_OTHER; break;
-        }
-        const home_result_t r = home_key(home_ui_model(), hk);
-        if (r.act == HOME_MOVED) {
-            cmd = DCMD_DRAW_HOME;
-            send_cmd(dq, cmd);
-        } else if (r.act == HOME_ENTER) {
-            enter_mode(r.mode, dq);
-        } else {
-            cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
-        }
-        settings_after_button();
-        return cmd;
-    }
-
-    /* Softkeys (docs/specs/platform/softkey-ui.md): in the meter, the four
-     * buttons under the screen do what the bar above them says. Caught here,
-     * before the per-button cases, so the meter never falls into another
-     * mode's meaning for MOVE/SELECT/TRIGGER/PRM. */
-    if (current_mode == MODE_MULTIMETER) {
-        int8_t sk = softkey_slot_for_button(button);
-        if (sk >= 0) {
-            (void)meter_softkey_press(sk);
-            cmd = DCMD_DRAW_METER;
-            send_cmd(dq, cmd);
-            /* Same settings hook as the end of this function: a softkey
-             * changes saved state (function, view) like any other button. */
-            uint32_t now = settings_now_ms();
-            settings_store_note_change(now);
-            (void)settings_store_service(now);
-            return cmd;
-        }
-    }
-
-    if (siggen_edit_input(button, dq)) {
-        settings_after_button();
-        return DCMD_DRAW_SIGGEN;
-    }
 
     switch (button) {
 
@@ -1223,7 +1283,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             meter_function_select(FPGA_METER_SUBMODE_AUTO);
             scope_show_popup("AUTO");
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         } else if (current_mode == MODE_OSCILLOSCOPE) {
 #ifdef FEATURE_FFT
             if (scope_view != SCOPE_VIEW_TIME) {
@@ -1286,19 +1346,19 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SIGNAL_GEN) {
             siggen_cycle_waveform();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         } else if (current_mode == MODE_SETTINGS &&
                    settings_depth == 5) {
             /* Resistor calc: simulate measurement */
             resistor_calc_simulate_measure();
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         } else if (current_mode == MODE_SETTINGS &&
                    settings_depth == 4) {
             /* Component tester: cycle component type */
             comp_test_cycle_type();
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         /* Scope time view: SELECT cycles the arrow stage -- key_model.c */
         break;
@@ -1317,7 +1377,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 if (settings_sub_selected > 0) settings_sub_selected--;
             }
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
 #ifdef FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
@@ -1335,12 +1395,12 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                  meter_layout == METER_LAYOUT_LIMITS) {
             meter_limits_nudge(+1);
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SIGNAL_GEN) {
             siggen_amplitude_up();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         break;
 
@@ -1361,7 +1421,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                     settings_sub_selected++;
             }
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
 #ifdef FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
@@ -1379,12 +1439,12 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                  meter_layout == METER_LAYOUT_LIMITS) {
             meter_limits_nudge(-1);
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SIGNAL_GEN) {
             siggen_amplitude_down();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         break;
 
@@ -1394,7 +1454,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS && settings_depth == 7) {
             sound_light_adjust(-1, false);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
             (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
@@ -1407,17 +1467,17 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             else
                 startup_mode_adjust(-1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 1) {
             osc_settings_adjust(-1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 5) {
             resistor_calc_move_band(-1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         /* Meter: fuse type or previous sub-mode */
         else if (current_mode == MODE_MULTIMETER) {
@@ -1440,7 +1500,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             if (siggen_wave_uses_duty(siggen_get_config()->waveform))
                 siggen_duty_cycle_down();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         break;
 
@@ -1448,7 +1508,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS && settings_depth == 7) {
             sound_light_adjust(+1, false);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
             (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
@@ -1461,17 +1521,17 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             else
                 startup_mode_adjust(1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 1) {
             osc_settings_adjust(+1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 5) {
             resistor_calc_move_band(1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         /* Meter: fuse type or next sub-mode */
         else if (current_mode == MODE_MULTIMETER) {
@@ -1494,7 +1554,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             if (siggen_wave_uses_duty(siggen_get_config()->waveform))
                 siggen_duty_cycle_up();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         }
         break;
 
@@ -1508,12 +1568,12 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             const siggen_config_t *sc = siggen_get_config();
             siggen_enable(!sc->output_enabled);
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         } else if (current_mode == MODE_MULTIMETER) {
             /* OK = Hold (softkey UI): freeze the reading on screen now. */
             meter_hold_toggle_now();
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, cmd);
+            send_cmd(dq, DCMD_DRAW_ACTIVE);
         } else if (current_mode == MODE_OSCILLOSCOPE) {
             if (scope_mask_hold_active()) {
                 /* A mask failure is being held (stop-on-fail): OK resumes
@@ -1546,21 +1606,8 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
             const theme_t *th = theme_get();
             uint16_t bg = 0x0010;  /* dark background */
 
-            /* MENU + POWER → clean handoff to the factory IAP bootloader.
-             * The FNIRSI bootloader at 0x08000000 checks the MENU key at
-             * reset; the user is holding it, so a plain reset (NOT the DFU
-             * magic-word path — that was for our retired HID bootloader)
-             * lands in stock upgrade mode. Replaces the old behavior where
-             * POWER alone hit the shutdown countdown and MENU+POWER froze.
-             * The bootloader draws its own "firmware upgrade" screen, so no
-             * delay/message here — reset immediately while MENU is still down. */
-            if (button_scan_get_raw() & BTN_SCAN_MENU_MASK) {
-                /* Reboot boundary — same reasoning as the DFU entry above. */
-                (void)settings_store_flush(settings_now_ms());
-                __DSB();
-                NVIC_SystemReset();
-                while (1) { }
-            }
+            /* MENU + POWER (the IAP reset) never gets here: input_handle_button()
+             * takes it before the router. */
 
             /* Claim the screen. The display task keeps repainting live modes
              * every 50 ms tick, so an overlay drawn inline from this task was

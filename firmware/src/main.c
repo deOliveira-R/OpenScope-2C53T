@@ -53,6 +53,8 @@ extern void system_clock_config(void);
 #include "rtt.h"
 #include "fault.h"
 #include "redraw_gate.h"
+#include "screen.h"
+#include "legacy_screens.h"
 #include "scope_mask.h"
 #include "can_scope.h"
 #include "osc_menu_model.h"
@@ -591,6 +593,10 @@ static void vDisplayTask(void *pvParameters)
         if (xQueueReceive(xDisplayQueue, &cmd, wait) == pdTRUE) {
             if (ui_modal_active)
                 cmd = DCMD_NONE_MODAL_DROP;
+            /* The router's top screen, in place: its own legacy command
+             * below, with that command's checks (ui/legacy_screens.c). */
+            if (cmd == DCMD_DRAW_ACTIVE)
+                cmd = legacy_screens_update_cmd(screen_top());
             switch (cmd) {
             case DCMD_DRAW_SPLASH:
                 draw_splash();
@@ -999,6 +1005,9 @@ static void vInputTask(void *pvParameters)
 {
     (void)pvParameters;
     button_scan_start();
+    /* The screen router over the legacy screens: up before the first key and
+     * before the shell's `ui screen` can ask for its stack. */
+    input_router_init(xDisplayQueue);
     logo_ui_boot_hold(xInputQueue, xDisplayQueue, 1000u);   /* boot logo, any key skips */
     /* After the logo: its "any key skips" would take a wake for a key. Until
      * here a shell `set` answers BUSY. */
@@ -1028,6 +1037,9 @@ static void vInputTask(void *pvParameters)
         /* Property sets queued by other tasks (the shell's `set`), after the
          * key: the two never interleave. No-op when the queue is empty. */
         (void)model_exec_drain();
+        /* The router mirrors the legacy state (ui/legacy_screens.h): catch
+         * what the shell changed without a key (`mode`, a gallery close). */
+        legacy_screens_sync();
         input_autooff_poll();   /* idle power-off (C15); no-op while "Off" */
         /* Backstop: the buzzer task ends a key click, but if it failed to
          * start a click would sound forever; this bounds it to <= ~210 ms. */

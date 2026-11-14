@@ -174,7 +174,9 @@ typedef enum {
     KA_OSCMENU_OPEN,      /* arg = osc_row_t: open it there, or jump there while open */
     KA_OSCMENU_PANE,      /* arg = osc_row_t: open it locked inside that pane (PRM, TRIGGER) */
     KA_OSCMENU_KEY,       /* arg = osc_key_t: arrows/OK, MENU = OSC_KEY_BACK */
-    KA_OSCMENU_CLOSE      /* the key that opened it, pressed again */
+    KA_OSCMENU_CLOSE,     /* the key that opened it, pressed again */
+    KA_POWER_PROMPT       /* short POWER, every screen: MENU+POWER IAP reset, else the
+                           * hold-to-power-off countdown (key_map_global only) */
 } key_action_t;
 
 typedef struct {
@@ -183,6 +185,19 @@ typedef struct {
 } key_cmd_t;
 
 key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long);
+
+/* The keys that act the same in every screen, overlays and settings pages
+ * included (the screen router's step 4, screen.h): long MENU -> home, long
+ * MOVE -> meter, long SELECT -> scope, long TRIGGER -> generator, long SAVE
+ * -> gallery, short SAVE -> screenshot, short POWER -> the power prompt.
+ * Anything else comes back KA_LEGACY: the screens decide. The answer does
+ * not depend on the context today (c may be NULL); it takes one so a screen
+ * can veto a global later without a signature change.
+ *
+ * key_map() asks this first and returns its answer, POWER excepted (key_map
+ * leaves POWER KA_LEGACY, as it always has), so key_map's answers did not
+ * change when this was split out of it (ARCH-1 B1). */
+key_cmd_t key_map_global(const key_ctx_t *c, button_id_t btn, bool is_long);
 
 /* Read-only views of the input task's state, for the status bar (R1-B).
  * Defined in input_handler.c (the state lives there and in main.c), not in

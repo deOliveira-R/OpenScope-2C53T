@@ -50,6 +50,10 @@ typedef enum {
 #endif
     DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
     DCMD_DRAW_OSC_MENU, /* scope: the Oscilloscope Settings page (osc_menu_draw) */
+    /* The screen on top of the router's stack (ui/screen.h), repainted in
+     * place: what its own DCMD_DRAW_* above does (legacy_screens_update_cmd).
+     * Senders that only repaint the screen they are on send this. */
+    DCMD_DRAW_ACTIVE,
     /* Not a real command: what the display task rewrites a received command
      * to while ui_modal_active, so it falls through to `default:` untouched.
      * Never send this. */
@@ -99,6 +103,14 @@ typedef enum {
  * ═══════════════════════════════════════════════════════════════════ */
 
 extern volatile device_mode_t current_mode;
+/* Enter a device mode the way the keys do (input_handler.c enter_mode():
+ * the mode's hardware posture, the settings flush, the repaint; nothing if it
+ * is already the mode). Input task only. false: not a mode, or before the
+ * router is up. The sys.mode / sys.instrument op is meant to call this. */
+bool input_mode_switch(device_mode_t m);
+/* The screen router over the legacy screens (ui/legacy_screens.h), started by
+ * the input task before its first key; display_queue is its QueueHandle_t. */
+void input_router_init(void *display_queue);
 extern volatile startup_mode_t startup_mode;
 extern volatile uint32_t      uptime_seconds;
 extern volatile int8_t        settings_selected;  /* Selected menu item index */
