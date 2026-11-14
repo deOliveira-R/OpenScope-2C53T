@@ -140,11 +140,6 @@ void scope_vpos_apply_ch(uint8_t ch, uint8_t range)
      * routing in force (PC1/PC2 mask) — the hardware state, not the UI's
      * intent, because the bank describes how the converters are clocked. */
     const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
-    /* DAC1/PA4 belongs to the signal generator while it runs: the dac_raw
-     * writer would re-init it as the CH1 reference and kill the output (e.g.
-     * `fpga scope vdiv` from the shell during siggen). Re-applied on scope
-     * entry instead (fpga_enter_scope_mode). */
-    if (ch == 1u && dac_output_is_running()) return;
     const unsigned i0 = ch - 1u;
     const int pos = calpage_clamp_pos(chan(ch)->position);
     uint16_t code;

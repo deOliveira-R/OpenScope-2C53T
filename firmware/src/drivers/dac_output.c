@@ -7,39 +7,20 @@
  * stopping it cleared D1EN and killed capture (signal_gen.c used to keep
  * the warm-handoff build inert for that reason).
  *
- * DAC_CTRL is shared with scope_trigger.c, which rewrites the lower half
- * from another task. Every write here is a read-modify-write of the upper
- * half only (siggen_dac_ctrl_ch2), inside a PRIMASK section so the two
- * read-modify-writes cannot interleave and undo each other.
+ * The DAC registers belong to the DAC owner (dac.h): channel 2's half of
+ * DAC_CTRL, D2DTH12R and the channel-2 software trigger are changed through
+ * it, as masked per-channel updates that never touch channel 1 (the scope's
+ * CH1 offset reference). This file owns TMR7 and DMA2 channel 4.
  */
 
 #include "dac_output.h"
+#include "dac.h"
 #include "at32f403a_407.h"
 
 #include <stddef.h>
 
 static uint16_t dac_buffer[DAC_BUFFER_SIZE];
 static volatile bool running = false;
-
-static uint32_t irq_save(void)
-{
-    uint32_t primask = __get_PRIMASK();
-    __disable_irq();
-    return primask;
-}
-
-static void irq_restore(uint32_t primask)
-{
-    __set_PRIMASK(primask);
-}
-
-/* Replace channel 2's half of DAC_CTRL, keep channel 1's. */
-static void dac_ctrl_ch2_write(uint8_t tsel, bool en)
-{
-    uint32_t pm = irq_save();
-    DAC->ctrl = siggen_dac_ctrl_ch2(DAC->ctrl, tsel, en);
-    irq_restore(pm);
-}
 
 uint32_t dac_output_timer_clock_hz(void)
 {
@@ -77,8 +58,8 @@ void dac_output_init(void)
 
     /* DAC channel 2 configured, not yet enabled: TMR7 trigger, buffer ON
      * (stock clears BOFF2, 0x0802CA48), no wave generation, DMA on. */
-    dac_ctrl_ch2_write(SIGGEN_DAC_TSEL_TMR7, false);
-    DAC->d2dth12r = 0;
+    dac_ch2_config(SIGGEN_DAC_TSEL_TMR7, false);
+    dac_ch2_data_clear();
 
     /* DMA2 ch4 (0x0802CA5A..0x0802CAEA): mem -> periph, circular, memory
      * increment, 32-bit peripheral / 16-bit memory size as stock, low
@@ -103,7 +84,7 @@ void dac_output_init(void)
     ch->ctrl_bit.chen = 1;
 
     /* EN2 last, in its own write, as stock (0x0802CAF2). Output = 0 V. */
-    dac_ctrl_ch2_write(SIGGEN_DAC_TSEL_TMR7, true);
+    dac_ch2_config(SIGGEN_DAC_TSEL_TMR7, true);
     running = false;
 }
 
@@ -111,11 +92,11 @@ void dac_output_apply(const siggen_timing_t *t)
 {
     if (t == NULL) { dac_output_stop(); return; }
 
-    /* Self-heal if anything rewrote channel 2 (a full-register DAC write
-     * elsewhere would also have to be fixed, this just keeps us running). */
-    if ((DAC->ctrl & ~SIGGEN_DAC_CH1_MASK) !=
+    /* Self-heal if channel 2 is not in its run setup (only the owner
+     * writes it, so this should never fire). */
+    if ((dac_ctrl_get() & ~SIGGEN_DAC_CH1_MASK) !=
         (siggen_dac_ctrl_ch2(0, SIGGEN_DAC_TSEL_TMR7, true) & ~SIGGEN_DAC_CH1_MASK))
-        dac_ctrl_ch2_write(SIGGEN_DAC_TSEL_TMR7, true);
+        dac_ch2_config(SIGGEN_DAC_TSEL_TMR7, true);
     if (!DMA2_CHANNEL4->ctrl_bit.chen) DMA2_CHANNEL4->ctrl_bit.chen = 1;
 
     TMR7->div = t->div;
@@ -129,11 +110,8 @@ void dac_output_stop(void)
 {
     TMR7->ctrl1_bit.tmren = 0;
     /* 0x08029DEA: D2DTH12R &= ~0xFFF, then a software trigger to move it
-     * to the output, then back to the TMR7 trigger. */
-    DAC->d2dth12r &= ~0xFFFu;
-    dac_ctrl_ch2_write(SIGGEN_DAC_TSEL_SW, true);
-    DAC->swtrg = 1u << 1;           /* D2SWTRG; bit 0 (channel 1) left 0 */
-    dac_ctrl_ch2_write(SIGGEN_DAC_TSEL_TMR7, true);
+     * to the output, then back to the TMR7 trigger (channel 1 untouched). */
+    dac_ch2_output_zero();
     running = false;
 }
 

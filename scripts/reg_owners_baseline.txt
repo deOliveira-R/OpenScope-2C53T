@@ -1,6 +1,3 @@
-drivers/dac_output.c	dac_ctrl_ch2_write	DAC	1
-drivers/dac_output.c	dac_output_init	DAC	1
-drivers/dac_output.c	dac_output_stop	DAC	2
 drivers/fpga.c	fpga_reconfig_pin_sweep	WDT	1
 drivers/fpga.c	fpga_spi3_config_sequence	WDT	1
 drivers/fpga_scanner.c	#define SCAN_CS_HI	GPIOB.out	1
@@ -13,8 +10,6 @@ drivers/fpga_scanner.c	scan_tier6	GPIOB.out	3
 drivers/fpga_scanner.c	scan_tier6	GPIOC.out	3
 drivers/fpga_scanner.c	scan_usart_cmd	USART2	1
 drivers/fw_loader.c	fwl_ram_install	WDT	1
-drivers/scope_trigger.c	scope_trigger_dac_init	DAC	2
-drivers/scope_trigger.c	scope_trigger_dac_raw	DAC	2
 drivers/usb_debug.c	cmd_bench_restore	GPIOB.out	2
 drivers/usb_debug.c	cmd_fpga_dbgarm	GPIOB.cfg	1
 drivers/usb_debug.c	cmd_fpga_dbgarm	GPIOB.out	2

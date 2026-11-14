@@ -70,6 +70,7 @@ C_SOURCES += src/drivers/battery_gauge.c
 C_SOURCES += src/drivers/fpga.c
 C_SOURCES += src/drivers/fpga_meter_plan.c
 C_SOURCES += src/drivers/fpga_scanner.c
+C_SOURCES += src/drivers/dac.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
 C_SOURCES += src/drivers/scope_vpos.c
@@ -1004,6 +1005,20 @@ $(BUILD_DIR)/test_siggen: tests/test_siggen.c src/dsp/siggen_wave.c src/dsp/sigg
 		$< src/dsp/siggen_wave.c -lm -o $@
 
 test-siggen: $(BUILD_DIR)/test_siggen
+	$<
+
+# DAC owner (src/drivers/dac.c) write log: the fake register block
+# (-DHOST_REGS) proves the boot store sequence is the one the drivers made
+# before the owner, a CH1 offset write beside the running generator leaves
+# channel 2 alone, and generator start/stop leaves channel 1 alone.
+# See tests/test_dac.c.
+$(BUILD_DIR)/test_dac: tests/test_dac.c src/drivers/dac.c src/drivers/dac.h \
+                       src/drivers/scope_trigger.c src/drivers/scope_trigger.h \
+                       src/dsp/siggen_wave.c src/dsp/siggen_wave.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -DHOST_REGS -Isrc/drivers -Isrc/dsp \
+		$< src/drivers/dac.c src/drivers/scope_trigger.c src/dsp/siggen_wave.c -lm -o $@
+
+test-dac: $(BUILD_DIR)/test_dac
 	$<
 
 # Generator frequency digit editor (parity G4): the pure state machine in
