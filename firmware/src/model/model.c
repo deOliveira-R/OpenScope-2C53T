@@ -70,6 +70,12 @@ static const model_hw_ops_t k_no_ops;            /* all NULL until model_bind_hw
 static const model_hw_ops_t *g_ops = &k_no_ops;
 
 void model_bind_hw(const model_hw_ops_t *ops) { g_ops = ops ? ops : &k_no_ops; }
+
+/* The deferral an op reported during the current set (model.h DEFERRED);
+ * a static string, never a copy. Executor only. */
+static const char *g_deferred;
+void        model_hw_deferred(const char *why) { g_deferred = why; }
+const char *prop_last_deferred(void)           { return g_deferred; }
 const model_hw_ops_t *model_hw(void) { return g_ops; }
 
 volatile uint32_t prop_epoch[PG_COUNT];
@@ -512,19 +518,6 @@ const instrument_desc_t *model_instrument_active(void)
     return NULL;                                  /* "none": Home or Settings */
 }
 
-const char *prop_instrument_refusal(const prop_desc_t *p, uint8_t origin)
-{
-    /* Reasons fit prop_note_t (24): "instrument is " + the longest name. */
-    static const char *const k_why[] = { "instrument is scope", "instrument is meter",
-                                         "instrument is gen" };
-    _Static_assert(sizeof k_why / sizeof k_why[0] == N_INSTRUMENTS, "one reason per instrument");
-    if (!p || p->inst == 0u) return NULL;
-    if (origin != ORIGIN_SHELL && origin != ORIGIN_KEY) return NULL;
-    const instrument_desc_t *in = model_instrument_active();
-    if (!in || (p->inst & in->member)) return NULL;
-    return k_why[in - k_instruments];
-}
-
 /* ═══════════════════════════════════════════════════════════════════
  * Setting
  * ═══════════════════════════════════════════════════════════════════ */
@@ -564,6 +557,7 @@ prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, pr
     prop_note_t scratch;
     if (!note) note = &scratch;
     note->text[0] = '\0';
+    g_deferred = NULL;
     if (!prop_is_settable(p)) { model_note(note, "read only"); return PS_INVALID; }
     if (busy_for(p, origin))  { model_note(note, "self-cal running"); return PS_BUSY; }
     const prop_status_t range = check_range(p, &v);
@@ -573,6 +567,10 @@ prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, pr
     prop_status_t s = p->set(p, v, origin, note);
     const bool ok = (s == PS_OK || s == PS_CLAMPED);
     if (ok && range == PS_CLAMPED) s = PS_CLAMPED;
+    /* Stored, hardware deferred (model.h DEFERRED): that is the answer,
+     * over the setter's own note ("posture posted" was not posted). */
+    if (!ok) g_deferred = NULL;
+    else if (g_deferred) model_note(note, g_deferred);
 
     /* A failing setter keeps the old value; if one did not (a two-step
      * apply whose undo failed too), the change is still announced. */
