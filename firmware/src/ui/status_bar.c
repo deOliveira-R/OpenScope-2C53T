@@ -326,8 +326,8 @@ static void slot_title(const theme_t *th)
                             th->text_primary, th->status_bar_bg, &font_small);
 }
 
-/* B1: 22x10 glyph + "%". Charging: bolt, no % (the voltage reads high on the
- * charger). Critical: red, blinking each second, "LOW". */
+/* B1: 22x10 glyph + "%". On external power: bolt in the glyph, and the
+ * percentage stays (the gauge takes the charging step off). Critical: red, blinking each second, "LOW". */
 static void slot_battery(const theme_t *th)
 {
     const uint16_t bg = th->status_bar_bg;
@@ -347,6 +347,7 @@ static void slot_battery(const theme_t *th)
         strcpy(buf, "LOW");
     } else if (chg) {
         fill = th->success;
+        snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);
     } else {
         fill = (pct <= 15u) ? th->warning : (pct <= 30u) ? SB_AMBER : th->success;
         snprintf(buf, sizeof(buf), "%u%%", (unsigned)pct);

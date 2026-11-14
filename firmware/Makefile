@@ -66,6 +66,7 @@ C_SOURCES += src/drivers/button_scan.c
 C_SOURCES += src/drivers/continuity_buzzer.c
 C_SOURCES += src/drivers/dfu_boot.c
 C_SOURCES += src/drivers/battery.c
+C_SOURCES += src/drivers/battery_gauge.c
 C_SOURCES += src/drivers/fpga.c
 C_SOURCES += src/drivers/fpga_meter_plan.c
 C_SOURCES += src/drivers/fpga_scanner.c
@@ -826,6 +827,14 @@ UNITS_NEG_CASES = 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16
 
 $(BUILD_DIR)/test_units: tests/test_units.c src/util/units.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -lm -o $@
+
+# Battery gauge logic (PC7 external power, charging step, percent curve).
+$(BUILD_DIR)/test_battery_gauge: tests/test_battery_gauge.c src/drivers/battery_gauge.c src/drivers/battery_gauge.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror tests/test_battery_gauge.c src/drivers/battery_gauge.c -o $@
+
+.PHONY: test-battery-gauge
+test-battery-gauge: $(BUILD_DIR)/test_battery_gauge
+	$<
 
 .PHONY: test-units test-units-negative
 test-units: $(BUILD_DIR)/test_units

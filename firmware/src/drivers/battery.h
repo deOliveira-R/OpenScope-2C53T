@@ -14,13 +14,17 @@ void battery_adc_init(void);
 /* Call once per second to take a reading and update state */
 void battery_update(void);
 
-/* Read averaged battery voltage in millivolts (no ADC access, returns cached) */
+/* Averaged estimate of the resting cell voltage in millivolts (cached; the
+ * charging step is taken off while on external power) */
 uint16_t battery_read_mv(void);
+
+/* Last cell voltage as measured, millivolts (cached) */
+uint16_t battery_raw_mv(void);
 
 /* Get battery percentage estimate (0-100) */
 uint8_t battery_percent(void);
 
-/* Returns 1 if USB charging detected (voltage > 4.3V) */
+/* Returns 1 while on external (USB) power: PC7 low, debounced 3 s */
 uint8_t battery_is_charging(void);
 
 /* Returns 1 if voltage critically low (< 3.3V) — should auto-shutdown */

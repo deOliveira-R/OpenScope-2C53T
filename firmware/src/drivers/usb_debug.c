@@ -10,6 +10,7 @@
  */
 
 #include "usb_debug.h"
+#include "battery.h"
 #include "at32f403a_407.h"
 #include "usbd_core.h"
 #include "usbd_int.h"
@@ -6271,6 +6272,16 @@ static void cmd_pinlog(const char *args)
                          s_pinlog[i].idt[3], s_pinlog[i].idt[4], (unsigned)s_pinlog[i].adc);
 }
 
+/* batt: the gauge's inputs and outputs in one line. */
+static void cmd_batt(const char *args)
+{
+    (void)args;
+    usb_debug_printf("batt: raw %u mV, rest %u mV, %u%%, external %u (PC7=%u), critical %u\r\n",
+                     (unsigned)battery_raw_mv(), (unsigned)battery_read_mv(), (unsigned)battery_percent(),
+                     (unsigned)battery_is_charging(), (unsigned)((GPIOC->idt >> 7) & 1u),
+                     (unsigned)battery_is_critical());
+}
+
 /* lcd [selftest]: panel health (util/lcd_health.h). selftest sends the
  * ST7789 a software reset (0x01), the state seen once on unit #2, so the
  * display task's check has to find it and recover within ~2 s. */
@@ -10523,6 +10534,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope trig <4 bytes>       Send 0x07/0x0A,0x16..0x19\r\n"),
     CMD_A("persist", cmd_persist, 0,
           "persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n"),
+    CMD_A("batt", cmd_batt, 0,
+          "batt                            Battery gauge: raw/resting mV, percent, external power\r\n"),
     CMD_A("pinlog", cmd_pinlog, 0,
           "pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n"),
     CMD_A("lcd", cmd_lcd, 0,
