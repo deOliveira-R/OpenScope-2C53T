@@ -223,6 +223,7 @@ void scope_ui_mask_slot_refresh(void);
 void scope_ui_cursor_row_refresh(void); /* cursor readout in the AUX row, when its text changed */
 void scope_ui_strip_refresh(void);      /* measurement cells in place, no blanking */
 void scope_ui_request_live(void);        /* next display tick: one live frame */
+void scope_popup_view_tick(void);        /* popup over the FFT/split/waterfall/X-Y frames */
 bool scope_ui_take_live_request(void);
 void scope_ui_can_row_refresh(void);   /* CAN readout on badge row 2 (can_scope.h) */
 uint8_t scope_ui_trig_anchor(void);
@@ -265,10 +266,12 @@ uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf);
  * incremental path needs this; the full path's draw_popup() does both jobs. */
 void scope_popup_overlay_tick(void);
 #ifdef FEATURE_FFT
-void draw_fft_screen(void);
-void draw_split_screen(uint32_t frame);
+/* The other views compose every pixel and never blank; `full` adds what
+ * changes only on entry or a setting (margins, titles). */
+void draw_fft_screen(bool full);
+void draw_split_screen(uint32_t frame, bool full);
 void draw_waterfall_screen(void);
-void draw_xy_screen(void);
+void draw_xy_screen(bool full);
 #endif
 /* Roll view (C11): the roll FIFO right-to-left; full = with labels/STOP/popup. */
 void draw_roll_screen(bool full);

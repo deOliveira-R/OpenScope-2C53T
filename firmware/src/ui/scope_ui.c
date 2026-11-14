@@ -872,6 +872,17 @@ static void draw_popup(const theme_t *th)
  * exactly once, and repaints the band underneath on the first frame after the
  * countdown expires. No full redraw is needed at either end.
  */
+/* The FFT / split / waterfall / X-Y views: their frames compose the plot
+ * with no hole for the box, so the box is put back over each frame while it
+ * lives, and the popup ends when it expires (it used to stay "active" in
+ * these views for good, as nothing there counted it down). */
+void scope_popup_view_tick(void)
+{
+    if (!popup_on) return;
+    if (popup_live()) draw_popup_box(theme_get());
+    else popup_on = false;
+}
+
 void scope_popup_overlay_tick(void)
 {
     if (!popup_on) return;
@@ -2663,6 +2674,48 @@ static void draw_scope_debug(const theme_t *th)
  * a continuous trace, the way an analog scope draws X-Y.
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* ── Text for the column compositors ─────────────────────────────────
+ * A view that composes each column's final pixels cannot draw text over a
+ * finished image, so its labels are a small list it asks per pixel
+ * (font_text_px). Opaque labels also own their box (glyph gaps in bg). */
+#define CTEXT_MAX  14
+#define CTEXT_LEN  24
+typedef struct {
+    uint8_t n;
+    struct {
+        int16_t  x, y, w;
+        uint16_t fg, bg;
+        bool     opaque;
+        char     s[CTEXT_LEN];
+    } t[CTEXT_MAX];
+} ctext_set_t;
+
+static void ctext_add(ctext_set_t *T, int x, int y, const char *s,
+                      uint16_t fg, uint16_t bg, bool opaque)
+{
+    if (T->n >= CTEXT_MAX || s == NULL || s[0] == '\0') return;
+    typeof(T->t[0]) *e = &T->t[T->n++];
+    strncpy(e->s, s, CTEXT_LEN - 1);
+    e->s[CTEXT_LEN - 1] = '\0';
+    e->x = (int16_t)x;
+    e->y = (int16_t)y;
+    e->w = (int16_t)font_string_width(e->s, &font_small);
+    e->fg = fg;
+    e->bg = bg;
+    e->opaque = opaque;
+}
+
+static inline bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c)
+{
+    for (uint8_t k = 0; k < T->n; k++) {
+        const int dx = x - T->t[k].x, dy = y - T->t[k].y;
+        if (dx < 0 || dx >= T->t[k].w || dy < 0 || dy >= (int)font_small.height) continue;
+        if (font_text_px(T->t[k].s, &font_small, dx, dy)) { *c = T->t[k].fg; return true; }
+        if (T->t[k].opaque) { *c = T->t[k].bg; return true; }
+    }
+    return false;
+}
+
 /* Bresenham segment written into the persistence buffer (buffer coords). */
 static void xy_line_persist(int x0, int y0, int x1, int y1)
 {
@@ -2680,51 +2733,69 @@ static void xy_line_persist(int x0, int y0, int x1, int y1)
     }
 }
 
-void draw_xy_screen(void)
+/* One channel's X-Y axis: code -> pixels from the centre, true scale where
+ * the range has a volts/div (26 px per division, 0 V at position 0 on the
+ * axis, as the Y-T plot), else autoscaled to the record. */
+typedef struct { bool fixed; int c0; float px_per_code; } xy_axis_t;
+
+static void xy_axis(const scope_state_t *ss, uint8_t ch, uint8_t mn, uint8_t mx,
+                    int half, xy_axis_t *a)
+{
+    const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
+    const float cpd = scope_cal_codes_per_div((uint8_t)(ch + 1u), r);
+    if (ss->true_scale && cpd > 0.0f) {
+        a->fixed = true;
+        a->c0 = yt_centre_code();
+        a->px_per_code = (float)SCOPE_DIV_PX / cpd;
+    } else {
+        int span = (int)mx - (int)mn;
+        if (span < 8) span = 8;
+        a->fixed = false;
+        a->c0 = ((int)mn + (int)mx) / 2;
+        a->px_per_code = (float)(2 * half) / (float)span;
+    }
+}
+
+void draw_xy_screen(bool full)
 {
     const theme_t *th = theme_get();
+    const scope_state_t *ss = scope_state_get();
     const uint16_t side = SCOPE_H;                 /* square side, 206 px */
     const uint16_t x0   = (LCD_WIDTH - side) / 2;  /* centred: 57 */
     const uint16_t y0   = SCOPE_TOP;               /* 18 */
-    const uint16_t cx   = x0 + side / 2;
-    const uint16_t cy   = y0 + side / 2;
+    const int cxr = side / 2, cyr = SCOPE_GRID_MID_Y - SCOPE_TOP;   /* centre in the square */
 
-    /* One-time bring-up: offset DACs (CH1 DAC1 + CH2 TMR13/PA6) and the shared
-     * persistence buffer, borrowed here for the phosphor trail (X-Y and the
-     * time-domain persistence overlay never run at once). */
+    /* The phosphor trail lives in the shared persistence buffer (X-Y and the
+     * time-domain persistence overlay never run at once). Without the
+     * calibration page the old bring-up of the offset outputs still runs;
+     * with it, the page's offset codes (scope_vpos) are left alone. */
     static bool xy_init = false;
-    static int  xy_dac1 = 2048, xy_dac2 = 2048;
-    if (!xy_init) {
-        scope_trigger_dac_init();
-        scope_trigger_ch2_init();
-        scope_trigger_dac_raw((uint16_t)xy_dac1);
-        scope_trigger_ch2_raw((uint16_t)xy_dac2);
+    if (!xy_init || !persist_is_initialized()) {
+        if (!scope_vpos_active()) {
+            scope_trigger_dac_init();
+            scope_trigger_ch2_init();
+        }
         if (!persist_is_initialized()) persist_init();
         persist_set_mode(PERSIST_LOW);             /* short phosphor tail */
         persist_clear();
         xy_init = true;
     }
 
-    /* Margins + title: background repaint of the strips either side of the
-     * square (also wipes a prior view on entry). The square is streamed from
-     * the persistence buffer below and never blanks, so there is no flash. */
-    lcd_fill_rect(0, SCOPE_TOP, x0, SCOPE_H, th->background);
-    lcd_fill_rect((uint16_t)(x0 + side), SCOPE_TOP,
-                  (uint16_t)(LCD_WIDTH - (x0 + side)), SCOPE_H, th->background);
-    font_draw_string(4, SCOPE_TOP + 2, "X-Y", th->text_secondary,
-                     th->background, &font_small);
+    if (full) {                                    /* margins and title, once */
+        lcd_fill_rect(0, SCOPE_TOP, x0, SCOPE_H, th->background);
+        lcd_fill_rect((uint16_t)(x0 + side), SCOPE_TOP,
+                      (uint16_t)(LCD_WIDTH - (x0 + side)), SCOPE_H, th->background);
+        font_draw_string(4, SCOPE_TOP + 2, "X-Y", th->text_secondary, th->background, &font_small);
+        font_draw_string(4, SCOPE_TOP + 16, "X=CH1", th->ch1, th->background, &font_small);
+        font_draw_string(4, SCOPE_TOP + 30, "Y=CH2", th->ch2, th->background, &font_small);
+    }
 
     const volatile uint8_t *xb = fpga_get_ch1_buf();
     const volatile uint8_t *yb = fpga_get_ch2_buf();
-    bool have = fpga_data_ready() && xb != NULL && yb != NULL
-                && persist_is_initialized();
+    bool have = fpga_data_ready() && xb != NULL && yb != NULL && persist_is_initialized();
 
-    /* Snapshot buffers live on the FreeRTOS heap, not in .bss: these 2 KB
-     * put the guest-flavour links over the RAM ceiling (make guest stopped
-     * linking at 352 B over on main alone, before fw_loader's buffers even
-     * joined it — #29). Allocated once, on first X-Y frame with data, and
-     * kept; on this heap (32 KB, ~14 KB measured free) the failure path is
-     * decorative, but it fails to "no snapshot", never to a null deref. */
+    /* Snapshot buffers on the FreeRTOS heap, not in .bss (#29); allocated on
+     * the first frame with data and kept. */
     static uint8_t *xy_xs, *xy_ys;
     if (have && (xy_xs == NULL || xy_ys == NULL)) {
         if (xy_xs == NULL) xy_xs = pvPortMalloc(FPGA_ADC_BUF_SIZE);
@@ -2735,106 +2806,68 @@ void draw_xy_screen(void)
     persist_decay();                     /* fade the whole buffer once per frame */
 
     if (have) {
-        /* Coherent snapshot (odd generation = acq commit in progress). */
         uint8_t *const xs = xy_xs;
         uint8_t *const ys = xy_ys;
-        for (int t = 0; t < 4; t++) {
+        for (int t = 0; t < 4; t++) {                /* coherent snapshot */
             uint32_t g0 = fpga_acq_frame_generation();
             memcpy(xs, (const void *)xb, FPGA_ADC_BUF_SIZE);
             memcpy(ys, (const void *)yb, FPGA_ADC_BUF_SIZE);
             if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
                 break;
         }
-
         uint8_t xmin = 255, xmax = 0, ymin = 255, ymax = 0;
-        for (uint16_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) {
+        for (uint16_t i = SCOPE_RECORD_HEAD_SKIP; i < FPGA_ADC_BUF_SIZE; i++) {
             if (xs[i] < xmin) xmin = xs[i];
             if (xs[i] > xmax) xmax = xs[i];
             if (ys[i] < ymin) ymin = ys[i];
             if (ys[i] > ymax) ymax = ys[i];
         }
-        const int xmid_raw = (xmin + xmax) / 2;
-        const int ymid_raw = (ymin + ymax) / 2;
-        int rng_raw = (xmax - xmin) > (ymax - ymin) ? (xmax - xmin) : (ymax - ymin);
-        if (rng_raw < 4) rng_raw = 4;
-
-        /* Smoothed auto-scale: rounded EMA (alpha 1/8) of centre and span. */
-        static int xmid = 128, ymid = 128, rng = 64;
-        static bool seeded = false;
-        if (!seeded) { xmid = xmid_raw; ymid = ymid_raw; rng = rng_raw; seeded = true; }
-        else {
-            xmid += ((xmid_raw - xmid) + (xmid_raw >= xmid ? 4 : -4)) / 8;
-            ymid += ((ymid_raw - ymid) + (ymid_raw >= ymid ? 4 : -4)) / 8;
-            rng  += ((rng_raw  - rng ) + (rng_raw  >= rng  ? 4 : -4)) / 8;
-        }
-        if (rng < 4) rng = 4;
-
-        /* Auto-centre servo on the offset DACs (baseline -> ADC mid-scale). */
-        int e1 = 128 - xmid_raw, e2 = 128 - ymid_raw;
-        if (e1 > 4 || e1 < -4) {
-            xy_dac1 += e1 * 5;
-            if (xy_dac1 < 0) xy_dac1 = 0; else if (xy_dac1 > 4095) xy_dac1 = 4095;
-            scope_trigger_dac_raw((uint16_t)xy_dac1);
-        }
-        if (e2 > 4 || e2 < -4) {
-            xy_dac2 += e2 * 5;
-            if (xy_dac2 < 0) xy_dac2 = 0; else if (xy_dac2 > 4095) xy_dac2 = 4095;
-            scope_trigger_ch2_raw((uint16_t)xy_dac2);
-        }
-
-        /* Plot into the persistence buffer, buffer coords (x 0..319,
-         * y 0..PERSIST_HEIGHT-1 = screen y - SCOPE_TOP). Y inverted. */
-        const int half  = side / 2 - 6;
-        const int chord = side / 3;
-        const int xl = (int)x0, xh = (int)x0 + (int)side - 1;
-        const int yl = 0,       yh = (int)side - 1;
-        const int cyb = (int)cy - (int)SCOPE_TOP;
+        const int half = side / 2 - 6;
+        xy_axis_t ax, ay;
+        xy_axis(ss, 0u, xmin, xmax, half, &ax);
+        xy_axis(ss, 1u, ymin, ymax, half, &ay);
+        /* Every sample joined to the next: a square's fast edge is a faint
+         * line between its two levels, as on an analog X-Y display. */
         int pbx = 0, pby = 0;
-        for (uint16_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) {
-            int bx = (int)cx + ((int)xs[i] - xmid) * half * 2 / rng;
-            int by = cyb - ((int)ys[i] - ymid) * half * 2 / rng;
-            if (bx < xl) bx = xl; else if (bx > xh) bx = xh;
-            if (by < yl) by = yl; else if (by > yh) by = yh;
-            if (i > 0) {
-                int adx = bx > pbx ? bx - pbx : pbx - bx;
-                int ady = by > pby ? by - pby : pby - by;
-                if (adx < chord && ady < chord)
-                    xy_line_persist(pbx, pby, bx, by);
-                else
-                    persist_add_point((uint16_t)bx, (uint16_t)by);
-            } else {
-                persist_add_point((uint16_t)bx, (uint16_t)by);
-            }
+        for (uint16_t i = SCOPE_RECORD_HEAD_SKIP; i < FPGA_ADC_BUF_SIZE; i++) {
+            int bx = (int)x0 + cxr + (int)lroundf((float)((int)xs[i] - ax.c0) * ax.px_per_code);
+            int by = cyr - (int)lroundf((float)((int)ys[i] - ay.c0) * ay.px_per_code);
+            if (bx < (int)x0) bx = x0; else if (bx > (int)x0 + side - 1) bx = x0 + side - 1;
+            if (by < 0) by = 0; else if (by > side - 1) by = side - 1;
+            if (i > SCOPE_RECORD_HEAD_SKIP) xy_line_persist(pbx, pby, bx, by);
+            else persist_add_point((uint16_t)bx, (uint16_t)by);
             pbx = bx; pby = by;
         }
     }
 
-    /* Stream the square from the persistence buffer, compositing the centre
-     * axes. Empty pixels -> background, so faded points erase cleanly and the
-     * square is repainted with no blank phase (no flash). */
+    /* Stream the square: the trail over a graticule of 26 px divisions about
+     * the centre (0 V at position 0 on both axes in true scale), no blank
+     * phase. A "no signal" note is composed into it, not drawn over it. */
+    static const char nosig[] = "no signal";
+    const int nsx = cxr - 30, nsy = cyr - 16;      /* in the square */
     const uint8_t *pb = persist_get_buffer();
-    uint16_t xy_row[SCOPE_H];            /* stack, not BSS — one row of the square */
-    const int cxr = (int)cx - (int)x0;      /* centre col within the square */
-    const int cyr = (int)cy - (int)y0;      /* centre row within the square */
-    for (int ry = 0; ry < (int)side; ry++) {
-        for (int rx = 0; rx < (int)side; rx++) {
-            uint8_t inten = pb ? pb[ry * PERSIST_WIDTH + (int)x0 + rx] : 0;
+    for (int rx = 0; rx < (int)side; rx++) {
+        const int dxc = rx - cxr;
+        const bool vline = (dxc % SCOPE_DIV_PX) == 0;
+        lcd_set_window((uint16_t)(x0 + rx), y0, 1, side);
+        for (int ry = 0; ry < (int)side; ry++) {
+            const int dyc = ry - cyr;
+            const uint8_t inten = pb ? pb[ry * PERSIST_WIDTH + (int)x0 + rx] : 0;
             uint16_t c;
-            if (inten)
+            if (!have && rx >= nsx && ry >= nsy && ry < nsy + (int)font_small.height &&
+                font_text_px(nosig, &font_small, rx - nsx, ry - nsy))
+                c = th->warning;
+            else if (inten)
                 c = persist_intensity_to_color_ch1(inten);
-            else if (rx == cxr || ry == cyr)
+            else if (dxc == 0 || dyc == 0)
+                c = th->grid_center;
+            else if ((vline && (ry & 1) == 0) || ((dyc % SCOPE_DIV_PX) == 0 && (rx & 1) == 0))
                 c = th->grid;
             else
                 c = th->background;
-            xy_row[rx] = c;
+            lcd_write_data(c);
         }
-        lcd_set_window(x0, (uint16_t)(y0 + ry), side, 1);
-        lcd_write_pixels(xy_row, side);
     }
-
-    if (!have)
-        font_draw_string_center(LCD_WIDTH / 2, SCOPE_MID_Y, "X-Y: no signal",
-                                th->warning, th->background, &font_small);
 }
 
 void draw_scope_screen(uint32_t frame)
@@ -3560,22 +3593,6 @@ static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
 #endif
 }
 
-/* Frequency-axis end labels for the visible bin span: hertz on a measured
- * code, "--" otherwise. Drawn along the bottom edge of the region. */
-static void draw_fft_axis_labels(uint16_t y_bot, float fs,
-                                 uint16_t zoom_start, uint16_t zoom_end)
-{
-    char lbl[12];
-    fft_live_axis_label(fs, FFT_SIZE, zoom_start, lbl, sizeof(lbl));
-    /* Opaque on black: the bars fill the bottom of the region, and grey
-     * transparent text on amber bars was invisible on the bench (FFT-live
-     * S2, 2026-09-22). fg == bg means transparent in font_draw_char(). */
-    font_draw_string(2, y_bot - 10, lbl, COLOR_WHITE, COLOR_BLACK, &font_small);
-    fft_live_axis_label(fs, FFT_SIZE, zoom_end, lbl, sizeof(lbl));
-    font_draw_string_right(LCD_WIDTH - 2, y_bot - 10, lbl,
-                           COLOR_WHITE, COLOR_BLACK, &font_small);
-}
-
 static float fft_display_ref(const fft_config_t *cfg, const float *data,
                              uint16_t start_bin, uint16_t end_bin)
 {
@@ -3601,221 +3618,237 @@ static float fft_display_ref(const fft_config_t *cfg, const float *data,
     return fft_ref_tracked + cfg->ref_level_db;
 }
 
-static void draw_fft_region(uint16_t y_top, uint16_t height)
+/* Left margin of the spectrum for its dB scale, so the numbers never sit on
+ * the bars (they did, at x = 2, over the lowest bins). */
+#define FFT_LMARGIN  22u
+
+/* The spectrum in [y_top, y_top + height): every pixel composed per column
+ * and streamed, never blanked first (the FFT views' 3-4 Hz flash). */
+static void fft_region_compose(uint16_t y_top, uint16_t height)
 {
     const fft_config_t *cfg = fft_get_config();
-    uint16_t y_bot = y_top + height;
+    const uint16_t y_bot = (uint16_t)(y_top + height);
+    ctext_set_t T;
+    T.n = 0;
 
     int16_t *sbuf = fft_get_sample_buf();
-    if (!sbuf) return;  /* FFT not initialized */
     uint16_t nsamp = 0;
     float fs = 0.0f;
-    fft_src_t src = fft_prepare_input(sbuf, &nsamp, &fs);
-    if (src == FFT_SRC_NONE || nsamp == 0) {
-        font_draw_string(4, y_top + 2, "FFT: waiting for capture",
-                         COLOR_GRAY, COLOR_GRAY, &font_small);
+    const fft_src_t src = sbuf ? fft_prepare_input(sbuf, &nsamp, &fs) : FFT_SRC_NONE;
+    if (cfg == NULL || src == FFT_SRC_NONE || nsamp == 0) {
+        ctext_add(&T, 4, y_top + 2, "FFT: waiting", COLOR_GRAY, COLOR_BLACK, false);
+        for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+            lcd_set_window(x, y_top, 1, height);
+            for (uint16_t y = y_top; y < y_bot; y++) {
+                uint16_t c = COLOR_BLACK;
+                (void)ctext_px(&T, x, y, &c);
+                lcd_write_data(c);
+            }
+        }
         return;
     }
-    bool live = (src == FFT_SRC_LIVE);
+    const bool live = (src == FFT_SRC_LIVE);
     fft_process(sbuf, nsamp, &fft_result);
-
-    const float *draw_data = (fft_result.avg_db != NULL)
-                             ? fft_result.avg_db : fft_result.level_db;
-
-    uint16_t zoom_start = cfg->zoom_start_bin;
-    uint16_t zoom_end = cfg->zoom_end_bin;
-    uint16_t zoom_span = zoom_end - zoom_start;
-    uint16_t x;
-
+    const float *draw_data = (fft_result.avg_db != NULL) ? fft_result.avg_db
+                                                         : fft_result.level_db;
+    const uint16_t zoom_start = cfg->zoom_start_bin, zoom_end = cfg->zoom_end_bin;
+    uint16_t zoom_span = (uint16_t)(zoom_end - zoom_start);
+    if (zoom_span == 0) zoom_span = 1;
+    const uint16_t W = (uint16_t)(LCD_WIDTH - FFT_LMARGIN);
     /* Same auto-ranged reference the waterfall uses: with the configured
      * ref_level_db = 0 every bar pinned to full height, because the dB scale
      * is relative to one count, not to full scale. See fft_display_ref(). */
-    float ref_db = fft_display_ref(cfg, draw_data, zoom_start, zoom_end);
-    float range_db = cfg->db_range;
+    const float ref_db = fft_display_ref(cfg, draw_data, zoom_start, zoom_end);
+    const float range_db = cfg->db_range;
 
-    for (x = 0; x < LCD_WIDTH; x++) {
-        uint16_t bin = zoom_start + (uint16_t)((uint32_t)x * zoom_span / LCD_WIDTH);
-        if (bin >= FFT_BINS) bin = FFT_BINS - 1;
-
-        float db = draw_data[bin];
-        float normalized = (ref_db - db) / range_db;
-        if (normalized < 0.0f) normalized = 0.0f;
-        if (normalized > 1.0f) normalized = 1.0f;
-
-        uint16_t bar_top = y_top + (uint16_t)(normalized * (float)height);
-        if (bar_top < y_bot) {
-            uint16_t color;
-            if (normalized < 0.25f) color = COLOR_CH1;
-            else if (normalized < 0.5f) color = COLOR_GREEN;
-            else if (normalized < 0.75f) color = COLOR_CYAN;
-            else color = COLOR_GRID;
-            lcd_fill_rect(x, bar_top, 1, y_bot - bar_top, color);
-        }
-
-        if (fft_result.max_hold_db != NULL) {
-            float mh_norm = (ref_db - fft_result.max_hold_db[bin]) / range_db;
-            if (mh_norm >= 0.0f && mh_norm <= 1.0f) {
-                uint16_t mh_y = y_top + (uint16_t)(mh_norm * (float)height);
-                if (mh_y >= y_top && mh_y < y_bot && (x & 1) == 0)
-                    lcd_set_pixel(x, mh_y, COLOR_RED);
-            }
-        }
+    /* Grid rows every 10 dB, labels every 20 dB in the left margin. */
+    uint16_t gy[16];
+    uint8_t ng = 0;
+    for (float db = ref_db; db > ref_db - range_db && ng < 16u; db -= 10.0f) {
+        const uint16_t y = (uint16_t)(y_top + (uint16_t)(((ref_db - db) / range_db) * (float)height));
+        if (y > y_top && y < y_bot) gy[ng++] = y;
     }
-
-    /* Horizontal grid lines (every 10dB) */
-    float db;
-    for (db = ref_db; db > ref_db - range_db; db -= 10.0f) {
-        float normalized = (ref_db - db) / range_db;
-        uint16_t y = y_top + (uint16_t)(normalized * (float)height);
-        if (y > y_top && y < y_bot)
-            for (x = 0; x < LCD_WIDTH; x += 4)
-                lcd_set_pixel(x, y, COLOR_GRID);
-    }
-
     if (height > 80) {
-        for (db = ref_db; db > ref_db - range_db; db -= 20.0f) {
-            float normalized = (ref_db - db) / range_db;
-            uint16_t y = y_top + (uint16_t)(normalized * (float)height);
+        for (float db = ref_db; db > ref_db - range_db; db -= 20.0f) {
+            const uint16_t y = (uint16_t)(y_top + (uint16_t)(((ref_db - db) / range_db) * (float)height));
             if (y > y_top + 8 && y < y_bot - 8) {
-                int db_int = (int)db;
-                char label[8];
-                int pos = 0;
-                if (db_int < 0) { label[pos++] = '-'; db_int = -db_int; }
-                if (db_int >= 100) label[pos++] = (char)('0' + db_int / 100);
-                if (db_int >= 10)  label[pos++] = (char)('0' + (db_int / 10) % 10);
-                label[pos++] = (char)('0' + db_int % 10);
-                label[pos] = '\0';
-                font_draw_string(2, y - 5, label, COLOR_GRAY, COLOR_BLACK, &font_small);  /* opaque: see draw_fft_axis_labels */
+                char l[8];
+                snprintf(l, sizeof l, "%d", (int)db);
+                ctext_add(&T, 1, y - 5, l, COLOR_GRAY, COLOR_BLACK, true);
             }
         }
     }
 
-    uint8_t p;
-    for (p = 0; p < fft_result.num_peaks && p < 3; p++) {
-        uint16_t peak_bin = fft_result.peaks[p].bin;
-        if (peak_bin < zoom_start || peak_bin > zoom_end) continue;
-
-        uint16_t peak_x = (uint16_t)((uint32_t)(peak_bin - zoom_start)
-                          * LCD_WIDTH / zoom_span);
+    /* Peaks: a red caret and the harmonic tag (ratios between bins, true
+     * whatever the rate). The tag stays under the header line. */
+    int16_t pkx[3], pky[3];
+    uint8_t np = 0;
+    for (uint8_t p = 0; p < fft_result.num_peaks && p < 3; p++) {
+        const uint16_t pb = fft_result.peaks[p].bin;
+        if (pb < zoom_start || pb > zoom_end) continue;
+        const int px = (int)FFT_LMARGIN + (int)((uint32_t)(pb - zoom_start) * W / zoom_span);
         float norm = (ref_db - fft_result.peaks[p].level_db) / range_db;
         if (norm < 0.0f) norm = 0.0f;
-        uint16_t peak_y = y_top + (uint16_t)(norm * (float)height);
-
-        if (peak_y >= y_top + 4 && peak_x > 2 && peak_x < LCD_WIDTH - 2) {
-            lcd_set_pixel(peak_x, peak_y - 3, COLOR_RED);
-            lcd_set_pixel(peak_x - 1, peak_y - 2, COLOR_RED);
-            lcd_set_pixel(peak_x, peak_y - 2, COLOR_RED);
-            lcd_set_pixel(peak_x + 1, peak_y - 2, COLOR_RED);
+        const int py = (int)y_top + (int)(norm * (float)height);
+        if (py >= y_top + 4 && px > (int)FFT_LMARGIN + 2 && px < LCD_WIDTH - 2) {
+            pkx[np] = (int16_t)px;
+            pky[np] = (int16_t)py;
+            np++;
         }
-
-        /* The per-peak harmonic tags ("Fund", "H2", ...) are RATIOS between
-         * bins, so they stay true whatever the sample rate turns out to be —
-         * unlike an absolute Hz figure, which is why one is drawn here and
-         * the other is not. */
-        if (fft_result.peaks[p].label[0] != '\0' && peak_x > 8 && peak_x < LCD_WIDTH - 30) {
-            /* Keep the tag below the source/peak header, which occupies
-             * y_top + 2 .. y_top + 2 + font height. The tallest peak reaches
-             * the headroom line just under the header, so its tag sat on top
-             * of "LIVE CH1 pk ..." on the bench (2026-09-22). */
-            int16_t tag_y = (int16_t)peak_y - 12;
-            int16_t tag_min = (int16_t)y_top + 2 + (int16_t)font_small.height + 1;
+        if (fft_result.peaks[p].label[0] != '\0' && px > (int)FFT_LMARGIN + 8 && px < LCD_WIDTH - 30) {
+            int tag_y = py - 12;
+            const int tag_min = (int)y_top + 2 + (int)font_small.height + 1;
             if (tag_y < tag_min) tag_y = tag_min;
-            font_draw_string(peak_x - 8, (uint16_t)tag_y,
-                             fft_result.peaks[p].label, COLOR_ORANGE, COLOR_ORANGE, &font_small);
+            ctext_add(&T, px - 8, tag_y, fft_result.peaks[p].label, COLOR_ORANGE, COLOR_ORANGE, false);
         }
     }
 
-    /* Source + peak header. The peak is quoted in Hz only when the sample
-     * rate is known — the demo signal's by construction, the live record's
-     * when the timebase code in force is a measured one (fft_live_axis_known).
-     * Otherwise it is quoted as a bin index, which needs no rate to be true. */
+    /* Source and peak header; the peak in Hz only when the rate is known. */
     {
-        char hdr[40];
-        char freq_str[16];
-        uint16_t color = live ? COLOR_WHITE : COLOR_ORANGE;
+        char hdr[40], f[16];
+        const uint16_t col = live ? COLOR_WHITE : COLOR_ORANGE;
         const char *tag = live ? "LIVE CH1" : "DEMO sq";
         if (fft_result.num_peaks == 0) {
-            snprintf(hdr, sizeof(hdr), "%s", live ? "LIVE CH1" : "DEMO SIGNAL");
+            snprintf(hdr, sizeof hdr, "%s", live ? "LIVE CH1" : "DEMO SIGNAL");
         } else if (fft_live_axis_known(fs)) {
-            fft_live_format_hz(fft_result.peaks[0].freq_hz, freq_str,
-                               sizeof(freq_str));
-            snprintf(hdr, sizeof(hdr), "%s  pk %s", tag, freq_str);
+            fft_live_format_hz(fft_result.peaks[0].freq_hz, f, sizeof f);
+            snprintf(hdr, sizeof hdr, "%s pk %s", tag, f);
         } else {
-            snprintf(hdr, sizeof(hdr), "%s  pk bin %u  --", tag,
-                     (unsigned)fft_result.peaks[0].bin);
+            snprintf(hdr, sizeof hdr, "%s bin %u", tag, (unsigned)fft_result.peaks[0].bin);
         }
-        font_draw_string(4, y_top + 2, hdr, color, color, &font_small);
+        ctext_add(&T, 4, y_top + 2, hdr, col, col, false);
+        static const char *const wn[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
+        const char *w = (cfg->window < FFT_WINDOW_COUNT) ? wn[cfg->window] : "?";
+        ctext_add(&T, LCD_WIDTH - 4 - (int)font_string_width(w, &font_small), y_top + 2, w,
+                  COLOR_GRAY, COLOR_GRAY, false);
+    }
+    if (height > 80) {
+        char l[12];
+        fft_live_axis_label(fs, FFT_SIZE, zoom_start, l, sizeof l);
+        ctext_add(&T, FFT_LMARGIN + 2, y_bot - 11, l, COLOR_WHITE, COLOR_BLACK, true);
+        fft_live_axis_label(fs, FFT_SIZE, zoom_end, l, sizeof l);
+        ctext_add(&T, LCD_WIDTH - 2 - (int)font_string_width(l, &font_small), y_bot - 11, l,
+                  COLOR_WHITE, COLOR_BLACK, true);
     }
 
-    if (height > 80)
-        draw_fft_axis_labels(y_bot, fs, zoom_start, zoom_end);
-
-    const char *win_names[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
-    const char *win_name = (cfg->window < FFT_WINDOW_COUNT)
-                           ? win_names[cfg->window] : "?";
-    font_draw_string_right(LCD_WIDTH - 4, y_top + 2, win_name,
-                           COLOR_GRAY, COLOR_GRAY, &font_small);
-}
-
-void draw_fft_screen(void)
-{
-    lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, SCOPE_H, COLOR_BLACK);
-    draw_fft_region(SCOPE_TOP + 2, SCOPE_H - 4);
-}
-
-void draw_split_screen(uint32_t frame)
-{
-    lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, SCOPE_H, COLOR_BLACK);
-
-    uint16_t scope_top = SCOPE_TOP;
-    uint16_t scope_bot = SCOPE_TOP + SCOPE_H / 2 - 1;
-    uint16_t scope_mid = (scope_top + scope_bot) / 2;
-    uint16_t x;
-
-    for (x = 0; x < LCD_WIDTH; x += 32)
-        for (uint16_t y = scope_top; y < scope_bot; y += 2)
-            lcd_set_pixel(x, y, COLOR_GRID);
-    for (x = 0; x < LCD_WIDTH; x++)
-        lcd_set_pixel(x, scope_mid, COLOR_GRID_CENTER);
-
-    /* Top half: the real CH1 record when there is one. Half-height, so the
-     * same y-transform as the full trace with SCOPE_H replaced by the band
-     * height — one screen column is still one sample. */
-    const volatile uint8_t *b1 = fpga_get_ch1_buf();
-    bool trace_live = fpga_data_ready() && b1 != NULL;
-
-    if (trace_live) {
-        uint16_t band_h = (uint16_t)(scope_bot - scope_top);
-        /* Start past the invalid head (scope_record.h), like the trace. */
-        for (x = 0; x < LCD_WIDTH && x + SCOPE_RECORD_HEAD_SKIP < FPGA_ADC_BUF_SIZE; x++) {
-            int16_t wy = (int16_t)scope_mid -
-                         (int16_t)(((int16_t)b1[x + SCOPE_RECORD_HEAD_SKIP] - 128) * band_h / 256);
-            if (wy >= (int16_t)scope_top && wy < (int16_t)scope_bot)
-                lcd_set_pixel(x, (uint16_t)wy, COLOR_CH1);
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        int bar_top = y_bot, mh_y = -1;
+        uint16_t bar_c = COLOR_GRID;
+        if (x >= FFT_LMARGIN) {
+            uint16_t bin = (uint16_t)(zoom_start + (uint16_t)((uint32_t)(x - FFT_LMARGIN) * zoom_span / W));
+            if (bin >= FFT_BINS) bin = FFT_BINS - 1;
+            float n = (ref_db - draw_data[bin]) / range_db;
+            if (n < 0.0f) n = 0.0f;
+            if (n > 1.0f) n = 1.0f;
+            bar_top = (int)y_top + (int)(n * (float)height);
+            bar_c = (n < 0.25f) ? COLOR_CH1 : (n < 0.5f) ? COLOR_GREEN
+                  : (n < 0.75f) ? COLOR_CYAN : COLOR_GRID;
+            if (fft_result.max_hold_db != NULL && (x & 1u) == 0u) {
+                const float m = (ref_db - fft_result.max_hold_db[bin]) / range_db;
+                if (m >= 0.0f && m <= 1.0f) mh_y = (int)y_top + (int)(m * (float)height);
+            }
         }
-    } else {
-        static const int8_t sin_lut[64] = {
-             0, 10, 19, 29, 38, 47, 56, 63, 71, 77, 83, 88, 92, 96, 98, 99,
-            100, 99, 98, 96, 92, 88, 83, 77, 71, 63, 56, 47, 38, 29, 19, 10,
-             0,-10,-19,-29,-38,-47,-56,-63,-71,-77,-83,-88,-92,-96,-98,-99,
-           -100,-99,-98,-96,-92,-88,-83,-77,-71,-63,-56,-47,-38,-29,-19,-10,
-        };
-        for (x = 0; x < LCD_WIDTH; x++) {
-            uint8_t idx = (uint8_t)((x * 4 + frame) & 0x3F);
-            int16_t wy = scope_mid - (sin_lut[idx] * 25 / 100);
-            if (wy >= (int16_t)scope_top && wy < (int16_t)scope_bot)
-                lcd_set_pixel(x, (uint16_t)wy, COLOR_CH1);
+        lcd_set_window(x, y_top, 1, height);
+        for (uint16_t y = y_top; y < y_bot; y++) {
+            uint16_t c = COLOR_BLACK;
+            bool done = ctext_px(&T, x, y, &c);
+            for (uint8_t k = 0; !done && k < np; k++) {
+                const int dx = (int)x - pkx[k], dy = (int)y - pky[k];
+                if ((dy == -3 && dx == 0) || (dy == -2 && dx >= -1 && dx <= 1)) {
+                    c = COLOR_RED;
+                    done = true;
+                }
+            }
+            if (!done && (int)y == mh_y) { c = COLOR_RED; done = true; }
+            if (!done && x >= FFT_LMARGIN && (x & 3u) == 0u)
+                for (uint8_t k = 0; k < ng; k++)
+                    if (gy[k] == y) { c = COLOR_GRID; done = true; break; }
+            if (!done && (int)y >= bar_top) c = bar_c;
+            lcd_write_data(c);
         }
-        /* An animated sine that no probe produced. Say so. */
-        font_draw_string(4, scope_top + 2, "DEMO TRACE",
-                         COLOR_ORANGE, COLOR_ORANGE, &font_small);
     }
+}
 
-    uint16_t divider_y = SCOPE_TOP + SCOPE_H / 2;
-    for (x = 0; x < LCD_WIDTH; x++)
-        lcd_set_pixel(x, divider_y, COLOR_GRID_CENTER);
+void draw_fft_screen(bool full)
+{
+    if (full) {                     /* the 2-row margins above and below */
+        lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, 2, COLOR_BLACK);
+        lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - 2, LCD_WIDTH, 2, COLOR_BLACK);
+    }
+    fft_region_compose(SCOPE_TOP + 2, SCOPE_H - 4);
+}
 
-    draw_fft_region(divider_y + 1, SCOPE_H / 2 - 2);
+/* Split view: the Y-T window on top (half-height divisions, 13 px, in the
+ * same stock geometry: one division = the range's volts/div), the spectrum
+ * below. Both composed per column. */
+#define SPLIT_DIV_PX  13
+void draw_split_screen(uint32_t frame, bool full)
+{
+    (void)frame;
+    const theme_t *th = theme_get();
+    const scope_state_t *ss = scope_state_get();
+    const uint16_t top = SCOPE_TOP, divider = SCOPE_TOP + SCOPE_H / 2;
+    const uint16_t mid = (uint16_t)(top + 4 * SPLIT_DIV_PX);       /* 8 divisions of 13 px */
+    const volatile uint8_t *r1 = fpga_get_ch1_buf(), *r2 = fpga_get_ch2_buf();
+    const bool live = fpga_data_ready() && r1 != NULL && r2 != NULL;
+    autofit_t m[2];
+    bool on[2] = { false, false };
+    if (live) {
+        view_build(ss, r1, r2);
+        for (uint8_t ch = 0; ch < 2u; ch++) {
+            const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
+            on[ch] = ch ? ss->ch2.enabled : ss->ch1.enabled;
+            if (!on[ch]) continue;
+            if (ss->true_scale && scope_cal_true_scale_ok((uint8_t)(ch + 1u), r)) {
+                yt_vmap_true(&m[ch], (int16_t)top, (int16_t)divider, (int16_t)mid, (int8_t)ch,
+                             yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
+                m[ch].h = SPLIT_DIV_PX * 100;           /* half-height divisions */
+            } else {
+                autofit_prep(&m[ch], yt_cols[ch], (int16_t)top, (int16_t)divider, (int8_t)ch);
+            }
+        }
+    }
+    static const char nrec[] = "no record";
+    int16_t prev[2] = { 0, 0 };
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        const bool inwin = (x < SCOPE_GEOM_COLS);
+        const bool tr = live && x >= g_view_first && x < g_view_end;
+        int16_t lo[2] = { 1, 1 }, hi[2] = { 0, 0 };
+        for (uint8_t ch = 0; ch < 2u; ch++) {
+            if (!on[ch] || !tr) continue;
+            const int16_t y = autofit_y(&m[ch], yt_cols[ch][x]);
+            lo[ch] = y; hi[ch] = y;
+            if (x > g_view_first) {
+                if (prev[ch] < lo[ch]) lo[ch] = prev[ch];
+                if (prev[ch] > hi[ch]) hi[ch] = prev[ch];
+            }
+            prev[ch] = y;
+        }
+        lcd_set_window(x, top, 1, (uint16_t)(divider - top + 1));
+        for (uint16_t y = top; y <= divider; y++) {
+            uint16_t c;
+            if (y == divider)
+                c = th->grid_center;
+            else if (!live && x >= 4u && y >= top + 2u && y < top + 2u + font_small.height &&
+                     font_text_px(nrec, &font_small, (int)x - 4, (int)y - (int)top - 2))
+                c = COLOR_ORANGE;
+            else if (on[1] && (int16_t)y >= lo[1] && (int16_t)y <= hi[1])
+                c = th->ch2;
+            else if (on[0] && (int16_t)y >= lo[0] && (int16_t)y <= hi[0])
+                c = th->ch1;
+            else if (inwin && (y == mid || x == SCOPE_GEOM_CENTER_COL))
+                c = th->grid_center;
+            else if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
+                               (((y - top) % SPLIT_DIV_PX) == 0 && (x & 1u) == 0)))
+                c = th->grid;
+            else
+                c = th->background;
+            lcd_write_data(c);
+        }
+    }
+    if (full)
+        lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - 1, LCD_WIDTH, 1, COLOR_BLACK);
+    fft_region_compose((uint16_t)(divider + 1), SCOPE_H / 2 - 2);
 }
 
 /* Waterfall
@@ -3986,36 +4019,54 @@ void draw_waterfall_screen(void)
     uint16_t rows_drawn = WATERFALL_ROWS;
     if ((uint32_t)rows_drawn * row_height > SCOPE_H)
         rows_drawn = (uint16_t)(SCOPE_H / row_height);
-    uint16_t block_h = (uint16_t)(rows_drawn * row_height);
+    const uint16_t block_h = (uint16_t)(rows_drawn * row_height);
 
-    if (block_h < SCOPE_H)
-        lcd_fill_rect(0, (uint16_t)(SCOPE_TOP + block_h), LCD_WIDTH,
-                      (uint16_t)(SCOPE_H - block_h), COLOR_BLACK);
-
-    uint16_t r;
-    for (r = 0; r < rows_drawn; r++) {
-        const uint8_t *src =
-            waterfall_buf[(newest_row + WATERFALL_ROWS - r) % WATERFALL_ROWS];
-        for (x = 0; x < WATERFALL_COLS; x++)
-            waterfall_line[x] = intensity_to_color(src[x]);
-
-        lcd_set_window(0, (uint16_t)(SCOPE_TOP + r * row_height),
-                       WATERFALL_COLS, row_height);
-
-        uint16_t rep;
-        for (rep = 0; rep < row_height; rep++)
-            lcd_write_pixels(waterfall_line, WATERFALL_COLS);
+    /* The header and the axis labels are composed into the lines they
+     * cross (font_text_px) instead of drawn over the streamed rows, so
+     * nothing is painted twice and nothing blinks; the residual strip under
+     * the block (SCOPE_H - block_h rows) carries the axis labels. */
+    ctext_set_t T;
+    T.n = 0;
+    ctext_add(&T, 4, SCOPE_TOP + 2, live ? "WFALL LIVE CH1" : "WFALL DEMO",
+              live ? COLOR_WHITE : COLOR_ORANGE, live ? COLOR_WHITE : COLOR_ORANGE, false);
+    {
+        char l[12];
+        const int ly = SCOPE_TOP + SCOPE_H - 12;
+        fft_live_axis_label(fs, FFT_SIZE, zoom_start, l, sizeof l);
+        ctext_add(&T, 2, ly, l, COLOR_WHITE, COLOR_BLACK, true);
+        fft_live_axis_label(fs, FFT_SIZE, zoom_end, l, sizeof l);
+        ctext_add(&T, LCD_WIDTH - 2 - (int)font_string_width(l, &font_small), ly, l,
+                  COLOR_WHITE, COLOR_BLACK, true);
     }
 
-    /* Say which signal built this history. A waterfall of a compiled-in test
-     * tone looks exactly like a waterfall of a probe. */
-    if (live)
-        font_draw_string(4, SCOPE_TOP + 2, "WFALL LIVE CH1",
-                         COLOR_WHITE, COLOR_WHITE, &font_small);
-    else
-        font_draw_string(4, SCOPE_TOP + 2, "WFALL DEMO SIGNAL",
-                         COLOR_ORANGE, COLOR_ORANGE, &font_small);
-    draw_fft_axis_labels(SCOPE_TOP + SCOPE_H, fs, zoom_start, zoom_end);
+    for (uint16_t sy = 0; sy < SCOPE_H; sy++) {
+        const uint16_t y = (uint16_t)(SCOPE_TOP + sy);
+        const bool in_block = sy < block_h;
+        const uint16_t r = (uint16_t)(sy / row_height);
+        /* A history row is converted once and reused for its row_height
+         * lines unless a label crosses this line. */
+        const bool row_first = in_block && (sy % row_height) == 0u;
+        bool text_line = false;
+        for (uint8_t k = 0; k < T.n; k++)
+            if ((int)y >= T.t[k].y && (int)y < T.t[k].y + (int)font_small.height) text_line = true;
+        if (row_first || text_line || !in_block) {
+            const uint8_t *src = in_block
+                ? waterfall_buf[(newest_row + WATERFALL_ROWS - r) % WATERFALL_ROWS] : NULL;
+            for (x = 0; x < WATERFALL_COLS; x++) {
+                uint16_t c = src ? intensity_to_color(src[x]) : COLOR_BLACK;
+                if (text_line) (void)ctext_px(&T, x, y, &c);
+                waterfall_line[x] = c;
+            }
+        }
+        lcd_set_window(0, y, WATERFALL_COLS, 1);
+        lcd_write_pixels(waterfall_line, WATERFALL_COLS);
+        if (text_line && in_block && (sy + 1u) % row_height != 0u) {
+            /* the next line of this row has no text: rebuild it plain */
+            const uint8_t *src = waterfall_buf[(newest_row + WATERFALL_ROWS - r) % WATERFALL_ROWS];
+            for (x = 0; x < WATERFALL_COLS; x++)
+                waterfall_line[x] = intensity_to_color(src[x]);
+        }
+    }
 }
 
 #endif /* FEATURE_FFT */

@@ -393,7 +393,8 @@ static bool scope_incremental_available(const scope_state_t *s)
     return false;   /* draw_scope_live_frame reads FPGA buffers */
 #else
 #ifdef FEATURE_FFT
-    if (scope_view != SCOPE_VIEW_TIME) return false;
+    /* FFT, split, waterfall and X-Y compose every pixel (no blank phase). */
+    if (scope_view != SCOPE_VIEW_TIME) return true;
 #endif
     /* Roll: its compositor needs no record and draws no cursors. */
     if (s->roll) return true;
@@ -425,17 +426,22 @@ static bool osc_page_up(void)
 
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
-    (void)action;
-
 #ifdef FEATURE_FFT
-    if (scope_view == SCOPE_VIEW_FFT)       { ui_scope_full_draws++;
-                                              draw_fft_screen();        return; }
-    if (scope_view == SCOPE_VIEW_SPLIT)     { ui_scope_full_draws++;
-                                              draw_split_screen(frame); return; }
-    if (scope_view == SCOPE_VIEW_WATERFALL) { ui_scope_full_draws++;
-                                              draw_waterfall_screen();  return; }
-    if (scope_view == SCOPE_VIEW_XY)        { ui_scope_full_draws++;
-                                              draw_xy_screen();         return; }
+    /* The other views compose every pixel and never blank: an incremental
+     * frame is the same drawing without the once-only margins and titles. */
+    if (scope_view != SCOPE_VIEW_TIME) {
+        const bool full = (action != REDRAW_INCREMENTAL);
+        if (full) ui_scope_full_draws++; else ui_scope_live_draws++;
+        switch (scope_view) {
+        case SCOPE_VIEW_FFT:       draw_fft_screen(full);          break;
+        case SCOPE_VIEW_SPLIT:     draw_split_screen(frame, full); break;
+        case SCOPE_VIEW_WATERFALL: draw_waterfall_screen();        break;
+        case SCOPE_VIEW_XY:        draw_xy_screen(full);           break;
+        default:                                                   break;
+        }
+        scope_popup_view_tick();
+        return;
+    }
 #endif
     /* Roll (C11) has its own compositor over the roll FIFO; the Y-T paths
      * below would draw the stale 1024-sample record. */
@@ -692,7 +698,7 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_FFT:
                 if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     ui_scope_full_draws++;
-                    draw_fft_screen();
+                    draw_fft_screen(true);
                     redraw_gate_mark(&scope_gate,
                                      scope_ui_epoch(scope_state_get()),
                                      frame, REDRAW_FULL);
