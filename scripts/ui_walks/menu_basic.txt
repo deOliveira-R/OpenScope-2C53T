@@ -1,0 +1,243 @@
+# menu_basic.txt -- every pane and row of the scope's menu, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The Oscilloscope Settings page (MENU on the scope; PRM and TRIGGER open it
+# locked in their pane) is a layer of the screen router (firmware/src/ui/
+# osc_menu_screen.c), table-bound to the scope's properties: every row and
+# item names the property it shows and sets, a change on the page is one
+# property set, and the page repaints from what it shows. So a `get` answers
+# a key press at once, and a `set` from the shell while the page is open is
+# painted in place (no full redraw: `ui dump`'s redraw_all does not move).
+# ui_walk.py records the `ui screen` line after every step and the answer of
+# every `get`; what each must show is on the "# expect" line above the step
+# (one `get` per property: the walk keeps one answer line per command).
+#
+#   `ui screen` while the page is up:  overlay=osc_menu stack=scope>osc_menu
+#     row=display|cursor|param|ch1|ch2|trigger|persist|math
+#     pane=rail|pane|locked      item=<the pane's cursor>
+#
+# Redraw rates: 0 in every step that only waits with the page open (the plot
+# under it is not drawn and the page paints only when what it shows changes).
+# Each key that moves the cursor or a value is one paint of the page; closing
+# the page is one redraw_all (the scope comes back). lcdforeign stays 0.
+#
+# The page changes saved settings: the walk starts from a known state and
+# puts it back at the end. A coupling change clicks a relay. Wire a signal
+# into CH1 if the Single step (m6) is to trigger.
+# POWER cannot be sent from the shell: with the page open hold it by hand,
+# the countdown must appear over the page and a release must repaint it.
+
+# ── 0. a known state ─────────────────────────────────────────────────────────
+# expect: screen=scope instrument=scope overlay=none stack=scope view=yt lcdforeign=0
+m0_base        | set sys.mode scope ; wait 1 ; set ch1.enabled on ; set ch2.enabled on ; set view.mode yt ; set view.cursor off ; set view.persist off ; set view.math off
+m0_base2       | set trig.mode auto ; set trig.edge rising ; set trig.source ch1 ; set ch1.probe 1x ; set ch2.probe 1x ; set ch1.coupling dc ; set ch2.coupling dc ; set ch1.meas 0x507 ; set ch2.meas 0x507 ; wait 2
+
+# ── 1. open, the rail, close ─────────────────────────────────────────────────
+# expect: overlay=osc_menu row=display pane=rail item=0 stack=scope>osc_menu
+m1_open        | ui seq MENU
+# expect: row=cursor ... row=math, then row=display again (DOWN wraps after the 8 rows)
+m1_rail_down   | ui seq DOWN
+m1_rail_all    | ui seq DOWN*6
+m1_rail_wrap   | ui seq DOWN
+# expect: row=math (UP wraps the other way), then row=display
+m1_rail_up     | ui seq UP
+m1_rail_back   | ui seq DOWN
+# expect: nothing changes (LEFT on the rail, MOVE, SELECT, AUTO and the plot's long keys do nothing here)
+#         ch1.enabled = on
+m1_dead_keys   | ui seq LEFT MOVE SELECT AUTO long:CH1 long:OK long:AUTO long:PRM ; get ch1.enabled
+# expect: 0 redraws of any kind while it only waits
+m1_idle        | wait 5
+# expect: overlay=none stack=scope   (MENU on the rail closes; one redraw_all)
+m1_close       | ui seq MENU
+
+# ── 2. Display: view.mode, one item per view ─────────────────────────────────
+# expect: overlay=osc_menu row=display pane=pane item=0   (the cursor enters on the view in force)
+m2_enter       | ui seq MENU OK
+# expect: view.mode = roll ; view=roll ; the page stays open
+m2_roll        | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: view.mode = xy
+m2_xy          | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: view.mode = fft
+m2_fft         | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: view.mode = split
+m2_split       | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: view.mode = waterfall
+m2_waterfall   | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: view.mode = yt ; item=0   (DOWN on the last item wraps to the first)
+m2_yt          | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: view.mode = split ; item=4   (UP twice from Y-T wraps to Split: the other direction)
+m2_up          | ui seq UP*2 OK ; wait 2 ; get view.mode ; set view.mode yt ; wait 2
+# expect: the page shows FFT checked at once, in place: redraw_all does not move ; view.mode = fft
+m2_shell_set   | set view.mode fft ; wait 2 ; get view.mode
+# expect: view.mode = yt ; Y-T checked again
+m2_shell_back  | set view.mode yt ; wait 2 ; get view.mode
+# expect: pane=rail row=display item=4   (MENU in a pane goes back to the rail; RIGHT in a RADIO pane does nothing)
+m2_rail        | ui seq RIGHT MENU
+
+# ── 3. Cursors: view.cursor; a cursor mode closes the page ───────────────────
+# expect: row=cursor pane=pane item=0
+m3_enter       | ui seq DOWN OK
+# expect: overlay=none stack=scope focus=cursor ; view.cursor = time   (the page closed, the arrows are the cursors')
+m3_time        | ui seq DOWN OK ; get view.cursor
+# expect: overlay=osc_menu row=cursor pane=pane item=1   (enters on the mode in force)
+m3_reenter     | ui seq MENU DOWN OK
+# expect: overlay=none ; view.cursor = volt
+m3_volt        | ui seq DOWN OK ; get view.cursor
+# expect: overlay=none ; view.cursor = both
+m3_both        | ui seq MENU DOWN OK DOWN OK ; get view.cursor
+# expect: overlay=osc_menu item=0 ; view.cursor = off   (Off keeps the page open; the focus leaves the cursor stage)
+m3_off         | ui seq MENU DOWN OK DOWN OK ; get view.cursor
+# expect: view.cursor = both ; the page shows Both checked, in place
+m3_shell_set   | set view.cursor both ; wait 1 ; get view.cursor ; set view.cursor off ; wait 1
+
+# ── 4. Measure: chN.meas (explicit actions: the tab, All, None, 12 chips) ────
+# expect: row=param pane=pane item=3   (on Freq of CH1)
+m4_enter       | ui seq MENU DOWN OK
+# expect: ch1.meas loses Freq, then has it again
+m4_chip        | ui seq OK ; get ch1.meas
+m4_chip_back   | ui seq OK ; get ch1.meas
+# expect: item=1 ; ch1.meas = every one of the 12
+m4_all         | ui seq UP RIGHT OK ; get ch1.meas
+# expect: item=2 ; ch1.meas = none ; ch2.meas unchanged
+m4_none        | ui seq RIGHT OK ; get ch1.meas ; get ch2.meas
+# expect: item=0 ; the pane shows CH2's page (the tab flips the channel; no property changes)
+m4_tab         | ui seq LEFT*2 OK ; get ch2.meas
+# expect: ch2.meas = every one of the 12
+m4_all_ch2     | ui seq RIGHT OK ; get ch2.meas
+# expect: both back to Freq,Peri,Duty+,Vp-p,Vrms (0x507); the chips follow the shell's set at once
+m4_shell_set   | set ch1.meas 0x507 ; set ch2.meas 0x507 ; wait 1 ; get ch1.meas ; get ch2.meas
+
+# ── 5. CH1 and CH2: enabled, probe, coupling; LEFT, RIGHT and OK step ────────
+# expect: row=ch1 pane=pane item=0
+m5_enter       | ui seq MENU DOWN OK
+# expect: ch1.enabled = off ; ach=CH2 (the active channel follows the live one), then on (ach stays CH2)
+m5_ch1_off     | ui seq RIGHT ; get ch1.enabled
+m5_ch1_on      | ui seq LEFT ; get ch1.enabled
+# expect: item=1 ; ch1.probe = 10X, then 1X (wraps), then 10X (LEFT wraps the other way), then 1X (OK = +1)
+m5_ch1_probe   | ui seq DOWN RIGHT ; get ch1.probe
+m5_ch1_probe2  | ui seq RIGHT ; get ch1.probe
+m5_ch1_probe3  | ui seq LEFT ; get ch1.probe
+m5_ch1_probe4  | ui seq OK ; get ch1.probe
+# expect: item=2 ; ch1.coupling = AC (a relay click), then DC
+m5_ch1_ac      | ui seq DOWN RIGHT ; get ch1.coupling
+m5_ch1_dc      | ui seq LEFT ; get ch1.coupling
+# expect: ch1.probe = 10X and the row says 10X at once, in place (redraw_all does not move)
+m5_shell_set   | set ch1.probe 10x ; wait 1 ; get ch1.probe ; set ch1.probe 1x ; wait 1
+# expect: ch1.enabled = on still ; the footer says "Keep one CH on"   (the last channel cannot go off)
+m5_keep_one    | set ch2.enabled off ; wait 1 ; ui seq UP*2 RIGHT ; get ch1.enabled ; set ch2.enabled on ; wait 1
+# expect: row=ch2 pane=pane item=0
+m5_ch2_enter   | ui seq MENU DOWN OK
+# expect: ch2.enabled = off, then on
+m5_ch2_off     | ui seq OK ; get ch2.enabled
+m5_ch2_on      | ui seq OK ; get ch2.enabled
+# expect: ch2.probe = 10X, then 1X
+m5_ch2_probe   | ui seq DOWN LEFT ; get ch2.probe
+m5_ch2_probe2  | ui seq RIGHT ; get ch2.probe
+# expect: ch2.coupling = AC, then DC
+m5_ch2_ac      | ui seq DOWN OK ; get ch2.coupling
+m5_ch2_dc      | ui seq OK ; get ch2.coupling
+
+# ── 6. Trigger: trig.mode, trig.edge, trig.source ────────────────────────────
+# expect: row=trigger pane=pane item=0
+m6_enter       | ui seq MENU DOWN OK
+# expect: trig.mode = Normal
+m6_normal      | ui seq RIGHT ; get trig.mode
+# expect: trig.mode = Single ; run=run ; the footer says "Await Trigger..."
+m6_single      | ui seq RIGHT ; get trig.mode
+# expect: trig.mode = Auto (wraps), then Single (LEFT wraps back), then Auto (OK = +1)
+m6_auto        | ui seq RIGHT ; get trig.mode
+m6_left        | ui seq LEFT ; get trig.mode
+m6_ok          | ui seq OK ; get trig.mode ; set view.run on
+# expect: item=1 ; trig.edge = Falling, then Rising
+m6_falling     | ui seq DOWN RIGHT ; get trig.edge
+m6_rising      | ui seq LEFT ; get trig.edge
+# expect: item=2 ; trig.source = CH2, then CH1
+m6_src_ch2     | ui seq DOWN RIGHT ; get trig.source
+m6_src_ch1     | ui seq LEFT ; get trig.source
+# expect: trig.source = CH1 still ; the footer says "CH2 is off"   (a channel that is off is refused)
+m6_src_off     | set ch2.enabled off ; wait 1 ; ui seq RIGHT ; get trig.source ; set ch2.enabled on ; wait 1
+# expect: trig.edge = Falling and the row says Falling at once, in place
+m6_shell_set   | set trig.edge falling ; wait 1 ; get trig.edge ; set trig.edge rising ; wait 1
+
+# ── 7. Persist: view.persist ─────────────────────────────────────────────────
+# expect: row=persist pane=pane item=0
+m7_enter       | ui seq MENU DOWN OK
+# expect: view.persist = 500ms
+m7_500ms       | ui seq DOWN OK ; wait 1 ; get view.persist
+# expect: view.persist = 1s
+m7_1s          | ui seq DOWN OK ; wait 1 ; get view.persist
+# expect: view.persist = 2s
+m7_2s          | ui seq DOWN OK ; wait 1 ; get view.persist
+# expect: view.persist = inf
+m7_inf         | ui seq DOWN OK ; wait 1 ; get view.persist
+# expect: view.persist = off (wraps to the first item)
+m7_off         | ui seq DOWN OK ; wait 1 ; get view.persist
+# expect: view.persist = 2s (UP twice: the other direction), then off from the shell, shown at once
+m7_up          | ui seq UP*2 OK ; wait 1 ; get view.persist
+m7_shell_set   | set view.persist off ; wait 1 ; get view.persist
+
+# ── 8. Math: view.math (Off over stock's 2x4 grid) ───────────────────────────
+# expect: row=math pane=pane item=0
+m8_enter       | ui seq MENU DOWN OK
+# expect: item=1 ; view.math = A+B   (CH1+CH2)
+m8_add         | ui seq DOWN OK ; get view.math
+# expect: item=2 ; view.math = -A    (-CH1)
+m8_inv_a       | ui seq RIGHT OK ; get view.math
+# expect: item=4 ; view.math = -B    (-CH2)
+m8_inv_b       | ui seq DOWN OK ; get view.math
+# expect: item=3 ; view.math = A-B   (CH1-CH2)
+m8_sub         | ui seq LEFT OK ; get view.math
+# expect: item=5 ; view.math = A*B   (CH1*CH2)
+m8_mul         | ui seq DOWN OK ; get view.math
+# expect: item=6 ; view.math = |A|   (|CH1|)
+m8_abs_a       | ui seq RIGHT OK ; get view.math
+# expect: item=8 ; view.math = |B|   (|CH2|)
+m8_abs_b       | ui seq DOWN OK ; get view.math
+# expect: item=7 ; view.math = A/B   (CH1/CH2)
+m8_div         | ui seq LEFT OK ; get view.math
+# expect: item=0 ; view.math = off
+m8_off         | ui seq UP*4 OK ; get view.math
+# expect: view.math = A-B and its chip lit at once, in place ; then off
+m8_shell_set   | set view.math A-B ; wait 1 ; get view.math ; set view.math off ; wait 1
+# expect: overlay=none stack=scope   (LEFT at the left column goes to the rail, MENU closes)
+m8_close       | ui seq LEFT MENU
+
+# ── 9. the deep links and the locked panes ───────────────────────────────────
+# expect: overlay=osc_menu row=param pane=locked item=3   (PRM: locked in Measure)
+m9_prm         | ui seq PRM
+# expect: row=param pane=locked still   (CH1, CH2 and LEFT at the edge lead nowhere while locked)
+m9_prm_locked  | ui seq CH1 CH2 LEFT*3
+# expect: row=trigger pane=locked item=0   (the other pane key moves the lock)
+m9_trigger     | ui seq TRIGGER
+# expect: trig.mode = Normal, then Auto ; still locked
+m9_trig_set    | ui seq RIGHT ; get trig.mode
+m9_trig_back   | ui seq LEFT ; get trig.mode
+# expect: overlay=none   (the key that opened it closes it)
+m9_trig_close  | ui seq TRIGGER
+# expect: overlay=osc_menu pane=locked, then overlay=none   (MENU closes a locked pane at once)
+m9_prm_menu    | ui seq PRM
+m9_prm_menu2   | ui seq MENU
+# expect: row=ch2 pane=rail   (CH2 on the open page jumps to its row), then overlay=none (CH2 again closes)
+m9_jump        | ui seq MENU CH2
+m9_jump_close  | ui seq CH2
+# expect: row=ch1 pane=rail, then row=trigger pane=rail, then overlay=none
+m9_jump2       | ui seq MENU CH1 TRIGGER
+m9_jump2_close | ui seq TRIGGER
+
+# ── 10. over the page: SAVE, the gallery, a mode change ──────────────────────
+# expect: overlay=osc_menu still ; a "Saved <n>.bmp" popup over the page ; the answer names the file
+m10_save       | ui seq MENU DOWN*3 OK ; ui seq SAVE ; wait 3
+# expect: overlay=gallery stack=scope>osc_menu>gallery gal=grid/0
+m10_gallery    | ui seq long:SAVE ; wait 2
+# expect: overlay=osc_menu row=ch1 pane=pane   (the page is back as it was, repainted whole)
+m10_gallery_x  | ui seq MENU ; wait 2
+# expect: screen=meter overlay=none stack=meter   (a mode change closes the page)
+m10_mode       | ui seq long:MOVE ; wait 3
+# expect: screen=scope overlay=none stack=scope   (and it does not come back with the scope)
+m10_back       | ui seq long:SELECT ; wait 3
+
+# ── 11. put the settings back ────────────────────────────────────────────────
+# expect: overlay=none stack=scope view=yt lcdforeign=0
+m11_restore    | set view.mode yt ; set view.cursor off ; set view.persist off ; set view.math off ; set trig.mode auto ; set trig.edge rising ; set trig.source ch1
+m11_restore2   | set ch1.enabled on ; set ch2.enabled on ; set ch1.probe 1x ; set ch2.probe 1x ; set ch1.coupling dc ; set ch2.coupling dc ; set ch1.meas 0x507 ; set ch2.meas 0x507 ; wait 2

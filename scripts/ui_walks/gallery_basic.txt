@@ -1,0 +1,118 @@
+# gallery_basic.txt -- the screenshot gallery and the capture, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The gallery (long SAVE, from every screen) is a layer of the screen router
+# (firmware/src/ui/gallery_screen.c): its keys run on the input task and
+# change only its state; the display task paints it (gallery_ui.c) and
+# repaints what was under it when it closes. A capture (short SAVE,
+# `screenshot save`) is a display command: the display task saves the screen
+# between two of its own frames. Nothing but the display task draws:
+# lcdforeign must be 0 in every step.
+#
+#   `ui screen` while it is up:  overlay=gallery stack=<base>[>osc_menu]>gallery
+#     gal=grid/<n>   the grid, shot n selected (0 = the newest)
+#     gal=full/<n>   shot n full screen
+#     .../del        "SAVE again: delete" is shown
+#   and gal=- when it is not up.
+#
+# Redraw rates: 0 in every step that only waits with the gallery open (no
+# bars, no plot, nothing is drawn under it). Closing it is one redraw_all.
+# POWER cannot be sent from the shell: with the gallery open hold it by hand,
+# the countdown must appear over the gallery's picture and a release must
+# show the screen that was under the gallery, not the gallery.
+#
+# The walk saves four screenshots and deletes one; it leaves three more than
+# it found (delete them with `screenshot delete <n>`). With fewer than four
+# free slots the saves answer "full": free some first (`screenshot list`).
+
+# ── 0. a known state, and four shots to browse ───────────────────────────────
+# expect: screen=scope overlay=none stack=scope gal=- lcdforeign=0
+g0_base        | set sys.mode scope ; wait 2 ; set view.mode yt ; set view.cursor off ; wait 1 ; screenshot list
+# expect: each answer "screenshot: saved <n>.bmp" ; the screen is still for ~0.5 s per save, no torn frame in the shot
+g0_save1       | screenshot save
+g0_save2       | set ch1.vdiv 5 ; wait 1 ; screenshot save
+g0_save3       | set ch1.vdiv 7 ; wait 1 ; screenshot save
+# expect: a "Saved <n>.bmp" popup on the scope, the popup itself not in the shot
+g0_save_key    | set ch1.vdiv 6 ; wait 1 ; ui seq SAVE ; wait 3 ; screenshot list
+
+# ── 1. open, the grid ────────────────────────────────────────────────────────
+# expect: overlay=gallery stack=scope>gallery gal=grid/0   (the newest shot selected)
+g1_open        | ui seq long:SAVE ; wait 2
+# expect: 0 redraws of any kind while it only waits (the scope under it is not drawn)
+g1_idle        | wait 5
+# expect: gal=grid/1, then gal=grid/2   (two cells repainted per move, no thumbnail reloaded)
+g1_right       | ui seq RIGHT
+g1_right2      | ui seq RIGHT
+# expect: gal=grid/1
+g1_left        | ui seq LEFT
+# expect: gal=grid/0, then the last shot (LEFT on the first wraps), then gal=grid/0 (RIGHT wraps back)
+g1_left2       | ui seq LEFT
+g1_wrap        | ui seq LEFT
+g1_wrap_back   | ui seq RIGHT
+# expect: gal=grid/3 (a row down), then gal=grid/0 (a row up); UP on the first row does nothing
+g1_down        | ui seq DOWN
+g1_up          | ui seq UP
+g1_up_edge     | ui seq UP
+# expect: gal=grid/0 still   (MOVE, SELECT, CH1, CH2, AUTO, PRM, TRIGGER and long OK do nothing and reach nothing under it)
+g1_dead_keys   | ui seq MOVE SELECT CH1 CH2 AUTO PRM TRIGGER long:OK ; get ch1.enabled
+# expect: gal=grid/2   (four keys in one line: the paint shows where they ended)
+g1_burst       | ui seq RIGHT RIGHT RIGHT LEFT
+
+# ── 2. the full-screen view ──────────────────────────────────────────────────
+# expect: gal=full/2   (the shot fills the screen)
+g2_full        | ui seq OK ; wait 2
+# expect: gal=full/3, then gal=full/2
+g2_next        | ui seq RIGHT ; wait 2
+g2_prev        | ui seq LEFT ; wait 2
+# expect: gal=full/2 still (UP and DOWN do nothing there)
+g2_updown      | ui seq UP DOWN
+# expect: gal=grid/2   (OK goes back to the grid)
+g2_back        | ui seq OK ; wait 2
+# expect: gal=full/2, then gal=grid/2   (MENU in the full view goes back to the grid, not out)
+g2_full2       | ui seq OK ; wait 2
+g2_menu        | ui seq MENU ; wait 2
+
+# ── 3. delete: SAVE arms, SAVE again deletes, any other key disarms ──────────
+# expect: gal=grid/2/del ; the title bar says "SAVE again: delete <n>.bmp"
+g3_arm         | ui seq SAVE
+# expect: gal=grid/2   (an arrow only disarms: the selection has not moved) ; the list is as it was
+g3_disarm      | ui seq RIGHT ; screenshot list
+# expect: gal=grid/2 ; the list has one shot less ; the grid is repainted with the shots moved up
+g3_delete      | ui seq SAVE SAVE ; wait 2 ; screenshot list
+# expect: gal=full/0/del (a strip at the bottom of the shot), then gal=full/0 (OK disarms, the shot again)
+g3_full_arm    | ui seq LEFT*2 OK ; wait 2 ; ui seq SAVE
+g3_full_disarm | ui seq OK ; wait 2
+# expect: gal=grid/0
+g3_grid        | ui seq OK ; wait 2
+
+# ── 4. close, and what comes back ────────────────────────────────────────────
+# expect: overlay=none stack=scope gal=-   (MENU on the grid closes; one redraw_all; the scope runs again)
+g4_close       | ui seq MENU ; wait 2
+# expect: overlay=gallery, then overlay=none   (long SAVE closes too)
+g4_open        | ui seq long:SAVE ; wait 2
+g4_long_close  | ui seq long:SAVE ; wait 2
+# expect: screen=meter overlay=gallery stack=meter>gallery, then overlay=none stack=meter (the meter page repainted)
+g4_meter       | set sys.mode meter ; wait 3 ; ui seq long:SAVE ; wait 2
+g4_meter_close | ui seq MENU ; wait 2
+# expect: screen=home overlay=gallery stack=home>gallery, then overlay=none
+g4_home        | ui seq long:MENU ; wait 1 ; ui seq long:SAVE ; wait 2
+g4_home_close  | ui seq MENU ; wait 2
+# expect: overlay=gallery, then screen=scope overlay=none stack=scope   (a mode change from the shell closes it)
+g4_mode_open   | ui seq long:SAVE ; wait 2
+g4_mode        | set sys.mode scope ; wait 3
+# expect: stack=scope>osc_menu>gallery, then overlay=osc_menu (the page under it is back, repainted whole)
+g4_over_menu   | ui seq MENU long:SAVE ; wait 2
+g4_over_menu_x | ui seq MENU ; wait 2
+# expect: overlay=none stack=scope
+g4_menu_close  | ui seq MENU ; wait 1
+
+# ── 5. a capture while the gallery is open; the logo layer ───────────────────
+# expect: "screenshot: saved <n>.bmp" (the shot is the gallery's grid) ; the grid repaints with the new shot first
+g5_open        | ui seq long:SAVE ; wait 2
+g5_save        | screenshot save ; wait 2 ; screenshot list
+g5_close       | ui seq MENU ; wait 2
+# expect: "logo: ok shown" (or "no valid logo stored") ; the screen is back after ~1 s ; overlay=none
+g5_logo        | logo show 1000 ; wait 1
+# expect: overlay=none stack=scope gal=- lcdforeign=0   (nothing but the display task drew in the whole walk)
+g5_end         | wait 1
