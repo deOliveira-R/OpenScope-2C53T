@@ -108,6 +108,24 @@ int main(void)
         CHECK(bad == 0, "every range: codes/div x volts/count == nominal volts/div");
     }
 
+    /* One zero for trace, tag and measurements (scope_measure_zero_for):
+     * on every calibrated range and position, the 0 V code 100 + pos is
+     * drawn pos / codes-per-div divisions above the centre line, and a
+     * record sitting on it is drawn on the ground tag's row (same map). */
+    {
+        int bad = 0;
+        for (uint8_t r = 0; r < 10u; r++)
+            for (int pos = -100; pos <= 100; pos += 5) {
+                yt_vmap_t m;
+                const float c = scope_cal_codes_per_div(2, r);
+                yt_vmap_true(&m, TOP, BOT, GMID, 1, ZERO, c);
+                const int want = GMID - (int)lroundf((float)pos * 26.0f / c);
+                const int got = yt_vmap_raw(&m, ZERO + pos);
+                if (abs(got - want) > 1) bad++;
+            }
+        CHECK(bad == 0, "0 V at position p: p / codes-per-div divisions above centre, every range");
+    }
+
     printf("[2] the map formula\n");
     {
         int bad = 0;

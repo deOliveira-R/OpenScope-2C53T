@@ -3168,8 +3168,8 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
 
     scope_roll_fifo_linearize(&roll_snap);
     scope_params_t p1, p2;
-    const uint8_t z1 = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
-    const uint8_t z2 = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
+    const uint8_t z1 = (uint8_t)chan_zero_code(ss, 0u);   /* the one zero (chan_zero_code) */
+    const uint8_t z2 = (uint8_t)chan_zero_code(ss, 1u);
     const bool have1 = ss->ch1.enabled &&
         scope_roll_measure(&roll_snap, 0u, nvis, ss->roll_step,
                            scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, NULL);

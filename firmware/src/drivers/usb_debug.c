@@ -4668,6 +4668,51 @@ static void cmd_fpga_roll(const char *args)
     }
 }
 
+/* `fpga scope zero` — does each channel's record sit where its 0 V is
+ * expected? Trace, ground tag and measurements all use one zero, the
+ * page formula (scope_measure_zero_for: 100 + pos); the record sits there
+ * only if the offset DAC was written for this channel's (bank, range). Prints
+ * the expected code, the record's middle-500 mean and the difference in
+ * codes, divisions and volts, and the DAC write in force, flagged when it
+ * was for another bank or range (scope_vpos leaves the DAC alone where the
+ * page has no clean pair). Take it with the input open. */
+static void cmd_fpga_scope_zero(const char *args)
+{
+    (void)args;
+    const scope_state_t *ss = scope_state_get();
+    const volatile uint8_t *bufs[2] = { fpga_get_ch1_buf(), fpga_get_ch2_buf() };
+    const uint8_t bank_now = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
+    for (uint8_t ch = 1u; ch <= 2u; ch++) {
+        const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
+        const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position,
+                                                 (int)FPGA_ADC_OFFSET);
+        const volatile uint8_t *b = bufs[ch - 1u];
+        uint32_t sum = 0;
+        for (unsigned i = 262u; i < 762u; i++) sum += b ? b[i] : 0u;
+        const int mean_x10 = (int)((sum * 10u + 250u) / 500u);
+        const int d_x10 = mean_x10 - 10 * (int)z;
+        const float cpd = scope_cal_codes_per_div(ch, cs->vdiv_idx);
+        const float vpc = scope_cal_volts_per_count(ch, cs->vdiv_idx);
+        const int div_x100 = (cpd > 0.0f) ? (int)((float)d_x10 * 10.0f / cpd) : 0;
+        const int mv = (int)((float)d_x10 * 0.1f * vpc * 1000.0f);
+        usb_debug_printf("CH%u: en %u range %u pos %d zero %u, record mean %d.%d = %+d.%d cnt "
+                         "(%+d.%02d div, %+d mV)\r\n",
+                         (unsigned)ch, (unsigned)cs->enabled, (unsigned)cs->vdiv_idx,
+                         (int)cs->position, (unsigned)z, mean_x10 / 10, mean_x10 % 10,
+                         d_x10 / 10, abs(d_x10 % 10), div_x100 / 100, abs(div_x100 % 100), mv);
+        uint8_t bk = 0, rg = 0;
+        uint16_t dc = 0;
+        if (!scope_vpos_last(ch, &bk, &rg, &dc))
+            usb_debug_printf("     dac never written (page %s)\r\n",
+                             scope_vpos_active() ? "in use" : "not in use");
+        else
+            usb_debug_printf("     dac bank %u range %u code %u%s (now bank %u range %u)\r\n",
+                             (unsigned)bk, (unsigned)rg, (unsigned)dc,
+                             (bk != bank_now || rg != cs->vdiv_idx) ? "  STALE" : "",
+                             (unsigned)bank_now, (unsigned)cs->vdiv_idx);
+    }
+}
+
 /* `fpga scope graticule [auto|true|toggle]` — the M3 seam. Choose whether the
  * live trace is drawn at TRUE volts/div (one grid division == the volts/div the
  * status bar prints, on calibrated ranges) or AUTOFIT (scaled to fill the band,
@@ -10428,6 +10473,8 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n"),
     CMD_A("fpga scope freq", cmd_fpga_scope_freq, 0,
           "fpga scope freq [n]             Run the shipped frequency estimator n times, with diagnostics\r\n"),
+    CMD_A("fpga scope zero", cmd_fpga_scope_zero, 0,
+          "fpga scope zero                 Record mean vs each channel's 0 V, and the offset DAC in force\r\n"),
     CMD_A("fpga scope graticule", cmd_fpga_scope_graticule, 0,
           "fpga scope graticule [auto|true|toggle]  Trace at true volts/div vs autofit-to-band\r\n"),
     CMD_A("fpga scope softtrig", cmd_fpga_scope_softtrig, 0,
