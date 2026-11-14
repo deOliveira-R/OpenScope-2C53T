@@ -26,7 +26,6 @@
 #include "scope_selfcal.h"   /* sc_corr_pair */
 #include "scope_state.h"
 #include "scope_trigger.h"
-#include "dac_output.h"
 #include "fpga.h"
 
 /* Same default as fpga.c: CH2's reference is armed in every build except the
@@ -202,7 +201,7 @@ bool scope_vpos_last(uint8_t ch, uint8_t *bank, uint8_t *range, uint16_t *code)
 
 bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper)
 {
-    if (!scope_vpos_active() || dac_output_is_running()) return false;
+    if (!scope_vpos_active()) return false;
     const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
     const uint8_t range = chan(1u)->vdiv_idx;
     const int8_t (*sb)[CALPAGE_BANKS][CALPAGE_RANGES] =
@@ -213,7 +212,7 @@ bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper)
 
 bool scope_vpos_ch1_raw(uint16_t code)
 {
-    if (!scope_vpos_active() || dac_output_is_running() || code > 4095u) return false;
+    if (!scope_vpos_active() || code > 4095u) return false;
     scope_trigger_dac_raw(code);
     return true;
 }

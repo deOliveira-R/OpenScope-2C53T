@@ -3686,8 +3686,7 @@ static void cmd_fpga_interleave_cal(bool piecewise)
     }
     uint16_t base, upper, codes[5];
     if (!scope_vpos_ch1_endpoints(&base, &upper) || !il_cal_dac_points(base, upper, codes)) {
-        usb_send_str("refused: needs a usable calibration page (cal page) with a 1000+ code span "
-                     "and the generator off\r\n");
+        usb_send_str("refused: needs a usable calibration page (cal page) with a 1000+ code span\r\n");
         return;
     }
     static il_cal_point_t pt[5];
@@ -3718,10 +3717,10 @@ static void cmd_fpga_interleave_cal(bool piecewise)
     if (parked && !fpga_apply_trigger_level(ss->trigger.level))
         usb_debug_printf("  WARNING: trigger level not restored (reg 0x08); `fpga scope level %d`\r\n",
                          ss->trigger.level);
-    {   /* apply_ch is silent when it cannot write (generator started, no clean
-         * bank after a range change): say so rather than leave a sweep code. */
+    {   /* apply_ch is silent when it cannot write (no clean bank after a
+         * range change): say so rather than leave a sweep code. */
         uint16_t pos_code = 0;
-        if (scope_vpos_active() && !dac_output_is_running() &&
+        if (scope_vpos_active() &&
             (!scope_vpos_last(1u, NULL, NULL, &pos_code) || scope_trigger_dac_last() != pos_code))
             usb_debug_printf("  WARNING: CH1 offset DAC not restored (DAC %u, position code %u); "
                              "re-select the CH1 range or position\r\n",

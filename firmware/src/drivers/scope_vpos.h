@@ -67,13 +67,16 @@ int  scope_vpos_get(uint8_t ch);
 bool scope_vpos_last(uint8_t ch, uint8_t *bank, uint8_t *range, uint16_t *code);
 
 /* CH1 offset-DAC endpoints (pos -100 and +100) for the bank and range in
- * force, from the page. False when inactive, the generator owns DAC1, or no
- * clean pair exists. For the 250 MS/s self-calibration sweep (C2). */
+ * force, from the page. False when inactive or no clean pair exists. For
+ * the 250 MS/s self-calibration sweep (C2). A pure page read: the generator
+ * (DAC channel 2, PA5) has no say in it. */
 bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper);
 
 /* Write a raw CH1 offset-DAC code (self-calibration sweep); undo with
- * scope_vpos_apply_ch(1, range) or scope_vpos_apply(). Same guards as
- * scope_vpos_apply_ch. */
+ * scope_vpos_apply_ch(1, range) or scope_vpos_apply(). False when the page
+ * is inactive or the code is out of range. A running generator does not
+ * refuse it: it is on DAC channel 2, and the DAC owner (dac.c) keeps the
+ * two channels' registers apart. */
 bool scope_vpos_ch1_raw(uint16_t code);
 
 /* Acquisition dry-spell recovery (fpga.c): re-apply the calibrated codes, or
