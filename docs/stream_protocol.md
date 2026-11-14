@@ -117,7 +117,7 @@ Strings are `u8 length` + bytes (no NUL).
 The host resets its sequence-gap and generation checks at HELLO.
 
 **Feature mask (1.2).** A feature's bit is its `NAME_bit` in `firmware/features.mk`; a number is never reused
-or moved, so a mask means the same thing for every build (today: bit 0 stream, 1 fft, 2 usbdrive). A set bit
+or moved, so a mask means the same thing for every build (today: bit 0 stream, 1 fft, 2 usbdrive, 3 benchshell, 4 meterdebug). A set bit
 means the feature is in the image. A clear bit means it is not in this build, or that this firmware is older
 than the feature; the text shell's `features` command lists every feature the firmware knows, with on/off,
 and tells the two apart. `scripts/scope_stream.py` reads the names from `features.mk` and shows an unknown bit

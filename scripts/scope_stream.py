@@ -1623,7 +1623,7 @@ def selftest():
     hello = decode(T_HELLO, [g for g in got if g[0] == "frame" and g[1] == T_HELLO][0][4])
     if hello.get("proto_minor") != 2 or hello.get("features") != 0x80000005:
         fail("1.2 HELLO: minor %r features %r" % (hello.get("proto_minor"), hello.get("features")))
-    bits = {0: "stream", 1: "fft", 2: "usbdrive"}
+    bits = {0: "stream", 1: "fft", 2: "usbdrive", 3: "benchshell", 4: "meterdebug"}
     if feature_names(0x80000005, bits) != ["stream", "usbdrive", "bit31"]:
         fail("feature names: %s" % feature_names(0x80000005, bits))
     if hello_features_text(hello, bits) != "features=stream,usbdrive,bit31 (0x80000005)":
@@ -1631,7 +1631,8 @@ def selftest():
     if encode_payload(hello) != [g for g in got if g[0] == "frame" and g[1] == T_HELLO][0][4]:
         fail("1.2 HELLO does not re-encode to the same bytes")
     mk = feature_bits()
-    if mk and (mk.get(0) != "stream" or len(set(mk.values())) != len(mk)):
+    if mk and (mk.get(0) != "stream" or mk.get(3) != "benchshell" or mk.get(4) != "meterdebug"
+               or len(set(mk.values())) != len(mk)):
         fail("features.mk bits: %s" % mk)
     fx11 = os.path.join(fx, "v1_1")
     with open(os.path.join(fx11, "vectors.bin"), "rb") as f:

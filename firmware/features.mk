@@ -40,9 +40,16 @@
 #   4. core code includes that header and calls / places the rows with no #if;
 #   5. `make features-ab FEATURE=name`, and write the result on the block.
 #
+# A feature that is only shell commands (benchshell, meterdebug) is the same
+# recipe: the handlers in their own file, the header gives their prototypes
+# and the rows; what they need from the shell core they reach through
+# src/drivers/shell_internal.h. `make test-shell-profiles` checks the command
+# table of every profile against scripts/shell_table_baseline.txt.
+#
 # Tools:  make features          the manifest and what this invocation enables
 #         make features-report   per-feature flash/RAM of the image in build/
 #         make features-ab FEATURE=name [AB_TARGET=app-coldtrace-meter]
+#         make -s features-shell-table [PROFILE=...]   the shell table as compiled
 
 FEATURE_LIST :=
 
@@ -127,16 +134,65 @@ USBDRIVE_defs      :=
 USBDRIVE_shared    := usb_debug.o:cmd_usb$$|usb_share|usbmode
 USBDRIVE_bit       := 2
 
+# ── bench shell ───────────────────────────────────────────────────────
+# The reverse-engineering and bring-up commands of the debug shell (raw FPGA
+# frames, SPI3, GPIO, USART, memory and W25Q pokes, the stock-state shadow,
+# the acquisition experiment knobs, the pin log). Handlers:
+# src/drivers/shell_bench.c, rows: shell_bench.h. Off: `help` does not list
+# them and they answer "Unknown command"; everything a user, the host client
+# or the flash path needs is core (usb_debug.c) and stays. On by default so
+# that a plain `make` and the bench image are what they were; the profile
+# `full` leaves it out.
+# A/B 2026-11-14 (app-coldtrace-meter): 56,616 B flash, 1,296 B RAM
+# (shell_bench.o 40.6 KB; the rows and their help text in usb_debug.o 10.1 KB;
+# code in fpga.o, flash_fs.o, lcd.o and others that only these commands call
+# 6.7 KB).
+FEATURE_LIST += BENCHSHELL
+BENCHSHELL_desc      := Bench shell: raw FPGA SPI3 GPIO USART memory and flash commands
+BENCHSHELL_default   := 1
+BENCHSHELL_requires  :=
+BENCHSHELL_conflicts :=
+BENCHSHELL_srcs      := src/drivers/shell_bench.c
+BENCHSHELL_incs      :=
+BENCHSHELL_defs      :=
+BENCHSHELL_shared    :=
+BENCHSHELL_bit       := 3
+
+# ── meter diagnostics ─────────────────────────────────────────────────
+# The DMM link diagnostics of the shell (`meter trace/dump/frontend/stream/
+# mux-.../boot-sequence/pc11-timing/wave/...`). Handlers:
+# src/drivers/shell_meterdebug.c, rows: shell_meterdebug.h. The meter itself
+# does not need them (`meter state/func/relays/degf/auto` are core).
+# A/B 2026-11-14 (app-coldtrace-meter): 23,560 B flash, 560 B RAM
+# (shell_meterdebug.o 19.5 KB; rows and help text 2.3 KB; the waveform
+# sampler's diagnostics in meter_voltage_wave.o and fpga.o 2.0 KB, 512 B RAM).
+# Both off (profile full): 80,200 B flash, 1,856 B RAM less than bench.
+FEATURE_LIST += METERDEBUG
+METERDEBUG_desc      := Meter link diagnostics in the shell (trace and dump and stream)
+METERDEBUG_default   := 1
+METERDEBUG_requires  :=
+METERDEBUG_conflicts :=
+METERDEBUG_srcs      := src/drivers/shell_meterdebug.c
+METERDEBUG_incs      :=
+METERDEBUG_defs      :=
+METERDEBUG_shared    :=
+METERDEBUG_bit       := 4
+
 # ── profiles: what a named image contains ─────────────────────────────
 # PROFILE_<name>_with / _without change the defaults above.
 PROFILE_default_with    :=
 PROFILE_default_without :=
 # bench: the bench image, everything on.
-PROFILE_bench_with      := stream
+PROFILE_bench_with      := stream benchshell meterdebug
 PROFILE_bench_without   :=
+# full: everything a user sees, without the bench shell and the meter
+# diagnostics (target app-full: the bench image's hardware flags).
+PROFILE_full_with       := stream
+PROFILE_full_without    := benchshell meterdebug
 
 # Named targets and their profile (any target not listed: default).
 PROFILE_OF_app-coldtrace-meter := bench
+PROFILE_OF_app-full := full
 
 ######################################################################
 # Evaluation. Nothing below is per feature.

@@ -1,0 +1,188 @@
+# The debug shell command table before the bench shell and the meter diagnostics
+# became features (feature manifest F3): name, handler, flags, help text (- = alias
+# row), tab separated, sorted. Read by scripts/test_shell_profiles.py; the default
+# build flags (no FPGA_ALT_BITSTREAM rows).
+?	cmd_help	0x01	-
+batt	cmd_batt	0x00	batt                            Battery gauge: raw/resting mV, percent, external power\r\n
+bench restore	cmd_bench_restore	0x01	bench restore                   Put that saved pin posture back (hermetic tests)\r\n
+bench snapshot	cmd_bench_snapshot	0x01	bench snapshot                  Save frontend/FPGA pin modes+levels\r\n
+btn	cmd_btn	0x02	btn <name> [n|long]             Inject a button press (not power) into the UI; long = the long-press event\r\n
+buzzer test	cmd_buzzer_test	0x00	buzzer test [ms]                Force continuity buzzer briefly\r\n
+cal backup	cmd_cal_backup	0x01	cal backup                      Copy MCU factory-cal page to W25Q (safe)\r\n
+cal base	cmd_cal_base	0x00	cal base [clear]                Baseline-correction deltas held in RAM (long AUTO)\r\n
+cal page	cmd_cal_page	0x00	cal page [on|off|reload]        Stock cal page in use: table, bank, substitutions, DAC codes\r\ncal page calc <1|2> <b> <r> <p> One offset code from the page: stock's vs ours\r\n
+cal pos	cmd_cal_pos	0x02	cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n
+cal restore	cmd_cal_restore	0x02	cal restore [force] CONFIRM     Write W25Q backup back to MCU flash 0x08006000\r\n
+cal status	cmd_cal_status	0x01	cal status                      Factory-cal page + W25Q backup state\r\n
+cal user	cmd_cal_user	0x00	cal user [show|save|clear]      Save/clear OpenScope's own corrections (baseline + interleave) in W25Q\r\n
+can decode	cmd_can_decode	0x01	can decode                      Decode CAN in the record (CH1=CAN_H, CH2=CAN_L)\r\n
+can screen	cmd_can_screen	0x00	can screen [on|off]             CAN readout on the scope screen\r\n
+can stats	cmd_can_stats	0x00	can stats [n]                   CAN over n records: IDs, ACK/NAK, CRC\r\n
+describe	cmd_model_describe	0x02	describe <prop>                 Range/labels, default, unit, saved where, owner\r\n
+features	cmd_features	0x01	features                        Features of this build: name, on/off, HELLO bit\r\n
+flash diag	cmd_flash_diag	0x01	flash diag                      W25Q SR1/SR2/SR3 + WEL-latch check\r\n
+flash dump	cmd_flash_dump	0x02	flash dump <addr> <len>         Stream external flash bytes (max 4096)\r\n
+flash jedec	cmd_flash_jedec	0x01	flash jedec                     Read external W25Q128 JEDEC ID\r\n
+flash read	cmd_flash_read	0x02	flash read <addr> <len>         Read external flash bytes (max 256)\r\n
+flash wtest	cmd_flash_wtest	0x02	flash wtest <addr> CONFIRM      Non-destructive write-primitive self-test (blank 4KB sector)\r\n
+fpga acq	cmd_fpga_acq	0x00	fpga acq [mode]                 Trigger SPI3 acquisition\r\n
+fpga acqbr	cmd_fpga_acqbr	0x00	fpga acqbr [0-7|off]            SPI3 clock the acq task sets before each pair (EXP-46)\r\n
+fpga acqgate	cmd_fpga_acqgate	0x00	fpga acqgate [on|off]           Stock PRE-read data-ready gate (EXP-29) A/B toggle\r\n
+fpga autolive	cmd_fpga_autolive	0x00	fpga autolive [on|off]          AUTO: show every untriggered read (EXP-72)\r\n
+fpga autowait	cmd_fpga_autowait	0x00	fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n
+fpga busreacquire	cmd_fpga_bus_reacquire	0x01	fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n
+fpga busrelease	cmd_fpga_bus_release	0x01	fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n
+fpga cfgsettle	cmd_fpga_cfgsettle	0x00	fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n
+fpga cmd	cmd_fpga_cmd	0x02	fpga cmd <hi> <lo>              Send FPGA command bytes (HEX)\r\n  e.g.: fpga cmd 05 14 (sends 0x05 0x14)\r\n        fpga cmd 0x0509 (sends 0x05 0x09)\r\n
+fpga configbb	cmd_fpga_configbb	0x01	fpga configbb                   Run GPIO bit-bang SSPI config on demand (H7 step 1)\r\n
+fpga diag clear	cmd_fpga_diag_clear	0x01	fpga diag clear                 Clear FPGA bench counters/state\r\n
+fpga edgefilter	cmd_fpga_edgefilter	0x00	fpga edgefilter [on|off]        MCU trigger edge filter: keep Rising/Falling records (default on)\r\n
+fpga frame	cmd_fpga_frame	0x02	fpga frame <hi> <lo> [p1..p5 [ck]]  Build/send full 10-byte frame (HEX)\r\n  e.g.: fpga frame 00 0B 01 00 00 00 00\r\n
+fpga holdlog	cmd_fpga_holdlog	0x00	fpga holdlog [on|off]           Per-handover interval log (EXP-72); no arg = dump\r\n
+fpga holdread	cmd_fpga_holdread	0x00	fpga holdread                   Retired (EXP-54)\r\n
+fpga interleave	cmd_fpga_interleave	0x00	fpga interleave [on|off|corr g o|cal [piecewise]|tone]  Single-channel merge; B corr gain x1e4, offset x100; cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\nfpga interleave skew [measure|set <ppm>|off]  B timing skew (ppm of a period from 0.5); measure needs a 5-50 MHz tone\r\n
+fpga meter reinit	cmd_fpga_meter_reinit	0x00	fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n
+fpga pairgap	cmd_fpga_pairgap	0x00	fpga pairgap [ms]               Gap between the 04 and 05 reads (EXP-45)\r\n
+fpga pollgap	cmd_fpga_pollgap	0x00	fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n
+fpga postedge	cmd_fpga_postedge	0x00	fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n
+fpga rate	cmd_fpga_rate	0x00	fpga rate [hexidx]              reg-0x01 rate index the re-arm rewrites\r\n
+fpga rearm	cmd_fpga_rearm	0x00	fpga rearm [on|off]             Stock post-read re-arm (reg01) A/B toggle\r\n
+fpga rearmwait	cmd_fpga_rearmwait	0x00	fpga rearmwait [ms]             Settle after re-arm before next read (EXP-40)\r\n
+fpga reinit	cmd_fpga_reinit	0x04	fpga reinit [br][gap][close][f0|1|2][u<ms>][a-e<pin>][s2|sd[h|l]][tc<n>] Replay cfg\r\n    f=prelude frame: 0 split(stock) 1 combined 2 merge15+3B; u=pre-upload gap; k<br>=cmd-phase clk div; tc<n>=trailing clocks\r\n    pe=probe SYSTEM_EDIT_MODE after 0x15 (STATUS@/256); rl=send 0x3C RELOAD before prelude; reports 0x41 STATUS\r\n
+fpga roll	cmd_fpga_roll	0x00	fpga roll [off|0-8|code <hex>|code stock]  Roll mode (C11): step 0-8 = 50ms..20s/div, status\r\n
+fpga scope acqmode	cmd_fpga_scope_acqmode	0x01	fpga scope acqmode              Send stock-like 0x20/0x21 block\r\n
+fpga scope autoset	cmd_fpga_scope_autoset	0x01	fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n
+fpga scope basecal	cmd_fpga_scope_basecal	0x00	fpga scope basecal [banks]      Baseline correction, as long AUTO; input open (default banks 3)\r\n
+fpga scope beat	cmd_fpga_scope_beat	0x00	fpga scope beat [count] [ms]    Send stock-like cmd-3 heartbeat(s)\r\n
+fpga scope cal	cmd_fpga_scope_cal	0x01	fpga scope cal                  Dump the compiled vertical cal table (mV/count, V/div, tier)\r\n
+fpga scope center	cmd_fpga_scope_center	0x00	fpga scope center [ch2] [0-9]   Auto-center offset ref per range (CH1/DAC1 default); all if omitted\r\n
+fpga scope center50	cmd_fpga_scope_center50	0x01	fpga scope center50             50% centre, as long OK (positions, trigger column/level)\r\n
+fpga scope ch	cmd_fpga_scope_ch	0x02	fpga scope ch <1|2> [on|off]    Channel enable; CH2 off = mask 1 (250 MS/s at tb <= 3)\r\n
+fpga scope coupling	cmd_fpga_scope_coupling	0x00	fpga scope coupling             Coupling label vs PD12/PD13 relay pins (read-only)\r\n
+fpga scope cursor	cmd_fpga_scope_cursor	0x00	fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n
+fpga scope edge	cmd_fpga_scope_edge	0x00	fpga scope edge [rising|falling] Trigger edge (display soft trigger + MCU edge filter)\r\n
+fpga scope entry	cmd_fpga_scope_entry	0x02	fpga scope entry <8 bytes>      Reset + send 0x01,0B..11 params\r\n
+fpga scope freq	cmd_fpga_scope_freq	0x00	fpga scope freq [n]             Run the shipped frequency estimator n times, with diagnostics\r\n
+fpga scope graticule	cmd_fpga_scope_graticule	0x00	fpga scope graticule [auto|true|toggle]  Trace at true volts/div vs autofit-to-band\r\n
+fpga scope hpos	cmd_fpga_scope_hpos	0x00	fpga scope hpos [8..312]        Screen column of the trigger point (default 160)\r\n
+fpga scope level	cmd_fpga_scope_level	0x00	fpga scope level [-100..100]    Digital trigger level -> reg 0x08 code (EXP-41)\r\n
+fpga scope measure	cmd_fpga_scope_measure	0x00	fpga scope measure [reps]       Badge values raw (uV/permille/mHz) for bench validation\r\n
+fpga scope prm	cmd_fpga_scope_prm	0x00	fpga scope prm [ch1|ch2] [mask|all|default|none|toggle N|hide|show]  Measurement selection per channel (12)\r\n
+fpga scope probe	cmd_fpga_scope_probe	0x02	fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n
+fpga scope range	cmd_fpga_scope_range	0x02	fpga scope range <0-9> <1|2|both>  Coarse frontend range; channel is MANDATORY\r\n
+fpga scope reinit	cmd_fpga_scope_reinit	0x01	fpga scope reinit               Re-apply scope frontend + FPGA cfg\r\n
+fpga scope selfcal	cmd_fpga_scope_selfcal	0x00	fpga scope selfcal [cancel]     Autoset/baseline progress and result\r\n
+fpga scope single	cmd_fpga_scope_single	0x00	fpga scope single               SINGLE: arm the one-shot (OK after a capture does the same)\r\n
+fpga scope softtrig	cmd_fpga_scope_softtrig	0x00	fpga scope softtrig [on|off|toggle]      Lock trace to trigger crossing vs free-run\r\n
+fpga scope source	cmd_fpga_scope_source	0x00	fpga scope source [ch1|ch2]     Trigger source -> reg 0x06 (C3)\r\n
+fpga scope timebase	cmd_fpga_scope_timebase	0x00	fpga scope timebase [code]      Set timebase in BOTH display state and reg 0x01 (hex)\r\n
+fpga scope timing	cmd_fpga_scope_timing	0x02	fpga scope timing <5 bytes>     Send 0x20,0x21,0x26..0x28 params\r\n
+fpga scope trig	cmd_fpga_scope_trig	0x02	fpga scope trig <4 bytes>       Send 0x07/0x0A,0x16..0x19\r\n
+fpga scope trigger	cmd_fpga_scope_trigger	0x00	fpga scope trigger              Trigger settings, reg 0x06/0x08, status, record kind (C3)\r\n
+fpga scope trigmode	cmd_fpga_scope_trigmode	0x00	fpga scope trigmode [auto|normal|single]  Acq wait policy (EXP-43)\r\n
+fpga scope vdiv	cmd_fpga_scope_vdiv	0x00	fpga scope vdiv <1|2> <0-9>     Set volts/div range: display AND relays together\r\n
+fpga scope wake	cmd_fpga_scope_wake	0x01	fpga scope wake                 Meter wake preamble then scope cfg\r\n
+fpga scope zero	cmd_fpga_scope_zero	0x00	fpga scope zero                 Record mean vs each channel's 0 V, and the offset DAC in force\r\n
+fpga selftest	cmd_fpga_selftest	0x01	fpga selftest                   Precondition table: SPI3 clk, IDCODE anchor,\r\n                                USART2 state, every driven pin's mode+level\r\n
+fpga stock base2	cmd_fpga_stock_base2	0x01	fpga stock base2               Seed visible state 2 scope posture\r\n
+fpga stock bridge dynamic	cmd_fpga_stock_bridge_dynamic	0x00	fpga stock bridge dynamic [ch1|ch2|both]  Probe post-13/14 0x050x path\r\n
+fpga stock bridge fixed	cmd_fpga_stock_bridge_fixed	0x01	fpga stock bridge fixed        Probe post-13/14 fixed 0x0501 path\r\n
+fpga stock clear	cmd_fpga_stock_clear	0x01	fpga stock clear               Reset stock-state bench shadow\r\n
+fpga stock commit	cmd_fpga_stock_commit	0x01	fpga stock commit              Walk E1C 0->2->1->0x2B commit path\r\n
+fpga stock consume	cmd_fpga_stock_consume	0x01	fpga stock consume             Consume packed state-9 preset path\r\n
+fpga stock diag	cmd_fpga_stock_diag	0x01	fpga stock diag                Show stock-state bench shadow\r\n
+fpga stock next	cmd_fpga_stock_next	0x01	fpga stock next                Drive stock-like adjust-next family\r\n
+fpga stock preset	cmd_fpga_stock_preset	0x02	fpga stock preset <4|5 bytes>  Set F68/F69/F6A/F6B [355]\r\n
+fpga stock prev	cmd_fpga_stock_prev	0x01	fpga stock prev                Drive stock-like adjust-prev family\r\n
+fpga stock reenter	cmd_fpga_stock_reenter	0x01	fpga stock reenter             Re-enter scope path with staged shadow\r\n
+fpga stock select	cmd_fpga_stock_select	0x01	fpga stock select              Stage single detail selection\r\n
+fpga stock set	cmd_fpga_stock_set	0x02	fpga stock set <9 bytes>       Set F68/F69/F6A/F6B/E1A/E1B/E1C/E1D/355\r\n
+fpga stock state5	cmd_fpga_stock_state5	0x00	fpga stock state5 [E1B] [E1D]  Seed visible state 5 editor posture\r\n
+fpga stock state6	cmd_fpga_stock_state6	0x00	fpga stock state6 [E1B] [E1D]  Seed visible state 6 pre-entry posture\r\n
+fpga stock toggle	cmd_fpga_stock_toggle	0x01	fpga stock toggle              Toggle staged detail bitmap\r\n
+fpga unrotate	cmd_fpga_unrotate	0x00	fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n
+fpga usart	cmd_fpga_usart	0x00	fpga usart [on|off]             Bring USART2 up post-config; show CTRL1+RX\r\n
+fpga wire entry	cmd_fpga_wire_entry	0x00	fpga wire entry [ch1|ch2|both] Send candidate scope-entry wire-word bank\r\n
+fpga wire scope	cmd_fpga_wire_scope	0x00	fpga wire scope [ch1|ch2|both] Wire-word entry + runtime scope blocks\r\n
+fpga wire words	cmd_fpga_wire_words	0x02	fpga wire words <w...>         Send final 16-bit wire words directly\r\n
+fwapply	cmd_fwapply	0x01	fwapply                         Install the staged image over the app slot\r\n
+fwload	cmd_fwload	0x02	fwload <size> <crc32hex> [a|b]  Stage an image into W25Q cache slot a/b\r\n  then stream exactly <size> raw bytes (scripts/cdc_flash.py does both)\r\n
+fwstat	cmd_fwstat	0x01	fwstat                          Staging state / byte count / verdict\r\n
+fwswap	cmd_fwswap	0x02	fwswap a|b                      Install a cached image (no transfer needed)\r\n
+get	cmd_model_get	0x02	get <prop|glob> [...]           Property values: get ch1.vdiv, get ch1.*, get *\r\n
+gpio mode	cmd_gpio_mode	0x02	gpio mode <port><pin> <out|in>  Set pin direction (RMW of its CRL/CRH nibble)\r\n  e.g.: gpio mode A6 out   (out = push-pull 50MHz, in = floating)\r\n
+gpio read	cmd_gpio_read	0x02	gpio read <port><pin>           Read GPIO pin\r\n
+gpio scan	cmd_gpio_scan	0x01	gpio scan                       Scan FPGA-related pins\r\n
+gpio set	cmd_gpio_set	0x02	gpio set <port><pin> <0|1>      Drive GPIO pin (REFUSES if pin is an input)\r\n  e.g.: gpio set B11 1\r\n
+help	cmd_help	0x01	help                            Show this help\r\n
+keys	cmd_keys	0x00	keys                            Key model: mode, arrow stage, active channel, enables, long-press time\r\n
+lcd	cmd_lcd	0x00	lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n
+lcd readback	cmd_lcd_readback	0x00	lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n
+list	cmd_model_list	0x00	list [prefix|glob]              Properties: name, type, range, value, flags\r\n
+logo	cmd_logo	0x00	logo [info]                     Boot logo status (CRC-checked)\r\nlogo put <len> <crc>|blk <off> <n> <crc>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\nlogo pos|data <off> <hex>       Upload position / legacy 48-byte hex chunk\r\nlogo show [ms]|clear            Preview now / remove (built-in splash)\r\n
+mask	cmd_mask	0x00	mask [status]                   Waveform pass/fail: state, counts, last verdict\r\nmask teach [n] [ch1|ch2|both]   Teach from the next n good records (default 8)\r\nmask tol <v> [h]                Tolerance: v ADC counts, h samples 0..16 (default 8 2)\r\nmask clear|reset|run            Drop mask | zero counts | release a fail hold\r\nmask stop on|off                Hold the acquisition on a failed record\r\nmask dump                       Bounds per column (bench scripts)\r\n
+mem read	cmd_mem_read	0x02	mem read <addr> [count]         Read 32-bit words\r\n  e.g.: mem read 0x40021000 4\r\n
+mem write	cmd_mem_write	0x02	mem write <addr> <value>        Write 32-bit word\r\n
+meter adc-snapshot	cmd_meter_adc_snapshot	0x01	meter adc-snapshot              Show read-only DMM waveform sampler state\r\n
+meter auto	cmd_meter_auto_async	0x00	meter auto [start|status|cancel] Async DMM function auto-select\r\n
+meter autoscan	cmd_meter_autoscan	0x00	meter autoscan [settle_ms]      Probe DMM submodes and select best live mode\r\n
+meter beep	cmd_meter_beep	0x00	meter beep [on|off|src <c|d|e|off> [rise|fall|both] [pu|pd]|tick <ms>]  SoC-edge buzzer\r\n
+meter boot-sequence	cmd_meter_boot_sequence	0x00	meter boot-sequence [ms]        Replay stock DMM boot word order + trace\r\n
+meter degf	cmd_meter_degf	0x00	meter degf [on|off]             Temperature in degF (stock MOVE key in Temp)\r\n
+meter dump	cmd_meter_dump	0x00	meter dump [delay_ms]           Show parsed DMM/UI/raw frame state\r\n
+meter fast	cmd_meter_fast	0x00	meter fast [on|off]             One-word function switching (stock) vs PC11 restart\r\n
+meter frontend	cmd_meter_frontend	0x01	meter frontend                  Show DMM analog frontend GPIO state\r\n
+meter func	cmd_meter_func	0x02	meter func <0-11>               Change function (11 = Auto, word 0x14) (one word, no SoC restart) and time it\r\n
+meter hdr	cmd_meter_hdr	0x00	meter hdr [on|off]              Meter TX header AA 55 (default) vs 00 00 (EXP-25) + echo ladder\r\n
+meter keepalive	cmd_meter_keepalive	0x00	meter keepalive [on|off]        4 Hz unobeyed poll traffic (stock sends none)\r\n
+meter mux-arms	cmd_meter_mux_arms	0x02	meter mux-arms <ce> <ab> [ms]   Apply stock mux arms, poll, trace\r\n
+meter mux-stream	cmd_meter_mux_stream	0x00	meter mux-stream [count] [ms]   Stream DMM frames plus frontend GPIOs\r\n
+meter overlay	cmd_meter_overlay	0x00	meter overlay                   Toggle the meter debug overlay (was short SAVE)\r\n
+meter pc11-timing	cmd_meter_pc11_timing	0x00	meter pc11-timing [lo hi]       Probe DMM PC11 gate timing + trace\r\n
+meter probe-tail	cmd_meter_probe_tail	0x00	meter probe-tail [auto|07|0a]   Override stock PC7-gated DMM tail for diagnostics\r\n
+meter relays	cmd_meter_relays	0x00	meter relays [on|off]           Meter entry moves the scope's range relays (default off)\r\n
+meter state	cmd_meter_state	0x01	meter state                     Decoded frame, range, status text, link, beep, cal guard\r\n
+meter stream	cmd_meter_stream	0x00	meter stream [count] [delay_ms] Print compact DMM frame stream\r\n
+meter trace	cmd_meter_trace	0x01	meter trace                     One machine-readable DMM producer record\r\n
+meter wave	cmd_meter_wave_args	0x00	meter wave                      Show DMM voltage waveform sample stats\r\nmeter wave reset                Reset DMM waveform diagnostics\r\nmeter wave sampler [on|off]     Enable/disable experimental SPI3 sampler\r\nmeter wave path [direct|preacq] Get/set DMM waveform SPI path\r\nmeter wave selector [auto|N]    DMM wave selector byte\r\nmeter wave preacq [auto|N]      DMM wave pre-acq byte\r\n
+mode	cmd_mode	0x00	mode meter [submode] [layout]   Switch UI + FPGA to DMM frontend ('mode 1' = same)\r\nmode scope                      Switch UI + FPGA to scope frontend ('mode 0' = same)\r\nmode startup [scope|meter]      Get/set Settings > Startup on Boot\r\n
+persist	cmd_persist	0x00	persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n
+pinlog	cmd_pinlog	0x00	pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n
+reboot bootloader	cmd_reboot_bootloader	0x01	reboot bootloader               Reboot into USB HID updater\r\n
+screen dump	cmd_screen_dump	0x00	screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n
+screen dumpbin	cmd_screen_dumpbin	0x00	screen dumpbin [x y w h]        Binary indexed4 LCD shadow dump\r\n
+screen shadow	cmd_screen_shadow	0x00	screen shadow page [y]          Clear full-screen shadow capture\r\n
+screenshot	cmd_screenshot	0x00	screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\nscreenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n
+set	cmd_model_set	0x02	set <prop> <value> | set p=v .. Set through the input task (label, number, step +=N/-=N)\r\n
+settings	cmd_settings	0x01	settings                        Persistence status: bound, load result, writes, failures\r\n
+siggen	cmd_siggen	0x00	siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [boot on|off] [dump]\r\n  Signal generator (DAC2/PA5): wave 0..12, freq 0..50000 (0 = off),\r\n  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state.\r\n  boot on|off = restore the output at power-on (default off)\r\n
+spi3 acqread	cmd_spi3_acqread	0x05	spi3 acqread                    Read CH1/CH2 via real 0x04/0x05 protocol\r\n
+spi3 acqtest	cmd_spi3_acqtest	0x05	spi3 acqtest                    Decomposer Phase 20 validation test\r\n
+spi3 armtest	cmd_spi3_armtest	0x04	spi3 armtest [pb11|pc6]         Pulse FPGA run/re-arm pin, re-cfg, acqread\r\n
+spi3 edgecap	cmd_spi3_edgecap	0x04	spi3 edgecap [reps]             EXP-37: AF vs bit-bang 0x15 frames for LA edge-diff\r\n
+spi3 frame	cmd_spi3_frame	0x01	spi3 frame                      Coherent CH1+CH2 snapshot + gen + render trig offset\r\n
+spi3 gowin	cmd_spi3_gowin	0x05	spi3 gowin                      Read+decode Gowin ID/USERCODE/STATUS regs\r\n
+spi3 h2txdiag	cmd_spi3_h2txdiag	0x05	spi3 h2txdiag                   Replay H2 TX + sample MISO; no ACK/apply proof\r\n
+spi3 h2verify	cmd_spi3_h2txdiag	0x05	-
+spi3 opread	cmd_spi3_opread	0x00	spi3 opread <op> [len [dump]]   One read window under any opcode + stats\r\n
+spi3 opsweep	cmd_spi3_opsweep	0x00	spi3 opsweep [a b [len]]        Sweep read opcodes (BSRAM_1/2 hunt, Step 0b)\r\n
+spi3 probe	cmd_spi3_probe	0x05	spi3 probe                      Bit-bang MISO probe; pokes SPI3 registers directly\r\n
+spi3 read	cmd_spi3_read	0x00	spi3 read [len]                 Raw SPI3 read + hex dump\r\n
+spi3 scopetest	cmd_spi3_scopetest	0x04	spi3 scopetest [bank]           Full scope seq: USART cfg->PC0->0x04/05 read\r\n
+spi3 seq	cmd_spi3_seq	0x04	spi3 seq <b..> | <b..>          xfer w/ mid-sequence CS pulse at '|'\r\n
+spi3 stock-readback	cmd_spi3_stock_readback	0x05	spi3 stock-readback             Stock case-8 SPI3 readback; not DMM proof\r\n
+spi3 xfer	cmd_spi3_xfer	0x04	spi3 xfer <hex...>              Send arbitrary MOSI bytes, dump MISO\r\n
+status	cmd_status	0x01	status                          FPGA & system status\r\n
+stream	cmd_stream	0x00	stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n
+trig	cmd_scope_trig	0x02	trig raw <0-4095>               Write DAC1 (PA4) directly + sw trigger\r\ntrig <range> <level>            Scope trigger DAC: range 0-9, level -100..100\r\n
+trig2	cmd_scope_trig2	0x02	trig2 raw <0-4095>              Write CH2 ref: TMR13 CH1 PWM-DAC (PA6)\r\ntrig2 <range> <level>           CH2 vertical-offset ref via the CH1 cal formula\r\n
+ui dump	cmd_ui_dump	0x01	ui dump                         Show current UI mode/redraw state\r\n
+ui long	cmd_ui_long	0x02	ui long <KEY>                   The long-press event of a key that has one\r\n
+ui press	cmd_ui_press	0x02	ui press <KEY> [n]              Press a key n times (not POWER), wait until handled\r\n
+ui screen	cmd_ui_screen	0x01	ui screen                       Where the UI is: one key=value line for scripts\r\n
+ui seq	cmd_ui_seq	0x02	ui seq <tok> ...                tok = KEY | KEY*n | long:KEY | wait:ms (all parsed first)\r\n
+uptime	cmd_uptime	0x01	uptime                          Show uptime\r\n
+usart raw	cmd_usart_raw	0x02	usart raw <10 hex bytes>       Send raw 10-byte USART frame\r\n  e.g.: usart raw 00 00 00 0B 01 00 00 00 00 0B\r\n
+usart tx	cmd_usart_tx	0x02	usart tx <cmd_hi> <cmd_lo>      Send FPGA command (queued, or direct if no dvom_TX)\r\n
+usb	cmd_usb	0x00	usb [status]                    USB device mode, switch result, CDC/MSC counters\r\nusb share [on|off]              Re-enumerate as CDC + read-only gallery drive / CDC only\r\nusb trace                       Last attach: resets/SETUPs, then the SCSI commands\r\n
+version	cmd_version	0x01	version                         Firmware info\r\n

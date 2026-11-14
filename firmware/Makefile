@@ -484,6 +484,18 @@ features-ab:
 		> $(BUILD_DIR)/ab_off.log 2>&1 || { tail -20 $(BUILD_DIR)/ab_off.log; echo "features-ab: the build WITHOUT $(_ab_feature) failed ($(BUILD_DIR)/ab_off.log)"; exit 1; }
 	@python3 -I ../scripts/features_report.py --ab $(BUILD_DIR)/ab_on $(BUILD_DIR)/ab_off --feature $(_ab_feature) --size-tool $(SZ)
 
+# The shell's command table as THIS invocation's feature set compiles it:
+# usb_debug.c through the preprocessor, so the row macros of the features
+# (STREAM_SHELL_ROWS, BENCHSHELL_SHELL_ROWS, ...) are expanded or empty.
+#   make -s features-shell-table PROFILE=full
+# scripts/test_shell_profiles.py reads it per profile (make test-shell-profiles).
+SHELL_TABLE_SRC ?= src/drivers/usb_debug.c
+.PHONY: features-shell-table test-shell-profiles
+features-shell-table:
+	@$(CC) -E -P $(CFLAGS) $(SHELL_TABLE_SRC)
+test-shell-profiles:
+	python3 -I ../scripts/test_shell_profiles.py --make "$(MAKE)"
+
 # Host test of the feature tools: the report's map reader against a synthetic
 # map (sums, the unattributed line, a mismatch is refused), and the manifest's
 # own rules (profile, WITH/WITHOUT, the old spellings, unknown names, both
@@ -1764,6 +1776,12 @@ app-coldtrace: clean all
 # no function change is ever sent. The daily bench image on unit #2.
 app-coldtrace-meter: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
 app-coldtrace-meter: clean all
+
+# app-full: the user image. The same hardware flags as app-coldtrace-meter, the
+# profile `full` (features.mk): every user-facing feature, without the bench
+# shell and the meter diagnostics.
+app-full: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
+app-full: clean all
 
 guest-caldump: CFLAGS += -DGUEST_BUILD -DCAL_DUMP_MODE=1
 guest-caldump: LDSCRIPT = ld/at32f403a_guest.ld
