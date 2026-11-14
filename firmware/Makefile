@@ -213,6 +213,12 @@ C_SOURCES += src/model/ui_shell.c
 # accepted: STREAM_BENCH=0, USB_MSC=0, FEATURES= (see features.mk).
 include features.mk
 C_SOURCES += $(FEATURE_SRCS)
+# The feature table of this build (src/util/features.h: `version`, `features`,
+# the stream HELLO mask). features.c alone gets the manifest as one X-list:
+# every known feature, on or off.
+C_SOURCES += src/util/features.c
+FEATURE_XLIST = $(foreach f,$(FEATURE_LIST),X($($(f)_name),$(strip $($(f)_bit)),$(FEATURE_$(f)),"$(strip $($(f)_desc))"))
+$(BUILD_DIR)/features.o: CFLAGS += '-DFEATURE_XLIST=$(FEATURE_XLIST)'
 # ── end features block ──
 
 # AT32 CMSIS + clock config

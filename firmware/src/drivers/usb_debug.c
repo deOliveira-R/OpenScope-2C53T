@@ -102,6 +102,7 @@
 #include <stdlib.h>
 #include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
 #include "ui_shell.h"      /* ui press / long / seq / screen, btn, keys (ARCH-1 M2 rows) */
+#include "../util/features.h"   /* version, features: what this build contains */
 #if FEATURE_STREAM
 #include "stream.h"        /* binary stream over this channel (src/stream/) */
 #endif
@@ -941,6 +942,26 @@ static void cmd_version(void)
         "SRAM: 224KB (EOPB0=0xFE)\r\n",
         system_core_clock / 1000000
     );
+    /* What this build contains (firmware/features.mk); `features` lists the
+     * ones that are off too. */
+    usb_send_str("Features:");
+    for (uint8_t i = 0; i < features_count(); i++) {
+        const feature_info_t *f = features_at(i);
+        if (f->on) usb_debug_printf(" %s", f->name);
+    }
+    usb_debug_printf(" (mask 0x%08lx)\r\n", (unsigned long)features_mask());
+}
+
+/* features: every feature the manifest knows, one per line:
+ *   <name> on|off bit <n>  <description>
+ * so a script can tell "off in this build" from "never heard of it". */
+static void cmd_features(void)
+{
+    for (uint8_t i = 0; i < features_count(); i++) {
+        const feature_info_t *f = features_at(i);
+        usb_debug_printf("%-10s %-3s bit %-2u %s\r\n", f->name, f->on ? "on" : "off", (unsigned)f->bit, f->desc);
+    }
+    usb_debug_printf("mask 0x%08lx\r\n", (unsigned long)features_mask());
 }
 
 static void cmd_status(void)
@@ -10448,6 +10469,8 @@ static const shell_cmd_t shell_cmds[] = {
           NULL /* alias */),
     CMD_V("version", cmd_version, SC_EXACT,
           "version                         Firmware info\r\n"),
+    CMD_V("features", cmd_features, SC_EXACT,
+          "features                        Features of this build: name, on/off, HELLO bit\r\n"),
     CMD_V("status", cmd_status, SC_EXACT,
           "status                          FPGA & system status\r\n"),
     CMD_A("fwload", cmd_fwload, SC_NEEDARGS,
