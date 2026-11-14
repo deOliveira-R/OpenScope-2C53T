@@ -119,6 +119,12 @@ typedef struct {
 
 static QueueHandle_t meter_rx_queue = NULL;  /* Complete immutable 12-byte data frames */
 
+/* Stack depths in words. Measured on unit #2 with `tasks` (2026-11-14) after
+ * a key walk over every screen: dvom_RX had 9 words left of 128 and dvom_TX
+ * 13 of 64 (the frame decode and the transition code run on them). Doubled;
+ * 192 words of heap. */
+#define FPGA_DVOM_TX_STACK 128
+#define FPGA_DVOM_RX_STACK 256
 static TaskHandle_t      acq_task_handle = NULL;
 static TaskHandle_t      tx_task_handle  = NULL;
 static TaskHandle_t      rx_task_handle  = NULL;
@@ -7030,8 +7036,8 @@ QueueHandle_t fpga_create_tasks(void)
      * quiet, and with it on only the meter's own words go out. Without them
      * PC11 high produces an audible relay click and a frozen DMM screen:
      * nothing polls, nothing decodes. */
-    xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   64,  NULL, 2, &tx_task_handle);
-    xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   128, NULL, 3, &rx_task_handle);
+    xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
+    xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
     /* 192, not 64: function changes (fpga_set_meter_mode) now run here. */
     xTaskCreate(fpga_meter_poll_task,  "meter_poll", 192, NULL, 2, &meter_poll_handle);
 #elif FPGA_USART_SILENT_SCOPE
@@ -7042,8 +7048,8 @@ QueueHandle_t fpga_create_tasks(void)
     (void)tx_task_handle; (void)rx_task_handle; (void)acq_task_handle;
 #else
     /* Create tasks (stack sizes and priorities match stock firmware) */
-    xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   64,  NULL, 2, &tx_task_handle);
-    xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   128, NULL, 3, &rx_task_handle);
+    xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
+    xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
     xTaskCreate(fpga_acquisition_task, "fpga",      256, NULL, 3, &acq_task_handle);
     xTaskCreate(fpga_meter_poll_task,  "meter_poll", 192, NULL, 2, &meter_poll_handle);
     xTaskCreate(fpga_meter_adc_sampler_task, "mtr_wave", 64, NULL, 2, NULL);
