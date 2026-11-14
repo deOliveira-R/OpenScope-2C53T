@@ -107,6 +107,10 @@ bool          screen_init(screen_id_t base);               /* stack = {base}; ca
 
 /* Input task. */
 uint8_t       screen_route_key(button_id_t raw);   /* raw may carry BTN_LONG_FLAG; returns a scr_res_t */
+/* The screen whose key() took the key last routed (it may have closed
+ * itself, or switched the base, under that key); SCR_COUNT when the lock or
+ * a global took it, or nobody. For the after_key hook. */
+screen_id_t   screen_last_handler(void);
 void          screen_switch(screen_id_t base);     /* the sys.mode setter calls this; closes top-down */
 bool          screen_push(screen_id_t layer);      /* false: not registered, a base, already open, or full */
 void          screen_pop(void);                    /* the top layer; the base never pops */

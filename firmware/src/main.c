@@ -57,6 +57,7 @@ extern void system_clock_config(void);
 #include "scope_mask.h"
 #include "can_scope.h"
 #include "osc_menu_model.h"
+#include "osc_menu_screen.h"
 #include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
@@ -492,6 +493,36 @@ static bool native_paint_update(const screen_t *s, uint32_t frame)
     return true;
 }
 
+/* ── Layers (ARCH-1 B5) ──────────────────────────────────────────────
+ * A layer over the base that is a real screen (the Oscilloscope Settings
+ * page) paints itself the same way: its draw() where this task called the
+ * page's draw function. Which layer is up is read from the state that
+ * decides it (osc_page_up), as the base is from current_mode. An UPDATE is
+ * gated on the layer's epoch, and the epoch is looked at every frame while
+ * the layer is up: a display command is only a wake-up, so a `set` from the
+ * shell, or a command the queue dropped, is still painted within a frame,
+ * and an idle layer costs no LCD write. The epoch is taken before the paint:
+ * a change made while it runs is seen on the next frame. */
+static redraw_gate_t   layer_gate = { 0, 0, 0, false, false };
+static const screen_t *layer_painted;        /* the layer the gate is about */
+
+static void layer_paint(const screen_t *s, scr_paint_t how, uint32_t frame)
+{
+    const uint32_t e = s->epoch ? s->epoch() : 0u;
+    s->draw(how, frame);
+    layer_painted = s;
+    redraw_gate_mark(&layer_gate, e, frame, REDRAW_FULL);
+}
+
+/* false: gated (nothing the layer shows changed since its last paint). */
+static bool layer_paint_update(const screen_t *s, uint32_t frame)
+{
+    if (layer_painted == s && s->epoch && layer_gate.primed && s->epoch() == layer_gate.drawn_epoch)
+        return false;
+    layer_paint(s, SCR_PAINT_UPDATE, frame);
+    return true;
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
 #if FEATURE_FFT
@@ -692,8 +723,7 @@ static void vDisplayTask(void *pvParameters)
                      * Also what repaints the page after the gallery or an
                      * LCD-health reinit: the LCD was cleared under it, so
                      * the page repaints its background too. */
-                    osc_menu_invalidate();
-                    osc_menu_draw();
+                    layer_paint(&osc_menu_screen, SCR_PAINT_FULL, frame);
                     g_screen_painted = true;
                     break;
                 }
@@ -754,10 +784,10 @@ static void vDisplayTask(void *pvParameters)
                 break;
             }
             case DCMD_DRAW_OSC_MENU:
-                if (osc_page_up()) {
-                    osc_menu_draw();
+                /* The page in place, after a key on it or a set of one of
+                 * its properties from the shell; gated on its epoch. */
+                if (osc_page_up() && layer_paint_update(&osc_menu_screen, frame))
                     g_screen_painted = true;
-                }
                 break;
 #if FEATURE_FFT
             case DCMD_DRAW_FFT:
@@ -812,6 +842,13 @@ static void vDisplayTask(void *pvParameters)
         /* The info bar shows under the Oscilloscope Settings page too, so a
          * channel or trigger change made on the page shows in it at once. */
         const bool page_up = osc_page_up();
+        if (!page_up) {
+            layer_painted = NULL;                 /* the next page is painted, whatever its epoch */
+        } else if (layer_paint_update(&osc_menu_screen, frame)) {
+            /* What the page shows changed with no command behind it (a set
+             * from the shell, a dropped command): in place. */
+            g_screen_painted = true;
+        }
         {
             /* RUN/STOP/ARM tab and trigger dot: repaint the bar when what
              * they show changes, not on the next 1 s tick (the slots that
@@ -987,8 +1024,8 @@ static void vDisplayTask(void *pvParameters)
             if (ui_popup_overlay_service(g_screen_painted) == 2) {
                 const screen_t *const nb_popup = native_base();   /* one look, as above */
                 if (page_up) {
-                    osc_menu_invalidate();   /* the box covered part of the pane */
-                    osc_menu_draw();
+                    /* the box covered part of the pane */
+                    layer_paint(&osc_menu_screen, SCR_PAINT_RESTORE, frame);
                 } else if (nb_popup != NULL) {
                     /* The meter's Big and Limits views repaint in place
                      * here, without a clear (ui/meter_ui.c). */

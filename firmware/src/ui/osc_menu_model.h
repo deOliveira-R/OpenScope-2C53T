@@ -11,9 +11,10 @@
  * This file is the state machine only: no LCD, no FPGA, no FreeRTOS, so
  * tests/test_osc_menu.c runs the code the input task runs (make test-osc-menu).
  * The one side effect it has is the Measure pane's selection, which is itself
- * pure (meas_select.c). Everything else the page changes is applied by
- * osc_menu_ui.c, from the action osc_menu_step() returns, through the existing
- * scope code (fpga_apply_*, trig_menu_change, persist_*, fft_*).
+ * pure (meas_select.c). Everything else the page changes is one property
+ * set, made by osc_menu_screen.c from the action osc_menu_step() returns
+ * (its table binds each pane and row to a property; the setters hold the
+ * rules).
  *
  * KEYS (study 1.4; stock where seen, ours where stock is silent)
  *   rail focus:   UP/DOWN   previous/next row, wrapping (all 8 rows are
@@ -55,8 +56,10 @@ typedef enum { OSC_KEY_UP, OSC_KEY_DOWN, OSC_KEY_LEFT, OSC_KEY_RIGHT, OSC_KEY_OK
 typedef enum { OSC_RES_NONE, OSC_RES_REDRAW, OSC_RES_CLOSE } osc_result_t;
 void         osc_menu_open(osc_row_t row);   /* opens the page with that row selected */
 bool         osc_menu_is_open(void);
-osc_result_t osc_menu_key(osc_key_t k);      /* model step + apply (osc_menu_ui.c) */
-void         osc_menu_draw(void);            /* full draw (osc_menu_ui.c), DCMD_DRAW_OSC_MENU */
+/* A key of the page: osc_menu_step() below, then the property set it asks
+ * for (osc_menu_screen.c: the page is a screen of the router, table-bound to
+ * the scope's properties). The brief's osc_menu_key() was that pair. */
+void         osc_menu_draw(void);            /* the page's paint (osc_menu_ui.c), display task */
 void         osc_menu_close(void);
 /* Not in the brief, additive: the screen was cleared behind the page (e.g.
  * DCMD_REDRAW_ALL's lcd_clear), so the next osc_menu_draw() repaints all of
@@ -111,7 +114,7 @@ typedef struct {
 
 const osc_menu_state_t *osc_menu_state(void);
 
-/* What a key asks the UI layer to apply (model -> osc_menu_ui.c). */
+/* What a key asks the screen to apply (model -> osc_menu_screen.c). */
 typedef enum {
     OSC_ACT_NONE = 0,
     OSC_ACT_ENTER,       /* focus moved into the pane: put item on the current value */

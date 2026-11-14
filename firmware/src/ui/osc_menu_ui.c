@@ -1,30 +1,18 @@
 /*
- * OpenScope 2C53T - Oscilloscope Settings page: apply and draw (UI round 1, R1-A)
+ * OpenScope 2C53T - Oscilloscope Settings page: the paint (UI round 1, R1-A)
  *
- * The model is osc_menu_model.c (pure, host-tested). This file is the other
- * half of the fixed interface: osc_menu_key() runs a key through the model and
- * applies what it asks through the scope code that already exists, and
- * osc_menu_draw() paints the page with the menu_frame widget.
- *
- * WHAT IS APPLIED, AND HOW (nothing reimplemented: the glue the keys and the
- * Settings list use is shared, src/tasks/scope_apply.c, since the merge):
- *   Display   the view.mode property (model: the view, the FFT pool and
- *             Roll in one setter, the old view kept if a step is refused)
- *   Cursors   ss->cursor.mode / .active (scope_state.c's per-mode rule)
- *   Measure   meas_select.c (in the model)
- *   CH1/CH2   fpga_apply_channel_enables() (reverted when both would be off),
- *             probe, fpga_apply_coupling() (label changes only if the relay
- *             did). No FFT row: the spectrum views are Display items and
- *             analyse the active channel (dsp/fft_source.h)
- *   Trigger   trig_menu_change() + fpga_apply_trigger_source() / SINGLE re-arm
- *   Persist   persist_init/deinit/set_mode (the pool is shared with the FFT)
- *   Math      math_enabled / math_op
+ * The model is osc_menu_model.c (pure, host-tested) and the page is a screen
+ * of the router (osc_menu_screen.c): its table binds every pane and row to a
+ * property, a key is one property set there, and this file is the paint
+ * only. It runs on the display task and reads: the model's cursor, the bound
+ * properties (osc_menu_bind_*), the measurement selection and the note.
  *
  * DRAWN AREA: y 16..223 (the status bar above and the info bar below stay
  * theirs), x 0..319: rail 96 px with 8 rows of 26 px, a 6 px notch column,
  * the pane x 102..319.
  */
 #include "osc_menu_model.h"
+#include "osc_menu_screen.h"
 #include "menu_frame.h"
 #include "meas_select.h"
 #include "measure_strip.h"   /* MSTRIP_MAX_PER_CH */
@@ -32,14 +20,7 @@
 #include "lcd.h"
 #include "font.h"
 #include "theme.h"
-#include "scope_state.h"
 #include "scope_measure.h"
-#include "trig_menu.h"
-#include "persistence.h"
-#include "math_channel.h"
-#include "fpga.h"
-#include "scope_apply.h"
-#include "model.h"
 #include <stdio.h>
 
 #define PAGE_Y        16u
@@ -56,23 +37,12 @@ static const menu_frame_t k_frame = {
     .label = rail_label, .icon = NULL,   /* 12x12 icons: R1-B's icons.c, at the merge */
 };
 
-/* A one-line result of the last key ("Keep one CH on"); "" = show the hint.
- * g_note_opens: the osc_menu_state()->opens it was written under. A note
- * from an earlier visit (or from before a deep-link jump) is not shown: the
- * input task writes both, the display task only compares. */
-static char    g_note[28];
-static uint8_t g_note_opens;
-
 /* ═══════════════════════════════════════════════════════════════════
- * Live values
+ * Live values: the properties the page is bound to (osc_menu_screen.h)
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* The item of the view in force: view.mode, through the model. */
-static uint8_t display_current(void)
-{
-    return osc_menu_disp_item(prop_get(P(VIEW_MODE)));
-}
-
+/* A Display item this build cannot show is drawn disabled (picking it is
+ * refused by the view.mode setter: "Not in this build"). */
 static bool display_available(uint8_t item)
 {
 #if FEATURE_FFT
@@ -81,178 +51,6 @@ static bool display_available(uint8_t item)
 #else
     return item == OSC_DISP_YT || item == OSC_DISP_ROLL;
 #endif
-}
-
-static uint8_t cursor_current(void)
-{
-    switch (scope_state_get()->cursor.mode) {
-    case CURSOR_VERTICAL:   return OSC_CUR_TIME;    /* X1/X2: vertical lines, time */
-    case CURSOR_HORIZONTAL: return OSC_CUR_VOLT;    /* Y1/Y2: horizontal lines, volts */
-    case CURSOR_BOTH:       return OSC_CUR_BOTH;
-    default:                return OSC_CUR_OFF;
-    }
-}
-
-static const persist_mode_t k_pers_mode[OSC_PERS_COUNT] = {
-    PERSIST_OFF, PERSIST_LOW, PERSIST_MEDIUM, PERSIST_HIGH, PERSIST_INFINITE,
-};
-
-static uint8_t persist_current(void)
-{
-    if (!persist_enabled) return OSC_PERS_OFF;
-    const persist_mode_t m = persist_get_mode();
-    for (uint8_t i = 1; i < OSC_PERS_COUNT; i++)
-        if (k_pers_mode[i] == m) return i;
-    return OSC_PERS_OFF;
-}
-
-static uint8_t math_current(void)
-{
-    return math_enabled ? osc_menu_math_item(math_op) : (uint8_t)OSC_MATH_OFF;
-}
-
-static uint8_t radio_current(osc_row_t row)
-{
-    switch (row) {
-    case OSC_ROW_DISPLAY: return display_current();
-    case OSC_ROW_CURSOR:  return cursor_current();
-    case OSC_ROW_PERSIST: return persist_current();
-    case OSC_ROW_MATH:    return math_current();
-    default:              return 0;
-    }
-}
-
-static channel_state_t *chan(uint8_t ch)
-{
-    scope_state_t *ss = scope_state_get();
-    return ch ? &ss->ch2 : &ss->ch1;
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Apply
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* The view, the FFT pool and Roll are one property, view.mode (this is the
- * executor: the key, the shell's `set view.mode` and a host are one path).
- * Its setter leaves the old view when a step is refused and says why. */
-static void display_select(uint8_t item)
-{
-    if (!display_available(item)) {
-        snprintf(g_note, sizeof g_note, "Not in this build");
-        return;
-    }
-    const int8_t vm = osc_menu_disp_view_mode(item);
-    if (vm < 0) return;
-    prop_note_t n;
-    const prop_status_t st = prop_set_local(P(VIEW_MODE), vm, ORIGIN_KEY, &n);
-    if (st != PS_OK && st != PS_CLAMPED)
-        snprintf(g_note, sizeof g_note, "%s", n.text[0] ? n.text : "view NOT SET");
-}
-
-static void cursor_select(uint8_t item)
-{
-    static const cursor_mode_t k_mode[OSC_CUR_COUNT] = {
-        CURSOR_OFF, CURSOR_VERTICAL, CURSOR_HORIZONTAL, CURSOR_BOTH,
-    };
-    cursor_state_t *c = &scope_state_get()->cursor;
-    c->mode   = k_mode[item];
-    c->active = (c->mode == CURSOR_HORIZONTAL) ? CURSOR_SEL_H1 : CURSOR_SEL_V1;
-}
-
-static void persist_select(uint8_t item)
-{
-    if (item == OSC_PERS_OFF) {
-        scope_apply_persist_off();
-        return;
-    }
-    if (!scope_apply_persist_on(k_pers_mode[item]))   /* leaves a spectrum view first */
-        snprintf(g_note, sizeof g_note, "No memory for persistence");
-}
-
-static void math_select(uint8_t item)
-{
-    const uint8_t op = osc_menu_math_op(item);
-    if (op >= MATH_COUNT) {
-        math_enabled = false;
-        return;
-    }
-    math_op = op;
-    math_enabled = true;
-}
-
-static void channel_change(uint8_t ch, uint8_t item, int dir)
-{
-    channel_state_t *c = chan(ch);
-    switch (item) {
-    case OSC_CH_ENABLE: {
-        const bool was = c->enabled;
-        c->enabled = !was;
-        if (!fpga_apply_channel_enables()) {
-            c->enabled = was;
-            snprintf(g_note, sizeof g_note, "Keep one CH on");
-            break;
-        }
-        if (!c->enabled && active_channel == ch)
-            active_channel = (uint8_t)(1u - ch);       /* the arrows follow the live one */
-        if (fpga_interleave_active())
-            snprintf(g_note, sizeof g_note, "CH%u alone: 250 MS/s", (unsigned)(2u - ch));
-        break;
-    }
-    case OSC_CH_PROBE:
-        c->probe = (probe_t)((c->probe + PROBE_COUNT + dir) % PROBE_COUNT);
-        break;
-    case OSC_CH_COUPLING: {
-        /* DC <-> AC on the relay; GND is not offered (no ground path known). */
-        char t[sizeof g_note];
-        if (!scope_apply_coupling_toggle(ch, t, sizeof t))
-            snprintf(g_note, sizeof g_note, "%s", t);
-        break;
-    }
-    default:
-        break;
-    }
-}
-
-static void trigger_change(uint8_t item, int dir)
-{
-    trig_menu_t m = { item };
-    char t[sizeof g_note];
-    /* The row shows the new value; the note only what it cannot (a refusal,
-     * NOT SET, the SINGLE arm). */
-    if (scope_apply_trigger_change(trig_menu_change(&m, scope_state_get(), dir), t, sizeof t))
-        snprintf(g_note, sizeof g_note, "%s", t);
-}
-
-osc_result_t osc_menu_key(osc_key_t k)
-{
-    osc_action_t a;
-    const osc_result_t r = osc_menu_step(k, &a);
-    /* A key that redraws nothing keeps the note on screen (this visit's). */
-    if (r != OSC_RES_NONE || g_note_opens != osc_menu_state()->opens) g_note[0] = '\0';
-    g_note_opens = osc_menu_state()->opens;
-    const osc_row_t row = (osc_row_t)a.row;
-
-    switch (a.kind) {
-    case OSC_ACT_ENTER:
-        if (osc_menu_layout(row)->kind == OSC_PANE_RADIO || row == OSC_ROW_MATH)
-            osc_menu_set_item(radio_current(row));
-        break;
-    case OSC_ACT_SELECT:
-        if (row == OSC_ROW_DISPLAY)      display_select(a.item);
-        else if (row == OSC_ROW_CURSOR)  cursor_select(a.item);
-        else if (row == OSC_ROW_PERSIST) persist_select(a.item);
-        else if (row == OSC_ROW_MATH)    math_select(a.item);
-        break;
-    case OSC_ACT_CHANGE:
-        if (row == OSC_ROW_CH1 || row == OSC_ROW_CH2)
-            channel_change(row == OSC_ROW_CH2 ? 1u : 0u, a.item, a.dir);
-        else if (row == OSC_ROW_TRIGGER)
-            trigger_change(a.item, a.dir);
-        break;
-    default:
-        break;
-    }
-    return r;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -273,7 +71,7 @@ static void draw_radio(const osc_menu_state_t *s)
 {
     const osc_row_t row = (osc_row_t)s->row;
     const uint8_t n = osc_menu_layout(row)->n_items;
-    const uint8_t cur = radio_current(row);
+    const uint8_t cur = osc_menu_bind_current(row);
     for (uint8_t i = 0; i < n; i++) {
         const bool ok = (row != OSC_ROW_DISPLAY) || display_available(i);
         menu_frame_radio(&k_frame, (uint16_t)(CONTENT_Y + i * RADIO_PITCH), 24, osc_menu_item_label(row, i, 0),
@@ -284,24 +82,11 @@ static void draw_radio(const osc_menu_state_t *s)
 static void draw_values(const osc_menu_state_t *s)
 {
     const osc_row_t row = (osc_row_t)s->row;
-    const scope_state_t *ss = scope_state_get();
     for (uint8_t i = 0; i < osc_menu_layout(row)->n_items; i++) {
-        const char *v = "";
-        bool ok = true;
-        if (row == OSC_ROW_TRIGGER) {
-            v = trig_menu_row_value(ss, i);
-        } else {
-            const uint8_t ch = (row == OSC_ROW_CH2) ? 1u : 0u;
-            const channel_state_t *c = ch ? &ss->ch2 : &ss->ch1;
-            switch (i) {
-            case OSC_CH_ENABLE:   v = c->enabled ? "ON" : "OFF"; break;
-            case OSC_CH_PROBE:    v = probe_labels[c->probe % PROBE_COUNT]; break;
-            case OSC_CH_COUPLING: v = coupling_labels[c->coupling % COUPLING_COUNT]; break;
-            default: break;
-            }
-        }
+        char v[16];
+        osc_menu_bind_text(row, i, v, sizeof v);
         menu_frame_value_row(&k_frame, (uint16_t)(CONTENT_Y + i * 30u), 26,
-                             osc_menu_item_label(row, i, 0), v, s->in_pane && s->item == i, ok);
+                             osc_menu_item_label(row, i, 0), v, s->in_pane && s->item == i, true);
     }
 }
 
@@ -328,7 +113,7 @@ static void draw_chips(const osc_menu_state_t *s)
     lcd_fill_rect((uint16_t)(ITEM_X + ITEM_W - 1u), CONTENT_Y, 1, panel_h, pc);
 
     const uint16_t mask = param ? meas_select_get(ch) : 0u;
-    const uint8_t cur_math = param ? 0u : math_current();
+    const uint8_t cur_math = param ? 0u : osc_menu_bind_current(row);
     for (uint8_t i = 0; i < l->n_items; i++) {
         uint8_t r, c;
         osc_menu_chip_pos(row, i, &r, &c);
@@ -358,9 +143,10 @@ static void draw_footer(const osc_menu_state_t *s)
 {
     char buf[48];
     const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)s->row);
+    const char *const note = osc_menu_screen_note();
     const char *t;
-    if (g_note[0] && g_note_opens == s->opens) {
-        t = g_note;
+    if (note[0]) {
+        t = note;
     } else if (!s->in_pane) {
         t = "OK: open   MENU: close";
     } else if (s->row == OSC_ROW_PARAM) {

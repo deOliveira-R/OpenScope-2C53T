@@ -17,6 +17,7 @@
 #include "key_model.h"
 #include "trig_menu.h"
 #include "osc_menu_model.h"
+#include "osc_menu_screen.h"
 #include "input_handler.h"
 #include "scope_apply.h"
 #include "ui.h"
@@ -332,10 +333,6 @@ static void set_focus(key_focus_t f)
 uint8_t key_focus_get(void)          { return (uint8_t)scope_key_focus; }
 uint8_t key_active_channel_get(void) { return active_channel; }
 
-/* The key that opened the Oscilloscope Settings page (or last jumped in it):
- * pressing it again closes the page (key_model.c map_osc_menu). */
-static uint8_t osc_menu_opener = BTN_NONE;
-
 /* Helper: show popup and send redraw */
 static void popup_and_redraw(QueueHandle_t q, const char *text)
 {
@@ -540,14 +537,13 @@ static void save_key_short(QueueHandle_t dq)
     }
 }
 
-/* After the page applied a change: the cursors switched on from its Cursors
- * row put the arrows on the cursor stage, as TRIGGER's old cursor cycle did
- * (stock behaviour [inferred], UI_STUDY 2.3). */
-static void osc_menu_after_key(cursor_mode_t was)
+/* The Oscilloscope Settings page changed the cursor mode (osc_menu_screen.h):
+ * the cursors switched on from its Cursors row put the arrows on the cursor
+ * stage, as TRIGGER's old cursor cycle did (stock behaviour [inferred],
+ * UI_STUDY 2.3). */
+void osc_menu_env_cursors(bool on)
 {
-    const scope_state_t *ss = scope_state_get();
-    if (ss->cursor.mode != was)
-        set_focus(key_focus_after_cursor_change(scope_key_focus, ss->cursor.mode != CURSOR_OFF));
+    set_focus(key_focus_after_cursor_change(scope_key_focus, on));
 }
 
 /* A long mode key: sys.mode through the model, the path `set sys.mode` and
@@ -579,7 +575,7 @@ static key_ctx_t key_ctx_now(void)
     c.active_channel = active_channel;
     c.osc_menu_open  = (current_mode == MODE_OSCILLOSCOPE) && osc_menu_is_open();
     c.osc_menu_locked = c.osc_menu_open && osc_menu_is_locked();
-    c.osc_menu_opener = osc_menu_opener;
+    c.osc_menu_opener = osc_menu_screen_opener();
     return c;
 }
 
@@ -603,6 +599,11 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
      * gen.out / gen.bootout sets before key_map() is asked. */
     case KA_SIGGEN_RUNSTOP:
     case KA_SIGGEN_BOOT_TOGGLE:
+    /* Nor these: while the Oscilloscope Settings page is up it is a screen
+     * of its own (ui/osc_menu_screen.c), which takes its keys before
+     * key_map() is asked here. */
+    case KA_OSCMENU_KEY:
+    case KA_OSCMENU_CLOSE:
         break;
 
     /* -- long presses: mode shortcuts, from any mode -------------------- */
@@ -815,40 +816,17 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
 
     /* -- the Oscilloscope Settings page (osc_menu_model.h) -------------- */
     case KA_OSCMENU_OPEN:
-        /* From the plot (MENU), or a deep-link key jumping to its row while
-         * the full page is up. */
-        osc_menu_open((osc_row_t)dir);
-        osc_menu_opener = (uint8_t)btn;
+        /* From the plot: MENU or a deep-link key opens the full page. The
+         * layer is pushed by the stack mirror after this key. */
+        osc_menu_screen_open((osc_row_t)dir, false, (uint8_t)btn);
         cmd = DCMD_DRAW_OSC_MENU;
         send_cmd(dq, cmd);
         break;
     case KA_OSCMENU_PANE:
         /* PRM / TRIGGER: the page locked inside their pane (stock V1.2.0);
          * that key, or MENU, closes it. */
-        osc_menu_open_locked((osc_row_t)dir);
-        osc_menu_opener = (uint8_t)btn;
+        osc_menu_screen_open((osc_row_t)dir, true, (uint8_t)btn);
         cmd = DCMD_DRAW_OSC_MENU;
-        send_cmd(dq, cmd);
-        break;
-    case KA_OSCMENU_KEY: {
-        const cursor_mode_t was = ss->cursor.mode;
-        const osc_result_t r = osc_menu_key((osc_key_t)dir);
-        osc_menu_after_key(was);
-        if (r == OSC_RES_REDRAW) {
-            cmd = DCMD_DRAW_OSC_MENU;
-            send_cmd(dq, legacy_screens_active_cmd());  /* the page stays up: DCMD_DRAW_OSC_MENU */
-        } else if (r == OSC_RES_CLOSE) {
-            osc_menu_close();               /* idempotent: the model may have closed already */
-            osc_menu_opener = BTN_NONE;
-            send_cmd(dq, cmd);              /* REDRAW_ALL: the scope, in whatever view is now set */
-        } else {
-            cmd = DCMD_NONE_MODAL_DROP;     /* nothing changed on screen */
-        }
-        break;
-    }
-    case KA_OSCMENU_CLOSE:
-        osc_menu_close();
-        osc_menu_opener = BTN_NONE;
         send_cmd(dq, cmd);
         break;
 
@@ -918,7 +896,10 @@ void lgc_exec(key_cmd_t k, button_id_t btn)
  * display task), CH1/CH2/TRIGGER/MOVE answer SCR_DRAW_FULL. The meter
  * (meter_screen.c): the softkeys, OK, AUTO and the Limits arrows answer
  * SCR_DRAW (in place, gated on its epoch), LEFT/RIGHT, the fuse tester's
- * arrows and CH1/CH2 SCR_DRAW_FULL, as their handlers sent before B6. */
+ * arrows and CH1/CH2 SCR_DRAW_FULL, as their handlers sent before B6. The
+ * Oscilloscope Settings page (osc_menu_screen.c, a layer over the scope): a
+ * key that moved its cursor or set a property answers SCR_DRAW (the page,
+ * gated on its epoch), closing it SCR_DRAW_FULL (the scope under it). */
 void lgc_native_after(screen_id_t scr, scr_res_t res)
 {
     if (res == SCR_DRAW_FULL) {

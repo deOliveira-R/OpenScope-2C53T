@@ -45,6 +45,7 @@
 #include "home_screen.h"
 #include "siggen_screen.h"
 #include "meter_screen.h"
+#include "osc_menu_screen.h"
 #include "model.h"     /* PG_x: the groups each screen shows (pure header) */
 
 _Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
@@ -56,7 +57,6 @@ _Static_assert(MODE_OSCILLOSCOPE == 0 && MODE_MULTIMETER == 1 && MODE_SIGNAL_GEN
 
 /* Per key (input task): reset by ls_touch (router step 1, every real key). */
 static bool        ls_legacy_done;   /* a legacy path handled it: repaint and settings hook done */
-static screen_id_t ls_key_base;      /* the base when the key arrived (it may switch under it)   */
 
 static bool ls_is_native(screen_id_t id)
 {
@@ -90,18 +90,6 @@ static scr_res_t ls_key_settings(scr_key_t k)
 {
     ls_legacy_done = true;
     if (!ls_mapped(k)) lgc_mode_key(k.btn);
-    return SCR_HANDLED;
-}
-
-/* The Oscilloscope Settings page: key_map() answers for it while it is open
- * (it owns the arrows, OK and MENU; the plot's own long keys do nothing). */
-static scr_res_t ls_key_osc_menu(scr_key_t k)
-{
-    const key_ctx_t c = lgc_ctx();
-    const key_cmd_t m = key_map(&c, k.btn, k.is_long);
-    if (m.act == KA_LEGACY) return SCR_UNHANDLED;   /* POWER only; the globals took it */
-    ls_legacy_done = true;
-    lgc_exec(m, k.btn);
     return SCR_HANDLED;
 }
 
@@ -143,15 +131,14 @@ static scr_res_t ls_key_gallery(scr_key_t k)
 #define LPAGE(id, nm, fl, keyfn, desc, grp) \
     { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
 
-/* The legacy rows. SCR_HOME, SCR_SIGGEN and SCR_METER are not among them:
- * home_screen (home_screen.c), siggen_screen (siggen_screen.c) and
- * meter_screen (meter_screen.c). */
+/* The legacy rows. SCR_HOME, SCR_SIGGEN, SCR_METER and SCR_OSC_MENU are not
+ * among them: home_screen (home_screen.c), siggen_screen (siggen_screen.c),
+ * meter_screen (meter_screen.c) and osc_menu_screen (osc_menu_screen.c). */
 static const screen_t ls_table[] = {
     LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL,                 G_SCOPE),
     LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_OSC_MENU, "osc_menu", SCR_F_OPAQUE,                                ls_key_osc_menu, ui_describe_osc_menu, G_SCOPE),
     LPAGE(SCR_GALLERY,  "gallery",  SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, ls_key_gallery,  NULL,                 0),
 };
 _Static_assert(PG_COUNT <= 16, "screen_t.groups holds one bit per property group");
@@ -224,9 +211,10 @@ static bool ls_globals(button_id_t b, bool is_long)
 {
     const key_cmd_t g = key_map_global(NULL, b, is_long);
     if (g.act == KA_LEGACY) {
-        /* A migrated base takes the key next: the context is still taken
-         * first, where the legacy screens take it in ls_mapped. */
-        if (ls_is_native(screen_base())) (void)lgc_ctx();
+        /* A migrated screen takes the key next (the base, or the page on
+         * top of the scope): the context is still taken first, where the
+         * legacy screens take it in ls_mapped. */
+        if (ls_is_native(screen_base()) || ls_is_native(screen_top())) (void)lgc_ctx();
         return false;
     }
     ls_legacy_done = true;
@@ -255,17 +243,19 @@ static bool ls_globals(button_id_t b, bool is_long)
 static void ls_touch(void)
 {
     ls_legacy_done = false;
-    ls_key_base = screen_base();
     lgc_touch();
 }
 
 /* Router step 7. A key a migrated screen handled: post what it answered and
- * run the settings hook. The screen is the base the key arrived on, not
- * the one on top now (the key may have switched the mode). */
+ * run the settings hook. The screen is the one whose key() took it (the
+ * router knows), not the one on top now: the key may have switched the mode
+ * or closed the layer. */
 static void ls_after_key(scr_res_t res)
 {
-    if (ls_legacy_done || !ls_is_native(ls_key_base)) return;
-    lgc_native_after(ls_key_base, res);
+    if (ls_legacy_done) return;
+    const screen_id_t who = screen_last_handler();
+    if (!ls_is_native(who)) return;
+    lgc_native_after(who, res);
 }
 
 static const screen_hooks_t ls_hooks = {
@@ -314,6 +304,7 @@ void legacy_screens_init(void)
     (void)screen_register(&home_screen);
     (void)screen_register(&siggen_screen);
     (void)screen_register(&meter_screen);
+    (void)screen_register(&osc_menu_screen);
     screen_set_hooks(&ls_hooks);
     lgc_state_t s;
     lgc_state(&s);

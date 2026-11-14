@@ -235,26 +235,12 @@ static ui_press_t press_one(uint8_t id) { return ui_press_one(&k_press_port, &g_
 
 /* ── ui screen ─────────────────────────────────────────────────────── */
 
-static const char *const k_row_name[OSC_ROW_COUNT] = {
-    "display", "cursor", "param", "ch1", "ch2", "trigger", "persist", "math",
-};
-
 static void fmt_prop(char *out, size_t n, const prop_desc_t *p)
 {
     prop_format_value(p, prop_get(p), out, n);
 }
 
-/* ── describe hooks of the legacy screens (ui/legacy_screens.c) ─────── */
-
-void ui_describe_osc_menu(char *out, size_t n)
-{
-    const osc_menu_state_t *om = osc_menu_state();
-    char item[6];
-    snprintf(item, sizeof item, "%u", (unsigned)om->item);
-    snprintf(out, n, "row=%s pane=%s item=%s",
-             om->row < OSC_ROW_COUNT ? k_row_name[om->row] : "?",
-             om->locked ? "locked" : om->in_pane ? "pane" : "rail", item);
-}
+/* ── describe hook of the legacy settings screens (ui/legacy_screens.c) ── */
 
 void ui_describe_settings(char *out, size_t n)
 {

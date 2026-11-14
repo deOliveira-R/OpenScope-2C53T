@@ -228,6 +228,7 @@ static void test_grab(void)
     screen_push(SCR_OSC_MENU);
     F[SCR_OSC_MENU].key_res = SCR_DRAW;
     CHECK("grab layer handles: result passes through", screen_route_key(BTN_LEFT) == SCR_DRAW);
+    CHECK("the handler of that key is the grab layer", screen_last_handler() == SCR_OSC_MENU);
     CHECK("grab: no lock check, no globals when it handled",
           g_locked_calls == 0 && g_globals_calls == 0 && F[SCR_SCOPE].keys == 0);
 
@@ -236,6 +237,7 @@ static void test_grab(void)
     CHECK("grab leaves the key: globals only", screen_route_key(BTN_MENU | BTN_LONG_FLAG) == SCR_HANDLED &&
           g_globals_calls == 1 && g_locked_calls == 0 && F[SCR_SCOPE].keys == 0);
     CHECK("grab then globals order", LOGIS("touch click key:SCR_OSC_MENU0 globals after"));
+    CHECK("a key the globals took has no handler screen", screen_last_handler() == SCR_COUNT);
 
     g_global_any = false;
     CHECK("grab leaves the key, globals decline: nothing, never the base",
@@ -256,9 +258,15 @@ static void test_grab(void)
     CHECK("CLOSE pops the grab layer and asks for a full redraw",
           screen_route_key(BTN_MENU) == SCR_DRAW_FULL && screen_top() == SCR_SCOPE && F[SCR_OSC_MENU].closes == 1);
     CHECK("close(to) names the screen below", F[SCR_OSC_MENU].last_close_to == SCR_SCOPE);
+    CHECK("the handler is the layer that closed itself, though it is gone",
+          screen_last_handler() == SCR_OSC_MENU && screen_top() == SCR_SCOPE);
     CHECK("after_key ran for the close", g_after >= 1 && g_after_last == SCR_DRAW_FULL);
     F[SCR_SCOPE].key_res = SCR_HANDLED;
     CHECK("after the pop the base gets keys again", screen_route_key(BTN_UP) == SCR_HANDLED && F[SCR_SCOPE].keys == 1);
+    CHECK("... and is the handler; a key nobody takes, or BTN_NONE, leaves none or the last",
+          screen_last_handler() == SCR_SCOPE &&
+          (F[SCR_SCOPE].key_res = SCR_UNHANDLED, screen_route_key(BTN_UP) == SCR_UNHANDLED) &&
+          screen_last_handler() == SCR_COUNT);
 }
 
 static void test_layer_close(void)
@@ -281,6 +289,8 @@ static void test_layer_close(void)
     CHECK("a lower layer's CLOSE (key passed down) pops it and the one above",
           screen_route_key(BTN_OK) == SCR_DRAW_FULL && screen_top() == SCR_SCOPE &&
           F[SCR_SET_SOUND].closes == 1 && F[SCR_LOGO].closes == 1);
+    CHECK("the handler is the lower layer, not the one that passed the key down",
+          screen_last_handler() == SCR_SET_SOUND);
 
     setup(SCR_SCOPE);
     F[SCR_SCOPE].key_res = SCR_CLOSE;
@@ -552,7 +562,6 @@ void lgc_touch(void)          { lg("touch", 0, 0, 0); }
 void lgc_click(void)          { lg("click", 0, 0, 0); }
 void lgc_lock(void)           { lg_lock++; }
 void lgc_unlock(void)         { lg_lock--; }
-void ui_describe_osc_menu(char *out, size_t n) { snprintf(out, n, "row=ch1 pane=rail item=0"); }
 void ui_describe_settings(char *out, size_t n) { snprintf(out, n, "settings=%d/0/0", (int)W.depth); }
 
 /* The home page's stand-in: every key it is asked, with what the real one
@@ -633,6 +642,38 @@ static void want_meter(uint8_t raw)
     lg("after:%d:%d", SCR_METER, fake_meter_answer(raw), 0);
 }
 
+/* The Oscilloscope Settings page's stand-in (B5), a layer over the scope:
+ * the arrows and OK repaint it in place, the rest change nothing. (The real
+ * one, its property sets and its close are in make test-osc-menu-screen.) */
+static scr_res_t fake_osc_answer(uint8_t raw)
+{
+    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
+    return (raw == BTN_UP || raw == BTN_DOWN || raw == BTN_LEFT || raw == BTN_RIGHT || raw == BTN_OK)
+               ? SCR_DRAW : SCR_HANDLED;
+}
+static scr_res_t fake_osc_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("osc:%d", raw, 0, 0);
+    return fake_osc_answer(raw);
+}
+static void fake_osc_describe(char *out, size_t n) { snprintf(out, n, "row=ch1 pane=rail item=0"); }
+const screen_t osc_menu_screen = {
+    .name = "osc_menu", .id = SCR_OSC_MENU, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
+    .flags = SCR_F_OPAQUE, .key = fake_osc_key, .draw = fake_draw, .describe = fake_osc_describe,
+    .groups = G_SCOPE,
+};
+static void want_osc(uint8_t raw)
+{
+    lg("osc:%d", raw, 0, 0);
+    lg("after:%d:%d", SCR_OSC_MENU, fake_osc_answer(raw), 0);
+}
+static bool is_osc_action(uint8_t act)
+{
+    return act == KA_NONE || act == KA_OSCMENU_OPEN || act == KA_OSCMENU_PANE ||
+           act == KA_OSCMENU_KEY || act == KA_OSCMENU_CLOSE;
+}
+
 /* input_handle_button() before the router (base 6a8c2ba), step by step. */
 static void old_route(uint8_t raw)
 {
@@ -672,11 +713,19 @@ static void old_route(uint8_t raw)
                 want_gen(raw);
                 return;
             }
+            /* The Oscilloscope Settings page (B5): the plot's long keys did
+             * nothing while it was up (key_map: KA_NONE); the page is asked
+             * now and answers "nothing" itself. */
+            if (c.osc_menu_open && k.act == KA_NONE) { want_osc(raw); return; }
             lgc_exec(k, b);
             return;
         }
     }
     const key_cmd_t k = key_map(&c, b, false);
+    /* The Oscilloscope Settings page (B5): its short keys (KA_OSCMENU_* and
+     * the ones that do nothing) were exec_key_cmd cases; the page is asked
+     * now. SAVE stays a global, POWER the switch. */
+    if (c.osc_menu_open && is_osc_action(k.act)) { want_osc(raw); return; }
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
     if (W.mode == MODE_HOME && b != BTN_POWER) { want_home(raw); return; }   /* was lgc_home(b) */
     /* was the softkey claim (MOVE/SELECT/TRIGGER/PRM), then the switch: the
@@ -812,7 +861,7 @@ static void test_legacy_table(void)
         { "long OK in the scope -> 50 % centre",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx exec:13:0:14" },
         { "long AUTO in the scope -> baseline",           MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx exec:12:0:7" },
         { "long CH2 in the scope -> CH2 on/off",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,     "touch click ctx exec:7:1:2" },
-        { "long CH1 under the osc page: nothing",         MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,     "touch click ctx exec:1:0:1" },
+        { "long CH1 under the osc page: the page (nothing)", MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,  "touch click ctx osc:129 after:7:1" },
         { "long OK in the generator: its screen",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx gen:142 after:3:1" },
         { "long AUTO in the generator: its screen",       MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx gen:135 after:3:1" },
         { "CH1 in the generator: screen, full repaint",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_CH1,                     "touch click ctx gen:1 after:3:3" },
@@ -827,7 +876,7 @@ static void test_legacy_table(void)
         { "long MOVE during autoset: Busy",               MODE_OSCILLOSCOPE, 0, 1, 0, 0, 1, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click busy" },
         { "long MENU during autoset: cancel",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click cancel" },
         { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click ctx switch:15" },
-        { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click ctx exec:28:0:10" },
+        { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click ctx osc:10 after:7:2" },
         { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx exec:26:0:9" },
         { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx meter:3 after:2:2" },
         { "LEFT in the meter: its screen",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx meter:12 after:2:3" },

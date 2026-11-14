@@ -15,6 +15,7 @@ static screen_id_t     g_st[SCR_STACK_MAX];
 static uint8_t         g_n;
 static uint32_t        g_gen;
 static screen_hooks_t  g_hk;
+static screen_id_t     g_handler = SCR_COUNT;   /* whose key() took the last routed key */
 
 static void lock(void)   { if (g_hk.lock)   g_hk.lock(); }
 static void unlock(void) { if (g_hk.unlock) g_hk.unlock(); }
@@ -47,6 +48,7 @@ void screen_reset(void)
     memset(&g_hk, 0, sizeof g_hk);
     g_n = 0;
     g_gen = 0;
+    g_handler = SCR_COUNT;
 }
 
 /* A copy of the stack taken under the lock. */
@@ -184,6 +186,7 @@ uint8_t screen_route_key(button_id_t raw)
 
     /* 1. BTN_NONE (the model wake) touches nothing. */
     if (k.btn == BTN_NONE) return SCR_UNHANDLED;
+    g_handler = SCR_COUNT;
     if (g_hk.touch) g_hk.touch();
     if (g_hk.click) g_hk.click();
 
@@ -202,7 +205,7 @@ uint8_t screen_route_key(button_id_t raw)
             grabbed = true;
             res = t->key ? t->key(k) : SCR_UNHANDLED;
             if (res == SCR_CLOSE) { screen_close(st[n - 1]); res = SCR_DRAW_FULL; }
-            if (res != SCR_UNHANDLED) goto done;
+            if (res != SCR_UNHANDLED) { g_handler = st[n - 1]; goto done; }
             screen_id_t now[SCR_STACK_MAX];
             const uint8_t m = copy_stack(now);
             bool still = false;
@@ -239,7 +242,7 @@ uint8_t screen_route_key(button_id_t raw)
                 if (i > 0) screen_close(st[i]);
                 res = (i > 0) ? SCR_DRAW_FULL : SCR_HANDLED;   /* a base cannot close */
             }
-            if (res != SCR_UNHANDLED) break;
+            if (res != SCR_UNHANDLED) { g_handler = st[i]; break; }
             if (s->flags & SCR_F_OPAQUE) break;
         }
     }
@@ -249,6 +252,8 @@ done:
     if (res != SCR_UNHANDLED && g_hk.after_key) g_hk.after_key(res);
     return (uint8_t)res;
 }
+
+screen_id_t screen_last_handler(void) { return g_handler; }
 
 /* ---- lookups ----------------------------------------------------------- */
 

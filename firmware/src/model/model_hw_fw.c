@@ -46,6 +46,7 @@
 #include "gallery_ui.h"
 #include "screen.h"
 #include "legacy_screens.h"
+#include "osc_menu_screen.h"
 
 bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's mailbox) */
 
@@ -488,6 +489,10 @@ static void port_changed(uint16_t groups)
          * always was, and its tick paints the result when it ends. */
         if (meter_autoselect_is_running()) return;
         cmd = (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)SCR_METER);
+    } else if (screen_top() == SCR_OSC_MENU && osc_menu_screen_paints(shown)) {
+        /* The Oscilloscope Settings page shows the value: painted in place
+         * (its epoch moved), no clear. */
+        cmd = (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)SCR_OSC_MENU);
     }
     if (g_display_q) (void)xQueueSend(g_display_q, &cmd, 0);
 }

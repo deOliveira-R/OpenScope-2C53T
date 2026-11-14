@@ -164,6 +164,7 @@ C_SOURCES += src/ui/icons.c
 # make test-osc-menu. The persistence test links meas_select.c too.
 C_SOURCES += src/ui/osc_menu_model.c
 C_SOURCES += src/ui/osc_menu_ui.c
+C_SOURCES += src/ui/osc_menu_screen.c
 C_SOURCES += src/ui/menu_frame.c
 C_SOURCES += src/ui/meas_select.c
 R1A_OSC_MENU_TEST_SRCS = src/ui/osc_menu_model.c src/ui/meas_select.c src/ui/scope_state.c \
@@ -2151,6 +2152,7 @@ check-owners:
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
                                  src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h \
+                                 src/ui/osc_menu_screen.h \
                                  src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
 
@@ -2200,6 +2202,19 @@ $(BUILD_DIR)/test_meter_screen: tests/test_meter_screen.c src/ui/meter_screen.c 
 
 .PHONY: test-meter-screen
 test-meter-screen: $(BUILD_DIR)/test_meter_screen
+	$<
+
+# The Oscilloscope Settings page as a screen (ARCH-1 B5): the binding table,
+# every row and item as one property set in both directions, the setters'
+# rules and the footer notes, a `set` while the page is open painted in
+# place, an idle page painting nothing, the router order, open/jump/close.
+$(BUILD_DIR)/test_osc_menu_screen: tests/test_osc_menu_screen.c src/ui/osc_menu_screen.c \
+                                   src/ui/osc_menu_screen.h src/ui/osc_menu_model.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< src/ui/osc_menu_screen.c src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-osc-menu-screen
+test-osc-menu-screen: $(BUILD_DIR)/test_osc_menu_screen
 	$<
 
 # Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,
