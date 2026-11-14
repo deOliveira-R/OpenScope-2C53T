@@ -86,9 +86,8 @@ void scope_state_init(scope_state_t *s)
     /* Running */
     s->running = true;
 
-    /* Graticule: autofit by default (see scope_state.h). True scale is opt-in
-     * from the shell because it needs a centred baseline first. */
-    s->true_scale = false;
+    /* Graticule: true scale by default (see scope_state.h). */
+    s->true_scale = true;
     s->soft_trigger = true;
     s->trig_x = SCOPE_GEOM_CENTER_COL;   /* stock hpos 0 (scope_geom.h) */
     s->prm_mask = SCOPE_PRM_DEFAULT_MASK;

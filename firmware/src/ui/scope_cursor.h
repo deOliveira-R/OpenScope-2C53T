@@ -44,8 +44,8 @@
  * WHY THE VERTICAL MAP IS AN ARGUMENT
  * -----------------------------------
  * Pixels mean a fixed number of ADC counts only in the TRUE-SCALE render
- * path. The default path is autofit, which rescales every frame from the
- * record's own min/max, so pixels-per-count is a property of the frame that
+ * path (the default). An autofit band (no calibration for the range, or
+ * view.truescale off) rescales every frame from the record's own min/max, so pixels-per-count is a property of the frame that
  * was drawn, not of the hardware. The renderer therefore reports the
  * transform it used (see scope_ui.c) and this module converts with THAT.
  * Assuming the fixed transform while autofit is on the screen would be a
@@ -66,7 +66,7 @@ extern "C" {
 
 /*
  * One screen column is one sample. This is a property of the RENDERER —
- * draw_channel_autofit()/draw_channel_fixed() plot buf[x] at column x — not
+ * draw_channel() and the live compositor plot buf[x] at column x — not
  * of the capture. scope_ui.c carries a compile-time assertion tying the two
  * together, so changing the plot without changing this is a build error
  * rather than a silently wrong dt.

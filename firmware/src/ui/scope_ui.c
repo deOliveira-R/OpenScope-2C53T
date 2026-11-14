@@ -27,6 +27,7 @@
 #include "scope_freq.h"
 #include "scope_record.h"
 #include "scope_geom.h"
+#include "yt_vmap.h"
 #include "math_channel.h"
 #include "paused_view.h"
 #include "persistence.h"
@@ -853,12 +854,8 @@ static union {
 } ui_draw_scratch;
 #define yt_cols (ui_draw_scratch.yt)
 
-typedef struct {
-    bool    on;
-    int16_t y_top, y_bot;
-    int     h, span;
-    uint8_t mn;
-} autofit_t;
+/* One channel's vertical transform, true scale or autofit (yt_vmap.h). */
+typedef yt_vmap_t autofit_t;
 
 /* ── The Y-T window's horizontal mapping (parity C5 x C14) ───────────────
  * ONE window, yt_cols, built once per frame by view_build() and read by every
@@ -884,10 +881,10 @@ typedef struct {
  *             record blank as in stock: [g_view_first, g_view_end) is the
  *             span that shows the record, and every consumer stays inside it.
  *
- * Vertical (C14): in the true-scale path only (autofit is range-blind by
+ * Vertical (C14): in true scale only (autofit is range-blind by
  * construction), counts rescaled by V[range_cap] / V[range_now] (pv_vscale).
  * Stock's position term is not applied: a position key moves the offset DAC
- * for the NEXT capture, and the default autofit view has no use for it.
+ * for the NEXT capture, so the record already carries it.
  * Cursor and badge rates: the cursors read the column rate (1000 fs_rec / R);
  * the measurements read the record's own (record_rate_for_display). */
 /* The span of the last build that shows the record, [first, end): all 301
@@ -985,35 +982,40 @@ static void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
         if (elo < mn) mn = elo;
         if (ehi > mx) mx = ehi;
     }
-    int span = (int)mx - (int)mn;
-    if (span < 8) span = 8;                 /* don't zoom pure noise to full band */
-    int h = (int)(y_bot - y_top) - 3;       /* usable height, small margin */
-    if (h < 4) h = 4;
+    yt_vmap_autofit(a, mn, mx, y_top, y_bot);
+}
 
-    a->on    = true;
-    a->y_top = y_top;
-    a->y_bot = y_bot;
-    a->h     = h;
-    a->span  = span;
-    a->mn    = mn;
+/* Where code v lands, unclipped (the tags) and clipped (everything drawn).
+ * True scale rescales a held record to the range now selected first. */
+static inline int autofit_y_raw(const autofit_t *a, int v)
+{
+    if (a->fx_ch >= 0)
+        v = pv_vscale((uint8_t)v, YT_VMAP_CENTRE, a->fx_ch);
+    return yt_vmap_raw(a, v);
 }
 
 static inline int16_t autofit_y(const autofit_t *a, uint8_t v)
 {
-    int yy = (int)(a->y_bot - 2) - ((int)((int)v - a->mn) * a->h) / a->span;
-    if (yy < a->y_top) yy = a->y_top;
-    if (yy >= a->y_bot) yy = a->y_bot - 1;
-    return (int16_t)yy;
+    return yt_vmap_clip(a, autofit_y_raw(a, v));
+}
+
+/* Record code of the channel's 0 V (ch 0/1): the ground tag, the badges and
+ * the cursors' absolute Y all use it. */
+static int chan_zero_code(const scope_state_t *ss, uint8_t ch)
+{
+    return scope_measure_zero_for(scope_vpos_active(),
+                                  ch ? ss->ch2.position : ss->ch1.position,
+                                  (int)FPGA_ADC_OFFSET);
 }
 
 /*
  * What the renderer ACTUALLY did to the vertical axis, recorded per band for
  * the cursor readout.
  *
- * The cursor cannot assume the fixed 256/SCOPE_H transform, because the
- * DEFAULT path is autofit and autofit's pixels-per-count is a property of the
- * frame that was drawn — it rescales from the record's own min/max, every
- * frame. Reading the scale off the drawing rather than off an assumption is
+ * The cursor cannot assume the fixed 256/SCOPE_H transform, because a band
+ * may be autofit (a range without calibration, or view.truescale off), and
+ * autofit's pixels-per-count is a property of the frame that was drawn — it
+ * rescales from the record's own min/max, every frame. Reading the scale off the drawing rather than off an assumption is
  * the same "one copy, two callers" rule that autofit_prep() itself exists to
  * enforce; the two-copies version of that bug (full path vs compositor)
  * already cost this project a week.
@@ -1051,35 +1053,25 @@ static void vband_clear(void)
     g_math_cur.on = false;
 }
 
+/* channel 1/2, a: the map the band was drawn with. True scale anchors the
+ * channel's 0 V code to a row, so absolute Y is known (mid_counts = 0 at the
+ * ground tag's row); autofit re-anchors per frame and leaves it unknown. */
 static void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
-                       int16_t y_top, int16_t y_bot, float counts_per_pixel)
+                       const autofit_t *a, float counts_per_pixel)
 {
     if (slot > 1u) return;
-    g_vband[slot].on               = (counts_per_pixel > 0.0f);
-    g_vband[slot].y_top            = y_top;
-    g_vband[slot].y_bot            = y_bot;
-    g_vband[slot].counts_per_pixel = counts_per_pixel;
-    g_vband[slot].channel          = channel;
-    g_vband[slot].range_idx        = range_idx;
-    g_vband[slot].mid_known         = false;   /* autofit re-anchors per frame */
-}
-
-/* True-scale bands draw ADC code 128 at the band middle row, so absolute Y is
- * known there (zero = the centred baseline). Call after vband_note(). */
-static void vband_note_fixed_mid(uint8_t slot, int16_t y_top, int16_t y_bot)
-{
-    if (slot > 1u) return;
-    g_vband[slot].mid_known  = g_vband[slot].on;
-    g_vband[slot].mid_row    = (int16_t)((y_top + y_bot) / 2);
-    g_vband[slot].mid_counts = 0.0f;
-}
-
-/* autofit_y() maps counts to pixels with h/span, so its inverse — the number
- * of ADC counts one screen row is worth in THIS frame — is span/h. */
-static float autofit_counts_per_pixel(const autofit_t *a)
-{
-    if (!a->on || a->h <= 0) return 0.0f;
-    return (float)a->span / (float)a->h;
+    vband_t *b = &g_vband[slot];
+    b->on               = (counts_per_pixel > 0.0f);
+    b->y_top            = a->y_top;
+    b->y_bot            = a->y_bot;
+    b->counts_per_pixel = counts_per_pixel;
+    b->channel          = channel;
+    b->range_idx        = range_idx;
+    b->mid_known        = b->on && a->fx_ch >= 0;
+    b->mid_row          = b->mid_known
+        ? (int16_t)autofit_y_raw(a, chan_zero_code(scope_state_get(), (uint8_t)(channel - 1u)))
+        : 0;
+    b->mid_counts       = 0.0f;
 }
 
 /*
@@ -1089,22 +1081,24 @@ static float autofit_counts_per_pixel(const autofit_t *a)
  * so the crossing that fires sits at (code - 28) in record units: measured on
  * ranges 5 and 7 at six levels (EXP-55/56, median 28) and the same constant
  * as stock's FPGA_ADC_OFFSET. That record code is mapped through the SAME
- * autofit the trigger-source trace is drawn with, so the line sits on the
- * trace where NORMAL would fire. Outside the trace's span it clamps to the
- * band edge (autofit_y's clamp), which on screen reads as "level is above /
- * below the signal" -- exactly the case where NORMAL holds.
+ * map the trigger-source trace is drawn with, so the line sits on the
+ * trace where NORMAL would fire. Outside the band it clamps to the band edge
+ * (autofit_y's clamp), which on screen reads as "level is above / below the
+ * signal" -- in autofit exactly the case where NORMAL holds.
  *
  * The code is the one fpga.c records as written (fpga_acq_trig_code_get),
  * not recomputed from the UI level: report the wire, not the intent.
  *
- * Not covered: the opt-in true-scale view (the live compositor ignores it
- * too); a band with no data falls back to the old pixel convention.
+ * In true scale the same code goes through the fixed map (yt_vmap.h), so
+ * the line sits at the trigger level's place on the graticule. A band with
+ * no data falls back to the old pixel convention.
  */
 static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                           const volatile uint8_t *src_buf, uint8_t L,
                                           int16_t *back_q8);
 static void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2);
+static void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2);
 
 static int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
 {
@@ -1116,26 +1110,18 @@ static int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
     return autofit_y(a, (uint8_t)rec);
 }
 
-/* Full-path variant: rebuild the trigger source's autofit exactly as
- * draw_demo_waveform() will (same soft-trigger offset, same band split). */
+/* Full-path variant: the trigger source's map exactly as
+ * draw_demo_waveform() will build it (same window, same yt_fits). */
 static int16_t trigger_marker_y_full(const scope_state_t *ss)
 {
     const volatile uint8_t *b1 = fpga_get_ch1_buf();
     const volatile uint8_t *b2 = fpga_get_ch2_buf();
     if (!fpga_data_ready() || b1 == NULL || b2 == NULL)
         return trigger_marker_y(ss, NULL);
-    const bool src2 = (ss->trigger.source == TRIG_SRC_CH2);
-    const bool c1 = ss->ch1.enabled, c2 = ss->ch2.enabled;
     view_build(ss, b1, b2);
-    const uint8_t *src = yt_cols[src2 ? 1 : 0];
-    autofit_t a = { false, 0, 0, 0, 8, 0 };
-    if (c1 && c2)
-        autofit_prep(&a, src, src2 ? (int16_t)(SCOPE_MID_Y + 1) : (int16_t)SCOPE_TOP,
-                              src2 ? (int16_t)SCOPE_BOT : (int16_t)(SCOPE_MID_Y - 1),
-                     src2 ? 1 : 0);
-    else if (src2 ? c2 : c1)
-        autofit_prep(&a, src, SCOPE_TOP, SCOPE_BOT, src2 ? 1 : 0);
-    return trigger_marker_y(ss, &a);
+    autofit_t a1, a2;
+    yt_fits(ss, &a1, &a2);
+    return trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &a2 : &a1);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1143,9 +1129,8 @@ static int16_t trigger_marker_y_full(const scope_state_t *ss)
  *
  * Ground (0 V) tag per channel at the left edge, trigger-level tag at the
  * right edge, both on the row where that level is ON THE TRACE: mapped through
- * the same transform the band was drawn with (autofit, or the fixed true-scale
- * slope in the full path), not `SCOPE_MID_Y - position`, which the autofit
- * renderer ignores. Off the band, the tag sits on the band edge pointing up or
+ * the same map the band was drawn with (yt_fits), not
+ * `SCOPE_MID_Y - position`: the position is already in the record. Off the band, the tag sits on the band edge pointing up or
  * down. Both renderers build the set with markers_build() and ask
  * plot_marker_px() for every pixel, so the live frames keep the tags (before
  * round 1 the compositor painted over them) and draw the same shapes.
@@ -1163,27 +1148,27 @@ typedef struct {
  * [2] the other channel's ground (the active one wins an overlap). */
 typedef struct { pm_tag_t t[3]; } pm_set_t;
 
-/* autofit_y() without the clamp: where a code lands, on or off the band. */
-static inline int autofit_y_raw(const autofit_t *a, int v)
-{
-    return (int)(a->y_bot - 2) - ((v - (int)a->mn) * a->h) / a->span;
-}
-
-/* The two Y-T bands, prepared exactly as both renderers prepare them (from
- * the window view_build() last filled into yt_cols). */
+/* The two Y-T maps, the only place that decides them (from the window
+ * view_build() last filled into yt_cols). True scale where the range has a
+ * real volts/div, over the full plot; autofit elsewhere (a NONE range, or
+ * view.truescale off), split into halves when both channels autofit. */
 static void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
 {
-    const autofit_t off = { false, 0, 0, 0, 8, 0 };
-    *a1 = off;
-    *a2 = off;
-    const bool en1 = ss->ch1.enabled, en2 = ss->ch2.enabled;
-    if (en1 && en2) {
-        autofit_prep(a1, yt_cols[0], SCOPE_TOP, SCOPE_MID_Y - 1, 0);
-        autofit_prep(a2, yt_cols[1], SCOPE_MID_Y + 1, SCOPE_BOT, 1);
-    } else if (en1) {
-        autofit_prep(a1, yt_cols[0], SCOPE_TOP, SCOPE_BOT, 0);
-    } else if (en2) {
-        autofit_prep(a2, yt_cols[1], SCOPE_TOP, SCOPE_BOT, 1);
+    autofit_t *a[2] = { a1, a2 };
+    const bool en[2] = { ss->ch1.enabled, ss->ch2.enabled };
+    const bool fx[2] = {
+        en[0] && ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
+        en[1] && ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx) };
+    const bool split = yt_vmap_split(en[0], en[1], fx[0], fx[1]);
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        *a[ch] = (autofit_t){ .fx_ch = -1, .span = YT_VMAP_MIN_SPAN };
+        if (fx[ch]) {
+            yt_vmap_true(a[ch], SCOPE_TOP, SCOPE_BOT, (int8_t)ch);
+        } else if (en[ch]) {
+            int16_t t, b;
+            yt_vmap_band(SCOPE_TOP, SCOPE_BOT, split, ch, &t, &b);
+            autofit_prep(a[ch], yt_cols[ch], t, b, (int8_t)ch);
+        }
     }
 }
 
@@ -1201,12 +1186,11 @@ static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
     t->color = color;
 }
 
-/* a1/a2: the bands as drawn (NULL = no record: the demo/no-data convention,
- * position and level in pixels about the centre). fx1/fx2: that band was
- * drawn true-scale (full path only). band_bot: the strip's top. */
+/* a1/a2: the maps as drawn (NULL = no record: the demo/no-data convention,
+ * position and level in pixels about the centre). band_bot: the strip's top. */
 static void markers_build(const scope_state_t *ss, const theme_t *th,
                           const autofit_t *a1, const autofit_t *a2,
-                          bool fx1, bool fx2, int band_bot, pm_set_t *m)
+                          int band_bot, pm_set_t *m)
 {
     memset(m, 0, sizeof(*m));
     const uint8_t act = active_channel ? 1u : 0u;
@@ -1218,16 +1202,9 @@ static void markers_build(const scope_state_t *ss, const theme_t *th,
         const autofit_t *a = ch ? a2 : a1;
         int top = SCOPE_TOP, bot = band_bot, row;
         if (a != NULL && a->on) {
-            const int z = scope_measure_zero_for(scope_vpos_active(), c->position,
-                                                 (int)FPGA_ADC_OFFSET);
             top = a->y_top;
             if (a->y_bot < bot) bot = a->y_bot;
-            if (ch ? fx2 : fx1) {          /* draw_channel_fixed's transform */
-                const int y_mid = (a->y_top + a->y_bot) / 2;
-                row = y_mid - ((int)pv_vscale((uint8_t)z, 128u, (int8_t)ch) - 128) * SCOPE_H / 256;
-            } else {
-                row = autofit_y_raw(a, z);
-            }
+            row = autofit_y_raw(a, chan_zero_code(ss, ch));
         } else {
             row = SCOPE_MID_Y - c->position;
         }
@@ -1385,7 +1362,7 @@ static void draw_mask_strip(const theme_t *th, uint16_t band_bot)
 
 /* Persistence (C12) is fed from the channel renderers as they draw each
  * column, so a ghost is exactly where the trace was, through whichever
- * transform (autofit or fixed) drew it, and costs no per-column storage (RAM
+ * map (true scale or autofit) drew it, and costs no per-column storage (RAM
  * is tight). prev_y < 0: first column. */
 
 static bool     g_math_live;    /* a real record was drawn this frame (yt_cols valid) */
@@ -1396,100 +1373,42 @@ static inline void persist_note(uint16_t x, int16_t prev_y, int16_t y)
                            (int)y - SCOPE_TOP);
 }
 
-/* Returns the ADC counts one screen row was worth in the frame it just drew,
- * for the cursor readout. */
-static float draw_channel_autofit(const volatile uint8_t *buf, uint16_t color,
-                                  int16_t y_top, int16_t y_bot, int8_t mask_ch)
+/* Draw one channel through its map (yt_fits). Returns the ADC counts one
+ * screen row is worth, for the cursor readout.
+ *
+ * True scale is the graticule-honesty path (M3): a constant 256/SCOPE_H
+ * counts per pixel, SCOPE_CAL_COUNTS_PER_DIV counts per 26 px division (the
+ * _Static_assert near the top ties the two), so one division is worth the
+ * volts/div the status bar prints. The trace sits at its real ADC code about
+ * 128; an uncentred DC offset shifts it and may clip it at the plot edge,
+ * which is what a real scope at a fixed volts/div does. */
+static float draw_channel(const volatile uint8_t *buf, uint16_t color,
+                          const autofit_t *a, int8_t mask_ch)
 {
-    autofit_t a;
-    autofit_prep(&a, buf, y_top, y_bot, mask_ch);
-
     const uint16_t fail_c = theme_get()->warning;
     const uint16_t bnd_c  = theme_get()->text_secondary;
     int16_t prev_y = -1;
     for (uint16_t x = g_view_first; x < g_view_end; x++) {   /* blank columns stay blank */
-        int16_t y = autofit_y(&a, buf[x]);
+        int16_t y = autofit_y(a, buf[x]);
         persist_note(x, prev_y, y);
         uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
         uint8_t blo, bhi;
         if (g_mask_bounds_on && mask_ch >= 0 && MASK_BOUND_DOT(x) &&
             scope_mask_bound_at((uint8_t)mask_ch, x, g_trig_x_actual, &blo, &bhi)) {
-            lcd_set_pixel(x, (uint16_t)autofit_y(&a, blo), bnd_c);
-            lcd_set_pixel(x, (uint16_t)autofit_y(&a, bhi), bnd_c);
+            lcd_set_pixel(x, (uint16_t)autofit_y(a, blo), bnd_c);
+            lcd_set_pixel(x, (uint16_t)autofit_y(a, bhi), bnd_c);
         }
         if (prev_y >= 0) {                  /* connect prev..cur vertically */
-            int16_t a = prev_y < y ? prev_y : y;
-            int16_t b = prev_y < y ? y : prev_y;
-            for (int16_t v = a; v <= b; v++)
+            int16_t lo = prev_y < y ? prev_y : y;
+            int16_t hi = prev_y < y ? y : prev_y;
+            for (int16_t v = lo; v <= hi; v++)
                 lcd_set_pixel(x, (uint16_t)v, cc);
         } else {
             lcd_set_pixel(x, (uint16_t)y, cc);
         }
         prev_y = y;
     }
-
-    return autofit_counts_per_pixel(&a);
-}
-
-/* Fixed-scale ("true volts/div") render — the graticule-honesty path (M3).
- *
- * Maps sample -> y at a CONSTANT 256/SCOPE_H counts per pixel, the exact
- * inverse of the geometry the grid and the status bar already assume:
- * SCOPE_CAL_COUNTS_PER_DIV counts per 26 px division (the _Static_assert below
- * ties the two together, so they cannot drift). Unlike autofit this does NOT
- * rescale to the band height, so one division on the glass is worth exactly the
- * volts/div scope_cal_volts_per_div() prints — that equality is the entire
- * point.
- *
- * The trace is positioned by the real ADC value about `center` (ADC mid-scale,
- * where `fpga scope center` parks a centred baseline). An uncentred DC offset
- * therefore shifts the whole trace and can push it past the band; that is the
- * honest behaviour of a real scope at a fixed volts/div, and it is why this
- * path is opt-in (scope_state.true_scale, default off) rather than the default.
- * In split (both-channel) mode the slope still uses the full SCOPE_H, so the
- * volts/div is identical to single-channel mode and a large signal clips at the
- * half-band edge exactly as it should. */
-static float draw_channel_fixed(const volatile uint8_t *buf, uint16_t color,
-                                int16_t y_top, int16_t y_bot, uint8_t center,
-                                int8_t mask_ch)
-{
-    int16_t  y_mid = (int16_t)((y_top + y_bot) / 2);
-    const uint16_t fail_c = theme_get()->warning;
-
-    int16_t prev_y = -1;
-    for (uint16_t x = g_view_first; x < g_view_end; x++) {   /* blank columns stay blank */
-        const uint8_t sv = pv_vscale(buf[x], center, mask_ch);
-        int yy = (int)y_mid - ((int)sv - (int)center) * SCOPE_H / 256;
-        if (yy < y_top)   yy = y_top;
-        if (yy >= y_bot)  yy = y_bot - 1;
-        int16_t y = (int16_t)yy;
-        persist_note(x, prev_y, y);
-        uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
-        uint8_t blo, bhi;
-        if (g_mask_bounds_on && mask_ch >= 0 && MASK_BOUND_DOT(x) &&
-            scope_mask_bound_at((uint8_t)mask_ch, x, g_trig_x_actual, &blo, &bhi)) {
-            for (int k = 0; k < 2; k++) {          /* same transform as the trace */
-                int by = (int)y_mid - ((int)(k ? bhi : blo) - (int)center) * SCOPE_H / 256;
-                if (by < y_top)  by = y_top;
-                if (by >= y_bot) by = y_bot - 1;
-                lcd_set_pixel(x, (uint16_t)by, theme_get()->text_secondary);
-            }
-        }
-        if (prev_y >= 0) {
-            int16_t a = prev_y < y ? prev_y : y;
-            int16_t b = prev_y < y ? y : prev_y;
-            for (int16_t v = a; v <= b; v++)
-                lcd_set_pixel(x, (uint16_t)v, cc);
-        } else {
-            lcd_set_pixel(x, (uint16_t)y, cc);
-        }
-        prev_y = y;
-    }
-
-    /* The inverse of the slope above, and the one the status bar's volts/div
-     * already assumes. Returned rather than recomputed at the call site so
-     * the cursor can never disagree with the plot. */
-    return 256.0f / (float)SCOPE_H;
+    return yt_vmap_counts_per_px(a);
 }
 
 /* Software display trigger — the fix for the free-running "dancing" trace.
@@ -1748,9 +1667,8 @@ void draw_demo_waveform(uint32_t frame)
         /* Re-triggering DISABLED — see note in demo waveform fallback.
          * TODO: re-enable once SPI3 protocol is confirmed working. */
 
-        /* Auto-fit render. If both channels are live, split the scope area
-         * into top (CH1) and bottom (CH2) bands so the traces don't overlap;
-         * a single live channel gets the whole area. */
+        /* One map per channel (yt_fits): true scale over the full plot, or
+         * autofit, split into halves when both channels autofit. */
         bool c1 = ss->ch1.enabled && ch1_buf != NULL;
         bool c2 = ss->ch2.enabled && ch2_buf != NULL;
 
@@ -1767,35 +1685,17 @@ void draw_demo_waveform(uint32_t frame)
          * (C12): they must be drawn from exactly what the traces were. */
         g_math_live = true;
 
-        /* True-scale only where the range has a real volts/div; a NONE range
-         * always autofits (its grid has no volts meaning to honour). Default
-         * ss->true_scale == false keeps every build on autofit unless toggled
-         * from the shell. */
-        bool fx1 = ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx);
-        bool fx2 = ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx);
-
-        /* Whatever transform each band ends up drawn with is recorded for the
-         * cursor readout — see vband_note(). */
-        if (c1 && c2) {
-            vband_note(0u, 1u, ss->ch1.vdiv_idx, SCOPE_TOP, SCOPE_MID_Y - 1,
-                       fx1 ? draw_channel_fixed(b1, th->ch1, SCOPE_TOP, SCOPE_MID_Y - 1, 128u, 0)
-                           : draw_channel_autofit(b1, th->ch1, SCOPE_TOP, SCOPE_MID_Y - 1, 0));
-            if (fx1) vband_note_fixed_mid(0u, SCOPE_TOP, SCOPE_MID_Y - 1);
-            vband_note(1u, 2u, ss->ch2.vdiv_idx, SCOPE_MID_Y + 1, SCOPE_BOT,
-                       fx2 ? draw_channel_fixed(b2, th->ch2, SCOPE_MID_Y + 1, SCOPE_BOT, 128u, 1)
-                           : draw_channel_autofit(b2, th->ch2, SCOPE_MID_Y + 1, SCOPE_BOT, 1));
-            if (fx2) vband_note_fixed_mid(1u, SCOPE_MID_Y + 1, SCOPE_BOT);
-        } else if (c1) {
-            vband_note(0u, 1u, ss->ch1.vdiv_idx, SCOPE_TOP, SCOPE_BOT,
-                       fx1 ? draw_channel_fixed(b1, th->ch1, SCOPE_TOP, SCOPE_BOT, 128u, 0)
-                           : draw_channel_autofit(b1, th->ch1, SCOPE_TOP, SCOPE_BOT, 0));
-            if (fx1) vband_note_fixed_mid(0u, SCOPE_TOP, SCOPE_BOT);
-        } else if (c2) {
-            vband_note(0u, 2u, ss->ch2.vdiv_idx, SCOPE_TOP, SCOPE_BOT,
-                       fx2 ? draw_channel_fixed(b2, th->ch2, SCOPE_TOP, SCOPE_BOT, 128u, 1)
-                           : draw_channel_autofit(b2, th->ch2, SCOPE_TOP, SCOPE_BOT, 1));
-            if (fx2) vband_note_fixed_mid(0u, SCOPE_TOP, SCOPE_BOT);
+        /* The map each band is drawn with is recorded for the cursor
+         * readout — see vband_note(). */
+        autofit_t a1, a2;
+        yt_fits(ss, &a1, &a2);
+        uint8_t slot = 0;
+        if (c1 && a1.on) {
+            vband_note(slot, 1u, ss->ch1.vdiv_idx, &a1, draw_channel(b1, th->ch1, &a1, 0));
+            slot++;
         }
+        if (c2 && a2.on)
+            vband_note(slot, 2u, ss->ch2.vdiv_idx, &a2, draw_channel(b2, th->ch2, &a2, 1));
         return;
     }
 
@@ -1909,8 +1809,12 @@ static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
         vm.unit_per_pixel = g_math_cur.unit_per_px;
         return vm;
     }
-    for (uint8_t i = 0u; i < 2u; i++) {
-        const vband_t *b = &g_vband[i];
+    /* Overlaid true-scale bands both contain the cursors: the active
+     * channel's is tried first. */
+    const uint8_t first = (g_vband[1].on &&
+                           g_vband[1].channel == (active_channel ? 2u : 1u)) ? 1u : 0u;
+    for (uint8_t k = 0u; k < 2u; k++) {
+        const vband_t *b = &g_vband[k ^ first];
         if (!b->on) continue;
         if ((int16_t)y_a < b->y_top || (int16_t)y_a > b->y_bot) continue;
         if ((int16_t)y_b < b->y_top || (int16_t)y_b > b->y_bot) continue;
@@ -2020,7 +1924,7 @@ static void draw_cursors(void)
      *                samples.
      *   vertical   — pixels-per-count is whatever the renderer used for the
      *                band the cursors are in, recorded by vband_note() as it
-     *                draws. It is NOT a constant: autofit, the default path,
+     *                draws. It is NOT a constant: an autofit band
      *                rescales from each record's own min/max. Volts then need
      *                the range's gain; without one the readout stays in
      *                counts, and without even a transform it stays in pixels.
@@ -2076,7 +1980,7 @@ static void draw_cursors(void)
 
         /*
          * Only a band that contains BOTH cursors can convert this. In split
-         * (two-channel) mode each band has its own autofit scale, so a delta
+         * (two-channel autofit) mode each band has its own scale, so a delta
          * spanning the two is not a voltage in either channel — it falls back
          * to pixels rather than picking one scale and hoping.
          */
@@ -2832,12 +2736,9 @@ void draw_scope_screen(uint32_t frame)
         if (fpga_data_ready()) {        /* draw_demo_waveform's own gate: yt_cols is this frame's */
             autofit_t a1, a2;
             yt_fits(ss, &a1, &a2);
-            markers_build(ss, th, &a1, &a2,
-                          ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
-                          ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx),
-                          band_bot, &pm);
+            markers_build(ss, th, &a1, &a2, band_bot, &pm);
         } else {
-            markers_build(ss, th, NULL, NULL, false, false, band_bot, &pm);
+            markers_build(ss, th, NULL, NULL, band_bot, &pm);
         }
         draw_plot_markers(&pm, th);
         for (int dy = 0; dy < PM_TPOS_H; dy++)
@@ -2953,25 +2854,24 @@ void draw_scope_live_frame(void)
     const uint16_t band_bot = strip_top(ss);
 
 
-    /* Autofit exactly as the full path does, including its band split, so a
-     * change of renderer never moves the trace. The transform runs against
-     * SCOPE_BOT even though this function only PAINTS down to band_bot: the
-     * full path draws the trace over that strip and then paints the badges on
-     * top, so matching its geometry means matching its y_bot, not its visible
-     * extent.
+    /* The maps exactly as the full path builds them (yt_fits: true scale or
+     * autofit, the band split), so a change of renderer never moves the
+     * trace. They run against SCOPE_BOT even though this function only
+     * PAINTS down to band_bot: the full path draws the trace over that strip
+     * and then paints the badges on top, so matching its geometry means
+     * matching its y_bot, not its visible extent.
      *
-     * The channel position offset is deliberately NOT applied. The full path
-     * ignores it, and against an autoscaled trace it has no meaning — keeping
-     * it here is what let the two paths disagree in the first place. */
+     * No software position term, in either path: the offset DAC already
+     * moved the signal in the record. */
     autofit_t a1, a2;
     yt_fits(ss, &a1, &a2);           /* b1/b2 ARE yt_cols: the one prep */
 
-    /* The tags, on the same transform (the compositor is autofit-only). */
+    /* The tags, on the same maps. */
     pm_set_t pm;
-    markers_build(ss, th, &a1, &a2, false, false, band_bot, &pm);
+    markers_build(ss, th, &a1, &a2, band_bot, &pm);
 
     /* Trigger dotted line, placed exactly as the full path places it: on the
-     * trigger source's autofit, at the record code where the hardware fires. */
+     * trigger source's map, at the record code where the hardware fires. */
     int16_t trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &a2 : &a1);
     if (trig_y < SCOPE_TOP + 2) trig_y = SCOPE_TOP + 2;
     if (trig_y > SCOPE_BOT - 3) trig_y = SCOPE_BOT - 3;
@@ -2996,7 +2896,7 @@ void draw_scope_live_frame(void)
         const bool inwin = (x < SCOPE_GEOM_COLS);
         const bool trace = (x >= g_view_first && x < g_view_end);
         const bool on1 = a1.on && trace, on2 = a2.on && trace;
-        /* One transform, shared with the full path — see autofit_prep. */
+        /* One transform, shared with the full path — see yt_fits. */
         int16_t y1 = on1 ? autofit_y(&a1, b1[x]) : (int16_t)SCOPE_MID_Y;
         int16_t y2 = on2 ? autofit_y(&a2, b2[x]) : (int16_t)SCOPE_MID_Y;
 
@@ -3018,8 +2918,8 @@ void draw_scope_live_frame(void)
         uint16_t mstrip = mask_strip_color((int)x, th, &mdot);
         uint16_t tc1 = mask_px_fail(0, (int)x) ? th->warning : th->ch1;
         uint16_t tc2 = mask_px_fail(1, (int)x) ? th->warning : th->ch2;
-        /* Mask bounds (dotted, every other column), through each band's own
-         * autofit -- the one transform, as everywhere else. -1 = none. */
+        /* Mask bounds (dotted, every other column), through each channel's
+         * own map -- the one transform, as everywhere else. -1 = none. */
         int16_t bl1 = -1, bh1 = -1, bl2 = -1, bh2 = -1;
         if (g_mask_bounds_on && MASK_BOUND_DOT(x)) {
             uint8_t lo, hi;
@@ -3154,7 +3054,7 @@ int scope_display_mode(void)
 }
 
 /* ui_draw_scratch (the roll FIFO copy) is defined with the Y-T window it
- * shares storage with, above draw_channel_autofit(). */
+ * shares storage with, above the Y-T maps (autofit_t). */
 #define roll_snap      (ui_draw_scratch.roll)
 #define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
 #define ROLL_LABEL_H 16u
@@ -3204,16 +3104,18 @@ void draw_roll_screen(bool full)
     const uint16_t nvis = scope_roll_visible(&roll_snap, SCOPE_GEOM_COLS);
 
     const bool en1 = ss->ch1.enabled, en2 = ss->ch2.enabled;
+    const bool fx1 = ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx);
+    const bool fx2 = ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx);
     scope_roll_vmap_t m1 = { false, 0, 255, 128, SCOPE_TOP, SCOPE_BOT, SCOPE_H };
     scope_roll_vmap_t m2 = m1;
-    if (en1 && en2) {
+    if (yt_vmap_split(en1, en2, fx1, fx2)) {    /* the Y-T band rule */
         m1.y_bot = SCOPE_MID_Y - 1;
         m2.y_top = SCOPE_MID_Y + 1;
     }
     bool on1 = en1, on2 = en2;
-    if (ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx)) m1.fixed = true;
+    if (fx1) m1.fixed = true;
     else on1 = on1 && scope_roll_fit(&roll_snap, 0u, nvis, &m1);
-    if (ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx)) m2.fixed = true;
+    if (fx2) m2.fixed = true;
     else on2 = on2 && scope_roll_fit(&roll_snap, 1u, nvis, &m2);
 
     const uint16_t band_bot = strip_top(ss);
