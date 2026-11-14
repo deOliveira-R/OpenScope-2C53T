@@ -186,19 +186,22 @@ class Shell:
         time.sleep(0.2)
         self.ser.reset_input_buffer()
 
-    def xact(self, line: str, maxt: float = 6.0, idle: float = 0.3) -> str:
-        """Send one line; read until the prompt ('> ') and a short idle, or maxt."""
+    def xact(self, line: str, maxt: float = 6.0) -> str:
+        """Send one line; read until the shell's prompt ('> ') comes back, or maxt.
+
+        The shell echoes the line before it runs the command and prints the
+        prompt only after the handler returned (and every `ui` command returns
+        only once its presses were handled), so the prompt is the one reliable
+        end: silence is not, a slow command (a SAVE grab, a mode switch) is
+        silent for seconds."""
         self.ser.reset_input_buffer()
         self.ser.write(line.encode() + b"\r\n")
-        buf, t0, last = b"", time.time(), time.time()
+        buf, t0 = b"", time.time()
         while time.time() - t0 < maxt:
             chunk = self.ser.read(4096)
             if chunk:
                 buf += chunk
-                last = time.time()
-            elif buf.endswith(b"> ") and time.time() - last >= 0.05:
-                break
-            elif buf and time.time() - last >= idle and b"\n" in buf:
+            elif buf.endswith(b"> "):
                 break
         return buf.decode(errors="replace")
 
@@ -213,9 +216,10 @@ class Shell:
                 out.append(s)
         return out
 
-    def run(self, cmd: str) -> List[str]:
-        ev = ui_events(cmd)
-        maxt = 6.0 if ev is None else 3.0 + ev[0] * PRESS_TIMEOUT_S + ev[1] / 1000.0
+    def run(self, cmd: str, maxt: Optional[float] = None) -> List[str]:
+        if maxt is None:
+            ev = ui_events(cmd)
+            maxt = 6.0 if ev is None else 3.0 + ev[0] * PRESS_TIMEOUT_S + ev[1] / 1000.0
         return self.answer_lines(self.xact(cmd, maxt=maxt), cmd)
 
     def screen(self) -> Tuple[str, Dict[str, str]]:
@@ -229,7 +233,7 @@ class Shell:
         return tuple(int(x) for x in m.groups()) if m else None
 
     def shot(self, path: str) -> str:
-        reply = "\n".join(self.run("screenshot save"))
+        reply = "\n".join(self.run("screenshot save", maxt=20.0))
         m = SAVED.search(reply)
         if not m:
             return "save failed: " + reply[-80:].replace("\n", " ")
@@ -241,7 +245,7 @@ class Shell:
         except SystemExit as e:           # gallery_get reports by SystemExit
             return f"get failed: {e}"
         finally:
-            self.run(f"screenshot delete {n}")
+            self.run(f"screenshot delete {n}", maxt=10.0)
         with open(path, "wb") as f:
             f.write(data)
         return os.path.basename(path)
