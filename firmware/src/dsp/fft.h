@@ -118,6 +118,11 @@ void fft_set_max_hold(bool enable);
 /* Reset max hold buffer. */
 void fft_reset_max_hold(void);
 
+/* Drop the averaging and max-hold history (the next frame starts both
+ * again). No configuration field changes. For the task that calls
+ * fft_process(), when the input is no longer the same signal source. */
+void fft_reset_history(void);
+
 /* Adjust reference level by delta dB. Returns new ref_level_db. */
 float fft_adjust_ref_level(float delta_db);
 

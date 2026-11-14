@@ -385,7 +385,8 @@ static bool view_switch(uint8_t view)
 #endif
 }
 
-/* display_select (+ the CH1 pane's FFT row for split), in three steps, each
+/* The Display pane's selection (osc_menu_ui.c display_select calls this
+ * setter; split was the CH1 pane's FFT row before), in three steps, each
  * undone if a later one is refused, so a failure leaves the old view:
  * Roll off first when the target is not Roll (split needs it off, as
  * channel_change does), then the view, then Roll on for Roll. */

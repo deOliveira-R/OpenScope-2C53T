@@ -82,9 +82,15 @@ typedef struct {
 const osc_pane_layout_t *osc_menu_layout(osc_row_t row);
 
 /* Item indices, per pane (the order the pane draws them). */
-enum { OSC_DISP_YT = 0, OSC_DISP_ROLL, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_WATERFALL, OSC_DISP_COUNT };
+/* Display: the one place the scope's view is chosen. The first six are the
+ * values of the view.mode property, in its order (osc_menu_disp_view_mode).
+ * Split is Y-T on top and the spectrum below. The spectrum views (FFT,
+ * Split, Waterfall) analyse the ACTIVE channel (MOVE; ui.ach), so there is
+ * no per-channel FFT row. */
+enum { OSC_DISP_YT = 0, OSC_DISP_ROLL, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_SPLIT, OSC_DISP_WATERFALL,
+       OSC_DISP_COUNT };
 enum { OSC_CUR_OFF = 0, OSC_CUR_TIME, OSC_CUR_VOLT, OSC_CUR_BOTH, OSC_CUR_COUNT };
-enum { OSC_CH_ENABLE = 0, OSC_CH_PROBE, OSC_CH_COUPLING, OSC_CH_FFT, OSC_CH_COUNT };
+enum { OSC_CH_ENABLE = 0, OSC_CH_PROBE, OSC_CH_COUPLING, OSC_CH_COUNT };
 enum { OSC_TRIG_MODE = 0, OSC_TRIG_EDGE, OSC_TRIG_SOURCE, OSC_TRIG_COUNT };
 enum { OSC_PERS_OFF = 0, OSC_PERS_500MS, OSC_PERS_1S, OSC_PERS_2S, OSC_PERS_INF, OSC_PERS_COUNT };
 /* Measure: 0 = channel tab, 1 = All ("A-on"), 2 = None ("A-off"), 3.. = chips */
@@ -140,6 +146,14 @@ const char *osc_menu_row_title(osc_row_t row);    /* "Display Mode" ... (pane ti
  * ("Channel", "Probe", ...); Measure chips use the stock measurement labels.
  * `ch` matters only for the Measure tab ("CH1"/"CH2"). "" out of range. */
 const char *osc_menu_item_label(osc_row_t row, uint8_t item, uint8_t ch);
+
+/* Display item -> the view.mode value it sets (0 yt, 1 roll, 2 xy, 3 fft,
+ * 4 split, 5 waterfall: model_table.h), or -1 for an item that is no view. */
+#define OSC_DISP_VIEW_MODES 6
+int8_t  osc_menu_disp_view_mode(uint8_t item);
+/* view.mode value -> the Display item that shows it checked;
+ * OSC_DISP_COUNT (no item) for a value out of range. */
+uint8_t osc_menu_disp_item(int32_t view_mode);
 
 /* Measure chip `chip` (0..11, grid order) -> scope_prm_id_t. Stock's grid is
  * row-major Freq Wid+ Vp-p / Peri Wid- Amp / Duty+ Vmax Vrms / Duty- Vmin Avg. */

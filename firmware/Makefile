@@ -219,6 +219,7 @@ app-coldtrace-meter: CFLAGS += -DFEATURE_STREAM=$(STREAM_BENCH)
 ifneq ($(findstring FFT,$(FEATURES)),)
   C_SOURCES += src/dsp/fft.c
   C_SOURCES += src/dsp/fft_live.c
+  C_SOURCES += src/dsp/fft_source.c
   C_SOURCES += src/dsp/fft_test_signals.c
   FFT_DEFS = -DFEATURE_FFT
   # CMSIS-DSP (optional optimization — auto-detected)
@@ -1023,6 +1024,16 @@ $(BUILD_DIR)/test_fft_live: tests/test_fft_live.c src/dsp/fft_live.c src/dsp/fft
 		$< src/dsp/fft_live.c src/dsp/fft.c src/dsp/shared_mem.c -lm -o $@
 
 test-fft-live: $(BUILD_DIR)/test_fft_live
+	$<
+
+# Which channel the spectrum views analyse (src/dsp/fft_source.c, pure): the
+# active channel, its enable, what the published record holds and the
+# 250 MS/s merge -> buffer, sample rate, label, "CH2 is off".
+$(BUILD_DIR)/test_fft_source: tests/test_fft_source.c src/dsp/fft_source.c src/dsp/fft_source.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/fft_source.c -o $@
+
+.PHONY: test-fft-source
+test-fft-source: $(BUILD_DIR)/test_fft_source
 	$<
 
 # The firmware's FFT path on the host: src/dsp/fft.c with USE_CMSIS_DSP, the

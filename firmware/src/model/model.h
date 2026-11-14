@@ -96,7 +96,7 @@ enum {                                   /* prop_desc_t.flags */
 typedef enum { PS_OK = 0,      /* applied (value may equal the old one)                   */
                PS_CLAMPED,     /* applied, value was clamped to the range                 */
                PS_INVALID,     /* out of range / unknown name / RO: nothing touched       */
-               PS_REFUSED,     /* a rule said no ("Keep one CH on", "FFT reads CH1 only") */
+               PS_REFUSED,     /* a rule said no ("Keep one CH on")                       */
                PS_NOT_SET,     /* the owner driver failed: old value kept                 */
                PS_BUSY,        /* self-cal running / acquisition did not park             */
                PS_TIMEOUT,     /* shell only: the executor did not answer                 */

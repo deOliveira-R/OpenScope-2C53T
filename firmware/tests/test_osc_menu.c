@@ -200,6 +200,49 @@ static void test_radio(void)
           !osc_menu_select_closes(OSC_ROW_CURSOR, OSC_CUR_COUNT));
 }
 
+/* ── Display pane: the one place for the view ───────────────────────── */
+static void test_display(void)
+{
+    printf("Display pane (the scope's view; view.mode)\n");
+    static const char *const want[] = { "Y-T", "Roll", "X-Y", "FFT", "Split", "Waterfall" };
+    const osc_pane_layout_t *l = osc_menu_layout(OSC_ROW_DISPLAY);
+    int ok = (l->kind == OSC_PANE_RADIO);
+    for (uint8_t i = 0; i < 6; i++)
+        ok &= strcmp(osc_menu_item_label(OSC_ROW_DISPLAY, i, 0), want[i]) == 0;
+    CHECK("six entries, in order: Y-T, Roll, X-Y, FFT, Split, Waterfall", ok && l->n_items == 6 &&
+          OSC_DISP_COUNT == 6);
+    CHECK("Split is an item of its own, between FFT and Waterfall",
+          OSC_DISP_SPLIT == OSC_DISP_FFT + 1 && OSC_DISP_WATERFALL == OSC_DISP_SPLIT + 1);
+
+    /* item <-> view.mode (0 yt, 1 roll, 2 xy, 3 fft, 4 split, 5 waterfall);
+     * test_model.c checks the same pairs against the property itself. */
+    ok = 1;
+    unsigned seen = 0;
+    for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
+        const int8_t vm = osc_menu_disp_view_mode(i);
+        ok &= vm >= 0 && vm < OSC_DISP_VIEW_MODES && !(seen & (1u << vm));
+        seen |= 1u << vm;
+        ok &= osc_menu_disp_item(vm) == i;         /* and back */
+    }
+    CHECK("every view.mode value has exactly one item, both ways", ok && seen == 0x3Fu);
+    CHECK("the named pairs", osc_menu_disp_view_mode(OSC_DISP_YT) == 0 && osc_menu_disp_view_mode(OSC_DISP_ROLL) == 1 &&
+          osc_menu_disp_view_mode(OSC_DISP_XY) == 2 && osc_menu_disp_view_mode(OSC_DISP_FFT) == 3 &&
+          osc_menu_disp_view_mode(OSC_DISP_SPLIT) == 4 && osc_menu_disp_view_mode(OSC_DISP_WATERFALL) == 5);
+    CHECK("out of range: no view, no item", osc_menu_disp_view_mode(OSC_DISP_COUNT) == -1 &&
+          osc_menu_disp_view_mode(0xFF) == -1 && osc_menu_disp_item(6) == OSC_DISP_COUNT &&
+          osc_menu_disp_item(-1) == OSC_DISP_COUNT);
+
+    fresh();
+    osc_menu_open(OSC_ROW_DISPLAY);
+    key(OSC_KEY_OK);
+    osc_menu_set_item(osc_menu_disp_item(4));
+    CHECK("the cursor starts on the view in force (split)", S()->item == OSC_DISP_SPLIT);
+    CHECK("OK picks Split and the page stays", key(OSC_KEY_OK) == OSC_RES_REDRAW && osc_menu_is_open() &&
+          A.kind == OSC_ACT_SELECT && A.row == OSC_ROW_DISPLAY && A.item == OSC_DISP_SPLIT);
+    CHECK("UP from Y-T wraps to the last item", (osc_menu_set_item(0), key(OSC_KEY_UP)) == OSC_RES_REDRAW &&
+          S()->item == l->n_items - 1u);
+}
+
 /* ── value panes ────────────────────────────────────────────────────── */
 static void test_values(void)
 {
@@ -214,8 +257,18 @@ static void test_values(void)
     CHECK("LEFT changes by -1 (and stays in the pane)", key(OSC_KEY_LEFT) == OSC_RES_REDRAW &&
           A.kind == OSC_ACT_CHANGE && A.dir == -1 && S()->in_pane);
     CHECK("OK changes by +1", key(OSC_KEY_OK) == OSC_RES_REDRAW && A.kind == OSC_ACT_CHANGE && A.dir == +1);
-    key(OSC_KEY_DOWN);
-    CHECK("DOWN from FFT wraps to Channel", key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->item == OSC_CH_ENABLE);
+    CHECK("no FFT row: three rows (Channel, Probe, Coupling), CH1 and CH2 alike",
+          OSC_CH_COUNT == 3 && osc_menu_layout(OSC_ROW_CH1)->n_items == 3 &&
+          osc_menu_layout(OSC_ROW_CH2)->n_items == 3);
+    {
+        int fft = 0;
+        for (uint8_t i = 0; i < 8; i++)
+            fft |= strstr(osc_menu_item_label(OSC_ROW_CH1, i, 0), "FFT") != NULL ||
+                   strstr(osc_menu_item_label(OSC_ROW_CH2, i, 0), "FFT") != NULL;
+        CHECK("no channel row is labelled FFT", !fft);
+    }
+    CHECK("DOWN from Coupling (the last row) wraps to Channel", S()->item == OSC_CH_COUPLING &&
+          key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->item == OSC_CH_ENABLE);
     CHECK("BACK returns to the rail", key(OSC_KEY_BACK) == OSC_RES_REDRAW && !S()->in_pane);
     osc_menu_open(OSC_ROW_TRIGGER);
     key(OSC_KEY_RIGHT); key(OSC_KEY_UP);
@@ -403,6 +456,7 @@ int main(void)
     test_open_close();
     test_rail();
     test_radio();
+    test_display();
     test_values();
     test_measure();
     test_math();

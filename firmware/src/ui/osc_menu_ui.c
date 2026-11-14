@@ -8,13 +8,14 @@
  *
  * WHAT IS APPLIED, AND HOW (nothing reimplemented: the glue the keys and the
  * Settings list use is shared, src/tasks/scope_apply.c, since the merge):
- *   Display   scope_view (+ the FFT pool, as the old PRM cycle did) and
- *             ss->roll + fpga_apply_roll(), reverted if refused
+ *   Display   the view.mode property (model: the view, the FFT pool and
+ *             Roll in one setter, the old view kept if a step is refused)
  *   Cursors   ss->cursor.mode / .active (scope_state.c's per-mode rule)
  *   Measure   meas_select.c (in the model)
  *   CH1/CH2   fpga_apply_channel_enables() (reverted when both would be off),
  *             probe, fpga_apply_coupling() (label changes only if the relay
- *             did), FFT on/off = the split view (CH1: the FFT reads CH1 only)
+ *             did). No FFT row: the spectrum views are Display items and
+ *             analyse the active channel (dsp/fft_source.h)
  *   Trigger   trig_menu_change() + fpga_apply_trigger_source() / SINGLE re-arm
  *   Persist   persist_init/deinit/set_mode (the pool is shared with the FFT)
  *   Math      math_enabled / math_op
@@ -38,9 +39,7 @@
 #include "math_channel.h"
 #include "fpga.h"
 #include "scope_apply.h"
-#ifdef FEATURE_FFT
-#include "fft.h"
-#endif
+#include "model.h"
 #include <stdio.h>
 
 #define PAGE_Y        16u
@@ -68,24 +67,10 @@ static uint8_t g_note_opens;
  * Live values
  * ═══════════════════════════════════════════════════════════════════ */
 
-static bool view_is_fft(void)
-{
-#ifdef FEATURE_FFT
-    return scope_view == SCOPE_VIEW_FFT || scope_view == SCOPE_VIEW_SPLIT ||
-           scope_view == SCOPE_VIEW_WATERFALL;
-#else
-    return false;
-#endif
-}
-
+/* The item of the view in force: view.mode, through the model. */
 static uint8_t display_current(void)
 {
-#ifdef FEATURE_FFT
-    if (scope_view == SCOPE_VIEW_XY)        return OSC_DISP_XY;
-    if (scope_view == SCOPE_VIEW_FFT)       return OSC_DISP_FFT;
-    if (scope_view == SCOPE_VIEW_WATERFALL) return OSC_DISP_WATERFALL;
-#endif
-    return scope_state_get()->roll ? OSC_DISP_ROLL : OSC_DISP_YT;   /* split = Y-T + CH1 FFT */
+    return osc_menu_disp_item(prop_get(P(VIEW_MODE)));
 }
 
 static bool display_available(uint8_t item)
@@ -147,39 +132,21 @@ static channel_state_t *chan(uint8_t ch)
  * Apply
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* The view, the pool and Roll go through scope_apply.c, the code the keys
- * use (scope_view_select(): spectrum views claim the FFT pool, persistence
- * is switched off first; leaving them releases it). */
-static void view_set(int v)
-{
-#ifdef FEATURE_FFT
-    scope_view_select((scope_view_t)v);
-#else
-    (void)v;
-#endif
-}
-
-/* Roll on/off through the FPGA; false (and the old mode kept) if refused. */
-static bool roll_set(bool want)
-{
-    if (scope_apply_roll(want)) return true;
-    snprintf(g_note, sizeof g_note, "Roll NOT SET");
-    return false;
-}
-
+/* The view, the FFT pool and Roll are one property, view.mode (this is the
+ * executor: the key, the shell's `set view.mode` and a host are one path).
+ * Its setter leaves the old view when a step is refused and says why. */
 static void display_select(uint8_t item)
 {
     if (!display_available(item)) {
         snprintf(g_note, sizeof g_note, "Not in this build");
         return;
     }
-#ifdef FEATURE_FFT
-    static const int8_t k_view[OSC_DISP_COUNT] = {
-        SCOPE_VIEW_TIME, SCOPE_VIEW_TIME, SCOPE_VIEW_XY, SCOPE_VIEW_FFT, SCOPE_VIEW_WATERFALL,
-    };
-    view_set(k_view[item]);
-#endif
-    (void)roll_set(item == OSC_DISP_ROLL);
+    const int8_t vm = osc_menu_disp_view_mode(item);
+    if (vm < 0) return;
+    prop_note_t n;
+    const prop_status_t st = prop_set_local(P(VIEW_MODE), vm, ORIGIN_KEY, &n);
+    if (st != PS_OK && st != PS_CLAMPED)
+        snprintf(g_note, sizeof g_note, "%s", n.text[0] ? n.text : "view NOT SET");
 }
 
 static void cursor_select(uint8_t item)
@@ -241,19 +208,6 @@ static void channel_change(uint8_t ch, uint8_t item, int dir)
             snprintf(g_note, sizeof g_note, "%s", t);
         break;
     }
-    case OSC_CH_FFT:
-#ifdef FEATURE_FFT
-        if (ch != 0u) {
-            snprintf(g_note, sizeof g_note, "The FFT reads CH1 only");
-        } else if (view_is_fft()) {
-            view_set(SCOPE_VIEW_TIME);
-        } else if (roll_set(false)) {
-            view_set(SCOPE_VIEW_SPLIT);
-        }
-#else
-        snprintf(g_note, sizeof g_note, "Not in this build");
-#endif
-        break;
     default:
         break;
     }
@@ -308,6 +262,13 @@ osc_result_t osc_menu_key(osc_key_t k)
 #define ITEM_X     (RAIL_W + MENU_FRAME_NOTCH_W + 4u)   /* 106: panel left  */
 #define ITEM_W     (LCD_WIDTH - ITEM_X - 4u)            /* 210: panel width */
 
+#define RADIO_PITCH  27u
+#define RADIO_ROWS   6u       /* the longest radio pane: Display */
+_Static_assert(CONTENT_Y + RADIO_ROWS * RADIO_PITCH <= PAGE_Y + PAGE_H - MENU_FRAME_FOOTER_H,
+               "the radio rows end above the footer");
+_Static_assert(OSC_DISP_COUNT <= RADIO_ROWS && OSC_CUR_COUNT <= RADIO_ROWS &&
+               OSC_PERS_COUNT <= RADIO_ROWS, "every radio pane fits");
+
 static void draw_radio(const osc_menu_state_t *s)
 {
     const osc_row_t row = (osc_row_t)s->row;
@@ -315,7 +276,7 @@ static void draw_radio(const osc_menu_state_t *s)
     const uint8_t cur = radio_current(row);
     for (uint8_t i = 0; i < n; i++) {
         const bool ok = (row != OSC_ROW_DISPLAY) || display_available(i);
-        menu_frame_radio(&k_frame, (uint16_t)(CONTENT_Y + i * 27u), 24, osc_menu_item_label(row, i, 0),
+        menu_frame_radio(&k_frame, (uint16_t)(CONTENT_Y + i * RADIO_PITCH), 24, osc_menu_item_label(row, i, 0),
                          s->in_pane && s->item == i, cur == i, ok);
     }
 }
@@ -336,14 +297,6 @@ static void draw_values(const osc_menu_state_t *s)
             case OSC_CH_ENABLE:   v = c->enabled ? "ON" : "OFF"; break;
             case OSC_CH_PROBE:    v = probe_labels[c->probe % PROBE_COUNT]; break;
             case OSC_CH_COUPLING: v = coupling_labels[c->coupling % COUPLING_COUNT]; break;
-            case OSC_CH_FFT:
-#ifdef FEATURE_FFT
-                ok = (ch == 0u);
-                v  = ok ? (view_is_fft() ? "ON" : "OFF") : "CH1 only";
-#else
-                ok = false; v = "n/a";
-#endif
-                break;
             default: break;
             }
         }

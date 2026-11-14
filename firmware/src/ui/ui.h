@@ -233,6 +233,11 @@ uint32_t scope_ui_view_ratio(void);
  * the range now selected; -100 when nothing limits it. */
 int16_t  scope_ui_lowest_visible_pos(uint8_t ch);
 bool     scope_ui_view_merged(void);
+#ifdef FEATURE_FFT
+/* The record the spectrum views analyse (the active channel's), NULL when
+ * there is none: no capture yet, or that channel is off (dsp/fft_source.h). */
+const volatile uint8_t *scope_ui_fft_record(void);
+#endif
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
  * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the column
  * rate used (record rate x zoom). For `fpga scope cursor`. */

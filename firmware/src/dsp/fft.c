@@ -633,6 +633,13 @@ void fft_set_max_hold(bool enable)
         fft_reset_max_hold();
 }
 
+void fft_reset_history(void)
+{
+    if (!initialized || max_hold_buf == 0) return;
+    avg_primed = false;
+    fft_reset_max_hold();
+}
+
 void fft_reset_max_hold(void)
 {
     uint16_t i;

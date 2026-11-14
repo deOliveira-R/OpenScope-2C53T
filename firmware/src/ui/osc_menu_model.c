@@ -30,9 +30,9 @@ static const char *const k_row_title[OSC_ROW_COUNT] = {
     "CH2 Settings", "Trigger Settings", "Persistence", "Mathematics",
 };
 
-static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "Roll", "X-Y", "FFT", "Waterfall" };
+static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "Roll", "X-Y", "FFT", "Split", "Waterfall" };
 static const char *const k_cur[OSC_CUR_COUNT]    = { "Off", "X1-X2  (time)", "Y1-Y2  (volts)", "Both" };
-static const char *const k_ch[OSC_CH_COUNT]      = { "Channel:", "Probe:", "Coupling:", "FFT:" };
+static const char *const k_ch[OSC_CH_COUNT]      = { "Channel:", "Probe:", "Coupling:" };
 static const char *const k_trig[OSC_TRIG_COUNT]  = { "Mode:", "Edge:", "Channel:" };
 static const char *const k_pers[OSC_PERS_COUNT]  = { "Off", "500 ms", "1 s", "2 s", "Infinite" };
 static const char *const k_math[OSC_MATH_COUNT]  = {
@@ -67,6 +67,27 @@ const char *osc_menu_row_label(osc_row_t row)
 const char *osc_menu_row_title(osc_row_t row)
 {
     return ((unsigned)row < OSC_ROW_COUNT) ? k_row_title[row] : "";
+}
+
+/* view.mode per Display item (props_scope.c: yt roll xy fft split
+ * waterfall); -1 = the item is not a view. test_osc_menu.c checks the pairs
+ * against the property's own value names. */
+static const int8_t k_disp_view_mode[OSC_DISP_COUNT] = {
+    [OSC_DISP_YT] = 0, [OSC_DISP_ROLL] = 1, [OSC_DISP_XY] = 2,
+    [OSC_DISP_FFT] = 3, [OSC_DISP_SPLIT] = 4, [OSC_DISP_WATERFALL] = 5,
+};
+
+int8_t osc_menu_disp_view_mode(uint8_t item)
+{
+    return (item < OSC_DISP_COUNT) ? k_disp_view_mode[item] : (int8_t)-1;
+}
+
+uint8_t osc_menu_disp_item(int32_t view_mode)
+{
+    if (view_mode >= 0)
+        for (uint8_t i = 0; i < OSC_DISP_COUNT; i++)
+            if (k_disp_view_mode[i] == view_mode) return i;
+    return OSC_DISP_COUNT;
 }
 
 uint8_t osc_menu_prm_of_chip(uint8_t chip)

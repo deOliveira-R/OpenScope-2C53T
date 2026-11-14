@@ -598,9 +598,10 @@ void draw_info_bar(void)
             /* UP/DOWN change the ACTIVE channel's V/div here too, and the
              * channel badges are not on this bar: show that channel's
              * measured V/div at the right (it replaces the "SEL:Window"
-             * hint), and CLIP when the analysed channel's record (CH1: the
-             * FFT reads CH1 only) touches an ADC rail, whose flat tops put
-             * false harmonics in the spectrum. */
+             * hint), and CLIP when that channel's record touches an ADC
+             * rail, whose flat tops put false harmonics in the spectrum.
+             * It is the channel the spectrum analyses (dsp/fft_source.h);
+             * grey when it is switched off (the plot says "CHn is off"). */
             const scope_state_t *ss = scope_state_get();
             const uint8_t ach = key_active_channel_get() ? 2u : 1u;
             const channel_state_t *ac = (ach == 2u) ? &ss->ch2 : &ss->ch1;
@@ -609,9 +610,10 @@ void draw_info_bar(void)
             char lab[20];
             snprintf(lab, sizeof lab, "CH%u %s", (unsigned)ach, fv.vdiv);
             font_draw_string_right(LCD_WIDTH - 4u, LCD_HEIGHT - 14, lab,
-                                   ach == 2u ? th->ch2 : th->ch1, ib, &font_small);
+                                   !ac->enabled ? th->text_secondary
+                                   : ach == 2u ? th->ch2 : th->ch1, ib, &font_small);
             const uint8_t clip = info_clip();
-            if (clip & 1u)
+            if (clip & (1u << (ach - 1u)))
                 font_draw_string(176, LCD_HEIGHT - 14, "CLIP", th->warning, ib, &font_small);
             s_info_drawn_epoch = status_bar_info_epoch();
             s_info_drawn_clip = clip;

@@ -903,6 +903,36 @@ static void test_meter_link(void)
     g_link_on = false;
 }
 
+/* The scope menu's Display pane is the one place the view is chosen: each
+ * of its view items sets one view.mode value and shows as checked for it. */
+#include "osc_menu_model.h"
+static void test_display_pane(void)
+{
+    static const char *const name[OSC_DISP_VIEW_MODES] = { "yt", "roll", "xy", "fft", "split", "waterfall" };
+    CHECK(P(VIEW_MODE)->id == 0x0501 && P(VIEW_MODE)->min == 0 && P(VIEW_MODE)->max == OSC_DISP_VIEW_MODES - 1);
+    unsigned seen = 0;
+    for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
+        const int8_t vm = osc_menu_disp_view_mode(i);
+        if (vm < 0) continue;
+        fresh();
+        prop_note_t n;
+        char t[PROP_TEXT_MAX];
+        CHECK(prop_set_local(P(VIEW_MODE), vm, ORIGIN_KEY, &n) == PS_OK);
+        CHECK(prop_get(P(VIEW_MODE)) == vm && osc_menu_disp_item(prop_get(P(VIEW_MODE))) == i);
+        prop_format_value(P(VIEW_MODE), vm, t, sizeof t);
+        CHECKF(strcmp(t, name[vm]) == 0, "item %u -> view.mode %d = %s", i, vm, t);
+        seen |= 1u << vm;
+    }
+    CHECK(seen == (1u << OSC_DISP_VIEW_MODES) - 1u);
+    /* the active channel is the spectrum's source: reported, never set here */
+    CHECK(P(UI_ACH)->id == 0x0C02 && (P(UI_ACH)->flags & PF_RO));
+    fresh();
+    active_channel = 1;
+    CHECK(prop_get(P(UI_ACH)) == 1);
+    active_channel = 0;
+    CHECK(prop_get(P(UI_ACH)) == 0);
+}
+
 static void test_sizes(void)
 {
     printf("  host: sizeof(prop_desc_t) = %u, table = %u B (%u properties), epochs = %u B\n",
@@ -928,6 +958,7 @@ int main(void)
     test_profile_write_and_defaults();
     test_instruments();
     test_meter_link();
+    test_display_pane();
     test_sizes();
     printf("test_model: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

@@ -44,6 +44,7 @@
 #include "scope_mask.h"
 #ifdef FEATURE_FFT
 #include "fft_live.h"
+#include "fft_source.h"
 #include "fft_test_signals.h"
 #endif
 #include "at32f403a_407.h"  /* GPIO port reads in the debug overlay */
@@ -3575,8 +3576,10 @@ static bool  fft_ref_primed  = false;
  * views did not say so: a user could not tell the spectrum of their probe
  * from the spectrum of a constant compiled into the firmware.
  *
- * Since then: the live CH1 record if there is one, and the view is LABELLED
- * with what it got. Same gate as the trace (fpga_data_ready()), same
+ * Since then: the live record if there is one, and the view is LABELLED
+ * with what it got. The record is the ACTIVE channel's (the one MOVE selects,
+ * ui.ach): dsp/fft_source.h decides the buffer, the rate and the label, and
+ * says "CH2 is off" instead of a spectrum when that channel is off. Same gate as the trace (fpga_data_ready()), same
  * tear-check as the measurement badges (frame generation counter).
  *
  * 2026-09-15 (FFT-live S1):
@@ -3598,7 +3601,7 @@ static bool  fft_ref_primed  = false;
 typedef enum {
     FFT_SRC_NONE = 0,   /* live build, no capture yet: nothing to analyse */
     FFT_SRC_DEMO,       /* synthetic 1 kHz square at FFT_DEMO_SAMPLE_RATE_HZ */
-    FFT_SRC_LIVE        /* CH1 acquisition record, head skipped */
+    FFT_SRC_LIVE        /* the active channel's acquisition record, head skipped */
 } fft_src_t;
 
 #define FFT_DEMO_SAMPLE_RATE_HZ  44100.0f
@@ -3618,29 +3621,95 @@ static float fft_live_rate_in_force(void)
     return fpga_record_sample_rate();        /* x2 for an interleaved record */
 }
 
-static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
-                                   float *fs_out)
+/* The published record's facts and the UI's channel state, as one snapshot
+ * for fft_source_select(). Called inside the generation check of the copy. */
+static void fft_source_now(fft_source_t *sel)
 {
-    const volatile uint8_t *b = fpga_get_ch1_buf();
+    const scope_state_t *ss = scope_state_get();
+    fft_source_in_t in;
+    in.active_ch   = active_channel ? 1u : 0u;
+    in.enabled[0]  = ss->ch1.enabled;
+    in.enabled[1]  = ss->ch2.enabled;
+    in.rec_has[0]  = fpga_acq_record_has_ch(0u);
+    in.rec_has[1]  = fpga_acq_record_has_ch(1u);
+    in.rec_merged  = fpga_acq_record_interleaved();
+    in.rec_rate_hz = fft_live_rate_in_force();
+    fft_source_select(&in, sel);
+}
+
+/* Averaging, max-hold, the tracked reference and the waterfall rows are
+ * history of ONE source. When the source changes (MOVE to the other
+ * channel, the channel switched off, live <-> demo) they are dropped before
+ * the next transform, on this task (the one that runs fft_process), so two
+ * channels are never mixed. No fft_config_t field is touched: the scope's
+ * redraw epoch mixes those. */
+static uint8_t fft_hist_key = 0xFFu;       /* fft_source_key(), 3 = demo */
+static bool    waterfall_restart;
+static void fft_history_track(uint8_t key)
+{
+    if (key == fft_hist_key) return;
+    fft_hist_key = key;
+    fft_reset_history();
+    fft_ref_primed = false;
+    waterfall_restart = true;
+}
+
+static const volatile uint8_t *fft_source_buf(const fft_source_t *sel)
+{
+    return sel->buf ? fpga_get_ch2_buf() : fpga_get_ch1_buf();
+}
+
+/* The record the spectrum views analyse now, NULL when there is none (no
+ * capture yet, the active channel off or without a record of its own): for
+ * the AUTO key (input_handler.c), so it configures on what is shown. */
+const volatile uint8_t *scope_ui_fft_record(void)
+{
+    fft_source_t sel;
+    if (!fpga_data_ready()) return NULL;
+    fft_source_now(&sel);
+    return (sel.state == FFT_SEL_OK) ? fft_source_buf(&sel) : NULL;
+}
+
+/* *sel says which channel (and why not, in sel->note, when the answer is
+ * FFT_SRC_NONE because of the channel). */
+static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
+                                   float *fs_out, fft_source_t *sel)
+{
     *n_out = 0;
     *fs_out = 0.0f;
 
-    if (fpga_data_ready() && b != NULL) {
+    fft_source_now(sel);
+    if (sel->state == FFT_SEL_OFF) {             /* in every build, demo included */
+        fft_history_track(0u);
+        return FFT_SRC_NONE;
+    }
+
+    if (fpga_data_ready() && fft_source_buf(sel) != NULL) {
         uint16_t n = 0;
         for (int attempt = 0; attempt < 3; attempt++) {
             uint32_t g0 = fpga_acq_frame_generation();
-            n = fft_live_prepare((const uint8_t *)b, FPGA_ADC_BUF_SIZE,
-                                 sbuf, FFT_SIZE);
+            fft_source_now(sel);
+            n = 0;
+            if (sel->state == FFT_SEL_OK)
+                n = fft_live_prepare((const uint8_t *)fft_source_buf(sel), FPGA_ADC_BUF_SIZE,
+                                     sbuf, FFT_SIZE);
             if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
                 break;
         }
-        *fs_out = fft_live_rate_in_force();
+        if (sel->state != FFT_SEL_OK) {          /* off, or no record of its own yet */
+            fft_history_track(0u);
+            return FFT_SRC_NONE;
+        }
+        fft_history_track(fft_source_key(sel));
+        *fs_out = sel->rate_hz;
         fft_set_sample_rate(*fs_out);
         *n_out = n;
         return FFT_SRC_LIVE;
     }
+    sel->note[0] = '\0';                         /* no capture yet: "waiting", not the channel */
 
 #if FFT_DEMO_REACHABLE
+    fft_history_track(3u);
     fft_set_sample_rate(FFT_DEMO_SAMPLE_RATE_HZ);
     test_signal_generate(TEST_SIG_SQUARE, sbuf,
                          FFT_SIZE, FFT_DEMO_SAMPLE_RATE_HZ,
@@ -3684,6 +3753,26 @@ static float fft_display_ref(const fft_config_t *cfg, const float *data,
 
 /* The spectrum in [y_top, y_top + height): every pixel composed per column
  * and streamed, never blanked first (the FFT views' 3-4 Hz flash). */
+static void fft_note_compose(uint16_t y_top, uint16_t height, const char *msg)
+{
+    const uint16_t y_bot = (uint16_t)(y_top + height);
+    ctext_set_t T;
+    T.n = 0;
+    ctext_add(&T, 4, y_top + 2, msg, COLOR_GRAY, COLOR_BLACK, false);
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        lcd_set_window(x, y_top, 1, height);
+        for (uint16_t y = y_top; y < y_bot; y++) {
+            uint16_t c = COLOR_BLACK;
+            (void)ctext_px(&T, x, y, &c);
+            lcd_write_data(c);
+        }
+    }
+}
+
+/* CH2's spectrum: cyan at the top like its trace, a darker teal where CH1's
+ * bars use cyan, so the bands stay distinct. */
+#define FFT_BAR_LOW_CH2  0x0410u
+
 static void fft_region_compose(uint16_t y_top, uint16_t height)
 {
     const fft_config_t *cfg = fft_get_config();
@@ -3694,23 +3783,22 @@ static void fft_region_compose(uint16_t y_top, uint16_t height)
     int16_t *sbuf = fft_get_sample_buf();
     uint16_t nsamp = 0;
     float fs = 0.0f;
-    const fft_src_t src = sbuf ? fft_prepare_input(sbuf, &nsamp, &fs) : FFT_SRC_NONE;
+    fft_source_t sel;
+    sel.note[0] = '\0';
+    const fft_src_t src = sbuf ? fft_prepare_input(sbuf, &nsamp, &fs, &sel) : FFT_SRC_NONE;
     if (cfg == NULL || src == FFT_SRC_NONE || nsamp == 0) {
-        /* An engine that failed its init says so; never a spectrum from it. */
-        ctext_add(&T, 4, y_top + 2,
-                  (fft_is_initialized() && !fft_engine_ok()) ? "FFT: init failed" : "FFT: waiting",
-                  COLOR_GRAY, COLOR_BLACK, false);
-        for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-            lcd_set_window(x, y_top, 1, height);
-            for (uint16_t y = y_top; y < y_bot; y++) {
-                uint16_t c = COLOR_BLACK;
-                (void)ctext_px(&T, x, y, &c);
-                lcd_write_data(c);
-            }
-        }
+        /* An engine that failed its init says so; never a spectrum from it.
+         * A channel that is off (or has no record yet) is named. */
+        fft_note_compose(y_top, height,
+                         (fft_is_initialized() && !fft_engine_ok()) ? "FFT: init failed"
+                         : sel.note[0] ? sel.note : "FFT: waiting");
         return;
     }
     const bool live = (src == FFT_SRC_LIVE);
+    /* CH2's spectrum in CH2's colour; the demo keeps CH1's. */
+    const bool ch2 = live && sel.ch == 1u;
+    const uint16_t bar_hot = ch2 ? COLOR_CH2 : COLOR_CH1;
+    const uint16_t bar_low = ch2 ? FFT_BAR_LOW_CH2 : COLOR_CYAN;
     fft_process(sbuf, nsamp, &fft_result);
     const float *draw_data = (fft_result.avg_db != NULL) ? fft_result.avg_db
                                                          : fft_result.level_db;
@@ -3770,9 +3858,11 @@ static void fft_region_compose(uint16_t y_top, uint16_t height)
     {
         char hdr[40], f[16];
         const uint16_t col = live ? COLOR_WHITE : COLOR_ORANGE;
-        const char *tag = live ? "LIVE CH1" : "DEMO sq";
+        char tag[12];
+        if (live) snprintf(tag, sizeof tag, "LIVE %s", sel.label);
+        else      snprintf(tag, sizeof tag, "DEMO sq");
         if (fft_result.num_peaks == 0) {
-            snprintf(hdr, sizeof hdr, "%s", live ? "LIVE CH1" : "DEMO SIGNAL");
+            snprintf(hdr, sizeof hdr, "%s", live ? tag : "DEMO SIGNAL");
         } else if (fft_live_axis_known(fs)) {
             fft_live_format_hz(fft_result.peaks[0].freq_hz, f, sizeof f);
             snprintf(hdr, sizeof hdr, "%s pk %s", tag, f);
@@ -3804,8 +3894,8 @@ static void fft_region_compose(uint16_t y_top, uint16_t height)
             if (n < 0.0f) n = 0.0f;
             if (n > 1.0f) n = 1.0f;
             bar_top = (int)y_top + (int)(n * (float)height);
-            bar_c = (n < 0.25f) ? COLOR_CH1 : (n < 0.5f) ? COLOR_GREEN
-                  : (n < 0.75f) ? COLOR_CYAN : COLOR_GRID;
+            bar_c = (n < 0.25f) ? bar_hot : (n < 0.5f) ? COLOR_GREEN
+                  : (n < 0.75f) ? bar_low : COLOR_GRID;
             if (fft_result.max_hold_db != NULL && (x & 1u) == 0u) {
                 const float m = (ref_db - fft_result.max_hold_db[bin]) / range_db;
                 if (m >= 0.0f && m <= 1.0f) mh_y = (int)y_top + (int)(m * (float)height);
@@ -3986,12 +4076,13 @@ void draw_waterfall_screen(void)
     }
     uint16_t nsamp = 0;
     float fs = 0.0f;
-    fft_src_t src = fft_prepare_input(sbuf, &nsamp, &fs);
+    fft_source_t sel;
+    sel.note[0] = '\0';
+    fft_src_t src = fft_prepare_input(sbuf, &nsamp, &fs, &sel);
     if (src == FFT_SRC_NONE || nsamp == 0) {
+        /* Composed, not blanked and redrawn: "CH2 is off" is a steady state. */
         g_wf_status = WF_ST_WAITING;
-        lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, SCOPE_H, COLOR_BLACK);
-        font_draw_string(4, SCOPE_TOP + 2, "WFALL: waiting for capture",
-                         COLOR_GRAY, COLOR_GRAY, &font_small);
+        fft_note_compose(SCOPE_TOP, SCOPE_H, sel.note[0] ? sel.note : "WFALL: waiting for capture");
         return;
     }
     bool live = (src == FFT_SRC_LIVE);
@@ -4023,7 +4114,10 @@ void draw_waterfall_screen(void)
      * WFALL painted the whole plot red and the history grew downward
      * through it. */
     uint32_t pool_generation = shared_mem_transition_count();
-    if (pool_generation != waterfall_pool_generation) {
+    if (pool_generation != waterfall_pool_generation || waterfall_restart) {
+        /* waterfall_restart: the source changed (fft_history_track), so the
+         * rows on screen are another channel's. */
+        waterfall_restart = false;
         waterfall_pool_generation = pool_generation;
         waterfall_row_idx = 0;
         memset(waterfall_buf, 0xFF, SHMEM_FFT_WATERFALL_SIZE);
@@ -4105,7 +4199,10 @@ void draw_waterfall_screen(void)
      * the block (SCOPE_H - block_h rows) carries the axis labels. */
     ctext_set_t T;
     T.n = 0;
-    ctext_add(&T, 4, SCOPE_TOP + 2, live ? "WFALL LIVE CH1" : "WFALL DEMO",
+    char wf_hdr[16];
+    if (live) snprintf(wf_hdr, sizeof wf_hdr, "WFALL LIVE %s", sel.label);
+    else      snprintf(wf_hdr, sizeof wf_hdr, "WFALL DEMO");
+    ctext_add(&T, 4, SCOPE_TOP + 2, wf_hdr,
               live ? COLOR_WHITE : COLOR_ORANGE, live ? COLOR_WHITE : COLOR_ORANGE, false);
     {
         char l[12];
