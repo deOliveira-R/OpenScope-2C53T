@@ -99,6 +99,7 @@
 #include <stdarg.h>
 #include <stdlib.h>
 #include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
+#include "ui_shell.h"      /* ui press / long / seq / screen, btn, keys (ARCH-1 M2 rows) */
 
 /* ═══════════════════════════════════════════════════════════════════
  * USB Device Instance
@@ -10054,42 +10055,7 @@ static void cmd_fwapply(void)
  * handlers shut the device down or reset into the factory IAP bootloader. */
 static void cmd_btn(const char *args)
 {
-    static const struct { const char *name; button_id_t id; } names[] = {
-        {"ch1", BTN_CH1}, {"ch2", BTN_CH2}, {"move", BTN_MOVE}, {"select", BTN_SELECT},
-        {"trigger", BTN_TRIGGER}, {"prm", BTN_PRM}, {"auto", BTN_AUTO}, {"save", BTN_SAVE},
-        {"menu", BTN_MENU}, {"up", BTN_UP}, {"down", BTN_DOWN}, {"left", BTN_LEFT},
-        {"right", BTN_RIGHT}, {"ok", BTN_OK},
-    };
-    while (*args == ' ') args++;
-    size_t len = 0;
-    while (args[len] && args[len] != ' ') len++;
-    uint32_t n = 1;
-    bool is_long = false;
-    if (args[len] == ' ') {
-        const char *p = args + len;
-        while (*p == ' ') p++;
-        if (strncmp(p, "long", 4) == 0 && (p[4] == '\0' || p[4] == ' '))
-            is_long = true;
-        else if (*p && (parse_int(p, &n) != 0 || n == 0 || n > 50))
-            n = 0;
-    }
-    for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
-        if (len == strlen(names[i].name) && strncmp(args, names[i].name, len) == 0 && n) {
-            unsigned sent = 0;
-            const button_id_t id = is_long ? (button_id_t)((unsigned)names[i].id | BTN_LONG_FLAG)
-                                           : names[i].id;
-            for (uint32_t k = 0; k < n; k++) {
-                if (input_inject_button(id)) sent++;
-                /* let each press be handled; a long one may switch modes */
-                vTaskDelay(pdMS_TO_TICKS(is_long ? 400 : 150));
-            }
-            usb_debug_printf("btn %s%s: %u/%lu queued\r\n", names[i].name,
-                             is_long ? " long" : "", sent, (unsigned long)n);
-            return;
-        }
-    }
-    usb_send_str("usage: btn ch1|ch2|move|select|trigger|prm|auto|save|menu|up|down|left|right|ok [1..50|long]\r\n"
-                 "(power is refused: it shuts down or enters IAP)\r\n");
+    ui_shell_btn(args);    /* alias of `ui press/long` (src/model/ui_shell.c), the old lines */
 }
 
 /* `keys` — the key model's state, so a long-press or MOVE-cycle test over the
@@ -10098,21 +10064,7 @@ static void cmd_btn(const char *args)
 static void cmd_keys(const char *args)
 {
     (void)args;
-    static const char *const mode_names[MODE_COUNT] = { "scope", "meter", "siggen", "settings", "home" };
-    const scope_state_t *ss = scope_state_get();
-    usb_debug_printf("mode %s (%u)  settings-depth %d\r\n",
-                     (unsigned)current_mode < (unsigned)MODE_COUNT ? mode_names[current_mode] : "?",
-                     (unsigned)current_mode, (int)settings_depth);
-    usb_debug_printf("arrows %s  adjust CH%u  meas %s\r\n", key_focus_name(scope_key_focus),
-                     (unsigned)active_channel + 1u, ss->prm_hidden ? "HIDDEN" : "shown");
-    usb_debug_printf("CH1 %s pos %d  CH2 %s pos %d  trigger CH%u %s %s  interleave %s\r\n",
-                     ss->ch1.enabled ? "on" : "off", (int)ss->ch1.position,
-                     ss->ch2.enabled ? "on" : "off", (int)ss->ch2.position,
-                     ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u,
-                     trigger_mode_labels[ss->trigger.mode], trigger_edge_labels[ss->trigger.edge],
-                     fpga_interleave_active() ? "ACTIVE" : "inactive");
-    usb_debug_printf("long press %u ms (%u ticks), short on release for the long-capable keys\r\n",
-                     (unsigned)(KEY_LONG_TICKS * 2u), (unsigned)KEY_LONG_TICKS);
+    ui_shell_keys();       /* the old four lines (src/model/ui_shell.c); `ui screen` is the new one */
 }
 
 /* ── `mask` — waveform pass/fail (docs/specs/scope/mask-pass-fail.md) ──────────
@@ -10519,6 +10471,16 @@ static const shell_cmd_t shell_cmds[] = {
           "btn <name> [n|long]             Inject a button press (not power) into the UI; long = the long-press event\r\n"),
     CMD_A("keys", cmd_keys, 0,
           "keys                            Key model: mode, arrow stage, active channel, enables, long-press time\r\n"),
+    /* The UI route (src/model/ui_shell.c): exact key replay into the key
+     * queue, each press waited for until the input task has handled it. */
+    CMD_A("ui press", cmd_ui_press, SC_NEEDARGS,
+          "ui press <KEY> [n]              Press a key n times (not POWER), wait until handled\r\n"),
+    CMD_A("ui long", cmd_ui_long, SC_NEEDARGS,
+          "ui long <KEY>                   The long-press event of a key that has one\r\n"),
+    CMD_A("ui seq", cmd_ui_seq, SC_NEEDARGS,
+          "ui seq <tok> ...                tok = KEY | KEY*n | long:KEY | wait:ms (all parsed first)\r\n"),
+    CMD_V("ui screen", cmd_ui_screen, SC_EXACT,
+          "ui screen                       Where the UI is: one key=value line for scripts\r\n"),
     CMD_A("mask", cmd_mask, 0,
           "mask [status]                   Waveform pass/fail: state, counts, last verdict\r\n"
           "mask teach [n] [ch1|ch2|both]   Teach from the next n good records (default 8)\r\n"

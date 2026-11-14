@@ -218,6 +218,20 @@ const instrument_desc_t *model_instrument_find(const char *name);
 bool                     prop_in_instrument(const prop_desc_t *p, const instrument_desc_t *in);
 /* The default of p when `in` starts on defaults: its override, else prop_default(). */
 int32_t                  prop_instrument_default(const prop_desc_t *p, const instrument_desc_t *in);
+/* The active instrument (sys.instrument), or NULL while none is (Home,
+ * Settings). */
+const instrument_desc_t *model_instrument_active(void);
+/* The owner's rule (2026-11-13): a property that belongs to an instrument
+ * cannot be set from the shell while another instrument is active, because
+ * no key sequence reaches that state ("set view.mode fft" in the meter).
+ * NULL = allowed, else the reason ("instrument is meter"). Allowed: every
+ * property of no instrument (sys.*, including sys.instrument / sys.mode
+ * themselves), any property while no instrument is active, and the origins
+ * that are not a person at a prompt (AUTO: meter_auto and self-cal run
+ * inside their own instrument; BOOT / PROFILE load whole profiles that span
+ * instruments). `get` is never gated. The executor's validation calls it
+ * (model_exec.c), so a multi-set stays all or nothing. */
+const char              *prop_instrument_refusal(const prop_desc_t *p, uint8_t origin);
 
 /* ── Setting (EXECUTOR ONLY) ─────────────────────────────────────────── */
 /* The single path: (1) RO/NULL -> INVALID; (2) self-cal busy -> BUSY for

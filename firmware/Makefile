@@ -189,6 +189,14 @@ M3_CONFIG_PERSIST_EXTRA = $(M3_PERSIST_SRCS) $(M3_PERSIST_LINK)
 M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT -Isrc/model
 # ── end M3 block ──
 
+# ── ARCH-1 M2: the UI route (one block, for the merge) ──
+# `ui press/long/seq/screen` and the `btn`/`keys` aliases (src/model/ui_shell.c):
+# exact key replay into the key queue, waited for on input_events_done.
+# Host test: make test-ui-shell (its rule is next to test-model-exec, below
+# `all`, so it never becomes the default goal).
+C_SOURCES += src/model/ui_shell.c
+# ── end M2 block ──
+
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
   C_SOURCES += src/dsp/fft.c
@@ -934,6 +942,18 @@ $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/mo
 
 .PHONY: test-model-persist
 test-model-persist: $(BUILD_DIR)/test_model_persist
+	$<
+
+# UI route (ARCH-1 M2, src/model/ui_shell.c): the `ui seq` token parser (key
+# names, KEY*n, long:KEY, wait:ms, bad tokens, POWER refused, the whole line
+# checked before any press). The firmware half (presses, waits) is not built.
+$(BUILD_DIR)/test_ui_shell: tests/test_ui_shell.c src/model/ui_shell.c src/model/ui_shell.h \
+                           src/ui/key_model.h src/ui/ui.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DUI_SHELL_TEST -Isrc/model -Isrc/ui -Isrc/util \
+		$< src/model/ui_shell.c -o $@
+
+.PHONY: test-ui-shell
+test-ui-shell: $(BUILD_DIR)/test_ui_shell
 	$<
 
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens
