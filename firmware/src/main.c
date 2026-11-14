@@ -30,6 +30,7 @@ extern void system_clock_config(void);
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "scope_vpos.h"
+#include "scope_trigger.h"
 #include "scope_selfcal_run.h"
 #include "input_handler.h"
 #include "theme.h"
@@ -1392,6 +1393,10 @@ int main(void)
      * After the restores above, because bank and range come from the
      * restored timebase and vdiv; a unit without a usable page keeps the
      * fixed arm fpga_init() just made. */
+    /* DAC channel 1 (PA4, CH1's offset reference): its boot init, right
+     * before its first write in this image (dac.h). The warm images made it
+     * in fpga_init() before the mid-scale arm; then this is a no-op. */
+    scope_trigger_dac_init();
     scope_vpos_init();
     /* OpenScope's own saved corrections (usercal.h): baseline deltas on top
      * of the page just parsed, and the 250 MS/s B correction. After

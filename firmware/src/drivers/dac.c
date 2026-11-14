@@ -75,6 +75,8 @@ uint32_t dac_ctrl_get(void)
 void dac_ch1_init(void)
 {
     if (ch1_ready) return;
+    /* Clocks and PA4 are idempotent; the CTRL stores are made once, the
+     * ready check repeated inside their mask section. */
 #ifdef HOST_REGS
     HOST_LOG(DAC_HOST_CLK_DAC, 1);
     HOST_LOG(DAC_HOST_CLK_GPIOA, 1);
@@ -92,10 +94,12 @@ void dac_ch1_init(void)
      * store (0x3D), so the first software trigger cannot latch against an
      * unconfigured trigger select. Channel 2's half is kept. */
     const uint32_t pm = mask_irq();
-    const uint32_t v = (DAC->ctrl & ~SIGGEN_DAC_CH1_MASK) | DAC_D1TSEL_SW | DAC_D1TEN;
-    ctrl_store(v);
-    ctrl_store(v | DAC_D1EN);
-    ch1_ready = true;
+    if (!ch1_ready) {
+        const uint32_t v = (DAC->ctrl & ~SIGGEN_DAC_CH1_MASK) | DAC_D1TSEL_SW | DAC_D1TEN;
+        ctrl_store(v);
+        ctrl_store(v | DAC_D1EN);
+        ch1_ready = true;
+    }
     unmask_irq(pm);
 }
 
@@ -104,9 +108,19 @@ bool dac_ch1_ready(void)
     return ch1_ready;
 }
 
+#ifdef HOST_REGS
+void dac_host_reset(void)
+{
+    ch1_ready = false;
+}
+#endif
+
 void dac_ch1_write(uint16_t code)
 {
-    if (!ch1_ready) dac_ch1_init();
+    /* Boot initialises channel 1 before its first write in every image
+     * (dac.h); a write before that is dropped, never made to an unclocked
+     * peripheral nor turned into an init on whichever task wrote first. */
+    if (!ch1_ready) return;
     const uint32_t pm = mask_irq();
     /* Stock keeps DHR12R1's upper bits; the trigger bits self-clear, so a
      * plain store of D1SWTRG leaves channel 2's trigger bit alone. */

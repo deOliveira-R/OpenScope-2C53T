@@ -5,7 +5,9 @@
  *
  *  1. Boot: the store sequence through the owner equals the one the
  *     drivers made before the owner existed (written out below from the
- *     previous scope_trigger.c / dac_output.c), value for value.
+ *     previous scope_trigger.c / dac_output.c), value for value, in the
+ *     warm images' order and the default image's (with and without a
+ *     calibration page). Channel 1 is initialised at boot, never by a write.
  *  2. A CH1 offset write while the generator runs changes only channel 1's
  *     data register and fires only channel 1's trigger: no DAC_CTRL store,
  *     no re-init, channel 2's half and data untouched. (This is why the
@@ -98,8 +100,33 @@ static void gen_stop(void)    /* dac_output_stop(), DAC part */
 }
 
 /* 1. Boot, in main()'s order: dac_output_init(); siggen_init(NULL) with the
- * output off -> dac_output_stop(); fpga_init() -> scope_trigger_dac_raw(2048),
- * the first CH1 write, which initialises channel 1. */
+ * output off -> dac_output_stop(); then channel 1's boot init right before
+ * its first write: in the warm images fpga_init() -> scope_trigger_dac_init()
+ * + scope_trigger_dac_raw(2048); in the default image (and bus-released)
+ * main.c -> scope_trigger_dac_init() + scope_vpos_init(), whose first write
+ * is the page's position code (or none without a usable page). Until
+ * 2026-11-14 the first write initialised channel 1 itself. */
+static void boot_ch2(void)
+{
+    memset(&dac_host_regs, 0, sizeof dac_host_regs);
+    dac_host_reset();
+    log_reset();
+    gen_init();
+    gen_stop();
+}
+
+static void check_boot_log(const char *what, const ev_t *ref, int nref)
+{
+    ev_t got[64];
+    const int n = stores(got, 64);
+    CHECK(n == nref, "%s: %d stores, expected %d", what, n, nref);
+    for (int i = 0; i < n && i < nref; i++)
+        CHECK(got[i].what == ref[i].what && got[i].v == ref[i].v,
+              "%s store %d: %s 0x%08X, expected %s 0x%08X", what, i, ev_name(got[i].what),
+              (unsigned)got[i].v, ev_name(ref[i].what), (unsigned)ref[i].v);
+    check_ctrl_masked(what);
+}
+
 static void test_boot_sequence(void)
 {
     /* Before the owner (77c08dd), from reset (all DAC registers 0):
@@ -121,23 +148,42 @@ static void test_boot_sequence(void)
     };
     const int nref = (int)(sizeof ref / sizeof ref[0]);
 
-    memset(&dac_host_regs, 0, sizeof dac_host_regs);
-    log_reset();
-    gen_init();
-    gen_stop();
-    CHECK(!dac_ch1_ready(), "channel 1 initialised before its first use");
-    scope_trigger_dac_raw(2048);
+    /* The default image, no usable page: the init alone (no CH1 data yet),
+     * the same stores as the reference up to channel 1's enable. */
+    boot_ch2();
+    CHECK(!dac_ch1_ready(), "channel 1 initialised before its boot init");
+    scope_trigger_dac_raw(1234);                     /* a write before the init: dropped */
+    CHECK(count(DAC_HOST_D1DTH12R) == 0 && count(DAC_HOST_CLK_DAC) == 0 && !dac_ch1_ready(),
+          "a write before the boot init stored or initialised");
+    scope_trigger_dac_init();                        /* main.c, before scope_vpos_init() */
+    check_boot_log("default boot, no page", ref, nref - 2);
+    CHECK(dac_ch1_ready() && dac_host_regs.ctrl == 0x1015003Du, "default boot CTRL 0x%08X",
+          (unsigned)dac_host_regs.ctrl);
 
-    ev_t got[64];
-    const int n = stores(got, 64);
-    CHECK(n == nref, "boot: %d stores, expected %d", n, nref);
-    for (int i = 0; i < n && i < nref; i++)
-        CHECK(got[i].what == ref[i].what && got[i].v == ref[i].v,
-              "boot store %d: %s 0x%08X, expected %s 0x%08X", i, ev_name(got[i].what),
-              (unsigned)got[i].v, ev_name(ref[i].what), (unsigned)ref[i].v);
-    check_ctrl_masked("boot");
+    /* The default image with a page: scope_vpos_init's first write follows
+     * the init; the order is the reference's with that code. */
+    {
+        ev_t ref_d[sizeof ref / sizeof ref[0]];
+        memcpy(ref_d, ref, sizeof ref);
+        ref_d[nref - 2].v = 0x6A5u;
+        boot_ch2();
+        scope_trigger_dac_init();
+        scope_trigger_dac_raw(0x6A5u);               /* scope_vpos_apply_ch(1, ...) */
+        check_boot_log("default boot, page", ref_d, nref);
+    }
+
+    /* The warm images: fpga_init() -> init, then the 2048 arm. Value for
+     * value the store sequence the drivers made before the owner existed. */
+    boot_ch2();
+    scope_trigger_dac_init();
+    scope_trigger_dac_raw(2048);
+    check_boot_log("warm boot", ref, nref);
     CHECK(dac_host_regs.ctrl == 0x1015003Du, "boot CTRL 0x%08X", (unsigned)dac_host_regs.ctrl);
     CHECK(dac_ch1_ready() && scope_trigger_dac_last() == 2048u, "channel 1 state after boot");
+    /* main.c's init after it (the warm images run both): nothing */
+    log_reset();
+    scope_trigger_dac_init();
+    CHECK(n_ev == 0, "second boot init logged %d events", n_ev);
 
     /* scope_vpos_init's write: data and trigger only. */
     log_reset();

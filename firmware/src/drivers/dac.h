@@ -12,9 +12,12 @@
  * channel-2 half or the other way round, whichever task or interrupt runs.
  * The code-plus-trigger pair of channel 1 is one masked section too.
  *
- * Init is done once, at boot: channel 2 from dac_output_init(), channel 1
- * by the first scope_trigger_dac_init()/scope_trigger_dac_raw() (fpga_init).
- * Later init calls are no-ops; there is no re-init on write.
+ * Init is done once, at boot, in every image, before the channel's first
+ * write: channel 2 from dac_output_init() (main.c), channel 1 from
+ * scope_trigger_dac_init() -> dac_ch1_init(), in fpga_init() just before
+ * the warm images' mid-scale arm and in main.c just before
+ * scope_vpos_init() (the first CH1 write of the other images). Later init
+ * calls are no-ops; a write never initialises.
  */
 #ifndef DAC_H
 #define DAC_H
@@ -29,7 +32,7 @@ void dac_ch1_init(void);
 bool dac_ch1_ready(void);
 
 /* Channel 1: DHR12R1[11:0] = code, then the channel-1 software trigger, in
- * one masked section. Initialises channel 1 first if nothing has yet. */
+ * one masked section. Before dac_ch1_init() the write is dropped. */
 void dac_ch1_write(uint16_t code);
 
 /* Channel 2 (PA5). Replace channel 2's half of DAC_CTRL with the generator
@@ -59,6 +62,7 @@ enum { DAC_HOST_CTRL, DAC_HOST_SWTRG, DAC_HOST_D1DTH12R, DAC_HOST_D2DTH12R,
        DAC_HOST_CLK_DAC, DAC_HOST_CLK_GPIOA, DAC_HOST_PA4_ANALOG,
        DAC_HOST_MASK, DAC_HOST_UNMASK };
 void dac_host_log(int what, uint32_t value);
+void dac_host_reset(void);              /* channel 1 not initialised again (one boot per test) */
 #endif
 
 #endif /* DAC_H */

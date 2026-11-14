@@ -6427,7 +6427,10 @@ void fpga_init(void)
      * until it is restored. Arm mid-scale. Touches only MCU-internal state
      * (CRM clocks, PA4 analog, DAC registers) — cannot disturb the FPGA.
      * The signal generator is on DAC channel 2 (PA5) and its driver only
-     * writes the upper half of DAC_CTRL, so it cannot disturb this. */
+     * writes the upper half of DAC_CTRL, so it cannot disturb this.
+     * Channel 1 is initialised here, at boot, right before its first write
+     * (dac.h); a write no longer initialises it. */
+    scope_trigger_dac_init();
     scope_trigger_dac_raw(2048);
 
 #if FPGA_CH2_TRIGGER
