@@ -103,9 +103,7 @@
 #include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
 #include "ui_shell.h"      /* ui press / long / seq / screen, btn, keys (ARCH-1 M2 rows) */
 #include "../util/features.h"   /* version, features: what this build contains */
-#if FEATURE_STREAM
-#include "stream.h"        /* binary stream over this channel (src/stream/) */
-#endif
+#include "stream.h"        /* binary stream over this channel (src/stream/): no-ops when off */
 
 /* ═══════════════════════════════════════════════════════════════════
  * USB Device Instance
@@ -506,10 +504,10 @@ int usb_debug_printf(const char *fmt, ...)
     return len;
 }
 
-#if FEATURE_STREAM
 /* The stream sender's port into the CDC IN path (src/stream/stream.h).
  * Additions beside the frozen write path, which they call unchanged; shell
- * task only, like every other writer here. */
+ * task only, like every other writer here. Built in every image: without
+ * the stream nothing calls them and the linker drops them. */
 bool usb_debug_stream_tx_ready(bool heal)
 {
 #if DEBUG_SHELL_RTT_ONLY
@@ -529,7 +527,6 @@ bool usb_debug_stream_write(const uint8_t *data, uint16_t len)
     usb_send_bytes(data, len);
     return s_cdc.tx_drops == drops;
 }
-#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * Hex Parsing Helpers
@@ -10661,10 +10658,7 @@ static const shell_cmd_t shell_cmds[] = {
           "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"),
     CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
           "describe <prop>                 Range/labels, default, unit, saved where, owner\r\n"),
-#if FEATURE_STREAM
-    CMD_A("stream", cmd_stream, 0,
-          "stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n"),
-#endif
+    STREAM_SHELL_ROWS       /* `stream`: from src/stream/stream.h, empty when the feature is off */
     CMD_A("fpga postedge", cmd_fpga_postedge, 0,
           "fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n"),
     CMD_A("fpga scope hpos", cmd_fpga_scope_hpos, 0,
@@ -11229,10 +11223,9 @@ static void vUsbDebugTask(void *pvParameters)
         if (s_usb_mode.active == USB_DEV_COMPOSITE && usb_msc_poll(&usb_core_dev)) did_work = true;
 #endif
 
-#if FEATURE_STREAM
-        /* Binary stream frames, between commands (src/stream/stream.h). */
+        /* Binary stream frames, between commands (src/stream/stream.h; a
+         * constant false without the stream). */
         if (fwl_discard == 0u && !raw_block_active(&s_raw) && stream_poll()) did_work = true;
-#endif
 
         if (!did_work) {
             /* 10 ms idle cadence, 1 ms while an upload is in flight (each
