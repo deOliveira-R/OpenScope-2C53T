@@ -47,7 +47,7 @@
 FEATURE_LIST :=
 
 # ── stream ────────────────────────────────────────────────────────────
-# A/B on the bench image: see the note at the end of this block.
+# A/B 2026-11-14 (app-coldtrace-meter): 5,784 B flash, 152 B RAM.
 FEATURE_LIST += STREAM
 STREAM_desc      := Binary frames to the host on the shell USB channel
 STREAM_default   := 0
