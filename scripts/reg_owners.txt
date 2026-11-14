@@ -8,7 +8,7 @@ GPIO*.*      drivers/fpga.c drivers/button_scan.c drivers/lcd.c drivers/sys_pwm.
              drivers/power.c drivers/dac.c drivers/dac_output.c drivers/scope_trigger.c drivers/battery.c drivers/continuity_buzzer.c
              drivers/usb_debug.c:usb_debug_init
 ?PTR         drivers/fpga.c drivers/button_scan.c drivers/sys_pwm.c drivers/continuity_buzzer.c
-DAC          drivers/dac.c
+DAC          drivers/dac.c                         # both channels: CH1 offset (PA4) and generator (PA5)
 TMR7         drivers/dac_output.c
 DMA2         drivers/dac_output.c
 DMA2_CHANNEL4 drivers/dac_output.c

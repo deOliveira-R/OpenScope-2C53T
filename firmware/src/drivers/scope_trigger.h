@@ -20,15 +20,17 @@
  * writes) is faithful and verifiable; the cal DATA is a TODO pending a
  * regenerated calibration once the scope acquisition path works.
  *
- * Shares DAC1/PA4 with the signal generator (dac_output.c). Scope and siggen are
- * mutually exclusive modes — do not run both at once.
+ * The DAC register writes go through the DAC owner (dac.h). Channel 1 (PA4)
+ * is this reference; channel 2 (PA5) is the signal generator, which runs
+ * beside the scope: each side only changes its own channel's bits.
  */
 #ifndef SCOPE_TRIGGER_H
 #define SCOPE_TRIGGER_H
 
 #include <stdint.h>
 
-/* Configure DAC1 (PA4) for single-value software-triggered output. Idempotent. */
+/* Configure DAC1 (PA4) for single-value software-triggered output. Done once
+ * (boot); later calls do nothing. */
 void scope_trigger_dac_init(void);
 
 /* Pure formula (no side effects) — testable in isolation. Returns 12-bit code. */

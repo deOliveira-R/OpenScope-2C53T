@@ -99,9 +99,9 @@ bool siggen_timing_stock(uint32_t freq_hz, uint32_t tmr_clk_hz,
                          siggen_timing_t *t);
 
 /*
- * DAC_CTRL composition. The lower half (bits 15:0) belongs to channel 1,
- * the scope's CH1 offset / trigger reference DAC on PA4
- * (scope_trigger.c), and is passed through untouched. The upper half is
+ * DAC_CTRL composition, used by the DAC owner (drivers/dac.c). The lower
+ * half (bits 15:0) belongs to channel 1, the scope's CH1 offset / trigger
+ * reference DAC on PA4 (scope_trigger.c), and is passed through untouched. The upper half is
  * replaced with stock's channel-2 setup (0x0802CA28..0x0802CAF6):
  *   D2TRGSEL = tsel, D2TRGEN = 1, D2NM = 0 (no noise/triangle),
  *   D2OBDIS = 0 (output buffer ON), D2DMAEN = 1, D2EN = en.

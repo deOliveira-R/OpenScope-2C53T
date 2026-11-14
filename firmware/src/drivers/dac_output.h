@@ -10,9 +10,10 @@
  *                    TMR7 TRGO (update), 100 updates per output cycle
  *
  * DAC channel 1 (PA4) is the scope's CH1 offset / trigger reference DAC
- * (scope_trigger.c). This driver only ever writes the upper half of
- * DAC_CTRL (channel 2) and never touches DMA2 ch3, so the generator can
- * run in every mode, as it does in stock.
+ * (scope_trigger.c). The DAC registers are written only by the DAC owner
+ * (dac.h); this driver asks it for channel-2 changes, which never touch
+ * channel 1, and it never touches DMA2 ch3, so the generator can run in
+ * every mode, as it does in stock.
  */
 
 #ifndef DAC_OUTPUT_H
