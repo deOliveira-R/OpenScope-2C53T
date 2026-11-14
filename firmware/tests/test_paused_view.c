@@ -58,6 +58,22 @@ int main(void)
     CHECK(pv_y_map(250, 128, 0, 0, 4.0f, 1.0f, 28, 228) == 228, "clamp high");
     CHECK(pv_y_map(10, 128, 0, 0, 4.0f, 1.0f, 28, 228) == 28, "clamp low");
     CHECK(pv_y_map(170, 128, 0, 0, 0.0f, 1.0f, 0, 255) == 170, "uncalibrated range -> k = 1");
+    /* scope_ui's held-record re-draw: centre 0, the 0 V codes as positions,
+     * k = volts/count at capture over now. Every code keeps its volts at the
+     * new range and position (Vp-p 3.94 V at 2 V/div must stay 3.94 V at
+     * 5 V/div), to the rounding of one count. */
+    {
+        const float kc = 0.0775f, kn = 0.194f;       /* r7 -> r8, unit #1 */
+        const int zc = 60, zn = 100;                 /* position -40 -> 0 */
+        int bad = 0;
+        for (int v = 0; v < 228; v++) {
+            const int w = pv_y_map(v, 0, zc, zn, kc, kn, 0, 255);
+            const float vc = (float)(v - zc) * kc, vn = (float)(w - zn) * kn;
+            if (fabsf(vc - vn) > 0.5f * kn + 1e-4f) bad++;
+        }
+        CHECK(bad == 0, "held re-draw keeps every code's volts (range and position changed)");
+        CHECK(pv_y_map(zc, 0, zc, zn, kc, kn, 0, 255) == zn, "the capture's 0 V lands on today's 0 V");
+    }
 
     printf("[3] taps\n");
     {

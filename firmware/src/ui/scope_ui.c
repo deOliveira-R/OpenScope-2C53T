@@ -350,6 +350,9 @@ static void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
  * badges and the cursors cannot disagree. */
 static float record_rate_for_display(const scope_state_t *ss)
 {
+    /* A held record keeps the rate it was captured at, whatever the code now. */
+    if (!ss->running && !ss->roll && fpga_data_ready())
+        return fpga_record_sample_rate();
     return (fpga_acq_rate_idx_get() == ss->timebase_idx)
          ? fpga_record_sample_rate()
          : scope_timebase_sample_rate(ss->timebase_idx);
@@ -713,6 +716,9 @@ static float freq_held(uint8_t ch, bool need, bool have,
     return freq_hz[ch];
 }
 
+static float   rec_vpc(const scope_state_t *ss, uint8_t ch);
+static uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
+
 static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
 {
     mstrip_layout_t L;
@@ -743,13 +749,13 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
         scope_params_t p1, p2;
         scope_prm_ctx_t ctx;
         ctx.sample_rate     = rec_fs;
-        ctx.volts_per_count = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
+        ctx.volts_per_count = rec_vpc(ss, 0u);
         ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
-        ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
+        ctx.zero_count      = rec_zero(ss, 0u);
         scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
-        ctx.volts_per_count = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
+        ctx.volts_per_count = rec_vpc(ss, 1u);
         ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
-        ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
+        ctx.zero_count      = rec_zero(ss, 1u);
         scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
 
         draw_strip_cells(&L, &p1, &p2, th);
@@ -883,7 +889,11 @@ typedef yt_vmap_t autofit_t;
  *             span that shows the record, and every consumer stays inside it.
  *
  * Vertical (C14): in true scale only (autofit is range-blind by
- * construction), counts rescaled by V[range_cap] / V[range_now] (pv_vscale).
+ * construction), a held record is re-drawn as stock does (0x080212BC):
+ * code' = zero_now + k (code - zero_cap), k = volts/count at capture over
+ * volts/count now (pv_vscale), so it reads true at the range and position now
+ * selected. Measurements of a held record use the capture's volts/count and
+ * 0 V (rec_vpc / rec_zero).
  * Stock's position term is not applied: a position key moves the offset DAC
  * for the NEXT capture, so the record already carries it.
  * Cursor and badge rates: the cursors read the column rate (1000 fs_rec / R);
@@ -895,7 +905,14 @@ typedef yt_vmap_t autofit_t;
 static struct { uint16_t first, end; } g_span;
 #define g_view_first (g_span.first)
 #define g_view_end   (g_span.end)
-static float    g_pv_vcap[2];       /* volts/div of the ranges at STOP, 0 = unknown */
+/* What the record's codes mean: volts/count and the 0 V code of each channel
+ * when it was captured. Latched every running frame and at STOP. */
+static struct {
+    float   vpc[2];
+    uint8_t zero[2];
+    bool    valid;
+} g_cap;
+static int chan_zero_code(const scope_state_t *ss, uint8_t ch);
 
 /* The plan for the current state: returns L (0 = general path), *ratio = R,
  * *fs_rec = the rate R was taken against. A pure function of the state, so
@@ -931,12 +948,34 @@ static float column_rate_for_display(const scope_state_t *ss)
     return (r > 0u) ? fs * (float)PV_RATIO_ONE / (float)r : fs;
 }
 
-/* Latch what the ranges were at STOP (called from the RUN/STOP key). */
+/* Latch the capture tuple (every running frame, and the RUN/STOP key). */
 void scope_ui_paused_latch(void)
 {
     const scope_state_t *ss = scope_state_get();
-    g_pv_vcap[0] = scope_cal_volts_per_div(1u, ss->ch1.vdiv_idx);
-    g_pv_vcap[1] = scope_cal_volts_per_div(2u, ss->ch2.vdiv_idx);
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        g_cap.vpc[ch]  = scope_cal_volts_per_count((uint8_t)(ch + 1u),
+                                                   ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
+        g_cap.zero[ch] = (uint8_t)chan_zero_code(ss, ch);
+    }
+    g_cap.valid = true;
+}
+
+/* Volts per count and 0 V code of channel ch's record: the capture's for a
+ * held record (the record does not change with the range or position now
+ * selected), the current ones otherwise. */
+static bool rec_held_cap(const scope_state_t *ss)
+{
+    return g_cap.valid && !ss->running && !ss->roll && fpga_data_ready();
+}
+static float rec_vpc(const scope_state_t *ss, uint8_t ch)
+{
+    return rec_held_cap(ss) ? g_cap.vpc[ch]
+                            : scope_cal_volts_per_count((uint8_t)(ch + 1u),
+                                                        ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
+}
+static uint8_t rec_zero(const scope_state_t *ss, uint8_t ch)
+{
+    return rec_held_cap(ss) ? g_cap.zero[ch] : (uint8_t)chan_zero_code(ss, ch);
 }
 
 uint32_t scope_ui_view_ratio(void)
@@ -946,19 +985,21 @@ uint32_t scope_ui_view_ratio(void)
     return r;
 }
 
-/* The true-scale path's vertical rescale: identity while running, or while the
- * range is the one the record was taken at. */
-static inline uint8_t pv_vscale(uint8_t v, uint8_t centre, int8_t ch)
+/* The true-scale path's held-record rescale (stock 0x080212BC):
+ * zero_now + k (v - zero_cap), k = volts/count at capture / now. Identity
+ * while running, or when range and position are the capture's. */
+static inline uint8_t pv_vscale(uint8_t v, int8_t ch)
 {
     const scope_state_t *ss = scope_state_get();
-    if (ss->running || ch < 0 || ch > 1)
+    if (ch < 0 || ch > 1 || !rec_held_cap(ss))
         return v;
-    const float vcap = g_pv_vcap[ch];
-    const float vnow = scope_cal_volts_per_div((uint8_t)(ch + 1),
+    const float kc = g_cap.vpc[ch];
+    const float kn = scope_cal_volts_per_count((uint8_t)(ch + 1),
                                                ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
-    if (!(vcap > 0.0f) || !(vnow > 0.0f) || vcap == vnow)
+    const int zc = g_cap.zero[ch], zn = chan_zero_code(ss, (uint8_t)ch);
+    if (!(kc > 0.0f) || !(kn > 0.0f) || (kc == kn && zc == zn))
         return v;
-    return (uint8_t)pv_y_map((int)v, (int)centre, 0, 0, vcap, vnow, 0, 255);
+    return (uint8_t)pv_y_map((int)v, 0, zc, zn, kc, kn, 0, 255);
 }
 
 /* mask_ch: the channel this band draws (0/1), or -1. When a finished mask
@@ -991,7 +1032,7 @@ static void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
 static inline int autofit_y_raw(const autofit_t *a, int v)
 {
     if (a->fx_ch >= 0)
-        v = pv_vscale((uint8_t)v, a->mn, a->fx_ch);
+        v = pv_vscale((uint8_t)v, a->fx_ch);
     return yt_vmap_raw(a, v);
 }
 
@@ -1078,7 +1119,7 @@ static void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
     b->range_idx        = range_idx;
     b->mid_known        = b->on && a->fx_ch >= 0;
     b->mid_row          = b->mid_known
-        ? (int16_t)autofit_y_raw(a, chan_zero_code(scope_state_get(), (uint8_t)(channel - 1u)))
+        ? (int16_t)autofit_y_raw(a, rec_zero(scope_state_get(), (uint8_t)(channel - 1u)))
         : 0;
     b->mid_counts       = 0.0f;
 }
@@ -1219,7 +1260,7 @@ static void markers_build(const scope_state_t *ss, const theme_t *th,
         if (a != NULL && a->on) {
             top = a->y_top;
             if (a->y_bot < bot) bot = a->y_bot;
-            row = autofit_y_raw(a, chan_zero_code(ss, ch));
+            row = autofit_y_raw(a, rec_zero(ss, ch));
         } else {
             row = SCOPE_MID_Y - c->position;
         }
@@ -2110,10 +2151,10 @@ static void draw_math_waveform(void)
     }
 
     math_in_t in;
-    in.zero_a = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
-    in.zero_b = scope_measure_zero_for(scope_vpos_active(), ss->ch2.position, (int)FPGA_ADC_OFFSET);
-    in.k_a = scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx);
-    in.k_b = scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx);
+    in.zero_a = rec_zero(ss, 0u);
+    in.zero_b = rec_zero(ss, 1u);
+    in.k_a = rec_vpc(ss, 0u);
+    in.k_b = rec_vpc(ss, 1u);
 
     /* Two passes over 64-sample chunks (peak, then rows) so no 320-sample
      * scratch has to live in RAM. Byte reads cannot tear a sample, but the
