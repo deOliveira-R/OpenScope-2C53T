@@ -264,7 +264,9 @@ void model_shell_set(const char *args, model_emit_fn emit)
     memset(&r, 0, sizeof r);
 
     if (!next_token(&s, tok, sizeof tok)) {
-        emit("usage: set <prop> <value>  |  set <p>=<v> [<p>=<v> ...]   (value: label, number, +N/-N)");
+        emit("usage: set <prop> <value>  |  set <p>=<v> [<p>=<v> ...]");
+        emit("  value: a label, a number, or a step +=N / -=N; a bare +N / -N steps only where "
+             "no value is negative (describe <prop>)");
         return;
     }
     if (strchr(tok, '=')) {
@@ -463,6 +465,12 @@ void model_shell_describe(const char *args, model_emit_fn emit)
             cat(line, sizeof line, item);
         }
         emit(line);
+    }
+    if (prop_is_settable(p) && p->type != PT_MASK) {
+        /* prop_parse: a step is +=N / -=N; a bare +N / -N steps only where
+         * no value is negative, else it is the number itself. */
+        emit(p->min < 0 ? "  steps:   +=N / -=N (a bare -N or +N is the value itself)"
+                        : "  steps:   +=N / -=N, or +N / -N");
     }
     snprintf(line, sizeof line, "  saved:   %s", saved_text(p));
     emit(line);

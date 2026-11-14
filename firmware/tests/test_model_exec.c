@@ -848,6 +848,45 @@ static void test_scope_regs_stored(void)
     CHECK(model_foreign_sets == 0);
 }
 
+/* Relative sets on the shell (model.h prop_parse, plan 2.8): "+=N"/"-=N"
+ * step every type; a bare number is absolute on a property that can hold a
+ * negative value ("-20" is -20, "+20" is 20), and "+N"/"-N" step only where
+ * no value is negative (the plan's "+N/-N (step)"). describe says which. */
+static void test_shell_steps(void)
+{
+    fresh(1);
+    sh_reset(); model_shell_set("ch1.pos 50", collect);
+    CHECK(prop_get(P(CH1_POS)) == 50);
+    sh_reset(); model_shell_set("ch1.pos +20", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK ch1.pos=20") == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.pos -20", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK ch1.pos=-20") == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.pos +=30", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK ch1.pos=10") == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.pos -=15", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK ch1.pos=-5") == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.pos=+=5 trig.level=-=10", collect);
+    CHECKF(n_out == 2 && strcmp(out[0], "OK ch1.pos=0") == 0 && strcmp(out[1], "OK trig.level=-10 px") == 0,
+           "%s | %s", out[0], out[1]);
+    /* unsigned: +N / -N step, as += / -= */
+    sh_reset(); model_shell_set("gen.freq 1000", collect);
+    sh_reset(); model_shell_set("gen.freq -100", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK gen.freq=900 Hz") == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("gen.freq +=50", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK gen.freq=950 Hz") == 0, "%s", out[0]);
+    /* describe names the form */
+    bool signed_line = false, unsigned_line = false;
+    sh_reset(); model_shell_describe("ch1.pos", collect);
+    for (unsigned i = 0; i < n_out && i < 64; i++)
+        if (strcmp(out[i], "  steps:   +=N / -=N (a bare -N or +N is the value itself)") == 0) signed_line = true;
+    sh_reset(); model_shell_describe("gen.freq", collect);
+    for (unsigned i = 0; i < n_out && i < 64; i++)
+        if (strcmp(out[i], "  steps:   +=N / -=N, or +N / -N") == 0) unsigned_line = true;
+    CHECK(signed_line && unsigned_line);
+    sh_reset(); model_shell_describe("ch1.meas", collect);
+    for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strstr(out[i], "steps:") == NULL);
+}
+
 int main(void)
 {
     test_not_up();
@@ -869,6 +908,7 @@ int main(void)
     test_bindings_multi();
     test_mode_switch();
     test_scope_regs_stored();
+    test_shell_steps();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

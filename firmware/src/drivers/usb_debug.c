@@ -10454,7 +10454,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("get", cmd_model_get, SC_NEEDARGS,
           "get <prop|glob> [...]           Property values: get ch1.vdiv, get ch1.*, get *\r\n"),
     CMD_A("set", cmd_model_set, SC_NEEDARGS,
-          "set <prop> <value> | set p=v .. Set through the input task (label, number, +N/-N)\r\n"),
+          "set <prop> <value> | set p=v .. Set through the input task (label, number, step +=N/-=N)\r\n"),
     CMD_A("list", cmd_model_list, 0,
           "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"),
     CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
