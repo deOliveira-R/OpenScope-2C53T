@@ -163,7 +163,20 @@ static void check_layout(uint16_t m1, bool e1, uint16_t m2, bool e2, bool hid, b
     CHECK(L.n == n1 + n2, "n %u != %u (m1 %03x m2 %03x)", L.n, n1 + n2, m1, m2);
     CHECK(L.dropped == want_drop, "dropped %u != %u", L.dropped, want_drop);
     CHECK(L.rows <= MSTRIP_MAX_ROWS, "rows %u", L.rows);
-    CHECK(L.rows == (L.n + 2u) / 3u, "rows %u for %u cells", L.rows, L.n);
+    CHECK(L.rows == (n1 + 2u) / 3u + (n2 + 2u) / 3u, "rows %u for %u + %u cells", L.rows, n1, n2);
+    /* One block per channel: each starts at the first column of a new row,
+     * and inside a block the cells flow left to right, top to bottom. */
+    {
+        const unsigned r1 = (n1 + 2u) / 3u, first = L.top + (aux ? MSTRIP_ROW_H : 0u);
+        unsigned k[2] = { 0, 0 };
+        for (unsigned i = 0; i < L.n; i++) {
+            const unsigned ch = L.cell[i].ch, j = k[ch]++;
+            const unsigned row = (ch ? r1 : 0u) + j / 3u;
+            CHECK(L.cell[i].x == MSTRIP_X0 + (j % 3u) * MSTRIP_CELL_W, "cell %u x", i);
+            CHECK(L.cell[i].y == first + row * MSTRIP_ROW_H, "cell %u y", i);
+        }
+        CHECK(k[0] == n1 && k[1] == n2, "cells per channel");
+    }
     CHECK(L.top == measure_strip_top(m1, e1, m2, e2, hid, aux, BOTTOM), "top disagrees");
     CHECK(L.top == BOTTOM - (L.rows + (aux ? 1u : 0u)) * MSTRIP_ROW_H, "top %u", L.top);
     CHECK(L.aux == aux, "aux flag");
@@ -219,17 +232,24 @@ static void test_layout(void)
             for (unsigned f = 0; f < 16u; f++)
                 check_layout((uint16_t)m1, f & 1u, m2s[j], (f >> 1) & 1u, (f >> 2) & 1u, (f >> 3) & 1u);
 
-    /* CH1's default (Freq Peri Duty+ Vp-p Vrms) with CH2 on Vp-p alone (its
-     * default until 2026-11-12): two rows; CH2's Vp-p in the third column of
-     * row 2, where stock puts CH2's first measurement after CH1's. */
+    /* CH1's default (Freq Peri Duty+ Vp-p Vrms) with CH2 on Vp-p alone: CH1
+     * takes two rows, CH2's Vp-p starts its own block at the first column of
+     * row 3 (stock runs it on after CH1's last cell; ours starts a block). */
     mstrip_layout_t L;
     measure_strip_layout(SCOPE_PRM_DEFAULT_MASK, true, 1u << SCOPE_PRM_VPP, true, false, false, BOTTOM, &L);
-    CHECK(L.n == 6 && L.rows == 2, "default: %u cells %u rows", L.n, L.rows);
+    CHECK(L.n == 6 && L.rows == 3, "default: %u cells %u rows", L.n, L.rows);
     CHECK(L.cell[5].ch == 1 && L.cell[5].prm == SCOPE_PRM_VPP &&
-          L.cell[5].x == MSTRIP_X0 + 2u * MSTRIP_CELL_W && L.cell[5].y == BOTTOM - MSTRIP_ROW_H,
-          "default: CH2 Vp-p not at row 2 col 3");
-    CHECK(L.cell[0].prm == SCOPE_PRM_FREQ && L.cell[0].x == MSTRIP_X0 && L.cell[0].y == BOTTOM - 2u * MSTRIP_ROW_H,
+          L.cell[5].x == MSTRIP_X0 && L.cell[5].y == BOTTOM - MSTRIP_ROW_H,
+          "default: CH2 Vp-p not at the start of its block");
+    CHECK(L.cell[0].prm == SCOPE_PRM_FREQ && L.cell[0].x == MSTRIP_X0 && L.cell[0].y == BOTTOM - 3u * MSTRIP_ROW_H,
           "default: Freq not first");
+    /* The same selection on both channels: the same measurement in the same
+     * column, CH2's block right under CH1's. */
+    measure_strip_layout(SCOPE_PRM_DEFAULT_MASK, true, SCOPE_PRM_DEFAULT_MASK, true, false, false, BOTTOM, &L);
+    CHECK(L.n == 10 && L.rows == 4, "both default: %u cells %u rows", L.n, L.rows);
+    for (unsigned i = 0; i < 5u; i++)
+        CHECK(L.cell[i].prm == L.cell[i + 5u].prm && L.cell[i].x == L.cell[i + 5u].x &&
+              L.cell[i + 5u].y == L.cell[i].y + 2u * MSTRIP_ROW_H, "both default: cell %u not aligned", i);
 
     /* Hidden: nothing placed, the band runs to the bottom (or the AUX row). */
     CHECK(measure_strip_top(0xFFF, true, 0xFFF, true, true, false, BOTTOM) == BOTTOM, "hidden top");

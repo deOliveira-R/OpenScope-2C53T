@@ -36,23 +36,25 @@ static unsigned popcount_capped(uint16_t mask, unsigned cap)
     return (c > cap) ? cap : c;
 }
 
-static unsigned count_shown(uint16_t m1, bool en1, uint16_t m2, bool en2, bool hidden)
-{
-    if (hidden)
-        return 0;
-    return (en1 ? popcount_capped(m1, MSTRIP_MAX_PER_CH) : 0u) +
-           (en2 ? popcount_capped(m2, MSTRIP_MAX_PER_CH) : 0u);
-}
-
 static unsigned rows_for(unsigned n)
 {
     return (n + MSTRIP_COLS - 1u) / MSTRIP_COLS;
 }
 
+/* Rows of the whole strip: each channel is a block of its own, starting on a
+ * new row at the first column, so CH1's and CH2's cells line up. */
+static unsigned rows_blocks(uint16_t m1, bool en1, uint16_t m2, bool en2, bool hidden)
+{
+    if (hidden)
+        return 0;
+    return rows_for(en1 ? popcount_capped(m1, MSTRIP_MAX_PER_CH) : 0u) +
+           rows_for(en2 ? popcount_capped(m2, MSTRIP_MAX_PER_CH) : 0u);
+}
+
 uint16_t measure_strip_top(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
                            bool hidden, bool aux, uint16_t bottom)
 {
-    unsigned h = rows_for(count_shown(mask1, en1, mask2, en2, hidden)) * MSTRIP_ROW_H;
+    unsigned h = rows_blocks(mask1, en1, mask2, en2, hidden) * MSTRIP_ROW_H;
     if (aux)
         h += MSTRIP_ROW_H;
     return (h > bottom) ? 0u : (uint16_t)(bottom - h);
@@ -69,17 +71,18 @@ void measure_strip_layout(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
     out->aux = aux;
     out->bottom = bottom;
 
-    const unsigned n = count_shown(mask1, en1, mask2, en2, hidden);
-    out->rows = (uint8_t)rows_for(n);
+    out->rows = (uint8_t)rows_blocks(mask1, en1, mask2, en2, hidden);
     out->top = measure_strip_top(mask1, en1, mask2, en2, hidden, aux, bottom);
     out->aux_y = out->top;                       /* the AUX row is the top one */
     const uint16_t first_row = (uint16_t)(out->top + (aux ? MSTRIP_ROW_H : 0u));
 
+    unsigned row = 0;                            /* first row of this channel's block */
     for (unsigned ch = 0; ch < 2u; ch++) {
         const uint16_t m = ch ? mask2 : mask1;
         const bool en = ch ? en2 : en1;
         if (!en || hidden)
             continue;
+        unsigned k = 0;                          /* cells placed in this block */
         const uint16_t shown = measure_strip_shown(m);   /* by priority ... */
         for (unsigned i = 0; i < MSTRIP_PRM_COUNT; i++) { /* ... drawn in stock order */
             if (!(m & (1u << i)))
@@ -91,10 +94,12 @@ void measure_strip_layout(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
             mstrip_cell_t *c = &out->cell[out->n];
             c->ch  = (uint8_t)ch;
             c->prm = (uint8_t)i;
-            c->x   = (uint16_t)(MSTRIP_X0 + (out->n % MSTRIP_COLS) * MSTRIP_CELL_W);
-            c->y   = (uint16_t)(first_row + (out->n / MSTRIP_COLS) * MSTRIP_ROW_H);
+            c->x   = (uint16_t)(MSTRIP_X0 + (k % MSTRIP_COLS) * MSTRIP_CELL_W);
+            c->y   = (uint16_t)(first_row + (row + k / MSTRIP_COLS) * MSTRIP_ROW_H);
             out->n++;
+            k++;
         }
+        row += rows_for(k);
     }
 }
 
