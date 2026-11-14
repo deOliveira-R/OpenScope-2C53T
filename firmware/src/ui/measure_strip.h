@@ -7,7 +7,10 @@
  * Stock V1.2.0 (photos scope/IMG_0324.jpeg, lines.jpeg): three columns over
  * the bottom of the plot, CH1's selected measurements first and then CH2's,
  * flowing left to right and top to bottom, each in its channel's colour,
- * "Label:value". Ours keeps the flow and the colours, and separates label and
+ * "Label:value". Ours gives each channel its own block: CH1's rows, then
+ * CH2's starting on a new row at the first column, so with the same selection
+ * the same measurement of both channels sits in the same column and the eye
+ * does not have to find where CH1 ends. It keeps the colours, and separates label and
  * value instead of running them together ("Freq10.00MHz" before round 1): the
  * label in a dimmed channel colour, the value in the bright one, each in its
  * own column of the cell (label MSTRIP_LABEL_W, then MSTRIP_GAP, then the
