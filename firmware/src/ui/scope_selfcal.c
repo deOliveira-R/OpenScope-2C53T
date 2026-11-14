@@ -86,6 +86,7 @@ bool sc_rec_stats(const uint8_t *rec, uint16_t len, uint16_t head_skip, sc_rec_s
         float h = ((float)mx - (float)mn) / 8.0f;
         if (h < 1.0f) h = 1.0f;
         bool armed = false;
+        uint16_t xs[SC_XING_MAX];
         uint16_t first = 0, last = 0, n = 0;
         for (uint16_t i = head_skip; i < len; i++) {
             const float s = (float)rec[i];
@@ -94,14 +95,48 @@ bool sc_rec_stats(const uint8_t *rec, uint16_t len, uint16_t head_skip, sc_rec_s
             } else if (armed && s > mid + h) {
                 armed = false;
                 if (n == 0u) first = i;
+                if (n < SC_XING_MAX) xs[n] = i;
                 last = i;
                 n++;
             }
         }
-        out->n_rise = n;
-        if (n >= 2u) out->period = (float)(last - first) / (float)(n - 1u);
+        if (n > SC_XING_MAX) {
+            /* Dozens of periods: the average spacing is the period. */
+            out->n_rise = n;
+            out->period = (float)(last - first) / (float)(n - 1u);
+        } else {
+            out->n_rise = sc_period_from_crossings(xs, n, head_skip, len, &out->period);
+        }
     }
     return true;
+}
+
+uint16_t sc_period_from_crossings(uint16_t *xs, uint16_t n, uint16_t head_skip,
+                                  uint16_t len, float *period)
+{
+    *period = 0.0f;
+    if (n < 2u) return n;
+    /* Edge ringing puts a burst of crossings a few samples apart after an
+     * edge: keep one crossing per burst (closer than half the largest gap to
+     * the last one kept is the same edge). */
+    uint16_t gmax = 0;
+    for (uint16_t k = 1; k < n; k++)
+        if ((uint16_t)(xs[k] - xs[k - 1u]) > gmax) gmax = (uint16_t)(xs[k] - xs[k - 1u]);
+    uint16_t m = 1;
+    for (uint16_t k = 1; k < n; k++)
+        if ((uint16_t)(xs[k] - xs[m - 1u]) >= gmax / 2u) xs[m++] = xs[k];
+    if (m < 2u) return m;
+    const float p = (float)(xs[m - 1u] - xs[0]) / (float)(m - 1u);
+    /* A period is believed only if it holds over the whole record: evenly
+     * spaced crossings, and no stretch at either end longer than 1.5
+     * periods without one. A ringing burst after a lone edge fails this. */
+    for (uint16_t k = 1; k < m; k++)
+        if (fabsf((float)(xs[k] - xs[k - 1u]) - p) > 0.25f * p) return m;
+    if ((float)((int)xs[0] - (int)head_skip) > 1.5f * p ||
+        (float)((int)len - 1 - (int)xs[m - 1u]) > 1.5f * p)
+        return m;
+    *period = p;
+    return m;
 }
 
 int sc_level_for_raw(float raw)
@@ -273,8 +308,8 @@ static bool as_vertical(sc_autoset_t *a, unsigned c, const sc_rec_stats_t *o)
     return changed;
 }
 
-/* Best code for a tone of f Hz: periods across the window nearest 3 (in
- * ratio), over the codes autoset may use. */
+/* Best code for a tone of f Hz: 2 to 3 periods across the window, nearest
+ * 2.5 (in ratio); fewer than 2 only if no code gives 2. */
 static uint8_t as_code_for_freq(const sc_autoset_t *a, float f)
 {
     uint8_t best = a->tb;
@@ -283,7 +318,8 @@ static uint8_t as_code_for_freq(const sc_autoset_t *a, float f)
         const float r = a->cfg.rate[c];
         if (r <= 0.0f) continue;
         const float periods = (float)a->cfg.window * f / r;
-        const float e = fabsf(logf(periods / 3.0f));
+        const float e = (periods < 2.0f) ? 1.0f + logf(2.0f / periods)
+                                         : fabsf(logf(periods / 2.5f));
         /* Ties (codes sharing one rate) go to the slower code: the same
          * picture with the longer record. */
         if (e < best_err - 1e-6f || (fabsf(e - best_err) <= 1e-6f && c > best)) {
@@ -341,17 +377,19 @@ static bool as_horizontal(sc_autoset_t *a, const sc_rec_stats_t *o, unsigned tc)
     int need = (int)a->v_pp[tc] / 4;
     if (need < SC_AS_FLAT_PP) need = SC_AS_FLAT_PP;
     const bool full = pp >= need;
-    if (full && o->n_rise >= 2u && o->period >= SC_AS_MIN_PERIOD) {
+    if (full && o->period >= SC_AS_MIN_PERIOD) {
         const uint8_t next = as_code_for_freq(a, cur / o->period);
         a->h_done = true;
         if (next == a->tb) return false;
         a->tb = next;
         return true;
     }
-    if (full && o->n_rise >= 2u) {
+    if (full && o->period > 0.0f) {
         a->h_done = true;      /* faster than the fastest code can frame */
         return false;
     }
+    /* No period that holds over this record (fewer than two periods, or a
+     * ringing burst after one edge): look 8x slower. */
     const uint8_t next = as_code_toward(a, cur / 8.0f, false);
     if (next == 0xFFu) {
         a->h_done = true;      /* slower than the slowest code allowed */

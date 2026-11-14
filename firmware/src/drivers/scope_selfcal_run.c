@@ -48,7 +48,7 @@
 #define AS_TB_MIN    0x04u
 #define AS_TB_MAX    0x13u
 #define AS_TB_PROBE  0x10u   /* 12.5 kS/s: a 72 ms record holds 3+ mains periods */
-#define AS_WINDOW    320u    /* samples across the screen at 1 sample per pixel */
+#define AS_WINDOW    SCOPE_GEOM_COLS   /* samples across the 301-column window at codes >= 0x04 */
 
 enum { REQ_NONE = 0, REQ_AUTOSET, REQ_BASECAL, REQ_CENTER50 };
 enum { W_NONE = 0, W_SETTLE, W_COMMITS };

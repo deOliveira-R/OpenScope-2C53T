@@ -16,6 +16,7 @@
 #include "../src/ui/scope_selfcal.h"
 #include "../src/ui/scope_cal.h"
 #include "../src/ui/scope_timebase.h"
+#include "../src/ui/scope_geom.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -442,6 +443,8 @@ static void test_basecal_refusals(void)
 typedef struct {
     float dc_v, amp_v, freq;     /* per channel */
     bool  square;
+    float duty;                  /* square: high fraction, 0 = 0.5 */
+    float ring_v, ring_f, ring_tau;   /* damped ringing after each square edge */
 } as_sig_t;
 
 typedef struct {
@@ -468,8 +471,20 @@ static void as_make_obs(as_sim_t *s, const sc_autoset_t *a, sc_rec_stats_t obs[2
         for (unsigned i = 0; i < REC_LEN; i++) {
             const float t = (float)i / fs;
             float w = sinf(6.2831853f * g->freq * t + ph);
-            if (g->square) w = (w >= 0.0f) ? 1.0f : -1.0f;
-            const float v = g->dc_v + g->amp_v * w;
+            float ring = 0.0f;
+            if (g->square) {
+                const float duty = (g->duty > 0.0f) ? g->duty : 0.5f;
+                float fr = g->freq * t + ph / 6.2831853f;
+                fr -= floorf(fr);
+                const bool hi = fr < duty;
+                w = hi ? 1.0f : -1.0f;
+                if (g->ring_v > 0.0f) {
+                    const float dt = (hi ? fr : fr - duty) / g->freq;
+                    ring = (hi ? 1.0f : -1.0f) * g->ring_v * expf(-dt / g->ring_tau) *
+                           sinf(6.2831853f * g->ring_f * dt);
+                }
+            }
+            const float v = g->dc_v + g->amp_v * w + ring;
             rec[i] = (i < 40u) ? 0u : clamp_rec(zero + v * cpv + s->noise * urand());
         }
         sc_rec_stats(rec, REC_LEN, HEAD, &obs[c]);
@@ -491,7 +506,7 @@ static sc_as_status_t as_run(as_sim_t *s, sc_autoset_t *a, bool on1, bool on2,
     cfg.tb_min = 0x04;
     cfg.tb_max = 0x13;
     cfg.tb_probe = 0x10;
-    cfg.window = 320;
+    cfg.window = SCOPE_GEOM_COLS;
     cfg.trig_src = trig_src;
     const uint8_t rr[2] = { r1, r2 };
     const int16_t pp[2] = { 0, 0 };
@@ -508,17 +523,23 @@ static sc_as_status_t as_run(as_sim_t *s, sc_autoset_t *a, bool on1, bool on2,
 
 static float periods_on_screen(const sc_autoset_t *a, float f)
 {
-    return 320.0f * f / rates[a->tb];
+    return (float)SCOPE_GEOM_COLS * f / rates[a->tb];
 }
 
-/* The code nearest 3 periods (in ratio) over 0x04..0x13: where the ladder
- * has a hole (0x0B/0x0C have no rate) 2..4 periods may not exist at all. */
+/* The framing rule: 2..3 periods, nearest 2.5; under 2 only as a last resort. */
+static float framing_err(float periods)
+{
+    return (periods < 2.0f) ? 1.0f + logf(2.0f / periods) : fabsf(logf(periods / 2.5f));
+}
+
+/* The best the code ladder allows over 0x04..0x13 (0x0B/0x0C have no rate,
+ * so 2..3 periods may not exist at all). */
 static float best_framing_err(float f)
 {
     float best = 1e30f;
     for (uint8_t c = 0x04; c <= 0x13; c++) {
         if (rates[c] <= 0.0f) continue;
-        const float e = fabsf(logf(320.0f * f / rates[c] / 3.0f));
+        const float e = framing_err((float)SCOPE_GEOM_COLS * f / rates[c]);
         if (e < best) best = e;
     }
     return best;
@@ -526,8 +547,7 @@ static float best_framing_err(float f)
 
 static bool framed_ok(const sc_autoset_t *a, float f)
 {
-    const float e = fabsf(logf(periods_on_screen(a, f) / 3.0f));
-    return e <= best_framing_err(f) + 0.05f;
+    return framing_err(periods_on_screen(a, f)) <= best_framing_err(f) + 0.05f;
 }
 
 static void check_framed(const char *what, const sc_autoset_t *a, unsigned c,
@@ -537,7 +557,7 @@ static void check_framed(const char *what, const sc_autoset_t *a, unsigned c,
     CHECK(!o->clipped, "%s: CH%u clipped after autoset (r%u)", what, c + 1u, a->range[c]);
     CHECK(pp <= SC_AS_PP_MAX + 8 && pp >= SC_AS_PP_MAX * 2 / 5 - 8,
           "%s: CH%u spans %d counts (%.1f div) on r%u, want ~2.4..6 div",
-          what, c + 1u, pp, pp / 32.0f, a->range[c]);
+          what, c + 1u, pp, pp / (float)SC_COUNTS_PER_DIV, a->range[c]);
     if (centred) {
         const float mid = 0.5f * ((float)o->min + (float)o->max);
         CHECK(fabsf(mid - 100.0f) <= 8.0f, "%s: CH%u midline at %.1f, want ~100 (pos %d)",
@@ -562,7 +582,7 @@ static void test_autoset(void)
         memset(&s, 0, sizeof(s));
         s.page = true;
         s.noise = 1.0f;
-        s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false };
+        s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
         st = as_run(&s, &a, true, false, starts[k][0], 9u, starts[k][1], 0u, o);
         char what[48];
         snprintf(what, sizeof(what), "1 kHz 2 Vpp from r%u tb 0x%02X", starts[k][0], starts[k][1]);
@@ -582,7 +602,7 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 0.3f, 0.2f, 5000.0f, true };
+    s.sig[0] = (as_sig_t){ 0.3f, 0.2f, 5000.0f, true, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, false, 9u, 9u, 0x0E, 0u, o);
     CHECK(st == SC_AS_DONE, "offset square: %s", sc_as_status_str(st));
     check_framed("offset square", &a, 0, &o[0], true);
@@ -594,7 +614,7 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 2.0f, 0.1f, 5000.0f, false };
+    s.sig[0] = (as_sig_t){ 2.0f, 0.1f, 5000.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, false, 9u, 9u, 0x0E, 0u, o);
     CHECK(st == SC_AS_DONE && !o[0].clipped && a.pos[0] == -100,
           "ripple on 2 V: %s r%u pos %d clipped %d", sc_as_status_str(st), a.range[0], a.pos[0],
@@ -605,7 +625,7 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 0.0f, 5.0f, 50.0f, false };
+    s.sig[0] = (as_sig_t){ 0.0f, 5.0f, 50.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, false, 9u, 9u, 0x05, 0u, o);
     CHECK(st == SC_AS_DONE, "50 Hz from tb 5: %s", sc_as_status_str(st));
     check_framed("50 Hz", &a, 0, &o[0], true);
@@ -618,8 +638,8 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false };
-    s.sig[1] = (as_sig_t){ 0.0f, 0.1f, 10000.0f, true };
+    s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
+    s.sig[1] = (as_sig_t){ 0.0f, 0.1f, 10000.0f, true, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, true, 9u, 9u, 0x0E, 0u, o);
     CHECK(st == SC_AS_DONE, "two channels: %s", sc_as_status_str(st));
     check_framed("two channels", &a, 0, &o[0], true);
@@ -636,7 +656,7 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false };
+    s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, true, 9u, 7u, 0x0E, 1u, o);
     CHECK(st == SC_AS_DONE && a.trig_ch == 0, "dead CH2 source: trigger on CH1 (%u, %s)",
           a.trig_ch, sc_as_status_str(st));
@@ -648,13 +668,13 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 2.0f, 0.0f, 0.0f, false };
+    s.sig[0] = (as_sig_t){ 2.0f, 0.0f, 0.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, false, 9u, 9u, 0x0E, 0u, o);
     CHECK(st == SC_AS_DC, "DC 2 V: %s", sc_as_status_str(st));
     CHECK(a.tb == 0x0E, "DC: timebase kept (0x%02X)", a.tb);
     {
         const float off = o[0].mean - 100.0f;
-        CHECK(!o[0].clipped && off > 20.0f && off <= 3.0f * 32.0f + 4.0f && a.pos[0] == 0,
+        CHECK(!o[0].clipped && off > 20.0f && off <= 3.0f * SC_COUNTS_PER_DIV + 4.0f && a.pos[0] == 0,
               "DC: level %.1f counts above 0 V on r%u, pos %d", off, a.range[0], a.pos[0]);
     }
 
@@ -671,7 +691,7 @@ static void test_autoset(void)
     memset(&s, 0, sizeof(s));
     s.page = true;
     s.noise = 1.0f;
-    s.sig[0] = (as_sig_t){ 0.0f, 80.0f, 1000.0f, false };
+    s.sig[0] = (as_sig_t){ 0.0f, 80.0f, 1000.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, false, 3u, 9u, 0x0E, 0u, o);
     CHECK(st == SC_AS_DONE && a.range[0] == 9 && a.res[0] == SC_ASC_OVER,
           "160 Vpp: r9 and OVER (r%u res %d)", a.range[0], (int)a.res[0]);
@@ -681,11 +701,66 @@ static void test_autoset(void)
     s.page = false;
     s.noise = 1.0f;
     s.nopage_offset[0] = 110.0f;
-    s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false };
+    s.sig[0] = (as_sig_t){ 0.0f, 1.0f, 1000.0f, false, 0.0f, 0.0f, 0.0f, 1.0f };
     st = as_run(&s, &a, true, false, 9u, 9u, 0x0E, 0u, o);
     CHECK(st == SC_AS_DONE && a.range[0] >= 4 && a.pos[0] == 0, "no page: %s r%u pos %d",
           sc_as_status_str(st), a.range[0], a.pos[0]);
     check_framed("no page", &a, 0, &o[0], false);
+
+    /* The bench case: 100 kHz 0..3.3 V square through a 1X probe, each edge
+     * ringing at 5 MHz (2.6 V, decaying in ~0.25 us: it re-crosses the
+     * midline, as on the bench). At 125 MS/s a record
+     * holds one edge and its ringing, which used to read as a 5 MHz tone
+     * (200 ns/div, "Freq 5.00 MHz"). Wanted: the 100 kHz fundamental, 2..3
+     * periods, the midline (1.65 V) on the centre line. Started from the
+     * fastest code and from a slow one. */
+    {
+        const uint8_t tbs[] = { 0x04u, 0x0Eu, 0x13u };
+        for (unsigned k = 0; k < sizeof(tbs); k++) {
+            memset(&s, 0, sizeof(s));
+            s.page = true;
+            s.noise = 1.0f;
+            s.sig[0] = (as_sig_t){ 1.65f, 1.65f, 100000.0f, true, 0.5f, 2.6f, 5.0e6f, 0.25e-6f };
+            st = as_run(&s, &a, true, false, 5u, 9u, tbs[k], 0u, o);
+            char what[48];
+            snprintf(what, sizeof(what), "ringing 100 kHz square from tb 0x%02X", tbs[k]);
+            const float p = periods_on_screen(&a, 100000.0f);
+            CHECK(st == SC_AS_DONE && framed_ok(&a, 100000.0f) && p >= 2.0f && p <= 3.0f,
+                  "%s: %s, %.2f periods at tb 0x%02X", what, sc_as_status_str(st), p, a.tb);
+            check_framed(what, &a, 0, &o[0], true);
+            CHECK(abs(a.trig_level - sc_level_for_raw(100.0f + 28.0f)) <= 6,
+                  "%s: trigger level %d at the midline", what, a.trig_level);
+            printf("  %s -> r%u pos %d tb 0x%02X (%.2f periods), %d records\n",
+                   what, a.range[0], a.pos[0], a.tb, p, s.records);
+        }
+    }
+
+    /* A floor-referenced pulse train, 10 % duty, 0..5 V at 20 kHz: framed on
+     * its period, midline (2.5 V) centred, the 0 V floor 2.5 V below it. */
+    memset(&s, 0, sizeof(s));
+    s.page = true;
+    s.noise = 1.0f;
+    s.sig[0] = (as_sig_t){ 2.5f, 2.5f, 20000.0f, true, 0.1f, 0.0f, 0.0f, 1.0f };
+    st = as_run(&s, &a, true, false, 9u, 9u, 0x0E, 0u, o);
+    {
+        const float p = periods_on_screen(&a, 20000.0f);
+        CHECK(st == SC_AS_DONE && framed_ok(&a, 20000.0f), "10 %% pulse train: %s, %.2f periods",
+              sc_as_status_str(st), p);
+        check_framed("10 % pulse train", &a, 0, &o[0], true);
+        CHECK(a.pos[0] < 0, "pulse train: the floor sits below centre (pos %d)", a.pos[0]);
+    }
+
+    /* The crossing filter on its own: one edge with a ringing burst holds
+     * no period; ringing bursts on periodic edges give the edge period. */
+    {
+        uint16_t xs[8] = { 520, 560, 600 };
+        float per = -1.0f;
+        (void)sc_period_from_crossings(xs, 3, HEAD, REC_LEN, &per);
+        CHECK(per == 0.0f, "lone edge with ringing: no period (%.1f)", per);
+        uint16_t ys[8] = { 200, 204, 208, 400, 404, 600, 603, 800 };
+        (void)sc_period_from_crossings(ys, 8, HEAD, REC_LEN, &per);
+        CHECK(fabsf(per - 200.0f) < 1.0f, "ringing on every edge: period %.1f, want 200", per);
+    }
 
     /* Torture: frequencies across the usable span always end framed. */
     const float fl[] = { 20.0f, 200.0f, 3000.0f, 40000.0f, 300000.0f, 2.0e6f, 9.7e6f };
@@ -693,7 +768,7 @@ static void test_autoset(void)
         memset(&s, 0, sizeof(s));
         s.page = true;
         s.noise = 1.0f;
-        s.sig[0] = (as_sig_t){ 0.0f, 0.5f, fl[k], (k & 1u) != 0u };
+        s.sig[0] = (as_sig_t){ 0.0f, 0.5f, fl[k], (k & 1u) != 0u, 0.0f, 0.0f, 0.0f, 1.0f };
         st = as_run(&s, &a, true, false, 9u, 9u, 0x0E, 0u, o);
         const float p = periods_on_screen(&a, fl[k]);
         CHECK(st == SC_AS_DONE && framed_ok(&a, fl[k]),

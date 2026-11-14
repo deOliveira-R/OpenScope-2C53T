@@ -28,9 +28,11 @@
  * scope_cal_nominal_mv) and takes the most sensitive range on which the
  * signal spans <= 6 divisions and stays inside the rails once centred; it
  * re-measures after each move because a clipped record hides the true span.
- * The timebase comes from the period between rising crossings, aiming for 3
- * periods across the screen (2..4 accepted); the trigger level goes to the
- * signal's midline (50 %) and the position centres it.
+ * The timebase comes from the period between rising crossings (one per
+ * ringing burst, and only a period that holds over the whole record), aiming
+ * for 2 to 3 periods across the screen; the trigger level goes to the
+ * signal's midline (50 %) and the position puts that midline on the centre
+ * line.
  *
  * BASELINE CORRECTION — stock's servo (SYNTHESIS 1.2, ADDENDUM_A S8, ADDENDUM_B
  * S15) without its traps:
@@ -74,7 +76,7 @@ typedef struct {
     float    mean;          /* the middle SC_MEAN_N samples of the body */
     bool     clipped;       /* a body sample sits on a rail (0 or SC_REC_MAX) */
     uint16_t n_rise;        /* rising crossings of the midline, with hysteresis */
-    float    period;        /* samples per period from those; 0 = fewer than 2 */
+    float    period;        /* samples per period, 0 = none that holds over the record */
     /* Glitch-trimmed view (baseline correction), as fpga.c's ilcal_window:
      * pass 1 takes the mean, pass 2 drops samples more than SC_TRIM counts
      * from it. Interference bursts (10-40 wild samples, ~5 % of a record on
@@ -92,6 +94,14 @@ typedef struct {
 /* `rec` is a whole record of `len` bytes; the first `head_skip` are ignored.
  * Returns false (and zeroes *out) when the body is shorter than SC_MEAN_N. */
 bool sc_rec_stats(const uint8_t *rec, uint16_t len, uint16_t head_skip, sc_rec_stats_t *out);
+
+#define SC_XING_MAX         32u     /* crossings kept for the period check */
+/* The period from rising-crossing indices xs[0..n): one crossing per ringing
+ * burst, then believed only if evenly spaced (25 %) over the whole body
+ * [head_skip, len) with no end gap over 1.5 periods; else *period = 0.
+ * Returns the crossings kept. xs is compacted in place. */
+uint16_t sc_period_from_crossings(uint16_t *xs, uint16_t n, uint16_t head_skip,
+                                  uint16_t len, float *period);
 
 /* Inverse of fpga_trigger_code_from_level(): the UI level (-100..100) whose
  * reg-0x08 code is `raw`. raw = record + 28. */
