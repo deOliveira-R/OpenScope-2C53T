@@ -14,6 +14,7 @@
 
 #include "config.h"
 #include "flash_regions.h"
+#include "model_persist_v5.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -52,64 +53,16 @@ void config_init_defaults(device_config_t *cfg)
     cfg->magic   = CONFIG_MAGIC;
     cfg->version = CONFIG_VERSION;
 
-    /* Oscilloscope defaults */
-    cfg->scope_ch1_vdiv     = 3;    /* 2V/div */
-    cfg->scope_ch2_vdiv     = 5;    /* 200mV/div */
-    cfg->scope_timebase     = 10;   /* 50us/div */
-    cfg->scope_trigger_mode = 0;    /* Auto */
-    cfg->scope_trigger_edge = 0;    /* Rising */
-    cfg->scope_trigger_level = 0;
-    cfg->scope_ch1_coupling = 0;    /* DC */
-    cfg->scope_ch2_coupling = 0;    /* DC */
-    cfg->scope_ch1_enabled  = true;
-    cfg->scope_ch2_enabled  = true;
-
-    /* FFT defaults */
-    cfg->fft_window    = 1;         /* Hanning */
-    cfg->fft_avg_count = 0;
-    cfg->fft_max_hold  = false;
-
-    /* Signal generator defaults */
-    cfg->siggen_waveform  = 0;      /* Sine */
-    cfg->siggen_frequency = 1000.0f;
-    cfg->siggen_amplitude = 3.0f;   /* stock factory 3.0 V (0x080294A0) */
-    /* Stock factory duty; the output boots OFF unless the user opted in
-     * (stock boots ON, 0x080294A0). */
-    cfg->siggen_duty      = 50;
-    cfg->siggen_enabled   = 0;
-    cfg->siggen_start_on  = 0;
-
-    /* Display defaults */
-    cfg->display_brightness  = 100;   /* stock factory (C15) */
-    cfg->display_persist_mode = 0;
-    cfg->language = 0;              /* English */
-    cfg->startup_mode = CONFIG_MODE_MULTIMETER;
-
-    /* System defaults */
-    cfg->auto_shutdown_mins = 0;      /* stock factory: off (C15) */
-    cfg->sound_enabled      = 1;
-    cfg->sys_prefs_mark     = CONFIG_SYS_PREFS_MARK;   /* these are C15's values */
-
-    /* v3 block */
-    cfg->theme                = 0;  /* THEME_DARK_BLUE */
-    cfg->scope_ch1_probe      = 0;  /* 1x */
-    cfg->scope_ch2_probe      = 0;
-    cfg->scope_ch1_bw_limit   = 0;
-    cfg->scope_ch2_bw_limit   = 0;
-    cfg->scope_trigger_source = 0;  /* CH1 */
-    cfg->math_enabled         = 0;
-    cfg->math_op              = 0;
-    cfg->meter_submode        = 0;  /* DCV */
-    cfg->meter_layout         = 0;  /* Full */
-
-    /* v5 block: the same five on both channels, CH1's badges before the
-     * selection page existed (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT;
-     * scope_measure.h ids: Freq 0, Peri 1, Duty+ 2, Vp-p 8, Vrms 10). Literal
-     * here so config.c stays free of UI headers; test_config_persist checks
-     * they agree. A saved record keeps its own CH2 set. */
-    cfg->meas_ch1_mask        = (uint16_t)((1u << 0) | (1u << 1) | (1u << 2) | (1u << 8) | (1u << 10));
-    cfg->meas_ch2_mask        = cfg->meas_ch1_mask;
-
+    /* Every field from the property table's built-in defaults through the
+     * v5 codec table (src/model/model_persist_v5.c): the scope 2 V/div CH1,
+     * 200 mV/div CH2, 50 us/div, Auto/rising/CH1 at 0; stock's factory
+     * generator (sine, 1 kHz, 3.0 V, 50 %) with the output off at boot;
+     * brightness 100, volume 1, auto-off off, sys_prefs_mark set (C15);
+     * startup Meter; the five-measurement set on both channels (v5); FFT
+     * Hanning, no averaging. Fields with no property (display_persist_mode)
+     * stay zero. tests/test_model_persist.c pins the bytes against the
+     * literal list this replaced. */
+    model_persist_v5_defaults(cfg);
 
     /* Compute and store checksum */
     cfg->checksum = config_compute_checksum(cfg);
