@@ -250,6 +250,8 @@ static void draw_delete_prompt(const gallery_index_t *idx)
 
 bool gallery_ui_is_open(void) { return is_open; }
 
+static QueueHandle_t open_dq;     /* the display queue it was opened with */
+
 static void close_gallery(QueueHandle_t dq)
 {
     is_open = false;
@@ -258,10 +260,21 @@ static void close_gallery(QueueHandle_t dq)
     xQueueSend(dq, &cmd, 0);
 }
 
+void gallery_ui_close(void)
+{
+    if (!is_open) return;
+    if (open_dq != NULL) {
+        close_gallery(open_dq);
+    } else {
+        is_open = false;
+        if (!modal_was_set) ui_modal_active = false;
+    }
+}
+
 void gallery_ui_open(QueueHandle_t dq)
 {
-    (void)dq;
     if (is_open) return;
+    open_dq = dq;
     gallery_nav_open(&nav);
     modal_was_set = claim_screen();
     is_open = true;

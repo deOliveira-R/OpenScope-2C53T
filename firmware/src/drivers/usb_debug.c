@@ -6364,6 +6364,12 @@ static void cmd_mode(const char *args)
         }
     }
 
+    /* A mode change hands the screen to that mode: the gallery (a modal
+     * claim) would otherwise stay on top of it. */
+    if (strcmp(args, "scope") == 0 ||
+        (strncmp(args, "meter", 5) == 0 && (args[5] == '\0' || args[5] == ' ' || args[5] == '\t')))
+        gallery_ui_close();
+
     if (strcmp(args, "scope") == 0) {
         current_mode = MODE_OSCILLOSCOPE;
         fpga_enter_scope_mode();

@@ -26,6 +26,9 @@ void gallery_ui_result_text(gallery_status_t st, uint32_t seq, char *out, uint32
 
 bool gallery_ui_is_open(void);
 void gallery_ui_open(QueueHandle_t dq);
+/* Close it (if open) and request the full repaint, from any task: a mode
+ * change from the shell must not leave the gallery owning the screen. */
+void gallery_ui_close(void);
 
 /* Every key while the gallery is open (button id, BTN_LONG_FLAG allowed).
  * Returns false only for POWER: the gallery has closed itself and the caller
