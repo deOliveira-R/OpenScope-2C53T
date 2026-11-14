@@ -28,6 +28,7 @@
 #include "battery.h"
 #include "at32f403a_407.h"
 #include "fpga.h"
+#include "units.h"              /* rec_touches_rail */
 #include <stdio.h>
 #include <string.h>
 
@@ -367,6 +368,19 @@ static void slot_battery(const theme_t *th)
 
 static uint32_t s_info_drawn_epoch;
 static bool s_info_drawn;
+static uint8_t s_info_drawn_clip;      /* info_clip() as last drawn */
+
+/* Bit 0 CH1, bit 1 CH2: the channel is on and its last record touches an
+ * ADC rail (units.h rec_touches_rail). 0 before the first record. */
+static uint8_t info_clip(void)
+{
+    if (!fpga_data_ready()) return 0u;
+    const scope_state_t *ss = scope_state_get();
+    uint8_t m = 0u;
+    if (ss->ch1.enabled && rec_touches_rail(fpga_get_ch1_buf(), FPGA_ADC_BUF_SIZE)) m |= 1u;
+    if (ss->ch2.enabled && rec_touches_rail(fpga_get_ch2_buf(), FPGA_ADC_BUF_SIZE)) m |= 2u;
+    return m;
+}
 
 /* Seconds of critical battery so far (the timer service task writes, the
  * display task reads). Like the counter it replaces, it never counts back
@@ -412,8 +426,9 @@ void draw_status_bar(void)
         slot_view(th, ss);
         /* The info bar's own inputs, for changes main.c's epoch does not
          * hash (the trigger level, a label from a new calibration). */
-        if (!full && scope_view == SCOPE_VIEW_TIME &&
-            (!s_info_drawn || status_bar_info_epoch() != s_info_drawn_epoch))
+        if (!full && (scope_view == SCOPE_VIEW_TIME || scope_view == SCOPE_VIEW_FFT) &&
+            (!s_info_drawn || status_bar_info_epoch() != s_info_drawn_epoch ||
+             info_clip() != s_info_drawn_clip))
             draw_info_bar();
     } else {
         slot_title(th);
@@ -466,7 +481,7 @@ static void ch_fields(uint8_t ch, const channel_state_t *c, ch_fields_t *f)
  * `col`. With `right` the badge ends at x; otherwise it starts there. If it
  * would not fit IB_CH_W the chip goes (the colour and side still say which). */
 static void draw_ch_badge(uint16_t x, bool right, uint8_t ch, const channel_state_t *c,
-                          uint16_t col, uint16_t bg)
+                          uint16_t col, uint16_t bg, bool clipped, uint16_t warn)
 {
     ch_fields_t f;
     ch_fields(ch, c, &f);
@@ -477,13 +492,15 @@ static void draw_ch_badge(uint16_t x, bool right, uint8_t ch, const channel_stat
     const uint16_t w  = (uint16_t)((chip ? IB_CHIP_W + IB_CHIP_GAP : 0u) + tw);
     uint16_t x0 = right ? (uint16_t)(x - w) : x;
     if (chip) {
+        /* A record at an ADC rail: the chip turns the warning colour. */
         const char num[2] = { (char)('0' + ch), '\0' };
-        lcd_fill_rect(x0, IB_TEXT_Y, IB_CHIP_W, 12, col);
+        lcd_fill_rect(x0, IB_TEXT_Y, IB_CHIP_W, 12, clipped ? warn : col);
         text_over((uint16_t)(x0 + (IB_CHIP_W - font_string_width(num, &font_small) + 1u) / 2u),
                   IB_TEXT_Y, num, bg);
         x0 = (uint16_t)(x0 + IB_CHIP_W + IB_CHIP_GAP);
     }
-    x0 = (uint16_t)(x0 + font_draw_string(x0, IB_TEXT_Y, f.vdiv, col, bg, &font_small) + IB_FIELD_GAP);
+    x0 = (uint16_t)(x0 + font_draw_string(x0, IB_TEXT_Y, f.vdiv, (clipped && !chip) ? warn : col, bg,
+                                          &font_small) + IB_FIELD_GAP);
     x0 = (uint16_t)(x0 + font_draw_string(x0, IB_TEXT_Y, f.probe, col, bg, &font_small) + IB_FIELD_GAP);
     font_draw_string(x0, IB_TEXT_Y, f.cpl, col, bg, &font_small);
 }
@@ -536,6 +553,7 @@ uint32_t status_bar_info_epoch(void)
     h = mix(h, (uint32_t)ss->trigger.mode | ((uint32_t)ss->trigger.edge << 4)
                | ((uint32_t)ss->trigger.source << 8));
     h = mix(h, (uint32_t)(uint16_t)ss->trigger.level);
+    h = mix(h, (uint32_t)key_active_channel_get());   /* the FFT bar names the active channel */
     return h;
 }
 
@@ -571,8 +589,27 @@ void draw_info_bar(void)
             if (cfg->max_hold)
                 font_draw_string(150, LCD_HEIGHT - 14, "MH",
                                  th->warning, ib, &font_small);
-            font_draw_string(220, LCD_HEIGHT - 14, "SEL:Window",
-                             th->text_secondary, ib, &font_small);
+            /* UP/DOWN change the ACTIVE channel's V/div here too, and the
+             * channel badges are not on this bar: show that channel's
+             * measured V/div at the right (it replaces the "SEL:Window"
+             * hint), and CLIP when the analysed channel's record (CH1: the
+             * FFT reads CH1 only) touches an ADC rail, whose flat tops put
+             * false harmonics in the spectrum. */
+            const scope_state_t *ss = scope_state_get();
+            const uint8_t ach = key_active_channel_get() ? 2u : 1u;
+            const channel_state_t *ac = (ach == 2u) ? &ss->ch2 : &ss->ch1;
+            ch_fields_t fv;
+            ch_fields(ach, ac, &fv);
+            char lab[20];
+            snprintf(lab, sizeof lab, "CH%u %s", (unsigned)ach, fv.vdiv);
+            font_draw_string_right(LCD_WIDTH - 4u, LCD_HEIGHT - 14, lab,
+                                   ach == 2u ? th->ch2 : th->ch1, ib, &font_small);
+            const uint8_t clip = info_clip();
+            if (clip & 1u)
+                font_draw_string(176, LCD_HEIGHT - 14, "CLIP", th->warning, ib, &font_small);
+            s_info_drawn_epoch = status_bar_info_epoch();
+            s_info_drawn_clip = clip;
+            s_info_drawn = true;
         } else
 #endif
         {
@@ -589,12 +626,14 @@ void draw_info_bar(void)
              * timebase moved to the top bar (S4), which frees the centre for
              * the trigger badge (S5).
              */
+            const uint8_t clip = info_clip();
             draw_ch_badge(IB_CH1_X, false, 1u, &ss->ch1,
-                          ss->ch1.enabled ? th->ch1 : th->text_secondary, ib);
+                          ss->ch1.enabled ? th->ch1 : th->text_secondary, ib, (clip & 1u) != 0u, th->warning);
             draw_trig_badge(th, ss, ib);
             draw_ch_badge(IB_CH2_X + IB_CH_W, true, 2u, &ss->ch2,
-                          ss->ch2.enabled ? th->ch2 : th->text_secondary, ib);
+                          ss->ch2.enabled ? th->ch2 : th->text_secondary, ib, (clip & 2u) != 0u, th->warning);
             s_info_drawn_epoch = status_bar_info_epoch();
+            s_info_drawn_clip = clip;
             s_info_drawn = true;
         }
         break;

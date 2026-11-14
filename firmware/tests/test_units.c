@@ -172,6 +172,23 @@ static void test_roundtrip(void)
         }
 }
 
+/* The rails in record units: 0 and REC_CODE_MAX (raw 0..28 and raw 255). */
+static void test_rail(void)
+{
+    uint8_t r[1024];
+    memset(r, 100, sizeof r);
+    CHECK(!rec_touches_rail(r, sizeof r));
+    r[1023] = REC_CODE_MAX;     CHECK(rec_touches_rail(r, sizeof r));
+    CHECK(!rec_touches_rail(r, 1023));                 /* only the samples asked about */
+    r[1023] = REC_CODE_MAX - 1; CHECK(!rec_touches_rail(r, sizeof r));
+    r[0] = 0;                   CHECK(rec_touches_rail(r, sizeof r));
+    r[0] = 1;                   CHECK(!rec_touches_rail(r, sizeof r));
+    CHECK(rec_touches_rail(&(uint8_t){ rec_from_raw(R(255)).v }, 1));
+    CHECK(rec_touches_rail(&(uint8_t){ rec_from_raw(R(20)).v }, 1));
+    CHECK(!rec_touches_rail(&(uint8_t){ rec_from_raw(R(254)).v }, 1));
+    CHECK(!rec_touches_rail(NULL, 4));
+}
+
 int main(void)
 {
     test_raw_rec();
@@ -181,6 +198,7 @@ int main(void)
     test_fmt();
     test_parse();
     test_roundtrip();
+    test_rail();
     printf("units: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

@@ -61,6 +61,16 @@ static inline rec_code_t rec_from_raw(adc_raw_t r)
     return c;
 }
 
+/* The record touches an ADC rail: a sample at record code 0 (raw at or below
+ * the offset) or REC_CODE_MAX (raw 255). A clipped input adds harmonics an
+ * FFT shows as real, and a flat top a Y-T trace shows as the signal. */
+static inline int rec_touches_rail(const volatile uint8_t *rec, uint32_t n)
+{
+    for (uint32_t i = 0; rec && i < n; i++)
+        if (rec[i] == 0u || rec[i] >= REC_CODE_MAX) return 1;
+    return 0;
+}
+
 /* Inverse; a record code above REC_CODE_MAX saturates at raw 255. */
 static inline adc_raw_t raw_from_rec(rec_code_t c)
 {
