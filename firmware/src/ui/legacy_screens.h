@@ -23,6 +23,14 @@
  * the shell's `set sys.mode` / `set sys.instrument` path. sys.instrument reads current_mode, so it and the router's
  * base are the same value one sync apart.
  *
+ * MIGRATED SCREENS (ARCH-1 B2 on). A base that is a real screen (it has its
+ * own file and a draw(): home_screen.c) is registered here in place of its
+ * legacy row. The mirror above still decides when it is up; what changes is
+ * who handles its keys and paints it: the screen's key() acts on the model
+ * and answers what to repaint, and this file posts that paint and runs the
+ * settings hook once per key (lgc_native_after), where each legacy handler
+ * does both itself. Its open()/close() run from the mirror's screen_switch.
+ *
  * This file is pure (no FreeRTOS, no driver header): the router order is
  * host-tested against the pre-router dispatch (tests/test_screen_router.c).
  * Its environment is the lgc_* functions below, implemented by
@@ -69,7 +77,6 @@ typedef struct {
 void      lgc_state(lgc_state_t *s);
 key_ctx_t lgc_ctx(void);                          /* key_ctx_now()                  */
 void      lgc_exec(key_cmd_t k, button_id_t btn); /* exec_key_cmd + settings hook   */
-void      lgc_home(button_id_t btn);              /* the home page's keys           */
 bool      lgc_meter_softkey(button_id_t btn);     /* true: a softkey took it        */
 bool      lgc_siggen_edit(button_id_t btn);       /* true: the digit editor took it */
 void      lgc_mode_key(button_id_t btn);          /* the per-key switch (+ POWER)   */
@@ -84,6 +91,12 @@ void      lgc_selfcal_cancel(void);               /* AUTO / MENU while locked   
 void      lgc_selfcal_refuse(void);               /* "Busy: AUTO cancels"           */
 void      lgc_touch(void);                        /* auto-off restart               */
 void      lgc_click(void);                        /* key click                      */
+/* After a key a migrated screen handled: `res` is its answer. SCR_DRAW posts
+ * an in-place paint of screen `scr` (DCMD_DRAW_ACTIVE + scr), SCR_DRAW_FULL
+ * a DCMD_REDRAW_ALL, SCR_HANDLED nothing (the key changed nothing on screen,
+ * or it switched the mode and the switch repaints); then the settings hook,
+ * as for every key. */
+void      lgc_native_after(screen_id_t scr, scr_res_t res);
 void      lgc_lock(void);                         /* guards the stack arrays        */
 void      lgc_unlock(void);
 
@@ -91,6 +104,5 @@ void      lgc_unlock(void);
  * one key=value fragment each. */
 void ui_describe_osc_menu(char *out, size_t n);   /* "row=ch1 pane=pane item=2" */
 void ui_describe_settings(char *out, size_t n);   /* "settings=1/0/3"           */
-void ui_describe_home(char *out, size_t n);       /* "home=meter"               */
 
 #endif /* LEGACY_SCREENS_H */

@@ -14,7 +14,8 @@
  *                                               then the top screen's key_map(long)
  *   5. short keys key_map claims (SAVE; the     globals (SAVE), then the osc page
  *      scope's keys and its Settings page)      layer / the scope base
- *   6. home page: every key but POWER           SCR_HOME
+ *   6. home page: every key but POWER           SCR_HOME (home_screen.c, a
+ *                                               migrated screen: see below)
  *   7. meter softkeys (MOVE/SELECT/TRIGGER/PRM) SCR_METER
  *   8. generator digit editor                   SCR_SIGGEN
  *   9. the per-key switch (POWER's countdown)   every base (POWER: the global)
@@ -23,17 +24,38 @@
  * self-cal lock, and today the lock comes first (a long MOVE during autoset
  * says "Busy", it does not switch mode).
  *
- * No after_key and no stack_changed hook: each forwarded handler keeps its own
- * settings hook (the gallery and the lock never had one) and sends its own
- * display command, so the router adds no repaint and no settings write.
+ * No stack_changed hook, and after_key acts for migrated screens only: each
+ * forwarded handler keeps its own settings hook (the gallery and the lock
+ * never had one) and sends its own display command, so for a key a legacy
+ * handler took the router adds no repaint and no settings write.
+ *
+ * Migrated screens (their own files; legacy_screens.h). For a key one of
+ * them handles, the order is still the one above: the context is taken
+ * before the key (ls_globals), the screen's key() runs, and ls_after_key
+ * posts the paint it answered and runs the settings hook
+ * (lgc_native_after). ls_legacy_done says a legacy path (a legacy screen,
+ * the lock, a global) handled the key and has done both itself.
  */
 #include "legacy_screens.h"
+#include "home_screen.h"
 #include "model.h"     /* PG_x: the groups each screen shows (pure header) */
 
 _Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
                "every screen id fits the DCMD_DRAW_ACTIVE range");
 _Static_assert(MODE_OSCILLOSCOPE == 0 && MODE_MULTIMETER == 1 && MODE_SIGNAL_GEN == 2,
                "a base screen's instrument id is its mode value (sys.instrument 0..2)");
+
+/* ── migrated screens ──────────────────────────────────────────────── */
+
+/* Per key (input task): reset by ls_touch (router step 1, every real key). */
+static bool        ls_legacy_done;   /* a legacy path handled it: repaint and settings hook done */
+static screen_id_t ls_key_base;      /* the base when the key arrived (it may switch under it)   */
+
+static bool ls_is_native(screen_id_t id)
+{
+    const screen_t *s = screen_get(id);
+    return s != NULL && s->draw != NULL;
+}
 
 /* ── key callbacks ─────────────────────────────────────────────────── */
 
@@ -51,18 +73,21 @@ static bool ls_mapped(scr_key_t k)
 
 static scr_res_t ls_key_scope(scr_key_t k)
 {
+    ls_legacy_done = true;
     if (!ls_mapped(k)) lgc_mode_key(k.btn);
     return SCR_HANDLED;
 }
 
 static scr_res_t ls_key_meter(scr_key_t k)
 {
+    ls_legacy_done = true;
     if (!ls_mapped(k) && !lgc_meter_softkey(k.btn)) lgc_mode_key(k.btn);
     return SCR_HANDLED;
 }
 
 static scr_res_t ls_key_siggen(scr_key_t k)
 {
+    ls_legacy_done = true;
     if (!ls_mapped(k) && !lgc_siggen_edit(k.btn)) lgc_mode_key(k.btn);
     return SCR_HANDLED;
 }
@@ -70,15 +95,8 @@ static scr_res_t ls_key_siggen(scr_key_t k)
 /* The settings base and every settings page: settings_depth decides inside. */
 static scr_res_t ls_key_settings(scr_key_t k)
 {
+    ls_legacy_done = true;
     if (!ls_mapped(k)) lgc_mode_key(k.btn);
-    return SCR_HANDLED;
-}
-
-static scr_res_t ls_key_home(scr_key_t k)
-{
-    if (ls_mapped(k)) return SCR_HANDLED;
-    if (k.btn != BTN_POWER) lgc_home(k.btn);      /* POWER is a global: never here */
-    else lgc_mode_key(k.btn);
     return SCR_HANDLED;
 }
 
@@ -89,6 +107,7 @@ static scr_res_t ls_key_osc_menu(scr_key_t k)
     const key_ctx_t c = lgc_ctx();
     const key_cmd_t m = key_map(&c, k.btn, k.is_long);
     if (m.act == KA_LEGACY) return SCR_UNHANDLED;   /* POWER only; the globals took it */
+    ls_legacy_done = true;
     lgc_exec(m, k.btn);
     return SCR_HANDLED;
 }
@@ -105,6 +124,7 @@ static scr_res_t ls_key_gallery(scr_key_t k)
         (void)screen_close(SCR_GALLERY);
         return SCR_UNHANDLED;
     }
+    ls_legacy_done = true;
     lgc_state_t s;
     lgc_state(&s);
     return s.gallery_open ? SCR_HANDLED : SCR_CLOSE;
@@ -132,12 +152,12 @@ static scr_res_t ls_key_gallery(scr_key_t k)
 #define LPAGE(id, nm, fl, keyfn, desc, grp) \
     { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
 
+/* The legacy rows. SCR_HOME is not one: home_screen (home_screen.c). */
 static const screen_t ls_table[] = {
     LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL,                 G_SCOPE),
     LBASE(SCR_METER,    "meter",    MODE_MULTIMETER,   MODE_MULTIMETER,     ls_key_meter,    NULL,                 G_METER),
     LBASE(SCR_SIGGEN,   "siggen",   MODE_SIGNAL_GEN,   MODE_SIGNAL_GEN,     ls_key_siggen,   NULL,                 G_SIGGEN),
     LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
-    LBASE(SCR_HOME,     "home",     MODE_HOME,         SCR_INSTRUMENT_NONE, ls_key_home,     ui_describe_home,     G_BARS),
     LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_OSC_MENU, "osc_menu", SCR_F_OPAQUE,                                ls_key_osc_menu, ui_describe_osc_menu, G_SCOPE),
@@ -187,6 +207,7 @@ static bool ls_locked(button_id_t b, bool is_long)
 {
     (void)is_long;
     if (!lgc_selfcal_busy()) return false;
+    ls_legacy_done = true;
     if (b == BTN_AUTO || b == BTN_MENU) lgc_selfcal_cancel();
     else lgc_selfcal_refuse();
     return true;
@@ -211,7 +232,13 @@ static device_mode_t ls_mode_of(key_action_t a)
 static bool ls_globals(button_id_t b, bool is_long)
 {
     const key_cmd_t g = key_map_global(NULL, b, is_long);
-    if (g.act == KA_LEGACY) return false;
+    if (g.act == KA_LEGACY) {
+        /* A migrated base takes the key next: the context is still taken
+         * first, where the legacy screens take it in ls_mapped. */
+        if (ls_is_native(screen_base())) (void)lgc_ctx();
+        return false;
+    }
+    ls_legacy_done = true;
     const device_mode_t m = ls_mode_of((key_action_t)g.act);
     if (g.act == KA_POWER_PROMPT) {
         /* The gallery hands POWER back after closing itself. */
@@ -234,9 +261,25 @@ static bool ls_globals(button_id_t b, bool is_long)
     return true;
 }
 
+static void ls_touch(void)
+{
+    ls_legacy_done = false;
+    ls_key_base = screen_base();
+    lgc_touch();
+}
+
+/* Router step 7. A key a migrated screen handled: post what it answered and
+ * run the settings hook. The screen is the base the key arrived on, not
+ * the one on top now (the key may have switched the mode). */
+static void ls_after_key(scr_res_t res)
+{
+    if (ls_legacy_done || !ls_is_native(ls_key_base)) return;
+    lgc_native_after(ls_key_base, res);
+}
+
 static const screen_hooks_t ls_hooks = {
-    .lock = lgc_lock, .unlock = lgc_unlock, .touch = lgc_touch, .click = lgc_click,
-    .locked = ls_locked, .globals = ls_globals, .after_key = NULL, .stack_changed = NULL,
+    .lock = lgc_lock, .unlock = lgc_unlock, .touch = ls_touch, .click = lgc_click,
+    .locked = ls_locked, .globals = ls_globals, .after_key = ls_after_key, .stack_changed = NULL,
 };
 
 /* ── the mirror ────────────────────────────────────────────────────── */
@@ -277,6 +320,7 @@ void legacy_screens_init(void)
     screen_reset();
     for (unsigned i = 0; i < sizeof ls_table / sizeof ls_table[0]; i++)
         (void)screen_register(&ls_table[i]);
+    (void)screen_register(&home_screen);
     screen_set_hooks(&ls_hooks);
     lgc_state_t s;
     lgc_state(&s);

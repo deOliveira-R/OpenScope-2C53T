@@ -474,6 +474,39 @@ static bool osc_page_up(void)
     return current_mode == MODE_OSCILLOSCOPE && osc_menu_is_open();
 }
 
+/* ── Migrated screens (ui/screen.h; ARCH-1 B2 on) ────────────────────
+ * A base that is a real screen paints itself: its draw() is called where
+ * this task used to call that mode's draw function. The base is looked up by
+ * current_mode, not from the router's stack: the stack follows a shell
+ * `mode` one input pass later. FULL is never gated (REDRAW_ALL, the boot
+ * paint, the repaint under an expired popup). UPDATE is the screen's
+ * in-place paint (DCMD_DRAW_ACTIVE), skipped when the screen has an epoch()
+ * and it equals the one last painted; the gate is invalidated on every mode
+ * change, as the per-screen gates are. */
+static redraw_gate_t native_gate = { 0, 0, 0, false, false };
+
+static const screen_t *native_base(void)
+{
+    const screen_t *s = screen_get(screen_base_for_mode(current_mode));
+    return (s != NULL && s->draw != NULL) ? s : NULL;
+}
+
+static void native_paint_full(const screen_t *s, uint32_t frame)
+{
+    s->draw(SCR_PAINT_FULL, frame);
+    if (s->epoch) redraw_gate_mark(&native_gate, s->epoch(), frame, REDRAW_FULL);
+}
+
+/* false: gated (nothing the screen shows changed since its last paint). */
+static bool native_paint_update(const screen_t *s, uint32_t frame)
+{
+    if (s->epoch && native_gate.primed && s->epoch() == native_gate.drawn_epoch)
+        return false;
+    s->draw(SCR_PAINT_UPDATE, frame);
+    if (s->epoch) redraw_gate_mark(&native_gate, s->epoch(), frame, REDRAW_FULL);
+    return true;
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
 #ifdef FEATURE_FFT
@@ -544,10 +577,11 @@ static void vDisplayTask(void *pvParameters)
         lcd_clear(COLOR_BLACK);
         draw_status_bar();
         draw_info_bar();
-        if (current_mode == MODE_MULTIMETER) {
+        const screen_t *nb = native_base();
+        if (nb != NULL) {
+            nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home) */
+        } else if (current_mode == MODE_MULTIMETER) {
             draw_meter_screen();
-        } else if (current_mode == MODE_HOME) {
-            draw_home_screen();
         } else if (current_mode == MODE_SIGNAL_GEN) {
             draw_siggen_screen(0);        /* Startup on Boot = Signal Gen */
         } else {
@@ -579,6 +613,7 @@ static void vDisplayTask(void *pvParameters)
             }
             redraw_gate_invalidate(&scope_gate);
             redraw_gate_invalidate(&siggen_gate);
+            redraw_gate_invalidate(&native_gate);
             last_rendered_mode = current_mode;
         }
 
@@ -677,7 +712,10 @@ static void vDisplayTask(void *pvParameters)
                     break;
                 }
                 /* Draw current mode's screen */
-                if (current_mode == MODE_OSCILLOSCOPE) {
+                const screen_t *const nb = native_base();   /* one look: the mode can move under us */
+                if (nb != NULL) {
+                    native_paint_full(nb, frame);
+                } else if (current_mode == MODE_OSCILLOSCOPE) {
                     scope_render(frame, REDRAW_FULL);
                     redraw_gate_mark(&scope_gate,
                                      scope_ui_epoch(scope_state_get()),
@@ -692,8 +730,6 @@ static void vDisplayTask(void *pvParameters)
                                      frame, REDRAW_FULL);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
-                } else if (current_mode == MODE_HOME) {
-                    draw_home_screen();
                 }
                 g_screen_painted = true;
                 break;
@@ -738,12 +774,16 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_STATUS_BAR:
                 draw_status_bar();
                 break;
-            case DCMD_DRAW_HOME:
-                if (current_mode == MODE_HOME) {
-                    draw_home_selection();
-                    g_screen_painted = true;
+            case DCMD_DRAW_HOME: {
+                /* A migrated screen's in-place paint (the home page: the
+                 * parts that follow its selection). */
+                const screen_t *const hb = native_base();
+                if (hb != NULL && hb->id == SCR_HOME) {
+                    if (native_paint_update(hb, frame))
+                        g_screen_painted = true;
                 }
                 break;
+            }
             case DCMD_DRAW_OSC_MENU:
                 if (osc_page_up()) {
                     osc_menu_draw();
@@ -993,9 +1033,12 @@ static void vDisplayTask(void *pvParameters)
         }
         if (current_mode != MODE_OSCILLOSCOPE || page_up) {
             if (ui_popup_overlay_service(g_screen_painted) == 2) {
+                const screen_t *const nb_popup = native_base();   /* one look, as above */
                 if (page_up) {
                     osc_menu_invalidate();   /* the box covered part of the pane */
                     osc_menu_draw();
+                } else if (nb_popup != NULL) {
+                    native_paint_full(nb_popup, frame);
                 } else if (current_mode == MODE_MULTIMETER) {
                     if (meter_layout != METER_LAYOUT_BIG &&
                         meter_layout != METER_LAYOUT_LIMITS)
@@ -1007,8 +1050,6 @@ static void vDisplayTask(void *pvParameters)
                                      frame, REDRAW_FULL);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
-                } else if (current_mode == MODE_HOME) {
-                    draw_home_screen();
                 }
             }
         }

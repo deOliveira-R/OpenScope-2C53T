@@ -42,6 +42,7 @@ C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
 C_SOURCES += src/ui/home_model.c
 C_SOURCES += src/ui/home_ui.c
+C_SOURCES += src/ui/home_screen.c
 C_SOURCES += src/ui/fuse_ui.c
 C_SOURCES += src/ui/scope_state.c
 C_SOURCES += src/ui/scope_measure.c
@@ -2109,11 +2110,29 @@ check-owners:
 # firmware yet.
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
-                                 src/ui/legacy_screens.h src/model/model.h | $(BUILD_DIR)
+                                 src/ui/legacy_screens.h src/ui/home_screen.h src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util $< src/ui/screen.c -o $@
 
 .PHONY: test-screen-router
 test-screen-router: $(BUILD_DIR)/test_screen_router
+	$<
+
+# Migrated screens (ARCH-1 B2 on): the real screen file on the real router
+# and the real property model, with fake hardware ops (tests/
+# screen_test_env.h). Home: every key, OK/MENU as one sys.instrument or
+# sys.mode set, the wrap over the entry table, open()'s preselection.
+SCREEN_TEST_DEPS = tests/screen_test_env.h src/ui/screen.c src/ui/screen.h $(MODEL_SRCS) \
+                   src/model/model.h src/model/model_table.h $(MODEL_TEST_LINK)
+SCREEN_TEST_CC   = $(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -Isrc/model -Isrc/util \
+                   -Isrc/ui -Isrc/dsp -Isrc/drivers
+
+$(BUILD_DIR)/test_home_screen: tests/test_home_screen.c src/ui/home_screen.c src/ui/home_screen.h \
+                               src/ui/home_model.c src/ui/home_model.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< src/ui/home_screen.c src/ui/home_model.c src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-home-screen
+test-home-screen: $(BUILD_DIR)/test_home_screen
 	$<
 
 # Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,

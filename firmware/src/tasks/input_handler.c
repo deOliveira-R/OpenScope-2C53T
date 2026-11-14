@@ -30,7 +30,6 @@
 #include "../ui/scope_geom.h"
 #include "signal_gen.h"
 #include "../ui/siggen_edit.h"
-#include "../ui/home_model.h"
 #include "../ui/startup_policy.h"   /* startup_mode_step: the Startup row's order */
 #include "theme.h"
 #include "math_channel.h"
@@ -441,8 +440,10 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
     meter_autoselect_cancel();
     siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
     osc_menu_close();                    /* never reappears over another mode's return */
-    if (m == MODE_HOME)
-        home_enter(home_ui_model(), current_mode);   /* preselect where we came from (stock 0x0800D834) */
+    /* The router's base is the mode being left (a shell `mode` may have
+     * moved it since the last pass): the screen entered is told where from
+     * (home_screen.c open(): Home preselects it, stock 0x0800D834). */
+    legacy_screens_sync();
     current_mode = m;
     if (current_mode == MODE_SETTINGS) {
         settings_selected = 0;
@@ -956,32 +957,21 @@ void lgc_exec(key_cmd_t k, button_id_t btn)
     settings_after_button();
 }
 
-/* The home page takes every key but POWER (shutdown must always work):
- * LEFT/RIGHT move, OK enters, MENU goes back (home_model.h). Before the
- * meter softkeys and the generator editor, which must never see them. */
-void lgc_home(button_id_t button)
+/* A key a migrated screen handled (ui/legacy_screens.h): post the paint its
+ * key() answered, then the settings hook every key runs. The home page
+ * (home_screen.c) is the first: LEFT/RIGHT answer SCR_DRAW (its selection),
+ * OK and MENU switch the mode through the model, which repaints. */
+void lgc_native_after(screen_id_t scr, scr_res_t res)
 {
-    home_key_t hk;
-    uint8_t cmd = DCMD_REDRAW_ALL;
-    switch (button) {
-    case BTN_LEFT:  hk = HOME_KEY_LEFT;  break;
-    case BTN_RIGHT: hk = HOME_KEY_RIGHT; break;
-    case BTN_UP:    hk = HOME_KEY_UP;    break;
-    case BTN_DOWN:  hk = HOME_KEY_DOWN;  break;
-    case BTN_OK:    hk = HOME_KEY_OK;    break;
-    case BTN_MENU:  hk = HOME_KEY_BACK;  break;
-    default:        hk = HOME_KEY_OTHER; break;
-    }
-    const home_result_t r = home_key(home_ui_model(), hk);
-    if (r.act == HOME_MOVED) {
-        cmd = DCMD_DRAW_HOME;
-        send_cmd(g_dq, legacy_screens_active_cmd());      /* the home page: DCMD_DRAW_HOME */
-    } else if (r.act == HOME_ENTER) {
-        enter_mode(r.mode, g_dq);
+    if (res == SCR_DRAW_FULL) {
+        g_cmd = DCMD_REDRAW_ALL;
+        send_cmd(g_dq, DCMD_REDRAW_ALL);
+    } else if (res == SCR_DRAW && (unsigned)scr < (unsigned)SCR_COUNT) {
+        g_cmd = legacy_screens_update_cmd(scr);
+        send_cmd(g_dq, (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)scr));
     } else {
-        cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
+        g_cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
     }
-    g_cmd = cmd;
     settings_after_button();
 }
 

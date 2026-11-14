@@ -366,13 +366,13 @@ void meter_function_select(uint8_t submode);
 const char *startup_mode_name(startup_mode_t mode);
 void startup_mode_set(startup_mode_t mode);
 
+/* The home page: home_screen.h (the screen) and home_ui.c (its painting). */
+
 /* siggen_ui.c */
 void draw_siggen_screen(uint32_t frame);
 
 /* settings_ui.c */
 void draw_settings_screen(void);
-void draw_home_screen(void);       /* home_ui.c: the whole page */
-void draw_home_selection(void);    /* home_ui.c: the parts that follow the selection */
 void draw_health_panel(uint16_t y_start);
 
 #endif /* UI_H */

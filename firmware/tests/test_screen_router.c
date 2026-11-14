@@ -469,7 +469,14 @@ static void test_locking_and_reentry(void)
  * expectation is old_route(): the dispatch order of input_handle_button() as
  * it was before the router (base 6a8c2ba), transcribed step by step. Every key,
  * short and long, in every mode, settings page and overlay must reach the same
- * handler with the same action in both. */
+ * handler with the same action in both.
+ *
+ * Migrated screens (B2 on: home) are not legacy rows any more. Their real
+ * files are tested with the real model (make test-home-screen); here each is
+ * a fake screen_t that logs the key it is asked, so the table and the
+ * equivalence below still say WHO is asked, in which order, and that the
+ * wiring posts the screen's answer once (lgc_native_after: "after:<screen>:
+ * <answer>"). What old_route() expects for them is noted at each place. */
 
 #include "../src/ui/key_model.c"
 #include "../src/ui/legacy_screens.c"
@@ -534,7 +541,7 @@ void lgc_state(lgc_state_t *s)
 }
 key_ctx_t lgc_ctx(void)                      { lg("ctx", 0, 0, 0); return w_ctx(); }   /* key_ctx_now */
 void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
-void lgc_home(button_id_t b)                 { lg("home:%d", b, 0, 0); }
+void lgc_native_after(screen_id_t scr, scr_res_t res) { lg("after:%d:%d", scr, res, 0); }
 bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return false; lg("softkey:%d", b, 0, 0); return true; }
 bool lgc_siggen_edit(button_id_t b)          { if (!editor_takes(b)) return false; lg("edit:%d", b, 0, 0); return true; }
 void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
@@ -560,7 +567,33 @@ void lgc_lock(void)           { lg_lock++; }
 void lgc_unlock(void)         { lg_lock--; }
 void ui_describe_osc_menu(char *out, size_t n) { snprintf(out, n, "row=ch1 pane=rail item=0"); }
 void ui_describe_settings(char *out, size_t n) { snprintf(out, n, "settings=%d/0/0", (int)W.depth); }
-void ui_describe_home(char *out, size_t n)     { snprintf(out, n, "home=scope"); }
+
+/* The home page's stand-in: every key it is asked, with what the real one
+ * answers for it (LEFT/RIGHT repaint the selection, the rest nothing). */
+static scr_res_t fake_home_answer(uint8_t raw)
+{
+    return (raw == BTN_LEFT || raw == BTN_RIGHT) ? SCR_DRAW : SCR_HANDLED;
+}
+static scr_res_t fake_home_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("home:%d", raw, 0, 0);
+    return fake_home_answer(raw);
+}
+static void fake_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; }
+static void fake_home_describe(char *out, size_t n) { snprintf(out, n, "home=scope"); }
+const screen_t home_screen = {
+    .name = "home", .id = SCR_HOME, .mode = MODE_HOME, .instrument = SCR_INSTRUMENT_NONE,
+    .key = fake_home_key, .draw = fake_draw, .describe = fake_home_describe,
+    .groups = (uint16_t)((1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI)),
+};
+/* What a key the home page is asked must log: the key, then the wiring's
+ * one post of its answer (the paint and the settings hook). */
+static void want_home(uint8_t raw)
+{
+    lg("home:%d", raw, 0, 0);
+    lg("after:%d:%d", SCR_HOME, fake_home_answer(raw), 0);
+}
 
 /* input_handle_button() before the router (base 6a8c2ba), step by step. */
 static void old_route(uint8_t raw)
@@ -585,12 +618,18 @@ static void old_route(uint8_t raw)
         case KA_ENTER_METER:  lg("mode:%d", MODE_MULTIMETER, 0, 0);   return;
         case KA_ENTER_SCOPE:  lg("mode:%d", MODE_OSCILLOSCOPE, 0, 0); return;
         case KA_ENTER_SIGGEN: lg("mode:%d", MODE_SIGNAL_GEN, 0, 0);   return;
-        default:              lgc_exec(k, b);                         return;
+        default:
+            /* Home (B2): a long key that is no global did nothing (key_map
+             * answered KA_NONE and exec_key_cmd ran the settings hook). The
+             * screen is asked now, and answers "nothing" itself. */
+            if (W.mode == MODE_HOME && k.act == KA_NONE) { want_home(raw); return; }
+            lgc_exec(k, b);
+            return;
         }
     }
     const key_cmd_t k = key_map(&c, b, false);
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
-    if (W.mode == MODE_HOME && b != BTN_POWER) { lgc_home(b); return; }
+    if (W.mode == MODE_HOME && b != BTN_POWER) { want_home(raw); return; }   /* was lgc_home(b) */
     if (W.mode == MODE_MULTIMETER && softkey_takes(b)) { lg("softkey:%d", b, 0, 0); return; }
     if (editor_takes(b)) { lg("edit:%d", b, 0, 0); return; }    /* siggen_edit_input */
     lgc_mode_key(b);                                             /* switch (button) */
@@ -736,7 +775,10 @@ static void test_legacy_table(void)
         { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx edit:6" },
         { "UP in the generator, editor closed: switch",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx switch:10" },
         { "UP in the generator, editor open: editor",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click ctx edit:10" },
-        { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx home:14" },
+        { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx home:14 after:0:1" },
+        { "RIGHT on home: home, and its selection paint", MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_RIGHT,                   "touch click ctx home:13 after:0:2" },
+        { "long OK on home: home (nothing), no exec",     MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx home:142 after:0:1" },
+        { "MENU on home with the gallery up: gallery's",  MODE_HOME,         0, 0, 0, 1, 0, 0, BTN_MENU,                    "touch click gallery:9" },
         { "MENU on Settings > Oscilloscope: switch",      MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx switch:9" },
         { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx switch:3" },
     };

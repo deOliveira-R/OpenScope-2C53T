@@ -16,9 +16,6 @@ static int run, passed;
 #define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-62s[PASS]\n", name); } \
                                else { printf("  %-62s[FAIL]\n", name); } } while (0)
 
-/* home_ui.c owns the live instance in the firmware; the model never calls it. */
-home_t *home_ui_model(void) { static home_t h = HOME_INIT; return &h; }
-
 static void test_order_and_labels(void)
 {
     printf("items (stock 0x0804C924 order)\n");

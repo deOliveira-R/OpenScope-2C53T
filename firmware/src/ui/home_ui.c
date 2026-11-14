@@ -1,7 +1,8 @@
 /*
  * OpenScope 2C53T - home screen drawing (stock's mode-selection page).
  *
- * The model is home_model.c; this file only paints it. Geometry follows
+ * The model is home_model.c and the screen is home_screen.c, which hands the
+ * selection in; this file only paints it (display task). Geometry follows
  * stock V1.2.0's display commands 0x0B..0x11 (0x0800FFB8..0x080102B8, all
  * gated on ms[0xF68] == 0), which place JPEGs from the W25Q volume
  * "3:/System file/":
@@ -25,13 +26,7 @@
 #include "font.h"
 #include "theme.h"
 #include "home_model.h"
-
-static home_t s_home = HOME_INIT;
-
-home_t *home_ui_model(void)
-{
-    return &s_home;
-}
+#include "home_screen.h"
 
 #define HOME_SEL_COLOR    0x055Fu   /* stock's highlight (label colour, table 0x0804C180) */
 #define HOME_DIM_COLOR    0x8C73u   /* stock's unselected grey (0x0804C180[0]) */
@@ -120,15 +115,17 @@ static void square(int x0, int w, int cy, int amp, int cycles, uint16_t c)
     }
 }
 
-/* The item's picture in a w x h box (the centre icon is 108 x 70, the
- * neighbour previews half that). `c` is the line colour, `a` the accent. */
+/* The item's picture (its table row's icon, home_model.h) in a w x h box
+ * (the centre icon is 108 x 70, the neighbour previews half that). `c` is
+ * the line colour, `a` the accent. */
 static void draw_icon(home_item_t it, int x, int y, int w, int h, uint16_t c, uint16_t a)
 {
     const uint16_t bg = theme_get()->background;
+    const home_tile_t *tile = home_tile(it);
     lcd_fill_rect((uint16_t)x, (uint16_t)y, (uint16_t)w, (uint16_t)h, bg);
 
-    switch (it) {
-    case HOME_ITEM_METER: {
+    switch (tile ? (home_icon_t)tile->icon : HOME_ICON_GEAR) {
+    case HOME_ICON_METER: {
         /* Meter body: a display window over a selector dial. */
         const int bw = w * 5 / 8, bx = x + (w - bw) / 2;
         rect_outline(bx, y, bw, h, c);
@@ -138,7 +135,7 @@ static void draw_icon(home_item_t it, int x, int y, int w, int h, uint16_t c, ui
                       (uint16_t)(h / 6), a);
         break;
     }
-    case HOME_ITEM_SCOPE: {
+    case HOME_ICON_SCOPE: {
         /* A screen with a grid and a trace. */
         rect_outline(x, y, w, h, c);
         for (int i = 1; i < 4; i++)
@@ -147,13 +144,13 @@ static void draw_icon(home_item_t it, int x, int y, int w, int h, uint16_t c, ui
         sine(x + 2, w - 4, y + h / 2, h / 3, 2, a);
         break;
     }
-    case HOME_ITEM_SIGGEN:
+    case HOME_ICON_SIGGEN:
         /* A square over a sine: what comes out of the generator. */
         rect_outline(x, y, w, h, c);
         square(x + w / 8, w * 3 / 4, y + h / 3, h / 8, 2, a);
         sine(x + w / 8, w * 3 / 4, y + h * 2 / 3, h / 8, 2, c);
         break;
-    case HOME_ITEM_SETTINGS:
+    case HOME_ICON_GEAR:
     default: {
         /* A gear. */
         const int cx = x + w / 2, cy = y + h / 2, r = h * 3 / 10;
@@ -194,10 +191,10 @@ static void chevron(int x, int cy, int dir, uint16_t c)
     }
 }
 
-void draw_home_selection(void)
+void home_ui_draw_selection(uint8_t sel)
 {
     const theme_t *th = theme_get();
-    const uint8_t sel = s_home.sel < (uint8_t)HOME_ITEM_COUNT ? s_home.sel : (uint8_t)HOME_ITEM_SCOPE;
+    if (sel >= (uint8_t)HOME_ITEM_COUNT) sel = (uint8_t)HOME_ITEM_SCOPE;
 
     draw_dots(sel);
     draw_icon((home_item_t)sel, ICON_X, ICON_Y, ICON_W, ICON_H, th->text_primary, HOME_SEL_COLOR);
@@ -215,12 +212,12 @@ void draw_home_selection(void)
                          &font_medium, FONT_ALIGN_CENTER);
 }
 
-void draw_home_screen(void)
+void home_ui_draw(uint8_t sel)
 {
     const theme_t *th = theme_get();
     lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
     rect_outline(FRAME_X, FRAME_Y, FRAME_W, FRAME_H, HOME_DIM_COLOR);
     chevron(NB_LX + NB_W + 8, ICON_Y + ICON_H / 2, -1, th->text_secondary);
     chevron(NB_RX - 8 - 8, ICON_Y + ICON_H / 2, +1, th->text_secondary);
-    draw_home_selection();
+    home_ui_draw_selection(sel);
 }

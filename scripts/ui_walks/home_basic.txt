@@ -1,0 +1,92 @@
+# home_basic.txt -- every key on the Home page, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The home page is a screen of the router (firmware/src/ui/home_screen.c). Its
+# keys act through the model: OK and short MENU are one `sys.instrument` (an
+# instrument) or `sys.mode` (Settings) set, the path the long mode keys and
+# the shell's `set` take. ui_walk.py records the `ui screen` line after every
+# step and the answer of every `get`; what each must show is on the "# expect"
+# line above the step (the fields not named do not matter for the step).
+# POWER cannot be sent from the shell (`ui press POWER` is refused): hold it
+# by hand, on Home the countdown must appear and a release must repaint Home.
+#
+# The redraw rates of every step on Home must be 0 (full/s, live/s, all/s):
+# the page is static. A step that moves the selection or switches the screen
+# shows its one repaint as a single count, not as a rate.
+
+# ── 1. in and out: long MENU, the selection, the wrap, BACK ──────────────────
+# expect: screen=scope instrument=scope home=- stack=scope
+h1_base        | set sys.mode scope ; wait 1 ; get sys.instrument ; get sys.mode
+# expect: screen=home instrument=none home=scope stack=home   (the screen left is preselected)
+#         sys.instrument = none ; sys.mode = home
+h1_enter       | ui seq long:MENU ; get sys.instrument ; get sys.mode
+# expect: home=siggen
+h1_right       | ui seq RIGHT
+# expect: home=settings
+h1_right2      | ui seq RIGHT
+# expect: home=meter   (wrap: after the last entry comes the first)
+h1_right_wrap  | ui seq RIGHT
+# expect: home=settings   (wrap the other way)
+h1_left_wrap   | ui seq LEFT
+# expect: home=scope
+h1_left2       | ui seq LEFT*2
+# expect: home=scope, screen=home   (UP and DOWN do nothing on Home, as in stock)
+h1_up_down     | ui seq UP DOWN
+# expect: home=scope, screen=home   (no front key has a meaning on Home)
+h1_front_keys  | ui seq CH1 CH2 MOVE SELECT TRIGGER PRM AUTO
+# expect: home=scope, screen=home   (nor has a long key that is not a mode key)
+h1_long_keys   | ui seq long:CH1 long:CH2 long:PRM long:AUTO long:OK
+# expect: home=scope, screen=home   (long MENU on Home itself: nothing)
+h1_long_menu   | ui seq long:MENU
+# expect: screen=scope instrument=scope home=-   (short MENU: back where Home was opened from,
+#         whatever is selected) ; sys.instrument = scope
+h1_back        | ui seq RIGHT MENU ; wait 1 ; get sys.instrument
+
+# ── 2. OK on every entry ─────────────────────────────────────────────────────
+# expect: screen=meter instrument=meter meter=<its function> ; sys.instrument = meter ; sys.mode = meter
+h2_ok_meter    | ui seq long:MENU LEFT OK ; wait 2 ; get sys.instrument ; get sys.mode
+# expect: screen=home home=meter   (the meter is preselected now)
+h2_home_meter  | ui seq long:MENU
+# expect: screen=meter instrument=meter   (BACK returns to the meter)
+h2_back_meter  | ui seq MENU ; wait 2
+# expect: screen=scope instrument=scope ; sys.instrument = scope
+h2_ok_scope    | ui seq long:MENU RIGHT OK ; wait 1 ; get sys.instrument
+# expect: screen=siggen instrument=gen ; sys.instrument = gen ; sys.mode = siggen
+h2_ok_siggen   | ui seq long:MENU RIGHT OK ; wait 1 ; get sys.instrument ; get sys.mode
+# expect: screen=home home=siggen
+h2_home_gen    | ui seq long:MENU
+# expect: screen=settings instrument=none settings=0/0/<n> ; sys.instrument = none ; sys.mode = settings
+h2_ok_settings | ui seq RIGHT OK ; wait 1 ; get sys.instrument ; get sys.mode
+# expect: screen=home home=settings   (short MENU at the top of Settings opens Home)
+h2_home_set    | ui seq MENU
+# expect: screen=settings   (BACK returns to Settings)
+h2_back_set    | ui seq MENU ; wait 1
+
+# ── 3. the keys the router takes before Home: mode keys, SAVE ────────────────
+# expect: screen=home home=settings
+h3_home        | ui seq long:MENU
+# expect: screen=meter instrument=meter
+h3_long_move   | ui seq long:MOVE ; wait 2
+# expect: screen=scope instrument=scope
+h3_long_select | ui seq long:MENU long:SELECT ; wait 1
+# expect: screen=siggen instrument=gen
+h3_long_trig   | ui seq long:MENU long:TRIGGER ; wait 1
+# expect: screen=home home=siggen   (short SAVE: a screenshot of Home; "Saved <n>.bmp" shows over
+#         the page for about 2 s and Home is whole again after it; this leaves one picture in the
+#         gallery: `screenshot list`, `screenshot delete <n>`)
+h3_save        | ui seq long:MENU SAVE ; wait 4
+# expect: screen=home overlay=gallery stack=home>gallery
+h3_gallery     | ui seq long:SAVE ; wait 2
+# expect: screen=home overlay=none home=siggen stack=home   (MENU closes the gallery, Home is repainted)
+h3_gallery_out | ui seq MENU ; wait 2
+
+# ── 4. the direct route while Home is shown ──────────────────────────────────
+# expect: screen=home ; gen.freq = 1234 Hz   (a set reaches the generator whatever is shown)
+h4_set_gen     | set gen.freq 1234 ; get gen.freq
+# expect: screen=meter instrument=meter   (a direct set binds the screen like OK does)
+h4_set_inst    | set sys.instrument meter ; wait 2
+# expect: screen=home home=meter ; sys.mode = home
+h4_set_home    | set sys.mode home ; wait 1 ; get sys.mode
+# expect: screen=scope instrument=scope home=-
+h4_end         | set gen.freq 1000 ; set sys.mode scope ; wait 1

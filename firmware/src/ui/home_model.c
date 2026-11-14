@@ -14,26 +14,28 @@ void home_init(home_t *h)
     h->back = HOME_NO_BACK;
 }
 
+static const home_tile_t k_tiles[HOME_ITEM_COUNT] = {
+#define X(id, token, label, icon, mode, inst) { token, label, (uint8_t)(icon), (uint8_t)(mode), (uint8_t)(inst) },
+    HOME_TILES(X)
+#undef X
+};
+
+const home_tile_t *home_tile(home_item_t it)
+{
+    return ((unsigned)it < (unsigned)HOME_ITEM_COUNT) ? &k_tiles[it] : NULL;
+}
+
 device_mode_t home_item_mode(home_item_t it)
 {
-    switch (it) {
-    case HOME_ITEM_METER:    return MODE_MULTIMETER;
-    case HOME_ITEM_SIGGEN:   return MODE_SIGNAL_GEN;
-    case HOME_ITEM_SETTINGS: return MODE_SETTINGS;
-    case HOME_ITEM_SCOPE:
-    default:                 return MODE_OSCILLOSCOPE;
-    }
+    const home_tile_t *t = home_tile(it);
+    return t ? (device_mode_t)t->mode : MODE_OSCILLOSCOPE;
 }
 
 home_item_t home_item_for_mode(device_mode_t m)
 {
-    switch (m) {
-    case MODE_MULTIMETER:   return HOME_ITEM_METER;
-    case MODE_OSCILLOSCOPE: return HOME_ITEM_SCOPE;
-    case MODE_SIGNAL_GEN:   return HOME_ITEM_SIGGEN;
-    case MODE_SETTINGS:     return HOME_ITEM_SETTINGS;
-    default:                return HOME_ITEM_COUNT;
-    }
+    for (unsigned i = 0; i < (unsigned)HOME_ITEM_COUNT; i++)
+        if (k_tiles[i].mode == (uint8_t)m) return (home_item_t)i;
+    return HOME_ITEM_COUNT;
 }
 
 void home_enter(home_t *h, device_mode_t from)
@@ -88,11 +90,6 @@ home_result_t home_key(home_t *h, home_key_t k)
 
 const char *home_item_label(home_item_t it)
 {
-    switch (it) {
-    case HOME_ITEM_METER:    return "Multimeter";
-    case HOME_ITEM_SCOPE:    return "Oscilloscope";
-    case HOME_ITEM_SIGGEN:   return "Signal Generator";
-    case HOME_ITEM_SETTINGS: return "Settings";
-    default:                 return "";
-    }
+    const home_tile_t *t = home_tile(it);
+    return t ? t->label : "";
 }

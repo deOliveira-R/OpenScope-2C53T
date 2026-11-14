@@ -202,7 +202,6 @@ ui_press_t ui_press_one(const ui_press_port_t *p, uint32_t *target, uint8_t id)
 #include "model_exec.h"       /* input_events_done, model_exec_ready */
 #include "osc_menu_model.h"
 #include "gallery_ui.h"
-#include "home_model.h"
 #include "scope_state.h"
 #include "input_handler.h"    /* scope_key_focus */
 #include "fpga.h"             /* fpga_interleave_active (keys) */
@@ -238,7 +237,6 @@ static ui_press_t press_one(uint8_t id) { return ui_press_one(&k_press_port, &g_
 static const char *const k_row_name[OSC_ROW_COUNT] = {
     "display", "cursor", "param", "ch1", "ch2", "trigger", "persist", "math",
 };
-static const char *const k_home_name[HOME_ITEM_COUNT] = { "meter", "scope", "siggen", "settings" };
 
 static void fmt_prop(char *out, size_t n, const prop_desc_t *p)
 {
@@ -261,12 +259,6 @@ void ui_describe_settings(char *out, size_t n)
 {
     snprintf(out, n, "settings=%d/%d/%d", (int)settings_depth, (int)settings_selected,
              (int)settings_sub_selected);
-}
-
-void ui_describe_home(char *out, size_t n)
-{
-    const uint8_t s = home_ui_model()->sel;
-    snprintf(out, n, "home=%s", s < HOME_ITEM_COUNT ? k_home_name[s] : "?");
 }
 
 /* One line, fixed keys in a fixed order, "-" where a key does not apply:
