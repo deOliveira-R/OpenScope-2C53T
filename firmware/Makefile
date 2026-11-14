@@ -174,6 +174,21 @@ C_SOURCES += src/model/model_exec.c src/model/model_hw_fw.c src/model/model_shel
 C_INCLUDES_M1 = -Isrc/model
 # ── end M1 block ──
 
+# ── ARCH-1 M3: settings persistence from the property table (one block) ──
+# The v5 codec table (src/model/model_persist_v5.c): settings_store_capture /
+# settings_store_apply and config_init_defaults are loops over it, so config.c
+# and settings_store.c now link the model. Host tests: make test-model-persist
+# (byte identity against a frozen copy of the hand-written code, over the
+# defaults, random live states and random records) and test-config-persist.
+C_SOURCES += src/model/model_persist_v5.c
+M3_PERSIST_SRCS  = src/model/model_persist_v5.c src/model/model.c src/model/props_scope.c \
+                   src/model/props_gen.c src/model/props_meter.c src/model/props_sys.c
+M3_PERSIST_LINK  = src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/key_model.c \
+                   src/ui/trig_menu.c src/ui/osc_menu_model.c
+M3_CONFIG_PERSIST_EXTRA = $(M3_PERSIST_SRCS) $(M3_PERSIST_LINK)
+M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT -Isrc/model
+# ── end M3 block ──
+
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
   C_SOURCES += src/dsp/fft.c
@@ -801,11 +816,11 @@ test-lcd-health: $(BUILD_DIR)/test_lcd_health
 CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
                       src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
                       src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c \
-                      $(R1A_CONFIG_PERSIST_EXTRA)
+                      $(R1A_CONFIG_PERSIST_EXTRA) $(M3_CONFIG_PERSIST_EXTRA)
 CONFIG_PERSIST_DEPS = tests/test_config_persist.c $(CONFIG_PERSIST_SRCS) \
                       src/util/config.h src/util/settings_store.h src/drivers/flash_regions.h
 CONFIG_PERSIST_CC   = $(HOST_CC) -std=c11 -Wall -Wextra -Werror -O1 \
-                      -Isrc/util -Isrc/drivers -Isrc/ui -Isrc/dsp
+                      -Isrc/util -Isrc/drivers -Isrc/ui -Isrc/dsp $(M3_CONFIG_PERSIST_FLAGS)
 
 $(BUILD_DIR)/test_config_persist: $(CONFIG_PERSIST_DEPS) | $(BUILD_DIR)
 	$(CONFIG_PERSIST_CC) -DSETTINGS_PERSIST_WRITES=1 $< $(CONFIG_PERSIST_SRCS) -o $@
@@ -900,6 +915,25 @@ $(BUILD_DIR)/test_model_exec: tests/test_model_exec.c $(MODEL_SRCS) $(MODEL_EXEC
 
 .PHONY: test-model-exec
 test-model-exec: $(BUILD_DIR)/test_model_exec
+	$<
+
+# Settings persistence generated from the property table (ARCH-1 M3): the v5
+# codec table against a frozen copy of the hand-written capture / apply /
+# defaults it replaced: byte-identical records and identical state over the
+# defaults, random live states and random (also hostile) records; the
+# per-field out-of-range policy; raw carry of the stored-only bytes; table
+# coverage; settings notes by origin.
+$(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/model/model_persist_v5.c \
+                                 src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
+                                 src/util/config.c src/util/config.h src/util/settings_store.c \
+                                 src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -Isrc/model -Isrc/util \
+		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
+		src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+		$(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-model-persist
+test-model-persist: $(BUILD_DIR)/test_model_persist
 	$<
 
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens

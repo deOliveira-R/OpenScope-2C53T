@@ -77,6 +77,19 @@ volatile uint8_t  meter_submode = 0;
 volatile uint8_t  meter_layout  = 0;
 volatile startup_mode_t startup_mode = STARTUP_METER;   /* M6: owned by settings_store now */
 
+/* Since ARCH-1 M3 settings_store.c captures and applies through the property
+ * table (src/model/model_persist_v5.c), so the model links in, and with it
+ * the rest of the state its getters read. None of these is a setting. */
+volatile device_mode_t  current_mode    = MODE_MULTIMETER;
+volatile uint8_t        active_channel  = 0;
+volatile bool           persist_enabled = false;
+volatile scope_view_t   scope_view      = SCOPE_VIEW_TIME;
+volatile uint8_t        fuse_type       = 0;
+volatile uint8_t        fuse_rating_idx = 6;
+volatile uint8_t        fuse_view       = 0;
+volatile float          fuse_scan_threshold_mv = 0.1f;
+uint8_t key_focus_get(void) { return 0; }
+
 /* The generator's output driver, stubbed: signal_gen.c is the real one, the
  * registers are not. dac_running is what the GEN lead would be doing. */
 static bool     dac_running = false;
@@ -999,6 +1012,39 @@ static void test_live_settings_survive_a_power_cycle(void)
     CHECK(settings_store_get_status()->load_result == CONFIG_LOAD_OK,
           "expected a loaded record, got \"%s\"",
           config_load_result_name(settings_store_get_status()->load_result));
+}
+
+/* ARCH-1 M3: the record fields nothing applies yet (language, the FFT block,
+ * display_persist_mode) are carried through load -> change -> save -> load
+ * unchanged, including byte values no property can hold. */
+static void test_stored_only_fields_survive_a_load_save_cycle(void)
+{
+    fresh_device();
+    power_cycle();
+    device_config_t cfg;
+    config_init_defaults(&cfg);
+    cfg.language = 7;
+    cfg.fft_window = 9;
+    cfg.fft_avg_count = 3;
+    ((uint8_t *)&cfg)[offsetof(device_config_t, fft_max_hold)] = 0x40;   /* a bool field: the byte */
+    cfg.display_persist_mode = 2;
+    CHECK(config_save(&cfg), "seed record not saved");
+
+    power_cycle();
+    settings_store_init();
+    scope_state_get()->ch1.vdiv_idx = 7;              /* a change, so a record is written */
+    CHECK(settings_store_flush(5000), "the change was not saved");
+
+    power_cycle();
+    device_config_t out;
+    CHECK(config_load(&out), "nothing to load");
+    CHECK(out.scope_ch1_vdiv == 7, "the change did not land (%u)", out.scope_ch1_vdiv);
+    CHECK(out.language == 7 && out.fft_window == 9 && out.fft_avg_count == 3 &&
+          ((uint8_t *)&out)[offsetof(device_config_t, fft_max_hold)] == 0x40 &&
+          out.display_persist_mode == 2,
+          "stored-only bytes not carried: lang %u win %u avg %u hold 0x%02x persist %u",
+          out.language, out.fft_window, out.fft_avg_count,
+          ((uint8_t *)&out)[offsetof(device_config_t, fft_max_hold)], out.display_persist_mode);
 }
 
 /* Parity G5: the generator's settings live in the settings store. Stock's
@@ -2694,6 +2740,8 @@ int main(void)
         run("measurement selection survives a power cycle (v5)",
             test_measurement_selection_survives_a_power_cycle);
         run("a v4 record is upgraded, not dropped", test_a_v4_record_is_upgraded_not_dropped);
+        run("stored-only fields survive a load/save cycle (M3)",
+            test_stored_only_fields_survive_a_load_save_cycle);
 
         run("damage mid-log is never applied", test_damage_mid_log_is_never_applied);
         run("damage at the end of the log is never applied",
