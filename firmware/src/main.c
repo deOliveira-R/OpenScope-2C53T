@@ -401,14 +401,12 @@ static bool scope_incremental_available(const scope_state_t *s)
      * the popup pinned the renderer to the full clear-then-redraw for its
      * entire life. draw_scope_live_frame() now steps around the popup box.
      * Cursors are a layer of the compositor (2026-11-13). */
-    /* Math and persistence (C12) are layers of the full path only: the
-     * compositor streams the trace band and knows neither. They trade the
-     * flicker-free update for the feature, on request. A re-sampled held
+    /* Math and persistence (C12) are layers of the compositor too
+     * (2026-11-13). A re-sampled held
      * record (zoom while paused, C14) no longer forces the full path: both
      * renderers draw the one window view_build() fills (scope_ui.c), blank
      * columns included. */
-    return scope_acquisition_ready()
-           && !math_enabled && !persist_enabled;
+    return scope_acquisition_ready();
 #endif
 }
 
@@ -836,7 +834,11 @@ static void vDisplayTask(void *pvParameters)
                 q.animating        = !scope_acquisition_ready() || persist_enabled
                                      || scope_view == SCOPE_VIEW_XY;
                 q.full_min_frames  = SCOPE_FULL_MIN_FRAMES;
-                q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY)
+                /* Persistence fades on wall time: with the live frame serving
+                 * it, a tick every 200 ms keeps a stopped trace fading
+                 * smoothly at no blanking cost. */
+                q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY ||
+                                      (persist_enabled && q.incremental_ok))
                                      ? SCOPE_FULL_MIN_FRAMES
                                      : SCOPE_ANIM_TICK_FRAMES;
                 q.idle_tick_frames = q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES

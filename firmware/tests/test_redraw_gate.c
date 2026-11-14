@@ -429,6 +429,31 @@ static void check_popup_rides_the_compositor(bool verbose)
                      "repaint — that is the screen flash, got %u", full);
 }
 
+static void check_fading_persistence_stays_live(bool verbose)
+{
+    /* Persistence (or anything animating) on a screen the compositor can
+     * serve: the fade ticks must be live frames, never a full repaint, even
+     * with no new data (stopped). Before 2026-11-13 the animating arm always
+     * returned FULL, which was the 2 Hz blink with persistence on. */
+    redraw_gate_t g = { 0, 0, 0, false, false };
+    /* frame, epoch, new_data, force, incremental_ok, animating, ... */
+    redraw_query_t q = { 0, 0xFADE, false, false, true, true,
+                         FW_FULL_MIN, FW_FULL_MIN, FW_IDLE_TICK };
+    redraw_gate_step(&g, &q);                    /* prime (entry: full) */
+    uint32_t live = 0, full = 0;
+    for (uint32_t f = 1; f <= 100; f++) {
+        q.frame = f;
+        redraw_action_t a = redraw_gate_step(&g, &q);
+        if (a == REDRAW_INCREMENTAL) live++;
+        if (a == REDRAW_FULL)        full++;
+    }
+    if (verbose)
+        printf("  fading persistence, stopped: %u live, %u full in 5 s\n", live, full);
+    CHECK(full == 0, "a fade on the compositor must not full-repaint, got %u", full);
+    CHECK(live >= 20, "the fade must keep ticking (every %u frames), got %u live",
+          (unsigned)FW_FULL_MIN, live);
+}
+
 static void check_screen_entry_always_draws(bool verbose)
 {
     /* NEGATIVE CONTROL: switching away and back must repaint even though
@@ -515,6 +540,7 @@ static int run_all_checks(bool verbose)
     check_popup_runs_at_tick_rate(verbose);
     check_popup_rides_the_compositor(verbose);
     check_screen_entry_always_draws(verbose);
+    check_fading_persistence_stays_live(verbose);
     check_siggen_clamped_presses(verbose);
     check_frame_counter_wrap(verbose);
     return failures_in_pass - before;

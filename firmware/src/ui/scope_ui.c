@@ -2119,27 +2119,43 @@ void scope_ui_cursor_row_refresh(void)
  * and takes that channel's theme colour.
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_persistence_overlay(void)
+/* Fade by the wall time since the last frame (either renderer). */
+static void persist_frame_decay(void)
 {
-    if (!persist_enabled || !persist_is_initialized()) return;
-
     static uint32_t last_tick;
     static bool     have_tick;
     uint32_t now = (uint32_t)xTaskGetTickCount() * (1000u / configTICK_RATE_HZ);
     persist_decay_ms(have_tick ? (uint32_t)(now - last_tick) : 0u);
     last_tick = now;
     have_tick = true;
+}
+
+/* A ghost's colour at screen row y: the channel's own, by band when the two
+ * channels are split, neutral when they are overlaid (one buffer cannot say
+ * whose a ghost is). */
+static uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y)
+{
+    if (!(ss->ch1.enabled && ss->ch2.enabled))
+        return ss->ch1.enabled ? th->ch1 : th->ch2;
+    const bool split = yt_vmap_split(true, true,
+        ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
+        ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx));
+    if (!split) return th->text_secondary;
+    return (y < SCOPE_MID_Y) ? th->ch1 : th->ch2;
+}
+
+static void draw_persistence_overlay(void)
+{
+    if (!persist_enabled || !persist_is_initialized()) return;
+    persist_frame_decay();
 
     const theme_t *th = theme_get();
     const scope_state_t *ss = scope_state_get();
     const uint8_t *buf = persist_get_buffer();
     if (!buf) return;
-    const bool split = ss->ch1.enabled && ss->ch2.enabled;
-    const uint16_t single_c = ss->ch1.enabled ? th->ch1 : th->ch2;
 
     for (uint16_t y = 0; y < PERSIST_HEIGHT; y++) {
-        const uint16_t base = split ? ((y + SCOPE_TOP < SCOPE_MID_Y) ? th->ch1 : th->ch2)
-                                    : single_c;
+        const uint16_t base = persist_base(ss, th, (uint16_t)(y + SCOPE_TOP));
         for (uint16_t x = 0; x < PERSIST_WIDTH; x++) {
             uint8_t intensity = buf[y * PERSIST_WIDTH + x];
             if (intensity > 0) {
@@ -2162,57 +2178,50 @@ static void draw_persistence_overlay(void)
  * graticule with A and B.
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_math_waveform(void)
+/* One frame of the math trace, shared by the full path and the live frame:
+ * the inputs, the 1-2-5 scale chosen from this window, and the label. */
+typedef struct {
+    bool       ok;
+    math_op_t  op;
+    math_in_t  in;
+    float      step;
+    char       label[24];
+} math_frame_t;
+
+static void math_prepare(const scope_state_t *ss, math_frame_t *mf)
 {
-    if (!math_enabled) return;
-
-    const theme_t *th = theme_get();
-    const scope_state_t *ss = scope_state_get();
-    const math_op_t op = ((math_op_t)math_op < MATH_COUNT) ? (math_op_t)math_op : MATH_ADD;
-    char label[32];
-
+    memset(mf, 0, sizeof(*mf));
+    mf->op = ((math_op_t)math_op < MATH_COUNT) ? (math_op_t)math_op : MATH_ADD;
+    const math_op_t op = mf->op;
     const volatile uint8_t *s1 = fpga_get_ch1_buf();
     const volatile uint8_t *s2 = fpga_get_ch2_buf();
-    const bool ok = g_math_live
+    mf->ok = g_math_live
         && (!math_op_uses_a(op) || (ss->ch1.enabled && s1 != NULL))
         && (!math_op_uses_b(op) || (ss->ch2.enabled && s2 != NULL));
-
-    if (!ok) {
+    if (!mf->ok) {
         /* No record, or a channel the op reads is off: say so, draw nothing. */
-        snprintf(label, sizeof(label), "M:%s --", math_channel_name(op));
-        font_draw_string(130, SCOPE_TOP, label, th->warning, th->warning, &font_small);
+        snprintf(mf->label, sizeof(mf->label), "M:%s --", math_channel_name(op));
         return;
     }
+    mf->in.zero_a = rec_zero(ss, 0u);
+    mf->in.zero_b = rec_zero(ss, 1u);
+    mf->in.k_a = rec_vpc(ss, 0u);
+    mf->in.k_b = rec_vpc(ss, 1u);
+    const math_unit_t unit = math_unit_for(op, &mf->in);
 
-    math_in_t in;
-    in.zero_a = rec_zero(ss, 0u);
-    in.zero_b = rec_zero(ss, 1u);
-    in.k_a = rec_vpc(ss, 0u);
-    in.k_b = rec_vpc(ss, 1u);
-
-    /* Two passes over 64-sample chunks (peak, then rows) so no 320-sample
-     * scratch has to live in RAM. Byte reads cannot tear a sample, but the
-     * window (and the two passes) can straddle a record commit, exactly as the
-     * trace renderers' own reads can: at worst one frame is scaled from a
-     * slightly different record than it is drawn from, and clips. */
+    /* The peak over the window, in 64-column chunks (no 301-float scratch). */
     enum { CH = 64 };
     uint8_t a[CH], b[CH];
     float v[CH];
-    int16_t rows[CH];
-    math_unit_t unit = math_unit_for(op, &in);
-
-    /* Only the columns that show the record (all 301 but on a re-sampled
-     * held record, C14, whose window can run past the record's ends). */
-    const uint16_t xa = g_view_first, xb = g_view_end;
     float peak = 0.0f;
-    for (uint16_t x0 = xa; x0 < xb; x0 += CH) {
-        const uint16_t nc = (xb - x0 < CH) ? (uint16_t)(xb - x0) : CH;
+    for (uint16_t x0 = g_view_first; x0 < g_view_end; x0 += CH) {
+        const uint16_t nc = (g_view_end - x0 < CH) ? (uint16_t)(g_view_end - x0) : CH;
         for (uint16_t i = 0; i < nc; i++) {
-            a[i] = s1 ? yt_cols[0][x0 + i] : 0u;
-            b[i] = s2 ? yt_cols[1][x0 + i] : 0u;
+            a[i] = yt_cols[0][x0 + i];
+            b[i] = yt_cols[1][x0 + i];
         }
-        math_compute(op, a, b, nc, &in, v);
-        float pk = math_peak(v, nc);
+        math_compute(op, a, b, nc, &mf->in, v);
+        const float pk = math_peak(v, nc);
         if (pk > peak) peak = pk;
     }
 
@@ -2225,36 +2234,16 @@ static void draw_math_waveform(void)
     /* Never finer than the source channel's own division, so ADC noise on a
      * quiet result (A-B of one signal) stays a flat line, not a full screen. */
     const int floor_idx = math_scale_floor_idx(
-        math_step_floor(op, &in, SCOPE_CAL_COUNTS_PER_DIV));
+        math_step_floor(op, &mf->in, SCOPE_CAL_COUNTS_PER_DIV));
     if (scale_idx < floor_idx) scale_idx = floor_idx;
-    const float step = math_scale_value(scale_idx);
+    mf->step = math_scale_value(scale_idx);
 
-    int16_t prev = -1;
-    for (uint16_t x0 = xa; x0 < xb; x0 += CH) {
-        const uint16_t nc = (xb - x0 < CH) ? (uint16_t)(xb - x0) : CH;
-        for (uint16_t i = 0; i < nc; i++) {
-            a[i] = s1 ? yt_cols[0][x0 + i] : 0u;
-            b[i] = s2 ? yt_cols[1][x0 + i] : 0u;
-        }
-        math_compute(op, a, b, nc, &in, v);
-        math_to_rows(v, nc, step, SCOPE_DIV_PX, SCOPE_GRID_MID_Y, SCOPE_TOP, SCOPE_BOT, rows);
-        for (uint16_t i = 0; i < nc; i++) {
-            int16_t lo = rows[i], hi = rows[i];
-            if (prev >= 0) {
-                if (prev < lo) lo = prev;
-                if (prev > hi) hi = prev;
-            }
-            for (int16_t y = lo; y <= hi; y++)
-                lcd_set_pixel((uint16_t)(x0 + i), (uint16_t)y, th->warning);
-            prev = rows[i];
-        }
-    }
     /* The cursors' view of this scale: `step` per SCOPE_DIV_PX rows. */
     g_math_cur.on = true;
     g_math_cur.direct = (unit == MATH_UNIT_VOLTS)  ? SCOPE_CURSOR_DIRECT_VOLTS
                       : (unit == MATH_UNIT_COUNTS) ? SCOPE_CURSOR_DIRECT_COUNTS
                                                    : SCOPE_CURSOR_DIRECT_NONE;
-    g_math_cur.unit_per_px = step / (float)SCOPE_DIV_PX;
+    g_math_cur.unit_per_px = mf->step / (float)SCOPE_DIV_PX;
     {
         scope_cursor_conf_t c = SCOPE_CURSOR_MEASURED;
         if (math_op_uses_a(op)) {
@@ -2267,14 +2256,48 @@ static void draw_math_waveform(void)
         }
         g_math_cur.conf = c;
     }
-    /* Zero marker of the math trace: a tick at the left edge. */
-    for (uint16_t x = 0; x < 6; x++)
-        lcd_set_pixel(x, SCOPE_GRID_MID_Y, th->warning);
-
     char sc[16];
     math_scale_label(scale_idx, unit, sc, sizeof(sc));
-    snprintf(label, sizeof(label), "M:%s %s", math_channel_name(op), sc);
-    font_draw_string(130, SCOPE_TOP, label, th->warning, th->warning, &font_small);
+    snprintf(mf->label, sizeof(mf->label), "M:%s %s", math_channel_name(op), sc);
+}
+
+/* The math trace's row at column x (within [g_view_first, g_view_end)). */
+static int16_t math_row(const math_frame_t *mf, uint16_t x)
+{
+    const uint8_t a = yt_cols[0][x], b = yt_cols[1][x];
+    float v;
+    int16_t row;
+    math_compute(mf->op, &a, &b, 1u, &mf->in, &v);
+    math_to_rows(&v, 1u, mf->step, SCOPE_DIV_PX, SCOPE_GRID_MID_Y, SCOPE_TOP, SCOPE_BOT, &row);
+    return row;
+}
+
+#define MATH_LABEL_X  130u
+
+static void draw_math_waveform(void)
+{
+    if (!math_enabled) return;
+    const theme_t *th = theme_get();
+    math_frame_t mf;
+    math_prepare(scope_state_get(), &mf);
+    if (mf.ok) {
+        int16_t prev = -1;
+        for (uint16_t x = g_view_first; x < g_view_end; x++) {
+            const int16_t r = math_row(&mf, x);
+            int16_t lo = r, hi = r;
+            if (prev >= 0) {
+                if (prev < lo) lo = prev;
+                if (prev > hi) hi = prev;
+            }
+            for (int16_t y = lo; y <= hi; y++)
+                lcd_set_pixel(x, (uint16_t)y, th->warning);
+            prev = r;
+        }
+        /* Zero marker of the math trace: a tick at the left edge. */
+        for (uint16_t x = 0; x < 6; x++)
+            lcd_set_pixel(x, SCOPE_GRID_MID_Y, th->warning);
+    }
+    font_draw_string(MATH_LABEL_X, SCOPE_TOP, mf.label, th->warning, th->warning, &font_small);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2926,6 +2949,7 @@ void draw_scope_live_frame(void)
     b1 = yt_cols[0];
     b2 = yt_cols[1];
     mask_overlay_begin();          /* per-column mask colours, see draw_mask_strip */
+    g_math_live = true;            /* yt_cols is this frame's window */
 
     /* The live band stops where fixed furniture begins: the debug strip
      * (debug builds) or the measurement badge rows. Those regions repaint
@@ -2971,6 +2995,23 @@ void draw_scope_live_frame(void)
     cursor_layer_build(ss, th, &cl);
     const bool curs = cl.v || cl.h;
 
+    /* Math trace (C12): the same frame helpers as the full path, one row per
+     * column, its label as per-pixel text. */
+    math_frame_t mf;
+    const bool mth = math_enabled;
+    if (mth) math_prepare(ss, &mf);
+    const int16_t mlab_w = mth ? (int16_t)font_string_width(mf.label, &font_small) : 0;
+    int16_t mp = 0;
+
+    /* Persistence (C12): the ghosts are read from the shared-pool buffer
+     * (320 x 206 intensities, not .bss) under the grid, and this frame's
+     * traces are added to it column by column after the column is sent,
+     * exactly as draw_channel() feeds it in the full path. */
+    const uint8_t *pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
+    if (pbuf) persist_frame_decay();
+    const uint16_t pbase_top = persist_base(ss, th, SCOPE_TOP);
+    const uint16_t pbase_bot = persist_base(ss, th, (uint16_t)(SCOPE_BOT - 1));
+
     /* Trigger dotted line, placed exactly as the full path places it: on the
      * trigger source's map, at the record code where the hardware fires. */
     int16_t trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &a2 : &a1);
@@ -3005,6 +3046,8 @@ void draw_scope_live_frame(void)
         /* 2-px dot plus a span to the previous sample, so steep edges draw
          * as connected verticals instead of the full path's dotted gaps. */
         int16_t lo1 = y1, hi1 = y1 + 1, lo2 = y2, hi2 = y2 + 1;
+        const int16_t pp1 = (x > g_view_first) ? p1 : -1;   /* persistence feed */
+        const int16_t pp2 = (x > g_view_first) ? p2 : -1;
         if (x > g_view_first) {             /* no span from a blank column */
             if (p1 < lo1) lo1 = p1;
             if (p1 > hi1) hi1 = p1;
@@ -3013,6 +3056,19 @@ void draw_scope_live_frame(void)
         }
         p1 = y1;
         p2 = y2;
+
+        /* Math: this column's row and the span from the previous one. */
+        int16_t mlo = -1, mhi = -2;
+        if (mth && mf.ok && trace) {
+            const int16_t r = math_row(&mf, x);
+            mlo = mhi = r;
+            if (x > g_view_first) {
+                if (mp < mlo) mlo = mp;
+                if (mp > mhi) mhi = mp;
+            }
+            mp = r;
+        }
+        const bool mcol = mth && (int)x >= (int)MATH_LABEL_X && (int)x < (int)MATH_LABEL_X + mlab_w;
 
         /* Mask overlay for this column: the strip colour and whether either
          * trace is painted as outside the mask. */
@@ -3073,6 +3129,14 @@ void draw_scope_live_frame(void)
                 c = th->trigger;
             else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))
                 ;                                      /* ground / trigger tags */
+            else if (mcol && y < SCOPE_TOP + font_small.height &&
+                     font_text_px(mf.label, &font_small, (int)x - (int)MATH_LABEL_X,
+                                  (int)y - SCOPE_TOP))
+                c = th->warning;                       /* math label */
+            else if ((int16_t)y >= mlo && (int16_t)y <= mhi)
+                c = th->warning;                       /* math trace */
+            else if (mth && mf.ok && x < 6u && y == SCOPE_GRID_MID_Y)
+                c = th->warning;                       /* math zero tick */
             else if (mstrip && y >= band_bot - MASK_STRIP_H &&
                      (!mdot || ((x + y) & 1u) == 0u))
                 c = mstrip;
@@ -3091,10 +3155,23 @@ void draw_scope_live_frame(void)
                      ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
                       (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
                 c = th->grid;
-            else
+            else {
                 c = th->background;
+                if (pbuf) {
+                    const uint8_t in = pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x];
+                    if (in) {
+                        const uint16_t g = persist_scale_rgb565(
+                            (y < SCOPE_MID_Y) ? pbase_top : pbase_bot, in);
+                        if (g != 0x0000) c = g;
+                    }
+                }
+            }
             lcd_write_data(c);
         }
+        }
+        if (pbuf && trace) {
+            if (on1) persist_note(x, pp1, y1);
+            if (on2) persist_note(x, pp2, y2);
         }
     }
 

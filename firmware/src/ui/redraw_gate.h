@@ -135,9 +135,11 @@ static inline void redraw_gate_mark(redraw_gate_t *g, uint32_t epoch,
  *                                   full_min_frames. FFT/waterfall/cursors
  *                                   still track the data; they just stop
  *                                   flashing at 34 Hz.
- *   5. animating                 -> FULL on anim_tick_frames. The synthetic
- *                                   demo waveform is a function of `frame`,
- *                                   so it genuinely has new pixels each tick.
+ *   5. animating                 -> on anim_tick_frames: INCREMENTAL when
+ *                                   the flicker-free renderer can serve it
+ *                                   (persistence fading), else FULL (the
+ *                                   synthetic demo waveform, a function of
+ *                                   `frame`).
  *   6. idle heartbeat            -> the slow backstop for anything a hash
  *                                   cannot see (bench overlay counters).
  *
@@ -167,7 +169,7 @@ static inline redraw_action_t redraw_gate_step(redraw_gate_t *g,
         action = REDRAW_FULL;
     } else if (q->animating && q->anim_tick_frames != 0 &&
                since_draw >= q->anim_tick_frames) {
-        action = REDRAW_FULL;
+        action = q->incremental_ok ? REDRAW_INCREMENTAL : REDRAW_FULL;
     } else if (q->idle_tick_frames != 0 && since_draw >= q->idle_tick_frames) {
         action = q->incremental_ok ? REDRAW_INCREMENTAL : REDRAW_FULL;
     }
