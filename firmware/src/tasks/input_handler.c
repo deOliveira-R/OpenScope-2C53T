@@ -940,16 +940,16 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         break;
     }
 
+    /* The live frame draws the cursors and the AUX row their readout, so a
+     * move is one live frame, not a clear-and-repaint (scope_ui.c). */
     case KA_CURSOR_MOVE:
         scope_cursor_move((int16_t)(dir * 4));
-        cmd = DCMD_DRAW_SCOPE;
-        send_cmd(dq, cmd);
+        scope_ui_request_live();
         break;
 
     case KA_CURSOR_NEXT:
         scope_cursor_next_sel();
-        cmd = DCMD_DRAW_SCOPE;
-        send_cmd(dq, cmd);
+        scope_ui_request_live();
         break;
 
     case KA_MASK_TOL_V:

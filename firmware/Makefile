@@ -1120,6 +1120,19 @@ $(BUILD_DIR)/test_icons: tests/test_icons.c src/ui/icons.c src/ui/icons.h src/ui
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp -Isrc/fonts $< \
 		src/ui/icons.c src/dsp/siggen_wave.c src/fonts/font_small.c -o $@
 
+# Fonts: struct integrity, widths, clipping, and font_text_px() (the
+# per-pixel text the live compositors use) == what font_draw_string() sets.
+$(BUILD_DIR)/test_font: tests/test_font.c src/fonts/font.c src/fonts/font.h \
+                        src/fonts/font_small.c src/fonts/font_medium.c \
+                        src/fonts/font_large.c src/fonts/font_xlarge.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/fonts -Isrc/drivers $< src/fonts/font.c \
+		src/fonts/font_small.c src/fonts/font_medium.c src/fonts/font_large.c \
+		src/fonts/font_xlarge.c -o $@
+
+.PHONY: test-font
+test-font: $(BUILD_DIR)/test_font
+	$<
+
 .PHONY: test-icons
 test-icons: $(BUILD_DIR)/test_icons
 	$<

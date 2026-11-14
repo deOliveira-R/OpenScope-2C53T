@@ -14,9 +14,11 @@
 static unsigned long px_writes = 0;
 static unsigned short px_max_x = 0;
 static unsigned short win_x = 0, win_w = 0;
-void lcd_set_pixel(unsigned short x, unsigned short y, unsigned short c) { (void)y; (void)c; px_writes++; if (x > px_max_x) px_max_x = x; }
+static unsigned char cap[24][120];   /* transparent draws, for font_text_px */
+void lcd_set_pixel(unsigned short x, unsigned short y, unsigned short c) { (void)c; px_writes++; if (x > px_max_x) px_max_x = x; if (x < 120 && y < 24) cap[y][x] = 1; }
 void lcd_set_window(unsigned short x, unsigned short y, unsigned short w, unsigned short h) { (void)y; (void)h; win_x = x; win_w = w; if (w && x + w - 1 > px_max_x) px_max_x = x + w - 1; }
 void lcd_write_data(unsigned short d) { (void)d; px_writes++; }
+void lcd_fill_rect(unsigned short x, unsigned short y, unsigned short w, unsigned short h, unsigned short c) { (void)x; (void)y; (void)w; (void)h; (void)c; }
 static void px_reset(void) { px_writes = 0; px_max_x = 0; win_x = win_w = 0; }
 
 #include "font.h"
@@ -129,6 +131,27 @@ static void test_right_aligned_edge_label(void)
     ASSERT(dropped >= 1, "old rule would not have reproduced the bench defect");
 }
 
+/* font_text_px() is the per-pixel form of a transparent draw: the pixels it
+ * reports for a string are exactly the ones font_draw_string() sets. */
+static void test_text_px(void)
+{
+    static const char *const s[] = { "V1", "H2", "dt=1.00ms", "M:A+B 1V", "CUR:TV" };
+    const font_t *f[] = { &font_small, &font_medium };
+    for (unsigned fi = 0; fi < 2; fi++)
+        for (unsigned k = 0; k < sizeof(s) / sizeof(s[0]); k++) {
+            memset(cap, 0, sizeof(cap));
+            font_draw_string(0, 0, s[k], 1, 1, f[fi]);
+            int bad = 0;
+            for (int y = 0; y < 24; y++)
+                for (int x = 0; x < 120; x++)
+                    if ((font_text_px(s[k], f[fi], x, y) != 0) != (cap[y][x] != 0)) bad++;
+            char name[64];
+            snprintf(name, sizeof(name), "text_px == drawn: \"%s\" (font %u)", s[k], fi);
+            TEST(name);
+            ASSERT(bad == 0, "pixel mismatch");
+        }
+}
+
 int main(void)
 {
     printf("=== Font System Tests ===\n\n");
@@ -147,6 +170,9 @@ int main(void)
 
     printf("\n[Edge clipping]\n");
     test_right_aligned_edge_label();
+
+    printf("\n[Per-pixel text]\n");
+    test_text_px();
 
     printf("\n=== Results: %d/%d passed ===\n", tests_passed, tests_run);
     return (tests_passed == tests_run) ? 0 : 1;

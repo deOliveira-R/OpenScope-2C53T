@@ -82,6 +82,31 @@ uint16_t font_draw_string(uint16_t x, uint16_t y, const char *str,
     return x - start_x;
 }
 
+int font_text_px(const char *str, const font_t *font, int dx, int dy)
+{
+    if (dx < 0 || dy < 0 || dy >= font->height)
+        return 0;
+    int x = 0;
+    for (; *str; str++) {
+        const uint8_t idx = font_glyph_index(*str, font);
+        if (idx == 0xFF || idx >= font->num_glyphs) {
+            x += font->height / 3;
+            continue;
+        }
+        const int adv = font->advances[idx];
+        if (dx < x + adv) {
+            const int col = dx - x;
+            if (col >= font->widths[idx])
+                return 0;
+            const uint8_t bpr = (uint8_t)((font->widths[idx] + 7) / 8);
+            const uint8_t *row = &font->data[font->offsets[idx] + (unsigned)dy * bpr];
+            return (row[col / 8] & (0x80 >> (col % 8))) != 0;
+        }
+        x += adv;
+    }
+    return 0;
+}
+
 uint16_t font_string_width(const char *str, const font_t *font)
 {
     uint16_t width = 0;

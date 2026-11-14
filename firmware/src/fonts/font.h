@@ -56,6 +56,13 @@ uint16_t font_draw_string(uint16_t x, uint16_t y, const char *str,
                           uint16_t fg, uint16_t bg, const font_t *font);
 
 /*
+ * Is pixel (dx, dy) of `str`, drawn with its top-left at (0, 0), a glyph
+ * pixel? For compositors that decide each pixel's final colour themselves
+ * (the scope's live frame) and so cannot draw text over a finished image.
+ */
+int font_text_px(const char *str, const font_t *font, int dx, int dy);
+
+/*
  * Measure string width without drawing (for centering, alignment).
  */
 uint16_t font_string_width(const char *str, const font_t *font);

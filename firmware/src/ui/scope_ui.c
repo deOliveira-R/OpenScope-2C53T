@@ -215,6 +215,17 @@ void ui_popup_overlay_cancel(void)
     ov_drawn = false;
 }
 
+/* A change the live frame can show by itself (cursor moved or reselected):
+ * the display task runs one live frame instead of a clear-and-repaint. */
+static volatile bool g_live_req;
+void scope_ui_request_live(void) { g_live_req = true; }
+bool scope_ui_take_live_request(void)
+{
+    const bool r = g_live_req;
+    g_live_req = false;
+    return r;
+}
+
 bool scope_popup_active(void)
 {
     return popup_on;
@@ -287,11 +298,14 @@ static void draw_run_stop(const scope_state_t *ss, const theme_t *th)
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* The full-width AUX row (above the measurement rows) is reserved while the
- * mask pass/fail readout or the CAN analyser's line has something to say. */
+ * CAN analyser's line, the cursor readout or the mask pass/fail readout has
+ * something to say; it shows the first of them, in that order. */
 static bool strip_aux(void)
 {
-    return can_scope_screen_on() || scope_mask_state() != MASK_PF_EMPTY;
+    return can_scope_screen_on() || scope_state_get()->cursor.mode != CURSOR_OFF ||
+           scope_mask_state() != MASK_PF_EMPTY;
 }
+static void cursor_row_paint(const scope_state_t *ss, bool force);
 
 /* Every user of the strip's geometry (the live band, the roll band, the mask
  * strip, the cursor readout, the AUX row) reads this one function, so they
@@ -607,8 +621,8 @@ void scope_ui_can_row_refresh(void)
 
 void scope_ui_mask_slot_refresh(void)
 {
-    if (can_scope_screen_on())
-        return;                                  /* the CAN line owns the AUX row */
+    if (can_scope_screen_on() || scope_state_get()->cursor.mode != CURSOR_OFF)
+        return;                                  /* the CAN line / cursor readout owns the AUX row */
     if (scope_mask_state() == MASK_PF_EMPTY) {
         /* Mask just cleared: the AUX row is released. Blank the row it had
          * (the top row a strip WITH aux would have); the live band extends
@@ -771,10 +785,13 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
         draw_strip_cells(&L, &p1, &p2, th);
     }
 
-    /* The AUX row: the CAN analyser's line, else the mask readout. */
+    /* The AUX row: the CAN analyser's line, else the cursor readout, else
+     * the mask readout. */
     if (L.aux) {
         if (can_scope_screen_on())
             scope_ui_can_row_refresh();
+        else if (ss->cursor.mode != CURSOR_OFF)
+            cursor_row_paint(ss, true);
         else
             draw_mask_slot(th);
     }
@@ -1858,24 +1875,6 @@ void draw_demo_waveform(uint32_t frame)
  * Cursor measurement drawing
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_vline_dashed(uint16_t x, uint16_t y_top, uint16_t y_bot,
-                              uint16_t color, bool is_active)
-{
-    for (uint16_t y = y_top; y <= y_bot; y++) {
-        if (is_active || ((y & 7) < 4))
-            lcd_set_pixel(x, y, color);
-    }
-}
-
-static void draw_hline_dashed(uint16_t y, uint16_t x_left, uint16_t x_right,
-                              uint16_t color, bool is_active)
-{
-    for (uint16_t x = x_left; x <= x_right; x++) {
-        if (is_active || ((x & 7) < 4))
-            lcd_set_pixel(x, y, color);
-    }
-}
-
 /* The vertical transform of the band that contains BOTH rows, as the
  * renderer last drew it; counts_per_pixel 0 when there is none (see the
  * delta readout in draw_cursors for why a straddle is refused). */
@@ -1945,163 +1944,167 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     if (fs_out) *fs_out = fs;
 }
 
-static void draw_cursors(void)
+/* The cursor layer, as both renderers draw it: dashed lines over the live
+ * band (the selected one solid) and their V1/V2/H1/H2 labels, transparent
+ * text. Built once per frame; cursor_layer_px() is the compositor's form. */
+typedef struct {
+    bool     v, h;
+    int16_t  vx[2], hy[2];
+    uint16_t vc[2], hc[2];
+    bool     vsolid[2], hsolid[2];
+    uint8_t  nlab;
+    struct { int16_t x, y, w; char s[3]; uint16_t c; } lab[4];
+} cur_layer_t;
+
+static void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L)
 {
-    const scope_state_t *ss = scope_state_get();
+    memset(L, 0, sizeof(*L));
     const cursor_state_t *c = &ss->cursor;
-    const theme_t *th = theme_get();
-
     if (c->mode == CURSOR_OFF) return;
-
-    uint16_t color_active   = th->highlight;
-    uint16_t color_inactive = th->text_secondary;
-
     if (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH) {
-        bool v1_active = (c->active == CURSOR_SEL_V1);
-        bool v2_active = (c->active == CURSOR_SEL_V2);
-
-        draw_vline_dashed(c->v1_x, SCOPE_TOP, SCOPE_BOT,
-                          v1_active ? color_active : color_inactive, v1_active);
-        draw_vline_dashed(c->v2_x, SCOPE_TOP, SCOPE_BOT,
-                          v2_active ? color_active : color_inactive, v2_active);
-
-        font_draw_string(c->v1_x > 12 ? c->v1_x - 10 : 0, SCOPE_TOP,
-                         "V1", v1_active ? color_active : color_inactive,
-                         v1_active ? color_active : color_inactive, &font_small);
-        font_draw_string(c->v2_x > 12 ? c->v2_x - 10 : 0, SCOPE_TOP,
-                         "V2", v2_active ? color_active : color_inactive,
-                         v2_active ? color_active : color_inactive, &font_small);
+        L->v = true;
+        for (uint8_t i = 0; i < 2u; i++) {
+            const bool act = (c->active == (i ? CURSOR_SEL_V2 : CURSOR_SEL_V1));
+            L->vx[i] = (int16_t)(i ? c->v2_x : c->v1_x);
+            L->vc[i] = act ? th->highlight : th->text_secondary;
+            L->vsolid[i] = act;
+            typeof(L->lab[0]) *t = &L->lab[L->nlab++];
+            t->s[0] = 'V'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
+            t->w = (int16_t)font_string_width(t->s, &font_small);
+            t->x = (int16_t)(L->vx[i] > 12 ? L->vx[i] - 10 : 0);
+            t->y = SCOPE_TOP;
+            t->c = L->vc[i];
+        }
     }
-
     if (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH) {
-        bool h1_active = (c->active == CURSOR_SEL_H1);
-        bool h2_active = (c->active == CURSOR_SEL_H2);
-
-        draw_hline_dashed(c->h1_y, 0, LCD_WIDTH - 1,
-                          h1_active ? color_active : color_inactive, h1_active);
-        draw_hline_dashed(c->h2_y, 0, LCD_WIDTH - 1,
-                          h2_active ? color_active : color_inactive, h2_active);
-
-        font_draw_string_right(LCD_WIDTH - 1,
-                               c->h1_y > SCOPE_TOP + 2 ? c->h1_y - 13 : c->h1_y + 2,
-                               "H1", h1_active ? color_active : color_inactive,
-                               h1_active ? color_active : color_inactive, &font_small);
-        font_draw_string_right(LCD_WIDTH - 1,
-                               c->h2_y > SCOPE_TOP + 2 ? c->h2_y - 13 : c->h2_y + 2,
-                               "H2", h2_active ? color_active : color_inactive,
-                               h2_active ? color_active : color_inactive, &font_small);
+        L->h = true;
+        for (uint8_t i = 0; i < 2u; i++) {
+            const bool act = (c->active == (i ? CURSOR_SEL_H2 : CURSOR_SEL_H1));
+            L->hy[i] = (int16_t)(i ? c->h2_y : c->h1_y);
+            L->hc[i] = act ? th->highlight : th->text_secondary;
+            L->hsolid[i] = act;
+            typeof(L->lab[0]) *t = &L->lab[L->nlab++];
+            t->s[0] = 'H'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
+            t->w = (int16_t)font_string_width(t->s, &font_small);
+            t->x = (int16_t)(LCD_WIDTH - 1 - t->w);
+            t->y = (int16_t)(L->hy[i] > SCOPE_TOP + 2 ? L->hy[i] - 13 : L->hy[i] + 2);
+            t->c = L->hc[i];
+        }
     }
+}
 
-    /*
-     * Delta readout.
-     *
-     * Nothing here converts anything itself. The pixel deltas are turned into
-     * real units by scope_cursor.c, which reads the SAME measured tables the
-     * status bar and the measurement badges read — scope_timebase.c for the
-     * sample rate and scope_cal.c for the per-(channel,range) gain — and
-     * refuses to name a unit when the table has no entry.
-     *
-     * What the axes are worth, and why each is exact:
-     *
-     *   horizontal — the plot draws buf[x] at column x, so dx pixels IS dx
-     *                samples (asserted at the top of this file). Seconds need
-     *                the reg-0x01 rate; without one the readout stays in
-     *                samples.
-     *   vertical   — pixels-per-count is whatever the renderer used for the
-     *                band the cursors are in, recorded by vband_note() as it
-     *                draws. It is NOT a constant: an autofit band
-     *                rescales from each record's own min/max. Volts then need
-     *                the range's gain; without one the readout stays in
-     *                counts, and without even a transform it stays in pixels.
-     *
-     * Until 2026-09-12 this read two floats in cursor_state_t that nothing
-     * ever updated: 10 ms across the screen and 8 V down it, seeded once at
-     * init. Every dt and dV the instrument had ever printed came from those
-     * two numbers. They were zeroed in August, which made the readout honest
-     * but left it disconnected from the tables that had just been measured.
-     * The floats are gone; there is no second copy of either constant now.
-     */
-    /* Above the measurement strip (round 1: its top moves with the
-     * selection; before, these rows sat under the badge rows). */
-    const uint16_t strip_y = strip_top(ss);
-    uint16_t badge_y = (uint16_t)(strip_y - 28);
-    uint16_t badge_x = 4;
+/* Labels over lines, as drawn. */
+static inline bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
+{
+    for (uint8_t k = 0; k < L->nlab; k++) {
+        const int dx = x - L->lab[k].x, dy = y - L->lab[k].y;
+        if (dx >= 0 && dx < L->lab[k].w && dy >= 0 && dy < (int)font_small.height &&
+            font_text_px(L->lab[k].s, &font_small, dx, dy)) {
+            *c = L->lab[k].c;
+            return true;
+        }
+    }
+    for (uint8_t i = 0; i < 2u; i++) {
+        if (L->v && x == L->vx[i] && (L->vsolid[i] || (y & 7) < 4)) { *c = L->vc[i]; return true; }
+        if (L->h && y == L->hy[i] && (L->hsolid[i] || (x & 7) < 4)) { *c = L->hc[i]; return true; }
+    }
+    return false;
+}
+
+/* Full path: the same layer, painted over the live band [SCOPE_TOP, band_bot). */
+static void draw_cursors(uint16_t band_bot)
+{
+    cur_layer_t L;
+    cursor_layer_build(scope_state_get(), theme_get(), &L);
+    if (!L.v && !L.h) return;
+    for (uint8_t i = 0; i < 2u; i++) {
+        if (L.v && L.vx[i] >= 0 && L.vx[i] < LCD_WIDTH)
+            for (uint16_t y = SCOPE_TOP; y < band_bot; y++)
+                if (L.vsolid[i] || (y & 7u) < 4u) lcd_set_pixel((uint16_t)L.vx[i], y, L.vc[i]);
+        if (L.h && L.hy[i] >= SCOPE_TOP && L.hy[i] < (int16_t)band_bot)
+            for (uint16_t x = 0; x < LCD_WIDTH; x++)
+                if (L.hsolid[i] || (x & 7u) < 4u) lcd_set_pixel(x, (uint16_t)L.hy[i], L.hc[i]);
+    }
+    for (uint8_t k = 0; k < L.nlab; k++)
+        if (L.lab[k].y >= SCOPE_TOP && L.lab[k].y + (int)font_small.height <= (int)band_bot)
+            font_draw_string((uint16_t)L.lab[k].x, (uint16_t)L.lab[k].y, L.lab[k].s,
+                             L.lab[k].c, L.lab[k].c, &font_small);
+}
+
+/*
+ * The cursor readout: one line in the strip's AUX row (strip_aux), off the
+ * trace and off the badges, repainted only when its text changes.
+ *
+ * Nothing here converts anything itself. The pixel deltas are turned into
+ * real units by scope_cursor.c, which reads the SAME measured tables the
+ * status bar and the measurement badges read (scope_timebase.c for the rate,
+ * scope_cal.c for the gain) and refuses to name a unit without an entry.
+ *   horizontal: dx columns at the column rate (record rate x zoom, C5/C14);
+ *   vertical:   the counts per row the renderer recorded for the band that
+ *               holds both cursors (vband_note), or the math trace's scale.
+ */
+static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
+{
+    const cursor_state_t *c = &ss->cursor;
     char buf[24];
-    char label[40];
-
-    if (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH) {
+    size_t k = 0;
+    out[0] = '\0';
+    if (c->mode == CURSOR_OFF) return;
+    k += (size_t)snprintf(out + k, n - k, "%s",
+                          c->mode == CURSOR_VERTICAL ? "CUR:T" :
+                          c->mode == CURSOR_HORIZONTAL ? "CUR:V" : "CUR:TV");
+    if (k < n && (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH)) {
         const int32_t dx = (int32_t)c->v2_x - (int32_t)c->v1_x;
-
-        /* ss->timebase_idx IS the reg-0x01 code — the same field the status
-         * bar labels and the Freq badge derive from, so the three cannot
-         * disagree about what rate is in force. */
-        /* The PUBLISHED record's rate, not the table's: an interleaved record
-         * is 2x (record_rate_for_display), times the zoom of the window (C5
-         * fast codes, C14 held record), because dx counts columns
-         * (column_rate_for_display). The confidence is the table tier of the
-         * code, which neither factor changes. */
         const float cfs = column_rate_for_display(ss);
         const scope_cursor_conf_t cconf = scope_cursor_tb_conf(ss->timebase_idx);
-        scope_cursor_reading_t dt = scope_cursor_delta_t_fs(cfs, cconf, dx);
-        scope_cursor_format(&dt, buf, sizeof(buf));
-        snprintf(label, sizeof(label), "dt=%s", buf);
-        lcd_fill_rect(badge_x, badge_y, 100, 13, th->background);
-        font_draw_string(badge_x, badge_y, label,
-                         th->highlight, th->highlight, &font_small);
-
-        scope_cursor_reading_t f = scope_cursor_one_over_dt_fs(cfs, cconf, dx);
-        scope_cursor_format(&f, buf, sizeof(buf));
-        snprintf(label, sizeof(label), "1/dt=%s", buf);
-        lcd_fill_rect(badge_x, badge_y + 14, 100, 13, th->background);
-        font_draw_string(badge_x, badge_y + 14, label,
-                         th->highlight, th->highlight, &font_small);
+        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, dx);
+        scope_cursor_format(&r, buf, sizeof(buf));
+        k += (size_t)snprintf(out + k, n - k, "  dt=%s", buf);
+        if (k < n) {
+            r = scope_cursor_one_over_dt_fs(cfs, cconf, dx);
+            scope_cursor_format(&r, buf, sizeof(buf));
+            k += (size_t)snprintf(out + k, n - k, "  1/dt=%s", buf);
+        }
     }
-
-    if (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH) {
-        /* Second cursor minus first, the same convention dt uses (v2 - v1).
-         * Screen y grows downward while volts grow upward, so H2 minus H1 in
-         * volts is h1_y minus h2_y in pixels. */
+    if (k < n && (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH)) {
+        /* Second minus first, as dt; screen y grows downward. A delta that
+         * straddles two differently-scaled bands stays in pixels. */
         const int32_t dy = (int32_t)c->h1_y - (int32_t)c->h2_y;
-
-        /*
-         * Only a band that contains BOTH cursors can convert this. In split
-         * (two-channel autofit) mode each band has its own scale, so a delta
-         * spanning the two is not a voltage in either channel — it falls back
-         * to pixels rather than picking one scale and hoping.
-         */
         scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
-
         scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, dy);
         scope_cursor_format(&dv, buf, sizeof(buf));
-
-        /* Name the channel when the number is a voltage: with two channels on
-         * two ranges, "dV=1.20V" alone does not say which frontend measured
-         * it. */
         if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
-            snprintf(label, sizeof(label), "dVm=%s", buf);   /* the math trace */
+            (void)snprintf(out + k, n - k, "  dVm=%s", buf);
         else if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS)
-            snprintf(label, sizeof(label), "dV%u=%s", vm.channel, buf);
+            (void)snprintf(out + k, n - k, "  dV%u=%s", vm.channel, buf);
         else
-            snprintf(label, sizeof(label), "dV=%s", buf);
-
-        uint16_t vbadge_x = (c->mode == CURSOR_BOTH) ? 120 : badge_x;
-        lcd_fill_rect(vbadge_x, badge_y, 100, 13, th->background);
-        font_draw_string(vbadge_x, badge_y, label,
-                         th->highlight, th->highlight, &font_small);
+            (void)snprintf(out + k, n - k, "  dV=%s", buf);
     }
+}
 
-    /* Cursor mode indicator */
-    {
-        const char *mode_str;
-        switch (c->mode) {
-        case CURSOR_VERTICAL:    mode_str = "CUR:T"; break;
-        case CURSOR_HORIZONTAL:  mode_str = "CUR:V"; break;
-        case CURSOR_BOTH:        mode_str = "CUR:TV"; break;
-        default:                 mode_str = ""; break;
-        }
-        font_draw_string_right(LCD_WIDTH - 4, (uint16_t)(strip_y - 13),
-                               mode_str, th->highlight, th->highlight, &font_small);
-    }
+static uint32_t g_cur_row_hash;   /* hash of the text the AUX row shows now */
+
+static void cursor_row_paint(const scope_state_t *ss, bool force)
+{
+    char t[64];
+    cursor_readout(ss, t, sizeof(t));
+    uint32_t h = 2166136261u;                         /* FNV-1a */
+    for (const char *p = t; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    if (!force && h == g_cur_row_hash) return;
+    g_cur_row_hash = h;
+    const theme_t *th = theme_get();
+    const uint16_t y = strip_top(ss);                 /* the AUX row */
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
+    font_draw_string(4, (uint16_t)(y + 1), t, th->highlight, th->background, &font_small);
+}
+
+/* Main loop, every tick in the time view: the row follows the cursors and
+ * the data (dV depends on the drawn scale) without a full repaint. */
+void scope_ui_cursor_row_refresh(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->cursor.mode == CURSOR_OFF || can_scope_screen_on() || ss->roll) return;
+    cursor_row_paint(ss, false);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2832,8 +2835,8 @@ void draw_scope_screen(uint32_t frame)
                     lcd_set_pixel((uint16_t)x, (uint16_t)(SCOPE_TOP + dy), th->trigger);
     }
 
-    /* Layer 7: Cursor lines */
-    draw_cursors();
+    /* Layer 7: Cursor lines and labels (the readout is in the AUX row) */
+    draw_cursors(band_bot);
 
     /* Layer 8 (the trigger status badge) is gone since the UI round 1 merge:
      * the status bar's trigger dot and RUN/STOP/ARM tab carry it. */
@@ -2955,6 +2958,19 @@ void draw_scope_live_frame(void)
     pm_set_t pm;
     markers_build(ss, th, &a1, &a2, band_bot, &pm);
 
+    /* What this frame drew, for the cursor readout (as draw_channel does). */
+    vband_clear();
+    {
+        uint8_t slot = 0;
+        if (a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &a1, yt_vmap_counts_per_px(&a1));
+        if (a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &a2, yt_vmap_counts_per_px(&a2));
+    }
+
+    /* Cursors: one more layer of the column composition. */
+    cur_layer_t cl;
+    cursor_layer_build(ss, th, &cl);
+    const bool curs = cl.v || cl.h;
+
     /* Trigger dotted line, placed exactly as the full path places it: on the
      * trigger source's map, at the record code where the hardware fires. */
     int16_t trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &a2 : &a1);
@@ -3047,9 +3063,12 @@ void draw_scope_live_frame(void)
         lcd_set_window(x, seg_top[sg], 1, (uint16_t)(seg_bot[sg] - seg_top[sg]));
         for (uint16_t y = seg_top[sg]; y < seg_bot[sg]; y++) {
             uint16_t c;
-            /* Z-order matches the full path: CH2 painted after CH1 there,
-             * so CH2 wins here; trace over trigger line over grid. */
-            if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
+            /* Z-order matches the full path: cursors over everything, CH2
+             * painted after CH1 there, so CH2 wins here; trace over trigger
+             * line over grid. */
+            if (curs && cursor_layer_px(&cl, (int)x, (int)y, &c))
+                ;                                      /* cursor lines and labels */
+            else if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
                 tpos_px(g_trig_x_actual, (int)x, (int)y))  /* trigger-position pointer */
                 c = th->trigger;
             else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))

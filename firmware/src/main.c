@@ -316,10 +316,9 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
     h = redraw_epoch_mix(h, (uint32_t)meas_select_get(0)
                             | ((uint32_t)meas_select_get(1) << 16));
 
-    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode
-                            | ((uint32_t)s->cursor.active << 4));
-    h = redraw_epoch_mix(h, ((uint32_t)s->cursor.v1_x << 16) | s->cursor.v2_x);
-    h = redraw_epoch_mix(h, ((uint32_t)s->cursor.h1_y << 16) | s->cursor.h2_y);
+    /* Cursor mode only: it moves the strip (the AUX row). Positions and the
+     * selection are drawn by the live frame (scope_ui_request_live). */
+    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode);
 
     h = redraw_epoch_mix(h, (uint32_t)math_enabled
                             | ((uint32_t)math_op         << 1)
@@ -401,7 +400,7 @@ static bool scope_incremental_available(const scope_state_t *s)
      * what made every timebase change blank the whole screen ten times over:
      * the popup pinned the renderer to the full clear-then-redraw for its
      * entire life. draw_scope_live_frame() now steps around the popup box.
-     * Cursors still force the full path — only it draws them. */
+     * Cursors are a layer of the compositor (2026-11-13). */
     /* Math and persistence (C12) are layers of the full path only: the
      * compositor streams the trace band and knows neither. They trade the
      * flicker-free update for the feature, on request. A re-sampled held
@@ -409,7 +408,6 @@ static bool scope_incremental_available(const scope_state_t *s)
      * renderers draw the one window view_build() fills (scope_ui.c), blank
      * columns included. */
     return scope_acquisition_ready()
-           && s->cursor.mode == CURSOR_OFF
            && !math_enabled && !persist_enabled;
 #endif
 }
@@ -820,7 +818,8 @@ static void vDisplayTask(void *pvParameters)
                 /* A live popup counts as new data so the compositor runs on
                  * every 50 ms tick while it is up, and once more to erase it
                  * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
-                q.new_data         = new_data || scope_popup_active();
+                q.new_data         = new_data || scope_popup_active()
+                                     || scope_ui_take_live_request();
                 q.incremental_ok   = scope_incremental_available(ss_anim);
                 /* Only the full path can show a popup when the compositor is
                  * unavailable (demo trace, cursors on, FFT views). When it IS
@@ -849,6 +848,12 @@ static void vDisplayTask(void *pvParameters)
                     ui_scope_skipped++;
                 else
                     scope_render(frame, act);
+#ifdef FEATURE_FFT
+                if (act != REDRAW_SKIP && !page_up && scope_view == SCOPE_VIEW_TIME)
+#else
+                if (act != REDRAW_SKIP && !page_up)
+#endif
+                    scope_ui_cursor_row_refresh();   /* only when its text changed */
             }
         } else if (current_mode == MODE_SIGNAL_GEN) {
             /* Siggen UI is static: no animation, no live data. It is
