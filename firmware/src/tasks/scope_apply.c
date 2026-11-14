@@ -12,7 +12,7 @@
 #include "trig_menu.h"
 #include "persistence.h"
 #include "fpga.h"
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 #include "fft.h"
 #endif
 #include <stdio.h>
@@ -71,7 +71,7 @@ bool scope_apply_roll(bool want)
     return true;
 }
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 bool scope_view_uses_fft(scope_view_t v)
 {
     return v == SCOPE_VIEW_FFT || v == SCOPE_VIEW_SPLIT || v == SCOPE_VIEW_WATERFALL;
@@ -119,7 +119,7 @@ bool scope_apply_persist_on(persist_mode_t m)
         persist_set_mode(m);
         return true;
     }
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     if (scope_view_uses_fft(scope_view))
         scope_view_select(SCOPE_VIEW_TIME);   /* releases the FFT's pool */
     if (fft_is_initialized()) fft_deinit();

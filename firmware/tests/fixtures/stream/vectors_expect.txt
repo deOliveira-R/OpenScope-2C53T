@@ -1,5 +1,5 @@
 TEXT 0d0a3e2073747265616d206f6e0d0a73747265616d3a206f6e2073636f7065206d657465722070726f70730d0a3e20
-FRAME type=1 seq=65530 proto_major=1 proto_minor=1 caps=7 on=7 max_payload=4096 rec_samples=1024 n_props=6 table_crc=195948557 fw=4f70656e53636f706520324335335420766563746f7273
+FRAME type=1 seq=65530 proto_major=1 proto_minor=2 caps=7 on=7 max_payload=4096 rec_samples=1024 n_props=6 table_crc=195948557 fw=4f70656e53636f706520324335335420766563746f7273 features=2147483653
 FRAME type=6 seq=65531 id=258 type_=1 unit=0 decimals=0 group=0 flags=10 min=0 max=9 def=3 name=6368312e76646976 unit_sym=
 FRAME type=6 seq=65532 id=1539 type_=2 unit=1 decimals=1 group=5 flags=10 min=0 max=30 def=30 name=67656e2e616d70 unit_sym=56
 FRAME type=2 seq=65533 table_crc=195948557 n_groups=3 epochs=1,0,3735928559 n_props=6 props=257:1,258:3,513:0,769:10,1028:-25,1538:50000

@@ -40,7 +40,7 @@ bool scope_apply_trigger_change(uint8_t what, char *pb, size_t n);
  * false returned. True if the scope is now in the mode asked for. */
 bool scope_apply_roll(bool want);
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 /* The views that need the FFT's half of the shared pool (FFT, split,
  * waterfall). X-Y does not: its phosphor trail borrows persistence's. */
 bool scope_view_uses_fft(scope_view_t v);

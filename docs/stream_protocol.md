@@ -1,8 +1,11 @@
 # Binary stream protocol (FEATURE_STREAM)
 
-Status: prototype, protocol 1.1 (1.0 plus the RECORD capture block and the STALE flag). Firmware: `firmware/src/stream/` (bench image `app-coldtrace-meter`).
+Status: prototype, protocol 1.2 (1.0 plus the RECORD capture block and the STALE flag in 1.1, plus the HELLO
+feature mask in 1.2). Firmware: `firmware/src/stream/`, the build feature `stream` of `firmware/features.mk`
+(on in the bench image `app-coldtrace-meter`; `make WITH=stream` elsewhere).
 Host: `scripts/scope_stream.py`. Encoder test and cross-check vectors: `firmware/tests/test_stream.c`,
-`firmware/tests/fixtures/stream/`.
+`firmware/tests/fixtures/stream/` (`v1_1/` holds the frozen 1.1 vectors: the host must keep decoding them).
+Host self-tests: `make -C firmware test-stream-host`.
 
 The scope is a measuring device that happens to have a screen and keys. The stream lets a host show what the
 instrument measures without asking the screen: captures, meter readings and the full property state go out
@@ -101,7 +104,7 @@ Strings are `u8 length` + bytes (no NUL).
 
 | field | type | |
 |---|---|---|
-| proto_major, proto_minor | u8, u8 | 1, 1 |
+| proto_major, proto_minor | u8, u8 | 1, 2 |
 | caps | u8 | what this firmware can send: bit0 scope, bit1 meter, bit2 props |
 | on | u8 | what this `stream on` asked for (same bits) |
 | max_payload | u16 | 4096 |
@@ -109,9 +112,21 @@ Strings are `u8 length` + bytes (no NUL).
 | n_props | u16 | properties in the table |
 | table_crc | u32 | CRC-32 over (id u16, type, unit, decimals, group) of every property, table order |
 | fw | str | firmware build text |
+| features | u32 | 1.2: the features built into this image, one bit per feature |
 
-A host that caches PROPDESC keys it by `table_crc`. The host resets its sequence-gap and generation checks at
-HELLO.
+The host resets its sequence-gap and generation checks at HELLO.
+
+**Feature mask (1.2).** A feature's bit is its `NAME_bit` in `firmware/features.mk`; a number is never reused
+or moved, so a mask means the same thing for every build (today: bit 0 stream, 1 fft, 2 usbdrive). A set bit
+means the feature is in the image. A clear bit means it is not in this build, or that this firmware is older
+than the feature; the text shell's `features` command lists every feature the firmware knows, with on/off,
+and tells the two apart. `scripts/scope_stream.py` reads the names from `features.mk` and shows an unknown bit
+as `bit<n>`. A 1.0 or 1.1 device sends no mask: the payload ends after `fw`, and the host reports the features
+as unknown (it must not read them as "none").
+
+The property table is the same in every build, whatever its features, so `table_crc` does not change with
+the mask. A host that caches PROPDESC keys it by `table_crc` **and** the feature mask (a 1.1 device: by
+`table_crc` alone).
 
 ### PROPDESC (0x06)
 

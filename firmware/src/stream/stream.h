@@ -10,23 +10,25 @@
  * while a command runs and a command's reply is never split by one. Frame
  * format and rules: docs/stream_protocol.md.
  *
- * Everything here exists only when FEATURE_STREAM is 1 (bench image
- * app-coldtrace-meter). Hooks in shared files (all under #if FEATURE_STREAM):
- * usb_debug.c includes this header, defines the two port functions below,
- * adds the `stream` table row, and calls stream_poll() in its task loop.
+ * THIS HEADER IS THE FEATURE'S WHOLE CONTRACT WITH THE CORE, and the template
+ * for every other feature (firmware/features.mk):
+ *
+ *   - the core includes it and uses it with NO #if. With FEATURE_STREAM 0 the
+ *     calls are inline no-ops (the compiler removes them), the row macro is
+ *     empty (`help` does not list the command, `stream` answers "unknown
+ *     command" like any typo), and the sources in src/stream/ are not compiled;
+ *   - what the feature needs FROM the core (the two port functions below) is
+ *     plain core code, always declared; unused, the linker drops it.
+ *
+ * So FEATURE_STREAM is tested here and in src/stream/ only. The core's hooks,
+ * all in usb_debug.c: this include, the two port functions, STREAM_SHELL_ROWS
+ * in the command table, stream_poll() in the task loop.
  */
 #ifndef STREAM_H
 #define STREAM_H
 
-#if FEATURE_STREAM
-
 #include <stdbool.h>
 #include <stdint.h>
-
-/* Shell task only. True when a frame went out this pass (the loop then
- * skips its idle wait, so a backlog drains between RX polls). */
-bool stream_poll(void);
-void cmd_stream(const char *args);
 
 /* Port into the CDC IN path, defined in usb_debug.c next to the frozen
  * usb_send_bytes() (additions only; shell task only).
@@ -35,6 +37,24 @@ void cmd_stream(const char *args);
  *   write: usb_send_bytes(); false if it dropped data (host not reading). */
 bool usb_debug_stream_tx_ready(bool heal);
 bool usb_debug_stream_write(const uint8_t *data, uint16_t len);
+
+#if FEATURE_STREAM
+
+/* Shell task only. True when a frame went out this pass (the loop then
+ * skips its idle wait, so a backlog drains between RX polls). */
+bool stream_poll(void);
+void cmd_stream(const char *args);
+
+/* The feature's rows of the shell table (usb_debug.c places them; the row
+ * keeps its place, so matching order does not change). */
+#define STREAM_SHELL_ROWS \
+    CMD_A("stream", cmd_stream, 0, \
+          "stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n"),
+
+#else  /* !FEATURE_STREAM: the feature is not in this build */
+
+static inline bool stream_poll(void) { return false; }
+#define STREAM_SHELL_ROWS            /* no rows */
 
 #endif /* FEATURE_STREAM */
 #endif /* STREAM_H */

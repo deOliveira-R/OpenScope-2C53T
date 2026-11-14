@@ -102,9 +102,8 @@
 #include <stdlib.h>
 #include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
 #include "ui_shell.h"      /* ui press / long / seq / screen, btn, keys (ARCH-1 M2 rows) */
-#if FEATURE_STREAM
-#include "stream.h"        /* binary stream over this channel (src/stream/) */
-#endif
+#include "../util/features.h"   /* version, features: what this build contains */
+#include "stream.h"        /* binary stream over this channel (src/stream/): no-ops when off */
 
 /* ═══════════════════════════════════════════════════════════════════
  * USB Device Instance
@@ -505,10 +504,10 @@ int usb_debug_printf(const char *fmt, ...)
     return len;
 }
 
-#if FEATURE_STREAM
 /* The stream sender's port into the CDC IN path (src/stream/stream.h).
  * Additions beside the frozen write path, which they call unchanged; shell
- * task only, like every other writer here. */
+ * task only, like every other writer here. Built in every image: without
+ * the stream nothing calls them and the linker drops them. */
 bool usb_debug_stream_tx_ready(bool heal)
 {
 #if DEBUG_SHELL_RTT_ONLY
@@ -528,7 +527,6 @@ bool usb_debug_stream_write(const uint8_t *data, uint16_t len)
     usb_send_bytes(data, len);
     return s_cdc.tx_drops == drops;
 }
-#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * Hex Parsing Helpers
@@ -941,6 +939,26 @@ static void cmd_version(void)
         "SRAM: 224KB (EOPB0=0xFE)\r\n",
         system_core_clock / 1000000
     );
+    /* What this build contains (firmware/features.mk); `features` lists the
+     * ones that are off too. */
+    usb_send_str("Features:");
+    for (uint8_t i = 0; i < features_count(); i++) {
+        const feature_info_t *f = features_at(i);
+        if (f->on) usb_debug_printf(" %s", f->name);
+    }
+    usb_debug_printf(" (mask 0x%08lx)\r\n", (unsigned long)features_mask());
+}
+
+/* features: every feature the manifest knows, one per line:
+ *   <name> on|off bit <n>  <description>
+ * so a script can tell "off in this build" from "never heard of it". */
+static void cmd_features(void)
+{
+    for (uint8_t i = 0; i < features_count(); i++) {
+        const feature_info_t *f = features_at(i);
+        usb_debug_printf("%-10s %-3s bit %-2u %s\r\n", f->name, f->on ? "on" : "off", (unsigned)f->bit, f->desc);
+    }
+    usb_debug_printf("mask 0x%08lx\r\n", (unsigned long)features_mask());
 }
 
 static void cmd_status(void)
@@ -8050,7 +8068,7 @@ static void cmd_ui_dump(void)
         usb_debug_printf("draws scope_full=%lu scope_live=%lu redraw_all=%lu\r\n",
                          (unsigned long)ui_scope_full_draws, (unsigned long)ui_scope_live_draws,
                          (unsigned long)ui_redraw_all_count);
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         static const char *const wfs[] = { "never drawn", "drawn", "no FFT", "waiting for capture",
                                            "pool not FFT's" };
         const uint8_t w = scope_ui_waterfall_status();
@@ -10448,6 +10466,8 @@ static const shell_cmd_t shell_cmds[] = {
           NULL /* alias */),
     CMD_V("version", cmd_version, SC_EXACT,
           "version                         Firmware info\r\n"),
+    CMD_V("features", cmd_features, SC_EXACT,
+          "features                        Features of this build: name, on/off, HELLO bit\r\n"),
     CMD_V("status", cmd_status, SC_EXACT,
           "status                          FPGA & system status\r\n"),
     CMD_A("fwload", cmd_fwload, SC_NEEDARGS,
@@ -10638,10 +10658,7 @@ static const shell_cmd_t shell_cmds[] = {
           "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"),
     CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
           "describe <prop>                 Range/labels, default, unit, saved where, owner\r\n"),
-#if FEATURE_STREAM
-    CMD_A("stream", cmd_stream, 0,
-          "stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n"),
-#endif
+    STREAM_SHELL_ROWS       /* `stream`: from src/stream/stream.h, empty when the feature is off */
     CMD_A("fpga postedge", cmd_fpga_postedge, 0,
           "fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n"),
     CMD_A("fpga scope hpos", cmd_fpga_scope_hpos, 0,
@@ -11206,10 +11223,9 @@ static void vUsbDebugTask(void *pvParameters)
         if (s_usb_mode.active == USB_DEV_COMPOSITE && usb_msc_poll(&usb_core_dev)) did_work = true;
 #endif
 
-#if FEATURE_STREAM
-        /* Binary stream frames, between commands (src/stream/stream.h). */
+        /* Binary stream frames, between commands (src/stream/stream.h; a
+         * constant false without the stream). */
         if (fwl_discard == 0u && !raw_block_active(&s_raw) && stream_poll()) did_work = true;
-#endif
 
         if (!did_work) {
             /* 10 ms idle cadence, 1 ms while an upload is in flight (each

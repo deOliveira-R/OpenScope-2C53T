@@ -685,6 +685,12 @@ static void spi3_pump_h2_record(const uint8_t *tx, uint32_t n)
 #define FPGA_WARM_HANDOFF_TEST  0
 #endif
 
+/* The five scope-engine restart writes after a warm hand-off: off (bench
+ * run 2, see the block that tests it). */
+#ifndef FPGA_WARMTEST_SEND_CFG_WRITES
+#define FPGA_WARMTEST_SEND_CFG_WRITES  0
+#endif
+
 /* USART-silent scope-boot experiment (2026-06-13, stock-bringup-diff finding).
  * Stock holds USART2 UEN CLEAR through the entire scope boot and never runs the
  * dvom/meter tasks before the SPI3 config; our firmware enables USART2 + runs

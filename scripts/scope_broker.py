@@ -647,6 +647,8 @@ class FakeDevice:
         self.gen = 0
         self.stop_flag = False
         self.down_until = 0.0
+        self.hello_minor = 2       # protocol minor of the next HELLO (1 = a device without the feature mask)
+        self.hello_features = 0x5
         self._listen(0)
         threading.Thread(target=self._serve, daemon=True).start()
 
@@ -767,10 +769,11 @@ class FakeDevice:
 
     def _stream_start(self):
         self.seq = (self.seq + 100) & 0xFFFF
-        out = self._frame(ss.T_HELLO, ss.encode_payload({"type": ss.T_HELLO, "proto_major": 1, "proto_minor": 0,
-                                                         "caps": 7, "on": 7, "max_payload": 4096,
-                                                         "rec_samples": 64, "n_props": 2, "table_crc": 5,
-                                                         "fw": "fake"}))
+        hello = {"type": ss.T_HELLO, "proto_major": 1, "proto_minor": self.hello_minor, "caps": 7, "on": 7,
+                 "max_payload": 4096, "rec_samples": 64, "n_props": 2, "table_crc": 5, "fw": "fake"}
+        if self.hello_minor >= 2:           # 1.2: the build's feature mask at the end
+            hello["features"] = self.hello_features
+        out = self._frame(ss.T_HELLO, ss.encode_payload(hello))
         for i, nm in ((0x0102, "ch1.vdiv"), (0x0301, "tb.code")):
             out += self._frame(ss.T_PROPDESC, ss.encode_payload({"type": ss.T_PROPDESC, "id": i, "type_": 1,
                                                                  "unit": 0, "decimals": 0, "group": 0, "flags": 0,
@@ -937,6 +940,12 @@ def selftest():
         if dev.count("stream on") != on0 + 1:
             fail("later subscribers restarted the device stream")
 
+        # 3b. the cached HELLO is the device's own bytes: a 1.2 device's feature mask survives the replay
+        with br.lock:
+            ch = ss.decode(ss.T_HELLO, br.cache["hello"][3]) if br.cache and br.cache.get("hello") else {}
+        if ch.get("proto_minor") != 2 or ch.get("features") != 0x5:
+            fail("cached HELLO of a 1.2 device: %r" % ch)
+
         # 4. reference counting
         off0 = dev.count("stream off")
         a.send("stream off")
@@ -984,6 +993,8 @@ def selftest():
             fail("status: %r" % bytes(a.text[ta:]))
 
         # 8. the device vanishing mid-command; reconnect; stream restored for b
+        #    (it comes back as a 1.1 device: a HELLO without the feature mask must work the same)
+        dev.hello_minor = 1
         on1 = dev.count("stream on")
         conns = dev.conns
         ta, _f = a.mark()
@@ -1003,6 +1014,11 @@ def selftest():
         _t, nb = b.mark()
         if not b.wait_frames(ss.T_RECORD, 2, start=nb):
             fail("b gets no records after the reconnect")
+        with br.lock:
+            ch = ss.decode(ss.T_HELLO, br.cache["hello"][3]) if br.cache and br.cache.get("hello") else {}
+        if ch.get("proto_minor") != 1 or "features" in ch:
+            fail("cached HELLO of a 1.1 device: %r" % ch)
+        dev.hello_minor = 2
         ta, _f = a.mark()
         a.send("version")
         if not a.wait_text("Build: fake device", start=ta):

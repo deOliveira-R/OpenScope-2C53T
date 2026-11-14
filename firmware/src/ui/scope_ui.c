@@ -42,7 +42,7 @@
 #include "osc_menu_model.h"
 #include "meas_select.h"
 #include "scope_mask.h"
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 #include "fft_live.h"
 #include "fft_source.h"
 #include "fft_test_signals.h"
@@ -2217,7 +2217,7 @@ void scope_ui_cursor_row_refresh(void)
 static void persist_frame_decay(void)
 {
     const scope_state_t *gss = scope_state_get();
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     const uint8_t gview = (uint8_t)scope_view;
 #else
     const uint8_t gview = 0u;
@@ -3523,7 +3523,7 @@ void draw_roll_screen(bool full)
  * FFT views (unchanged — reference scope_state for consistency)
  * ═══════════════════════════════════════════════════════════════════ */
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 
 /* ── Display reference auto-ranging ─────────────────────────────────
  *

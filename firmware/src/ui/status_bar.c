@@ -580,7 +580,7 @@ void draw_info_bar(void)
     uint16_t ib = th->status_bar_bg;
     switch (current_mode) {
     case MODE_OSCILLOSCOPE:
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         if (scope_view == SCOPE_VIEW_FFT) {
             const char *win_names[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
             const fft_config_t *cfg = fft_get_config();

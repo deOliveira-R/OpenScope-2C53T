@@ -145,7 +145,7 @@ static device_mode_t startup_target_mode(void)
                              FPGA_METER_SUBMODES != 0);
 }
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 volatile scope_view_t scope_view = SCOPE_VIEW_TIME;
 fft_result_t fft_result;
 #endif
@@ -268,7 +268,7 @@ static uint32_t info_bar_epoch(void)
          * repaints its own slots. */
         h = redraw_epoch_mix(h, status_bar_info_epoch());
         /* The FFT view's own bar (window, averaging, max hold). */
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         const fft_config_t *cfg = fft_get_config();
         if (cfg)
             h = redraw_epoch_mix(h, (uint32_t)cfg->window | ((uint32_t)cfg->avg_count << 8)
@@ -379,7 +379,7 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
      * round 1 merge: the status bar's dot and RUN tab show it and repaint
      * their own slots, so it does not force a full plot repaint. */
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
     {
         const fft_config_t *fc = fft_get_config();
@@ -402,7 +402,7 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
 /* Is the scope showing the roll view (C11)? Time view with roll on. */
 static bool s_roll_view(void)
 {
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     if (scope_view != SCOPE_VIEW_TIME) return false;
 #endif
     return scope_state_get()->roll;
@@ -417,7 +417,7 @@ static bool scope_incremental_available(const scope_state_t *s)
     (void)s;
     return false;   /* draw_scope_live_frame reads FPGA buffers */
 #else
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     /* FFT, split, waterfall and X-Y compose every pixel (no blank phase). */
     if (scope_view != SCOPE_VIEW_TIME) return true;
 #endif
@@ -484,7 +484,7 @@ static bool native_paint_update(const screen_t *s, uint32_t frame)
 
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     /* The other views compose every pixel and never blank: an incremental
      * frame is the same drawing without the once-only margins and titles. */
     if (scope_view != SCOPE_VIEW_TIME) {
@@ -752,7 +752,7 @@ static void vDisplayTask(void *pvParameters)
                     g_screen_painted = true;
                 }
                 break;
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
             case DCMD_DRAW_FFT:
                 if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     ui_scope_full_draws++;
@@ -832,7 +832,7 @@ static void vDisplayTask(void *pvParameters)
             {
                 static uint32_t g_mask_slot_epoch;
                 uint32_t me = scope_mask_epoch();
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
                 const bool time_view = (scope_view == SCOPE_VIEW_TIME);
 #else
                 const bool time_view = true;
@@ -930,7 +930,7 @@ static void vDisplayTask(void *pvParameters)
                     ui_scope_skipped++;
                 else
                     scope_render(frame, act);
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
                 const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
 #else
                 const bool yt_view = !page_up;

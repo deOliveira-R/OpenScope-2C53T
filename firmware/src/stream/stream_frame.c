@@ -158,7 +158,7 @@ bool sf_end(sf_writer_t *w)
 
 uint16_t sf_hello_len(const sf_hello_t *h)
 {
-    return (uint16_t)(2u + 1u + 1u + 2u + 2u + 2u + 4u + sf_str_len(h->fw, FW_MAX));
+    return (uint16_t)(2u + 1u + 1u + 2u + 2u + 2u + 4u + sf_str_len(h->fw, FW_MAX) + 4u);
 }
 
 bool sf_send_hello(sf_writer_t *w, sf_sink_fn s, void *ctx, uint16_t seq, const sf_hello_t *h)
@@ -173,6 +173,7 @@ bool sf_send_hello(sf_writer_t *w, sf_sink_fn s, void *ctx, uint16_t seq, const 
     sf_u16(w, h->n_props);
     sf_u32(w, h->table_crc);
     sf_str(w, h->fw, FW_MAX);
+    sf_u32(w, h->features);                  /* 1.2, after everything 1.1 has */
     return sf_end(w);
 }
 

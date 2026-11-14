@@ -17,6 +17,12 @@
 #ifndef FPGA_H
 #define FPGA_H
 
+/* Build-variant switch (Makefile target CFLAGS); 0 unless a target sets it.
+ * main.c tests it before its own default, so the default lives here too. */
+#ifndef FPGA_WARM_HANDOFF_TEST
+#define FPGA_WARM_HANDOFF_TEST  0
+#endif
+
 #include <stdint.h>
 #include <stdbool.h>
 #include "fpga_meter_plan.h"
@@ -859,6 +865,9 @@ void fpga_spi3_bus_reacquire(void);
  * — same pins/rate/frame, drive type the only variable. Isolated frames; does NOT
  * configure. Arm sigrok (D0=SCK/D1=MISO/D2=MOSI/D3=CS) before calling.
  * FPGA_CONFIG_B builds only — the bit-bang half is compiled out elsewhere. */
+#ifndef FPGA_CONFIG_B
+#define FPGA_CONFIG_B 0            /* the same default fpga.c gives it (-Wundef) */
+#endif
 #if FPGA_CONFIG_B
 void fpga_edgecap_15(uint8_t reps);
 #endif

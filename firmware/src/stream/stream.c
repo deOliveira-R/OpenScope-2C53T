@@ -40,6 +40,7 @@
 #include "stream_frame.h"
 
 #include "fpga.h"
+#include "features.h"
 #include "fw_loader.h"
 #include "meter_data.h"
 #include "model.h"
@@ -178,6 +179,7 @@ static bool send_hello(void)
         .caps = CAP_ALL, .on = s.want, .max_payload = SF_MAX_PAYLOAD,
         .rec_samples = FPGA_ADC_BUF_SIZE, .n_props = prop_count(), .table_crc = s.table_crc,
         .fw = "OpenScope 2C53T " __DATE__ " " __TIME__,
+        .features = features_mask(),
     };
     sf_writer_t w;
     const bool ok = frame_done(SF_T_HELLO, &w, sf_send_hello(&w, sink, NULL, s.seq, &h));

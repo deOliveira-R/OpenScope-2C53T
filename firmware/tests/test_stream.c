@@ -249,7 +249,7 @@ static void test_lengths(void)
     static cap_t c;
     sf_writer_t w;
     const sf_hello_t h = { SF_CAP_SCOPE | SF_CAP_METER | SF_CAP_PROPS, SF_CAP_SCOPE, SF_MAX_PAYLOAD,
-                           1024u, 62u, 0x12345678u, "OpenScope test" };
+                           1024u, 62u, 0x12345678u, "OpenScope test", 0x00000005u };
     cap_init(&c);
     CHECK(sf_send_hello(&w, cap_sink, &c, 0u, &h) && c.n == sf_wire_len(sf_hello_len(&h)));
     const sf_meter_t m = { 7u, 99u, -1.234f, -1234, 1u, 0u, 1u, 0u, 3u, 2u, SF_MTR_VALID | SF_MTR_NEGATIVE,
@@ -332,13 +332,13 @@ static int write_vectors(const char *bin_path, const char *exp_path, const char 
 
     const sf_hello_t h = { SF_CAP_SCOPE | SF_CAP_METER | SF_CAP_PROPS,
                            SF_CAP_SCOPE | SF_CAP_METER | SF_CAP_PROPS, SF_MAX_PAYLOAD, 1024u, 6u,
-                           0x0BADF00Du, "OpenScope 2C53T vectors" };
+                           0x0BADF00Du, "OpenScope 2C53T vectors", 0x80000005u };
     CHECK(sf_send_hello(&w, cap_sink, &vec, vseq, &h));
     fprintf(vexp, "FRAME type=1 seq=%u proto_major=%u proto_minor=%u caps=%u on=%u max_payload=%u "
                   "rec_samples=%u n_props=%u table_crc=%u", vseq, SF_PROTO_MAJOR, SF_PROTO_MINOR, h.caps,
             h.on, h.max_payload, h.rec_samples, h.n_props, h.table_crc);
     vstr("fw", h.fw);
-    fprintf(vexp, "\n");
+    fprintf(vexp, " features=%u\n", (unsigned)h.features);
     vseq++;
 
     static const sf_propdesc_t descs[2] = {
