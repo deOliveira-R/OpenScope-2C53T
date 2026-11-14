@@ -102,6 +102,7 @@ PROP(IL_ENABLED,   0x0A01, "il.enabled",     PT_BOOL, UNIT_NONE,      0, PG_IL, 
 PROP(IL_GAIN,      0x0A02, "il.gain",        PT_INT,  UNIT_GAIN_E6,   6, PG_IL, INST_SCOPE, 0, 500000, 2000000, 1000, 1000000, PF_HW|PF_USERCAL,         NULL,            NULL,          il_gain_get,     il_gain_set,     il_gain_store,     "fpga_interleave_corr_set (B gain)")
 PROP(IL_OFFSET,    0x0A03, "il.offset",      PT_INT,  UNIT_REC_CODE,  2, PG_IL, INST_SCOPE, 0, -10000,   10000,   10,       0, PF_HW|PF_USERCAL,         NULL,            NULL,          il_offset_get,   il_offset_set,   il_offset_store,   "fpga_interleave_corr_set (B offset)")
 PROP(IL_SKEW,      0x0A04, "il.skew",        PT_INT,  UNIT_PPM_PERIOD,0, PG_IL, INST_SCOPE, 0,-150000,  150000,  100,       0, PF_HW|PF_USERCAL,         NULL,            NULL,          il_skew_get,     il_skew_set,     il_skew_store,     "fpga_interleave_skew_set")
+PROP(IL_KNOTS,     0x0A05, "il.knots",       PT_INT,  UNIT_NONE,      0, PG_IL, INST_SCOPE, 0,      0,       5,    1,       0, PF_HW|PF_SESSION,         NULL,            NULL,          il_knots_get,    il_knots_set,    il_knots_store,    "fpga_interleave_corr_set (0 drops the piecewise map)")
 
 /* ── mask (pass/fail mask test; applied by the acquisition task) ───────── */
 PROP(MASK_TOLV,    0x0B01, "mask.tolv",      PT_INT,  UNIT_NONE, 0, PG_MASK, INST_SCOPE, 0,   0,     64,  2,    8, PF_HW|PF_SESSION|PF_POSTED,           NULL,                  NULL,          mask_tolv_get,   mask_tolv_set,   mask_tolv_store,   "scope_mask_post(REQ_TOL) (record counts)")

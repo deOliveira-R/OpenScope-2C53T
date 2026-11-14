@@ -44,7 +44,7 @@ SC_EXACT = 0x01
 # shell's contract with the host tools and the flash path; `stream` is there
 # only when the stream feature is on (it is, in both profiles tested here).
 CORE = [n.strip() for n in """
-help | ? | version | features | status
+help | ? | version | features | status | tasks
 fwload | fwstat | fwapply | fwswap | reboot bootloader
 get | set | list | describe | settings | persist
 ui press | ui long | ui seq | ui screen | ui dump | btn | keys | mode

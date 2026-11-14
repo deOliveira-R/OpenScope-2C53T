@@ -432,6 +432,7 @@ MODEL_PROP_FNS(trig_soft)   MODEL_PROP_FNS(view_mode)   MODEL_PROP_FNS(view_pers
 MODEL_PROP_FNS(view_math)   MODEL_PROP_FNS(view_cursor) MODEL_PROP_FNS(view_ts)
 MODEL_PROP_FNS(view_mh)     MODEL_PROP_FNS(view_run)    MODEL_PROP_FNS(il_enabled)
 MODEL_PROP_FNS(il_gain)     MODEL_PROP_FNS(il_offset)   MODEL_PROP_FNS(il_skew)
+MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
 bool vdiv_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 bool tb_label(const prop_desc_t *p, int32_t v, char *out, size_t n);

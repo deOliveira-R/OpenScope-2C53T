@@ -20,6 +20,7 @@
 #include "meas_select.h"
 #include "persistence.h"
 #include "math_channel.h"
+#include "interleave.h"       /* IL_KNOTS_MAX */
 #include "ui.h"
 
 #include <stdio.h>
@@ -563,6 +564,30 @@ prop_status_t il_offset_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
 {
     (void)p; (void)origin; gain_e6_t g; int32_t o; il_corr(&g, &o);
     return il_corr_apply(g, v, note);
+}
+
+/* il.knots: how many knots the piecewise level map has (0 = the line
+ * il.gain / il.offset alone). The map itself is made by `fpga interleave cal
+ * piecewise` and saved with `cal user save`; it has no value a set could
+ * give it. A set of 0 drops it and keeps the line, through the owner's own
+ * call (fpga_interleave_corr_set replaces the whole map), so that il.gain
+ * and il.offset can be set afterwards: what the old `fpga interleave corr`
+ * did in one step and its alias now asks for by name (ARCH-1 M4). The value
+ * it has is accepted and does nothing; any other is refused. The store is
+ * empty on purpose: loading defaults or a
+ * profile must never drop a calibration. */
+_Static_assert(IL_KNOTS_MAX == 5u, "il.knots 0..5");
+int32_t il_knots_get(const prop_desc_t *p) { (void)p; return HW->il_knots ? HW->il_knots() : 0; }
+void    il_knots_store(const prop_desc_t *p, int32_t v) { (void)p; (void)v; }
+prop_status_t il_knots_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin;
+    if (v == il_knots_get(p)) return PS_OK;         /* get then set is the identity (a profile replays) */
+    if (v != 0) { model_note(note, "only 0: drop the map"); return PS_REFUSED; }
+    gain_e6_t g; int32_t o;
+    il_corr(&g, &o);
+    if (!HW->il_corr_set || !HW->il_corr_set(g, o)) { model_note(note, "map NOT dropped"); return PS_NOT_SET; }
+    return PS_OK;
 }
 
 int32_t il_skew_get(const prop_desc_t *p) { (void)p; return HW->il_skew_get ? HW->il_skew_get().ppm : 0; }
