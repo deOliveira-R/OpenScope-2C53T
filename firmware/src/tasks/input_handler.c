@@ -861,6 +861,12 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
             ss->roll = was_roll;
             ss->roll_step = was_step;
         }
+        /* The status bar's H= shows the new code; only a failed write,
+         * which the bar cannot show, gets a popup. */
+        if (tb_ok) {
+            send_cmd(dq, DCMD_REDRAW_ALL);
+            break;
+        }
         char tb[12];
         if (ss->roll)
             scope_roll_label(ss->roll_step, tb, sizeof(tb));
@@ -869,9 +875,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
             scope_timebase_view_label(ss->timebase_idx,
                                       scope_ui_view_merged(),
                                       tb, sizeof(tb));
-        /* Short on purpose: pb is 24 bytes and a truncated warning is
-         * worse than a terse one. */
-        snprintf(pb, sizeof(pb), tb_ok ? "H=%s/div" : "H=%s NOT SET", tb);
+        snprintf(pb, sizeof(pb), "H=%s NOT SET", tb);
         popup_and_redraw(dq, pb);
         break;
     }
@@ -884,13 +888,15 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
          * the decorative-timebase-button bug (EXP-17), on the axis where
          * it prints a confidently wrong VOLTAGE. */
         const bool vd_ok = fpga_apply_vdiv((uint8_t)(active_channel + 1), ach->vdiv_idx);
-        /* Same derived label the status bar shows — see scope_cal.h.
-         * Two different volts/div strings for one range would be worse
-         * than the wrong one we replaced. */
+        /* The bottom bar shows the new volts/div; only a failed relay
+         * write, which the bar cannot show, gets a popup. */
+        if (vd_ok) {
+            send_cmd(dq, DCMD_REDRAW_ALL);
+            break;
+        }
         char vd[12];
         scope_cal_range_label((uint8_t)(active_channel + 1), ach->vdiv_idx, vd, sizeof(vd));
-        snprintf(pb, sizeof(pb), vd_ok ? "CH%d %s/div" : "CH%d %s NOT SET",
-                 active_channel + 1, vd);
+        snprintf(pb, sizeof(pb), "CH%d %s NOT SET", active_channel + 1, vd);
         popup_and_redraw(dq, pb);
         break;
     }
@@ -1527,7 +1533,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
                 scope_toggle_running(ss);
                 if (!ss->running)
                     scope_ui_paused_latch();   /* ranges at STOP, for the zoom (C14) */
-                scope_show_popup(ss->running ? "RUN" : "STOP");
+                /* No popup: the status bar's RUN/STOP tab says it. */
             }
             send_cmd(dq, cmd);
         }

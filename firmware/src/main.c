@@ -785,8 +785,13 @@ static void vDisplayTask(void *pvParameters)
                     fpga_scope_heartbeat();
                 }
 #endif
-
-                /* Redraw decision (B2, 2026-08-13).
+            }
+            {
+                /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
+                 * nothing new arrives then, so the gate skips, but a popup
+                 * still has to be shown and erased on wall-clock time
+                 * (until 2026-11-13 this block was inside the running test
+                 * and a popup raised while stopped stayed up for good).
                  *
                  * Previously: popup OR new SPI3 data OR an unconditional
                  * 1 s tick. The 1 s arm repainted a settled screen once a
@@ -813,11 +818,8 @@ static void vDisplayTask(void *pvParameters)
                 q.frame            = frame;
                 q.epoch            = scope_ui_epoch(ss_anim);
                 /* A live popup counts as new data so the compositor runs on
-                 * every 50 ms tick while it is up. POPUP_DURATION is measured
-                 * in DRAWS, and on the incremental path draws follow capture,
-                 * so a quiet input would otherwise stretch a 500 ms popup to
-                 * ten seconds. This keeps the popup on wall-clock without
-                 * reintroducing a single full repaint. */
+                 * every 50 ms tick while it is up, and once more to erase it
+                 * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
                 q.new_data         = new_data || scope_popup_active();
                 q.incremental_ok   = scope_incremental_available(ss_anim);
                 /* Only the full path can show a popup when the compositor is

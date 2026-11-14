@@ -119,7 +119,11 @@ _Static_assert(MSTRIP_PRM_COUNT == SCOPE_PRM_COUNT,
  * ═══════════════════════════════════════════════════════════════════ */
 
 static char popup_text[32] = "";
-static uint8_t popup_frames = 0;  /* Countdown: show for N frames then dismiss */
+/* A scope popup lives POPUP_MS of wall clock, running or stopped; popup_on
+ * stays set until a frame has been drawn without the box (the erase). */
+static bool     popup_on;
+static uint32_t popup_until;
+static bool     popup_hole_last;  /* the last compositor frame kept the box */
 
 /* Has the box been painted for THIS popup? The incremental path paints it
  * once and then leaves it alone (see draw_scope_live_frame's hole); the full
@@ -127,7 +131,12 @@ static uint8_t popup_frames = 0;  /* Countdown: show for N frames then dismiss *
  * repaint the box and the text would strobe at the capture rate. */
 static bool popup_painted = false;
 
-#define POPUP_DURATION 10  /* ~500ms at 20fps */
+#define POPUP_MS 500u
+
+static bool popup_live(void)
+{
+    return popup_on && (int32_t)(xTaskGetTickCount() - popup_until) < 0;
+}
 
 /* Popups outside the scope (2026-10-06, softkey UI P0; findings F15, F20).
  * The scope's popup is counted in scope frames, and only the scope renderer
@@ -152,10 +161,11 @@ void scope_show_popup(const char *text)
      * page there is no plot being drawn, so it takes the overlay path the
      * other screens use (main.c services it while the page is up). */
     if (current_mode == MODE_OSCILLOSCOPE && !osc_menu_is_open()) {
-        popup_frames = POPUP_DURATION;
+        popup_on = true;
+        popup_until = xTaskGetTickCount() + pdMS_TO_TICKS(POPUP_MS);
         popup_painted = false;
     } else {
-        popup_frames = 0;
+        popup_on = false;
         ov_pending = true;
         ov_drawn = false;
         ov_until = xTaskGetTickCount() + pdMS_TO_TICKS(POPUP_OVERLAY_MS);
@@ -207,7 +217,7 @@ void ui_popup_overlay_cancel(void)
 
 bool scope_popup_active(void)
 {
-    return popup_frames > 0;
+    return popup_on;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -793,8 +803,11 @@ static void draw_popup_box(const theme_t *th)
 
 static void draw_popup(const theme_t *th)
 {
-    if (popup_frames == 0) return;
-    popup_frames--;
+    if (!popup_on) return;
+    if (!popup_live()) {          /* expired: this full frame drew without it */
+        popup_on = false;
+        return;
+    }
     draw_popup_box(th);
 }
 
@@ -814,10 +827,13 @@ static void draw_popup(const theme_t *th)
  */
 void scope_popup_overlay_tick(void)
 {
-    if (popup_frames == 0) return;
+    if (!popup_on) return;
+    if (!popup_hole_last) {       /* this frame painted the band over it */
+        popup_on = false;
+        return;
+    }
     if (!popup_painted)
         draw_popup_box(theme_get());
-    popup_frames--;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2935,12 +2951,13 @@ void draw_scope_live_frame(void)
 
     /* Popup hole, clamped into the band so a future move of either rectangle
      * cannot produce an inverted or out-of-band window. */
-    bool     hole     = (popup_frames > 0);
+    bool     hole     = popup_live();
     uint16_t hole_top = POPUP_Y;
     uint16_t hole_bot = POPUP_Y + POPUP_H;
     if (hole_top < SCOPE_TOP) hole_top = SCOPE_TOP;
     if (hole_bot > band_bot)  hole_bot = band_bot;
     if (hole_top >= hole_bot) hole = false;
+    popup_hole_last = hole;
 
     for (uint16_t x = 0; x < LCD_WIDTH; x++) {
         /* The trace lives in the 301-column window (scope_geom.h); right of
@@ -3182,12 +3199,13 @@ void draw_roll_screen(bool full)
     const uint16_t band_bot = strip_top(ss);
 
     /* Popup hole: as the live compositor, never paint over the box. */
-    bool     hole     = (popup_frames > 0);
+    bool     hole     = popup_live();
     uint16_t hole_top = POPUP_Y;
     uint16_t hole_bot = POPUP_Y + POPUP_H;
     if (hole_top < SCOPE_TOP) hole_top = SCOPE_TOP;
     if (hole_bot > SCOPE_BOT) hole_bot = SCOPE_BOT;
     if (hole_top >= hole_bot) hole = false;
+    popup_hole_last = hole;
 
     int16_t p1 = -1, p2 = -1;
     for (uint16_t x = 0; x < LCD_WIDTH; x++) {
@@ -3266,7 +3284,8 @@ void draw_roll_screen(bool full)
     if (!full)
         return;
     draw_run_stop(ss, th);
-    draw_popup(th);
+    if (hole) draw_popup_box(th);      /* the same decision the band was painted with */
+    else      popup_on = false;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
