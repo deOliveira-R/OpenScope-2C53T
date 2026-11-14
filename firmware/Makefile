@@ -200,6 +200,18 @@ M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT -Isrc/model
 C_SOURCES += src/model/ui_shell.c
 # ── end M2 block ──
 
+# ── FEATURE_STREAM: binary frames on the shell's CDC channel (one block) ──
+# src/stream/ (docs/stream_protocol.md): `stream on|off|status`, sent by the
+# shell task between commands. Both files are whole-file `#if FEATURE_STREAM`,
+# so with the switch off they compile to nothing and the image is the one
+# without the feature. On in the bench image; `make app-coldtrace-meter
+# STREAM_BENCH=0` builds it without. Host test: make test-stream.
+C_SOURCES += src/stream/stream.c src/stream/stream_frame.c
+C_INCLUDES_STREAM = -Isrc/stream
+STREAM_BENCH ?= 1
+app-coldtrace-meter: CFLAGS += -DFEATURE_STREAM=$(STREAM_BENCH)
+# ── end FEATURE_STREAM block ──
+
 # FFT / DSP module
 ifneq ($(findstring FFT,$(FEATURES)),)
   C_SOURCES += src/dsp/fft.c
@@ -304,6 +316,7 @@ C_INCLUDES += -Isrc/modules
 C_INCLUDES += -Isrc/fonts
 C_INCLUDES += -Isrc
 C_INCLUDES += $(C_INCLUDES_M1)
+C_INCLUDES += $(C_INCLUDES_STREAM)
 C_INCLUDES += -I$(AT32_DRV)/inc
 C_INCLUDES += -I$(AT32_CMSIS)/device_support
 C_INCLUDES += -I$(AT32_CMSIS)/core_support

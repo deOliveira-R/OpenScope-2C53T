@@ -3,6 +3,8 @@
 # src/model/ owns no peripheral: user-settings state only. It must never write a register; the model reaches
 # hardware through the owner drivers.
 src/model/   -
+# src/stream/ (FEATURE_STREAM) owns no peripheral either: it sends through usb_debug.c's write path.
+src/stream/  -
 # GPIO: per-port .cfg (CFGLR/CFGHR, read-modify-write) and .out (SCR/CLR/ODT). Pin ownership: src/drivers/pins.h (review).
 GPIO*.*      drivers/fpga.c drivers/button_scan.c drivers/lcd.c drivers/sys_pwm.c drivers/flash_fs.c
              drivers/power.c drivers/dac.c drivers/dac_output.c drivers/scope_trigger.c drivers/battery.c drivers/continuity_buzzer.c

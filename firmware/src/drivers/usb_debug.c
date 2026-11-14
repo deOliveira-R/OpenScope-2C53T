@@ -100,6 +100,9 @@
 #include <stdlib.h>
 #include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
 #include "ui_shell.h"      /* ui press / long / seq / screen, btn, keys (ARCH-1 M2 rows) */
+#if FEATURE_STREAM
+#include "stream.h"        /* binary stream over this channel (src/stream/) */
+#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * USB Device Instance
@@ -499,6 +502,31 @@ int usb_debug_printf(const char *fmt, ...)
     }
     return len;
 }
+
+#if FEATURE_STREAM
+/* The stream sender's port into the CDC IN path (src/stream/stream.h).
+ * Additions beside the frozen write path, which they call unchanged; shell
+ * task only, like every other writer here. */
+bool usb_debug_stream_tx_ready(bool heal)
+{
+#if DEBUG_SHELL_RTT_ONLY
+    (void)heal;
+    return false;
+#else
+    if (!usb_debug_connected()) return false;
+    cdc_struct_type *pcdc = (cdc_struct_type *)usb_core_dev.class_handler->pdata;
+    if (pcdc->g_tx_completed) return true;
+    return heal && cdc_tx_heal(pcdc);
+#endif
+}
+
+bool usb_debug_stream_write(const uint8_t *data, uint16_t len)
+{
+    const uint32_t drops = s_cdc.tx_drops;
+    usb_send_bytes(data, len);
+    return s_cdc.tx_drops == drops;
+}
+#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * Hex Parsing Helpers
@@ -10552,6 +10580,10 @@ static const shell_cmd_t shell_cmds[] = {
           "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"),
     CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
           "describe <prop>                 Range/labels, default, unit, saved where, owner\r\n"),
+#if FEATURE_STREAM
+    CMD_A("stream", cmd_stream, 0,
+          "stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n"),
+#endif
     CMD_A("fpga postedge", cmd_fpga_postedge, 0,
           "fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n"),
     CMD_A("fpga scope hpos", cmd_fpga_scope_hpos, 0,
@@ -11110,6 +11142,11 @@ static void vUsbDebugTask(void *pvParameters)
          * changes. Only while the composite device is up: as the CDC device
          * there is no drive to keep current. */
         if (s_usb_mode.active == USB_DEV_COMPOSITE && usb_msc_poll(&usb_core_dev)) did_work = true;
+#endif
+
+#if FEATURE_STREAM
+        /* Binary stream frames, between commands (src/stream/stream.h). */
+        if (fwl_discard == 0u && !raw_block_active(&s_raw) && stream_poll()) did_work = true;
 #endif
 
         if (!did_work) {
