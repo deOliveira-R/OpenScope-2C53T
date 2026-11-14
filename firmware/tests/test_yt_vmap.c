@@ -158,6 +158,34 @@ int main(void)
               yt_vmap_counts_per_px(&off) == 0.0f, "autofit: span/h; nothing drawn: 0");
     }
 
+    printf("[6] every map kind, every code pair: the draw spans stay on the plot\n");
+    {
+        /* draw_channel's column: rows lo..hi between the previous and this
+         * code; the compositor's lo..hi+1. Saturated codes (0, 255), noise
+         * windows and empty-looking bands included. */
+        yt_vmap_t maps[8];
+        int nm = 0;
+        yt_vmap_true(&maps[nm++], TOP, BOT, 0);
+        yt_vmap_true(&maps[nm++], TOP, BOT, 1);
+        yt_vmap_autofit(&maps[nm++], 0, 255, TOP, BOT);
+        yt_vmap_autofit(&maps[nm++], 0, 255, TOP, MID - 1);
+        yt_vmap_autofit(&maps[nm++], 255, 255, MID + 1, BOT);
+        yt_vmap_autofit(&maps[nm++], 0, 0, TOP, BOT);
+        yt_vmap_autofit(&maps[nm++], 126, 130, TOP, MID - 1);
+        yt_vmap_autofit(&maps[nm++], 0, 255, 100, 102);       /* band shorter than the margin */
+        int bad = 0;
+        long steps = 0;
+        for (int m = 0; m < nm; m++)
+            for (int p = 0; p < 256; p++)
+                for (int v = 0; v < 256; v++) {
+                    const int y0 = y_of(&maps[m], p), y1 = y_of(&maps[m], v);
+                    int lo = y0 < y1 ? y0 : y1, hi = y0 < y1 ? y1 : y0;
+                    if (lo < maps[m].y_top || hi >= maps[m].y_bot) bad++;
+                    for (int16_t r = (int16_t)lo; r <= (int16_t)hi; r++) steps++;
+                }
+        CHECK(bad == 0 && steps > 0, "%d maps x 65536 code pairs: %d spans off the band, %ld rows", nm, bad, steps);
+    }
+
     if (fails) { printf("test_yt_vmap: %d FAILED\n", fails); return 1; }
     printf("test_yt_vmap: all checks passed\n");
     return 0;

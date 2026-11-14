@@ -25,6 +25,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <signal.h>
+#include <unistd.h>
 
 #define MAXN 1024
 
@@ -252,8 +254,50 @@ static void test_bench_records(const char *path)
           answered, count);
 }
 
+/*
+ * Records holding a single edge (a period longer than the record, e.g. a
+ * 100 kHz square at 125 MS/s, saturated at 0/255): the peak sits at bin 1,
+ * whose left neighbour is bin 0. That neighbour was the raw DC real part,
+ * a tiny residual whose sign depends on rounding; negative, it made the
+ * interpolation NaN and the harmonic loop never ended -- the display task
+ * hung on the unit. Every record must return, refused or with a finite bin.
+ */
+static void on_hang(int sig)
+{
+    (void)sig;
+    static const char msg[] = "FAIL: scope_freq_estimate did not return (single-edge record)\n";
+    (void)!write(1, msg, sizeof(msg) - 1);
+    _exit(1);
+}
+
+static void test_single_edge_terminates(void)
+{
+    static const int lv[][2] = { {0, 255}, {255, 0}, {100, 227}, {98, 227},
+                                 {127, 128}, {0, 1}, {128, 128} };
+    static uint8_t rec[MAXN];
+    unsigned n = 0, answered = 0;
+    signal(SIGALRM, on_hang);
+    alarm(20);
+    for (unsigned l = 0; l < sizeof(lv) / sizeof(lv[0]); l++)
+        for (unsigned e = 0; e <= MAXN; e += 7) {
+            for (unsigned i = 0; i < MAXN; i++)
+                rec[i] = (uint8_t)(i < e ? lv[l][0] : lv[l][1]);
+            for (unsigned w = 0; w < 2; w++, n++) {
+                const uint16_t len = w ? MAXN / 2 : MAXN;
+                scope_freq_t f;
+                const bool ok = scope_freq_estimate(rec, len, 125e6f, &f);
+                CHECK(isfinite(f.hz) && isfinite(f.bin) && isfinite(f.sharpness),
+                      "edge %u levels %d/%d n %u: non-finite result", e, lv[l][0], lv[l][1], len);
+                if (ok) answered++;
+            }
+        }
+    alarm(0);
+    printf("single-edge records: %u estimated, %u answered (all returned)\n", n, answered);
+}
+
 int main(int argc, char **argv)
 {
+    test_single_edge_terminates();
     const char *path = (argc > 1) ? argv[1]
                                   : "tests/fixtures/scope_records.txt";
     test_synthetic();

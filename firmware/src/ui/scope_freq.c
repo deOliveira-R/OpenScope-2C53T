@@ -109,6 +109,11 @@ static bool analyse(const uint8_t *s, uint16_t n, float *bin, float *sharp)
     float total = 0.0f;
     uint16_t peak = 0;
     float peak_p = 0.0f;
+    /* Bin 0 is power too (zero: DC discarded). It is the left neighbour of a
+     * peak at bin 1 (a record holding a single edge): left as the raw DC real
+     * part, a tiny negative residual made sqrtf() NaN, the harmonic loop below
+     * never reached `half`, and the display task hung with the lock held. */
+    fft_re[0] = 0.0f;
     for (uint16_t k = 1u; k < half; k++) {
         const float p = fft_re[k] * fft_re[k] + fft_im[k] * fft_im[k];
         fft_re[k] = p;                       /* reuse: power in place */
@@ -153,7 +158,9 @@ static bool analyse(const uint8_t *s, uint16_t n, float *bin, float *sharp)
     {
         float sig = 0.0f;
         uint16_t counted_to = 0u;           /* highest bin already summed */
-        for (uint16_t h = 1u; ; h++) {
+        /* fbin >= 0.5 breaks out before h = 2 half; the bound only makes the
+         * loop finite whatever fbin is. */
+        for (uint16_t h = 1u; h <= (uint16_t)(2u * half); h++) {
             const uint32_t c = (uint32_t)(fbin * (float)h + 0.5f);   /* on the comb */
             if (c + 1u >= half)
                 break;
