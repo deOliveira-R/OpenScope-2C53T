@@ -201,19 +201,12 @@ M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT=1 -Isrc/model
 # ── end M3 block ──
 
 # ── ARCH-1 M2: the UI route (one block, for the merge) ──
-# `ui press/long/seq/screen` and the `btn`/`keys` aliases (src/model/ui_shell.c):
+# `ui press/long/seq/screen` (src/model/ui_shell.c):
 # exact key replay into the key queue, waited for on input_events_done.
 # Host test: make test-ui-shell (its rule is next to test-model-exec, below
 # `all`, so it never becomes the default goal).
 C_SOURCES += src/model/ui_shell.c
 # ── end M2 block ──
-
-# ── ARCH-1 M4: the old state commands as aliases of the property model ──
-# `fpga scope vdiv`, `mode`, `siggen`, ... parse their old syntax, ask the
-# executor (prop_request) and print their old text (src/drivers/shell_alias.c).
-# Host test: make test-shell-alias (its rule is next to test-model-exec).
-C_SOURCES += src/drivers/shell_alias.c
-# ── end M4 block ──
 
 # ── Features (features.mk: the manifest) ──
 # Which features this image has is decided here, once, while the Makefile is
@@ -1015,23 +1008,6 @@ $(BUILD_DIR)/test_model_exec: tests/test_model_exec.c $(MODEL_SRCS) $(MODEL_EXEC
 
 .PHONY: test-model-exec
 test-model-exec: $(BUILD_DIR)/test_model_exec
-	$<
-
-# The old state commands as aliases (ARCH-1 M4, src/drivers/shell_alias.c):
-# every converted handler driven against the model with fake ops behind the
-# executor's host port; its output is compared byte for byte with the text the
-# handler printed before the conversion (transcribed from the old code), and
-# the intentional differences are each asserted.
-$(BUILD_DIR)/test_shell_alias: tests/test_shell_alias.c src/drivers/shell_alias.c \
-                               src/drivers/shell_alias.h $(MODEL_SRCS) src/model/model_exec.c \
-                               src/model/model.h src/model/model_table.h src/model/model_exec.h \
-                               src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DMODEL_EXEC_TEST -Isrc/model \
-		-Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< src/drivers/shell_alias.c $(MODEL_SRCS) \
-		src/model/model_exec.c $(MODEL_TEST_LINK) -lm -o $@
-
-.PHONY: test-shell-alias
-test-shell-alias: $(BUILD_DIR)/test_shell_alias
 	$<
 
 # Settings persistence generated from the property table (ARCH-1 M3): the v5

@@ -297,7 +297,7 @@ static void fpga_meter_reset_transport(void)
      * Do not inherit a dead transceiver (EXP-205, unit #2). On a silent-scope
      * build, scope entry parks USART2 with ctrl1 = 0 and the IRQ masked. When
      * a meter transition runs before fpga_set_meter_mux(true) has re-armed it
-     * -- a race the shell's `mode meter` loses about one time in three -- the
+     * -- a race a shell mode switch to the meter loses about one time in three -- the
      * restore above re-enables UEN and RDBFIEN on a ctrl1 that had TE and RE
      * clear, with the NVIC line still masked: TX count climbs, the wire is
      * dark, the SoC never speaks, and every selector retry times out
@@ -3994,7 +3994,7 @@ bool fpga_interleave_active(void)
     return acq_il_enable && fpga.channel_mask == 1u && acq_rate_idx <= 3u;
 }
 /* The line also drops any knots: it is a complete level map of its own
- * (`fpga interleave corr`, a v1 user-cal record, `cal user clear`). The
+ * (il.knots = 0, a v1 user-cal record, `cal user clear`). The
  * skew is independent and stays. */
 void fpga_interleave_corr_set(float gain, float offset)
 {
@@ -4697,7 +4697,7 @@ static void fpga_warmtest_acq_task(void *pv)
             drop_next = (mode_now == TRIG_SINGLE);
             last_mode = mode_now;
         }
-        if (acq_single_arm_req != single_arm_seen) {   /* OK / `fpga scope single` */
+        if (acq_single_arm_req != single_arm_seen) {   /* OK / trig.mode = single */
             single_arm_seen = acq_single_arm_req;
             if (mode_now == TRIG_SINGLE) {
                 single_done = false;
@@ -5552,7 +5552,7 @@ uint8_t fpga_bitbang_config_sequence(void)
  * fpga_create_tasks(), so no acquisition task can be mid-frame on SPI3.
  */
 /* 0 = never ran, 1 = pushed the display's code to the FPGA, 2 = pulled the
- * display down to the arm block's 0x08. Reported by `fpga scope timebase`.
+ * display down to the arm block's 0x08. Reported by `status`.
  *
  * This exists because the first version of this fix was placed in ONE of the
  * two arm paths and the other is what the shipping build uses. It compiled,

@@ -4,8 +4,9 @@
  * The DMM link diagnostics: `meter trace/dump/frontend/stream/mux-...`, the
  * boot-sequence and PC11 timing replays, the waveform sampler state, the
  * debug overlay and the link experiments (hdr, fast, keepalive, beep). The
- * meter itself does not need them: `meter state`, `meter func`, `meter
- * relays`, `meter degf` and `meter auto` are core (usb_debug.c).
+ * meter itself does not need them: `meter state`, `meter relays` and
+ * `meter auto` are core (usb_debug.c), the function and degF are the
+ * properties meter.func and meter.degf.
  *
  * The handlers were moved here unchanged from usb_debug.c (feature manifest
  * F3). They reach the shell core through shell_internal.h; the rows of the

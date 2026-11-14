@@ -579,6 +579,25 @@ static void test_rules(void)
     CHECK(g_il_gain == 1002500 && g_il_off == -60 && g_il_knots == 5 && g_log[0] == '\0');
     g_il_knots = 0;                    /* linear again: a change goes through */
     CHECK(prop_set_local(P(IL_GAIN), 1003000, ORIGIN_SHELL, &n) == PS_OK && g_il_gain == 1003000);
+
+    /* il.knots itself: its own value is the identity (a `get *` dump
+     * replays), any other is refused, and loading defaults never drops a
+     * calibration; 0 drops the map and keeps the line, so the pair can be
+     * set in the same request (`set il.knots=0 il.gain=.. il.offset=..`,
+     * what the retired `fpga interleave corr` did). */
+    g_il_knots = 5;
+    CHECK(prop_get(P(IL_KNOTS)) == 5);
+    CHECK(prop_set_local(P(IL_KNOTS), 5, ORIGIN_PROFILE, &n) == PS_OK && g_il_knots == 5);
+    CHECK(prop_set_local(P(IL_KNOTS), 3, ORIGIN_SHELL, &n) == PS_REFUSED && g_il_knots == 5);
+    (void)model_load_defaults(PF_PERSIST | PF_SESSION | PF_USERCAL, NULL, false);
+    CHECK(g_il_knots == 5);
+    {
+        const prop_pair_t pp[3] = { { PROP_ID_IL_KNOTS, 0 }, { PROP_ID_IL_GAIN, 990000 },
+                                    { PROP_ID_IL_OFFSET, 20 } };
+        uint8_t failed = 0;
+        CHECK(prop_set_pairs_local(pp, 3, ORIGIN_SHELL, &n, &failed) == PS_OK);
+        CHECK(g_il_knots == 0 && g_il_gain == 990000 && g_il_off == 20);
+    }
 }
 
 /* ═══ every hardware property: a failed owner call keeps the old value ═ */

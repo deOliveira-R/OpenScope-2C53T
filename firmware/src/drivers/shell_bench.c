@@ -1499,7 +1499,7 @@ void cmd_fpga_holdlog(const char *args)
 
 /* `fpga scope coupling` — READ-ONLY: each channel's coupling label beside the
  * relay pin it is supposed to describe (PD12 CH1 / PD13 CH2, HIGH = DC) and
- * the pin's GPIO mode. Change it with the buttons (`btn ch1` / `btn ch2`):
+ * the pin's GPIO mode. Change it with the property chN.coupling (or the keys):
  * that is the path under test, and a second writer here would be a second
  * place for the label and the relay to disagree. */
 void cmd_fpga_scope_coupling(const char *args)
@@ -1667,7 +1667,7 @@ void cmd_fpga_scope_freq(const char *args)
     if (in_force != ss->timebase_idx) {
         usb_send_str("MISMATCH: the display's timebase is not the one the "
                      "hardware is sampling at — refusing to derive a "
-                     "frequency. Use `fpga scope timebase <code>`.\r\n");
+                     "frequency. Use `set tb.code <code>`.\r\n");
         return;
     }
 

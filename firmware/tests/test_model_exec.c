@@ -915,6 +915,91 @@ static void test_changed_groups(void)
     CHECK(n_changed == 5 && last_changed == GB(PG_GEN));
 }
 
+/* The requests that replace the retired state commands (docs/shell_profiles.md
+ * has the table): the orders that make one register write, the values in
+ * the property's unit, and the replies a script meets when the input task
+ * cannot take the request. */
+static void test_retired_replacements(void)
+{
+    scope_state_t *ss = scope_state_get();
+    fresh(1);
+    /* `fpga scope timebase <code>` left roll: the code first (stored while
+     * rolling), then roll off: one write of reg 0x01 */
+    ss->roll = true;
+    sh_reset(); model_shell_set("tb.code=3 tb.roll=off", collect);
+    CHECKF(n_out == 2 && starts(0, "OK tb.code=3") && strcmp(out[1], "OK tb.roll=off") == 0,
+           "%s | %s", out[0], out[1]);
+    CHECKF(strcmp(g_log, "roll(0,0);") == 0 && !ss->roll && ss->timebase_idx == 3, "%s", g_log);
+    /* `fpga roll <step>`: the step first (stored while not rolling), then
+     * roll on: one write */
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("tb.rollstep=3 tb.roll=on", collect);
+    CHECKF(n_out == 2 && strcmp(g_log, "roll(1,3);") == 0 && ss->roll && ss->roll_step == 3, "%s", g_log);
+    /* the step in force again re-enters roll (what `fpga roll code` asks for) */
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("tb.rollstep 3", collect);
+    CHECKF(n_out == 1 && strcmp(g_log, "roll(1,3);") == 0, "%s", g_log);
+    /* `fpga roll off` out of roll writes nothing */
+    sh_reset(); model_shell_set("tb.roll off", collect);
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("tb.roll off", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK tb.roll=off") == 0 && g_log[0] == '\0', "%s %s", out[0], g_log);
+
+    /* `mode meter <func> <layout>`: the function first (stored on another
+     * screen), then the entry that applies it: one function change */
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("meter.func=3 meter.layout=2 sys.mode=meter", collect);
+    CHECKF(n_out == 3 && starts(0, "OK meter.func=dca ; stored: meter FE off") &&
+           starts(1, "OK meter.layout=") && strcmp(out[2], "OK sys.mode=meter ; posted") == 0,
+           "%s | %s | %s", out[0], out[1], out[2]);
+    CHECKF(strcmp(g_log, "meter-stored(3);mode(1);") == 0 && current_mode == MODE_MULTIMETER &&
+           meter_submode == 3 && meter_layout == 2, "%s", g_log);
+    sh_reset(); model_shell_set("sys.mode scope", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK sys.mode=scope ; posted") == 0, "%s", out[0]);
+
+    /* `fpga scope softtrig toggle`, `graticule toggle`: a step on a bool */
+    const int32_t soft = prop_get(P(TRIG_SOFT));
+    sh_reset(); model_shell_set("trig.soft +=1", collect);
+    CHECKF(n_out == 1 && prop_get(P(TRIG_SOFT)) == !soft, "%s", out[0]);
+    sh_reset(); model_shell_set("trig.soft +=1", collect);
+    CHECK(prop_get(P(TRIG_SOFT)) == soft);
+    /* `fpga scope single`: single again re-arms */
+    sh_reset(); model_shell_set("trig.mode single", collect);
+    sh_reset(); model_shell_set("trig.mode single", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK trig.mode=Single ; Await Trigger...") == 0, "%s", out[0]);
+    /* `siggen amp 15` was tenths of a volt: gen.amp is in volts, and 15 is
+     * past its range (said, not applied as 1.5 V) */
+    sh_reset(); model_shell_set("gen.amp 1.5", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK gen.amp=1.5 V") == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("gen.amp 15", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "CLAMPED gen.amp=3.0 V") == 0, "%s", out[0]);
+    /* `fpga scope timebase` took hex: tb.code is a decimal number (or its label) */
+    sh_reset(); model_shell_set("tb.code 0x0A", collect);
+    CHECKF(n_out == 1 && starts(0, "INVALID tb.code=0x0A (bad value"), "%s", out[0]);
+    sh_reset(); model_shell_set("tb.code 10", collect);
+    CHECKF(n_out == 1 && starts(0, "OK tb.code=10") && ss->timebase_idx == 10, "%s", out[0]);
+
+    /* what a script meets when the request cannot run: nothing applied */
+    g_busy = true;
+    sh_reset(); model_shell_set("ch1.vdiv 7", collect);
+    CHECKF(n_out == 1 && starts(0, "BUSY ch1.vdiv (self-cal running)"), "%s", out[0]);
+    g_busy = false;
+    for (unsigned i = 0; i < MODEL_EXEC_QUEUE_LEN; i++) {
+        model_req_t junk;
+        memset(&junk, 0, sizeof junk);
+        (void)tp_send(&junk);
+    }
+    responsive = false;
+    sh_reset(); model_shell_set("ch1.vdiv 7", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "BUSY (request queue full)") == 0, "%s", out[0]);
+    responsive = true;
+    fresh(1);
+    model_exec_test_reset(1);                              /* the boot logo: the executor is not up */
+    sh_reset(); model_shell_set("sys.mode meter", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "BUSY (executor not up yet)") == 0, "%s", out[0]);
+    CHECK(prop_get(P(CH1_VDIV)) == 3 && current_mode == MODE_OSCILLOSCOPE);
+}
+
 int main(void)
 {
     test_not_up();
@@ -938,6 +1023,7 @@ int main(void)
     test_scope_regs_stored();
     test_shell_steps();
     test_changed_groups();
+    test_retired_replacements();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

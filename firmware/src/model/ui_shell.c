@@ -1,6 +1,6 @@
 /*
  * OpenScope 2C53T - the shell's UI route (ui_shell.h): `ui press/long/seq/
- * screen`, and the `btn` / `keys` aliases.
+ * screen`.
  *
  * The first half (key names, the `ui seq` token parser) is pure and host
  * tested. The second half is the firmware's: it injects into the key queue
@@ -14,7 +14,7 @@
 
 /* ═══ key names (pure) ════════════════════════════════════════════════ */
 
-/* `btn`'s order (its usage line lists them so), then POWER for the refusal. */
+/* The keys, then POWER for the refusal. */
 static const struct { const char *name; uint8_t id; uint8_t bit; } k_keys[] = {
     { "CH1",     BTN_CH1,     KEYBIT_CH1     }, { "CH2",     BTN_CH2,     KEYBIT_CH2     },
     { "MOVE",    BTN_MOVE,    KEYBIT_MOVE    }, { "SELECT",  BTN_SELECT,  KEYBIT_SELECT  },
@@ -26,12 +26,8 @@ static const struct { const char *name; uint8_t id; uint8_t bit; } k_keys[] = {
     { "POWER",   BTN_POWER,   KEYBIT_POWER   },
 };
 #define N_KEYS (sizeof k_keys / sizeof k_keys[0])
-#define N_BTN_KEYS (N_KEYS - 1u)          /* without POWER: what `btn` names */
 
 static char up(char c)  { return (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c; }
-#ifndef UI_SHELL_TEST
-static char low(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c; }
-#endif
 
 int ui_key_find(const char *name, size_t len)
 {
@@ -275,7 +271,7 @@ void ui_describe_settings(char *out, size_t n)
  * limits), in the fuse tester with the page (fuse/detail, fuse/table,
  * fuse/scan, fuse/types). The rest are properties. The stack
  * mirrors the legacy state on the input task (legacy_screens_sync), so right
- * after a shell `mode` it can lag by one input pass (<= 100 ms). */
+ * after a `set sys.mode` it can lag by one input pass (<= 100 ms). */
 static void screen_line(void)
 {
     char inst[12], focus[12], view[16], meter[16];
@@ -402,79 +398,4 @@ static void one_key(const char *args, bool is_long)
 void cmd_ui_press(const char *args) { one_key(args, false); }
 void cmd_ui_long(const char *args)  { one_key(args, true); }
 
-/* ── aliases: `btn` and `keys`, their old lines ────────────────────── */
-
-/* `btn <name> [n|long]`: the old syntax and lines exactly ("btn up: 3/3
- * queued", the usage text). `long` is accepted for every key, as before (the
- * handler ignores a long event a key does not have); only the waits changed:
- * each press is handled before the next instead of a 150/400 ms sleep. A
- * press that times out adds one TIMEOUT line after the old one. */
-void ui_shell_btn(const char *args)
-{
-    while (*args == ' ') args++;
-    size_t len = 0;
-    while (args[len] && args[len] != ' ') len++;
-    uint32_t n = 1;
-    bool is_long = false;
-    if (args[len] == ' ') {
-        const char *p = args + len;
-        while (*p == ' ') p++;
-        if (strncmp(p, "long", 4) == 0 && (p[4] == '\0' || p[4] == ' ')) {
-            is_long = true;
-        } else if (*p) {
-            /* the shell's parse_int: 0x.. hex, else decimal up to a space */
-            char *end;
-            const bool hex = (p[0] == '0' && (p[1] == 'x' || p[1] == 'X'));
-            n = (uint32_t)strtoul(hex ? p + 2 : p, &end, hex ? 16 : 10);
-            const bool ok = (end != (hex ? p + 2 : p) || !hex) &&
-                            (*end == '\0' || *end == ' ' || *end == '\r' || *end == '\n');
-            if (!ok || n == 0 || n > 50) n = 0;
-        }
-    }
-    for (unsigned i = 0; i < N_BTN_KEYS; i++) {
-        const char *nm = k_keys[i].name;
-        if (len != strlen(nm) || !n) continue;
-        char lname[8];                 /* `btn` names are lower case, exactly */
-        size_t j;
-        for (j = 0; j < len && j + 1u < sizeof lname; j++) lname[j] = low(nm[j]);
-        lname[j] = '\0';
-        if (strncmp(args, lname, len) != 0) continue;
-        unsigned sent = 0;
-        bool timed_out = false;
-        const uint8_t id = (uint8_t)(is_long ? (k_keys[i].id | BTN_LONG_FLAG) : k_keys[i].id);
-        for (uint32_t k = 0; k < n; k++) {
-            if (timed_out) break;
-            const ui_press_t r = press_one(id);
-            if (r == UI_PRESS_DONE || r == UI_PRESS_TIMEOUT) sent++;
-            if (r == UI_PRESS_TIMEOUT || r == UI_PRESS_STALE) timed_out = true;
-        }
-        usb_debug_printf("btn %s%s: %u/%lu queued\r\n", lname, is_long ? " long" : "", sent,
-                         (unsigned long)n);
-        if (timed_out)
-            usb_debug_printf("%s", "TIMEOUT: input task busy (gallery/countdown/selfcal?); later presses not sent\r\n");
-        return;
-    }
-    usb_debug_printf("%s", "usage: btn ch1|ch2|move|select|trigger|prm|auto|save|menu|up|down|left|right|ok [1..50|long]\r\n"
-                 "(power is refused: it shuts down or enters IAP)\r\n");
-}
-
-/* `keys`: the key model's state, its old four lines. */
-void ui_shell_keys(void)
-{
-    static const char *const mode_names[MODE_COUNT] = { "scope", "meter", "siggen", "settings", "home" };
-    const scope_state_t *ss = scope_state_get();
-    usb_debug_printf("mode %s (%u)  settings-depth %d\r\n",
-                     (unsigned)current_mode < (unsigned)MODE_COUNT ? mode_names[current_mode] : "?",
-                     (unsigned)current_mode, (int)settings_depth);
-    usb_debug_printf("arrows %s  adjust CH%u  meas %s\r\n", key_focus_name(scope_key_focus),
-                     (unsigned)active_channel + 1u, ss->prm_hidden ? "HIDDEN" : "shown");
-    usb_debug_printf("CH1 %s pos %d  CH2 %s pos %d  trigger CH%u %s %s  interleave %s\r\n",
-                     ss->ch1.enabled ? "on" : "off", (int)ss->ch1.position,
-                     ss->ch2.enabled ? "on" : "off", (int)ss->ch2.position,
-                     ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u,
-                     trigger_mode_labels[ss->trigger.mode], trigger_edge_labels[ss->trigger.edge],
-                     fpga_interleave_active() ? "ACTIVE" : "inactive");
-    usb_debug_printf("long press %u ms (%u ticks), short on release for the long-capable keys\r\n",
-                     (unsigned)(KEY_LONG_TICKS * 2u), (unsigned)KEY_LONG_TICKS);
-}
 #endif /* !UI_SHELL_TEST */
