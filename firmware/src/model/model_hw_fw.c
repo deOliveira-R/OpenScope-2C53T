@@ -58,8 +58,8 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  *   vdiv offset half, vpos (DAC1 / TMR13: chN.vdiv, chN.pos)  live in every posture **
  *   coupling (PD12/PD13)           live          live          live
  *   channel_enables (PC1/PC2 mask, reg 0x06, offsets)          live in every posture
- *   timebase/roll/trigger (SPI3 regs 0x01/0x06/0x08, parked acq task)  live in every posture ***
- *   view/persist/mask/il (MCU state, acq-task requests)        live in every posture
+ *   timebase/roll/trigger (SPI3 regs 0x01/0x06/0x08, parked acq task)  written in every posture ***
+ *   view/persist/mask/il (MCU state, the FFT/persistence pool, acq-task requests): live in every posture
  *   generator (DAC2/PA5, TMR7, DMA2)                           live in every posture
  *   meter_func (meter SoC function, USART2)  DEFERRED  live    DEFERRED
  *   state-only properties (probe, bw, meas, edge, x, soft, math, cursor, ...): no hardware
@@ -88,9 +88,15 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  * dac_output_is_running(), a guard from when the generator was on DAC1
  * (A1 removes it); with the generator running CH1's offset is then not
  * applied in any posture, as before this change.
- * (***) the acquisition task parks in every mode, and in the warm builds no
- * posture rewrites these registers. In the default image scope entry resets
- * the FPGA and resends the timing from scope_state (fpga_send_scope_sequence).
+ * (***) written at once in every posture: the acquisition task parks in
+ * every mode (only `fpga bus release` keeps it off the bus), and in the warm
+ * builds no posture rewrites these registers. NOT PROVEN to be in force
+ * while the meter holds the front end: its PA/PB table drives PB11 (the
+ * "FPGA active" line, also a CH2 range bit) low for some functions, and
+ * nothing re-sends the registers on scope entry in the warm builds. Bench
+ * check: set tb.code in the meter, back to the scope, `fpga status` / the
+ * axis and the trace agree. In the default image scope entry resets the
+ * FPGA and resends the timing from scope_state (fpga_send_scope_sequence).
  * meter_func: the posture request is only served in the meter (the poll task
  * drops it elsewhere; without a poll task it would posture the meter SoC
  * under the scope), so outside the meter the op does the state half only,
