@@ -400,6 +400,16 @@ def robust_span(codes, lo=HEAD_SKIP, trim=0.02):
     return s[k], s[len(s) - 1 - k]
 
 
+def hw_level_code(level_px):
+    """Record code of the hardware trigger level for trig.level (fpga.c:
+    reg 0x08 = 128 + level * 256 / 206 in C integer division, records are
+    raw - 28)."""
+    lv = max(-100, min(100, int(level_px)))
+    q = abs(lv) * 256 // TRIG_PX_SPAN
+    code = 128 + (q if lv >= 0 else -q)
+    return min(254, max(1, code)) - 28
+
+
 def soft_level(codes, level_px=0, lo=HEAD_SKIP):
     """The scope's soft-trigger threshold (scope_ui.c): the signal's midline
     plus trig.level converted to codes, kept inside the signal. None when the
@@ -562,7 +572,7 @@ def geometry_key(rec, props=None):
     """What must stay the same for accumulated pictures to stay valid: from
     the record (rate, channels, scale, zero) and, when known, the properties
     (V/div, position, timebase, trigger, probe, coupling, enables)."""
-    k = [rec["fs_hz"], rec["nch"], rec["trig_idx"] == TRIG_NONE]
+    k = [rec["fs_hz"], rec["nch"]]
     for c in rec["ch"]:
         k += [c["id"], c["vdiv_idx"], c["zero_code"], c["probe_x"], c["coupling"], c["volts_per_count"]]
     if props:
@@ -590,10 +600,20 @@ def record_reference(rec, props=None):
     is not time-ordered, e.g. a fast periodic signal: the screen aligns it the
     same way); "centre" nothing to lock to."""
     n = rec["n"]
-    if rec["trig_idx"] != TRIG_NONE:
-        return rec["trig_idx"], "hw"
     level_px, rising, src = trig_settings(props)
     chans = rec["ch"]
+    if rec["trig_idx"] != TRIG_NONE:
+        # the screen's hardware anchor (trig_edge_anchor): the crossing of the
+        # level in force nearest the index, within +-48 samples, on CH1 (the
+        # level was measured there); else the index itself
+        t = rec["trig_idx"]
+        c1 = next((c for c in chans if c["id"] == 0), None)
+        if c1 is not None and src == 0:
+            xs = [x for x in find_crossings(c1["codes"], hw_level_code(level_px), rising, lo=max(1, t - 64))
+                  if abs(x - t) <= 48]
+            if xs:
+                return min(xs, key=lambda v: abs(v - t)), "hw"
+        return t, "hw"
     c = next((c for c in chans if c["id"] == src), chans[0] if chans else None)
     if c is not None:
         xs = find_crossings(c["codes"], soft_level(c["codes"], level_px), rising)
@@ -794,16 +814,23 @@ class Plot:
             if cmd and self.send:
                 self.send(cmd)
                 self.last_reply = "> " + cmd
-        if self.last_rec is not None:
-            self.update(self.last_rec, time.monotonic(), redraw_only=True)
+        self.redraw()
 
     def reply(self, text):
         line = [l for l in text.replace("\r", "").split("\n") if l.strip() and l.strip() != ">"]
         if line:
             self.last_reply = line[-1][-90:]
+            self.redraw()
 
     def set_props(self, props):
+        """Follow the scope's state: also when no record comes (stopped), so
+        a change made with the scope's own keys shows at once."""
         self.props = dict(props)
+        self.redraw()
+
+    def redraw(self):
+        if self.last_rec is not None:
+            self.update(self.last_rec, time.monotonic(), redraw_only=True)
 
     # -- drawing --
     def _hist_for(self, nm, xlim, ylim):
@@ -895,7 +922,7 @@ class Plot:
             flags.append("TORN")
         if rec["flags"] & REC_INTERLEAVED:
             flags.append("interleaved")
-        if not rec["flags"] & REC_RUNNING:
+        if (self.props.get("view.run", 1) if "view.run" in self.props else rec["flags"] & REC_RUNNING) == 0:
             flags.append("STOP")
         self.fig.suptitle("OpenScope stream  %.1f records/s  %s  fs %s  gen %d %s"
                           % (fps, trig, eng(rec["fs_hz"], "Sa/s"), rec["gen"], " ".join(flags)),
@@ -1224,6 +1251,18 @@ def numeric_selftest(fail):
         fail("record_reference: %s %s (a triggered record without an index aligns soft)" % (ref, how))
     if record_reference(synth_record(step, trig_idx=512))[1] != "hw":
         fail("record_reference ignores the hardware index")
+    if hw_level_code(0) != 100 or hw_level_code(-50) != 128 - 62 - 28 or hw_level_code(100) != 252 - 28:
+        fail("hw_level_code %s" % [hw_level_code(0), hw_level_code(-50), hw_level_code(100)])
+    # time-ordered records whose edge wanders a few samples around 512 (the
+    # measured 501..520) accumulate to one edge: anchored at the crossing
+    for shift in (-9, -3, 0, 4, 8):
+        rec = synth_record([50] * (512 + shift) + [150] * (512 - shift), trig_idx=512)
+        ref, how = record_reference(rec)
+        if how != "hw" or abs(ref - (511.5 + shift)) > 0.01:
+            fail("hw anchor at shift %d: %s %s" % (shift, ref, how))
+    far = synth_record([50] * 600 + [150] * 424, trig_idx=512)
+    if record_reference(far)[0] != 512:
+        fail("hw anchor: a crossing 88 samples away must not be taken")
     if record_reference(synth_record([100] * 1024))[1] != "centre":
         fail("record_reference on a flat record")
 
@@ -1464,7 +1503,13 @@ def selftest():
                 fail("plot keys sent %s" % sent)
             if pd.fold or pd.persist_on or pd.hists:
                 fail("plot keys f/p/c did not toggle and clear")
-            pd.set_props({"ch1.vdiv": 4})
+            n0 = pd.fig.number
+            pd.set_props({"ch1.vdiv": 4, "view.run": 0})       # no record: the window still follows
+            if "STOP" not in pd.fig._suptitle.get_text() or pd.fig.number != n0:
+                fail("PROPS without a record did not redraw: %r" % pd.fig._suptitle.get_text())
+            pd.reply("> set view.run off\r\nOK view.run=off\r\n> ")
+            if "OK view.run=off" not in pd.status.get_text():
+                fail("reply line not shown: %r" % pd.status.get_text())
             persist_demo(os.path.join(d, "p2.png"), fold=False, persist=2.0)
         p = Plot("Agg")
         p.update(rec, 0.0)

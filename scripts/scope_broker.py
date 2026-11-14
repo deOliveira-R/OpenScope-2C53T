@@ -98,8 +98,8 @@ class SocketPort:
             pass
 
 
-def open_device(url):
-    if url.startswith("socket://"):
+def open_device(url, pyserial=False):
+    if url.startswith("socket://") and not pyserial:
         return SocketPort(url)
     import serial  # pyserial, only for a real port
     s = serial.serial_for_url(url, baudrate=115200, timeout=0.05, write_timeout=2.0)
@@ -189,8 +189,9 @@ class Inflight:
 
 # ── the broker ──────────────────────────────────────────────────────────────
 class Broker:
-    def __init__(self, url, listen_port=DEFAULT_PORT, cmd_timeout=10.0, log=None):
+    def __init__(self, url, listen_port=DEFAULT_PORT, cmd_timeout=10.0, log=None, pyserial=False):
         self.url = url
+        self.pyserial = pyserial
         self.cmd_timeout = cmd_timeout
         self.log = log or (lambda m: None)
         self.lock = threading.RLock()
@@ -242,7 +243,12 @@ class Broker:
             while not self.stopping:
                 time.sleep(0.2)
         except KeyboardInterrupt:
-            pass
+            # as `!broker quit`: the device stream off first, then close
+            self.notice("quitting (Ctrl-C)")
+            self.jobs.put(Job(None, None, "quit"))
+            t = time.monotonic() + 2.0
+            while not self.stopping and time.monotonic() < t:
+                time.sleep(0.05)
         self.stop()
 
     # -- notices --
@@ -415,7 +421,7 @@ class Broker:
                 continue
             if state in ("closed", "released"):
                 try:
-                    d = open_device(self.url)
+                    d = open_device(self.url, self.pyserial)
                 except Exception as e:  # not there (yet)
                     self.counters["open_fail"] += 1
                     if state == "released" and self.counters["open_fail"] % 20 == 1:
@@ -585,14 +591,16 @@ class Broker:
                 else:
                     c.send_text(("stream: unknown '%s' (scope meter props all fast)\r\n> " % o).encode())
                     return
+            # one hold of the lock: no live frame can reach this client
+            # before its reply and the replayed HELLO / PROPDESC / PROPS
             with self.lock:
                 late = self.dev_stream not in (None, "unknown") and self.cache is not None
                 c.wants, c.fast = (wants or set(ALL_WANTS)), fast
                 n = sum(1 for x in self.clients if x.wants is not None)
-            c.send_text(("stream: on %s%s (via broker, %d subscriber%s)\r\n> " % (
-                " ".join(sorted(c.wants)), " fast" if fast else "", n, "" if n == 1 else "s")).encode())
-            if late:
-                self._replay_to(c)
+                c.send_text(("stream: on %s%s (via broker, %d subscriber%s)\r\n> " % (
+                    " ".join(sorted(c.wants)), " fast" if fast else "", n, "" if n == 1 else "s")).encode())
+                if late:
+                    self._replay_to(c)
         else:
             with self.lock:
                 c.wants = None
@@ -1043,7 +1051,32 @@ def selftest():
         a.send("!broker quit")
         if not wait(lambda: br.stopping):
             fail("quit did not stop the broker")
-        msg = "pyserial socket:// client checked" if have_serial else "pyserial not installed: socket:// client skipped"
+        # 12. after quit (the fake serves one connection): the device opened through pyserial's socket:// (the real-port code path)
+        if have_serial:
+            br2 = Broker("socket://127.0.0.1:%d" % dev.port, listen_port=0, cmd_timeout=0.6, pyserial=True).start()
+            try:
+                e = TestClient(br2.port)
+                if not wait(lambda: br2.dev_state == "open", timeout=4):
+                    fail("pyserial device: not opened")
+                e.send("version")
+                if not e.wait_text("Build: fake device"):
+                    fail("pyserial device: no reply")
+                te, _f = e.mark()
+                e.send("die")
+                if not e.wait_text("device lost", start=te, timeout=3):
+                    fail("pyserial device: a closed device was not noticed: %r" % bytes(e.text[te:]))
+                if not e.wait_text("device connected", start=te, timeout=5):
+                    fail("pyserial device: no reconnect")
+                te, _f = e.mark()
+                e.send("echo again")
+                if not e.wait_text("again\r\n> ", start=te):
+                    fail("pyserial device: no reply after the reconnect")
+                e.close()
+            finally:
+                br2.stop()
+
+        msg = ("pyserial socket:// client and device checked" if have_serial
+               else "pyserial not installed: socket:// client and pyserial device skipped")
     finally:
         br.stop()
         dev.close()
