@@ -176,6 +176,7 @@ static sf_record_t make_record(uint8_t nch, uint32_t gen)
     r.kind = 1u; r.tb_code = 10u; r.nch = nch;
     r.ch[0] = (sf_rec_ch_t){ 0u, 3u, 100u, 0u, 0, 1u, 0.0390625f, 1.0f, ch1_codes };
     r.ch[1] = (sf_rec_ch_t){ 1u, 5u, 105u, 1u, 5, 10u, 0.75f, 20.0f, ch2_codes };
+    r.trig_level = -25; r.trig_edge = 1u; r.trig_src = 0u; r.trig_mode = 0u; r.cap_mask = nch == 2u ? 3u : 1u;
     return r;
 }
 
@@ -204,6 +205,10 @@ static void test_record(void)
         CHECK(memcmp(s, ch1_codes, 1024) == 0);
         if (nch == 2) CHECK(memcmp(s + 1024, ch2_codes, 1024) == 0);
         CHECK(rd32(s + nch * 1024u) == 42u);           /* gen_end after the samples */
+        const uint8_t *cb = s + nch * 1024u + 4u;      /* 1.1 capture block */
+        CHECK((int16_t)rd16(cb) == -25 && cb[2] == 1u && cb[3] == 0u && cb[4] == 0u);
+        CHECK(cb[5] == (nch == 2u ? 3u : 1u) && cb[6] == SF_REC_CAP_VERSION);
+        CHECK(cb + SF_REC_CAP_LEN == p + l);
     }
 }
 
@@ -294,6 +299,8 @@ static void vrecord(sf_record_t *r, uint32_t gen_end)
                   "flags=%u kind=%u tb_code=%u nch=%u",
             vseq, r->gen, gen_end, r->t_ms, (double)r->fs_hz, (double)r->s_per_div, r->n, r->trig_idx,
             r->flags, r->kind, r->tb_code, r->nch);
+    fprintf(vexp, " trig_level=%d trig_edge=%u trig_src=%u trig_mode=%u cap_mask=%u cap_version=%u",
+            r->trig_level, r->trig_edge, r->trig_src, r->trig_mode, r->cap_mask, SF_REC_CAP_VERSION);
     for (uint8_t i = 0; i < r->nch; i++) {
         const sf_rec_ch_t *c = &r->ch[i];
         fprintf(vexp, " ch%u.id=%u ch%u.vdiv_idx=%u ch%u.zero_code=%u ch%u.coupling=%u ch%u.position=%d "
@@ -361,7 +368,7 @@ static int write_vectors(const char *bin_path, const char *exp_path, const char 
     vrecord(&r2, 1000u);                          /* clean */
     vtext("version\r\nOpenScope 2C53T\r\nBuild: test \xe2\x80\x94 vectors\r\n> ");
     sf_record_t r1 = make_record(1u, 1004u);
-    r1.flags = SF_REC_INTERLEAVED | SF_REC_RUNNING;
+    r1.flags = SF_REC_INTERLEAVED | SF_REC_RUNNING | SF_REC_STALE;
     r1.trig_idx = SF_TRIG_NONE;
     r1.fs_hz = 2.5e8f;
     vrecord(&r1, 1006u);                          /* torn: a commit during the send */

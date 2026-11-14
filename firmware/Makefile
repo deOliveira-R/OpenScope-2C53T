@@ -80,6 +80,7 @@ C_SOURCES += src/drivers/scope_vpos.c
 C_SOURCES += src/drivers/scope_selfcal_run.c
 C_SOURCES += src/dsp/trig_edge.c
 C_SOURCES += src/dsp/trig_policy.c
+C_SOURCES += src/dsp/acq_cfg.c
 C_SOURCES += src/ui/trig_menu.c
 C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/dsp/interleave_cal.c
@@ -2033,6 +2034,17 @@ $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/
 
 .PHONY: test-screen-router
 test-screen-router: $(BUILD_DIR)/test_screen_router
+	$<
+
+# Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,
+# the settle window (fill + poll gap + settle) after one, a change between
+# the notes around a read, slow timebases, tick wrap, and which buffers hold
+# their own channel.
+$(BUILD_DIR)/test_acq_cfg: tests/test_acq_cfg.c src/dsp/acq_cfg.c src/dsp/acq_cfg.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror $< src/dsp/acq_cfg.c -o $@
+
+.PHONY: test-acq-cfg
+test-acq-cfg: $(BUILD_DIR)/test_acq_cfg
 	$<
 
 # Stream frame encoder (src/stream/stream_frame.c, FEATURE_STREAM): header and

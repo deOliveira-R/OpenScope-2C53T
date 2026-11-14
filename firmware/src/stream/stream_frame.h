@@ -37,7 +37,7 @@
 #define SF_PACKET          64u          /* USB full-speed bulk packet */
 
 #define SF_PROTO_MAJOR     1u
-#define SF_PROTO_MINOR     0u
+#define SF_PROTO_MINOR     1u     /* 1.1: RECORD capture block, STALE flag */
 
 /* Frame types. Codes are never reused. */
 enum {
@@ -70,6 +70,8 @@ enum {
     SF_REC_COHERENT     = 1u << 3,  /* CH1 and CH2 are one moment               */
     SF_REC_RUNNING      = 1u << 4,  /* acquisition running (not STOP/held)      */
     SF_REC_TRUE_SCALE   = 1u << 5,  /* the screen draws at true volts/div       */
+    SF_REC_STALE        = 1u << 6,  /* captured under a configuration that is no
+                                     * longer the one in force (1.1)            */
 };
 
 /* METER flags. */
@@ -86,6 +88,8 @@ enum {
 #define SF_REC_FIXED_LEN   24u     /* RECORD bytes before the channel table */
 #define SF_REC_CH_LEN      16u     /* one channel table entry               */
 #define SF_REC_TAIL_LEN    4u      /* gen_end                               */
+#define SF_REC_CAP_LEN     7u      /* 1.1 capture block after gen_end       */
+#define SF_REC_CAP_VERSION 1u
 #define SF_PROPS_PAIR_LEN  6u
 
 /* ── checksums ──────────────────────────────────────────────────────── */
@@ -154,6 +158,9 @@ typedef struct {
     uint16_t n, trig_idx;
     uint8_t  flags, kind, tb_code, nch;
     sf_rec_ch_t ch[2];
+    /* 1.1 capture block: the trigger and routing the record was captured with */
+    int16_t  trig_level;            /* UI level -100..100 */
+    uint8_t  trig_edge, trig_src, trig_mode, cap_mask;
 } sf_record_t;
 
 typedef struct {

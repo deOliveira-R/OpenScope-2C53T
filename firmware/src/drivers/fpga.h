@@ -22,6 +22,7 @@
 #include "fpga_meter_plan.h"
 #include "../dsp/interleave_cal.h"
 #include "../ui/scope_roll.h"
+#include "../dsp/acq_cfg.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 
@@ -1127,6 +1128,21 @@ int32_t fpga_interleave_skew_get(void);
 void    fpga_ilcal_begin(uint8_t skip);
 bool    fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *out);
 bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge */
+/* The capture configuration (dsp/acq_cfg.h). snapshot: in force now (any
+ * task). record_cfg: the published record's, copied with it in the commit
+ * (read it inside a generation check). has_ch: the published record holds
+ * channel ch's own samples (0 = CH1); with one channel routed, the other
+ * buffer is the second converter's copy of it. drops: records refused
+ * because the configuration had not settled over their window. */
+void     fpga_acq_cfg_snapshot(acq_cfg_t *c);
+void     fpga_acq_record_cfg(acq_cfg_t *out);
+const acq_cfg_t *fpga_acq_record_cfg_ptr(void);   /* the renderer's per-sample read */
+/* Settle margin of the admission rule: 0 = ACQ_CFG_SETTLE_MS, 0xFFFF = rule
+ * off (every record admitted, as before), else ms. `fpga cfgsettle`. */
+void     fpga_acq_cfg_settle_set(uint16_t cmd);
+uint16_t fpga_acq_cfg_settle_get(void);
+bool     fpga_acq_record_has_ch(uint8_t ch);
+uint32_t fpga_acq_cfg_drops(void);
 /* Parity C3 (trig_policy.h). The published record's kind (trig_acq_t):
  * handed over, free-run, or free-run with two non-simultaneous channels. */
 uint8_t fpga_acq_record_kind(void);

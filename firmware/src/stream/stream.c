@@ -223,18 +223,23 @@ static uint32_t gen_end_cb(void)
     return s.gen_end;
 }
 
-static void rec_channel(sf_rec_ch_t *c, const scope_state_t *ss, uint8_t ch)
+/* One channel entry, from the configuration the record was CAPTURED with
+ * (fpga_acq_record_cfg), never from what is set now: a V/div, position or
+ * probe change after the capture must not relabel it. */
+static void rec_channel(sf_rec_ch_t *c, const acq_cfg_t *cap, uint8_t ch)
 {
-    const channel_state_t *cs = ch ? &ss->ch2 : &ss->ch1;
-    const float pf = scope_cal_probe_factor((uint8_t)(ch + 1u));
+    const uint8_t chn = (uint8_t)(ch + 1u);
+    const uint8_t idx = cap->vdiv[ch];
+    const float pf_cap = (cap->probe[ch] == (uint8_t)PROBE_10X) ? 10.0f : 1.0f;
+    const float pf_now = scope_cal_probe_factor(chn);
     c->ch              = ch;
-    c->vdiv_idx        = cs->vdiv_idx;
-    c->zero_code       = scope_measure_zero_for(scope_vpos_active(), cs->position, (int)FPGA_ADC_OFFSET);
-    c->coupling        = (uint8_t)cs->coupling;
-    c->position        = cs->position;
-    c->probe_x         = (uint16_t)(pf + 0.5f);
-    c->volts_per_count = scope_cal_volts_per_count((uint8_t)(ch + 1u), cs->vdiv_idx);
-    c->volts_per_div   = scope_cal_volts_per_div((uint8_t)(ch + 1u), cs->vdiv_idx);
+    c->vdiv_idx        = idx;
+    c->zero_code       = scope_measure_zero_for(scope_vpos_active(), cap->pos[ch], (int)FPGA_ADC_OFFSET);
+    c->coupling        = cap->coupling[ch];
+    c->position        = cap->pos[ch];
+    c->probe_x         = (uint16_t)(pf_cap + 0.5f);
+    c->volts_per_count = scope_cal_mv_per_count(chn, idx) / 1000.0f * pf_cap;
+    c->volts_per_div   = scope_cal_volts_per_div(chn, idx) / pf_now * pf_cap;
     c->codes           = ch ? fpga_get_ch2_buf() : fpga_get_ch1_buf();
 }
 
@@ -246,13 +251,16 @@ static bool poll_record(void)
     if (!fpga_data_ready() || fpga_get_ch1_buf() == NULL) return false;
 
     const scope_state_t *ss = scope_state_get();
+    acq_cfg_t cap, now;
+    fpga_acq_record_cfg(&cap);                             /* inside the generation check */
+    fpga_acq_cfg_snapshot(&now);
     sf_record_t r;
     memset(&r, 0, sizeof r);
     r.gen  = g0;
     r.t_ms = now_ms();
     r.fs_hz = fpga_record_sample_rate();
     r.s_per_div = ss->roll ? scope_roll_seconds_per_div(ss->roll_step)
-                           : scope_timebase_seconds_per_div(ss->timebase_idx);
+                           : scope_timebase_seconds_per_div(cap.mask ? cap.rate_idx : ss->timebase_idx);
     r.n = FPGA_ADC_BUF_SIZE;
     const bool ordered = fpga_acq_record_time_ordered();
     r.trig_idx = ordered ? (uint16_t)(FPGA_ADC_BUF_SIZE / 2u) : (uint16_t)SF_TRIG_NONE;
@@ -261,12 +269,19 @@ static bool poll_record(void)
                         ((ss->roll || fpga_roll_active()) ? SF_REC_ROLL : 0u) |
                         (fpga_acq_record_coherent() ? SF_REC_COHERENT : 0u) |
                         (ss->running ? SF_REC_RUNNING : 0u) |
-                        (ss->true_scale ? SF_REC_TRUE_SCALE : 0u));
+                        (ss->true_scale ? SF_REC_TRUE_SCALE : 0u) |
+                        (acq_cfg_equal(&cap, &now) ? 0u : SF_REC_STALE));
     r.kind = fpga_acq_record_kind();
-    r.tb_code = ss->timebase_idx;
-    if (ss->ch1.enabled) rec_channel(&r.ch[r.nch++], ss, 0u);
-    if (ss->ch2.enabled && !fpga_acq_record_interleaved()) rec_channel(&r.ch[r.nch++], ss, 1u);
-    if (r.nch == 0u) rec_channel(&r.ch[r.nch++], ss, 0u);  /* the model refuses both-off */
+    r.tb_code = cap.rate_idx;
+    /* The channels the record holds, as captured (not the enables now). */
+    if (acq_cfg_has_ch(&cap, 0u)) rec_channel(&r.ch[r.nch++], &cap, 0u);
+    if (acq_cfg_has_ch(&cap, 1u) && !fpga_acq_record_interleaved()) rec_channel(&r.ch[r.nch++], &cap, 1u);
+    if (r.nch == 0u) rec_channel(&r.ch[r.nch++], &cap, 0u);
+    r.trig_level = cap.trig_level;
+    r.trig_edge  = cap.trig_edge;
+    r.trig_src   = cap.trig_src;
+    r.trig_mode  = cap.trig_mode;
+    r.cap_mask   = cap.mask;
     if (fpga_acq_frame_generation() != g0) return false;  /* a commit hit the metadata: next pass */
 
     if (s.have_gen) {
@@ -363,6 +378,8 @@ static void print_status(void)
                      (unsigned long)fpga_acq_frame_generation(), (unsigned long)t->bytes,
                      (unsigned long)t->aborts,
                      s.off_reason ? " off_reason=" : "", s.off_reason ? s.off_reason : "");
+    usb_debug_printf("stream: acq records refused (capture config not settled, `fpga cfgsettle`)=%lu\r\n",
+                     (unsigned long)fpga_acq_cfg_drops());
     usb_debug_printf("stream: sent/dropped record=%lu/%lu missed=%lu torn=%lu meter=%lu/%lu "
                      "props=%lu/%lu desc=%lu/%lu hello=%lu/%lu stats=%lu/%lu\r\n",
                      (unsigned long)t->sent[SF_T_RECORD], (unsigned long)t->dropped[SF_T_RECORD],

@@ -3511,6 +3511,36 @@ static void cmd_fpga_pollgap(const char *args)
                      (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads);
 }
 
+/* `fpga cfgsettle [ms|off|default]` -- the capture-configuration rule
+ * (dsp/acq_cfg.h): a record is published only after routing, range,
+ * position, probe, timebase and trigger have been stable for fill + poll gap
+ * + this margin. `off` admits every record (the behaviour before the rule),
+ * for an A/B in one boot. */
+static void cmd_fpga_cfgsettle(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strcmp(args, "off") == 0) {
+        fpga_acq_cfg_settle_set(0xFFFFu);
+    } else if (strcmp(args, "default") == 0) {
+        fpga_acq_cfg_settle_set(0u);
+    } else if (*args) {
+        uint32_t ms = 0;
+        if (parse_int(args, &ms) != 0 || ms < 1u || ms > 2000u) {
+            usb_send_str("usage: fpga cfgsettle [ms 1..2000|off|default]\r\n");
+            return;
+        }
+        fpga_acq_cfg_settle_set((uint16_t)ms);
+    }
+    const uint16_t c = fpga_acq_cfg_settle_get();
+    if (c == 0xFFFFu)
+        usb_debug_printf("cfgsettle: off (every record admitted); refused so far %lu\r\n",
+                         (unsigned long)fpga_acq_cfg_drops());
+    else
+        usb_debug_printf("cfgsettle: %u ms%s after fill + poll gap; records refused %lu\r\n",
+                         (unsigned)(c ? c : ACQ_CFG_SETTLE_MS), c ? "" : " (default)",
+                         (unsigned long)fpga_acq_cfg_drops());
+}
+
 /* `fpga autolive [on|off]` -- EXP-72: AUTO shows every roll read once no
  * handover has come for a whole budget (default on; off = v0.4.1's one per
  * budget). */
@@ -10615,6 +10645,8 @@ static const shell_cmd_t shell_cmds[] = {
           "mask dump                       Bounds per column (bench scripts)\r\n"),
     CMD_A("fpga edgefilter", cmd_fpga_edgefilter, 0,
           "fpga edgefilter [on|off]        MCU trigger edge filter: keep Rising/Falling records (default on)\r\n"),
+    CMD_A("fpga cfgsettle", cmd_fpga_cfgsettle, 0,
+          "fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n"),
     CMD_A("fpga pollgap", cmd_fpga_pollgap, 0,
           "fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n"),
     CMD_A("fpga autolive", cmd_fpga_autolive, 0,

@@ -1,6 +1,6 @@
 # Binary stream protocol (FEATURE_STREAM)
 
-Status: prototype, protocol 1.0. Firmware: `firmware/src/stream/` (bench image `app-coldtrace-meter`).
+Status: prototype, protocol 1.1 (1.0 plus the RECORD capture block and the STALE flag). Firmware: `firmware/src/stream/` (bench image `app-coldtrace-meter`).
 Host: `scripts/scope_stream.py`. Encoder test and cross-check vectors: `firmware/tests/test_stream.c`,
 `firmware/tests/fixtures/stream/`.
 
@@ -101,7 +101,7 @@ Strings are `u8 length` + bytes (no NUL).
 
 | field | type | |
 |---|---|---|
-| proto_major, proto_minor | u8, u8 | 1, 0 |
+| proto_major, proto_minor | u8, u8 | 1, 1 |
 | caps | u8 | what this firmware can send: bit0 scope, bit1 meter, bit2 props |
 | on | u8 | what this `stream on` asked for (same bits) |
 | max_payload | u16 | 4096 |
@@ -138,13 +138,33 @@ moves no epoch. The hash sees every writer.
 | s_per_div | f32 | the screen's time/div (Y-T timebase, or roll) |
 | n | u16 | samples per channel (1024) |
 | trig_idx | u16 | sample index of the hardware trigger, 0xFFFF = not known (the record is not time-ordered). **Not** "untriggered": whether the record was triggered is `kind` |
-| flags | u8 | bit0 interleaved, bit1 time-ordered, bit2 roll, bit3 coherent (CH1 and CH2 one moment), bit4 running, bit5 true scale |
+| flags | u8 | bit0 interleaved, bit1 time-ordered, bit2 roll, bit3 coherent (CH1 and CH2 one moment), bit4 running, bit5 true scale, bit6 STALE (1.1: captured under a configuration that is no longer in force; a host should not draw or accumulate it) |
 | kind | u8 | trig_acq_t: 1 triggered (handed over), 2 free-run, 3 free-run split |
-| tb_code | u8 | timebase code selected (tb.code) |
-| nch | u8 | channel entries that follow (1 or 2: the enabled channels) |
-| per channel (16 B) | | `ch u8 (0 = CH1), vdiv_idx u8, zero_code u8, coupling u8, position i16, probe_x u16, volts_per_count f32, volts_per_div f32` |
+| tb_code | u8 | timebase code the record was captured at |
+| nch | u8 | channel entries that follow (1 or 2: the channels the record holds, as captured) |
+| per channel (16 B) | | `ch u8 (0 = CH1), vdiv_idx u8, zero_code u8, coupling u8, position i16, probe_x u16, volts_per_count f32, volts_per_div f32`, all as captured |
 | samples | u8 x n x nch | record codes, channel order as the table |
 | gen_end | u32 | the generation read again **after** the samples |
+| trig_level | i16 | 1.1: the trigger level it was captured with (UI units, -100..100) |
+| trig_edge, trig_src, trig_mode | u8 x 3 | 1.1: 0 rising / 1 falling; 0 CH1 / 1 CH2; 0 Auto / 1 Normal / 2 Single |
+| cap_mask | u8 | 1.1: converter routing at capture: 1 CH1, 2 CH2, 3 both |
+| cap_version | u8 | 1.1: 1 |
+
+**Capture configuration (1.1).** The channel table and the capture block describe the configuration the
+record was captured with, never the settings now. The acquisition task (`src/dsp/acq_cfg.h`) notes the
+configuration before and after every read: routing, ranges, coupling, positions, probes, timebase, trigger
+level, source, edge and mode, interleave and roll. It publishes a record only if that configuration was
+unchanged over the whole window its samples can come from: fill (1024 / fs), plus one poll gap (a completed
+record waits at most that long to be read), plus 30 ms for relays, the offset DAC and the routing to settle.
+A record that fails is dropped, because it may be a mixture that no configuration describes. One example:
+the first record after CH2 was switched back on held converter B's copy of CH1 in the CH2 slot (bench,
+2026-11-14). The screen likewise draws a channel only once a record captured with it is published. It
+draws and measures the record still on the glass with that record's own range and position, the way a held
+(STOP) record was already rescaled. STALE marks the rare record that was committed and then overtaken by a
+change before the sender took it. The trigger mode is carried but not compared: it does not change the
+samples, and comparing it would drop the single record a SINGLE armed just before it took.
+`fpga cfgsettle [ms|off|default]` shows how many records were refused and sets the margin (`off` restores
+the old behaviour, for an A/B in one boot).
 
 A triggered record (`kind` 1) is time-ordered only when the acquisition finds the seam of the FPGA's write
 pointer (`fpga_acq_unrotate_staging`). For a fast periodic signal (many periods per record) there is no seam
@@ -161,7 +181,7 @@ centre line at code 100 (true scale).
 mix two captures. Discard or mark it. **Missed**: a step in `gen` larger than 2 means records were published
 that the host never got (sent or dropped, the firmware counts which).
 
-2 channels: 2108-byte payload, 2122 bytes on the wire (34 packets). 1 channel: 1068 / 1082 (17 packets).
+2 channels: 2115-byte payload, 2129 bytes on the wire (34 packets). 1 channel: 1075 / 1089 (18 packets). (1.0: 2108 / 2122 and 1068 / 1082.)
 
 ### METER (0x04)
 

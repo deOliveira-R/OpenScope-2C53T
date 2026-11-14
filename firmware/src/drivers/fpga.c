@@ -32,6 +32,7 @@
 #include "../dsp/interleave.h"
 #include "../dsp/interleave_cal.h"
 #include "../dsp/trig_policy.h"
+#include "../dsp/acq_cfg.h"
 #include "../ui/ui.h"
 #include "../ui/scope_state.h"
 #include "../ui/scope_timebase.h"
@@ -3112,6 +3113,17 @@ static volatile uint32_t acq_last_trig_tick = 0;     /* tick a handed-over recor
 static volatile bool     acq_single_done_pub = false;
 static volatile uint32_t acq_single_arm_req = 0;
 
+/* The capture configuration (dsp/acq_cfg.h) of the STAGED record, set by
+ * the acquisition task when it admits a read, and of the PUBLISHED one,
+ * copied in the commit's seqlock window like the flags above. Mask 0 = no
+ * record committed yet (or the in-place fallback, which never commits):
+ * every channel counts as present, as before this existed. 2 x 22 B .bss. */
+static acq_cfg_t acq_stage_cfg;
+static acq_cfg_t acq_pub_cfg;
+static volatile uint32_t acq_cfg_drops;      /* records refused: configuration not settled */
+static volatile uint16_t acq_cfg_settle_cmd;  /* 0 = ACQ_CFG_SETTLE_MS, 0xFFFF = rule off, else ms */
+void fpga_acq_cfg_snapshot(acq_cfg_t *c);    /* defined with the registers it reads, below */
+
 static void fpga_acq_frames_commit(void)
 {
     if (acq_stage_ch1 == NULL || acq_stage_ch2 == NULL)
@@ -3123,6 +3135,7 @@ static void fpga_acq_frames_commit(void)
     acq_pub_il = acq_stage_il;
     acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
+    acq_pub_cfg = acq_stage_cfg;
     acq_frame_gen++;                                   /* even: stable */
 }
 
@@ -3143,8 +3156,10 @@ static void fpga_acq_publish(uint16_t hw_to_before, bool commit_frames)
         fpga.spi3_total_timeouts++;
         return;
     }
-    if (commit_frames)
+    if (commit_frames) {
+        fpga_acq_cfg_snapshot(&acq_stage_cfg);   /* this legacy path has no admission rule */
         fpga_acq_frames_commit();
+    }
     fpga.spi3_ok_count++;
     fpga.spi3_timeout_count = 0;
     data_ready = true;
@@ -4094,6 +4109,41 @@ static void fpga_scope_write_reg(uint8_t reg, uint8_t val)
  * the task never sees a reg-0x01 code and a read path that disagree. */
 static scope_roll_fifo_t acq_roll_fifo;
 static volatile bool     acq_roll_on = false;
+
+/* The capture configuration in force now (dsp/acq_cfg.h): what the hardware
+ * was last set to (routing, reg 0x01/0x06/0x08, interleave, roll) and the
+ * scope state the record's scale depends on. Any task; every field is one
+ * aligned read. */
+void fpga_acq_cfg_snapshot(acq_cfg_t *c)
+{
+    const scope_state_t *ss = scope_state_get();
+    memset(c, 0, sizeof *c);
+    c->mask      = fpga.channel_mask;
+    c->rate_idx  = acq_rate_idx;
+    c->trig_code = acq_trig_code;
+    c->trig_src  = acq_trig_src_code;
+    c->il        = fpga_interleave_active() ? 1u : 0u;
+    c->roll      = acq_roll_on ? 1u : 0u;
+    if (ss != NULL) {
+        c->vdiv[0] = ss->ch1.vdiv_idx;            c->vdiv[1] = ss->ch2.vdiv_idx;
+        c->coupling[0] = (uint8_t)ss->ch1.coupling; c->coupling[1] = (uint8_t)ss->ch2.coupling;
+        c->probe[0] = (uint8_t)ss->ch1.probe;     c->probe[1] = (uint8_t)ss->ch2.probe;
+        c->pos[0] = ss->ch1.position;             c->pos[1] = ss->ch2.position;
+        c->trig_edge = (uint8_t)ss->trigger.edge;
+        c->trig_mode = (uint8_t)ss->trigger.mode;
+        c->trig_level = ss->trigger.level;
+    }
+}
+
+void fpga_acq_record_cfg(acq_cfg_t *out) { *out = acq_pub_cfg; }   /* read it inside the generation check */
+const acq_cfg_t *fpga_acq_record_cfg_ptr(void) { return &acq_pub_cfg; }
+void fpga_acq_cfg_settle_set(uint16_t cmd) { acq_cfg_settle_cmd = cmd; }
+uint16_t fpga_acq_cfg_settle_get(void)     { return acq_cfg_settle_cmd; }
+bool fpga_acq_record_has_ch(uint8_t ch)
+{
+    return acq_pub_cfg.mask == 0u ? ch <= 1u : acq_cfg_has_ch(&acq_pub_cfg, ch);
+}
+uint32_t fpga_acq_cfg_drops(void)        { return acq_cfg_drops; }
 static volatile uint8_t  acq_roll_step = 0;
 static int               acq_roll_code_override = -1;
 static volatile fpga_roll_stats_t acq_roll_stats;
@@ -4411,6 +4461,10 @@ static void fpga_roll_service(void)
     }
 }
 
+/* The acquisition task's capture-configuration tracker (dsp/acq_cfg.h):
+ * static, not on the task's 256-word stack. 36 B. */
+static acq_cfg_track_t s_acq_cfg_trk;
+
 static void fpga_warmtest_acq_task(void *pv)
 {
     (void)pv;
@@ -4525,6 +4579,9 @@ static void fpga_warmtest_acq_task(void *pv)
         if (acq_reprime_req) {                 /* a register write dropped the capture */
             acq_reprime_req = false;
             capture_in_flight = false;
+            /* ...and the records in flight describe the old configuration,
+             * even when the snapshot ends where it began (dsp/acq_cfg.h) */
+            acq_cfg_touch(&s_acq_cfg_trk, xTaskGetTickCount() * portTICK_PERIOD_MS);
         }
         if (mode_now == TRIG_SINGLE && single_done) {
             vTaskDelay(pdMS_TO_TICKS(10));     /* hold the one record */
@@ -4573,6 +4630,11 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         if (acq_read_br != 0xFF)
             spi3_set_br(acq_read_br);                       /* EXP-46 (b) */
+        /* The configuration before the read (dsp/acq_cfg.h): a change since
+         * the last note restarts the settle window. */
+        acq_cfg_t cfg_now;
+        fpga_acq_cfg_snapshot(&cfg_now);
+        (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, xTaskGetTickCount() * portTICK_PERIOD_MS);
         uint32_t edges_before = fpga.pc0_edges;
         uint16_t hw_to_before = fpga.spi3_hw_timeouts;
         /* Reads land in staging, not the published buffers (P0.2): a frame
@@ -4585,6 +4647,8 @@ static void fpga_warmtest_acq_task(void *pv)
         if (acq_pair_gap_ms) vTaskDelay(pdMS_TO_TICKS(acq_pair_gap_ms));
         uint8_t s2 = fpga_warmtest_read_channel(0x05, w2);
         last_read_tick = xTaskGetTickCount();
+        fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
+        (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, last_read_tick * portTICK_PERIOD_MS);
         bool triggered = (fpga.pc0_edges != edges_before);
         if (!triggered) {                       /* the strobe is µs after the read; give the ISR a tick */
             vTaskDelay(pdMS_TO_TICKS(1));
@@ -4648,6 +4712,19 @@ static void fpga_warmtest_acq_task(void *pv)
             }
             continue;
         }
+        /* Capture configuration (dsp/acq_cfg.h, bench 2026-11-14): a record
+         * whose samples may predate the last change of routing, range,
+         * coupling, position, probe, timebase, trigger, interleave or roll,
+         * or overlap the settling after it, is dropped -- neither
+         * configuration describes it. The published record (screen and
+         * stream) stays the last good one, with its own configuration. */
+        if (acq_cfg_settle_cmd != 0xFFFFu &&
+            !acq_cfg_admit(&s_acq_cfg_trk, last_read_tick * portTICK_PERIOD_MS,
+                           acq_cfg_fill_ms(scope_timebase_sample_rate(acq_rate_idx)),
+                           acq_poll_gap_ms, acq_cfg_settle_cmd ? acq_cfg_settle_cmd : ACQ_CFG_SETTLE_MS)) {
+            acq_cfg_drops++;
+            continue;
+        }
         /* Edge filter (2026-09-22). A strobed record whose trigger crossing
          * runs the wrong way is handled exactly like a read that found the
          * roll: NORMAL/SINGLE keep holding (SINGLE is not consumed), AUTO
@@ -4704,6 +4781,7 @@ static void fpga_warmtest_acq_task(void *pv)
             acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)
                 interleave_merge(acq_stage_ch1, acq_stage_ch2, &acq_il_corr);
+            acq_stage_cfg = s_acq_cfg_trk.last;          /* what it was captured with */
             fpga_acq_frames_commit();
             /* Judge (or teach from) the record just committed: exactly once,
              * from the published buffers, in the only task that writes them. */

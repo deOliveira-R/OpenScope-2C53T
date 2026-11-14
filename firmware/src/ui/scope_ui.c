@@ -789,8 +789,8 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, 
         }
         scope_measure_t m1, m2;
         const volatile uint8_t *b1 = fpga_get_ch1_buf(), *b2 = fpga_get_ch2_buf();
-        const bool have1 = cells[0] && measure_live_channel(b1, &m1);
-        const bool have2 = cells[1] && measure_live_channel(b2, &m2);
+        const bool have1 = cells[0] && fpga_acq_record_has_ch(0u) && measure_live_channel(b1, &m1);
+        const bool have2 = cells[1] && fpga_acq_record_has_ch(1u) && measure_live_channel(b2, &m2);
 
         /* The 12 measurements (C6), per channel. All arithmetic is in
          * scope_params_compute(): time uses the PUBLISHED record's rate
@@ -1024,14 +1024,39 @@ static float column_rate_for_display(const scope_state_t *ss)
     return (r > 0u) ? fs * (float)PV_RATIO_ONE / (float)r : fs;
 }
 
-/* Latch the capture tuple (every running frame, and the RUN/STOP key). */
+/* The published record's OWN volts/count and 0 V code (the configuration it
+ * was captured with, dsp/acq_cfg.h); false before the first record that has
+ * one. After a range or position change the record on the glass is still the
+ * old one for at least a cycle (records captured across the change are
+ * refused), so "the settings now" would mislabel it. */
+static bool rec_own_scale(uint8_t ch, float *k, int *z)
+{
+    const acq_cfg_t *c = fpga_acq_record_cfg_ptr();
+    if (c->mask == 0u || ch > 1u)
+        return false;
+    const float pf = (c->probe[ch] == (uint8_t)PROBE_10X) ? 10.0f : 1.0f;
+    *k = scope_cal_mv_per_count((uint8_t)(ch + 1u), c->vdiv[ch]) / 1000.0f * pf;
+    *z = scope_measure_zero_for(scope_vpos_active(), c->pos[ch], (int)FPGA_ADC_OFFSET);
+    return true;
+}
+
+/* Latch the capture tuple (every running frame, and the RUN/STOP key): the
+ * published record's own scale, so a STOP right after a range change holds
+ * the record with the range it was captured at. */
 void scope_ui_paused_latch(void)
 {
     const scope_state_t *ss = scope_state_get();
     for (uint8_t ch = 0; ch < 2u; ch++) {
-        g_cap.vpc[ch]  = scope_cal_volts_per_count((uint8_t)(ch + 1u),
-                                                   ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
-        g_cap.zero[ch] = (uint8_t)chan_zero_code(ss, ch);
+        float k;
+        int z;
+        if (rec_own_scale(ch, &k, &z)) {
+            g_cap.vpc[ch]  = k;
+            g_cap.zero[ch] = (uint8_t)z;
+        } else {
+            g_cap.vpc[ch]  = scope_cal_volts_per_count((uint8_t)(ch + 1u),
+                                                       ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
+            g_cap.zero[ch] = (uint8_t)chan_zero_code(ss, ch);
+        }
     }
     g_cap.valid = true;
 }
@@ -1045,13 +1070,19 @@ static bool rec_held_cap(const scope_state_t *ss)
 }
 static float rec_vpc(const scope_state_t *ss, uint8_t ch)
 {
-    return rec_held_cap(ss) ? g_cap.vpc[ch]
-                            : scope_cal_volts_per_count((uint8_t)(ch + 1u),
-                                                        ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
+    float k;
+    int z;
+    if (rec_held_cap(ss)) return g_cap.vpc[ch];
+    if (rec_own_scale(ch, &k, &z)) return k;
+    return scope_cal_volts_per_count((uint8_t)(ch + 1u), ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
 }
 static uint8_t rec_zero(const scope_state_t *ss, uint8_t ch)
 {
-    return rec_held_cap(ss) ? g_cap.zero[ch] : (uint8_t)chan_zero_code(ss, ch);
+    float k;
+    int z;
+    if (rec_held_cap(ss)) return g_cap.zero[ch];
+    if (rec_own_scale(ch, &k, &z)) return (uint8_t)z;
+    return (uint8_t)chan_zero_code(ss, ch);
 }
 
 int16_t scope_ui_lowest_visible_pos(uint8_t ch)
@@ -1077,17 +1108,27 @@ uint32_t scope_ui_view_ratio(void)
 }
 
 /* The true-scale path's held-record rescale (stock 0x080212BC):
- * zero_now + k (v - zero_cap), k = volts/count at capture / now. Identity
- * while running, or when range and position are the capture's. */
+ * zero_now + k (v - zero_cap), k = volts/count at capture / now. A held
+ * record uses the latched tuple; a running one its own capture
+ * configuration, so the record still on the glass in the cycle after a range
+ * or position change is drawn at its true volts. Identity when range and
+ * position are the capture's (every steady running frame). */
 static inline uint8_t pv_vscale(uint8_t v, int8_t ch)
 {
     const scope_state_t *ss = scope_state_get();
-    if (ch < 0 || ch > 1 || !rec_held_cap(ss))
+    if (ch < 0 || ch > 1)
         return v;
-    const float kc = g_cap.vpc[ch];
+    float kc;
+    int zc;
+    if (rec_held_cap(ss)) {
+        kc = g_cap.vpc[ch];
+        zc = g_cap.zero[ch];
+    } else if (ss->roll || !rec_own_scale((uint8_t)ch, &kc, &zc)) {
+        return v;
+    }
     const float kn = scope_cal_volts_per_count((uint8_t)(ch + 1),
                                                ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
-    const int zc = g_cap.zero[ch], zn = chan_zero_code(ss, (uint8_t)ch);
+    const int zn = chan_zero_code(ss, (uint8_t)ch);
     if (!(kc > 0.0f) || !(kn > 0.0f) || (kc == kn && zc == zn))
         return v;
     return (uint8_t)pv_y_map((int)v, 0, zc, zn, kc, kn, 0, 255);
@@ -1296,7 +1337,13 @@ typedef struct { pm_tag_t t[3]; } pm_set_t;
 static void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
 {
     autofit_t *a[2] = { a1, a2 };
-    const bool en[2] = { ss->ch1.enabled, ss->ch2.enabled };
+    /* A channel is drawn only when the published record holds its own
+     * samples (fpga_acq_record_has_ch, dsp/acq_cfg.h): right after CH2 is
+     * switched back on, the record on screen was captured with CH1 alone and
+     * its CH2 buffer is the second converter's copy of CH1 (bench
+     * 2026-11-14). The band appears with the first record captured with it. */
+    const bool en[2] = { ss->ch1.enabled && fpga_acq_record_has_ch(0u),
+                         ss->ch2.enabled && fpga_acq_record_has_ch(1u) };
     const bool fx[2] = {
         en[0] && ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
         en[1] && ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx) };
@@ -2251,7 +2298,7 @@ static void math_prepare(const scope_state_t *ss, math_frame_t *mf)
     const volatile uint8_t *s2 = fpga_get_ch2_buf();
     mf->ok = g_math_live
         && (!math_op_uses_a(op) || (ss->ch1.enabled && s1 != NULL))
-        && (!math_op_uses_b(op) || (ss->ch2.enabled && s2 != NULL));
+        && (!math_op_uses_b(op) || (ss->ch2.enabled && fpga_acq_record_has_ch(1u) && s2 != NULL));
     if (!mf->ok) {
         /* No record, or a channel the op reads is off: say so, draw nothing. */
         snprintf(mf->label, sizeof(mf->label), "M:%s --", math_channel_name(op));

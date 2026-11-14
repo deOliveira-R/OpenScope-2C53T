@@ -179,7 +179,8 @@ bool sf_send_hello(sf_writer_t *w, sf_sink_fn s, void *ctx, uint16_t seq, const 
 uint16_t sf_record_len(const sf_record_t *r)
 {
     const uint8_t nch = r->nch > 2u ? 2u : r->nch;
-    return (uint16_t)(SF_REC_FIXED_LEN + nch * (SF_REC_CH_LEN + (uint32_t)r->n) + SF_REC_TAIL_LEN);
+    return (uint16_t)(SF_REC_FIXED_LEN + nch * (SF_REC_CH_LEN + (uint32_t)r->n) + SF_REC_TAIL_LEN +
+                      SF_REC_CAP_LEN);
 }
 
 bool sf_send_record(sf_writer_t *w, sf_sink_fn s, void *ctx, uint16_t seq, const sf_record_t *r,
@@ -211,6 +212,12 @@ bool sf_send_record(sf_writer_t *w, sf_sink_fn s, void *ctx, uint16_t seq, const
     for (uint8_t i = 0; i < nch && w->ok; i++)
         sf_put_vol(w, r->ch[i].codes, r->n);
     sf_u32(w, gen_end_fn ? gen_end_fn() : r->gen);
+    sf_u16(w, (uint16_t)r->trig_level);
+    sf_u8(w, r->trig_edge);
+    sf_u8(w, r->trig_src);
+    sf_u8(w, r->trig_mode);
+    sf_u8(w, r->cap_mask);
+    sf_u8(w, SF_REC_CAP_VERSION);
     return sf_end(w);
 }
 

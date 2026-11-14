@@ -52,6 +52,7 @@ TYPE_NAMES = {1: "HELLO", 2: "PROPS", 3: "RECORD", 4: "METER", 5: "STATS", 6: "P
 
 REC_INTERLEAVED, REC_TIME_ORDERED, REC_ROLL = 1, 2, 4
 REC_COHERENT, REC_RUNNING, REC_TRUE_SCALE = 8, 16, 32
+REC_STALE = 64              # 1.1: captured under a configuration no longer in force
 FLAG_REPLAY = 0x01          # header flags: a copy re-sent from a broker's cache
 FLAG_FILTERED = 0x02        # a broker left other types out of this client's stream: seq gaps expected
 TRIG_NONE = 0xFFFF
@@ -211,6 +212,9 @@ def decode(ftype, payload):
         d["ch"] = chans
         d["gen_end"] = r.take("I")
         d["torn"] = d["gen_end"] != d["gen"]
+        if len(payload) - r.o >= 7:     # 1.1 capture block: trigger and routing at capture
+            (d["trig_level"], d["trig_edge"], d["trig_src"], d["trig_mode"], d["cap_mask"],
+             d["cap_version"]) = r.take("hBBBBB")
     elif ftype == T_METER:
         (d["update_count"], d["t_ms"], d["value"], d["bcd"], d["func"], d["auto_fn"], d["result_class"],
          d["status_code"], d["decimal_pos"], d["range_index"], d["flags"]) = r.take("IIfiBBBBBBB")
@@ -254,6 +258,9 @@ def encode_payload(d):
             out += struct.pack("<BBBBhHff", c["id"], c["vdiv_idx"], c["zero_code"], c["coupling"], c["position"],
                                c["probe_x"], c["volts_per_count"], c["volts_per_div"])
         out += b"".join(bytes(c["codes"]) for c in d["ch"]) + struct.pack("<I", d.get("gen_end", d["gen"]))
+        if "cap_version" in d:
+            out += struct.pack("<hBBBBB", d["trig_level"], d["trig_edge"], d["trig_src"], d["trig_mode"],
+                               d["cap_mask"], d["cap_version"])
         return out
     if t == T_METER:
         return struct.pack("<IIfiBBBBBBB", d["update_count"], d["t_ms"], d["value"], d["bcd"], d["func"],
@@ -293,6 +300,7 @@ class Stats:
         self.replayed = 0
         self.filtered = 0
         self.rec_kinds = {}       # (kind, has trigger index) -> records
+        self.stale = 0            # records flagged STALE (1.1)
 
     def props_by_name(self):
         """Latest PROPS as {name: value} (names from PROPDESC)."""
@@ -348,6 +356,8 @@ class Stats:
             self.fw_stats = d
         elif ftype == T_RECORD:
             self.records += 1
+            if d["flags"] & REC_STALE:
+                self.stale += 1
             k = (d["kind"], d["trig_idx"] != TRIG_NONE)
             self.rec_kinds[k] = self.rec_kinds.get(k, 0) + 1
             if now is not None:
@@ -376,8 +386,8 @@ class Stats:
         p("seq_gaps=%s crc_errors=%d truncated=%d decode_errors=%d replayed=%d" % (
             "n/a (broker-filtered stream; see !broker status)" if self.filtered else self.seq_gaps,
             self.crc_errors, self.truncated, self.decode_errors, self.replayed))
-        p("records=%d torn=%d gen_missed=%d (records published but not received)" % (
-            self.records, self.torn, self.gen_missed))
+        p("records=%d torn=%d stale=%d gen_missed=%d (records published but not received)" % (
+            self.records, self.torn, self.stale, self.gen_missed))
         if self.rec_kinds:
             p("records by kind: " + " ".join("%s/%s=%d" % (KIND_NAMES.get(k, k).replace(" ", "_"),
                                                            "index" if i else "no_index", n)
@@ -580,7 +590,7 @@ def geometry_key(rec, props=None):
     """What must stay the same for accumulated pictures to stay valid: from
     the record (rate, channels, scale, zero) and, when known, the properties
     (V/div, position, timebase, trigger, probe, coupling, enables)."""
-    k = [rec["fs_hz"], rec["nch"]]
+    k = [rec["fs_hz"], rec["nch"], rec.get("cap_mask")]
     for c in rec["ch"]:
         k += [c["id"], c["vdiv_idx"], c["zero_code"], c["probe_x"], c["coupling"], c["volts_per_count"]]
     if props:
@@ -596,7 +606,11 @@ GEOMETRY_PROPS = ("ch1.enabled", "ch1.vdiv", "ch1.pos", "ch1.probe", "ch1.coupli
 
 
 def trig_settings(props, rec=None):
-    """(level_px, rising, source channel 0/1) from PROPS by name."""
+    """(level_px, rising, source channel 0/1): from the record's capture
+    block (protocol 1.1: what it was captured with) when it has one, else
+    from PROPS by name."""
+    if rec is not None and "cap_version" in rec:
+        return rec["trig_level"], rec["trig_edge"] == 0, 1 if rec["trig_src"] else 0
     p = props or {}
     return p.get("trig.level", 0), p.get("trig.edge", 0) == 0, p.get("trig.source", 0)
 
@@ -614,8 +628,11 @@ def rate_per_s(times, window=2.0, now=None):
 
 
 def record_usable(rec):
-    """(ok, why): a record to draw and accumulate: not one with no channels
-    or no samples."""
+    """(ok, why): a record to draw and accumulate. Not one flagged STALE
+    (captured under another configuration, protocol 1.1), and not one with
+    no channels or no samples."""
+    if rec.get("flags", 0) & REC_STALE:
+        return False, "stale (captured under another configuration)"
     if not rec.get("ch") or rec.get("n", 0) < 2:
         return False, "no channels / samples"
     return True, ""
@@ -1420,9 +1437,18 @@ def numeric_selftest(fail):
     if rate_per_s([0.0, 10.0, 10.5], now=10.5) != 2.0:
         fail("rate_per_s window")
 
-    # usable records: empty ones are not drawn
-    if not record_usable(synth_record(codes))[0]:
-        fail("record_usable refuses a good record")
+    # the record's capture block wins over PROPS for the trigger
+    rc = synth_record(codes)
+    rc.update({"trig_level": 20, "trig_edge": 1, "trig_src": 1, "trig_mode": 0, "cap_mask": 1, "cap_version": 1})
+    if trig_settings({"trig.level": 0, "trig.edge": 0, "trig.source": 0}, rc) != (20, False, 1):
+        fail("trig_settings ignores the capture block")
+    if geometry_key(rc) == geometry_key(synth_record(codes)):
+        fail("geometry_key ignores the capture mask")
+    # usable records: STALE and empty ones are not drawn
+    st_rec = synth_record(codes)
+    st_rec["flags"] |= REC_STALE
+    if record_usable(st_rec)[0] or not record_usable(synth_record(codes))[0]:
+        fail("record_usable and the STALE flag")
     empty = synth_record(codes)
     empty["ch"], empty["nch"] = [], 0
     if record_usable(empty)[0]:
@@ -1472,8 +1498,8 @@ def demo_stream(n_records=12, seed=3):
 def live_robustness(fail):
     """The live window against what crashed it on the bench and its kin:
     identical and backwards timestamps, a burst, a record with no channels,
-    PROPS between records of different channel counts, and a handler that
-    raises. Nothing may escape; errors show in the footer."""
+    PROPS between records of different channel counts, STALE records, and a
+    handler that raises. Nothing may escape; errors show in the footer."""
     codes, _e = square(phase=3)
     p = Plot("Agg", persist="inf", fold=True)
     two = synth_record(codes, [200 - v for v in codes])
@@ -1492,8 +1518,12 @@ def live_robustness(fail):
     p.update(one, 3.3)
     p.set_props({"ch2.enabled": 1})
     p.update(two, 3.4)
-    if p.ignored < 1:
-        fail("the record with no channels was not ignored")
+    wf_before = {k: h.waveforms for k, h in p.hists.items()}
+    stale = synth_record([v + 40 for v in codes], [v for v in codes])
+    stale["flags"] |= REC_STALE
+    p.update(stale, 3.5)
+    if {k: h.waveforms for k, h in p.hists.items()} != wf_before or p.ignored < 2:
+        fail("a STALE record was accumulated (ignored=%d)" % p.ignored)
     if p.errors:
         fail("live path raised: %s" % list(p.errors))
     bad = dict(two)
