@@ -100,15 +100,15 @@ def main():
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "0"); jds.freq(1000.0, 1); jds.amp(2.0, 1)
     jds.offset(0.5, 1); jds.output(True, False); jds.close()
     sc.scope_range(5, 1)
-    print(sc.cmd("fpga scope level 0").strip().splitlines()[-1])
+    print(sc.cmd("set trig.level 0").strip().splitlines()[-1])
     print("boot status03:", status03(sc))
-    sc.cmd("fpga scope trigmode normal")
+    sc.cmd("set trig.mode normal")
     sc.cmd("fpga postedge 1"); sc.cmd("fpga pollgap 5")
     rows = []
 
     print("-- P1 baseline: hold + fill across timebases")
     for code in ((0x0E,) if a.wild_only else (0x0E, 0x0F, 0x10, 0x11, 0x12, 0x0E)):
-        sc.cmd("fpga scope timebase %02x" % code, timeout=6.0)
+        sc.cmd("set tb.code=%d tb.roll=off" % code, timeout=6.0)
         measure(sc, "base", code, a.window if code < 0x11 else a.window + 4, rows, log)
     if not any(r["n"] for r in rows):
         print("NO HANDOVERS in the baseline -- input not triggering; stopping."); return 2
@@ -135,12 +135,12 @@ def main():
             seq(sc, reg, v)
             measure(sc, "reg%02X=%02X" % (reg, v), 0x0E, a.window, rows, log)
         seq(sc, reg, stock)
-        sc.cmd("fpga scope timebase 0e", timeout=6.0)
+        sc.cmd("set tb.code=14 tb.roll=off", timeout=6.0)
         measure(sc, "reg%02X=%02X restore" % (reg, stock), 0x0E, a.window, rows, log)
 
     # restore
     sc.cmd("fpga postedge 0"); sc.cmd("fpga pollgap 30"); sc.cmd("fpga acqbr 0"); sc.cmd("fpga acqbr off")
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope timebase 10", timeout=6.0)
+    sc.cmd("set trig.mode auto"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
     sc.close(); log.close()
     base = [r for r in rows if r["tag"] == "base"]
     print("baseline dt - fill: %s" % ", ".join("0x%02X %.0f" % (r["code"], r["dt_minus_fill"]) for r in base))

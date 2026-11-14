@@ -79,7 +79,7 @@ class DmmGoalValidatorTests(unittest.TestCase):
         result = validate_dmm_goal.verify_live_validation_safety_contract()
         self.assertEqual(
             result["mode_commands"],
-            ["mode meter 0 0", "mode meter 1 0", "mode meter 0 0"],
+            ["set meter.func=0 meter.layout=0 sys.mode=meter", "set meter.func=1 meter.layout=0 sys.mode=meter", "set meter.func=0 meter.layout=0 sys.mode=meter"],
         )
 
     def test_meter_transition_drain_gates_usart_enable(self) -> None:

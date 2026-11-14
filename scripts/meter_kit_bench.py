@@ -66,7 +66,7 @@ def as_si(display, unit):
 
 def capture(sc, func, settle, need=3, timeout=30.0):
     sub, _ = FUNCS[func]
-    sc.cmd("mode meter %d" % sub)
+    sc.cmd("set meter.func=%d sys.mode=meter" % sub)
     time.sleep(settle)
     seen, last_upd, t0 = [], -1, time.time()
     while time.time() - t0 < timeout:

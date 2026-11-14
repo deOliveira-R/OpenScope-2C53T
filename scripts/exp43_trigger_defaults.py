@@ -11,9 +11,9 @@ QUESTION
     with no shell writes, and does NORMAL mode now capture?
 
 HYPOTHESIS AND FALSIFIER
-    Fresh boot: `fpga scope level` reports reconcile code 0x80 and code in
+    Fresh boot: `fpga scope trigger` reports reconcile code 0x80 and code in
     force 0x80; `fpga autowait` reports "derived"; PC0 edges ADVANCE with
-    nothing set. After `fpga scope timebase 10` the derived budget is ~328 ms
+    nothing set. After `set tb.code 16` (0x10) the derived budget is ~328 ms
     and the body metric shows 0 gross seams in 10 (EXP-42's result, now by
     default). NORMAL mode with level 0 keeps capturing (gen advances, edges
     ~1 per record); NORMAL with level +100 (code 252, above the signal)
@@ -60,14 +60,15 @@ def main():
 
     sc = Scope("/dev/ttyACM0")
     print("=== EXP-43: fresh-boot readback, nothing written yet ===")
-    print(sc.cmd("fpga scope level").strip().splitlines()[1])
+    trig = sc.cmd("fpga scope trigger").splitlines()          # trig.* in force, reg 0x06/0x08
+    print(next((l.strip() for l in trig if l.strip().startswith("trigger level")), "?"))
     print(sc.cmd("fpga autowait").strip().splitlines()[1])
-    print(sc.cmd("fpga scope trigmode").strip().splitlines()[1])
+    print(next((l.strip() for l in trig if l.strip().startswith("trigger mode")), "?"))
     e0, o0 = counters(sc); time.sleep(3.0); e1, o1 = counters(sc)
     print("PC0 edges in 3 s, untouched boot: +%d  (SPI3 OK +%d)  -> %s" % (e1 - e0, o1 - o0, "EDGES ARRIVE" if e1 > e0 else "NO EDGES"))
 
     print("\n=== timebase 0x10 (relays to range 5), derived budget ===")
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope timebase 10", timeout=6.0)
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
     print(sc.cmd("fpga autowait").strip().splitlines()[1])
     fs = load_rates()[0x10]
     e0, o0 = counters(sc)
@@ -80,15 +81,15 @@ def main():
           % (sum(x > 20 for x in mx), np.diff(gens).min(), np.diff(gens).max(), (e1 - e0) / max(o1 - o0, 1)))
 
     print("\n=== NORMAL mode ===")
-    print(sc.cmd("fpga scope trigmode normal").strip().splitlines()[1][:40])
+    print(sc.cmd("set trig.mode normal").strip().splitlines()[1][:40])
     for level in (0, 100, 0):
-        print(sc.cmd("fpga scope level %d" % level).strip().splitlines()[1])
+        print(sc.cmd("set trig.level %d" % level).strip().splitlines()[1])
         time.sleep(1.0)
         e0, o0 = counters(sc); g = [grab_frame(sc)["gen"] for _ in range(4)]; e1, o1 = counters(sc)
         adv = np.diff(g)
         print("   level %+4d: gen %s -> %s   edges +%d  OK +%d"
               % (level, list(g), "FROZEN (holds last trace)" if np.all(adv == 0) else "advancing", e1 - e0, o1 - o0))
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope level 0")
+    sc.cmd("set trig.mode auto"); sc.cmd("set trig.level 0")
     sc.close()
 
 

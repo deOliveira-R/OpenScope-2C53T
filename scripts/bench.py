@@ -429,6 +429,25 @@ class Scope:
     def close(self) -> None:
         self._t.close()
 
+    _SET_FAILED = re.compile(r"^\s*(INVALID|REFUSED|NOT_SET|BUSY|TIMEOUT|ERR|Unknown command)\b.*$", re.M)
+
+    def set(self, *pairs: str, timeout: float = 3.0) -> str:
+        """``set name=value [name=value ...]``: instrument state through the
+        property model (the input task applies it, as for a key).
+
+        The firmware answers one ``OK`` / ``CLAMPED`` line per pair, or says
+        why nothing (or not everything) was applied: INVALID, REFUSED,
+        NOT_SET, BUSY, TIMEOUT. Anything but applied raises, so a run cannot
+        go on measuring with a setting the instrument does not have. A line
+        ending in ``; stored: ... FE off`` is applied to the state and reaches
+        the hardware when that instrument is next entered."""
+        line = "set " + " ".join(pairs)
+        reply = self.cmd(line, timeout)
+        failed = self._SET_FAILED.search(reply)
+        if failed or not re.search(r"^\s*(OK|CLAMPED) ", reply, re.M):
+            raise BenchError("%r was not applied: %s" % (line, failed.group(0).strip() if failed else reply.strip()))
+        return reply
+
     # -- reads -------------------------------------------------------------
 
     def opread(self, op: int, n: int = STOCK_WINDOW_BYTES,
@@ -539,17 +558,18 @@ class Scope:
     def vdiv(self, ch: int, index: int) -> str:
         """Set a channel's volts/div range in BOTH display state and relays.
 
-        Uses `fpga scope vdiv`, NOT `fpga scope range`. The raw form drives
+        Uses the property chN.vdiv, NOT `fpga scope range`. The raw form drives
         the relay bank behind the display's back, so the badge's counts->volts
         k stays at the OLD range — exactly how EXP-19's first grid run got
         fourteen refusals: the harness moved the hardware and the badge never
         heard. Same lesson as timebase()/timebase_raw() below."""
-        return self.cmd(f"fpga scope vdiv {ch} {index}")
+        return self.set(f"ch{ch}.vdiv={index}")
 
     def timebase(self, index: int) -> str:
         """Set the timebase in BOTH the display state and reg 0x01.
 
-        Uses `fpga scope timebase`, NOT a raw `seq 01 XX`. The raw write
+        Uses the property tb.code (and leaves roll, as the timebase
+        keys do), NOT a raw `seq 01 XX`. The raw write
         changes the hardware behind the display's back: the firmware carries
         the current timebase in scope_state.timebase_idx (what labels the axis
         and picks fs for the Freq badge) and in fpga.c's acq_rate_idx (what is
@@ -558,7 +578,7 @@ class Scope:
         Driving them apart from a bench script is how that stays hidden, so
         this method drives them together.
         """
-        return self.cmd(f"fpga scope timebase {index & 0xFF:02X}")
+        return self.set(f"tb.code={index & 0xFF}", "tb.roll=off")
 
     def timebase_raw(self, index: int) -> str:
         """Write reg 0x01 directly, leaving the display state stale.
@@ -571,22 +591,23 @@ class Scope:
     def trigger_mode(self, mode: str) -> str:
         """Set the acquisition trigger mode through the single entry point.
 
-        `fpga scope trigmode auto|normal|single` is the same path the UI
+        `set trig.mode auto|normal|single` is the same path the UI
         button takes (trigger-modes spec S3 (i)). The mode is an acquisition
         policy in fpga.c, not a fabric register: EXP-55 found no polarity
         select and nothing here writes SPI3 directly.
         """
-        return self.cmd(f"fpga scope trigmode {mode}")
+        return self.set(f"trig.mode={mode}")
 
     def trigger_level(self, level: int) -> str:
         """Set the trigger level through the single entry point.
 
-        `fpga scope level <n>` is the one writer of SPI3 reg 0x08 (EXP-43,
+        The property trig.level is the one writer of SPI3 reg 0x08 (EXP-43,
         `3ec8fd9`); it records what is in force for the UI and re-primes the
         capture. `n` is the UI unit (code = 128 + 1.2 n by readback, EXP-56).
-        The reply carries `code 0x..`, which is the number to trust.
+        The code in force is in `fpga scope trigger` (`code 0x..`), which is
+        the number to trust.
         """
-        return self.cmd(f"fpga scope level {int(level)}")
+        return self.set(f"trig.level={int(level)}")
 
     def trigger_level_raw(self, code: int) -> str:
         """Write reg 0x08 directly, leaving the UI's idea of the level stale.
@@ -1676,6 +1697,26 @@ def selftest() -> int:
     t.raises(lambda: sc.gpio("XX9", 1), "gpio() rejects a malformed pin name")
     t.raises(lambda: sc.gpio("E4", 2), "gpio() rejects a level that is not 0/1")
     t.raises(lambda: sc.opread(0x1FF), "opread() rejects an out-of-range opcode")
+
+    print("\n3b. settings go through the property model, and a refusal raises")
+    ps = Scope(transport=ScriptedTransport({
+        "set ch1.vdiv=5": "set ch1.vdiv=5\r\nOK ch1.vdiv=5  # 500mV\r\n> ",
+        "set tb.code=16 tb.roll=off": "OK tb.code=16  # 5ms\r\nOK tb.roll=off\r\n> ",
+        "set trig.mode=normal": "OK trig.mode=Normal\r\n> ",
+        "set trig.level=20": "OK trig.level=20 px ; stored: scope FE off\r\n> ",
+        "set ch2.vdiv=4": "NOT_SET ch2.vdiv (relay apply failed); old value kept: 3  # 1.00V\r\n> ",
+        "set trig.level=-20": "TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing applied\r\n> ",
+        "set gen.amp=15": "CLAMPED gen.amp=3.0 V\r\n> ",
+        "set ch1.vdiv=2 tb.code=99": "INVALID tb.code=99 (out of range); nothing applied\r\n> ",
+    }))
+    ps.vdiv(1, 5); ps.timebase(0x10); ps.trigger_mode("normal"); ps.trigger_level(20)
+    t.ok(ps._t.log == ["set ch1.vdiv=5", "set tb.code=16 tb.roll=off", "set trig.mode=normal",
+                       "set trig.level=20"],
+         "vdiv/timebase/trigger_mode/trigger_level send `set` (tb.code decimal, roll left)")
+    t.ok("CLAMPED" in ps.set("gen.amp=15"), "a clamped set is applied and returned")
+    t.raises(lambda: ps.vdiv(2, 4), "NOT_SET raises")
+    t.raises(lambda: ps.trigger_level(-20), "TIMEOUT raises")
+    t.raises(lambda: ps.set("ch1.vdiv=2", "tb.code=99"), "INVALID raises")
 
     print("\n4. spectral detection — why a fixed bin is forbidden")
     n = STOCK_SAMPLES

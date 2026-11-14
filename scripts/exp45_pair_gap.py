@@ -43,14 +43,14 @@ def main():
     jds.output(False, False); jds.waveform("sine", 1); jds.freq(F_DRIVE, 1); jds.amp(3.0, 1); jds.offset(0.0, 1)
     jds.output(True, False); jds.close()
     sc = Scope("/dev/ttyACM0")
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope timebase 10", timeout=6.0)
-    sc.cmd("fpga scope level 0"); sc.cmd("fpga acqgate off"); sc.cmd("fpga rearm off")
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
+    sc.cmd("set trig.level 0"); sc.cmd("fpga acqgate off"); sc.cmd("fpga rearm off")
     print("EXP-45  NORMAL sustain vs pair gap;  then AUTO edges/pair vs gap")
     for gap in (0, 2, 10, 50, 0):
-        sc.cmd("fpga scope trigmode auto"); time.sleep(0.3)
+        sc.cmd("set trig.mode auto"); time.sleep(0.3)
         got = int(re.search(r"gap (\d+) ms", sc.cmd("fpga pairgap %d" % gap)).group(1))
         assert got == gap, "pairgap did not take"
-        sc.cmd("fpga scope trigmode normal"); time.sleep(1.0)
+        sc.cmd("set trig.mode normal"); time.sleep(1.0)
         sc.opread_stats(0x04)                       # one shell prime so the mode has its first edge
         time.sleep(1.0)
         e0, o0 = counters(sc); gens = [grab_frame(sc)["gen"] for _ in range(6)]; e1, o1 = counters(sc)
@@ -59,11 +59,11 @@ def main():
               % (gap, gens, "FROZEN" if np.all(adv == 0) else "advancing (adv %d..%d)" % (adv.min(), adv.max()), e1 - e0, o1 - o0))
     print()
     for gap in (0, 10, 50):
-        sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga pairgap %d" % gap); time.sleep(1.0)
+        sc.cmd("set trig.mode auto"); sc.cmd("fpga pairgap %d" % gap); time.sleep(1.0)
         e0, o0 = counters(sc); time.sleep(6.0); e1, o1 = counters(sc)
         print("AUTO  gap %2d ms: 6 s free-run+gated  edges +%d  pairs +%d  edges/pair %.2f  pairs/s %.1f"
               % (gap, e1 - e0, o1 - o0, (e1 - e0) / max(o1 - o0, 1), (o1 - o0) / 6.0))
-    sc.cmd("fpga pairgap 0"); sc.cmd("fpga scope trigmode auto")
+    sc.cmd("fpga pairgap 0"); sc.cmd("set trig.mode auto")
     sc.close()
 
 

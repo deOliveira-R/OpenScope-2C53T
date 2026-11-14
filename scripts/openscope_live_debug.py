@@ -657,7 +657,7 @@ def run_shorted_probes_sweep(
     with PosixSerial(port, baud, timeout) as serial:
         serial.drain()
         for submode in SHORTED_PROBE_SUBMODES:
-            mode_command = f"mode meter {submode} 0"
+            mode_command = f"set meter.func={submode} meter.layout=0 sys.mode=meter"
             mode_response = run_command_on_serial(serial, mode_command, timeout)
             serial.drain()
             time.sleep(settle_ms / 1000.0)
@@ -1036,7 +1036,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     command_parser = subparsers.add_parser("command", help="send one debug-shell command and print the response")
     add_common_serial_args(command_parser)
-    command_parser.add_argument("command", help='debug-shell command, for example "status", "meter wave", or "mode meter 1 0"')
+    command_parser.add_argument("command", help='debug-shell command, for example "status", "meter wave", or "set meter.func=1 meter.layout=0 sys.mode=meter"')
 
     poll_parser = subparsers.add_parser("poll", help="send one command repeatedly")
     add_common_serial_args(poll_parser)

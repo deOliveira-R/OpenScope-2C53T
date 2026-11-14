@@ -53,10 +53,10 @@ def main():
     sc = Scope("/dev/ttyACM0"); saved = {}
     print("EXP-55 device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "3"); jds.freq(2.0, 1); jds.amp(2.0, 1); jds.offset(0.5, 1); jds.output(True, False); jds.close()
-    sc.cmd("fpga scope timebase 12", timeout=6.0)
-    r = sc.cmd("fpga scope level 0"); L = int(re.search(r"code 0x([0-9A-Fa-f]+)", r).group(1), 16)
+    sc.cmd("set tb.code=18 tb.roll=off", timeout=6.0)
+    r = sc.cmd("set trig.level 0"); L = int(re.search(r"code 0x([0-9A-Fa-f]+)", r).group(1), 16)
     print("level code %d -> expected crossing in record scale %d" % (L, L - 28))
-    sc.cmd("fpga scope trigmode normal"); time.sleep(3.0)
+    sc.cmd("set trig.mode normal"); time.sleep(3.0)
     for tag, val in (("control", 0x03), ("bit0", 0x01), ("bit1", 0x02), ("none", 0x00), ("recovery", 0x03)):
         t = sc.cmd("spi3 seq 02 %02x" % val, timeout=6.0)
         if "error" in t.lower() or "usage" in t.lower(): print("  write failed:", t.strip()[:120])
@@ -74,7 +74,7 @@ def main():
         for k, v512, s, edge, dup in rows:
             print("      k %4d  r[512] %3d  slope %+6.1f  %-4s%s" % (k, v512, s, edge, "  (dup)" if dup else ""))
     np.savez(OUT + "exp55_records.npz", **saved)
-    sc.cmd("spi3 seq 02 03", timeout=6.0); sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope level 0"); sc.cmd("fpga scope timebase 10", timeout=6.0)
+    sc.cmd("spi3 seq 02 03", timeout=6.0); sc.cmd("set trig.mode auto"); sc.cmd("set trig.level 0"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "0"); jds.freq(1000.0, 1); jds.amp(3.0, 1); jds.offset(0.0, 1); jds.close(); sc.close(); print("done")
 
 if __name__ == "__main__":

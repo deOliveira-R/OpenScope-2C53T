@@ -479,7 +479,7 @@ h2_post_rx n=0 trigger=01 len=2 bytes=FF FF
         try:
             responses: list[str] = []
             for submode in range(11):
-                responses.append(f"mode=meter submode={submode}")
+                responses.append(f"OK meter.func={submode} ; OK meter.layout=0 ; OK sys.mode=meter ; posted")
                 if submode == 0:
                     responses.append(make_trace_text(0, display="0.0000", value_i10000=0, family=0))
                     responses.append(make_dump_text(0, valid=1, result_class=1, display="0.0000", unit="V", family=0))
@@ -525,10 +525,10 @@ h2_post_rx n=0 trigger=01 len=2 bytes=FF FF
 
         self.assertEqual(rc, 0)
         written = SequenceSerial.instances[0].written
-        self.assertEqual(written[0:3], ["mode meter 0 0", "meter trace", "meter dump"])
-        self.assertEqual(written[-3:], ["mode meter 10 0", "meter trace", "meter dump"])
-        self.assertEqual([cmd for cmd in written if cmd.startswith("mode meter")],
-                         [f"mode meter {submode} 0" for submode in range(11)])
+        self.assertEqual(written[0:3], ["set meter.func=0 meter.layout=0 sys.mode=meter", "meter trace", "meter dump"])
+        self.assertEqual(written[-3:], ["set meter.func=10 meter.layout=0 sys.mode=meter", "meter trace", "meter dump"])
+        self.assertEqual([cmd for cmd in written if cmd.startswith("set meter.func=")],
+                         [f"set meter.func={submode} meter.layout=0 sys.mode=meter" for submode in range(11)])
         self.assertIn("PASS sub=7 Continuity: continuity beep on", out.getvalue())
 
     def test_shorted_probes_sweep_fails_on_nonzero_dcv(self) -> None:
@@ -537,7 +537,7 @@ h2_post_rx n=0 trigger=01 len=2 bytes=FF FF
         try:
             responses: list[str] = []
             for submode in range(11):
-                responses.append(f"mode=meter submode={submode}")
+                responses.append(f"OK meter.func={submode} ; OK meter.layout=0 ; OK sys.mode=meter ; posted")
                 responses.append(make_trace_text(submode, display="0.4300", value_i10000=4300,
                                                  family=0 if submode < 2 else min(submode, 5)))
                 responses.append(make_dump_text(submode, valid=1, result_class=1, display="0.4300",

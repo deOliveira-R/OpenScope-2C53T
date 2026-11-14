@@ -39,8 +39,8 @@ def counters(sc):
 
 
 def normal_arm(sc, label):
-    sc.cmd("fpga scope trigmode auto"); time.sleep(0.3)
-    sc.cmd("fpga scope trigmode normal"); time.sleep(1.0)
+    sc.cmd("set trig.mode auto"); time.sleep(0.3)
+    sc.cmd("set trig.mode normal"); time.sleep(1.0)
     sc.opread_stats(0x04); time.sleep(1.0)               # one shell prime
     e0, o0 = counters(sc); gens = [grab_frame(sc)["gen"] for _ in range(6)]; e1, o1 = counters(sc)
     adv = np.diff(gens)
@@ -50,7 +50,7 @@ def normal_arm(sc, label):
 
 
 def auto_arm(sc, label):
-    sc.cmd("fpga scope trigmode auto"); time.sleep(1.0)
+    sc.cmd("set trig.mode auto"); time.sleep(1.0)
     e0, o0 = counters(sc); time.sleep(6.0); e1, o1 = counters(sc)
     print("AUTO   %-28s 6 s: edges +%d pairs +%d edges/pair %.2f pairs/s %.1f"
           % (label, e1 - e0, o1 - o0, (e1 - e0) / max(o1 - o0, 1), (o1 - o0) / 6.0))
@@ -61,8 +61,8 @@ def main():
     jds.output(False, False); jds.waveform("sine", 1); jds.freq(F_DRIVE, 1); jds.amp(3.0, 1); jds.offset(0.0, 1)
     jds.output(True, False); jds.close()
     sc = Scope("/dev/ttyACM0")
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope timebase 10", timeout=6.0)
-    sc.cmd("fpga scope level 0"); sc.cmd("fpga acqgate off"); sc.cmd("fpga rearm off"); sc.cmd("fpga pairgap 0")
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
+    sc.cmd("set trig.level 0"); sc.cmd("fpga acqgate off"); sc.cmd("fpga rearm off"); sc.cmd("fpga pairgap 0")
     print("EXP-46")
     sustained = []
     sc.cmd("fpga acqbr off")
@@ -81,7 +81,7 @@ def main():
         sc.cmd("fpga postedge 0"); sc.cmd("fpga acqbr off")
         sc.cmd("fpga %s %d" % (kind, v))
         auto_arm(sc, "%s %d" % (kind, v))
-    sc.cmd("fpga postedge 0"); sc.cmd("fpga acqbr off"); sc.cmd("fpga scope trigmode auto")
+    sc.cmd("fpga postedge 0"); sc.cmd("fpga acqbr off"); sc.cmd("set trig.mode auto")
     sc.close()
 
 

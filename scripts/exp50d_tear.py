@@ -31,9 +31,9 @@ def peak_fs(v, f):
     a, bb, c = np.log(X[b-1]+1e-9), np.log(X[b]+1e-9), np.log(X[b+1]+1e-9); d = 0.5*(a-c)/(a-2*bb+c)
     return f * 1024 / (b + d)
 rates = load_rates(); sc = Scope("/dev/ttyACM0")
-sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope level 0"); sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0")
+sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.level 0"); sc.cmd("set trig.mode auto"); sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0")
 for tb in (0x12, 0x11):
-    sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0); time.sleep(0.5); fs = rates[tb]; fill = 1024 / fs * 1000
+    sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0); time.sleep(0.5); fs = rates[tb]; fill = 1024 / fs * 1000
     # rate first, from clean records at +330, 201.2 Hz
     jds = JDS6600("/dev/ttyUSB0"); jds.waveform("sine", 1); jds.freq(201.2, 1); jds.amp(3.0, 1); jds.offset(0.0, 1); jds.output(True, False); jds.close()
     sc.cmd("fpga holdread %d" % int(fill + 330)); time.sleep(2.5)
@@ -49,4 +49,4 @@ for tb in (0x12, 0x11):
             print("tb 0x%02X drive %4.0f Hz hold fill+%-4d  tear k %s  phase-jump deg %s  1-seg rms %s  2-seg rms %s" % (
                 tb, F, m, [r[0] for r in rows], [int(r[1]) for r in rows], " ".join("%.0f" % r[2] for r in rows), " ".join("%.0f" % r[3] for r in rows)))
     sc.cmd("fpga holdread 0")
-sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0"); sc.cmd("fpga scope timebase 10", timeout=6.0); sc.close(); print("done")
+sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); sc.close(); print("done")

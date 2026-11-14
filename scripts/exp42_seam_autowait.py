@@ -99,7 +99,7 @@ def main():
     print("EXP-42  seam vs AUTO edge-wait budget")
     print("drive %.1f Hz, timebase 0x%02X = %.1f S/s, capture %.0f ms, long wait %d ms, %d records/arm"
           % (F_DRIVE, a.tb, fs, 1024.0 / fs * 1000.0, long_ms, a.n))
-    sc.cmd("fpga scope timebase %02x" % a.tb, timeout=6.0)
+    sc.cmd("set tb.code=%d tb.roll=off" % a.tb, timeout=6.0)
     sc.cmd("fpga acqgate off", timeout=4.0)
     sc.cmd("fpga rearm off", timeout=4.0)
     sc.seq(0x08, LEVEL)

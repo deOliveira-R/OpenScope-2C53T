@@ -36,27 +36,27 @@ def main():
     rates = load_rates(); sc = Scope("/dev/ttyACM0")
     print("EXP-50  device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
     print("=== readback first ===")
-    for c in ("fpga holdread", "fpga postedge", "fpga autowait", "fpga scope level", "fpga scope trigmode"):
+    for c in ("fpga holdread", "fpga postedge", "fpga autowait", "fpga scope trigger"):
         print("  " + next((l for l in sc.cmd(c).strip().splitlines() if l.strip() and not l.strip().startswith(">") and c not in l), "?")[:110])
-    sc.cmd("fpga scope vdiv 1 5")
+    sc.cmd("set ch1.vdiv 5")
     print("\n=== NORMAL, defaults, level 0 ===")
     for tb in (0x0E, 0x10, 0x11, 0x12):
-        sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0); time.sleep(0.5)
-        sc.cmd("fpga scope trigmode normal"); time.sleep(1.5)
+        sc.cmd("set trig.mode auto"); sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0); time.sleep(0.5)
+        sc.cmd("set trig.mode normal"); time.sleep(1.5)
         st, de, do, lat = watch(sc)
         print("  tb 0x%02X: %-9s edges +%d commits +%d  latency ms %s  (fill %.0f)" % (tb, st, de, do, lat, 1024 / rates[tb] * 1000))
     print("\n=== NORMAL negative control at 0x10 ===")
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope timebase 10", timeout=6.0); sc.cmd("fpga scope trigmode normal"); time.sleep(1.5)
+    sc.cmd("set trig.mode auto"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); sc.cmd("set trig.mode normal"); time.sleep(1.5)
     for lvl in (0, 100, 0):
-        sc.cmd("fpga scope level %d" % lvl); time.sleep(1.5); st, de, do, _ = watch(sc)
+        sc.cmd("set trig.level %d" % lvl); time.sleep(1.5); st, de, do, _ = watch(sc)
         print("  level %+4d: %-9s edges +%d commits +%d" % (lvl, st, de, do))
     print("\n=== SINGLE ===")
     for k in range(3):
-        sc.cmd("fpga scope trigmode auto"); time.sleep(0.4); g0 = grab_frame(sc)["gen"]
-        sc.cmd("fpga scope trigmode single"); time.sleep(2.5); g = [grab_frame(sc)["gen"] for _ in range(3)]
+        sc.cmd("set trig.mode auto"); time.sleep(0.4); g0 = grab_frame(sc)["gen"]
+        sc.cmd("set trig.mode single"); time.sleep(2.5); g = [grab_frame(sc)["gen"] for _ in range(3)]
         print("  selection %d: gen %d -> %s  -> %s" % (k + 1, g0, g, "ONE record then held" if (g[0] > g0 and len(set(g)) == 1) else "UNEXPECTED"))
     print("\n=== AUTO at 0x10 ===")
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope level 0"); time.sleep(1.0)
+    sc.cmd("set trig.mode auto"); sc.cmd("set trig.level 0"); time.sleep(1.0)
     e0, o0, _ = status(sc); t0 = time.time(); mx = []; lat = []
     for _ in range(10): mx.append(body_max(np.asarray(grab_frame(sc)["ch1"], float), rates[0x10])); lat.append(status(sc)[2])
     e1, o1, _ = status(sc)

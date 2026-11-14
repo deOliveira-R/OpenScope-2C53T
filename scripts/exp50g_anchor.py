@@ -25,11 +25,11 @@ def analyse(v, fs, f, code):
     ti_r = np.mod(p_r - ph0, 1.0) * fs / f; ti_f = np.mod(p_f - ph0, 1.0) * fs / f
     return k, jump, rms, ti_r, ti_f, amp, off
 rates = load_rates(); sc = Scope("/dev/ttyACM0"); saved = {}
-sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga postedge 0")
+sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.mode auto"); sc.cmd("fpga postedge 0")
 for tb, F in ((0x12, 2.0), (0x10, 10.0)):
-    sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0); fs = rates[tb]; fill = 1024/fs*1000; per = fs/F
+    sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0); fs = rates[tb]; fill = 1024/fs*1000; per = fs/F
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "3"); jds.freq(F, 1); jds.amp(2.0, 1); jds.offset(0.5, 1); jds.output(True, False); jds.close()
-    sc.cmd("fpga holdread %d" % int(fill + 330)); time.sleep(3.0); v0 = np.asarray(grab_frame(sc)["ch1"], float); code = int((np.percentile(v0, 2) + np.percentile(v0, 98))/2); level = int(round((code - 128)*206/256)); sc.cmd("fpga scope level %d" % level); time.sleep(1.0); print("  span %.0f..%.0f" % (v0.min(), v0.max()))
+    sc.cmd("fpga holdread %d" % int(fill + 330)); time.sleep(3.0); v0 = np.asarray(grab_frame(sc)["ch1"], float); code = int((np.percentile(v0, 2) + np.percentile(v0, 98))/2); level = int(round((code - 128)*206/256)); sc.cmd("set trig.level %d" % level); time.sleep(1.0); print("  span %.0f..%.0f" % (v0.min(), v0.max()))
     print("tb 0x%02X tri %.0f Hz fs %.0f  level %d (code %d)  period %.0f samples; predictions: post=0  roll-end=1024  189ms-late=%.0f" % (tb, F, fs, level, code, per, np.mod(-0.189*fs, per)))
     for label, hr in (("LATE  edge+fill+330", int(fill + 330)), ("LATE  edge+fill+230", int(fill + 230)), ("EARLY edge+100", 100)):
         sc.cmd("fpga holdread %d" % hr); time.sleep(3.0 if tb == 0x12 else 2.0)
@@ -39,5 +39,5 @@ for tb, F in ((0x12, 2.0), (0x10, 10.0)):
             print("  %-20s seam k %4d (jump %3.0f)  fit rms %4.1f amp %5.1f off %5.1f   trig index: rising %6.0f  falling %6.0f" % (label, k, jump, rms, amp, off, ti_r, ti_f))
     sc.cmd("fpga holdread 0")
 np.savez("/tmp/claude-1000/-home-david-osc/7295c197-e28f-4e77-9e4f-ae5fa413ac94/scratchpad/exp50g_records.npz", **saved)
-sc.cmd("fpga scope level 0"); sc.cmd("fpga holdread 0"); sc.cmd("fpga scope timebase 10", timeout=6.0)
+sc.cmd("set trig.level 0"); sc.cmd("fpga holdread 0"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
 jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "0"); jds.freq(201.2, 1); jds.close(); sc.close(); print("done")

@@ -82,7 +82,7 @@ def main():
     print("EXP-29  seam vs acq re-arm")
     print("drive %.1f Hz, timebase 0x%02X = %.1f S/s, %d records/arm"
           % (F_DRIVE, TB_CODE, fs, N_PER_ARM))
-    print(sc.cmd("fpga scope timebase %02x" % TB_CODE, timeout=6.0).strip()
+    print(sc.cmd("set tb.code=%d tb.roll=off" % TB_CODE, timeout=6.0).strip()
           .splitlines()[-2] if True else "")
 
     out = {}

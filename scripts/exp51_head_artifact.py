@@ -61,8 +61,8 @@ CONTROL
     session is VOID (the drive, range or level moved). Body floor must stay
     at the EXP-47 level (~6 at 201.2 Hz, 0x10) in every arm -- a floor above
     20 means the record is torn and the head measure is meaningless for it.
-    Timebase changes are confirmed by `fpga scope timebase` not answering
-    NOT SET, and every knob is restored at the end.
+    Timebase changes are confirmed by `set tb.code` not answering
+    NOT_SET, and every knob is restored at the end.
 
 PRECONDITIONS
     JDS6600 CH1 -> scope CH1 and (arm e) JDS6600 CH2 -> scope CH2, as in
@@ -194,8 +194,8 @@ def readback(sc, cmd, must_contain):
 
 
 def set_tb(sc, tb):
-    r = sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0)
-    assert "NOT SET" not in r and "sage" not in r, r
+    r = sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0)
+    assert "OK tb.code=%d" % tb in r and "NOT_SET" not in r and "TIMEOUT" not in r, r
     time.sleep(0.8)
 
 
@@ -209,8 +209,8 @@ def main():
     rates = load_rates()
     sc = Scope("/dev/ttyACM0")
     print("EXP-51  device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope vdiv 2 5")
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope level 0")
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set ch2.vdiv 5")
+    sc.cmd("set trig.mode auto"); sc.cmd("set trig.level 0")
     readback(sc, "fpga postedge 0", "derived")
     readback(sc, "fpga autowait 0", "derived")
     readback(sc, "fpga acqbr off", "not set by the task")

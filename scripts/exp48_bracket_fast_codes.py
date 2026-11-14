@@ -37,14 +37,14 @@ def counters(sc):
             int(re.search(r"SPI3 OK: (\d+)", t).group(1)))
 
 def normal_arm(sc, n=4):
-    sc.cmd("fpga scope trigmode auto"); time.sleep(0.3)
-    sc.cmd("fpga scope trigmode normal"); time.sleep(1.2)
+    sc.cmd("set trig.mode auto"); time.sleep(0.3)
+    sc.cmd("set trig.mode normal"); time.sleep(1.2)
     e0, o0 = counters(sc); g = [grab_frame(sc)["gen"] for _ in range(n)]; e1, o1 = counters(sc)
     return (not np.all(np.diff(g) == 0)), e1 - e0, o1 - o0
 
 def set_tb(sc, tb):
-    r = sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0)
-    assert "NOT SET" not in r and "usage" not in r, r
+    r = sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0)
+    assert "OK tb.code=%d" % tb in r and "NOT_SET" not in r and "TIMEOUT" not in r, r
     time.sleep(0.4)
 
 def main():
@@ -53,12 +53,12 @@ def main():
     jds.output(True, False); jds.close()
     sc = Scope("/dev/ttyACM0")
     print("EXP-48  device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope level 0"); sc.cmd("fpga acqgate off"); sc.cmd("fpga rearm off")
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.level 0"); sc.cmd("fpga acqgate off"); sc.cmd("fpga rearm off")
     sc.cmd("fpga pairgap 0"); sc.cmd("fpga acqbr off"); sc.cmd("fpga autowait 0")
 
     print("\n=== A. NORMAL sustain vs post-edge delay (ms); sweep stops after the first sustain + one confirm ===")
     for tb in (0x10, 0x0D, 0x0C, 0x0A, 0x08):
-        sc.cmd("fpga scope trigmode auto"); set_tb(sc, tb)
+        sc.cmd("set trig.mode auto"); set_tb(sc, tb)
         row = []; hits = 0
         for pe in (1, 60, 120, 150, 180, 210, 250, 300):
             r = sc.cmd("fpga postedge %d" % pe); assert re.search(r"delay %d ms" % pe, r), r
@@ -70,8 +70,8 @@ def main():
         print("  tb 0x%02X  %s" % (tb, "  ".join(row)))
 
     print("\n=== B. shell probes, task parked (SINGLE after one record), 0x10, postedge derived ===")
-    sc.cmd("fpga postedge 0"); sc.cmd("fpga scope trigmode auto"); set_tb(sc, 0x10)
-    sc.cmd("fpga scope trigmode single"); time.sleep(2.5)
+    sc.cmd("fpga postedge 0"); sc.cmd("set trig.mode auto"); set_tb(sc, 0x10)
+    sc.cmd("set trig.mode single"); time.sleep(2.5)
     g = [grab_frame(sc)["gen"] for _ in range(2)]; print("  parked: gen %s (%s)" % (g, "held" if g[0] == g[1] else "NOT HELD"))
     def probe(label, actions):
         time.sleep(1.5); e0, o0 = counters(sc); ts = []
@@ -92,15 +92,15 @@ def main():
     probe("read, read (repeat)", ["read", "read"])
 
     print("\n=== C. stock's condition: level +100 (above the signal), AUTO autowait 25, 0x08 ===")
-    sc.cmd("fpga scope trigmode auto"); set_tb(sc, 0x08); sc.cmd("fpga postedge 1"); sc.cmd("fpga autowait 25")
-    sc.cmd("fpga scope level 100"); time.sleep(1.0)
+    sc.cmd("set trig.mode auto"); set_tb(sc, 0x08); sc.cmd("fpga postedge 1"); sc.cmd("fpga autowait 25")
+    sc.cmd("set trig.level 100"); time.sleep(1.0)
     e0, o0 = counters(sc); t0 = time.time(); fr = [np.asarray(grab_frame(sc)["ch1"]) for _ in range(4)]; e1, o1 = counters(sc); dt = time.time() - t0
     d = [int(np.sum(a != b)) for a, b in zip(fr, fr[1:])]
     print("  level +100: edges +%d pairs +%d in %.1f s (%.1f pairs/s)  consecutive-frame differing samples %s" % (e1 - e0, o1 - o0, dt, (o1 - o0) / dt, d))
-    sc.cmd("fpga scope level 0"); time.sleep(1.0)
+    sc.cmd("set trig.level 0"); time.sleep(1.0)
     e0, o0 = counters(sc); t0 = time.time(); time.sleep(6.0); e1, o1 = counters(sc); dt = time.time() - t0
     print("  level 0, autowait 25, postedge 1: edges +%d pairs +%d  edges/pair %.2f  pairs/s %.1f" % (e1 - e0, o1 - o0, (e1 - e0) / max(o1 - o0, 1), (o1 - o0) / dt))
-    sc.cmd("fpga postedge 0"); sc.cmd("fpga autowait 0"); set_tb(sc, 0x10); sc.cmd("fpga scope trigmode auto")
+    sc.cmd("fpga postedge 0"); sc.cmd("fpga autowait 0"); set_tb(sc, 0x10); sc.cmd("set trig.mode auto")
     sc.close()
 
 if __name__ == "__main__":
