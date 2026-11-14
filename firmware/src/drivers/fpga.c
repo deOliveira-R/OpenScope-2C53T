@@ -6426,10 +6426,11 @@ void fpga_init(void)
      * comparator loses its reference, and every capture reads flat zeros
      * until it is restored. Arm mid-scale. Touches only MCU-internal state
      * (CRM clocks, PA4 analog, DAC registers) — cannot disturb the FPGA.
-     * The signal generator is on DAC channel 2 (PA5) and its driver only
-     * writes the upper half of DAC_CTRL, so it cannot disturb this.
-     * Channel 1 is initialised here, at boot, right before its first write
-     * (dac.h); a write no longer initialises it. */
+     * The signal generator is on DAC channel 2 (PA5); both channels share
+     * DAC_CTRL, and the DAC owner (dac.c) changes it only by a masked
+     * read-modify-write of one channel's half, so the generator cannot
+     * disturb this. Channel 1 is initialised here, at boot, right before its
+     * first write (dac.h); a write no longer initialises it. */
     scope_trigger_dac_init();
     scope_trigger_dac_raw(2048);
 
@@ -7202,8 +7203,9 @@ void fpga_enter_scope_mode(void)
 
     fpga_stock_diag_seed_base2();
     fpga_scope_reinit();
-    /* Siggen owned DAC1/PA4 until dac_output_stop() above; give CH1 its
-     * offset reference back (no-op without a usable cal page). */
+    /* CH1's / CH2's offset references (DAC1 / TMR13) from the restored
+     * range and position (no-op without a usable cal page). The generator
+     * (DAC2) is not in the way: it keeps running, see above. */
     scope_vpos_apply();
 
     /* NOTE: Do NOT fire acquisition triggers here. The scope USART commands

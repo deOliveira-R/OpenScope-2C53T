@@ -11,10 +11,15 @@
  * it). The full decode (calpage_t, ~440 B) lives on a stack only at boot and
  * in the shell.
  *
- * Every write goes through scope_trigger_dac_raw()/scope_trigger_ch2_raw(),
- * which self-initialise DAC1 (stock CTRL 0x3D) and TMR13 (PR 4094, PSC 0)
- * as stock's master_init does; stock's codes therefore transfer 1:1
- * (ADDENDUM_A S5, bench B2). Neither touches SPI3, so no acquisition park is
+ * Every write goes through scope_trigger_dac_raw()/scope_trigger_ch2_raw().
+ * DAC channel 1 (stock CTRL 0x3D) is initialised at boot, before its first
+ * write, and a write never initialises it (dac.h). TMR13 (PR 4094, PSC 0) is
+ * brought up by fpga_init where it arms CH2's reference (the warm images);
+ * elsewhere scope_trigger_ch2_raw() brings it up on its first write. Both as
+ * stock's master_init does, so stock's codes transfer
+ * 1:1 (ADDENDUM_A S5, bench B2). A running generator does not hold any of
+ * this back: it is on DAC channel 2 (PA5), and the DAC owner keeps the two
+ * channels' registers apart. Neither touches SPI3, so no acquisition park is
  * needed — the same reason fpga_apply_vdiv() needs none.
  */
 #include "scope_vpos.h"

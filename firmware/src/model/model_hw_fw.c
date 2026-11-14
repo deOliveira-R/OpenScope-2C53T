@@ -89,10 +89,10 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  *     meter's), so the relays are live on the scope screen only (*).
  * (**) DAC1/TMR13 are not in the meter's pin set, so the offset half of a
  * range change is applied live even when the relays defer (the relay
- * re-apply does not redo it). scope_vpos skips CH1 while
- * dac_output_is_running(), a guard from when the generator was on DAC1
- * (A1 removes it); with the generator running CH1's offset is then not
- * applied in any posture, as before this change.
+ * re-apply does not redo it). The generator does not hold it back: it is
+ * on DAC channel 2, and the DAC owner keeps the channels apart (A1 removed
+ * scope_vpos's old generator guard), so CH1's offset is applied whether the
+ * generator runs or not.
  * (***) as the relays: written at once while the scope front end is live
  * (scope_fe_live), else stored and re-sent from scope_state when the
  * scope's posture is back (fpga_scope_posture_gen moves: fpga_set_meter_mux
