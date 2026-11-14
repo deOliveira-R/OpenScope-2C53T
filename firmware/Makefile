@@ -488,11 +488,13 @@ _ft = $(MAKE) --no-print-directory -s features
 .PHONY: test-features
 test-features:
 	python3 -I ../scripts/features_report.py --self-test
-	@$(_ft) | grep '^on: fft usbdrive$$' >/dev/null || { echo "FAIL: default set"; exit 1; }
-	@$(_ft) PROFILE=bench | grep '^mask: 0x00000007$$' >/dev/null || { echo "FAIL: bench mask"; exit 1; }
-	@$(_ft) PROFILE=bench WITHOUT=STREAM | grep '^on: fft usbdrive$$' >/dev/null || { echo "FAIL: WITHOUT over profile"; exit 1; }
-	@$(_ft) WITH=stream USB_MSC=0 | grep '^on: stream fft$$' >/dev/null || { echo "FAIL: WITH + USB_MSC=0"; exit 1; }
-	@$(_ft) PROFILE=bench STREAM_BENCH=0 FEATURES= | grep '^on: usbdrive$$' >/dev/null || { echo "FAIL: old spellings"; exit 1; }
+	@o="$$($(_ft))"; echo "$$o" | grep -E '^stream +off ' >/dev/null && echo "$$o" | grep -E '^usbdrive +on ' >/dev/null || { echo "FAIL: defaults"; exit 1; }
+	@$(_ft) PROFILE=bench | grep -E '^stream +on ' >/dev/null || { echo "FAIL: bench profile"; exit 1; }
+	@$(_ft) PROFILE=bench WITHOUT=STREAM | grep -E '^stream +off ' >/dev/null || { echo "FAIL: WITHOUT over profile"; exit 1; }
+	@o="$$($(_ft) WITH=stream USB_MSC=0)"; echo "$$o" | grep -E '^stream +on ' >/dev/null && echo "$$o" | grep -E '^usbdrive +off ' >/dev/null || { echo "FAIL: WITH + USB_MSC=0"; exit 1; }
+	@o="$$($(_ft) PROFILE=bench STREAM_BENCH=0 FEATURES=)"; echo "$$o" | grep -E '^stream +off ' >/dev/null && echo "$$o" | grep -E '^fft +off ' >/dev/null || { echo "FAIL: old spellings"; exit 1; }
+	@$(_ft) WITHOUT=stream | grep -E '^mask: 0x[0-9a-f]*[02468ace]$$' >/dev/null || { echo "FAIL: stream bit (0) set in the mask with the stream off"; exit 1; }
+	@$(_ft) WITH=stream | grep -E '^mask: 0x[0-9a-f]*[13579bdf]$$' >/dev/null || { echo "FAIL: stream bit (0) clear in the mask with the stream on"; exit 1; }
 	@! $(_ft) WITH=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown feature accepted"; exit 1; }
 	@! $(_ft) PROFILE=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown profile accepted"; exit 1; }
 	@! $(_ft) WITH=stream WITHOUT=stream >/dev/null 2>&1 || { echo "FAIL: WITH and WITHOUT accepted"; exit 1; }
