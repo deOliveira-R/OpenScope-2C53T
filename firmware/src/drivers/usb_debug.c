@@ -3291,6 +3291,16 @@ static void cmd_meter_keepalive(const char *args)
                      (unsigned)fpga.frame_count, (unsigned)fpga.tx_count);
 }
 
+static void cmd_meter_relays(const char *args)
+{
+    bool on;
+    if (shell_onoff_arg(args, &on)) fpga_meter_relays_set(on);
+    else if (*args) { usb_send_str("usage: meter relays [on|off]\r\n"); return; }
+    usb_debug_printf("meter relays: %s (on = meter entry moves the scope's range relays, the old"
+                     " behaviour; applies at the next meter entry or function change)\r\n",
+                     onoff(fpga_meter_relays_get()));
+}
+
 static void cmd_meter_degf(const char *args)
 {
     bool on;
@@ -10696,6 +10706,8 @@ static const shell_cmd_t shell_cmds[] = {
           "meter state                     Decoded frame, range, status text, link, beep, cal guard\r\n"),
     CMD_A("meter fast", cmd_meter_fast, 0,
           "meter fast [on|off]             One-word function switching (stock) vs PC11 restart\r\n"),
+    CMD_A("meter relays", cmd_meter_relays, 0,
+          "meter relays [on|off]           Meter entry moves the scope's range relays (default off)\r\n"),
     CMD_A("meter keepalive", cmd_meter_keepalive, 0,
           "meter keepalive [on|off]        4 Hz unobeyed poll traffic (stock sends none)\r\n"),
     CMD_A("meter degf", cmd_meter_degf, 0,

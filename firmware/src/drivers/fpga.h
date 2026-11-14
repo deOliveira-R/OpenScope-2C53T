@@ -1164,6 +1164,12 @@ extern volatile bool fpga_meter_needs_activation;
  * front end was not live once the generation moves (model_hw_fw.c). */
 extern volatile uint8_t fpga_scope_posture_gen;
 bool    fpga_meter_holds_fe(void);
+/* Whether meter entry projects the stock "mux" states onto the scope's range
+ * relay pins (PC12, PE4..6, PA15, PA10, PB10, PB11, PB9, PA6). Default off:
+ * the meter SoC does not depend on them (bench 2026-11-14), and leaving them
+ * keeps the scope capturing while the meter runs. On = the old behaviour. */
+void    fpga_meter_relays_set(bool on);
+bool    fpga_meter_relays_get(void);
 
 void    fpga_acq_rearm_set(bool on);
 bool    fpga_acq_rearm_get(void);

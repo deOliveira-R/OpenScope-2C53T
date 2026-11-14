@@ -186,6 +186,7 @@ static TaskHandle_t      rx_task_handle  = NULL;
 static volatile bool data_ready = false;
 static volatile bool scope_reinit_pending = false;
 static volatile bool meter_transition_busy = false;
+static volatile bool meter_moves_relays;      /* `meter relays on`: old projection (A/B) */
 /* M1/M2 state: see fpga_meter_fast_switch_set() and fpga_meter_keepalive_set(). */
 static volatile bool meter_fast_switch_enabled = true;
 static volatile bool meter_keepalive_enabled = true;
@@ -1965,7 +1966,14 @@ static void fpga_set_meter_frontend_for_submode(uint8_t submode)
      * fabricated frontend split.
      */
     (void)fpga_meter_mux_gpio_state_for_submode(submode, &mux_state);
-    fpga_apply_meter_mux_gpio_state(&mux_state);
+    /* Bench 2026-11-14 (unit #2): the meter SoC reads the same in every
+     * state of these pins (DCV 1.6017 V, 121.5 Ohm, continuity, diode, all
+     * ten scope ranges on both channels), and they are the scope's range
+     * relays: moving them here is what stopped the scope's capture in the
+     * meter. Left alone by default, so the scope front end stays live and
+     * both instruments run together. `meter relays on` restores the old
+     * projection for A/B. */
+    if (meter_moves_relays) fpga_apply_meter_mux_gpio_state(&mux_state);
 }
 
 static void fpga_send_meter_wake_preamble(void)
@@ -3447,6 +3455,8 @@ volatile uint8_t fpga_scope_posture_gen;      /* fpga.h: moves when the scope's 
 static volatile bool meter_holds_fe;          /* mux(true) .. the scope's posture back          */
 
 bool fpga_meter_holds_fe(void) { return meter_holds_fe; }
+void fpga_meter_relays_set(bool on) { meter_moves_relays = on; }
+bool fpga_meter_relays_get(void)    { return meter_moves_relays; }
 
 void fpga_set_meter_mux(bool enable)
 {
@@ -3487,7 +3497,7 @@ void fpga_set_meter_mux(bool enable)
         meter_holds_fe = false;
         fpga_scope_posture_gen++;
     } else {
-        meter_holds_fe = true;
+        meter_holds_fe = meter_moves_relays;
     }
 #endif
 }

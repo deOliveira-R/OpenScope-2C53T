@@ -122,6 +122,9 @@ static bool scope_fe_live(void)
     /* mux(false) re-applies on any other screen. Until the display task has
      * run it after leaving the meter, the meter's posture still holds the
      * front end (PB11 may be low): not live yet. */
+    /* The meter takes the relays only with `meter relays on` (fpga.h):
+     * by default the scope front end is live on every screen. */
+    if (!fpga_meter_relays_get()) return true;
     return current_mode != MODE_MULTIMETER && !fpga_meter_holds_fe();
 #else
     return current_mode == MODE_OSCILLOSCOPE;          /* only scope entry re-applies */
