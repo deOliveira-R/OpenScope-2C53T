@@ -796,13 +796,15 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, 
          * scope_params_compute(): time uses the PUBLISHED record's rate
          * (doubled when interleaved), volts the scope_cal gain with k == 0
          * meaning counts, 0 V the channel's scope_measure_zero_for(). Freq/Per
-         * come only from the spectral estimate above, with its hold, and Per
-         * falls back to crossing SAMPLES. A channel with no record refuses
+         * come from the spectral estimate above, with its hold; below four
+         * periods from the checked crossing period of a whole record, else
+         * "--" (scope_params_compute). A channel with no record refuses
          * all twelve ("--"). */
         const float rec_fs = record_rate_for_display(ss);
         scope_params_t p1, p2;
         scope_prm_ctx_t ctx;
         ctx.sample_rate     = rec_fs;
+        ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
         ctx.volts_per_count = rec_vpc(ss, 0u);
         ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
         ctx.zero_count      = rec_zero(ss, 0u);

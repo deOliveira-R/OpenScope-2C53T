@@ -57,6 +57,11 @@
  */
 #define SCOPE_MEASURE_MIN_PP  6u
 
+/* Crossing intervals (rise-rise, fall-fall, and the two periods) must agree
+ * within this fraction for a period to be reported: with 1.5..3 periods in a
+ * record a single misplaced crossing is a wrong period, so it is "--". */
+#define SCOPE_MEASURE_PERIOD_TOL 0.04f
+
 typedef struct {
     bool     valid;         /* a usable record was supplied at all           */
 
@@ -86,6 +91,8 @@ typedef struct {
     uint16_t cycles;        /* rising mid-level crossings within the record  */
     bool     cycles_valid;  /* level_valid && >= 2 crossings                 */
     float    period_samples;/* samples per cycle, first->last crossing       */
+                            /* valid only when every crossing interval agrees
+                             * within SCOPE_MEASURE_PERIOD_TOL (few periods)  */
     bool     period_valid;
 
     /* Edge timing — in SAMPLES, never seconds (same rule as period_samples).
@@ -204,8 +211,15 @@ typedef struct {
     float sample_rate;   /* S/s of THIS record (fpga_record_sample_rate()); <=0 = unknown */
     float volts_per_count;/* probe-tip V per ADC count; <=0 = uncalibrated  */
     float freq_hz;       /* the SPECTRAL estimate (scope_freq), 0 = declined.
-                          * Freq/Peri come from it only: the crossing period is
-                          * 5-50% out (EXP-13) and is never dressed in Hz.   */
+                          * The crossing period was 5-50% out (EXP-13) because
+                          * records were torn (EXP-16): it is dressed in Hz
+                          * only for a record proven whole (record_whole) and
+                          * only when every crossing interval agrees
+                          * (period_valid). Else Freq and Peri are both "--"
+                          * (Peri in SAMPLES when there is no rate at all). */
+    bool  record_whole;  /* the record is one continuous stretch of time:
+                          * un-rotated at its seam (fpga_acq_record_time_
+                          * ordered()), or MCU-paced points (Roll)            */
     uint8_t zero_count;  /* ADC code of 0 V. Vmax/Vmin/Avg are volts relative to
                           * it; SCOPE_MEASURE_ZERO_COUNT when the channel is
                           * centred (`fpga scope center`).                   */

@@ -24,6 +24,7 @@ bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
     ctx.sample_rate = rate;
     ctx.volts_per_count = volts_per_count;
     ctx.zero_count = zero;
+    ctx.record_whole = true;           /* MCU-paced points, oldest first */
     ctx.freq_hz = (m.level_valid && m.cycles_valid && m.period_valid && m.period_samples > 0.0f)
                       ? rate / m.period_samples : 0.0f;
     scope_params_compute(&m, &ctx, out);

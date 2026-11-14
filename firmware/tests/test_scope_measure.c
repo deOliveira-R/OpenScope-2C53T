@@ -536,6 +536,7 @@ static int test_params(void)
 
     ctx.sample_rate = 1.0e6f; ctx.volts_per_count = 0.01f;
     ctx.freq_hz = 10000.0f;   ctx.zero_count = 128u;
+    ctx.record_whole = false;
     scope_params_compute(&m, &ctx, &p);
 
     bad += chk("prm: all 12 present for a clean square", 1);
@@ -593,6 +594,34 @@ static int test_params(void)
     bad += chk("prm: no spectral Freq -> Peri in samples, ~100",
                p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_SAMPLES &&
                near(p.v[SCOPE_PRM_PERI].value, 100.0f, 1.0f));
+
+    /* Below four periods the spectral estimate declines. With a rate, Freq
+     * and Peri come together from the checked crossing period of a WHOLE
+     * record, or both are "--" (a torn record's crossings: EXP-13/16). */
+    {
+        scope_prm_ctx_t c2 = ctx;
+        c2.sample_rate = 49.9e6f; c2.freq_hz = 0.0f; c2.record_whole = true;
+        scope_params_compute(&m, &c2, &p);
+        bad += chk("prm: whole record, no spectral -> Freq = rate / crossing period",
+                   p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_HZ &&
+                   near(p.v[SCOPE_PRM_FREQ].value, 49.9e6f / 100.0f, 5000.0f));
+        bad += chk("prm: ... and Peri = its inverse, in seconds",
+                   p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_SECONDS &&
+                   near(p.v[SCOPE_PRM_PERI].value, 100.0f / 49.9e6f, 2e-8f));
+        c2.record_whole = false;
+        scope_params_compute(&m, &c2, &p);
+        bad += chk("prm: record not proven whole -> Freq and Peri both \"--\"",
+                   p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE &&
+                   p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_NONE);
+        /* a period that failed the interval check: both "--" even when whole */
+        scope_measure_t mbad = m;
+        mbad.period_valid = false;
+        c2.record_whole = true;
+        scope_params_compute(&mbad, &c2, &p);
+        bad += chk("prm: unchecked period -> Freq and Peri both \"--\"",
+                   p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE &&
+                   p.v[SCOPE_PRM_PERI].unit == SCOPE_PRM_UNIT_NONE);
+    }
 
     /* Affine invariance of the time/ratio parameters (same argument as for
      * duty): y = 2x + 3 must not move Duty or the widths. */
@@ -710,6 +739,92 @@ static int test_zero_for(void)
     return bad;
 }
 
+/* ── Few periods (bench 2026-11-14) ───────────────────────────────────────
+ * 100 kHz 0..3.3 V square at tb.code 5 (49.9 MS/s): ~500 samples per period,
+ * ~2 in the 1024-sample record, codes ~93..195, with one-sample outliers at
+ * the edges reaching code 0 (pp raw 192, robust 102). The period read 262
+ * samples and the spectral frequency was refused. Squares and sines at 1.5,
+ * 2, 2.5 and 3 periods per record, phases across the period, with and
+ * without edge outliers and edge ringing: the period is either within 2 %
+ * of the truth or not valid (Freq/Peri "--"), never wrong. */
+static void gen_square_few(uint8_t *b, uint16_t n, float P, float phase, int lo, int hi,
+                           int spikes, int ring)
+{
+    for (uint16_t i = 0; i < n; i++) {
+        const float t = (float)i + phase * P;
+        const float ph = t / P - floorf(t / P);
+        int v = (ph < 0.5f) ? hi : lo;
+        if (ring) {                                   /* decaying ringing after each edge */
+            const float since = (ph < 0.5f ? ph : ph - 0.5f) * P;
+            const float amp = 0.25f * (float)(hi - lo) * expf(-since / 6.0f);
+            v += (int)(amp * cosf(since * 1.3f) * (ph < 0.5f ? 1.0f : -1.0f));
+        }
+        if (v < 0) v = 0;
+        if (v > 227) v = 227;
+        b[i] = (uint8_t)v;
+    }
+    if (spikes == 1) {                                /* one-sample outliers at the edges */
+        for (uint16_t i = 1; i < n; i++)
+            if ((b[i] > (lo + hi) / 2) != (b[i - 1] > (lo + hi) / 2)) b[i] = (i & 1u) ? 0u : 227u;
+    } else if (spikes == 2) {                         /* a dip to ~0, then one sample of the old level */
+        for (uint16_t i = 1; i + 1u < n; i++)
+            if ((b[i] > (lo + hi) / 2) != (b[i - 1] > (lo + hi) / 2)) { b[i + 1] = b[i - 1]; b[i] = 3u; i++; }
+    }
+}
+
+static int test_few_periods(void)
+{
+    static uint8_t buf[N];
+    int bad = 0, cases = 0, valid = 0;
+    int tot[4][8] = { { 0 } }, ans[4][8] = { { 0 } };   /* columns: see the table */
+    const float per_rec[] = { 1.5f, 2.0f, 2.5f, 3.0f };
+    for (unsigned k = 0; k < 4u; k++) {
+        const float P = (float)N / per_rec[k];
+        for (int shape = 0; shape < 2; shape++)
+        for (int spikes = 0; spikes < 3; spikes++)
+        for (int ring = 0; ring < 2; ring++)
+        for (int ph = 0; ph < 16; ph++) {
+            if (shape == 1 && (ring || spikes == 2)) continue;   /* a square's */
+            if (shape == 0) gen_square_few(buf, N, P, (float)ph / 16.0f, 93, 195, spikes, ring);
+            else {
+                gen_sine_f(buf, N, P, 51.0f, 144.0f, (float)ph * 0.3927f);
+                if (spikes) { buf[N / 3] = 0u; buf[N / 2] = 227u; buf[2 * N / 3] = 0u; }
+            }
+            scope_measure_t m;
+            scope_measure_record(buf, N, &m);
+            cases++;
+            const int col = shape ? 6 + (spikes != 0) : (spikes == 2 ? 4 + ring : spikes * 2 + ring);
+            tot[k][col]++;
+            if (!m.period_valid) continue;
+            valid++;
+            ans[k][col]++;
+            const float e = fabsf(m.period_samples - P) / P * 100.0f;
+            if (e > 2.0f) {
+                bad++;
+                if (bad <= 6)
+                    printf("   WRONG: %s %.1f/rec phase %d spikes %d ring %d: period %.1f (true %.1f)\n",
+                           shape ? "sine" : "square", (double)per_rec[k], ph, spikes, ring,
+                           (double)m.period_samples, (double)P);
+            }
+        }
+    }
+    printf("   %d records, %d with a period, %d wrong\n", cases, valid, bad);
+    printf("   answered of 16 phases   sq  sq+ring  sq+spk  sq+spk+ring  sq+dip  sq+dip+ring  sine  sine+spk\n");
+    for (unsigned k = 0; k < 4u; k++)
+        printf("   %.1f periods/record     %2d   %2d       %2d      %2d           %2d      %2d           %2d    %2d\n",
+               (double)per_rec[k], ans[k][0], ans[k][1], ans[k][2], ans[k][3], ans[k][4], ans[k][5],
+               ans[k][6], ans[k][7]);
+    (void)tot;
+    /* the bench case itself must be answered, and right */
+    gen_square_few(buf, N, 499.0f, 0.3f, 93, 195, 1, 0);
+    scope_measure_t m;
+    scope_measure_record(buf, N, &m);
+    bad += chk("bench case (2 periods, edge outliers): period 499 +-2%",
+               m.period_valid && fabsf(m.period_samples - 499.0f) < 10.0f);
+    bad += chk("few periods: most records answered (not refused across the board)", valid * 2 > cases);
+    return bad;
+}
+
 int main(int argc, char **argv)
 {
     g_verbose = (argc > 1 && strcmp(argv[1], "-v") == 0);
@@ -742,6 +857,11 @@ int main(int argc, char **argv)
     printf("   %d failed check(s) -> %s\n\n", sweep_bad,
            sweep_bad == 0 ? "PASS" : "*** FAIL ***");
     if (sweep_bad) fail = 1;
+
+    printf("1.5 to 3 periods per record (bench 2026-11-14)\n");
+    int few_bad = test_few_periods();
+    printf("   %d failed check(s) -> %s\n\n", few_bad, few_bad == 0 ? "PASS" : "*** FAIL ***");
+    if (few_bad) fail = 1;
 
     printf("edge rise/fall timing (M4 — retires measurement.c)\n");
     int edge_bad = test_edge_timing();

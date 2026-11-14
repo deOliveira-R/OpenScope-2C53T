@@ -147,8 +147,16 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
      *
      * The mid-level is computed in halves (mid2 = min+max, compared against
      * 2*s) so no rounding is introduced for odd min+max. */
+    /* The mid-level and the hysteresis of passes 2 and 3 come from the
+     * TRIMMED span [rob_lo, rob_hi], like the levels and the 10/90 points:
+     * one-sample outliers at the edges (bench 2026-11-14: a 93..195 square
+     * with samples near code 0, raw pp 192 against robust 102) move the
+     * raw extremes, and with them the thresholds, so the Schmitt trigger
+     * re-armed on an outlier and counted one edge twice (host test: periods
+     * of 3 samples from a 499-sample square). */
+    const uint16_t mid2_r = (uint16_t)rob_lo + (uint16_t)rob_hi;
     {
-        uint16_t mid2 = (uint16_t)smin + (uint16_t)smax;
+        uint16_t mid2 = mid2_r;
         uint32_t above = 0;
         for (uint16_t i = 0; i < n; i++) {
             if ((uint16_t)(2u * (uint16_t)samples[i]) > mid2)
@@ -168,8 +176,8 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
      * rate; when a timebase exists, frequency = cycles * rate / n and this
      * field is what to multiply. */
     {
-        uint16_t mid2  = (uint16_t)smin + (uint16_t)smax;
-        uint16_t hyst2 = (uint16_t)(out->pp / 4u);   /* 2 * (pp/8)          */
+        uint16_t mid2  = mid2_r;
+        uint16_t hyst2 = (uint16_t)(out->pp_robust / 4u);   /* 2 * (pp/8)   */
         if (hyst2 < 2u) hyst2 = 2u;                  /* 2 * 1 count minimum */
 
         uint16_t hi_thr2 = (uint16_t)(mid2 + hyst2);
@@ -177,9 +185,12 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
 
         int state = 0;              /* 0 = below/unknown, 1 = above */
         uint16_t rising = 0;
-        uint16_t first_rise = 0, last_rise = 0;   /* integer, for duty span   */
         float    pc_first = 0.0f, pc_last = 0.0f; /* interpolated crossings   */
         uint16_t pc_count = 0;                    /* genuine crossings only   */
+        uint16_t gr_first = 0, gr_last = 0;       /* their integer indices    */
+        float    pc_prev = 0.0f, rmin = 0.0f, rmax = 0.0f;   /* rise intervals */
+        float    fc_first = 0.0f, fc_last = 0.0f, fc_prev = 0.0f, fmin = 0.0f, fmax = 0.0f;
+        uint16_t fc_count = 0;                    /* genuine falling crossings */
         uint16_t prev_s2 = (uint16_t)(2u * (uint16_t)samples[0]);
 
         /* Pulse widths (Wid+/Wid-): mid-level crossings of each confirmed
@@ -203,8 +214,6 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
                             edge_kind = 0;
                         }
                     }
-                    if (rising == 0) first_rise = i;
-                    last_rise = i;
                     rising++;
 
                     /* Sub-sample crossing (issue #26). The integer index i is
@@ -227,14 +236,36 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
                         float frac = (float)((int)hi_thr2 - (int)prev_s2) /
                                      (float)((int)s2 - (int)prev_s2);
                         float cross = (float)(i - 1u) + frac;
-                        if (pc_count == 0u) pc_first = cross;
+                        if (pc_count == 0u) { pc_first = cross; gr_first = i; }
+                        else {
+                            const float d = cross - pc_prev;
+                            if (pc_count == 1u || d < rmin) rmin = d;
+                            if (pc_count == 1u || d > rmax) rmax = d;
+                        }
+                        pc_prev = cross;
                         pc_last = cross;
+                        gr_last = i;
                         pc_count++;
                     }
                 }
             } else {
                 if (s2 <= lo_thr2) {
                     state = 0;
+                    /* The falling twin of the sub-sample rise above: a second,
+                     * independent period estimate for the few-period check. */
+                    if (i > 0u && s2 < prev_s2) {
+                        const float cross = (float)(i - 1u) +
+                            (float)((int)prev_s2 - (int)lo_thr2) / (float)((int)prev_s2 - (int)s2);
+                        if (fc_count == 0u) fc_first = cross;
+                        else {
+                            const float d = cross - fc_prev;
+                            if (fc_count == 1u || d < fmin) fmin = d;
+                            if (fc_count == 1u || d > fmax) fmax = d;
+                        }
+                        fc_prev = cross;
+                        fc_last = cross;
+                        fc_count++;
+                    }
                     float cp;
                     if (mid_crossing(samples, i, mid2, false, &cp)) {
                         if (edge_kind == 1) { hi_sum += cp - edge_pos; hi_n++; }
@@ -258,22 +289,47 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
 
         if (out->cycles_valid) {
             /* Period measured the accurate way: the span from the first to
-             * the last rising crossing, divided by the number of whole
-             * periods in that span. Units are SAMPLES — the only horizontal
-             * unit this instrument can honestly quote. Multiply by the
-             * sample interval to get seconds the day a timebase exists;
-             * that one multiplication is the entire wiring job. */
+             * the last GENUINE crossing (interpolated, i > 0), divided by the
+             * number of whole periods in that span. Units are SAMPLES — the
+             * only horizontal unit this instrument can honestly quote.
+             *
+             * Few periods (bench 2026-11-14): with 1.5..3 periods in the
+             * record one bad crossing is a wrong period, not a small error,
+             * so the answer is "no period" unless the evidence agrees:
+             *   - two genuine crossings of one sense at least (a rise at
+             *     i == 0 is where the record starts, not an edge: the old
+             *     fallback divided the distance from sample 0 to the next
+             *     rise and read 0.6..0.9 of the period at 1.5 periods);
+             *   - every interval within SCOPE_MEASURE_PERIOD_TOL of every
+             *     other, rises and falls alike;
+             *   - when both senses give a period, they agree as closely;
+             *   - the number of edges in the whole record fits the period. */
+            const float tol = SCOPE_MEASURE_PERIOD_TOL;
+            float pr = 0.0f, pf = 0.0f;
+            bool ok = true;
             if (pc_count >= 2u) {
-                out->period_samples = (pc_last - pc_first) /
-                                      (float)(pc_count - 1u);
-            } else {
-                /* Fewer than two genuine crossings (e.g. a record that starts
-                 * high and holds one clean cycle) — fall back to the integer
-                 * span, which is all the information present. */
-                out->period_samples = (float)(last_rise - first_rise) /
-                                      (float)(rising - 1u);
+                pr = (pc_last - pc_first) / (float)(pc_count - 1u);
+                if (pc_count >= 3u && rmax > rmin * (1.0f + tol)) ok = false;
             }
-            out->period_valid = (out->period_samples > 0.0f);
+            if (fc_count >= 2u) {
+                pf = (fc_last - fc_first) / (float)(fc_count - 1u);
+                if (fc_count >= 3u && fmax > fmin * (1.0f + tol)) ok = false;
+            }
+            if (pr > 0.0f && pf > 0.0f &&
+                (pr > pf * (1.0f + tol) || pf > pr * (1.0f + tol))) ok = false;
+            if (pr <= 0.0f && pf <= 0.0f) ok = false;
+            /* ... and the period must account for the edges the whole record
+             * shows: n / period cycles fit in it, so the Schmitt rises
+             * (the one at i == 0 included) number between n/P - 1 and
+             * n/P + 2. Two crossings a few samples apart (an outlier pair
+             * inside one edge) give a "period" the record contradicts. */
+            if (ok) {
+                const float per = (pr > 0.0f) ? pr : pf;
+                const float fit = (float)n / per;
+                if ((float)rising < fit - 1.0f || (float)rising > fit + 2.0f) ok = false;
+            }
+            out->period_samples = ok ? (pr > 0.0f ? pr : pf) : 0.0f;
+            out->period_valid = ok && (out->period_samples > 0.0f);
 
             /* ── Duty, recomputed over WHOLE CYCLES ────────────────────
              *
@@ -287,7 +343,7 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
              * 20-40% — and the predicted phase-bias range for that record
              * is 14-29%, which matches.
              *
-             * [first_rise, last_rise) spans exactly (rising-1) whole
+             * [first genuine rise, last genuine rise) spans whole
              * cycles by construction, so duty over that span is
              * phase-independent. Still affine-invariant, so it remains
              * correct before any calibration exists.
@@ -297,12 +353,16 @@ void scope_measure_record(const uint8_t *samples, uint16_t n,
              * detector intermittently finding nothing, point at the record
              * not being a uniform-rate time series — the open timebase
              * question (dev plan F4), not an arithmetic problem here. */
+            /* Over GENUINE rises only (a rise at i == 0 is not a cycle
+             * boundary); with fewer than two the whole-record duty stays. */
+            const uint16_t d0 = (pc_count >= 2u) ? gr_first : 0u;
+            const uint16_t d1 = (pc_count >= 2u) ? gr_last : 0u;
             uint32_t above_c = 0;
-            for (uint16_t i = first_rise; i < last_rise; i++) {
+            for (uint16_t i = d0; i < d1; i++) {
                 if ((uint16_t)(2u * (uint16_t)samples[i]) > mid2)
                     above_c++;
             }
-            uint16_t span = (uint16_t)(last_rise - first_rise);
+            uint16_t span = (uint16_t)(d1 - d0);
             if (span > 0u)
                 out->duty_pct = (float)above_c * 100.0f / (float)span;
         }
@@ -456,12 +516,23 @@ void scope_params_compute(const scope_measure_t *m, const scope_prm_ctx_t *ctx,
     const float k  = ctx->volts_per_count;
     const uint8_t z = ctx->zero_count;
 
-    /* Freq/Peri: the spectral estimate or nothing in real units. Peri falls
-     * back to the crossing period in SAMPLES (never converted), as the badge
-     * always did. */
+    /* Freq/Peri: the spectral estimate when it answers (four periods or
+     * more: SCOPE_FREQ_MIN_BIN). Below that, the crossing period, which
+     * reports only when every crossing interval agrees (scope_measure_record,
+     * SCOPE_MEASURE_PERIOD_TOL), of a record proven whole (ctx->record_whole),
+     * turned into both with the record's rate, so Freq and Peri are the same
+     * number or both "--". Without a rate, Peri in SAMPLES as before. */
     if (ctx->freq_hz > 0.0f) {
         out->v[SCOPE_PRM_FREQ] = prm(SCOPE_PRM_UNIT_HZ, ctx->freq_hz);
         out->v[SCOPE_PRM_PERI] = prm(SCOPE_PRM_UNIT_SECONDS, 1.0f / ctx->freq_hz);
+    } else if (fs > 0.0f) {
+        /* A rate: Hz from the checked crossing period of a whole record, or
+         * nothing for both (a torn record's crossing period is the number
+         * EXP-13 measured 5-50% out). */
+        if (m->level_valid && m->period_valid && ctx->record_whole) {
+            out->v[SCOPE_PRM_FREQ] = prm(SCOPE_PRM_UNIT_HZ, fs / m->period_samples);
+            out->v[SCOPE_PRM_PERI] = prm(SCOPE_PRM_UNIT_SECONDS, m->period_samples / fs);
+        }
     } else if (m->level_valid && m->period_valid) {
         out->v[SCOPE_PRM_PERI] = prm(SCOPE_PRM_UNIT_SAMPLES, m->period_samples);
     }
