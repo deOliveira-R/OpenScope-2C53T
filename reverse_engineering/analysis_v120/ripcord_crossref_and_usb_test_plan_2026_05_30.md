@@ -46,7 +46,7 @@ the only positive signal.
 
 | Contract | Ripcord prediction | Our implementation | USB-testable | How (shell) |
 |---|---|---|---|---|
-| **Boot blob** 115638B `0x3B`/`0x3A` | stream from flash `0x08051D19`, FPGA SPI inactive until done | **implemented, divergent framing**: `spi3_pump(fpga_h2_cal_table,NULL,115638)` gap-free (not 3-byte records); `0x3B` is tail of handshake G3 (`fpga.c:1735`), `0x3A` post-upload at `:1781` **CS-HIGH** (our inference) | **yes** | `status` → bytes_sent/115638 + done; `spi3 h2verify` re-streams + samples MISO + PC0 before/after |
+| **Boot blob** 115638B `0x3B`/`0x3A` | stream from flash `0x08051D19`, FPGA SPI inactive until done | **implemented, divergent framing**: `spi3_pump(fpga_bitstream_stock,NULL,115638)` gap-free (not 3-byte records); `0x3B` is tail of handshake G3 (`fpga.c:1735`), `0x3A` post-upload at `:1781` **CS-HIGH** (our inference) | **yes** | `status` → bytes_sent/115638 + done; `spi3 h2verify` re-streams + samples MISO + PC0 before/after |
 | **SPI3 config** Mode3 /2 | @0x40003C00 master, STS@..08, DT@..0C | **match**: CTRL1 CPHA/CPOL=1, MSTEN, BR=000(/2=60MHz), SPE; CTRL2=0x03 (`fpga.c:1632-1653`) | **yes** | `status` (CTRL1/STS); `mem read 0x40003C00 4` (= 4 **words**) |
 | **CS = PB6** active-LOW | assert per-cmd, deassert at loop bottom | **match, framing inferred**: assert once around whole handshake+upload (`:1700`); 3-phase post-upload dance (`:1777-1791`); left LOW | **yes** | `gpio read B6`, `gpio scan`, `status` (PB6 level) |
 | **PC6/PB11** enable+gate | both HIGH; gating reality unconfirmed | **PC6 HIGH at boot** (`:1594-1599`); **PB11 left FLOATING through the entire blob upload**, raised HIGH only at `:1939-1944` (after upload) | **yes** ⭐ | force both HIGH then re-probe (see **T3**) |

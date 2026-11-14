@@ -137,7 +137,7 @@ compile flag.
 ## Current open-firmware boundary
 
 The open firmware now replays the full H2 table from
-`firmware/src/drivers/fpga_cal_table.h` during the SPI3 boot sequence. The
+`firmware/src/drivers/fpga_bitstream_stock.c` during the SPI3 boot sequence. The
 firmware diagnostics expose `h2_bytes_sent == 115638` and an `H2T:Y` TX flag.
 That is deliberately a TX-side diagnostic only: stock drains/ignores MISO in the
 bulk loop, no FPGA ACK/apply status has been recovered, and live DMM correctness

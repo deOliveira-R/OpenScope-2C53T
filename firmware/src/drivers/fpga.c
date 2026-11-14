@@ -22,7 +22,7 @@
  */
 
 #include "fpga.h"
-#include "fpga_cal_table.h"
+#include "fpga_bitstream_stock.h"
 #include "fpga_meter_plan.h"
 #include "meter_data.h"
 #include "meter_stock.h"
@@ -5216,10 +5216,10 @@ uint8_t fpga_bitbang_config_sequence(void)
     (void)bb_xfer(0);
     GPIOB->clr = BB_CS;
     (void)bb_xfer(0x3B);
-    for (uint32_t i = 0; i < FPGA_H2_CAL_TABLE_SIZE; ++i)
-        (void)bb_xfer(fpga_h2_cal_table[i]);
+    for (uint32_t i = 0; i < FPGA_BITSTREAM_SIZE; ++i)
+        (void)bb_xfer(fpga_bitstream[i]);
     GPIOB->scr = BB_CS;
-    fpga.h2_bytes_sent  = FPGA_H2_CAL_TABLE_SIZE;
+    fpga.h2_bytes_sent  = FPGA_BITSTREAM_SIZE;
     fpga.h2_upload_done = 1;
 
 #if FPGA_CONFIG_B_FAITHFUL
@@ -5780,7 +5780,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     fpga.h2_rx_other_count = 0;
     fpga.h2_close_rx_len = 0;
     memset((void *)fpga.h2_close_rx, 0, sizeof(fpga.h2_close_rx));
-    spi3_pump_h2_record(fpga_h2_cal_table, FPGA_H2_CAL_TABLE_SIZE);
+    spi3_pump_h2_record(fpga_bitstream, FPGA_BITSTREAM_SIZE);
     if (!opt->single_br) spi3_set_br(opt->cmd_br);  /* EXP-34: keep SPE untouched */
     /* Trailing clocks: Gowin runs the CRC-check / DONE / wakeup on CCLK cycles
      * AFTER the last config byte. Our sequence sent none; rosenrot00's working
@@ -5789,7 +5789,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     for (uint32_t i = 0; i < opt->trailing_clocks; i++)
         spi3_xfer(0x00);
     SPI3_CS_DEASSERT();
-    fpga.h2_bytes_sent = FPGA_H2_CAL_TABLE_SIZE;
+    fpga.h2_bytes_sent = FPGA_BITSTREAM_SIZE;
     fpga.h2_upload_done = 1;
     cfg_trace_capture(opt, 4);   /* T4: full bitstream sent, before the 3A close */
 

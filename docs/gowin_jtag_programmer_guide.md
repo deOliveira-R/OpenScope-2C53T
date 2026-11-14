@@ -225,7 +225,7 @@ openFPGALoader -c ft232 -m scope.fs
 - Watch for **DONE** going HIGH (and your bench behavior) to confirm the design ran.
 
 **Bitstream file format / our raw blob:**
-- openFPGALoader expects a Gowin **`.fs`** by default (deduced from extension). Our bitstream is a **raw 115,639-byte blob** extracted from firmware (`reverse_engineering/.../fpga_cal_table.h`, or raw at **file offset `0x4AD19`** of `APP_2C53T_V1.2.0_251015.bin`). The raw blob already carries the Gowin `.fs` preamble + IDCODE `0x0120681B`.
+- openFPGALoader expects a Gowin **`.fs`** by default (deduced from extension). Our bitstream is a **raw 115,639-byte blob** extracted from firmware (`reverse_engineering/.../fpga_bitstream_stock.c`, or raw at **file offset `0x4AD19`** of `APP_2C53T_V1.2.0_251015.bin`). The raw blob already carries the Gowin `.fs` preamble + IDCODE `0x0120681B`.
 - A raw binary can be loaded by forcing the type:
   ```bash
   openFPGALoader -c ft232 -m --file-type bin scope.bin

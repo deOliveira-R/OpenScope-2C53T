@@ -90,7 +90,7 @@
 #include "watchdog.h"
 #include "../util/cal_backup_core.h"
 
-#include "fpga_cal_table.h"
+#include "fpga_bitstream_stock.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -8206,7 +8206,7 @@ static void cmd_uptime(void)
 /* ═══════════════════════════════════════════════════════════════════
  * SPI3 Acquisition Test — Decomposer Phase 20 Validation
  *
- * Tests whether SPI3 returns non-0xFF data after the H2 cal upload.
+ * Tests whether SPI3 returns non-0xFF data after the H2 (bitstream) upload.
  * The decomposer identified Phase 20 as a 40-exchange SPI3 session
  * that constitutes the acquisition interface. This command tries
  * multiple approaches to coax data from the FPGA:
@@ -8451,8 +8451,8 @@ static void cmd_spi3_h2txdiag(void)
     resp_start[1] = spi3_raw_xfer(0x00);
 
     /* Stream entire table, sampling at key points */
-    for (uint32_t i = 0; i < FPGA_H2_CAL_TABLE_SIZE; i++) {
-        uint8_t rx = spi3_raw_xfer(fpga_h2_cal_table[i]);
+    for (uint32_t i = 0; i < FPGA_BITSTREAM_SIZE; i++) {
+        uint8_t rx = spi3_raw_xfer(fpga_bitstream[i]);
 
         if (rx != 0xFF && rx != 0xEE) total_nonff++;
 
@@ -8462,7 +8462,7 @@ static void cmd_spi3_h2txdiag(void)
         if (i >= 160 && i < 164) resp_blk1[i - 160] = rx;
         if (i >= 320 && i < 324) resp_blk2[i - 320] = rx;
         if (i >= 87040 && i < 87044) resp_regB[i - 87040] = rx;
-        if (i >= FPGA_H2_CAL_TABLE_SIZE - 16) resp_last16[i - (FPGA_H2_CAL_TABLE_SIZE - 16)] = rx;
+        if (i >= FPGA_BITSTREAM_SIZE - 16) resp_last16[i - (FPGA_BITSTREAM_SIZE - 16)] = rx;
     }
 
     /* End opcode */

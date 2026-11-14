@@ -9,18 +9,33 @@
  * sha256: 5a0e73384e496bdb3b3d591b852bec2e806e70cbc71439c9829695324efd5c3b
  */
 
-/* The ONE copy of the configuration payload in the image (fpga_cal_table.h
- * declares it). Until 2026-11-14 the array was a `static const` in the header,
- * and both fpga.c and usb_debug.c included it: two 115,638-byte copies in
- * flash. */
-#include "fpga_cal_table.h"
+/* What it is, from the bytes themselves (tests/test_fpga_bitstream.c pins
+ * them): a Gowin configuration stream. 22 bytes of 0xFF preamble, the sync
+ * word A5 C3, command 0x06 (IDCODE check) with 0x0120681B, the GW1N-2
+ * family's IDCODE (the same answer READ_IDCODE 0x11 gives on this board),
+ * the configuration commands 0x10 / 0x51 / 0x0B / 0xD2 / 0x12, then 0x3B 80
+ * 02 D2: write SRAM, 0x2D2 = 722 frames of 160 bytes (each ending in its
+ * CRC16 and 6 x 0xFF), and the trailer: 0x0A (user code 0), padding and 0x08
+ * 00 00 00 (program done), 10 x 0xFF. Nothing else is appended: the 722
+ * frames and the trailer end exactly at byte 115,638. fpga_spi3_config_
+ * sequence (fpga.c) uploads it at every boot on the FPGA's SSPI port
+ * (prelude 05 / 12 / 15, 0x3B + the stream, 0x3A close, answered 0xF8),
+ * and the configured part then reports DONE_FINAL in its STATUS register.
+ * Until 2026-11-14 it was named fpga_h2_cal_table / fpga_cal_table.h (from
+ * stock's H2 step, read as a calibration table before 2026-06).
+ *
+ * The ONE copy in the image (fpga_bitstream_stock.h declares it). */
+#if defined(FPGA_ALT_BITSTREAM)
+#define FPGA_BITSTREAM_ALT_H_DEFINE      /* the alternate's bytes: here, once */
+#endif
+#include "fpga_bitstream_stock.h"
 
-/* ── Alternate-payload selector (2026-08-16) ─────────────────────────────────
- * Building with -DFPGA_ALT_BITSTREAM=1 swaps the compiled-in configuration
- * payload for fpga_bitstream_alt.h, which defines the SAME name
- * (fpga_h2_cal_table, FPGA_H2_CAL_TABLE_SIZE bytes), so every consumer —
- * fpga.c's bit-bang and hardware-SPI upload loops, usb_debug.c's h2txdiag —
- * is untouched and the default build is byte-identical.
+/* ── Alternate payload (2026-08-16) ──────────────────────────────────────────
+ * Building with -DFPGA_ALT_BITSTREAM=1 compiles fpga_bitstream_alt.h's design
+ * (fpga_bitstream_alt, built from RTL) instead of this one: the same slot,
+ * uploaded the same way, so the consumers use fpga_bitstream /
+ * FPGA_BITSTREAM_SIZE (fpga_bitstream_stock.h) and are untouched, and the
+ * stock bytes are not in that image.
  *
  * Regenerate the alternate header from a Gowin .fs with scripts/fs2header.py;
  * see the guest-debugclk target in the Makefile for the exact command.
@@ -29,10 +44,11 @@
  * fabric with something else entirely, so scope capture, the meter path and
  * every calibration assumption are off the table for that build. */
 #if defined(FPGA_ALT_BITSTREAM)
-#include "fpga_bitstream_alt.h"
+/* fpga_bitstream_alt.h, included through the header with
+ * FPGA_BITSTREAM_ALT_H_DEFINE set above, compiled the alternate's bytes. */
 #else
 
-const uint8_t fpga_h2_cal_table[FPGA_H2_CAL_TABLE_SIZE] = {
+const uint8_t fpga_bitstream_stock[FPGA_BITSTREAM_STOCK_SIZE] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xA5, 0xC3, 0x06, 0x00, 0x00, 0x00, 0x01, 0x20, 0x68, 0x1B,
     0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x51, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,

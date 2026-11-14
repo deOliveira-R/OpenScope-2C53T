@@ -95,7 +95,7 @@ divergences not covered by a knob, add one (cheap) rather than reflashing per-te
   (run wf_14db1b9a-ecd, 70 agents) diffed **22 critical-path units — ALL 22 diverge
   from stock** (confirms our clean-room rewrite was never faithful). **8 HIGH-relevance
   divergences.** Full ranked report: `analysis_v120/stock_vs_ours_bringup_diff.md`.
-  - ✅ **Gate cleared:** `fpga_cal_table.h` payload verified = 115638 B, sha `5a0e7338…`,
+  - ✅ **Gate cleared:** `fpga_bitstream_stock.c` payload verified = 115638 B, sha `5a0e7338…`,
     Gowin sync + IDCODE present. The bitstream is correct; sweeps are meaningful.
   - 🔆 **HEADLINE LEAD (reopens the "JTAG-only" pessimism):** stock holds **USART2 UE
     CLEAR through the whole scope boot** (enables it only post-upload, only on a

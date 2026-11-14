@@ -90,4 +90,4 @@ re-flash to reclaim the bus.
 - [ ] Confirm the IDCODE read framing (dummy-byte count) against the #18 capture.
 - [ ] Add the 115,638-byte bitstream upload path (`0x3B` + data + `0x3A`) once the
       IDCODE/prelude round-trip is confirmed — the array can be generated from
-      `firmware/src/drivers/fpga_cal_table.h`.
+      `firmware/src/drivers/fpga_bitstream_stock.c`.

@@ -26,7 +26,7 @@ Decoder: `analyze_capture.py`, UART: `decode_uart.py`, export: `export_sal.py`.
 
 ## Headline: the FPGA mystery is solved
 
-**Our `fpga_cal_table.h` payload was wrong.** The captured upload body
+**Our `fpga_bitstream_stock.c` payload was wrong.** The captured upload body
 (115,638 bytes inside the 0x3B frame) matches
 `APP_2C53T_V1.2.0_251015.bin` at **file offset 0x4AD19** byte-for-byte
 (115,638/115,638). The stock APP is **linked at 0x08007000**, so flash
@@ -83,7 +83,7 @@ unsigned samples. CH1 (0x04) hovered ~0x4D, CH2 (0x05) drifted
 
 ## Firmware changes made from this capture (2026-06-12)
 
-1. `fpga_cal_table.h` regenerated from file offset 0x4AD19 (byte-exact vs
+1. `fpga_bitstream_stock.c` regenerated from file offset 0x4AD19 (byte-exact vs
    capture; header comment carries the sha256).
 2. PB11 arm moved to ~1ms **before** the SPI3 handshake.
 3. Post-0x3A MISO status byte captured (`fpga.h2_close_status`, expect 0xF8).

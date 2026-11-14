@@ -15,7 +15,7 @@
 
 Phase 0 changed the experiment's shape. Findings:
 
-1. **Our firmware already replayed the table at every boot** — `fpga_init()` in `fpga.c` has streamed `fpga_h2_cal_table` (115,638 B, byte-identical to `h2_cal_table.bin`, verified) since ~April. The scope stayed dead anyway — because the framing was wrong.
+1. **Our firmware already replayed the table at every boot** — `fpga_init()` in `fpga.c` has streamed `fpga_bitstream_stock` (115,638 B, byte-identical to `h2_cal_table.bin`, verified) since ~April. The scope stayed dead anyway — because the framing was wrong.
 2. **`SPI3_HANDSHAKE_BYTE_ACCURATE.md` is debunked.** objdump of the raw stock binary proves: the upload loop lives at `0x08026B28` inside master init `FUN_08023A50` (single occurrence in the image — the doc's `FUN_08027a50` attribution is wrong), and the CS polarity is inverted (`[r4,lr]` = `0x40010C10` = GPIOB_BSRR = PB6 HIGH = CS **deassert**; the doc claimed BRR/assert).
 3. **Definitive stock sequence** (from `init_function_decompile.txt` 4180–5160, ground-truthed against objdump): every byte full-duplex polled (TXE → write → RXNE → read); each command in its own CS-LOW frame with a CS-HIGH dummy byte between frames:
    `CS↑ 00 | CS↓ 05 00 CS↑ 00 | ~100ms | CS↓ 12 00 CS↑ 00 | ~100ms | CS↓ 15 00 CS↑ 00 | CS↓ 3B <115,638 bytes> CS↑ 00 | CS↓ 3A 00 CS↑ 00 | CS↓ 00 CS↑ 00`
@@ -115,7 +115,7 @@ The capture also retired this plan's open hypotheses:
 - **Phase 2's read format was wrong:** scope data is per-channel
   `04`/`05` + 1025×FF reads (1026 bytes), not one interleaved stream.
 
-Implemented 2026-06-12: corrected `fpga_cal_table.h` (sha256 `5a0e7338…`),
+Implemented 2026-06-12: corrected `fpga_bitstream_stock.c` (sha256 `5a0e7338…`),
 PB11 armed 1ms pre-handshake, post-0x3A status captured, new Step 7c
 (600ms → `01 08`,`02 03`,`06 00`,`07 00`,`08 AD` → read `03`).
 **Remaining:** bench litmus (PC0 LOW + status bytes), then rewrite

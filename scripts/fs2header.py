@@ -2,8 +2,8 @@
 """Convert a Gowin bitstream into the C header shape the firmware compiles in.
 
 The firmware uploads its FPGA configuration from a `const uint8_t[]` compiled
-into the image once (`firmware/src/drivers/fpga_cal_table.c`, extracted from
-stock; fpga_cal_table.h declares it).  This script produces a header of the *same shape* from any other
+into the image once (`firmware/src/drivers/fpga_bitstream_stock.c`, the stock
+design; fpga_bitstream_stock.h declares the slot).  This script produces a header of the *same shape* from any other
 bitstream, so an alternate image (e.g. a diagnostic design) can be built in via
 `-DFPGA_ALT_BITSTREAM=1` without touching the default payload.
 
@@ -18,17 +18,17 @@ Input formats
   *.bin  Raw bitstream bytes, already packed (use --raw, or let the .bin
          extension select it).
 
-The output has the structure of fpga_cal_table.c's array: a size macro, a
-`const uint8_t` array (external: the header is included by fpga_cal_table.c
-only, which keeps one copy in the image), 16 bytes per line, `0xNN` uppercase
-hex.
+The output: the design's name and size macros, an `extern` declaration, and
+the `const uint8_t` array (16 bytes per line, `0xNN` uppercase hex) compiled
+only where `<GUARD>_DEFINE` is defined (fpga_bitstream_stock.c), so the image
+holds one copy and any includer still gets the name and size.
 
 Usage
 -----
     python3 scripts/fs2header.py IN.fs OUT.h [options]
 
-    --symbol NAME     array name        (default: fpga_h2_cal_table)
-    --size-macro NAME size macro name   (default: FPGA_H2_CAL_TABLE_SIZE)
+    --symbol NAME     array name        (default: fpga_bitstream_alt)
+    --size-macro NAME size macro name   (default: FPGA_BITSTREAM_ALT_SIZE)
     --name TEXT       human label baked in as FPGA_BITSTREAM_NAME
                       (default: input file basename)
     --guard NAME      include guard     (default: derived from OUT.h)
@@ -113,11 +113,17 @@ def emit(data, out_path, symbol, size_macro, guard, name, banner, placeholder):
             )
         f.write(f"#define FPGA_BITSTREAM_NAME  \"{name}\"\n")
         f.write(f"#define {size_macro}  {len(data)}u\n\n")
+        f.write(f"extern const uint8_t {symbol}[{size_macro}];\n\n")
+        # The bytes only in the one translation unit that asks for them
+        # (fpga_bitstream_stock.c): one copy in the image; every other
+        # includer gets the name, the size and the declaration.
+        f.write(f"#ifdef {guard}_DEFINE\n")
         f.write(f"const uint8_t {symbol}[{size_macro}] = {{\n")
         for i in range(0, len(data), 16):
             row = ", ".join(f"0x{b:02X}" for b in data[i:i + 16])
             f.write(f"    {row},\n")
-        f.write("};\n\n")
+        f.write("};\n")
+        f.write(f"#endif /* {guard}_DEFINE */\n\n")
         f.write(f"#endif /* {guard} */\n")
 
 
@@ -125,8 +131,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("infile")
     ap.add_argument("outfile")
-    ap.add_argument("--symbol", default="fpga_h2_cal_table")
-    ap.add_argument("--size-macro", default="FPGA_H2_CAL_TABLE_SIZE")
+    ap.add_argument("--symbol", default="fpga_bitstream_alt")
+    ap.add_argument("--size-macro", default="FPGA_BITSTREAM_ALT_SIZE")
     ap.add_argument("--name", default=None)
     ap.add_argument("--guard", default=None)
     ap.add_argument("--note", action="append", default=[])

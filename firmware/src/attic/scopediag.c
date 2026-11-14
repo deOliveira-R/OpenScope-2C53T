@@ -23,7 +23,7 @@
  */
 
 #include "at32f403a_407.h"
-#include "../drivers/fpga_cal_table.h"
+#include "../drivers/fpga_bitstream_stock.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
@@ -714,13 +714,13 @@ static void fpga_upload_h2(uint8_t mode)
         return;
     }
 
-    count = (mode == H2_REGION_A) ? REGION_A_SIZE : FPGA_H2_CAL_TABLE_SIZE;
+    count = (mode == H2_REGION_A) ? REGION_A_SIZE : FPGA_BITSTREAM_SIZE;
 
     SPI3_CS_ASSERT();
     spi3_xfer(0x3B);
     spi3_xfer(0x00);
     for (uint32_t i = 0; i < count; i++) {
-        spi3_xfer(fpga_h2_cal_table[i]);
+        spi3_xfer(fpga_bitstream[i]);
         diag_state.h2_bytes_sent = i + 1;
     }
     spi3_xfer(0x3A);

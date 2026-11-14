@@ -115,7 +115,7 @@ Concrete reimplementation items:
    guard). Adopt 28..228, not 0..255, to match stock pixel mapping.
 3. **The flash LUT `0x080465CC` (16-bit entries, indexed by `state+0x02` and `state+0xDC1`)
    is not represented.** It is the per-timebase sample-rate / points-per-division table.
-   `drivers/fpga_cal_table.h` carries ADC cal, not this resample LUT — extract and add it.
+   `drivers/fpga_bitstream_stock.c` (then `fpga_cal_table.h`) is the FPGA configuration bitstream, not this resample LUT — extract and add it.
 
 ---
 
