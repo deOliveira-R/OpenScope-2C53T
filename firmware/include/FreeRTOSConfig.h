@@ -64,6 +64,11 @@
 #define configGENERATE_RUN_TIME_STATS           0
 #define configUSE_TRACE_FACILITY                1
 #define configUSE_STATS_FORMATTING_FUNCTIONS    0
+/* The shell's `tasks` prints each task's stack size next to its high-water
+ * mark: the kernel then keeps the stack's top address in the task's control
+ * block (4 bytes of heap per task, one store at task creation; nothing else
+ * reads it). */
+#define configRECORD_STACK_HIGH_ADDRESS         1
 
 /* Co-routine (not used) */
 #define configUSE_CO_ROUTINES                   0
