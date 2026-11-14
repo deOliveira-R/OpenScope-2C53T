@@ -816,6 +816,43 @@ static void test_legacy_mirror(void)
     gallery_gone = false;
     W.mode = MODE_OSCILLOSCOPE;
 
+    /* The groups each screen shows (a shell set repaints only a screen that
+     * shows what it changed: model_hw_fw.c port_changed). */
+    {
+#define GB(g) ((uint16_t)(1u << (g)))
+        W.gallery = false; W.osc_open = false; W.depth = 0;
+        W.mode = MODE_OSCILLOSCOPE; legacy_screens_sync();
+        const uint16_t scope = screen_groups();
+        W.mode = MODE_MULTIMETER; legacy_screens_sync();
+        const uint16_t meter = screen_groups();
+        W.mode = MODE_SIGNAL_GEN; legacy_screens_sync();
+        const uint16_t gen = screen_groups();
+        W.mode = MODE_HOME; legacy_screens_sync();
+        const uint16_t home = screen_groups();
+        W.mode = MODE_SETTINGS; W.depth = 1; legacy_screens_sync();
+        const uint16_t set_osc = screen_groups();
+        W.depth = 0;
+        W.mode = MODE_OSCILLOSCOPE; W.osc_open = true; legacy_screens_sync();
+        const uint16_t osc = screen_groups();
+        W.gallery = true; legacy_screens_sync();
+        const uint16_t gal = screen_groups();
+        W.gallery = false; W.osc_open = false; legacy_screens_sync();
+        CHECK("scope shows its groups, not the meter's",
+              (scope & GB(PG_CH1)) && (scope & GB(PG_TB)) && (scope & GB(PG_TRIG)) && !(scope & GB(PG_METER)));
+        CHECK("meter shows the meter, not the scope's channels",
+              (meter & GB(PG_METER)) && !(meter & GB(PG_CH1)) && !(meter & GB(PG_TB)));
+        CHECK("generator, home: the bars only (generator slot, sys, ui)",
+              gen == (GB(PG_GEN) | GB(PG_SYS) | GB(PG_UI)) && home == gen && (scope & gen) == gen &&
+              (meter & gen) == gen);
+        CHECK("Settings > Oscilloscope shows every group", set_osc == (uint16_t)((1u << PG_COUNT) - 1u));
+        CHECK("the osc page over the scope shows the scope's groups", osc == scope);
+        CHECK("the gallery (opaque) shows none", gal == 0);
+        CHECK("a stored meter.func on the scope repaints nothing; with ch1.vdiv it does",
+              (GB(PG_METER) & scope) == 0 && ((GB(PG_METER) | GB(PG_CH1)) & scope) != 0 &&
+              (GB(PG_CH1) & meter) == 0);
+#undef GB
+    }
+
     /* Instruments: a base's instrument id is the sys.instrument value. */
     CHECK("bases by instrument: 0 scope, 1 meter, 2 generator; home/settings none",
           screen_base_for_instrument(0) == SCR_SCOPE && screen_base_for_instrument(1) == SCR_METER &&

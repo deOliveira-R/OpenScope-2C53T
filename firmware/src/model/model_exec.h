@@ -80,8 +80,9 @@ typedef struct {
     void     (*wake)(void);                   /* nudge the executor (BTN_NONE)           */
     void     (*sleep_ms)(uint32_t ms);        /* caller side, between polls              */
     void     (*checkin)(void);                /* executor: health check-in between pairs */
-    void     (*changed)(void);                /* executor: a non-KEY request changed a
-                                               * value -> one redraw request             */
+    /* executor: a non-KEY request changed values in these groups (bit g =
+     * PG_x) -> one redraw request, if the screen shows one of them        */
+    void     (*changed)(uint16_t groups);
     void     (*service)(void);                /* executor: every drain pass (posted
                                                * changes that landed -> model_touch)     */
     bool     (*on_executor)(void);            /* the calling task is the executor        */

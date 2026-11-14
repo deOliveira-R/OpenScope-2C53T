@@ -278,6 +278,11 @@ uint32_t prop_group_epoch(uint8_t g);
  * and an owner that lands a POSTED change later (the mode switch, a mask
  * request) calls it when the change is in force. */
 void     model_touch(uint8_t g);
+/* The groups whose epoch moved since the last call (bit g = PG_x), and
+ * forget them. The executor takes them around each request to know what a
+ * request changed (model_exec.c: the repaint goes only to a screen that
+ * shows one of them). Executor only. */
+uint16_t model_touched_take(void);
 
 /* ── Hardware ops (bound once at boot; fake in the host tests) ───────── */
 /* Each is the owner API the setter calls (model_hw_fw.c binds the real ones

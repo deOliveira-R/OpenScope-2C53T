@@ -79,8 +79,19 @@ const char *prop_last_deferred(void)           { return g_deferred; }
 const model_hw_ops_t *model_hw(void) { return g_ops; }
 
 volatile uint32_t prop_epoch[PG_COUNT];
+/* Bit g: group g's epoch moved since the last model_touched_take(). */
+static uint16_t g_touched;
 uint32_t prop_group_epoch(uint8_t g) { return g < PG_COUNT ? prop_epoch[g] : 0u; }
-void     model_touch(uint8_t g)       { if (g < PG_COUNT) prop_epoch[g]++; }
+void     model_touch(uint8_t g)
+{
+    if (g < PG_COUNT) { prop_epoch[g]++; g_touched |= (uint16_t)(1u << g); }
+}
+uint16_t model_touched_take(void)
+{
+    const uint16_t t = g_touched;
+    g_touched = 0u;
+    return t;
+}
 
 void model_note(prop_note_t *note, const char *text)
 {
@@ -575,7 +586,7 @@ prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, pr
     /* A failing setter keeps the old value; if one did not (a two-step
      * apply whose undo failed too), the change is still announced. */
     if (prop_get(p) != old) {
-        prop_epoch[p->group]++;
+        model_touch(p->group);
         if (may_note(p, origin) && g_ops->note_change) g_ops->note_change();
     }
     return s;
@@ -651,7 +662,7 @@ unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool no
         p->store(p, in ? prop_instrument_default(p, in) : prop_default(p));
         if (prop_get(p) != old) {
             changed++;
-            prop_epoch[p->group]++;
+            model_touch(p->group);
             if (p->flags & PF_PERSIST) persisted = true;
         }
     }

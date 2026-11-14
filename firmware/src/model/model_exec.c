@@ -46,13 +46,6 @@ static bool withdrawn(uint32_t seq)
     return (int32_t)(seq - g_withdrawn_upto) <= 0;
 }
 
-static uint32_t epoch_sum(void)
-{
-    uint32_t s = 0;
-    for (unsigned g = 0; g < PG_COUNT; g++) s += prop_epoch[g];
-    return s;
-}
-
 static const char *unwired_id(uint16_t id)
 {
     return (g_port && g_port->unwired) ? g_port->unwired(id) : NULL;
@@ -241,7 +234,7 @@ static void run(const model_req_t *r, model_result_t *res)
     prop_status_t s = check_pairs(r->pairs, r->n, &res->failed, &res->note);
     if (s != PS_OK) { res->status = (uint8_t)s; return; }
 
-    const uint32_t before = epoch_sum();
+    (void)model_touched_take();                           /* what this request changes, only */
     prop_status_t worst = PS_OK;
     uint8_t i;
     for (i = 0; i < r->n; i++) {
@@ -265,8 +258,11 @@ static void run(const model_req_t *r, model_result_t *res)
         res->failed = r->n;
         res->applied = r->n;
     }
-    if (r->origin != ORIGIN_KEY && epoch_sum() != before && g_port->changed)
-        g_port->changed();                                 /* one redraw per request */
+    /* One redraw per request, with the groups it changed: the port posts
+     * it only if the screen shows one of them, so a stored set of another
+     * instrument (meter.func on the scope) repaints nothing. */
+    const uint16_t touched = model_touched_take();
+    if (r->origin != ORIGIN_KEY && touched && g_port->changed) g_port->changed(touched);
 }
 
 unsigned model_exec_drain(void)

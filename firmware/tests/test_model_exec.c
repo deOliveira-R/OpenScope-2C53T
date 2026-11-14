@@ -192,7 +192,8 @@ static void run_executor(void) { in_exec = true; (void)model_exec_drain(); in_ex
 static void tp_wake(void)      { n_wakes++; }
 static void tp_sleep(uint32_t ms) { (void)ms; n_sleeps++; if (responsive) run_executor(); }
 static void tp_checkin(void)   { n_checkins++; }
-static void tp_changed(void)   { n_changed++; }
+static uint16_t last_changed;          /* the groups of the last redraw request */
+static void tp_changed(uint16_t g) { n_changed++; last_changed = g; }
 static void tp_service(void)   { n_service++; }
 static bool tp_on_exec(void)   { return in_exec; }
 /* As the firmware's list (model_hw_fw.c): the idle timer is not callable yet. */
@@ -448,10 +449,11 @@ static void th_sleep(uint32_t ms)
 }
 static bool th_on_exec(void)               { return pthread_equal(pthread_self(), exec_thread); }
 static void th_nop(void)                   {}
+static void th_changed(uint16_t g) { (void)g; }
 
 static const model_exec_port_t k_thread_port = {
     .send = th_send, .receive = th_receive, .wake = th_nop, .sleep_ms = th_sleep,
-    .checkin = th_nop, .changed = th_nop, .service = th_nop,
+    .checkin = th_nop, .changed = th_changed, .service = th_nop,
     .on_executor = th_on_exec, .unwired = tp_unwired,
 };
 
@@ -887,6 +889,32 @@ static void test_shell_steps(void)
     for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strstr(out[i], "steps:") == NULL);
 }
 
+/* The redraw request carries the groups a request changed, so the port can
+ * leave a screen alone that shows none of them (legacy_screens.c groups;
+ * test_screen_router checks the screens' side). A stored set of another
+ * instrument changes only that instrument's group. */
+#define GB(g) ((uint16_t)(1u << (g)))
+static void test_changed_groups(void)
+{
+    fresh(1);
+    n_changed = 0;
+    sh_reset(); model_shell_set("meter.func ohm", collect);        /* stored on the scope */
+    CHECKF(n_changed == 1 && last_changed == GB(PG_METER), "%u 0x%x", n_changed, last_changed);
+    sh_reset(); model_shell_set("meter.func=dcv ch1.vdiv=5", collect);
+    CHECK(n_changed == 2 && last_changed == (GB(PG_METER) | GB(PG_CH1)));
+    sh_reset(); model_shell_set("ch1.enabled off", collect);        /* moves ui.ach too: cross-group */
+    CHECKF(n_changed == 3 && (last_changed & GB(PG_CH1)), "0x%x", last_changed);
+    sh_reset(); model_shell_set("tb.roll on", collect);             /* tb and view (model_touch) */
+    CHECK(n_changed == 4 && last_changed == (GB(PG_TB) | GB(PG_VIEW)));
+    sh_reset(); model_shell_set("ch1.vdiv 5", collect);             /* no change: no request */
+    CHECK(n_changed == 4);
+    /* a key-origin set never asks (the key handler paints) */
+    prop_note_t n;
+    CHECK(prop_set_local(P(GEN_FREQ), 4321, ORIGIN_KEY, &n) == PS_OK);
+    sh_reset(); model_shell_set("gen.amp 2.0", collect);           /* the key's group is not carried over */
+    CHECK(n_changed == 5 && last_changed == GB(PG_GEN));
+}
+
 int main(void)
 {
     test_not_up();
@@ -909,6 +937,7 @@ int main(void)
     test_mode_switch();
     test_scope_regs_stored();
     test_shell_steps();
+    test_changed_groups();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

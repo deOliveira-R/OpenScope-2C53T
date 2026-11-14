@@ -41,6 +41,8 @@
 #include "watchdog.h"
 #include "meter_autoselect.h"
 #include "gallery_ui.h"
+#include "screen.h"
+#include "legacy_screens.h"
 
 bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's mailbox) */
 
@@ -419,11 +421,15 @@ static void port_sleep_ms(uint32_t ms)       { vTaskDelay(pdMS_TO_TICKS(ms)); }
 static void port_checkin(void)               { health_checkin_self(); }
 static bool port_on_executor(void)           { return xTaskGetCurrentTaskHandle() == g_executor; }
 
-/* One full repaint per shell request that changed something, as a key's
- * popup_and_redraw does; never waits (a full display queue drops it, and
- * the periodic redraw gates catch up). */
-static void port_changed(void)
+/* One full repaint per shell request that changed something the screen
+ * shows (the visible screens' property groups, legacy_screens.c), as a
+ * key's popup_and_redraw does. A set the screen does not show, e.g. a
+ * stored meter.func on the scope, repaints nothing. Never waits (a full
+ * display queue drops it, and the periodic redraw gates catch up). */
+static void port_changed(uint16_t groups)
 {
+    legacy_screens_sync();             /* a shell `mode` just before: judge the new screen */
+    if (!(groups & screen_groups())) return;
     const uint8_t cmd = DCMD_REDRAW_ALL;
     if (g_display_q) (void)xQueueSend(g_display_q, &cmd, 0);
 }

@@ -2003,8 +2003,9 @@ check-owners:
 # capture, close/switch and the `ui screen` snapshot. Pure; not linked into the
 # firmware yet.
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
-                                 src/ui/ui.h src/ui/redraw_gate.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< src/ui/screen.c -o $@
+                                 src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
+                                 src/ui/legacy_screens.h src/model/model.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util $< src/ui/screen.c -o $@
 
 .PHONY: test-screen-router
 test-screen-router: $(BUILD_DIR)/test_screen_router

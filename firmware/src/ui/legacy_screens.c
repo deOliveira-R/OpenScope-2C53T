@@ -28,6 +28,7 @@
  * display command, so the router adds no repaint and no settings write.
  */
 #include "legacy_screens.h"
+#include "model.h"     /* PG_x: the groups each screen shows (pure header) */
 
 _Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
                "every screen id fits the DCMD_DRAW_ACTIVE range");
@@ -111,26 +112,42 @@ static scr_res_t ls_key_gallery(scr_key_t k)
 
 /* ── the screens ───────────────────────────────────────────────────── */
 
-#define LBASE(id, nm, md, ins, keyfn, desc) \
-    { nm, id, md, ins, 0, NULL, NULL, keyfn, NULL, NULL, NULL, desc, 0 }
-#define LPAGE(id, nm, fl, keyfn, desc) \
-    { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, 0 }
+/* The property groups each screen shows (screen_t.groups, bit = PG_x): a
+ * shell set repaints the screen only when it changed one of them
+ * (model_hw_fw.c port_changed). Every screen with the bars shows the
+ * generator (the status bar's generator slot) and sys/ui (theme, mode,
+ * focus). The settings base and its pages list values from every group (the
+ * Oscilloscope page included, with no instrument bound): all of them. The
+ * gallery shows none of them. */
+#define G(g)        ((uint16_t)(1u << (g)))
+#define G_BARS      (G(PG_GEN) | G(PG_SYS) | G(PG_UI))
+#define G_SCOPE     (G_BARS | G(PG_CH1) | G(PG_CH2) | G(PG_TB) | G(PG_TRIG) | G(PG_VIEW) | \
+                     G(PG_FFT) | G(PG_IL) | G(PG_MASK))
+#define G_METER     (G_BARS | G(PG_METER))
+#define G_SIGGEN    G_BARS
+#define G_ALL       ((uint16_t)((1u << PG_COUNT) - 1u))
+
+#define LBASE(id, nm, md, ins, keyfn, desc, grp) \
+    { nm, id, md, ins, 0, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
+#define LPAGE(id, nm, fl, keyfn, desc, grp) \
+    { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
 
 static const screen_t ls_table[] = {
-    LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL),
-    LBASE(SCR_METER,    "meter",    MODE_MULTIMETER,   MODE_MULTIMETER,     ls_key_meter,    NULL),
-    LBASE(SCR_SIGGEN,   "siggen",   MODE_SIGNAL_GEN,   MODE_SIGNAL_GEN,     ls_key_siggen,   NULL),
-    LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings),
-    LBASE(SCR_HOME,     "home",     MODE_HOME,         SCR_INSTRUMENT_NONE, ls_key_home,     ui_describe_home),
-    LPAGE(SCR_SET_OSC,       "set_osc",       SCR_F_CHILD, ls_key_settings, ui_describe_settings),
-    LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings),
-    LPAGE(SCR_SET_MATH,      "set_math",      SCR_F_CHILD, ls_key_settings, ui_describe_settings),
-    LPAGE(SCR_SET_COMPONENT, "set_component", SCR_F_CHILD, ls_key_settings, ui_describe_settings),
-    LPAGE(SCR_SET_BODE,      "set_bode",      SCR_F_CHILD, ls_key_settings, ui_describe_settings),
-    LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings),
-    LPAGE(SCR_OSC_MENU, "osc_menu", SCR_F_OPAQUE,                                ls_key_osc_menu, ui_describe_osc_menu),
-    LPAGE(SCR_GALLERY,  "gallery",  SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, ls_key_gallery,  NULL),
+    LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL,                 G_SCOPE),
+    LBASE(SCR_METER,    "meter",    MODE_MULTIMETER,   MODE_MULTIMETER,     ls_key_meter,    NULL,                 G_METER),
+    LBASE(SCR_SIGGEN,   "siggen",   MODE_SIGNAL_GEN,   MODE_SIGNAL_GEN,     ls_key_siggen,   NULL,                 G_SIGGEN),
+    LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
+    LBASE(SCR_HOME,     "home",     MODE_HOME,         SCR_INSTRUMENT_NONE, ls_key_home,     ui_describe_home,     G_BARS),
+    LPAGE(SCR_SET_OSC,       "set_osc",       SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
+    LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
+    LPAGE(SCR_SET_MATH,      "set_math",      SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
+    LPAGE(SCR_SET_COMPONENT, "set_component", SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
+    LPAGE(SCR_SET_BODE,      "set_bode",      SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
+    LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
+    LPAGE(SCR_OSC_MENU, "osc_menu", SCR_F_OPAQUE,                                ls_key_osc_menu, ui_describe_osc_menu, G_SCOPE),
+    LPAGE(SCR_GALLERY,  "gallery",  SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, ls_key_gallery,  NULL,                 0),
 };
+_Static_assert(PG_COUNT <= 16, "screen_t.groups holds one bit per property group");
 
 screen_id_t legacy_settings_page(int8_t depth)
 {
