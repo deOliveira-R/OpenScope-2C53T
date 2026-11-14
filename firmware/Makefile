@@ -2022,6 +2022,20 @@ $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/
 test-screen-router: $(BUILD_DIR)/test_screen_router
 	$<
 
+# Stream frame encoder (src/stream/stream_frame.c, FEATURE_STREAM): header and
+# CRCs, packet chunking and the pad rule, a sink that refuses mid-frame, every
+# payload's length and bytes, PROPS from a property list. It also regenerates
+# the cross-check vectors that `scripts/scope_stream.py --selftest` decodes
+# (tests/fixtures/stream/) and fails if they differ from the committed ones;
+# STREAM_VECTORS_UPDATE=1 rewrites them.
+$(BUILD_DIR)/test_stream: tests/test_stream.c src/stream/stream_frame.c src/stream/stream_frame.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_STREAM=1 -Isrc/stream $< \
+		src/stream/stream_frame.c -o $@
+
+.PHONY: test-stream
+test-stream: $(BUILD_DIR)/test_stream
+	$<
+
 # test-all: every host test, from scratch. Stale binaries are removed first so
 # a test that no longer builds cannot pass on an old executable. All tests run
 # even after a failure; the target fails if any did, and names them.
