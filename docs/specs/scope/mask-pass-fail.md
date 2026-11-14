@@ -106,7 +106,7 @@ and indexed by screen column rather than by trigger.
 
 These are properties of *this* signal (a ±50-count sine, 62 samples/period),
 not of the feature: sensitivity is roughly `tol_v` + slope × `tol_h` +
-teach spread. Tighten with `mask tol`.
+teach spread. Tighten with `set mask.tolv=<counts> mask.tolh=<samples>`.
 
 ## Hardware dependencies
 

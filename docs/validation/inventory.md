@@ -114,7 +114,7 @@ hidden FFT state.
 | Mask strip | 3 px above row 2 | green pass, red fail column, amber skip/teach |
 
 **Vertical scale** is autofit by default: each frame is fitted to its own min/max, but never
-zoomed closer than 8 ADC counts. True scale is shell-only (`fpga scope graticule true`).
+zoomed closer than 8 ADC counts. True scale is shell-only (`set view.truescale on`).
 
 **Expected labels** (1X; ×10 at 10X), worked out from the calibration tables:
 
@@ -273,7 +273,7 @@ checklist records these as absent, not as failures.
 
 ## 9. Shell-only features (USB, `scripts/bench.py` or a terminal)
 
-`fpga scope graticule true|auto` (true scale), `fpga scope center`, `fpga scope softtrig`,
+`set view.truescale on|off` (true scale), `fpga scope center`, `set trig.soft on|off`,
 `mask …` (numeric tolerances, per-channel, stats), `trig2` (CH2 offset), `screen dumpbin`
-(screenshot), `btn <name>` (inject a press), `settings`, `mode startup`, `version`.
+(screenshot), `ui press <KEY>` (inject a press), `settings`, `set sys.startup`, `version`.
 EXP-72: `fpga autolive on|off` (default on), `fpga holdlog` (per-handover interval log).

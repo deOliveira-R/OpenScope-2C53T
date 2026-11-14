@@ -75,15 +75,16 @@ The USB debug shell commands used for validation are:
 - `meter wave path [direct|preacq]`, `meter wave selector [auto|0..255]`,
   and `meter wave preacq [auto|0..255]`: explicit diagnostics for the
   candidate DMM waveform SPI path.
-- `mode meter [submode] [layout]`: switch the UI and FPGA frontend to a DMM
-  submode from USB before capturing evidence.
+- `set meter.func=<f> meter.layout=<l> sys.mode=meter`: switch the UI and FPGA
+  frontend to a DMM function from USB before capturing evidence (the retired
+  `mode meter [submode] [layout]`).
 
 The host helper `scripts/openscope_live_debug.py` can run those commands once
 or poll them into a log without needing a terminal emulator. It has dedicated
 subcommands for `meter-dump`, `meter-frontend`, `meter-stream`,
 `meter-mux-stream`, `meter-adc-snapshot`, and `screen-capture`; use the generic
 `command` or `poll` subcommands for firmware shell commands such as
-`meter wave` and `mode meter 1 0`.
+`meter wave` and `set meter.func=1 meter.layout=0 sys.mode=meter`.
 
 `screen-capture` defaults to the read-only firmware command `screen dumpbin`,
 which returns a `SCREENBIN` header, exact-length packed indexed4 payload, and
@@ -188,7 +189,7 @@ instead of using `extra` as a range hint once AC evidence is present:
 Out-of-range local submodes fail closed. The shared plan API marks them with an
 invalid stock mode/frame family, emits no selector/apply word, and the parser
 rejects any frame with `METER_REJECT_INVALID_SUBMODE` instead of silently
-falling back to DCV. USB `mode meter` already bounds user input, but the parser
+falling back to DCV. The property meter.func already bounds user input, but the parser
 and plan layer keep this guard so future callers cannot arm the voltage
 frontend by accident.
 
