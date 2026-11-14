@@ -126,16 +126,6 @@ static void test_tb_step(void)
                                   !scope_roll_tb_step(&tb, &roll, &step, 0, 21));
 }
 
-static void test_disp_mode(void)
-{
-    CHECK("Y-T -> Roll -> X-Y -> Y-T",
-          scope_disp_mode_cycle(SCOPE_DISP_YT, 1) == SCOPE_DISP_ROLL &&
-          scope_disp_mode_cycle(SCOPE_DISP_ROLL, 1) == SCOPE_DISP_XY &&
-          scope_disp_mode_cycle(SCOPE_DISP_XY, 1) == SCOPE_DISP_YT);
-    CHECK("reverse: Y-T -> X-Y", scope_disp_mode_cycle(SCOPE_DISP_YT, -1) == SCOPE_DISP_XY);
-    CHECK("labels", strcmp(scope_disp_mode_label(SCOPE_DISP_ROLL), "Roll") == 0 &&
-                    strcmp(scope_disp_mode_label(SCOPE_DISP_XY), "X-Y") == 0);
-}
 
 static void test_geometry(void)
 {
@@ -393,7 +383,6 @@ int main(void)
     test_table();
     test_fifo();
     test_tb_step();
-    test_disp_mode();
     test_geometry();
     test_volts();
     test_linearize();

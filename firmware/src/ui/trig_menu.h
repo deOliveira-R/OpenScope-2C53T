@@ -8,7 +8,7 @@
  * Pure (no LCD, no FPGA): tests/test_key_model.c runs the code the input task
  * runs. Its users are the Oscilloscope Settings page's Trigger pane
  * (osc_menu_ui.c; TRIGGER in the scope opens the page locked there, stock
- * V1.2.0 as the owner saw it, 2026-11-12), the Settings list and the shell.
+ * V1.2.0 as the owner saw it, 2026-11-12) and the shell.
  * They apply the hardware side (reg 0x06 for the source, the SINGLE re-arm)
  * from the bits trig_menu_change() returns, through scope_apply.c.
  *

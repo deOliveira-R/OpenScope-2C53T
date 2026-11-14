@@ -185,18 +185,6 @@ scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
 bool scope_roll_tb_step(uint8_t *yt_idx, bool *roll, uint8_t *step, int dir,
                         uint8_t yt_count);
 
-/* ── Display mode (stock menu "Display Mode": Y-T / Roll / X-Y) ─────── */
-
-typedef enum {
-    SCOPE_DISP_YT = 0,
-    SCOPE_DISP_ROLL,
-    SCOPE_DISP_XY,
-    SCOPE_DISP_COUNT
-} scope_disp_mode_t;
-
-/* Next/previous mode in the menu cycle Y-T -> Roll -> X-Y -> Y-T. */
-scope_disp_mode_t scope_disp_mode_cycle(scope_disp_mode_t m, int dir);
-const char *scope_disp_mode_label(scope_disp_mode_t m);
 
 /* ── Screen geometry ────────────────────────────────────────────────── */
 

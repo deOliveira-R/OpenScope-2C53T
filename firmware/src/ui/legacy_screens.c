@@ -116,8 +116,8 @@ static scr_res_t ls_key_gallery(scr_key_t k)
  * shell set repaints the screen only when it changed one of them
  * (model_hw_fw.c port_changed). Every screen with the bars shows the
  * generator (the status bar's generator slot) and sys/ui (theme, mode,
- * focus). The settings base and its pages list values from every group (the
- * Oscilloscope page included, with no instrument bound): all of them. The
+ * focus). The settings base and its pages keep every group (device settings
+ * are sys.* and meter.link today; a repaint there is cheap): all of them. The
  * gallery shows none of them. */
 #define G(g)        ((uint16_t)(1u << (g)))
 #define G_BARS      (G(PG_GEN) | G(PG_SYS) | G(PG_UI))
@@ -138,11 +138,7 @@ static const screen_t ls_table[] = {
     LBASE(SCR_SIGGEN,   "siggen",   MODE_SIGNAL_GEN,   MODE_SIGNAL_GEN,     ls_key_siggen,   NULL,                 G_SIGGEN),
     LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
     LBASE(SCR_HOME,     "home",     MODE_HOME,         SCR_INSTRUMENT_NONE, ls_key_home,     ui_describe_home,     G_BARS),
-    LPAGE(SCR_SET_OSC,       "set_osc",       SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_SET_MATH,      "set_math",      SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_SET_COMPONENT, "set_component", SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_SET_BODE,      "set_bode",      SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_OSC_MENU, "osc_menu", SCR_F_OPAQUE,                                ls_key_osc_menu, ui_describe_osc_menu, G_SCOPE),
     LPAGE(SCR_GALLERY,  "gallery",  SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, ls_key_gallery,  NULL,                 0),
@@ -151,15 +147,10 @@ _Static_assert(PG_COUNT <= 16, "screen_t.groups holds one bit per property group
 
 screen_id_t legacy_settings_page(int8_t depth)
 {
-    switch (depth) {
-    case 1:  return SCR_SET_OSC;
-    case 2:  return SCR_SET_ABOUT;
-    case 3:  return SCR_SET_MATH;
-    case 4:                                       /* component tester        */
-    case 5:  return SCR_SET_COMPONENT;            /* ... its resistor calculator */
-    case 6:  return SCR_SET_BODE;
-    case 7:  return SCR_SET_SOUND;
-    default: return SCR_SETTINGS;
+    switch ((settings_page_t)depth) {
+    case SET_PAGE_ABOUT: return SCR_SET_ABOUT;
+    case SET_PAGE_SOUND: return SCR_SET_SOUND;
+    default:             return SCR_SETTINGS;     /* the list (and any value that is no page) */
     }
 }
 
@@ -171,8 +162,7 @@ uint8_t legacy_screens_update_cmd(screen_id_t top)
     case SCR_SIGGEN:   return DCMD_DRAW_SIGGEN;
     case SCR_HOME:     return DCMD_DRAW_HOME;
     case SCR_OSC_MENU: return DCMD_DRAW_OSC_MENU;
-    case SCR_SETTINGS: case SCR_SET_OSC: case SCR_SET_ABOUT: case SCR_SET_MATH:
-    case SCR_SET_COMPONENT: case SCR_SET_BODE: case SCR_SET_SOUND:
+    case SCR_SETTINGS: case SCR_SET_ABOUT: case SCR_SET_SOUND:
         return DCMD_DRAW_SETTINGS;
     default:           return DCMD_NONE_MODAL_DROP;
     }

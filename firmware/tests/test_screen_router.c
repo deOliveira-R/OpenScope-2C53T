@@ -59,7 +59,7 @@ static fake_t F[SCR_COUNT];
     static void draw_##id(scr_paint_t h, uint32_t fr) { (void)fr; logn("draw", #id, (int)h); } \
     static redraw_action_t tick_##id(uint32_t fr) { (void)fr; logn("tick", #id, 0); return F[id].tick_res; } \
     static uint32_t epoch_##id(void)         { return F[id].epoch; }
-CB(SCR_HOME) CB(SCR_SCOPE) CB(SCR_METER) CB(SCR_SETTINGS) CB(SCR_SET_OSC)
+CB(SCR_HOME) CB(SCR_SCOPE) CB(SCR_METER) CB(SCR_SETTINGS) CB(SCR_SET_SOUND)
 CB(SCR_OSC_MENU) CB(SCR_GALLERY) CB(SCR_LOGO) CB(SCR_POWER_PROMPT) CB(SCR_SET_ABOUT)
 
 static void describe_osc(char *out, size_t n) { snprintf(out, n, "row 2 pane 1"); }
@@ -71,7 +71,7 @@ static const screen_t S_HOME     = SCREEN(SCR_HOME,     "home",     MODE_HOME,  
 static const screen_t S_SCOPE    = SCREEN(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, 3,    0, 0x02, NULL);
 static const screen_t S_METER    = SCREEN(SCR_METER,    "meter",    MODE_MULTIMETER,   0xFF, 0, 0x04, NULL);
 static const screen_t S_SETTINGS = SCREEN(SCR_SETTINGS, "settings", MODE_SETTINGS,     0xFF, 0, 0x08, NULL);
-static const screen_t S_SET_OSC  = SCREEN(SCR_SET_OSC,  "set_osc",  MODE_COUNT,        0xFF, SCR_F_CHILD, 0x10, NULL);
+static const screen_t S_SET_SOUND  = SCREEN(SCR_SET_SOUND,  "set_sound",  MODE_COUNT,        0xFF, SCR_F_CHILD, 0x10, NULL);
 static const screen_t S_OSC_MENU = SCREEN(SCR_OSC_MENU, "osc_menu", MODE_COUNT,        0xFF, SCR_F_OPAQUE | SCR_F_GRAB, 0x20, describe_osc);
 static const screen_t S_GALLERY  = SCREEN(SCR_GALLERY,  "gallery",  MODE_COUNT,        0xFF, SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, 0x40, NULL);
 static const screen_t S_LOGO     = SCREEN(SCR_LOGO,     "logo",     MODE_COUNT,        0xFF, 0, 0x80, NULL);
@@ -117,7 +117,7 @@ static void setup(screen_id_t base)
     g_global_take = g_global_any = false;
     g_global_btn = BTN_NONE; g_global_long = false;
     for (int i = 0; i < SCR_COUNT; i++) { F[i].key_res = SCR_UNHANDLED; F[i].tick_res = REDRAW_SKIP; }
-    const screen_t *all[] = { &S_HOME, &S_SCOPE, &S_METER, &S_SETTINGS, &S_SET_OSC, &S_OSC_MENU,
+    const screen_t *all[] = { &S_HOME, &S_SCOPE, &S_METER, &S_SETTINGS, &S_SET_SOUND, &S_OSC_MENU,
                               &S_GALLERY, &S_LOGO, &S_POWER, &S_ABOUT };
     for (unsigned i = 0; i < sizeof all / sizeof all[0]; i++) screen_register(all[i]);
     screen_set_hooks(&HOOKS);
@@ -137,7 +137,7 @@ static void test_registry_and_init(void)
     CHECK("init: base open(SCR_COUNT) was called once", F[SCR_SCOPE].opens == 1 && F[SCR_SCOPE].last_open_from == SCR_COUNT);
     CHECK("register: duplicate id refused, NULL refused", !screen_register(&S_SCOPE) && !screen_register(NULL));
     CHECK("init: an overlay is not a base", !screen_init(SCR_OSC_MENU));
-    CHECK("init: an unregistered id is refused", !screen_init(SCR_SET_SOUND));
+    CHECK("init: an unregistered id is refused", !screen_init(SCR_SIGGEN));
     CHECK("lookup by mode", screen_base_for_mode(MODE_MULTIMETER) == SCR_METER &&
                             screen_base_for_mode(MODE_SIGNAL_GEN) == SCR_COUNT);
     CHECK("lookup by instrument id (scope owns 3)", screen_base_for_instrument(3) == SCR_SCOPE &&
@@ -197,14 +197,14 @@ static void test_overlay_over_base(void)
 {
     printf("overlays over the base\n");
     setup(SCR_SETTINGS);
-    screen_push(SCR_SET_OSC);
-    F[SCR_SET_OSC].key_res = SCR_DRAW;
+    screen_push(SCR_SET_SOUND);
+    F[SCR_SET_SOUND].key_res = SCR_DRAW;
     screen_route_key(BTN_DOWN);
-    CHECK("child on top gets the key, the base does not", F[SCR_SET_OSC].keys == 1 && F[SCR_SETTINGS].keys == 0);
+    CHECK("child on top gets the key, the base does not", F[SCR_SET_SOUND].keys == 1 && F[SCR_SETTINGS].keys == 0);
 
-    F[SCR_SET_OSC].key_res = SCR_UNHANDLED; F[SCR_SETTINGS].key_res = SCR_HANDLED;
+    F[SCR_SET_SOUND].key_res = SCR_UNHANDLED; F[SCR_SETTINGS].key_res = SCR_HANDLED;
     CHECK("a non-opaque layer that leaves the key passes it down", screen_route_key(BTN_DOWN) == SCR_HANDLED &&
-          F[SCR_SET_OSC].keys == 2 && F[SCR_SETTINGS].keys == 1);
+          F[SCR_SET_SOUND].keys == 2 && F[SCR_SETTINGS].keys == 1);
 
     setup(SCR_SCOPE);
     screen_push(SCR_POWER_PROMPT);              /* opaque, not a grab */
@@ -276,11 +276,11 @@ static void test_layer_close(void)
     CHECK("after_key got DRAW_FULL", g_after_last == SCR_DRAW_FULL);
 
     setup(SCR_SCOPE);
-    screen_push(SCR_SET_OSC); screen_push(SCR_LOGO);
-    F[SCR_LOGO].key_res = SCR_UNHANDLED; F[SCR_SET_OSC].key_res = SCR_CLOSE;
+    screen_push(SCR_SET_SOUND); screen_push(SCR_LOGO);
+    F[SCR_LOGO].key_res = SCR_UNHANDLED; F[SCR_SET_SOUND].key_res = SCR_CLOSE;
     CHECK("a lower layer's CLOSE (key passed down) pops it and the one above",
           screen_route_key(BTN_OK) == SCR_DRAW_FULL && screen_top() == SCR_SCOPE &&
-          F[SCR_SET_OSC].closes == 1 && F[SCR_LOGO].closes == 1);
+          F[SCR_SET_SOUND].closes == 1 && F[SCR_LOGO].closes == 1);
 
     setup(SCR_SCOPE);
     F[SCR_SCOPE].key_res = SCR_CLOSE;
@@ -304,18 +304,18 @@ static void test_close_and_pop(void)
     CHECK("push posts a stack change", g_stack_posts == 1);
     CHECK("push twice: refused", !screen_push(SCR_LOGO) && F[SCR_LOGO].opens == 1);
     CHECK("push a base as a layer: refused", !screen_push(SCR_METER));
-    CHECK("push an unregistered screen: refused", !screen_push(SCR_SET_SOUND));
+    CHECK("push an unregistered screen: refused", !screen_push(SCR_SIGGEN));
     CHECK("close is idempotent: first closes, second is a no-op",
           screen_close(SCR_LOGO) && !screen_close(SCR_LOGO) && F[SCR_LOGO].closes == 1);
     CHECK("close posts once", g_stack_posts == 2);
 
-    screen_push(SCR_SET_OSC); screen_push(SCR_SET_ABOUT); screen_push(SCR_LOGO);
+    screen_push(SCR_SET_SOUND); screen_push(SCR_SET_ABOUT); screen_push(SCR_LOGO);
     CHECK("depth cap: the stack is full at SCR_STACK_MAX", screen_snapshot().n == SCR_STACK_MAX && !screen_push(SCR_POWER_PROMPT));
     clear_log();
     CHECK("close of a lower layer closes the ones above it, top first",
-          screen_close(SCR_SET_OSC) && screen_snapshot().n == 1);
+          screen_close(SCR_SET_SOUND) && screen_snapshot().n == 1);
     CHECK("pop order was top-down (logo, about, osc)", strstr(g_log, "SCR_LOGO") < strstr(g_log, "SCR_SET_ABOUT") &&
-          strstr(g_log, "SCR_SET_ABOUT") < strstr(g_log, "SCR_SET_OSC"));
+          strstr(g_log, "SCR_SET_ABOUT") < strstr(g_log, "SCR_SET_SOUND"));
 
     screen_push(SCR_LOGO);
     screen_pop();
@@ -326,12 +326,12 @@ static void test_switch(void)
 {
     printf("switch\n");
     setup(SCR_SETTINGS);
-    screen_push(SCR_SET_OSC); screen_push(SCR_LOGO);
+    screen_push(SCR_SET_SOUND); screen_push(SCR_LOGO);
     clear_log(); g_stack_posts = 0;
     screen_switch(SCR_METER);
     CHECK("switch: layers close top-down, then the old base closes, then the new opens",
-          strstr(g_log, "close:SCR_LOGO") && strstr(g_log, "close:SCR_LOGO") < strstr(g_log, "close:SCR_SET_OSC") &&
-          strstr(g_log, "close:SCR_SET_OSC") < strstr(g_log, "close:SCR_SETTINGS") &&
+          strstr(g_log, "close:SCR_LOGO") && strstr(g_log, "close:SCR_LOGO") < strstr(g_log, "close:SCR_SET_SOUND") &&
+          strstr(g_log, "close:SCR_SET_SOUND") < strstr(g_log, "close:SCR_SETTINGS") &&
           strstr(g_log, "close:SCR_SETTINGS") < strstr(g_log, "open:SCR_METER"));
     CHECK("switch: old base told where it goes, new base told where it came from",
           F[SCR_SETTINGS].last_close_to == SCR_METER && F[SCR_METER].last_open_from == SCR_SETTINGS);
@@ -344,7 +344,7 @@ static void test_switch(void)
     CHECK("switch to the same base: overlays close, the base is not reopened",
           screen_snapshot().n == 1 && F[SCR_METER].opens == opens && F[SCR_METER].closes == closes);
     screen_switch(SCR_LOGO);
-    screen_switch(SCR_SET_SOUND);
+    screen_switch(SCR_SIGGEN);
     CHECK("switch to a non-base or unregistered id: ignored", screen_base() == SCR_METER);
 }
 
@@ -407,19 +407,19 @@ static void test_snapshot(void)
     screen_stack_t s0 = screen_snapshot();
     CHECK("snapshot: base only, ids and generation",
           s0.n == 1 && s0.id[0] == SCR_SETTINGS && s0.gen == 1);
-    screen_push(SCR_SET_OSC); screen_push(SCR_OSC_MENU);
+    screen_push(SCR_SET_SOUND); screen_push(SCR_OSC_MENU);
     screen_stack_t s = screen_snapshot();
-    CHECK("snapshot: ids bottom-up", s.n == 3 && s.id[0] == SCR_SETTINGS && s.id[1] == SCR_SET_OSC && s.id[2] == SCR_OSC_MENU);
+    CHECK("snapshot: ids bottom-up", s.n == 3 && s.id[0] == SCR_SETTINGS && s.id[1] == SCR_SET_SOUND && s.id[2] == SCR_OSC_MENU);
     CHECK("snapshot: generation moves on every change", s.gen == s0.gen + 2);
     screen_close(SCR_OSC_MENU); screen_close(SCR_OSC_MENU);
     CHECK("an idempotent close does not move the generation", screen_snapshot().gen == s.gen + 1);
 
     char buf[128];
     screen_snapshot_text(buf, sizeof buf);
-    CHECK("text: names and generation", strcmp(buf, "settings > set_osc gen=4") == 0);
+    CHECK("text: names and generation", strcmp(buf, "settings > set_sound gen=4") == 0);
     screen_push(SCR_OSC_MENU);
     screen_snapshot_text(buf, sizeof buf);
-    CHECK("text: the top's describe() is appended", strcmp(buf, "settings > set_osc > osc_menu gen=5 | row 2 pane 1") == 0);
+    CHECK("text: the top's describe() is appended", strcmp(buf, "settings > set_sound > osc_menu gen=5 | row 2 pane 1") == 0);
     char small[12];
     size_t n = screen_snapshot_text(small, sizeof small);
     CHECK("text: a small buffer is cut, terminated, and the length is right", n == strlen(small) && n < sizeof small);
@@ -610,7 +610,8 @@ static bool stack_mirrors(void)
     screen_id_t want[SCR_STACK_MAX];
     uint8_t n = 0;
     want[n++] = screen_base_for_mode(W.mode);
-    if (W.mode == MODE_SETTINGS && W.depth > 0) want[n++] = legacy_settings_page(W.depth);
+    if (W.mode == MODE_SETTINGS && legacy_settings_page(W.depth) != SCR_SETTINGS)
+        want[n++] = legacy_settings_page(W.depth);    /* a value that is no page shows the list */
     if (W.mode == MODE_OSCILLOSCOPE && W.osc_open) want[n++] = SCR_OSC_MENU;
     if (W.gallery) want[n++] = SCR_GALLERY;
     if (st.n != n) return false;
@@ -780,15 +781,27 @@ static void test_legacy_mirror(void)
     W.mode = MODE_MULTIMETER; W.gallery = false; legacy_screens_sync();   /* shell `mode meter` */
     CHECK("shell mode switch + gallery close -> meter alone (stale page not shown)",
           stack_mirrors() && screen_base() == SCR_METER && screen_top() == SCR_METER);
-    W.mode = MODE_SETTINGS; W.depth = 3; W.osc_open = false; legacy_screens_sync();
-    CHECK("settings depth 3 -> settings > set_math", stack_mirrors() && screen_top() == SCR_SET_MATH);
-    W.depth = 7; legacy_screens_sync();
-    CHECK("depth 3 -> 7 swaps the page", stack_mirrors() && screen_top() == SCR_SET_SOUND);
+    W.mode = MODE_SETTINGS; W.depth = SET_PAGE_ABOUT; W.osc_open = false; legacy_screens_sync();
+    CHECK("settings page About -> settings > set_about", stack_mirrors() && screen_top() == SCR_SET_ABOUT);
+    W.depth = SET_PAGE_SOUND; legacy_screens_sync();
+    CHECK("About -> Sound and Light swaps the page", stack_mirrors() && screen_top() == SCR_SET_SOUND);
     W.depth = 0; legacy_screens_sync();
     CHECK("depth 0 -> the settings base", stack_mirrors() && screen_top() == SCR_SETTINGS);
-    W.depth = 5;
-    CHECK("depth 4 and 5 are both the component page",
-          legacy_settings_page(4) == SCR_SET_COMPONENT && legacy_settings_page(5) == SCR_SET_COMPONENT);
+    {
+        /* The scope, math, component and Bode pages (1, 3..6) are gone: the
+         * list has two pages, and any other value shows the list. */
+        int only = legacy_settings_page(SET_PAGE_ABOUT) == SCR_SET_ABOUT &&
+                   legacy_settings_page(SET_PAGE_SOUND) == SCR_SET_SOUND;
+        for (int d = -1; d < 12; d++)
+            if (d != SET_PAGE_ABOUT && d != SET_PAGE_SOUND)
+                only &= legacy_settings_page((int8_t)d) == SCR_SETTINGS;
+        CHECK("two settings pages (About, Sound and Light); nothing else is a page", only);
+        CHECK("the list: nine device settings, named, in the owner's order",
+              SETTINGS_ITEM_COUNT == 9 && SET_ITEM_SOUND_LIGHT == 0 && SET_ITEM_AUTOOFF == 1 &&
+              SET_ITEM_STARTUP == 2 && SET_ITEM_METER_LINK == 3 && SET_ITEM_THEME == 4 &&
+              SET_ITEM_USB_SHARE == 5 && SET_ITEM_FW_UPDATE == 6 && SET_ITEM_FACTORY_RESET == 7 &&
+              SET_ITEM_ABOUT == 8);
+    }
 
     /* The gallery closing itself pops its layer within the same key. */
     W.mode = MODE_OSCILLOSCOPE; W.depth = 0; W.gallery = true; legacy_screens_sync();
@@ -829,8 +842,8 @@ static void test_legacy_mirror(void)
         const uint16_t gen = screen_groups();
         W.mode = MODE_HOME; legacy_screens_sync();
         const uint16_t home = screen_groups();
-        W.mode = MODE_SETTINGS; W.depth = 1; legacy_screens_sync();
-        const uint16_t set_osc = screen_groups();
+        W.mode = MODE_SETTINGS; W.depth = SET_PAGE_SOUND; legacy_screens_sync();
+        const uint16_t set_page = screen_groups();
         W.depth = 0;
         W.mode = MODE_OSCILLOSCOPE; W.osc_open = true; legacy_screens_sync();
         const uint16_t osc = screen_groups();
@@ -844,7 +857,7 @@ static void test_legacy_mirror(void)
         CHECK("generator, home: the bars only (generator slot, sys, ui)",
               gen == (GB(PG_GEN) | GB(PG_SYS) | GB(PG_UI)) && home == gen && (scope & gen) == gen &&
               (meter & gen) == gen);
-        CHECK("Settings > Oscilloscope shows every group", set_osc == (uint16_t)((1u << PG_COUNT) - 1u));
+        CHECK("a Settings page keeps every group", set_page == (uint16_t)((1u << PG_COUNT) - 1u));
         CHECK("the osc page over the scope shows the scope's groups", osc == scope);
         CHECK("the gallery (opaque) shows none", gal == 0);
         CHECK("a stored meter.func on the scope repaints nothing; with ch1.vdiv it does",

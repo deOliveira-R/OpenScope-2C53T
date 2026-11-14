@@ -34,8 +34,7 @@
 
 typedef enum {
     SCR_HOME, SCR_SCOPE, SCR_METER, SCR_SIGGEN, SCR_SETTINGS,          /* bases (one per mode) */
-    SCR_SET_OSC, SCR_SET_ABOUT, SCR_SET_MATH, SCR_SET_COMPONENT,        /* settings children    */
-    SCR_SET_BODE, SCR_SET_SOUND,
+    SCR_SET_ABOUT, SCR_SET_SOUND,                                       /* settings children    */
     SCR_OSC_MENU, SCR_GALLERY, SCR_LOGO, SCR_POWER_PROMPT,              /* overlays             */
     SCR_COUNT
 } screen_id_t;

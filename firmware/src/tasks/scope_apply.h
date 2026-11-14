@@ -2,9 +2,9 @@
  * OpenScope 2C53T - the hardware side of a scope setting change
  *
  * One copy of the glue that the keys (input_handler.c: the trigger panel, the
- * legacy Settings list) and the Oscilloscope Settings page (osc_menu_ui.c)
- * both need, so the two can never disagree on what a change does: the
- * coupling relay with readback, a trigger change's register write / SINGLE
+ * device Settings list, until it lost its scope rows) and the Oscilloscope
+ * Settings page (osc_menu_ui.c) both need, so the two can never disagree on
+ * what a change does: the coupling relay with readback, a trigger change's register write / SINGLE
  * re-arm, Roll through the FPGA with revert, the scope view with the shared
  * memory pool (FFT and persistence take turns on it), and persistence on.
  * UI round 1 merge (each side had its own static copy before).

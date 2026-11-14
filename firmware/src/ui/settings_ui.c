@@ -1,10 +1,15 @@
 /*
  * OpenScope 2C53T - Settings UI
  *
- * Multi-level navigable menu system:
- *   depth 0: Top-level settings (7 items)
- *   depth 1: Oscilloscope settings sub-menu (CH1/CH2/trigger config)
- *   depth 2: About screen (device info)
+ * Home > Settings: DEVICE settings only (settings_item_t, ui.h), a list and
+ * two pages (settings_page_t): Sound and Light, About. Everything about the
+ * scope (channels, trigger, cursors, display mode, math, persistence) is in
+ * the scope's own menu, MENU on the scope screen (osc_menu_model.h): one
+ * place per setting.
+ *
+ * Values are read through the property model (prop_get) where a property
+ * exists: sys.volume, sys.brightness, sys.autooff, sys.startup, sys.theme,
+ * meter.link. USB Sharing has no property yet (usb_share_label()).
  */
 
 #include "ui.h"
@@ -12,11 +17,6 @@
 #include "font.h"
 #include "theme.h"
 #include "watchdog.h"
-#include "scope_state.h"
-#include "scope_roll.h"
-#include "math_channel.h"
-#include "persistence.h"
-#include "component_test.h"
 #include "shared_mem.h"
 #include "sys_prefs.h"
 #include "model.h"
@@ -26,32 +26,20 @@
 #endif
 #include <stdio.h>
 
-/* Top-level menu items */
-static const char *settings_items[SETTINGS_ITEM_COUNT] = {
-    "Oscilloscope Settings",
-    "Sound and Light",
-    "Auto Shutdown",
-    "Display Mode",
-    "Math / Persist",
-    "Component Tester",
-    "Bode Plot",
-    "Startup on Boot",
-    "About",
-    "FPGA SPI Scanner",
-    "Firmware Update",
-    "Factory Reset",
-    "Theme",
-    "USB Sharing",   /* stock's settings item (OK handler 0x0800BF08); appended so no index moves */
-    "Meter on Battery",   /* meter.link: without a USB host, With Screen / Always; appended */
+/* The list's labels, by name (ui.h settings_item_t is the display order). */
+static const char *const settings_items[SETTINGS_ITEM_COUNT] = {
+    [SET_ITEM_SOUND_LIGHT]   = "Sound and Light",
+    [SET_ITEM_AUTOOFF]       = "Auto Shutdown",
+    [SET_ITEM_STARTUP]       = "Startup on Boot",
+    [SET_ITEM_METER_LINK]    = "Meter on Battery",   /* without a USB host: With Screen / Always */
+    [SET_ITEM_THEME]         = "Theme",
+    [SET_ITEM_USB_SHARE]     = "USB Sharing",        /* stock's settings item (OK handler 0x0800BF08) */
+    [SET_ITEM_FW_UPDATE]     = "Firmware Update",
+    [SET_ITEM_FACTORY_RESET] = "Factory Reset",
+    [SET_ITEM_ABOUT]         = "About",
 };
-
-/* Math / Persistence sub-menu items */
-#define MATH_SUB_ITEMS  3
-static const char *math_sub_labels[MATH_SUB_ITEMS] = {
-    "Math Channel",
-    "Persistence",
-    "Back",
-};
+_Static_assert(SET_ITEM_ABOUT == SETTINGS_ITEM_COUNT - 1 && SETTINGS_ITEM_COUNT == 9,
+               "nine device settings, About last");
 
 /* Layout constants */
 #define MENU_TOP        42
@@ -93,43 +81,8 @@ static void draw_menu_item(int i, int scroll_offset, int selected_idx,
                                value, th->highlight, bg, &font_medium);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Top-level settings screen (depth 0)
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* ═══════════════════════════════════════════════════════════════════
- * Math / Persistence sub-menu (depth 3)
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void draw_settings_math(void)
-{
-    const theme_t *th = theme_get();
-
-    lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
-
-    font_draw_string_center(LCD_WIDTH / 2, 20, "Math / Persist",
-                            th->text_primary, th->background, &font_large);
-
-    for (int i = 0; i < MATH_SUB_ITEMS; i++) {
-        const char *val = NULL;
-
-        if (i == 0) {
-            if (math_enabled) {
-                val = math_channel_name((math_op_t)math_op);
-            } else {
-                val = "Off";
-            }
-        }
-        if (i == 1) {
-            val = persist_enabled ? persist_mode_name(persist_get_mode()) : "Off";
-        }
-
-        draw_menu_item(i, 0, settings_sub_selected, math_sub_labels[i], val, th);
-    }
-}
-
-/* Sound and Light sub-page (depth 7): stock's two rows, volume 0..10 and
- * brightness 25..100 % in steps of 5. */
+/* Sound and Light page: stock's two rows, volume 0..10 and brightness
+ * 25..100 % in steps of 5 (sys.volume, sys.brightness). */
 static void draw_settings_sound_light(void)
 {
     const theme_t *th = theme_get();
@@ -139,12 +92,13 @@ static void draw_settings_sound_light(void)
     font_draw_string_center(LCD_WIDTH / 2, 20, "Sound and Light",
                             th->text_primary, th->background, &font_large);
 
-    if (sys_prefs_volume() == 0u) snprintf(vol, sizeof(vol), "Off");
-    else                          snprintf(vol, sizeof(vol), "%u", (unsigned)sys_prefs_volume());
-    snprintf(bri, sizeof(bri), "%u%%", (unsigned)sys_prefs_brightness());
+    const unsigned v = (unsigned)prop_get(P(SYS_VOLUME));
+    if (v == 0u) snprintf(vol, sizeof(vol), "Off");
+    else         snprintf(vol, sizeof(vol), "%u", v);
+    snprintf(bri, sizeof(bri), "%u%%", (unsigned)prop_get(P(SYS_BRIGHTNESS)));
 
-    draw_menu_item(0, 0, settings_sub_selected, "Sound", vol, th);
-    draw_menu_item(1, 0, settings_sub_selected, "Brightness", bri, th);
+    draw_menu_item(SET_SOUND_ROW_VOLUME, 0, settings_sub_selected, "Sound", vol, th);
+    draw_menu_item(SET_SOUND_ROW_BRIGHTNESS, 0, settings_sub_selected, "Brightness", bri, th);
 }
 
 static void draw_settings_top(void)
@@ -164,83 +118,30 @@ static void draw_settings_top(void)
     for (int i = 0; i < SETTINGS_ITEM_COUNT; i++) {
         const char *value = NULL;
 
-        /* Dynamic values for certain items */
-        if (i == 0) value = ">";        /* Has sub-menu */
-        if (i == 1) value = ">";        /* Sound and Light: sub-page */
-        if (i == 2) value = sys_autooff_label(sys_prefs_autooff_mins());
-        if (i == 3) value = scope_disp_mode_label((scope_disp_mode_t)scope_display_mode()); /* Y-T/Roll/X-Y */
-        if (i == 4) value = ">";        /* Math/Persist: sub-menu */
-        if (i == 5) value = ">";        /* Component Tester */
-        if (i == 6) value = ">";        /* Bode Plot */
-        if (i == 7) value = startup_mode_name(startup_mode);
-        if (i == 8) value = ">";        /* About: has detail screen */
-        if (i == 10) value = "DFU";     /* Firmware Update: reboot to bootloader */
-        if (i == 12) value = th->name;  /* Theme (was the Display Mode value) */
+        switch ((settings_item_t)i) {
+        case SET_ITEM_SOUND_LIGHT:
+        case SET_ITEM_ABOUT:        value = ">"; break;                 /* a page */
+        case SET_ITEM_AUTOOFF:      value = sys_autooff_label(sys_autooff_mins_at((unsigned)prop_get(P(SYS_AUTOOFF)))); break;
+        case SET_ITEM_STARTUP:      value = startup_mode_name((startup_mode_t)prop_get(P(SYS_STARTUP))); break;
+        /* With a USB host the meter runs whatever this says (meter_link_policy.h). */
+        case SET_ITEM_METER_LINK:   value = prop_get(P(METER_LINK)) == METER_LINK_ALWAYS ? "Always" : "With Screen"; break;
+        case SET_ITEM_THEME:        value = th->name; break;                /* sys.theme: the theme in force */
 #if defined(USB_MSC) && USB_MSC
-        if (i == 13) value = usb_share_label();   /* CDC + read-only gallery drive */
+        case SET_ITEM_USB_SHARE:    value = usb_share_label(); break;   /* CDC + read-only gallery drive */
 #else
-        if (i == 13) value = "n/a";     /* built CDC-only (USB_MSC=0) */
+        case SET_ITEM_USB_SHARE:    value = "n/a"; break;               /* built CDC-only (USB_MSC=0) */
 #endif
-
-        /* Meter on Battery: the property, through the model. With a USB host
-         * the meter runs whatever this says (meter_link_policy.h). */
-        if (i == 14) value = prop_get(P(METER_LINK)) == METER_LINK_ALWAYS ? "Always" : "With Screen";
+        case SET_ITEM_FW_UPDATE:    value = "DFU"; break;               /* reboot to the bootloader */
+        case SET_ITEM_FACTORY_RESET:                                    /* not implemented: no value */
+        default: break;
+        }
 
         draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
     }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Oscilloscope settings sub-menu (depth 1)
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void draw_settings_osc(void)
-{
-    const theme_t *th = theme_get();
-    const scope_state_t *ss = scope_state_get();
-
-    lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
-
-    font_draw_string_center(LCD_WIDTH / 2, 20, "Oscilloscope",
-                            th->text_primary, th->background, &font_large);
-
-    /* Eight rows (stock has no reachable 20M Limit row: parity = absent, see
-     * docs/re/parity2_static.md section 2), seven visible: scroll so the selected one is on screen.
-     * (Before C3 the eighth row, Trigger Edge, sat below the last visible
-     * slot with no scroll, so it could be selected but not seen.) */
-    int sc = 0;
-    if (settings_sub_selected >= MENU_VISIBLE)
-        sc = settings_sub_selected - MENU_VISIBLE + 1;
-
-    /* CH1 section */
-    draw_menu_item(0, sc, settings_sub_selected,
-                   "CH1 Coupling", coupling_labels[ss->ch1.coupling], th);
-    draw_menu_item(1, sc, settings_sub_selected,
-                   "CH1 Probe", probe_labels[ss->ch1.probe], th);
-
-    /* CH2 section */
-    draw_menu_item(2, sc, settings_sub_selected,
-                   "CH2 Coupling", coupling_labels[ss->ch2.coupling], th);
-    draw_menu_item(3, sc, settings_sub_selected,
-                   "CH2 Probe", probe_labels[ss->ch2.probe], th);
-
-    /* Trigger section (the TRIGGER key's panel holds the same three) */
-    draw_menu_item(4, sc, settings_sub_selected,
-                   "Trigger Mode", trigger_mode_labels[ss->trigger.mode], th);
-    draw_menu_item(5, sc, settings_sub_selected,
-                   "Trigger Edge", trigger_edge_labels[ss->trigger.edge], th);
-    draw_menu_item(6, sc, settings_sub_selected,
-                   "Trigger Source", trigger_source_labels[ss->trigger.source], th);
-
-    /* Cursors: stock's "Cursor Measurement" menu entry; TRIGGER cycled them
-     * before C3. */
-    static const char *const cur_labels[] = { "Off", "Vertical", "Horizontal", "Both" };
-    draw_menu_item(7, sc, settings_sub_selected, "Cursors",
-                   ((unsigned)ss->cursor.mode < 4u) ? cur_labels[ss->cursor.mode] : "?", th);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * About screen (depth 2)
+ * About page
  * ═══════════════════════════════════════════════════════════════════ */
 
 static void draw_settings_about(void)
@@ -296,15 +197,10 @@ static void draw_settings_about(void)
 
 void draw_settings_screen(void)
 {
-    switch (settings_depth) {
-    case 1:  draw_settings_osc();              break;
-    case 2:  draw_settings_about();            break;
-    case 3:  draw_settings_math();             break;
-    case 4:  draw_component_test_screen();     break;
-    case 5:  draw_resistor_calc_screen();      break;
-    case 6:  draw_bode_screen();              break;
-    case 7:  draw_settings_sound_light();     break;
-    default: draw_settings_top();              break;
+    switch ((settings_page_t)settings_depth) {
+    case SET_PAGE_ABOUT: draw_settings_about();       break;
+    case SET_PAGE_SOUND: draw_settings_sound_light(); break;
+    default:             draw_settings_top();         break;
     }
 }
 

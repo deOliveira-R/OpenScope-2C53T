@@ -129,18 +129,6 @@ uint32_t persist_mode_tau_ms(persist_mode_t mode)
     }
 }
 
-const char *persist_mode_name(persist_mode_t mode)
-{
-    switch (mode) {
-    case PERSIST_OFF:      return "Off";
-    case PERSIST_LOW:      return "500ms";
-    case PERSIST_MEDIUM:   return "1s";
-    case PERSIST_HIGH:     return "2s";
-    case PERSIST_INFINITE: return "Inf";
-    default:               return "?";
-    }
-}
-
 void persist_decay_ms(uint32_t dt_ms)
 {
     const uint32_t tau = persist_mode_tau_ms(current_mode);

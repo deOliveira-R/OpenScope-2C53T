@@ -117,9 +117,9 @@ bool input_mode_switch(device_mode_t m);
 void input_router_init(void *display_queue);
 extern volatile startup_mode_t startup_mode;
 extern volatile uint32_t      uptime_seconds;
-extern volatile int8_t        settings_selected;  /* Selected menu item index */
-extern volatile int8_t        settings_depth;      /* 0=top, 1=sub-menu, 2=about, 3=osc-math, 4=component, 7=sound+light */
-extern volatile int8_t        settings_sub_selected; /* Sub-menu selection */
+extern volatile int8_t        settings_selected;  /* settings_item_t: the row of the Settings list */
+extern volatile int8_t        settings_depth;      /* settings_page_t: the list, or one of its pages */
+extern volatile int8_t        settings_sub_selected; /* row inside a page (Sound and Light) */
 extern volatile uint8_t       active_channel;      /* 0=CH1, 1=CH2 (for scope adjustments) */
 extern volatile uint8_t       meter_submode;       /* 0-11: current meter sub-mode (11 = Auto) */
 extern volatile uint8_t       meter_layout;        /* 0=full, 1=chart, 2=stats, 3=fuse */
@@ -162,9 +162,32 @@ extern volatile bool          math_enabled;
 extern volatile uint8_t       math_op;        /* math_op_t cast */
 extern volatile bool          persist_enabled;
 
-#define SETTINGS_ITEM_COUNT     15
-#define SETTINGS_OSC_ITEM_COUNT 8    /* no 20M Limit rows: stock V1.2.0 has none reachable (C13) */
-#define SETTINGS_ABOUT_LINES    5
+/* The Settings list (Home > Settings): DEVICE settings only, in display
+ * order. Everything about the scope lives in the scope's own menu (MENU on
+ * the scope screen, osc_menu_model.h). Code names the rows, never their
+ * numbers, so the list can be reordered; nothing persists a row number. */
+typedef enum {
+    SET_ITEM_SOUND_LIGHT = 0,   /* page: volume, brightness (sys.volume, sys.brightness) */
+    SET_ITEM_AUTOOFF,           /* sys.autooff                                           */
+    SET_ITEM_STARTUP,           /* sys.startup                                           */
+    SET_ITEM_METER_LINK,        /* meter.link: "Meter on Battery"                        */
+    SET_ITEM_THEME,             /* sys.theme                                             */
+    SET_ITEM_USB_SHARE,         /* CDC + read-only gallery drive (no property yet)       */
+    SET_ITEM_FW_UPDATE,         /* reboot into the DFU bootloader                        */
+    SET_ITEM_FACTORY_RESET,     /* listed, not implemented: OK does nothing              */
+    SET_ITEM_ABOUT,             /* page                                                  */
+    SETTINGS_ITEM_COUNT
+} settings_item_t;
+
+/* settings_depth: the list or one of its two pages. The numbers are what
+ * `ui screen` prints (settings=<page>/<row>/<sub>) and are kept as they
+ * were; 1 and 3..6 were the scope, math, component and Bode pages. */
+typedef enum {
+    SET_PAGE_LIST  = 0,
+    SET_PAGE_ABOUT = 2,
+    SET_PAGE_SOUND = 7,
+} settings_page_t;
+enum { SET_SOUND_ROW_VOLUME = 0, SET_SOUND_ROW_BRIGHTNESS, SET_SOUND_ROWS };
 #define METER_SUBMODE_COUNT     12   /* 0-10 stock functions, 11 = Auto (word 0x14) */
 /* Meter views (softkey UI, 2026-10-06), cycled by the View softkey (PRM):
  * Big -> Graph -> Stats -> Limits -> Fuse. Numbering keeps saved settings
@@ -189,10 +212,6 @@ extern volatile bool          persist_enabled;
 #include "fft_test_signals.h"
 #include "shared_mem.h"   /* waterfall history is a sub-tenant of the FFT pool region */
 extern volatile scope_view_t scope_view;
-/* Stock's "Display Mode" (Y-T / Roll / X-Y, scope_roll.h) as the scope is
- * now: X-Y when the X-Y view is up, else Roll when scope_state.roll, else
- * Y-T. Defined in scope_ui.c. Returns a scope_disp_mode_t. */
-int scope_display_mode(void);
 
 /* Scope time view: what the arrow keys adjust, cycled by MOVE (key_model.h:
  * zoom -> channel move -> trigger move -> [cursor] -> [mask]). The three bools
@@ -346,7 +365,6 @@ const char *meter_submode_name(uint8_t submode);
 void meter_function_select(uint8_t submode);
 const char *startup_mode_name(startup_mode_t mode);
 void startup_mode_set(startup_mode_t mode);
-void startup_mode_adjust(int dir);
 
 /* siggen_ui.c */
 void draw_siggen_screen(uint32_t frame);
@@ -356,19 +374,5 @@ void draw_settings_screen(void);
 void draw_home_screen(void);       /* home_ui.c: the whole page */
 void draw_home_selection(void);    /* home_ui.c: the parts that follow the selection */
 void draw_health_panel(uint16_t y_start);
-
-/* component_ui.c */
-void draw_component_test_screen(void);
-
-/* bode_ui.c */
-void draw_bode_screen(void);
-
-/* resistor_calc_ui.c */
-void draw_resistor_calc_screen(void);
-void resistor_calc_init(void);
-void resistor_calc_move_band(int direction);
-void resistor_calc_change_color(int direction);
-void resistor_calc_simulate_measure(void);
-float resistor_calc_get_value(void);
 
 #endif /* UI_H */

@@ -31,9 +31,9 @@
 #include "signal_gen.h"
 #include "../ui/siggen_edit.h"
 #include "../ui/home_model.h"
+#include "../ui/startup_policy.h"   /* startup_mode_step: the Startup row's order */
 #include "theme.h"
 #include "math_channel.h"
-#include "component_test.h"
 #include "persistence.h"
 #include "shared_mem.h"
 #ifdef FEATURE_FFT
@@ -179,114 +179,71 @@ void input_autooff_poll(void)
     power_off_now();
 }
 
-/* Settings > Auto Shutdown value (top-level row 2). */
-static void autooff_adjust(int dir, bool wrap)
+/* ═══════════════════════════════════════════════════════════════════
+ * Settings (Home > Settings): device settings only, through the model
+ * ═══════════════════════════════════════════════════════════════════
+ * This task is the model's executor, so a key, the shell's `set` and a saved
+ * record are one state. Rows are named (settings_item_t, ui.h), never
+ * numbered. The scope's own settings are in its menu (osc_menu_model.h). */
+
+/* The auto-off timer follows sys.autooff (model_hw_fw.c op_autooff): the
+ * Settings row and the shell's `set sys.autooff` restart it the same way. */
+void input_autooff_apply(uint8_t mins)
 {
-    uint8_t m = sys_autooff_step(sys_prefs_autooff_mins(), dir, wrap);
-    sys_prefs_set_autooff_mins(m);
-    sys_autooff_set_minutes(&g_autooff, m, settings_now_ms());
+    sys_autooff_set_minutes(&g_autooff, mins, settings_now_ms());
     g_autooff_ready = true;
 }
 
-/* Settings > Meter on Battery: meter.link through the model (this is the
- * executor), so the key, the shell's `set meter.link` and a saved record
- * are one state. The display task turns the link on or off within a frame
- * (main.c meter_link_service); the key's own capture saves it. */
-static void meter_link_adjust(int dir)
+/* One step of a property from a Settings row. OK wraps round the ends,
+ * LEFT/RIGHT stop at them (as the rows always did), whatever the property's
+ * own PF_WRAP says. */
+static void settings_prop_step(const prop_desc_t *p, int dir, bool wrap)
 {
-    (void)prop_step_local(P(METER_LINK), dir, ORIGIN_KEY, NULL);
+    const int32_t v = prop_get(p);
+    const bool at_end = (dir > 0) ? (v >= p->max) : (v <= p->min);
+    if (!at_end)
+        (void)prop_step_local(p, dir, ORIGIN_KEY, NULL);
+    else if (wrap)
+        (void)prop_set_local(p, (dir > 0) ? p->min : p->max, ORIGIN_KEY, NULL);
 }
 
-/* Settings > Sound and Light (depth 7): row 0 volume, row 1 brightness. */
+/* Sound and Light page: sys.volume / sys.brightness. */
 static void sound_light_adjust(int dir, bool wrap)
 {
-    if (settings_sub_selected == 0) {
-        uint8_t v = sys_prefs_volume();
-        uint8_t n = sys_vol_step(v, dir);
-        if (wrap && n == v) n = (dir > 0) ? 0u : SYS_VOL_MAX;
-        sys_prefs_set_volume(n);
+    if (settings_sub_selected == SET_SOUND_ROW_VOLUME) {
+        settings_prop_step(P(SYS_VOLUME), dir, wrap);
         sys_pwm_click();             /* hear the new level */
     } else {
-        uint8_t b = sys_prefs_brightness();
-        uint8_t n = sys_bright_step(b, dir);
-        if (wrap && n == b) n = (dir > 0) ? SYS_BRIGHT_MIN : SYS_BRIGHT_MAX;
-        sys_prefs_set_brightness(n);
-        sys_pwm_apply_brightness();
+        settings_prop_step(P(SYS_BRIGHTNESS), dir, wrap);   /* the setter applies the backlight */
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Oscilloscope settings Left/Right handler
- * ═══════════════════════════════════════════════════════════════════ */
+/* LEFT/RIGHT (wrap = false) or OK (dir = +1, wrap = true) on a row of the
+ * list that holds a value. false: the row has none (a page or an action). */
+static bool settings_value_adjust(settings_item_t item, int dir, bool wrap)
+{
+    switch (item) {
+    case SET_ITEM_AUTOOFF:      /* Off / 15 / 30 / 60 min */
+        settings_prop_step(P(SYS_AUTOOFF), dir, wrap);
+        return true;
+    case SET_ITEM_STARTUP:      /* stock's row order (home, meter, scope, generator), always round */
+        (void)prop_set_local(P(SYS_STARTUP),
+                             (int32_t)startup_mode_step((startup_mode_t)prop_get(P(SYS_STARTUP)), dir),
+                             ORIGIN_KEY, NULL);
+        return true;
+    case SET_ITEM_METER_LINK:   /* With Screen <-> Always. The display task turns the link on or
+                                 * off within a frame (main.c meter_link_service). */
+        (void)prop_step_local(P(METER_LINK), dir, ORIGIN_KEY, NULL);
+        return true;
+    case SET_ITEM_THEME:        /* always round, as before */
+        (void)prop_step_local(P(SYS_THEME), dir, ORIGIN_KEY, NULL);
+        return true;
+    default:
+        return false;
+    }
+}
 
 static void set_focus(key_focus_t f);
-
-/* The hardware side of coupling, trigger, Roll, view and persistence
- * changes is scope_apply.c, shared with the Oscilloscope Settings page. */
-
-/* Settings -> Oscilloscope -> Cursors: what TRIGGER did before C3. */
-static void cursor_mode_cycle(void)
-{
-    scope_state_t *ss = scope_state_get();
-    scope_cursor_cycle_mode();
-    /* Cursors on = the arrows move them, as before the key model; off =
-     * back to zoom. */
-    set_focus(key_focus_after_cursor_change(scope_key_focus, ss->cursor.mode != CURSOR_OFF));
-}
-
-/* Stock's "Display Mode" item (menu table 0x0804C824: Y-T / Rolling / X-Y).
- * This item used to cycle the colour theme, which now has its own row.
- * Roll is the C11 MCU-paced mode (re-applied to the FPGA here, so the menu
- * and the timebase keys reach the same state); X-Y is the existing Lissajous
- * view, so it needs the FEATURE_FFT build that carries it and is skipped
- * otherwise. The view goes through scope_view_select() (scope_apply.c), which
- * releases the FFT pool on the way out of a spectrum view. */
-static void display_mode_step(int dir)
-{
-    const scope_disp_mode_t cur = (scope_disp_mode_t)scope_display_mode();
-    scope_disp_mode_t next = scope_disp_mode_cycle(cur, dir);
-#ifndef FEATURE_FFT
-    if (next == SCOPE_DISP_XY)
-        next = scope_disp_mode_cycle(next, dir);
-#else
-    scope_view_select(next == SCOPE_DISP_XY ? SCOPE_VIEW_XY : SCOPE_VIEW_TIME);
-#endif
-    (void)scope_apply_roll(next == SCOPE_DISP_ROLL);   /* refused: the old mode stays */
-}
-
-static void osc_settings_adjust(int dir)
-{
-    scope_state_t *ss = scope_state_get();
-    switch (settings_sub_selected) {
-    case 0: /* CH1 Coupling -- the relay, DC <-> AC; two states, so dir is moot */
-        { char t[24]; (void)scope_apply_coupling_toggle(0, t, sizeof(t)); }
-        break;
-    case 1: /* CH1 Probe */
-        ss->ch1.probe = (probe_t)((ss->ch1.probe + PROBE_COUNT + dir) % PROBE_COUNT);
-        break;
-    case 2: /* CH2 Coupling -- the relay, DC <-> AC; two states, so dir is moot */
-        { char t[24]; (void)scope_apply_coupling_toggle(1, t, sizeof(t)); }
-        break;
-    case 3: /* CH2 Probe */
-        ss->ch2.probe = (probe_t)((ss->ch2.probe + PROBE_COUNT + dir) % PROBE_COUNT);
-        break;
-    case 4: /* Trigger Mode */
-    case 5: /* Trigger Edge */
-    case 6: /* Trigger Source */
-    {
-        /* The panel's model, so Settings and the panel cannot disagree on
-         * what a change means (or on refusing a source that is off). */
-        static const uint8_t row[3] = { TM_ROW_MODE, TM_ROW_EDGE, TM_ROW_SOURCE };
-        trig_menu_t m = { row[settings_sub_selected - 4] };
-        char t[24];
-        (void)scope_apply_trigger_change(trig_menu_change(&m, ss, dir), t, sizeof(t));
-        break;
-    }
-    case 7: /* Cursors */
-        cursor_mode_cycle();
-        break;
-    }
-}
 
 /* ═══════════════════════════════════════════════════════════════════
  * Settings OK handler
@@ -294,134 +251,49 @@ static void osc_settings_adjust(int dir)
 
 void input_handle_settings_ok(void)
 {
-    scope_state_t *ss = scope_state_get();
-
-    if (settings_depth == 0) {
-        switch (settings_selected) {
-        case 0: /* Oscilloscope Settings -- enter sub-menu */
-            settings_depth = 1;
-            settings_sub_selected = 0;
-            break;
-        case 1: /* Sound and Light -- stock sub-page: volume, brightness */
-            settings_depth = 7;
-            settings_sub_selected = 0;
-            break;
-        case 2: /* Auto Shutdown: Off / 15 / 30 / 60 min */
-            autooff_adjust(+1, true);
-            break;
-        case 3: /* Display Mode: Y-T / Roll / X-Y (stock menu 0x0804C824) */
-            display_mode_step(+1);
-            break;
-        case 12: /* Theme -- moved off Display Mode, which is stock's Y-T/Roll/X-Y */
-            theme_cycle();
-            break;
-        case 4: /* Math Channel -- enter math sub-menu */
-            settings_depth = 3;
-            settings_sub_selected = 0;
-            break;
-        case 5: /* Component Tester -- enter component test screen */
-            settings_depth = 4;
-            comp_test_init();
-            break;
-        case 6: /* Bode Plot -- enter bode screen */
-            settings_depth = 6;
-            break;
-        case 7: /* Startup on Boot -- cycle target mode */
-            startup_mode_adjust(1);
-            break;
-        case 14: /* Meter on Battery: With Screen <-> Always (meter.link) */
-            meter_link_adjust(1);
-            break;
-        case 8: /* About -- display info screen */
-            settings_depth = 2;
-            break;
-        case 9: /* FPGA SPI Scanner -- brute-force activation sweep */
-            {
-                extern void fpga_scanner_run(void);
-                fpga_scanner_run();
-            }
-            break;
-        case 13: /* USB Sharing: re-enumerate as CDC + read-only gallery
-                  * drive, or back to CDC only. Stock (0x0800BF08) goes
-                  * MSC-only and stops the scope; ours keeps the shell and
-                  * the scope, and falls back to CDC-only by itself if the
-                  * host does not configure the composite device (usb_mode_sm.h). */
-#if defined(USB_MSC) && USB_MSC
-            usb_share_toggle();
-#endif
-            break;
-        case 10: /* Firmware Update -- reboot into DFU bootloader */
-            {
-                extern void dfu_request_reboot(void);
-                /* Deliberate boundary: we are about to reboot, so anything
-                 * still inside the settle window would be lost. */
-                (void)settings_store_flush(settings_now_ms());
-                dfu_request_reboot();
-            }
-            break;
-        default:
-            break;
-        }
-    } else if (settings_depth == 1) {
-        /* Oscilloscope settings sub-menu */
-        switch (settings_sub_selected) {
-        /* Coupling through the relay, as on the CH1/CH2 buttons; the popup
-         * text is discarded here -- the menu redraw shows the label, which
-         * only changes when the relay did. */
-        case 0: { char t[24]; (void)scope_apply_coupling_toggle(0, t, sizeof(t)); } break;
-        case 1: scope_cycle_probe(&ss->ch1); break;
-        case 2: { char t[24]; (void)scope_apply_coupling_toggle(1, t, sizeof(t)); } break;
-        case 3: scope_cycle_probe(&ss->ch2); break;
-        case 4: case 5: case 6: case 7: osc_settings_adjust(+1); break;
-        default: break;
-        }
-    } else if (settings_depth == 7) {
+    switch ((settings_page_t)settings_depth) {
+    case SET_PAGE_SOUND:
         sound_light_adjust(+1, true);
-    } else if (settings_depth == 2) {
-        /* About screen -- OK goes back */
-        settings_depth = 0;
-    } else if (settings_depth == 3) {
-        /* Math channel sub-menu */
-        if (settings_sub_selected == 0) {
-            /* Math Channel: cycle Off -> A+B -> A-B -> A*B -> ... -> Off */
-            if (!math_enabled) {
-                math_enabled = true;
-                math_op = 0;
-            } else if (math_op < MATH_COUNT - 1) {
-                math_op++;
-            } else {
-                math_enabled = false;
-                math_op = 0;
-            }
-        } else if (settings_sub_selected == 1) {
-            /* Persistence: Off -> 500ms -> 1s -> Inf -> Off (stock's menu,
-             * manual p.30), with the pool lifecycle. */
-            if (!persist_enabled) {
-                /* Persistence needs the pool: a spectrum view gives it up
-                 * (scope_apply.c; until the merge the FFT was evicted but
-                 * its view left selected). */
-                (void)scope_apply_persist_on(PERSIST_LOW);
-            } else if (persist_get_mode() == PERSIST_LOW) {
-                persist_set_mode(PERSIST_MEDIUM);
-            } else if (persist_get_mode() == PERSIST_MEDIUM) {
-                persist_set_mode(PERSIST_INFINITE);
-            } else {
-                scope_apply_persist_off();
-            }
-        } else if (settings_sub_selected == 2) {
-            /* Back */
-            settings_depth = 0;
-        }
-    } else if (settings_depth == 4) {
-        /* Component tester: OK = enter resistor calculator */
-        settings_depth = 5;
-        resistor_calc_init();
-    } else if (settings_depth == 5) {
-        /* Resistor calculator: OK = back to component tester */
-        settings_depth = 4;
-    } else if (settings_depth == 6) {
-        /* Bode plot: OK = back to settings */
-        settings_depth = 0;
+        return;
+    case SET_PAGE_ABOUT:            /* OK goes back */
+        settings_depth = SET_PAGE_LIST;
+        return;
+    default:
+        break;
+    }
+
+    const settings_item_t item = (settings_item_t)settings_selected;
+    if (settings_value_adjust(item, +1, true))
+        return;
+    switch (item) {
+    case SET_ITEM_SOUND_LIGHT:      /* stock's sub-page: volume, brightness */
+        settings_depth = SET_PAGE_SOUND;
+        settings_sub_selected = 0;
+        break;
+    case SET_ITEM_ABOUT:
+        settings_depth = SET_PAGE_ABOUT;
+        break;
+    case SET_ITEM_USB_SHARE:
+        /* Re-enumerate as CDC + read-only gallery drive, or back to CDC
+         * only. Stock (0x0800BF08) goes MSC-only and stops the scope; ours
+         * keeps the shell and the scope, and falls back to CDC-only by
+         * itself if the host does not configure the composite device
+         * (usb_mode_sm.h). No property yet: usb_debug.c owns the state. */
+#if defined(USB_MSC) && USB_MSC
+        usb_share_toggle();
+#endif
+        break;
+    case SET_ITEM_FW_UPDATE: {      /* reboot into the DFU bootloader */
+        extern void dfu_request_reboot(void);
+        /* Deliberate boundary: we are about to reboot, so anything
+         * still inside the settle window would be lost. */
+        (void)settings_store_flush(settings_now_ms());
+        dfu_request_reboot();
+        break;
+    }
+    case SET_ITEM_FACTORY_RESET:    /* listed, not implemented (it never was): nothing */
+    default:
+        break;
     }
 }
 
@@ -1375,18 +1247,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             siggen_cycle_waveform();
             cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, legacy_screens_active_cmd());
-        } else if (current_mode == MODE_SETTINGS &&
-                   settings_depth == 5) {
-            /* Resistor calc: simulate measurement */
-            resistor_calc_simulate_measure();
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        } else if (current_mode == MODE_SETTINGS &&
-                   settings_depth == 4) {
-            /* Component tester: cycle component type */
-            comp_test_cycle_type();
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
         }
         /* Scope time view: SELECT cycles the arrow stage -- key_model.c */
         break;
@@ -1395,13 +1255,9 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 
     case BTN_UP:
         if (current_mode == MODE_SETTINGS) {
-            if (settings_depth == 5) {
-                resistor_calc_change_color(1);
-            } else if (settings_depth == 0) {
+            if (settings_depth == SET_PAGE_LIST) {
                 if (settings_selected > 0) settings_selected--;
-            } else if (settings_depth == 3 || settings_depth == 7) {
-                if (settings_sub_selected > 0) settings_sub_selected--;
-            } else if (settings_depth == 1) {
+            } else if (settings_depth == SET_PAGE_SOUND) {
                 if (settings_sub_selected > 0) settings_sub_selected--;
             }
             cmd = DCMD_DRAW_SETTINGS;
@@ -1434,19 +1290,11 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 
     case BTN_DOWN:
         if (current_mode == MODE_SETTINGS) {
-            if (settings_depth == 5) {
-                resistor_calc_change_color(-1);
-            } else if (settings_depth == 0) {
+            if (settings_depth == SET_PAGE_LIST) {
                 if (settings_selected < SETTINGS_ITEM_COUNT - 1)
                     settings_selected++;
-            } else if (settings_depth == 3) {
-                /* Math/persist sub-menu: 3 items (0,1,2) */
-                if (settings_sub_selected < 2) settings_sub_selected++;
-            } else if (settings_depth == 7) {
-                if (settings_sub_selected < 1) settings_sub_selected++;   /* 2 rows */
-            } else if (settings_depth == 1) {
-                if (settings_sub_selected < SETTINGS_OSC_ITEM_COUNT - 1)
-                    settings_sub_selected++;
+            } else if (settings_depth == SET_PAGE_SOUND) {
+                if (settings_sub_selected < SET_SOUND_ROWS - 1) settings_sub_selected++;
             }
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
@@ -1479,34 +1327,13 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
     /* -- LEFT / RIGHT --------------------------------------------- */
 
     case BTN_LEFT:
-        if (current_mode == MODE_SETTINGS && settings_depth == 7) {
+        if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_SOUND) {
             sound_light_adjust(-1, false);
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-        else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12 ||
-             settings_selected == 14)) {
-            if (settings_selected == 14)
-                meter_link_adjust(-1);
-            else if (settings_selected == 2)
-                autooff_adjust(-1, false);
-            else if (settings_selected == 3)
-                display_mode_step(-1);
-            else if (settings_selected == 12)
-                theme_cycle_reverse();
-            else
-                startup_mode_adjust(-1);
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SETTINGS && settings_depth == 1) {
-            osc_settings_adjust(-1);
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SETTINGS && settings_depth == 5) {
-            resistor_calc_move_band(-1);
+        else if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_LIST &&
+                 settings_value_adjust((settings_item_t)settings_selected, -1, false)) {
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
@@ -1536,34 +1363,13 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         break;
 
     case BTN_RIGHT:
-        if (current_mode == MODE_SETTINGS && settings_depth == 7) {
+        if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_SOUND) {
             sound_light_adjust(+1, false);
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-        else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12 ||
-             settings_selected == 14)) {
-            if (settings_selected == 14)
-                meter_link_adjust(+1);
-            else if (settings_selected == 2)
-                autooff_adjust(+1, false);
-            else if (settings_selected == 3)
-                display_mode_step(+1);
-            else if (settings_selected == 12)
-                theme_cycle();
-            else
-                startup_mode_adjust(1);
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SETTINGS && settings_depth == 1) {
-            osc_settings_adjust(+1);
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SETTINGS && settings_depth == 5) {
-            resistor_calc_move_band(1);
+        else if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_LIST &&
+                 settings_value_adjust((settings_item_t)settings_selected, +1, false)) {
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }

@@ -147,23 +147,6 @@ bool scope_roll_tb_step(uint8_t *yt_idx, bool *roll, uint8_t *step, int dir,
     return true;
 }
 
-scope_disp_mode_t scope_disp_mode_cycle(scope_disp_mode_t m, int dir)
-{
-    int n = (int)SCOPE_DISP_COUNT;
-    int i = ((int)m % n + n) % n;
-    i = (i + (dir >= 0 ? 1 : n - 1)) % n;
-    return (scope_disp_mode_t)i;
-}
-
-const char *scope_disp_mode_label(scope_disp_mode_t m)
-{
-    switch (m) {
-    case SCOPE_DISP_YT:   return "Y-T";
-    case SCOPE_DISP_ROLL: return "Roll";
-    case SCOPE_DISP_XY:   return "X-Y";
-    default:              return "?";
-    }
-}
 
 uint16_t scope_roll_age_at_column(uint16_t x, uint16_t width)
 {

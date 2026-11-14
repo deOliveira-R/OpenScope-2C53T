@@ -42,9 +42,6 @@ C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
 C_SOURCES += src/ui/home_model.c
 C_SOURCES += src/ui/home_ui.c
-C_SOURCES += src/ui/component_ui.c
-C_SOURCES += src/ui/resistor_calc_ui.c
-C_SOURCES += src/ui/bode_ui.c
 C_SOURCES += src/ui/fuse_ui.c
 C_SOURCES += src/ui/scope_state.c
 C_SOURCES += src/ui/scope_measure.c
@@ -72,7 +69,9 @@ C_SOURCES += src/drivers/battery_gauge.c
 C_SOURCES += src/drivers/fpga.c
 C_SOURCES += src/drivers/fpga_bitstream_stock.c
 C_SOURCES += src/drivers/fpga_meter_plan.c
-C_SOURCES += src/drivers/fpga_scanner.c
+# src/drivers/fpga_scanner.c (the 2026 SPI activation sweep) is not linked:
+# its Settings entry is gone and it cannot run from the shell (it takes over
+# the LCD and SPI3 for hours on the calling task). Kept as a source file.
 C_SOURCES += src/drivers/dac.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
@@ -107,8 +106,10 @@ C_SOURCES += src/ui/trend_plot.c
 C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
 C_SOURCES += src/dsp/paused_view.c
-C_SOURCES += src/dsp/bode.c
-C_SOURCES += src/tasks/component_test.c
+# src/dsp/bode.c (host test: make test-bode) and src/tasks/component_test.c are
+# not linked: their only callers were demo screens on synthetic data (the
+# Settings entries "Bode Plot" and "Component Tester"), removed. The meter
+# measures R, C, diode and continuity for real.
 C_SOURCES += src/dsp/mask_pf.c
 C_SOURCES += src/ui/scope_mask.c
 C_SOURCES += src/util/config.c

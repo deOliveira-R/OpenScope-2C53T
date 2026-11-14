@@ -64,6 +64,11 @@ uint8_t sys_autooff_step(uint8_t mins, int dir, bool wrap)
     return autooff_table[i];
 }
 
+uint8_t sys_autooff_mins_at(unsigned index)
+{
+    return (index < SYS_AUTOOFF_COUNT) ? autooff_table[index] : 0u;
+}
+
 const char *sys_autooff_label(uint8_t mins)
 {
     return autooff_labels[autooff_index(mins)];

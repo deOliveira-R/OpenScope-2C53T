@@ -35,7 +35,6 @@ extern void system_clock_config(void);
 #include "input_handler.h"
 #include "theme.h"
 #include "math_channel.h"
-#include "component_test.h"
 #include "persistence.h"
 #include "button_scan.h"
 #include "continuity_buzzer.h"
@@ -132,11 +131,6 @@ void startup_mode_set(startup_mode_t mode)
 {
     if (mode >= STARTUP_COUNT) return;
     startup_mode = mode;       /* captured on the next key, or at once via input_request_settings_flush() (shell) */
-}
-
-void startup_mode_adjust(int dir)
-{
-    startup_mode_set(startup_mode_step(startup_mode, dir));   /* stock's row order */
 }
 
 #ifndef FPGA_WARM_HANDOFF_TEST

@@ -52,7 +52,6 @@ void persist_decay(void);
  * is OFF / 500 ms / 1 s / infinite (manual p.30); LOW and MEDIUM are the
  * first two, HIGH (2 s) is the extra step this firmware always had. */
 uint32_t persist_mode_tau_ms(persist_mode_t mode);
-const char *persist_mode_name(persist_mode_t mode);   /* "Off" "500ms" "1s" ... */
 
 /* Decay by elapsed wall time, independent of the frame rate: a pixel at 255
  * reaches 0 after persist_mode_tau_ms(). The sub-step remainder is carried

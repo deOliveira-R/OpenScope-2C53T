@@ -27,6 +27,7 @@
 #include "queue.h"
 
 #include "ui.h"
+#include "input_handler.h"   /* input_autooff_apply */
 #include "fpga.h"
 #include "scope_vpos.h"
 #include "scope_apply.h"
@@ -335,7 +336,7 @@ static bool op_mode(uint8_t m)
     return input_mode_switch((device_mode_t)m);
 }
 static void op_backlight(uint8_t pct)    { CTX(); (void)pct; sys_pwm_apply_brightness(); }  /* reads sys_prefs */
-static void op_autooff(uint8_t mins)     { CTX(); (void)mins; }                             /* not wired */
+static void op_autooff(uint8_t mins)     { CTX(); input_autooff_apply(mins); }              /* restarts the timer */
 
 /* ═══ interleave (fpga.c keeps floats; typed ints at this boundary) ══ */
 

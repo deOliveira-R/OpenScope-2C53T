@@ -3721,8 +3721,8 @@ static void cmd_fpga_scope_ch(const char *args)
 
 /* `fpga scope probe <1|2> [1x|10x]` — the channel's probe setting from the
  * shell. SELECT used to cycle it; SELECT now switches the adjusted channel
- * (stock's key meaning), and the probe lives in Settings -> Oscilloscope
- * Settings, so the bench needs its own path. Same state the key changed. */
+ * (stock's key meaning), and the probe lives in the scope menu's CH1/CH2
+ * panes, so the bench needs its own path. Same state the key changed. */
 static void cmd_fpga_scope_probe(const char *args)
 {
     while (*args == ' ') args++;

@@ -928,7 +928,7 @@ void scope_popup_overlay_tick(void)
  * and the Y-T window (2 x 301 B, parity C5: what each column of each channel
  * shows, interpolated at the fast codes). Each is filled and consumed on the
  * display task inside one view's draw calls, and the views exclude each
- * other (scope_display_mode). Sharing them keeps the coldtrace build inside
+ * other (one scope view at a time). Sharing them keeps the coldtrace build inside
  * RAM (it overflowed by 56 B when the round-2 parity branches were merged;
  * the Y-T window is smaller than the waterfall line, so it costs nothing). */
 static union {
@@ -3350,15 +3350,6 @@ void draw_scope_live_frame(void)
  * `full` adds the decorations the compositor cannot recompute per pixel
  * (labels, STOP, popup); the band itself is identical either way.
  * ═══════════════════════════════════════════════════════════════════ */
-int scope_display_mode(void)
-{
-#ifdef FEATURE_FFT
-    if (scope_view == SCOPE_VIEW_XY)
-        return (int)SCOPE_DISP_XY;
-#endif
-    return scope_state_get()->roll ? (int)SCOPE_DISP_ROLL : (int)SCOPE_DISP_YT;
-}
-
 /* ui_draw_scratch (the roll FIFO copy) is defined with the Y-T window it
  * shares storage with, above the Y-T maps (autofit_t). */
 #define roll_snap      (ui_draw_scratch.roll)

@@ -44,6 +44,7 @@ uint8_t sys_vol_step(uint8_t vol, int dir);      /* saturates at 0 and 10 */
 uint8_t  sys_autooff_clamp(uint8_t mins);        /* not in table -> 0 (off) */
 uint8_t  sys_autooff_step(uint8_t mins, int dir, bool wrap);
 const char *sys_autooff_label(uint8_t mins);     /* "Off", "15 min", ... */
+uint8_t  sys_autooff_mins_at(unsigned index);    /* table order = the sys.autooff property's values */
 
 /* Live values (the settings store captures and restores these). */
 uint8_t sys_prefs_brightness(void);
