@@ -392,7 +392,6 @@ static const model_hw_ops_t k_fw_ops = {
 
 /* The reason fits a prop_note_t (23 characters). */
 static const struct { uint16_t id; const char *why; } k_unwired[] = {
-    { PROP_ID_SYS_AUTOOFF,    "idle timer: keys (B4)" },     /* the timer re-arm is static there too    */
     { PROP_ID_VIEW_RUN,       "RUN/STOP: OK key (B7)" },     /* STOP latches the paused ranges inline   */
     { PROP_ID_METER_LAYOUT,   "View softkey (B6)" },         /* Fuse forces DC V, Limits inits: inline  */
     { PROP_ID_METER_FUSETYPE, "fuse type keys (B6)" },       /* keeps the rating in amps: static helper */
