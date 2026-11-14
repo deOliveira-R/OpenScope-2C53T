@@ -890,6 +890,76 @@ static void test_stored_only_raw_carry(void)
     CHECK(config_validate(&next));
 }
 
+/* The stored-only rows decode and encode by their own tables: the
+ * properties have no RAM variable before M3, so the snapshot comparisons
+ * above never see them. Every byte of sys.lang, fft.window and fft.avg_count
+ * against the documented mapping (props_sys.c labels; fft.avg is an index
+ * into the counts 0/2/4/8/16/32), and every value back. */
+static void test_stored_only_codec(void)
+{
+    static const uint8_t counts[6] = { 0u, 2u, 4u, 8u, 16u, 32u };   /* lbl_fft_avg: off x2 .. x32 */
+    const v5_field_t *fw = model_persist_v5_find(PROP_ID_FFT_WINDOW);
+    const v5_field_t *fa = model_persist_v5_find(PROP_ID_FFT_AVG);
+    const v5_field_t *fl = model_persist_v5_find(PROP_ID_SYS_LANG);
+    CHECK(fw && fa && fl);
+    if (!fw || !fa || !fl) return;
+    CHECK(fw->offset == offsetof(device_config_t, fft_window) &&
+          fa->offset == offsetof(device_config_t, fft_avg_count) &&
+          fl->offset == offsetof(device_config_t, language));
+    unsigned bad = 0;
+    for (unsigned b = 0; b < 256u; b++) {
+        device_config_t rec;
+        config_init_defaults(&rec);
+        rec.fft_window = (uint8_t)b; rec.fft_avg_count = (uint8_t)b; rec.language = (uint8_t)b;
+        const int32_t want_w = b <= 4u ? (int32_t)b : 1;              /* rect..flattop, else Hanning */
+        int32_t want_a = 0;                                            /* not a count: off */
+        for (int32_t i = 0; i < 6; i++) if (counts[i] == b) want_a = i;
+        const int32_t want_l = 0;                                      /* English, the only one */
+        if (model_persist_v5_decode(fw, &rec) != want_w) bad++;
+        if (model_persist_v5_decode(fa, &rec) != want_a) bad++;
+        if (model_persist_v5_decode(fl, &rec) != want_l) bad++;
+        /* the load puts the same into the properties */
+        settings_store_apply(&rec);
+        if (prop_get(P(FFT_WINDOW)) != want_w || prop_get(P(FFT_AVG)) != want_a ||
+            prop_get(P(SYS_LANG)) != want_l) bad++;
+    }
+    CHECKF(bad == 0, "%u stored-only bytes decoded wrong", bad);
+    /* every value: captured as its record byte, and read back */
+    for (int32_t v = 0; v <= 5; v++) {
+        device_config_t rec;
+        config_init_defaults(&rec);
+        rec.fft_window = 0xEE; rec.fft_avg_count = 0xEE; rec.language = 0xEE;   /* nothing understood */
+        settings_store_apply(&rec);
+        if (v <= 4) CHECK(prop_set_local(P(FFT_WINDOW), v, ORIGIN_KEY, NULL) == PS_OK);
+        CHECK(prop_set_local(P(FFT_AVG), v, ORIGIN_KEY, NULL) == PS_OK);
+        device_config_t next = rec;
+        settings_store_capture(&next);
+        /* the value the byte already decodes to (the default) is carried as
+         * the byte; any other is written as its record byte */
+        CHECKF(next.fft_avg_count == (v == 0 ? 0xEE : counts[v]), "fft.avg %ld saved as %u", (long)v,
+               next.fft_avg_count);
+        CHECK(model_persist_v5_decode(fa, &next) == v);
+        if (v <= 4) {
+            CHECKF(next.fft_window == (v == 1 ? 0xEE : (uint8_t)v), "fft.window %ld saved as %u", (long)v,
+                   next.fft_window);
+            CHECK(model_persist_v5_decode(fw, &next) == v);
+        }
+        CHECK(next.language == 0xEE);                  /* unchanged property: the byte is carried */
+    }
+    /* sys.lang's one value is written when it is not what the byte says */
+    {
+        device_config_t rec;
+        config_init_defaults(&rec);
+        rec.language = 0;
+        settings_store_apply(&rec);
+        device_config_t next = rec;
+        next.language = 1;                             /* a record byte that decodes to the default */
+        settings_store_capture(&next);
+        CHECK(next.language == 1);                     /* 1 decodes to 0 = the property: carried */
+        CHECK(model_persist_v5_decode(fl, &next) == 0);
+    }
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Change notification by origin
  * ═══════════════════════════════════════════════════════════════════ */
@@ -899,12 +969,60 @@ static bool     g_shell_persist = true;
 static bool     g_real_note;
 static void f_note(void) { g_notes++; if (g_real_note) settings_store_note_change(1000u); }
 static bool f_shell_persist(void) { return g_shell_persist; }
-static bool f_ok_u8(uint8_t ch, uint8_t v) { (void)ch; (void)v; return true; }
+static bool g_op_fail, g_selfcal;
+static bool f_ok_u8(uint8_t ch, uint8_t v) { (void)ch; (void)v; return !g_op_fail; }
 static bool f_ok_pos(uint8_t ch, int16_t v) { (void)ch; (void)v; return true; }
+static bool f_ok_void(void) { return !g_op_fail; }
+static bool f_busy(void) { return g_selfcal; }
 static const model_hw_ops_t k_ops = {
-    .vdiv = f_ok_u8, .coupling = f_ok_u8, .vpos = f_ok_pos,
-    .shell_persist = f_shell_persist, .note_change = f_note,
+    .vdiv = f_ok_u8, .coupling = f_ok_u8, .vpos = f_ok_pos, .trigger_source = f_ok_void,
+    .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note,
 };
+
+/* A refused commit is no settings change: whatever said no (a rule, the
+ * owner, the range check, the self-cal lock), no note reaches the store and
+ * the record still matches what is saved. Persisted properties, key origin
+ * (the one that always notes). */
+static void test_refused_commit_no_note(void)
+{
+    device_config_t d;
+    config_init_defaults(&d);
+    settings_store_apply(&d);
+    model_bind_hw(&k_ops);
+    (void)settings_store_load_and_apply();           /* no storage bound: defaults */
+    g_real_note = true;
+    g_notes = 0;
+    const uint32_t seen = settings_store_get_status()->changes_seen;
+    scope_state_t *ss = scope_state_get();
+    prop_note_t n;
+
+    /* REFUSED by a rule: the trigger source on a channel that is off */
+    ss->ch2.enabled = false;
+    CHECK(prop_set_local(P(TRIG_SOURCE), TRIG_SRC_CH2, ORIGIN_KEY, &n) == PS_REFUSED);
+    CHECK(strcmp(n.text, "CH2 is off") == 0 && prop_get(P(TRIG_SOURCE)) == TRIG_SRC_CH1);
+    ss->ch2.enabled = true;
+    /* NOT_SET by the owner */
+    g_op_fail = true;
+    CHECK(prop_set_local(P(CH1_VDIV), 6, ORIGIN_KEY, &n) == PS_NOT_SET);
+    CHECK(prop_set_local(P(TRIG_SOURCE), TRIG_SRC_CH2, ORIGIN_KEY, &n) == PS_NOT_SET);
+    g_op_fail = false;
+    /* BUSY: self-cal holds the scope's properties */
+    g_selfcal = true;
+    CHECK(prop_set_local(P(TB_CODE), 4, ORIGIN_KEY, &n) == PS_BUSY);
+    g_selfcal = false;
+    /* INVALID: out of range */
+    CHECK(prop_set_local(P(CH1_COUPLING), 5, ORIGIN_KEY, &n) == PS_INVALID);
+    CHECK(prop_set_local(P(SYS_THEME), 9, ORIGIN_KEY, &n) == PS_INVALID);
+    CHECK(prop_set_local(P(FFT_WINDOW), 7, ORIGIN_KEY, &n) == PS_INVALID);
+
+    CHECKF(g_notes == 0, "%u notes after refused commits", g_notes);
+    CHECK(settings_store_get_status()->changes_seen == seen);
+    /* and an accepted one still notes (the hook is live) */
+    CHECK(prop_set_local(P(CH1_VDIV), 6, ORIGIN_KEY, &n) == PS_OK);
+    CHECK(g_notes == 1 && settings_store_get_status()->changes_seen == seen + 1);
+    g_real_note = false;
+    model_bind_hw(NULL);
+}
 
 static void test_notes_by_origin(void)
 {
@@ -954,7 +1072,9 @@ int main(void)
     test_round_trip_through_properties();
     test_out_of_range_policy();
     test_stored_only_raw_carry();
+    test_stored_only_codec();
     test_notes_by_origin();
+    test_refused_commit_no_note();
 
     printf("test_model_persist: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;
