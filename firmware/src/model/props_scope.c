@@ -572,8 +572,9 @@ prop_status_t il_offset_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
  * give it. A set of 0 drops it and keeps the line, through the owner's own
  * call (fpga_interleave_corr_set replaces the whole map), so that il.gain
  * and il.offset can be set afterwards: what the old `fpga interleave corr`
- * did in one step and its alias now asks for by name (ARCH-1 M4). Any other
- * value is refused. The store is empty on purpose: loading defaults or a
+ * did in one step and its alias now asks for by name (ARCH-1 M4). The value
+ * it has is accepted and does nothing; any other is refused. The store is
+ * empty on purpose: loading defaults or a
  * profile must never drop a calibration. */
 _Static_assert(IL_KNOTS_MAX == 5u, "il.knots 0..5");
 int32_t il_knots_get(const prop_desc_t *p) { (void)p; return HW->il_knots ? HW->il_knots() : 0; }
@@ -581,8 +582,8 @@ void    il_knots_store(const prop_desc_t *p, int32_t v) { (void)p; (void)v; }
 prop_status_t il_knots_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)origin;
+    if (v == il_knots_get(p)) return PS_OK;         /* get then set is the identity (a profile replays) */
     if (v != 0) { model_note(note, "only 0: drop the map"); return PS_REFUSED; }
-    if (il_knots_get(p) == 0) return PS_OK;
     gain_e6_t g; int32_t o;
     il_corr(&g, &o);
     if (!HW->il_corr_set || !HW->il_corr_set(g, o)) { model_note(note, "map NOT dropped"); return PS_NOT_SET; }

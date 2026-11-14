@@ -4369,7 +4369,8 @@ static const shell_alias_env_t *alias_env(void)
  * (input) task is the one named "key" (main.c: every key, every screen and
  * every property setter runs on it); its line is marked and repeated at the
  * end. uxTaskGetSystemState suspends the scheduler while it walks the task
- * lists and scans each stack for its untouched fill (well under 1 ms). */
+ * lists and scans each stack for its untouched fill (not timed on the unit
+ * yet: a few thousand byte compares). Lines are in creation order. */
 static void cmd_tasks(void)
 {
     static const char *const state[] = { "run", "ready", "block", "susp", "del", "?" };

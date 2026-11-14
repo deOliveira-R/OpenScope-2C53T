@@ -120,6 +120,10 @@ Replies that are new (the old handlers could not give them):
 - `TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing applied` (or `; still applying: check with
   get`): the input task did not answer in 600 ms (1500 ms for a hardware change).
 - `BUSY <prop> (self-cal running)`: autoset or the baseline correction is running.
+- `BUSY (executor not up yet)`: the boot logo is still shown (the input task starts the executor after
+  it); `BUSY (request queue full)`: four requests are waiting for an input task that does not answer.
+  In all three cases nothing was changed: a script that does not read the reply no longer gets the change
+  it got from the old handler, which acted whatever the input task was doing.
 - after the old reply, `  (<prop> stored: <instrument> FE off; applied when it is next entered)`: the
   hardware path was not live (for example a range change on the meter screen with `meter relays on`).
 - `mask tol: v <n> is past the model's range, set to 64 (mask.tolv 0..64)`.

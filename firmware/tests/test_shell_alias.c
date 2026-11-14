@@ -419,6 +419,20 @@ static void test_vdiv(void)
     g_busy = true;
     SAYS(shell_alias_scope_vdiv, "1 7", "BUSY ch1.vdiv (self-cal running)\r\n");
     g_busy = false;
+    /* D2: a request that never reaches the input task: four unanswered ones
+     * fill the queue; and the executor not started yet (the boot logo) */
+    responsive = false;
+    for (int i = 0; i < (int)MODEL_EXEC_QUEUE_LEN; i++)
+        SAYS(shell_alias_scope_vdiv, "1 7", TIMEOUT_NOTHING);
+    SAYS(shell_alias_scope_vdiv, "1 7", "BUSY (request queue full)\r\n");
+    responsive = true;
+    (void)model_exec_drain();
+    CHECK(ss->ch1.vdiv_idx == 4);
+    model_exec_test_reset(1);                              /* forgets the port: not up */
+    SAYS(shell_alias_scope_vdiv, "1 7", "BUSY (executor not up yet)\r\n");
+    SAYS(shell_alias_mode, "meter", "BUSY (executor not up yet)\r\n");
+    CHECK(ss->ch1.vdiv_idx == 4 && current_mode == MODE_OSCILLOSCOPE);
+    model_exec_init(&k_port);
     /* D3: the scope front end is not live: stored, and it says so */
     g_fe_off = true;
     scope_cal_range_label(1, 7, lbl, sizeof lbl);
@@ -693,6 +707,18 @@ static void test_interleave(void)
     SAYS(shell_alias_interleave, "corr 9900 20", "<INTERLEAVE 0>\r\n");
     OPS("il_corr(1012300,-45);il_corr(990000,-45);il_corr(990000,20);");
     CHECK(g_il_knots == 0 && g_il_gain == 990000 && g_il_off == 20);
+    {   /* il.knots itself: its own value is the identity (a `get *` dump
+         * replays), 0 drops the map, anything else is refused */
+        const prop_desc_t *kp = prop_by_id(PROP_ID_IL_KNOTS);
+        prop_note_t note;
+        g_il_knots = 5;
+        CHECK(prop_get(kp) == 5);
+        CHECK(prop_set_local(kp, 5, ORIGIN_PROFILE, &note) == PS_OK && g_il_knots == 5);
+        CHECK(prop_set_local(kp, 3, ORIGIN_SHELL, &note) == PS_REFUSED && g_il_knots == 5);
+        (void)model_load_defaults(PF_PERSIST | PF_SESSION | PF_USERCAL, NULL, false);
+        CHECK(g_il_knots == 5);                            /* defaults never drop a calibration */
+        CHECK(prop_set_local(kp, 0, ORIGIN_SHELL, &note) == PS_OK && g_il_knots == 0);
+    }
     /* skew */
     SAYS(shell_alias_interleave, "skew", "<SKEW 0>\r\n");
     SAYS(shell_alias_interleave, "skew set -49000", "<SKEW 0>\r\n");
