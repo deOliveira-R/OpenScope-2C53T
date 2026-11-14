@@ -6358,6 +6358,99 @@ static void cmd_lcd(const char *args)
     usb_debug_printf("\r\n");
 }
 
+/* `lcd readback [x y w h] [w565]` — an EXPERIMENT, in no automatic path.
+ * Reads the window back from the panel's frame memory (lcd_readback_row:
+ * RAMRD, 18-bit packed by default, `w565` for one word per pixel), CRC32s
+ * it as RGB565 (little-endian, row by row) next to the same window of the
+ * screenshot shadow expanded through its palette as the screenshot does,
+ * and counts the pixels that differ. Nothing is stored. To decide whether
+ * the 38,400 B shadow could go and screenshots read the glass instead.
+ *
+ * Exclusion: the screen is claimed as the screenshot claims it (ui_modal_
+ * active, then up to 500 ms for the display task to report idle), for the
+ * whole read; and each row is read with the scheduler suspended (one row,
+ * ~0.3-0.5 ms), so no task can move the panel's address window mid-row.
+ * Interrupts stay on. */
+typedef struct {
+    uint32_t crc_g, crc_s, diff, n;
+    uint16_t g[4], s[4], raw[4];
+    const uint8_t  *bits;
+    const uint16_t *pal;
+    uint16_t page;
+} lcd_rb_ctx_t;
+
+static void lcd_rb_px(uint16_t x, uint16_t y, uint16_t g, uint16_t raw, void *vc)
+{
+    lcd_rb_ctx_t *c = (lcd_rb_ctx_t *)vc;
+    uint8_t idx = 0;
+    if (y >= c->page && y < (uint32_t)c->page + LCD_SHADOW_HEIGHT) {
+        const uint8_t byte = c->bits[(uint32_t)(y - c->page) * LCD_SHADOW_STRIDE + (x >> 1)];
+        idx = (x & 1u) ? (byte & 0x0Fu) : (byte >> 4);
+    }
+    const uint16_t s = c->pal[idx & 0x0Fu];
+    const uint8_t gb[2] = { (uint8_t)g, (uint8_t)(g >> 8) }, sb[2] = { (uint8_t)s, (uint8_t)(s >> 8) };
+    c->crc_g = crc32_update(c->crc_g, gb, 2);
+    c->crc_s = crc32_update(c->crc_s, sb, 2);
+    if (g != s) c->diff++;
+    if (c->n < 4u) { c->g[c->n] = g; c->s[c->n] = s; c->raw[c->n] = raw; }
+    c->n++;
+}
+
+static void cmd_lcd_readback(const char *args)
+{
+    static const char usage[] = "usage: lcd readback [x y w h] [w565]\r\n";
+    uint32_t v[4] = { 0, 0, LCD_WIDTH, LCD_HEIGHT };
+    uint8_t fmt = LCD_RB_PACKED18;
+    char buf[48], *save = NULL, *tok;
+    unsigned k = 0;
+    if (strlen(args) >= sizeof buf) { usb_send_str(usage); return; }
+    strcpy(buf, args);
+    for (tok = strtok_r(buf, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
+        if (strcmp(tok, "w565") == 0) { fmt = LCD_RB_WORD565; continue; }
+        if (k >= 4u || parse_int(tok, &v[k]) != 0) { usb_send_str(usage); return; }
+        k++;
+    }
+    if ((k != 0u && k != 4u) || v[2] == 0u || v[3] == 0u || v[0] + v[2] > LCD_WIDTH ||
+        v[1] + v[3] > LCD_HEIGHT) {
+        usb_send_str(usage);
+        return;
+    }
+    lcd_rb_ctx_t c;
+    memset(&c, 0, sizeof c);
+    c.bits = lcd_shadow_bits();
+    c.pal = lcd_shadow_palette_get();
+    c.page = lcd_shadow_page_y();
+
+    const bool was = ui_modal_active;
+    ui_modal_active = true;
+    const uint32_t c0 = ui_modal_idle_count;
+    for (int i = 0; i < 50 && ui_modal_idle_count == c0; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    if (ui_modal_idle_count == c0) {
+        if (!was) ui_modal_active = false;
+        usb_send_str("lcd readback: the display task did not go idle in 500 ms; nothing read\r\n");
+        return;
+    }
+    const TickType_t t0 = xTaskGetTickCount();
+    for (uint32_t r = 0; r < v[3]; r++) {
+        vTaskSuspendAll();
+        lcd_readback_row((uint16_t)v[0], (uint16_t)(v[1] + r), (uint16_t)v[2], fmt, lcd_rb_px, &c);
+        (void)xTaskResumeAll();
+    }
+    const uint32_t ms = (uint32_t)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS);
+    if (!was) ui_modal_active = false;
+
+    usb_debug_printf("lcd readback x=%lu y=%lu w=%lu h=%lu fmt=%s: %lu px in %lu ms\r\n",
+                     (unsigned long)v[0], (unsigned long)v[1], (unsigned long)v[2], (unsigned long)v[3],
+                     fmt == LCD_RB_WORD565 ? "w565" : "packed18", (unsigned long)c.n, (unsigned long)ms);
+    usb_debug_printf("  glass  crc32 %08lX\r\n  shadow crc32 %08lX  %s, %lu px differ\r\n",
+                     (unsigned long)c.crc_g, (unsigned long)c.crc_s,
+                     c.crc_g == c.crc_s ? "MATCH" : "differ", (unsigned long)c.diff);
+    usb_send_str("  first px (glass rgb565 / raw word / shadow rgb565):");
+    for (unsigned i = 0; i < 4u && i < c.n; i++)
+        usb_debug_printf(" %04X/%04X/%04X", (unsigned)c.g[i], (unsigned)c.raw[i], (unsigned)c.s[i]);
+    usb_send_str("\r\n");
+}
+
 static void cmd_mode(const char *args)
 {
     /* Numeric aliases for the mode keywords.
@@ -10576,6 +10669,8 @@ static const shell_cmd_t shell_cmds[] = {
           "batt                            Battery gauge: raw/resting mV, percent, external power\r\n"),
     CMD_A("pinlog", cmd_pinlog, 0,
           "pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n"),
+    CMD_A("lcd readback", cmd_lcd_readback, 0,
+          "lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n"),
     CMD_A("lcd", cmd_lcd, 0,
           "lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n"),
     CMD_A("mode", cmd_mode, 0,

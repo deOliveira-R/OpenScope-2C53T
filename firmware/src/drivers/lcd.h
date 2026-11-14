@@ -180,6 +180,24 @@ void lcd_reset(void);           /* Hardware reset via GPIO (if RST pin wired) */
 /* Drawing window control */
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
+/* ── Frame-memory read-back (an experiment: `lcd readback`) ─────────────
+ * One row of the panel's frame memory, read through the ST7789's RAMRD
+ * (0x2E) on the EXMC read path, handed out pixel by pixel (nothing is
+ * stored). The read strobe is slowed for the call to the frame-memory read
+ * cycle (EXMC read ADDSET 15 + DATAST 90 cycles, ~440 ns a read at 240 MHz;
+ * the RDDPM timing, 67 ns, is too fast for RAMRD) and restored after.
+ * RAMRD's first read is a dummy.
+ *   LCD_RB_PACKED18: 18-bit data, two pixels in three 16-bit reads
+ *                    (R1 G1 | B1 R2 | G2 B2, one colour per byte, 6 bits
+ *                    left-aligned), the ST7789's format for a 16-bit bus;
+ *   LCD_RB_WORD565:  one 16-bit read per pixel, taken as RGB565.
+ * The format is what the experiment checks: px() gets the RGB565 value and
+ * the first raw word of the read that carried it. Caller: nothing else may
+ * touch the panel during the call (the address window and RAMRD state). */
+enum { LCD_RB_PACKED18 = 0, LCD_RB_WORD565 = 1 };
+typedef void (*lcd_readback_fn)(uint16_t x, uint16_t y, uint16_t rgb565, uint16_t raw, void *ctx);
+void lcd_readback_row(uint16_t x, uint16_t y, uint16_t w, uint8_t fmt, lcd_readback_fn px, void *ctx);
+
 /* Drawing primitives */
 void lcd_set_pixel(uint16_t x, uint16_t y, uint16_t color);
 void lcd_blit_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_t *pixels);

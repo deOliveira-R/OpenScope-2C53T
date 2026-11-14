@@ -596,6 +596,52 @@ void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 }
 
 /* ========================================================================
+ * Frame-memory read-back (lcd.h; the `lcd readback` experiment)
+ * ======================================================================== */
+
+/* EXMC read timing low half for RAMRD: ADDSET 15 (bits 3:0), ADDHLD 2
+ * (7:4), DATAST 90 = 0x5A (15:8). ST7789V frame-memory read: RDX low
+ * >= 355 ns, cycle >= 450 ns; 90 cycles = 375 ns low, 15 + 90 + the bus
+ * turnaround ~ 450 ns a read. */
+#define LCD_RB_READ_TIMING 0x5A2Fu
+
+static inline uint16_t rb_565(uint8_t r, uint8_t g, uint8_t b)
+{
+    return (uint16_t)(((uint16_t)(r >> 3) << 11) | ((uint16_t)(g >> 2) << 5) | (b >> 3));
+}
+
+void lcd_readback_row(uint16_t x, uint16_t y, uint16_t w, uint8_t fmt, lcd_readback_fn px, void *ctx)
+{
+    if (!px || w == 0u) return;
+    const uint32_t t = EXMC_SNTCFG0;
+    EXMC_SNTCFG0 = (t & ~0xFFFFu) | LCD_RB_READ_TIMING;
+    const uint16_t x_end = (uint16_t)(x + w - 1u);
+    lcd_write_cmd(ST7789_CASET);
+    lcd_write_data8(x >> 8); lcd_write_data8(x & 0xFF);
+    lcd_write_data8(x_end >> 8); lcd_write_data8(x_end & 0xFF);
+    lcd_write_cmd(ST7789_RASET);
+    lcd_write_data8(y >> 8); lcd_write_data8(y & 0xFF);
+    lcd_write_data8(y >> 8); lcd_write_data8(y & 0xFF);
+    lcd_write_cmd(0x2E);                                   /* RAMRD */
+    (void)*LCD_DATA_ADDR;                                  /* the dummy read */
+    if (fmt == LCD_RB_WORD565) {
+        for (uint16_t i = 0; i < w; i++) {
+            const uint16_t v = *LCD_DATA_ADDR;
+            px((uint16_t)(x + i), y, v, v, ctx);
+        }
+    } else {
+        for (uint16_t i = 0; i < w; i += 2u) {
+            const uint16_t a = *LCD_DATA_ADDR, b = *LCD_DATA_ADDR;
+            px((uint16_t)(x + i), y, rb_565((uint8_t)(a >> 8), (uint8_t)a, (uint8_t)(b >> 8)), a, ctx);
+            if ((uint16_t)(i + 1u) >= w) break;
+            const uint16_t c = *LCD_DATA_ADDR;
+            px((uint16_t)(x + i + 1u), y, rb_565((uint8_t)b, (uint8_t)(c >> 8), (uint8_t)c), b, ctx);
+        }
+    }
+    EXMC_SNTCFG0 = t;
+}
+
+/* ========================================================================
  * Drawing primitives
  * ======================================================================== */
 
