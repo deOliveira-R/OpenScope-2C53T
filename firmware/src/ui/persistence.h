@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "scope_state.h"   /* persist_geometry_key */
 
 #define PERSIST_WIDTH  320
 #define PERSIST_HEIGHT 206   /* Display area between status bars (y=18 to y=223) */
@@ -83,5 +84,20 @@ uint16_t persist_intensity_to_color_ch1(uint8_t intensity);
 
 /* Map intensity (0-255) to RGB565 color for CH2 (cyan) */
 uint16_t persist_intensity_to_color_ch2(uint8_t intensity);
+
+/* ── Geometry guard ─────────────────────────────────────────────────
+ * The buffer holds screen pixels, so a ghost is only right at the mapping
+ * from signal to screen it was drawn with. The scope's draw paths call
+ * persist_follow_geometry() once per frame, before the ghosts are read, with
+ * a key of everything in that mapping (persist_geometry_key); the buffer is
+ * cleared when the key moves, whoever moved it (a key handler, a shell set,
+ * autoset, 50 % centre, a load), and when acquisition resumes after a stop
+ * under a key other than the one it stopped with (the frozen record was
+ * drawn at its own scale, the live one is not). */
+/* view: the scope view (time, FFT, ...); merged: the record is the
+ * two-converter 250 MS/s merge (twice the samples per division). */
+uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged);
+/* true: the buffer was cleared now. */
+bool     persist_follow_geometry(uint32_t key, bool running);
 
 #endif

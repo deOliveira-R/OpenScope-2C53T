@@ -2160,9 +2160,20 @@ void scope_ui_cursor_row_refresh(void)
  * and takes that channel's theme colour.
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Fade by the wall time since the last frame (either renderer). */
+/* Before the ghosts are read, every frame and in either renderer: clear
+ * them if the signal-to-screen mapping moved (persistence.h geometry guard:
+ * one place that sees keys, shell sets, autoset and loads alike), then fade
+ * by the wall time since the last frame. */
 static void persist_frame_decay(void)
 {
+    const scope_state_t *gss = scope_state_get();
+#ifdef FEATURE_FFT
+    const uint8_t gview = (uint8_t)scope_view;
+#else
+    const uint8_t gview = 0u;
+#endif
+    (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss)),
+                                  gss->running);
     static uint32_t last_tick;
     static bool     have_tick;
     uint32_t now = (uint32_t)xTaskGetTickCount() * (1000u / configTICK_RATE_HZ);

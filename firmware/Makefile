@@ -1007,7 +1007,7 @@ test-math-channel: $(BUILD_DIR)/test_math_channel
 	$<
 .PHONY: test-math-channel test-persistence
 
-$(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src/ui/persistence.h src/dsp/shared_mem.c | $(BUILD_DIR)
+$(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src/ui/persistence.h src/ui/scope_state.h src/dsp/shared_mem.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< src/ui/persistence.c src/dsp/shared_mem.c -lm -o $@
 
 test-persistence: $(BUILD_DIR)/test_persistence

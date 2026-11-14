@@ -237,3 +237,49 @@ uint16_t persist_intensity_to_color_ch2(uint8_t intensity)
     uint8_t b = intensity >> 3;  /* 0-31 */
     return (uint16_t)(g << 5) | b; /* RGB565 cyan */
 }
+
+/* ── Geometry guard (persistence.h) ─────────────────────────────────── */
+
+static uint32_t mix(uint32_t h, uint32_t v)
+{
+    for (int i = 0; i < 4; i++) { h ^= (v >> (8 * i)) & 0xFFu; h *= 16777619u; }
+    return h;
+}
+
+static uint32_t mix_ch(uint32_t h, const channel_state_t *c)
+{
+    h = mix(h, (uint32_t)c->enabled | ((uint32_t)c->vdiv_idx << 1) | ((uint32_t)c->coupling << 9) |
+               ((uint32_t)c->probe << 13));
+    return mix(h, (uint32_t)(uint16_t)c->position);
+}
+
+uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged)
+{
+    uint32_t h = 2166136261u;
+    h = mix_ch(h, &ss->ch1);
+    h = mix_ch(h, &ss->ch2);
+    h = mix(h, (uint32_t)ss->timebase_idx | ((uint32_t)ss->roll << 8) | ((uint32_t)ss->roll_step << 9) |
+               ((uint32_t)merged << 17) | ((uint32_t)view << 18) | ((uint32_t)ss->true_scale << 26));
+    h = mix(h, (uint32_t)ss->trigger.edge | ((uint32_t)ss->trigger.source << 4) |
+               ((uint32_t)ss->soft_trigger << 8));
+    h = mix(h, (uint32_t)(uint16_t)ss->trigger.level | ((uint32_t)(uint16_t)ss->trig_x << 16));
+    return h;
+}
+
+/* The key the buffer was filled under, the one acquisition stopped with,
+ * and whether it was running: 12 bytes. */
+static uint32_t g_geom_key, g_geom_stop_key;
+static bool     g_geom_seen, g_geom_running;
+
+bool persist_follow_geometry(uint32_t key, bool running)
+{
+    bool clear = g_geom_seen && key != g_geom_key;
+    if (g_geom_seen && running && !g_geom_running && key != g_geom_stop_key) clear = true;
+    if (g_geom_seen && !running && g_geom_running) g_geom_stop_key = key;
+    if (!g_geom_seen) g_geom_stop_key = key;
+    g_geom_key = key;
+    g_geom_running = running;
+    g_geom_seen = true;
+    if (clear) persist_clear();
+    return clear;
+}

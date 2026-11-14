@@ -349,6 +349,77 @@ static void test_scale_rgb(void)
 /* ------------------------------------------------------------------ */
 /* Main                                                                */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Geometry guard: every input of the signal-to-screen mapping moves the */
+/* key, and a moved key (or a resume under another key) clears.          */
+/* ------------------------------------------------------------------ */
+static scope_state_t geom_base(void)
+{
+    scope_state_t s;
+    memset(&s, 0, sizeof s);
+    s.ch1.enabled = s.ch2.enabled = true;
+    s.ch1.vdiv_idx = 3; s.ch2.vdiv_idx = 5;
+    s.timebase_idx = 10; s.true_scale = true; s.soft_trigger = true; s.trig_x = 150;
+    s.running = true; s.prm_mask = 0x507;
+    return s;
+}
+
+static bool ghost_left(void)
+{
+    return persist_get_intensity(10, 100) != 0;
+}
+
+static void test_geometry_guard(void)
+{
+    printf("Test: geometry guard...\n");
+    persist_init();
+    persist_set_mode(PERSIST_INFINITE);
+    const scope_state_t b = geom_base();
+    const uint32_t k0 = persist_geometry_key(&b, 0, false);
+    /* each field of the mapping, one at a time */
+#define MOVES(stmt) do { scope_state_t t = b; stmt; \
+        ASSERT(persist_geometry_key(&t, 0, false) != k0, "key ignores: " #stmt); } while (0)
+    MOVES(t.ch1.vdiv_idx = 4);      MOVES(t.ch2.vdiv_idx = 4);
+    MOVES(t.ch1.position = 20);     MOVES(t.ch2.position = -20);
+    MOVES(t.ch1.probe = PROBE_10X); MOVES(t.ch2.probe = PROBE_10X);
+    MOVES(t.ch1.coupling = COUPLING_AC); MOVES(t.ch2.coupling = COUPLING_AC);
+    MOVES(t.ch1.enabled = false);   MOVES(t.ch2.enabled = false);
+    MOVES(t.timebase_idx = 9);      MOVES(t.roll = true);
+    MOVES(t.trig_x = 100);          MOVES(t.trigger.level = 30);
+    MOVES(t.trigger.source = TRIG_SRC_CH2); MOVES(t.trigger.edge = TRIG_FALLING);
+    MOVES(t.true_scale = false);
+#undef MOVES
+    ASSERT(persist_geometry_key(&b, 1, false) != k0, "key ignores the view");
+    ASSERT(persist_geometry_key(&b, 0, true) != k0, "key ignores the 250 MS/s merge");
+    /* not in the mapping: measurements, cursors, running */
+    {
+        scope_state_t t = b;
+        t.prm_mask = 0x1; t.prm_hidden = true; t.cursor.mode = CURSOR_BOTH; t.running = false;
+        ASSERT(persist_geometry_key(&t, 0, false) == k0, "key moved on a non-geometry field");
+    }
+    /* the guard: same key keeps the ghosts, a new key clears */
+    (void)persist_follow_geometry(k0, true);
+    persist_add_column(10, -1, 100);
+    ASSERT(!persist_follow_geometry(k0, true) && ghost_left(), "same key cleared");
+    scope_state_t v = b; v.ch1.vdiv_idx = 4;
+    const uint32_t k1 = persist_geometry_key(&v, 0, false);
+    ASSERT(persist_follow_geometry(k1, true) && !ghost_left(), "V/div change left the ghosts");
+    /* stop, change, back: one clear at the change; resume under the new key
+     * clears again (the frozen record was at the old scale) */
+    persist_add_column(10, -1, 100);
+    ASSERT(!persist_follow_geometry(k1, false) && ghost_left(), "stop alone cleared");
+    ASSERT(persist_follow_geometry(k0, false) && !ghost_left(), "change while stopped kept the ghosts");
+    persist_add_column(10, -1, 100);
+    ASSERT(persist_follow_geometry(k0, true) && !ghost_left(), "run after a changed stop kept the ghosts");
+    /* stop and run with nothing changed keeps them */
+    persist_add_column(10, -1, 100);
+    ASSERT(!persist_follow_geometry(k0, false) && !persist_follow_geometry(k0, true) && ghost_left(),
+           "plain stop/run cleared");
+    persist_deinit();
+    printf("  PASS\n");
+    tests_passed++;
+}
+
 int main(void)
 {
     printf("=== Persistence Display Module Tests ===\n\n");
@@ -365,6 +436,7 @@ int main(void)
     test_decay_ms_modes();
     test_add_rows();
     test_scale_rgb();
+    test_geometry_guard();
 
     printf("\n=== Results: %d passed, %d failed ===\n", tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
