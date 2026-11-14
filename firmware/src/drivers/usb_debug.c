@@ -105,7 +105,7 @@
 #include "../util/features.h"   /* version, features: what this build contains */
 #include "stream.h"        /* binary stream over this channel (src/stream/): no-ops when off */
 #include "shell_internal.h" /* the accessors below, for the feature shell files */
-#include "shell_alias.h"     /* the old state commands as aliases of the property model (M4) */
+#include "model_exec.h"      /* `fpga roll code`: the re-apply goes through the executor */
 #include "shell_bench.h"     /* bench shell rows (FEATURE_BENCHSHELL): empty when off */
 #include "shell_meterdebug.h" /* meter diagnostics rows (FEATURE_METERDEBUG): empty when off */
 
@@ -711,9 +711,8 @@ void usb_debug_sh_stock_diag_print(void)
  * it renders the per-row help strings, so it must live after the table. */
 static void cmd_help(void);
 
-/* What the alias handlers (shell_alias.c, ARCH-1 M4) reach in this file: the
- * print path and the read-only status printers. Defined above the table. */
-static const shell_alias_env_t *alias_env(void);
+/* `status` ends with the timebase in force (defined with the scope commands). */
+static void timebase_print_status(bool after_set);
 
 static void cmd_version(void)
 {
@@ -821,6 +820,9 @@ static void cmd_status(void)
         fpga.acq_hdr_ch1[0], fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2],
         fpga.acq_hdr_ch2[0], fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]
     );
+    /* The timebase in force (reg 0x01, sample rate, s/div) and what the boot
+     * reconcile did: `get tb.code` gives the code and the label only. */
+    timebase_print_status(false);
     usb_print_last_tx_frame();
     usb_print_recent_tx_frames();
 
@@ -1948,13 +1950,11 @@ static void cmd_screen_shadow(const char *args)
 
 /* ── Stock-parity meter shell (M1/M4/M5) ────────────────────────────────
  *
- * `meter func <n>`        change the function without touching the mode and
- *                         say which path ran (fast = one word) and how long
+ * (the function is the property meter.func, degC/degF is meter.degf)
  * `meter state`           everything decoded from the last frame, the switch
  *                         counters, the beep source and the guard
  * `meter fast [on|off]`   one-word switching (default on); off = old PC11 path
  * `meter keepalive [..]`  the 4 Hz unobeyed poll (default on)
- * `meter degf [on|off]`   degC/degF (the UI's MOVE key in Temperature)
  * `meter beep ...`        the SoC-edge buzzer (default off)
  */
 static const char *onoff(bool b) { return b ? "on" : "off"; }
@@ -1979,68 +1979,6 @@ bool usb_debug_sh_onoff_arg(const char *args, bool *out)
     return shell_onoff_arg(args, out);
 }
 
-/* `meter func`: the read-only half. The function change itself is the
- * property's (shell_alias.c -> meter.func -> the meter poll task); what the
- * old handler measured around its inline fpga_set_meter_mode() is read
- * here, around the wait for that posted switch. */
-static struct {
-    uint16_t seq, fast, fb;
-    bool     live, pc11;
-    uint32_t t0;
-} g_meter_sw;
-
-static void meter_switch_begin(void)
-{
-    g_meter_sw.seq  = fpga.meter_mode_sequence_count;
-    g_meter_sw.fast = fpga.meter_fast_switch_count;
-    g_meter_sw.fb   = fpga.meter_fast_fallback_count;
-    g_meter_sw.live = fpga_meter_soc_live();
-    g_meter_sw.pc11 = (GPIOC->odt & (1U << 11)) != 0U;
-    g_meter_sw.t0   = xTaskGetTickCount();
-}
-
-/* Wait for the posted function change: up to 600 ms for the poll task to
- * start one (none starts when the chip already runs that function, or the
- * meter link is off), then up to 5 s for it to end (the old inline call took
- * ~1.4 s, up to ~4.5 s). false = one started and is still running. */
-static bool meter_switch_wait(void)
-{
-    for (int i = 0; i < 60; i++) {
-        if (fpga.meter_mode_sequence_count != g_meter_sw.seq || fpga_meter_transition_busy()) break;
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    if (fpga.meter_mode_sequence_count == g_meter_sw.seq && !fpga_meter_transition_busy())
-        return true;
-    for (int i = 0; i < 500; i++) {
-        if (!fpga_meter_transition_busy()) return true;
-        vTaskDelay(pdMS_TO_TICKS(10));
-    }
-    return false;
-}
-
-static void meter_func_print(uint8_t sub)
-{
-    const fpga_meter_transition_plan_t plan = fpga_meter_transition_plan_for_submode(sub);
-    if (!meter_switch_wait())
-        usb_send_str("meter func: the switch is still running after 5 s; the state now:\r\n");
-    const uint32_t dt = (xTaskGetTickCount() - g_meter_sw.t0) * 1000U / configTICK_RATE_HZ;
-
-    usb_debug_printf(
-        "meter func %lu (%s) word=%04X path=%s dt_ms=%lu | soc_live before=%u after=%u"
-        " PC11 before=%u after=%u | echo ok=%u tries=%u | fast_fallbacks+%u\r\n",
-        (unsigned long)sub, meter_submode_name(sub), (unsigned)plan.selector_word,
-        (fpga.meter_fast_switch_count != g_meter_sw.fast) ? "FAST(one word)" : "FULL(PC11 restart)",
-        dt, g_meter_sw.live ? 1U : 0U, fpga_meter_soc_live() ? 1U : 0U,
-        g_meter_sw.pc11 ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
-        (unsigned)fpga.meter_selector_confirmed, (unsigned)fpga.meter_selector_attempts,
-        (unsigned)(fpga.meter_fast_fallback_count - g_meter_sw.fb));
-}
-
-static void cmd_meter_func(const char *args)
-{
-    shell_alias_meter_func(args, alias_env());
-}
-
 static void cmd_meter_relays(const char *args)
 {
     bool on;
@@ -2050,11 +1988,6 @@ static void cmd_meter_relays(const char *args)
                      " behaviour, and the meter link follows the screen only; applies at the next"
                      " meter entry or function change)\r\n",
                      onoff(fpga_meter_relays_get()));
-}
-
-static void cmd_meter_degf(const char *args)
-{
-    shell_alias_meter_degf(args, alias_env());
 }
 
 static void cmd_meter_state(void)
@@ -2148,21 +2081,6 @@ static void cmd_fpga_cfgsettle(const char *args)
                          (unsigned long)fpga_acq_cfg_drops());
 }
 
-/* `fpga scope hpos [0..300]` — the screen column for the trigger point (the
- * same field MOVE -> Position -> LEFT/RIGHT sets): stock's 150 + hpos, hpos
- * +-150 (parity C5, scope_geom.h). */
-static void cmd_fpga_scope_hpos(const char *args)
-{
-    shell_alias_scope_hpos(args, alias_env());
-}
-
-/* `fpga scope edge [rising|falling]` — the same field Settings -> Trigger Edge
- * sets; it steers the display's soft trigger and the MCU edge filter. */
-static void cmd_fpga_scope_edge(const char *args)
-{
-    shell_alias_scope_edge(args, alias_env());
-}
-
 /* `fpga edgefilter [on|off]` — the MCU-side trigger edge filter. */
 static void cmd_fpga_edgefilter(const char *args)
 {
@@ -2195,23 +2113,6 @@ static void cmd_fpga_unrotate(const char *args)
                      fpga_acq_unrotate_get() ? "ON" : "OFF", (long)fpga.acq_last_rot);
 }
 
-/* `fpga scope ch <1|2> [on|off]` — channel enable from the shell (there is
- * no UI control yet). Applies the converter routing at once: CH2 off is mask 1,
- * which at timebase <= 3 gives the 250 MS/s interleaved CH1 record. */
-static void cmd_fpga_scope_ch(const char *args)
-{
-    shell_alias_scope_ch(args, alias_env());
-}
-
-/* `fpga scope probe <1|2> [1x|10x]` — the channel's probe setting from the
- * shell. SELECT used to cycle it; SELECT now switches the adjusted channel
- * (stock's key meaning), and the probe lives in the scope menu's CH1/CH2
- * panes, so the bench needs its own path. Same state the key changed. */
-static void cmd_fpga_scope_probe(const char *args)
-{
-    shell_alias_scope_probe(args, alias_env());
-}
-
 /* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
  * timebase <= 3, a quiet CH1 input. Sweeps the CH1 offset DAC over five codes
  * of this unit's calibration page (base+80, base+400, mid, upper-400, upper —
@@ -2231,7 +2132,7 @@ static void cmd_fpga_interleave_cal(bool piecewise)
     scope_state_t *ss = scope_state_get();
     if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
         usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
-                     "(fpga scope ch 2 off; fpga scope tb <= 3)\r\n");
+                     "(set ch2.enabled=off; set tb.code <= 3)\r\n");
         return;
     }
     uint16_t base, upper, codes[5];
@@ -2265,7 +2166,7 @@ static void cmd_fpga_interleave_cal(bool piecewise)
     }
     scope_vpos_apply_ch(1u, ss->ch1.vdiv_idx);     /* DAC back to the position code */
     if (parked && !fpga_apply_trigger_level(ss->trigger.level))
-        usb_debug_printf("  WARNING: trigger level not restored (reg 0x08); `fpga scope level %d`\r\n",
+        usb_debug_printf("  WARNING: trigger level not restored (reg 0x08); `set trig.level %d`\r\n",
                          ss->trigger.level);
     {   /* apply_ch is silent when it cannot write (no clean bank after a
          * range change): say so rather than leave a sweep code. */
@@ -2343,7 +2244,7 @@ static bool cmd_fpga_interleave_skew_measure(bool with_gain)
     scope_state_t *ss = scope_state_get();
     if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
         usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
-                     "(fpga scope ch 2 off; fpga scope tb <= 3)\r\n");
+                     "(set ch2.enabled=off; set tb.code <= 3)\r\n");
         return false;
     }
     const volatile uint8_t *c1 = fpga_get_ch1_buf();
@@ -2453,9 +2354,8 @@ static void interleave_skew_print_status(void)
     else          print_skew_line("interleave skew: correcting", ppm);
 }
 
-/* `fpga interleave [on|off]`, `fpga interleave corr <gain x10000> <offset x100>`
- * — the single-channel merge and its converter-B correction (B' = (B - off) /
- * gain, record units). Integer arguments: the shell has no float parsing. */
+/* The single-channel merge and its converter-B correction (B' = (B - off) /
+ * gain, record units): il.enabled, il.gain, il.offset, il.knots, il.skew. */
 /* The status block every `fpga interleave ...` ends with. */
 static void interleave_print_status(void)
 {
@@ -2482,9 +2382,9 @@ static void interleave_print_status(void)
     else    usb_send_str("  skew: correction OFF\r\n");
 }
 
-/* `fpga interleave ...`: on / off / corr / skew set|off are aliases of il.*
- * (shell_alias.c). The procedures stay here: `cal`, `tone` and `skew measure`
- * drive the front end over many records and then write the fit they found. */
+/* `fpga interleave`: the status block and the procedures (`cal`, `tone`,
+ * `skew measure`: they drive the front end over many records and then write
+ * the fit they found). The settings are the il.* properties. */
 static void cmd_fpga_interleave(const char *args)
 {
     while (*args == ' ') args++;
@@ -2513,16 +2413,13 @@ static void cmd_fpga_interleave(const char *args)
             return;
         }
     }
-    shell_alias_interleave(args, alias_env());
-}
-
-/* `fpga scope trigmode [auto|normal|single]` — set/read the acq wait policy
- * (EXP-30 noted nothing in the shell could set it; the time-view button
- * cycles cursors). Pure state; the acq task reads it each cycle. */
-static void print_trigger_status(void);
-static void cmd_fpga_scope_trigmode(const char *args)
-{
-    shell_alias_scope_trigmode(args, alias_env());
+    if (*args) {
+        usb_send_str("usage: fpga interleave [cal [piecewise]|tone|skew measure]  (no argument: status)\r\n"
+                     "  the settings are properties: set il.enabled on|off; set il.knots=0 il.gain=<g> "
+                     "il.offset=<o>; set il.skew <ppm>\r\n");
+        return;
+    }
+    interleave_print_status();
 }
 
 /* Parity C3: the whole trigger in two lines -- settings and the wire, then
@@ -2545,44 +2442,24 @@ static void print_trigger_status(void)
                      k < 4u ? kind[k] : "?", fpga_acq_record_coherent() ? "yes" : "no",
                      ss->trigger.mode != TRIG_SINGLE ? "-" :
                      fpga_acq_single_done() ? "captured" : "armed");
+    /* What no property carries (the lines the retired `fpga scope level` and
+     * `fpga scope hpos` printed): the level code the boot reconcile wrote,
+     * and where the last drawn window put the trigger point. */
+    const uint8_t a = (uint8_t)scope_ui_trig_anchor();
+    usb_debug_printf("trigger level %d -> reg 0x08 code 0x%02X in force (boot reconcile wrote 0x%02X)\r\n",
+                     (int)ss->trigger.level, (unsigned)fpga_acq_trig_code_get(),
+                     (unsigned)fpga_trigger_reconcile_code());
+    usb_debug_printf("trigger position: asked column %d; last window landed at %d (anchor %s)\r\n",
+                     (int)prop_get(P(TRIG_X)), (int)scope_ui_trig_x_actual(),
+                     a == 2 ? "hardware" : a == 1 ? "soft" : "none");
 }
 
-/* `fpga scope trigger` -- print_trigger_status(). */
+/* `fpga scope trigger` -- print_trigger_status(). The settings themselves
+ * are the trig.* properties. */
 static void cmd_fpga_scope_trigger(const char *args)
 {
     (void)args;
     print_trigger_status();
-}
-
-/* `fpga scope source [ch1|ch2]` -- the trigger source, through the same model
- * as the panel (refuses a channel that is off) and the one writer of reg 0x06. */
-static void cmd_fpga_scope_source(const char *args)
-{
-    shell_alias_scope_source(args, alias_env());
-}
-
-/* `fpga scope single` -- SINGLE and arm it: what OK does after a capture. */
-static void cmd_fpga_scope_single(const char *args)
-{
-    shell_alias_scope_single(args, alias_env());
-}
-
-/* `fpga scope level [level]` — the digital trigger level (reg 0x08) from the
- * UI's -100..100, through the one entry point; prints the code in force. */
-static void cmd_fpga_scope_level(const char *args)
-{
-    shell_alias_scope_level(args, alias_env());
-}
-
-/* `fpga scope vdiv <1|2> <0-9>` — the vdiv BUTTON's path from the shell:
- * updates scope_state (label + counts->volts k) AND drives the relay bank
- * through fpga_apply_vdiv(), the single entry point. This is to `fpga scope
- * range` what `fpga scope timebase` is to a raw `seq 01 XX`: the raw form
- * changes the hardware behind the display's back and exists only for
- * deliberately testing that divergence (EXP-19). */
-static void cmd_fpga_scope_vdiv(const char *args)
-{
-    shell_alias_scope_vdiv(args, alias_env());
 }
 
 /* `fpga scope range <n> <1|2|both>` — apply coarse frontend range n (0-9) to
@@ -2632,7 +2509,7 @@ static void cmd_fpga_scope_range(const char *args)
 
     fpga_scope_set_range_diag_ch(ch_sel, (uint8_t)n);
     usb_send_str("(raw relay drive — display state and counts->volts k NOT "
-                 "updated; use `fpga scope vdiv`)\r\n");
+                 "updated; use `set chN.vdiv`)\r\n");
     usb_debug_printf("scope frontend range = %lu on %s\r\n",
                      (unsigned long)n,
                      ch_sel == 0 ? "CH1" : (ch_sel == 1 ? "CH2" : "CH1+CH2"));
@@ -2870,14 +2747,10 @@ static void cmd_settings(void)
                  "orderly power-off follows it - see settings_store.h)\r\n");
 }
 
-/* `fpga scope timebase [code]` — change the timebase the way the UI button
- * does, i.e. through the single entry point that updates BOTH the display
- * state and the hardware register. Writing reg 0x01 with a raw `seq 01 XX`
- * changes the hardware behind the display's back and is how the divergence
- * above goes unnoticed; this command exists so bench scripts do not have to
- * reproduce that bug. */
-/* What `fpga scope timebase` prints: the boot reconcile and the code in
- * force. after_set: a code was just set (the published record is still the
+/* The timebase in force, for `status`: the boot reconcile, then the code,
+ * reg 0x01, the sample rate and the s/div label (the lines the retired
+ * `fpga scope timebase` printed; the code itself is the property tb.code).
+ * after_set: a code was just set (the published record is still the
  * previous one). */
 static void timebase_print_status(bool after_set)
 {
@@ -2906,11 +2779,6 @@ static void timebase_print_status(bool after_set)
                      lbl);
 }
 
-static void cmd_fpga_scope_timebase(const char *args)
-{
-    shell_alias_scope_timebase(args, alias_env());
-}
-
 /* Millivolts of one roll point as a signed "x.yyy" string, or counts when the
  * range is uncalibrated -- the same rule and units the Y-T badges use. */
 static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
@@ -2931,11 +2799,11 @@ static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
     snprintf(out, n, "code %u = %c%ld.%03ld V", (unsigned)code, sign, mv / 1000, mv % 1000);
 }
 
-/* `fpga roll [off|<step 0-8>|code <hex>|code stock]` -- roll mode (C11).
- * A step enters roll there; `off` returns to the Y-T code; `code` picks the
- * reg-0x01 byte written on entry (stock writes 0x14 + step; 0x14 is the only
- * code with a measured rate) and re-applies if rolling. Bare: status, with the
- * last op03 frame exactly as received so the live slots can be checked. */
+/* `fpga roll [code <hex>|code stock]` -- roll mode (C11) status, with the
+ * last op03 frame exactly as received so the live slots can be checked.
+ * Roll itself is tb.roll and its step tb.rollstep. `code` picks the reg-0x01
+ * byte written on entry (stock writes 0x14 + step; 0x14 is the only code
+ * with a measured rate): a debug knob of fpga.c that is no property. */
 static void roll_print_status(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -2995,27 +2863,37 @@ static void roll_print_status(void)
 
 static void cmd_fpga_roll(const char *args)
 {
-    shell_alias_roll(args, alias_env());
-}
-
-/* `fpga scope graticule [auto|true|toggle]` — the M3 seam. Choose whether the
- * live trace is drawn at TRUE volts/div (one grid division == the volts/div the
- * status bar prints, on calibrated ranges) or AUTOFIT (scaled to fill the band,
- * so the grid is a position reference only). Autofit at boot; this flips it on
- * the bench without a rebuild. True scale needs a centred baseline, so it also
- * prints which ranges will honour it and the reminder to center first. */
-static void cmd_fpga_scope_graticule(const char *args)
-{
-    shell_alias_scope_graticule(args, alias_env());
-}
-
-/* `fpga scope softtrig [on|off|toggle]` — the software display trigger. When on
- * (default), each frame's render window starts on the trigger source's level
- * crossing so a periodic trace stands still; off free-runs from sample 0 (the
- * old "dancing"). Handy for A/B on the bench: off = dances, on = locked. */
-static void cmd_fpga_scope_softtrig(const char *args)
-{
-    shell_alias_scope_softtrig(args, alias_env());
+    while (*args == ' ') args++;
+    if (strncmp(args, "code", 4) == 0) {
+        const char *q = args + 4;
+        while (*q == ' ') q++;
+        uint32_t v;
+        if (strncmp(q, "stock", 5) == 0) {
+            fpga_roll_code_override_set(-1);
+        } else if (*q && parse_hex32(q, &v) == 0 && v <= 0xFFu) {
+            fpga_roll_code_override_set((int)v);
+        } else {
+            usb_send_str("usage: fpga roll code <hex 00-FF>|stock\r\n");
+            return;
+        }
+        /* Rolling: re-enter with the new byte, by asking the input task for
+         * the step in force again (the setter re-enters roll with it). */
+        if (prop_get(P(TB_ROLL))) {
+            const prop_pair_t p = { PROP_ID_TB_ROLLSTEP, prop_get(P(TB_ROLLSTEP)) };
+            model_result_t res;
+            const prop_status_t st = prop_request(&p, 1, ORIGIN_SHELL, prop_request_timeout(&p, 1), &res);
+            if (st != PS_OK && st != PS_CLAMPED) {
+                usb_debug_printf("%s tb.rollstep (%s): the entry byte is set, roll was not re-entered\r\n",
+                                 prop_status_name(st), res.note.text[0] ? res.note.text : "no reason given");
+                return;
+            }
+        }
+    } else if (*args) {
+        usb_send_str("usage: fpga roll [code <hex 00-FF>|code stock]  (no argument: status)\r\n"
+                     "  roll is a property: set tb.rollstep=<0-8> tb.roll=on; set tb.roll off\r\n");
+        return;
+    }
+    roll_print_status();
 }
 
 /* `fpga scope measure [reps]` — print what the measurement badges compute,
@@ -3151,17 +3029,12 @@ static void cmd_fpga_scope_measure(const char *args)
     }
 }
 
-/* `fpga scope prm [ch1|ch2] [mask|all|default|none|toggle <0-11>|hide|show]`
- * -- which of the 12 measurements each channel shows (stock's Parameter
- * Measurement page, ours: the Oscilloscope Settings page's Measure pane), and
- * long PRM's hide. The channel defaults to CH1 (the command's meaning before
- * the per-channel selection). With no action, just reports both channels.
- * The mask is bit i = parameter i in stock's order: Freq Peri Duty+ Duty-
- * Wid+ Wid- Vmax Vmin Vp-p Amp Vrms Avg. Everything goes through
- * meas_select.c, the page's own store, so the page, the strip and the
- * persisted record see the change. With more than MSTRIP_MAX_PER_CH (6) on,
- * the strip shows the 6 measure_strip_shown() picks (levels first); the
- * others are listed "(no slot)". */
+/* Which of the 12 measurements each channel shows (chN.meas, bit i =
+ * parameter i in stock's order: Freq Peri Duty+ Duty- Wid+ Wid- Vmax Vmin
+ * Vp-p Amp Vrms Avg) and long PRM's hide (view.meashide), as the strip
+ * draws them, for `ui dump`: with more than MSTRIP_MAX_PER_CH (6) on, the
+ * strip shows the 6 measure_strip_shown() picks (levels first); the others
+ * are listed "(no slot)". */
 static void prm_print_status(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -3177,11 +3050,6 @@ static void prm_print_status(void)
                              (shown >> ids[i]) & 1u ? "" : "(no slot)");
         usb_send_str("\r\n");
     }
-}
-
-static void cmd_fpga_scope_prm(const char *args)
-{
-    shell_alias_scope_prm(args, alias_env());
 }
 
 /* `fpga scope cursor` — the cursor readouts (C7) as the screen computes them:
@@ -3285,7 +3153,8 @@ static void cmd_fpga_scope_center(const char *args)
  * Stock calibration page in use (parity C4; src/util/calpage.h, scope_vpos.h).
  *   cal page [on|off|reload]     decoded table, bank in force, substitutions
  *   cal page calc <1|2> <bank> <range> <pos>   one code, ours vs stock's
- *   cal pos <1|2> [-100..100]    vertical position (stock units)
+ * The vertical position is the property chN.pos; `cal page` prints the
+ * offset code it gave and the reference read back, per channel.
  * The page is only READ here; `cal restore` is still the one writer.
  */
 static void fmt_g(char *out, size_t n, float g)
@@ -3422,11 +3291,6 @@ static void cmd_cal_page(const char *args)
                 }
                 usb_debug_printf("%s\r\n", line);
             }
-}
-
-static void cmd_cal_pos(const char *args)
-{
-    shell_alias_cal_pos(args, alias_env());
 }
 
 /* ---- autoset / baseline correction / 50 % centre (parity C9/C10) --------
@@ -3653,7 +3517,6 @@ const char *usb_debug_sh_meter_layout_name(uint8_t layout)
 _Static_assert(sizeof(meter_voltage_wave_snapshot_t) <= sizeof(shell_bus_scratch),
                "meter wave snapshot must fit the shell bus scratch");
 
-/* One usage line, so every rejection path names the same accepted set. */
 /* persist [on|off]: whether shell commands save the settings they change.
  * Off is for bench sweeps (one settings record per changed command otherwise);
  * RAM only, on at every boot. Key presses save as usual either way. */
@@ -3698,11 +3561,6 @@ static void cmd_batt(const char *args)
                      (unsigned)battery_raw_mv(), (unsigned)battery_read_mv(), (unsigned)battery_percent(),
                      (unsigned)battery_is_charging(), (unsigned)((GPIOC->idt >> 7) & 1u),
                      (unsigned)battery_is_critical());
-}
-
-static void cmd_mode(const char *args)
-{
-    shell_alias_mode(args, alias_env());
 }
 
 static void cmd_meter_auto_async(const char *args)
@@ -3825,6 +3683,25 @@ static void cmd_ui_dump(void)
                      (unsigned)auto_st.best_score,
                      (unsigned)auto_st.last_score,
                      auto_st.cancel_pending ? 1U : 0U);
+    /* What the strip and the graticule do with the properties (chN.meas,
+     * view.meashide, view.truescale), and the key timing: the read-only
+     * lines of the retired `fpga scope prm`, `fpga scope graticule`, `keys`. */
+    prm_print_status();
+    {
+        const scope_state_t *ss = scope_state_get();
+        usb_debug_printf("graticule: %s\r\n",
+                         ss->true_scale ? "TRUE SCALE (grid == volts/div)"
+                                        : "autofit (grid == position only)");
+        for (uint8_t ch = 1u; ch <= 2u; ch++) {
+            const uint8_t r = (ch == 1u) ? ss->ch1.vdiv_idx : ss->ch2.vdiv_idx;
+            char l[12];
+            scope_cal_range_label(ch, r, l, sizeof(l));
+            usb_debug_printf("  CH%u rng %u -> %s/div %s\r\n", (unsigned)ch, (unsigned)r, l,
+                             scope_cal_true_scale_ok(ch, r) ? "" : "(no cal -> autofit)");
+        }
+    }
+    usb_debug_printf("long press %u ms (%u ticks), short on release for the long-capable keys\r\n",
+                     (unsigned)(KEY_LONG_TICKS * 2u), (unsigned)KEY_LONG_TICKS);
 }
 
 static void cmd_uptime(void)
@@ -3854,8 +3731,9 @@ static bool spi3_shell_claim(void)
  * Bench check for parity G1/G3/G4: every field the stock SWD session read
  * (TMR7 DIV/PR/CTRL1, DAC CTRL both halves, DMA2 ch4, flex select, PA5
  * mode) printed next to what we asked for, so a GEN-lead -> CH2 capture
- * can be tied to the programming. Arguments are applied left to right:
- *   siggen wave 3 amp 15 freq 2000 on */
+ * can be tied to the programming. The settings are the gen.* properties
+ * (set gen.wave=3 gen.amp=1.5 gen.freq=2000 gen.out=on); `siggen dump`
+ * adds the cycle in the DMA buffer. */
 static void siggen_print_state(void)
 {
     const siggen_config_t *c = siggen_get_config();
@@ -3917,7 +3795,20 @@ static void siggen_print_state(void)
 
 static void cmd_siggen(const char *args)
 {
-    shell_alias_siggen(args, alias_env());
+    while (*args == ' ') args++;
+    if (strcmp(args, "dump") == 0) {
+        const uint16_t *cy = siggen_get_cycle();
+        for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i += 10)
+            usb_debug_printf("  %3u: %4u %4u %4u %4u %4u %4u %4u %4u %4u %4u\r\n", i,
+                             cy[i], cy[i + 1], cy[i + 2], cy[i + 3], cy[i + 4],
+                             cy[i + 5], cy[i + 6], cy[i + 7], cy[i + 8], cy[i + 9]);
+    } else if (*args) {
+        usb_send_str("usage: siggen [dump]  (no argument: state and registers)\r\n"
+                     "  the settings are properties: set gen.wave|gen.freq|gen.amp|gen.duty|gen.out|gen.bootout"
+                     " (gen.amp in volts: 1.5)\r\n");
+        return;
+    }
+    siggen_print_state();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -4109,26 +4000,6 @@ static void cmd_fwapply(void)
     }
 }
 
-/* `btn <name> [n|long]` — inject a button press into the input queue, downstream
- * of the TMR3 key scan, so a bench script can drive the UI exactly as the
- * buttons do. `long` posts the long-press event (the id with BTN_LONG_FLAG)
- * for the keys that have one (ui/key_model.h KEY_LONG_MASK); for the others
- * the queue takes it and the handler ignores it. POWER is refused: its
- * handlers shut the device down or reset into the factory IAP bootloader. */
-static void cmd_btn(const char *args)
-{
-    ui_shell_btn(args);    /* alias of `ui press/long` (src/model/ui_shell.c), the old lines */
-}
-
-/* `keys` — the key model's state, so a long-press or MOVE-cycle test over the
- * shell has something to read back: the mode a long press switched to, the
- * stage the arrows are in, which channel they adjust, the enables and routing. */
-static void cmd_keys(const char *args)
-{
-    (void)args;
-    ui_shell_keys();       /* the old four lines (src/model/ui_shell.c); `ui screen` is the new one */
-}
-
 /* ── `mask` — waveform pass/fail (docs/specs/scope/mask-pass-fail.md) ──────────
  *
  * Every mutation is a request applied by the acquisition task (scope_mask.h),
@@ -4250,10 +4121,6 @@ static void cmd_mask(const char *args)
         mask_print_status();
         return;
     }
-    if (strncmp(args, "tol", 3) == 0) {
-        shell_alias_mask_tol(args + 3, alias_env());    /* mask.tolv, mask.tolh */
-        return;
-    }
     if (strncmp(args, "clear", 5) == 0) {
         if (mask_post_wait(SCOPE_MASK_REQ_CLEAR, 0, 0, 0)) usb_send_str("mask cleared\r\n");
         return;
@@ -4264,10 +4131,6 @@ static void cmd_mask(const char *args)
     }
     if (strncmp(args, "run", 3) == 0) {
         if (mask_post_wait(SCOPE_MASK_REQ_RELEASE, 0, 0, 0)) usb_send_str("hold released\r\n");
-        return;
-    }
-    if (strncmp(args, "stop", 4) == 0) {
-        shell_alias_mask_stop(args + 4, alias_env());   /* mask.stopfail */
         return;
     }
     if (strncmp(args, "dump", 4) == 0) {
@@ -4287,78 +4150,9 @@ static void cmd_mask(const char *args)
         usb_send_str("end\r\n");
         return;
     }
-    usb_send_str("usage: mask [status|teach [n] [ch1|ch2|both]|tol <v> [h]|clear|reset|run|stop on|off|dump]\r\n");
-}
-
-/* ── The alias environment (shell_alias.h) ──────────────────────────────
- * Everything here reads or prints; the changes themselves go to the
- * executor from shell_alias.c. */
-static void sa_emit(const char *text) { usb_send_str(text); }
-static void sa_sleep_ms(uint32_t ms)  { vTaskDelay(pdMS_TO_TICKS(ms)); }
-
-static void sa_status(shell_alias_status_t which, int arg)
-{
-    switch (which) {
-    case SA_ST_TRIGGER:    print_trigger_status(); break;
-    case SA_ST_TIMEBASE:   timebase_print_status(arg != 0); break;
-    case SA_ST_ROLL:       roll_print_status(); break;
-    case SA_ST_INTERLEAVE: interleave_print_status(); break;
-    case SA_ST_SKEW:       interleave_skew_print_status(); break;
-    case SA_ST_VPOS:
-        if (!scope_vpos_active())
-            usb_send_str("(cal page not in use: position stored, offset reference unchanged)\r\n");
-        print_vpos_channel((uint8_t)arg);
-        break;
-    case SA_ST_PRM:        prm_print_status(); break;
-    case SA_ST_SIGGEN:
-        /* The siggen screen repaints from the executor's redraw request. */
-        siggen_print_state();
-        break;
-    case SA_ST_MASK:       mask_print_status(); break;
-    case SA_ST_METER_FUNC_BEGIN: meter_switch_begin(); break;
-    case SA_ST_METER_FUNC: meter_func_print((uint8_t)arg); break;
-    default: break;
-    }
-}
-
-static int     sa_trig_x_actual(void)  { return (int)scope_ui_trig_x_actual(); }
-static uint8_t sa_trig_anchor(void)    { return (uint8_t)scope_ui_trig_anchor(); }
-static bool    sa_edge_filter(void)    { return fpga_acq_edge_filter_get(); }
-static uint8_t sa_channel_mask(void)   { return (uint8_t)fpga.channel_mask; }
-static uint8_t sa_trig_code(void)      { return (uint8_t)fpga_acq_trig_code_get(); }
-static uint8_t sa_trig_reconcile(void) { return (uint8_t)fpga_trigger_reconcile_code(); }
-static uint8_t sa_trig_src_code(void)  { return (uint8_t)fpga_acq_trig_src_code_get(); }
-static const char *sa_startup_name(uint8_t m) { return startup_mode_name((startup_mode_t)m); }
-
-/* Ask the input task (the one writer of the settings record) to flush and
- * say what REALLY happened; `mode startup` used to promise "saved within
- * 100 ms" whether or not the write took place. */
-static bool sa_settings_flush(uint32_t timeout_ms, const char **outcome)
-{
-    settings_flush_outcome_t o;
-    if (!input_settings_flush_sync(timeout_ms, &o)) return false;
-    *outcome = settings_flush_outcome_text(o);
-    return true;
-}
-
-static void sa_meter_switch_wait(void) { (void)meter_switch_wait(); }
-static void sa_roll_code_override(int code) { fpga_roll_code_override_set(code); }
-
-static const shell_alias_env_t *alias_env(void)
-{
-    static const shell_alias_env_t env = {
-        .emit = sa_emit, .sleep_ms = sa_sleep_ms, .status = sa_status,
-        .trig_x_actual = sa_trig_x_actual, .trig_anchor = sa_trig_anchor,
-        .edge_filter = sa_edge_filter, .channel_mask = sa_channel_mask,
-        .trig_code = sa_trig_code, .trig_reconcile_code = sa_trig_reconcile,
-        .trig_src_code = sa_trig_src_code,
-        .startup_name = sa_startup_name, .meter_func_name = meter_submode_name,
-        .meter_layout_name = meter_layout_name,
-        .settings_flush = sa_settings_flush,
-        .meter_switch_begin = meter_switch_begin, .meter_switch_wait = sa_meter_switch_wait,
-        .roll_code_override = sa_roll_code_override,
-    };
-    return &env;
+    usb_send_str("usage: mask [status|teach [n] [ch1|ch2|both]|clear|reset|run|dump]\r\n"
+                 "  the tolerance and stop-on-fail are properties: set mask.tolv=<counts> mask.tolh=<samples>; "
+                 "set mask.stopfail on|off\r\n");
 }
 
 /* ── `tasks`: every FreeRTOS task's stack and the heap ──────────────────
@@ -4442,7 +4236,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_V("features", cmd_features, SC_EXACT,
           "features                        Features of this build: name, on/off, HELLO bit\r\n"),
     CMD_V("status", cmd_status, SC_EXACT,
-          "status                          FPGA & system status\r\n"),
+          "status                          FPGA & system status, the timebase in force\r\n"),
     CMD_A("fwload", cmd_fwload, SC_NEEDARGS,
           "fwload <size> <crc32hex> [a|b]  Stage an image into W25Q cache slot a/b\r\n"
           "  then stream exactly <size> raw bytes (scripts/cdc_flash.py does both)\r\n"),
@@ -4453,10 +4247,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fwswap", cmd_fwswap, SC_NEEDARGS,
           "fwswap a|b                      Install a cached image (no transfer needed)\r\n"),
     CMD_A("siggen", cmd_siggen, 0,
-          "siggen [wave N] [freq HZ] [amp DV] [duty PCT] [on|off] [boot on|off] [dump]\r\n"
-          "  Signal generator (DAC2/PA5): wave 0..12, freq 0..50000 (0 = off),\r\n"
-          "  amp 0..30 = 0.0..3.0 V, duty 0..100; prints TMR7/DAC/DMA2 ch4 state.\r\n"
-          "  boot on|off = restore the output at power-on (default off)\r\n"),
+          "siggen [dump]                   Signal generator state: gen.*, TMR7/DAC/DMA2 ch4; dump = the cycle\r\n"),
     CMD_V("flash jedec", cmd_flash_jedec, SC_EXACT,
           "flash jedec                     Read external W25Q128 JEDEC ID\r\n"),
     CMD_A("flash read", cmd_flash_read, SC_NEEDARGS,
@@ -4478,8 +4269,6 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("cal page", cmd_cal_page, 0,
           "cal page [on|off|reload]        Stock cal page in use: table, bank, substitutions, DAC codes\r\n"
           "cal page calc <1|2> <b> <r> <p> One offset code from the page: stock's vs ours\r\n"),
-    CMD_A("cal pos", cmd_cal_pos, SC_NEEDARGS,
-          "cal pos <1|2> [-100..100]       Vertical position (stock units); re-applies the offset DAC\r\n"),
     CMD_A("cal base", cmd_cal_base, 0,
           "cal base [clear]                Baseline-correction deltas held in RAM (long AUTO)\r\n"),
     CMD_A("cal user", cmd_cal_user, 0,
@@ -4513,18 +4302,10 @@ static const shell_cmd_t shell_cmds[] = {
           "screen shadow page [y]          Clear full-screen shadow capture\r\n"),
     CMD_A("fpga scope range", cmd_fpga_scope_range, SC_NEEDARGS,
           "fpga scope range <0-9> <1|2|both>  Coarse frontend range; channel is MANDATORY\r\n"),
-    CMD_A("fpga scope vdiv", cmd_fpga_scope_vdiv, 0,
-          "fpga scope vdiv <1|2> <0-9>     Set volts/div range: display AND relays together\r\n"),
     CMD_A("fpga scope measure", cmd_fpga_scope_measure, 0,
           "fpga scope measure [reps]       Badge values raw (uV/permille/mHz) for bench validation\r\n"),
-    CMD_A("fpga scope prm", cmd_fpga_scope_prm, 0,
-          "fpga scope prm [ch1|ch2] [mask|all|default|none|toggle N|hide|show]  Measurement selection per channel (12)\r\n"),
     CMD_A("fpga scope cursor", cmd_fpga_scope_cursor, 0,
           "fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n"),
-    CMD_A("fpga scope graticule", cmd_fpga_scope_graticule, 0,
-          "fpga scope graticule [auto|true|toggle]  Trace at true volts/div vs autofit-to-band\r\n"),
-    CMD_A("fpga scope softtrig", cmd_fpga_scope_softtrig, 0,
-          "fpga scope softtrig [on|off|toggle]      Lock trace to trigger crossing vs free-run\r\n"),
     CMD_V("settings", cmd_settings, SC_EXACT,
           "settings                        Persistence status: bound, load result, writes, failures\r\n"),
     /* The property model's raw route (src/model/model_shell.c): the same
@@ -4538,14 +4319,6 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
           "describe <prop>                 Range/labels, default, unit, saved where, owner\r\n"),
     STREAM_SHELL_ROWS       /* `stream`: from src/stream/stream.h, empty when the feature is off */
-    CMD_A("fpga scope hpos", cmd_fpga_scope_hpos, 0,
-          "fpga scope hpos [8..312]        Screen column of the trigger point (default 160)\r\n"),
-    CMD_A("fpga scope edge", cmd_fpga_scope_edge, 0,
-          "fpga scope edge [rising|falling] Trigger edge (display soft trigger + MCU edge filter)\r\n"),
-    CMD_A("btn", cmd_btn, SC_NEEDARGS,
-          "btn <name> [n|long]             Inject a button press (not power) into the UI; long = the long-press event\r\n"),
-    CMD_A("keys", cmd_keys, 0,
-          "keys                            Key model: mode, arrow stage, active channel, enables, long-press time\r\n"),
     /* The UI route (src/model/ui_shell.c): exact key replay into the key
      * queue, each press waited for until the input task has handled it. */
     CMD_A("ui press", cmd_ui_press, SC_NEEDARGS,
@@ -4559,57 +4332,35 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("mask", cmd_mask, 0,
           "mask [status]                   Waveform pass/fail: state, counts, last verdict\r\n"
           "mask teach [n] [ch1|ch2|both]   Teach from the next n good records (default 8)\r\n"
-          "mask tol <v> [h]                Tolerance: v ADC counts, h samples 0..16 (default 8 2)\r\n"
           "mask clear|reset|run            Drop mask | zero counts | release a fail hold\r\n"
-          "mask stop on|off                Hold the acquisition on a failed record\r\n"
           "mask dump                       Bounds per column (bench scripts)\r\n"),
     CMD_A("fpga edgefilter", cmd_fpga_edgefilter, 0,
           "fpga edgefilter [on|off]        MCU trigger edge filter: keep Rising/Falling records (default on)\r\n"),
     CMD_A("fpga cfgsettle", cmd_fpga_cfgsettle, 0,
           "fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n"),
-    CMD_A("fpga scope ch", cmd_fpga_scope_ch, SC_NEEDARGS,
-          "fpga scope ch <1|2> [on|off]    Channel enable; CH2 off = mask 1 (250 MS/s at tb <= 3)\r\n"),
-    CMD_A("fpga scope probe", cmd_fpga_scope_probe, SC_NEEDARGS,
-          "fpga scope probe <1|2> [1x|10x] Channel probe setting (SELECT no longer cycles it)\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
-          "fpga interleave [on|off|corr g o|cal [piecewise]|tone]  Single-channel merge; B corr gain x1e4, offset x100; cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
-          "fpga interleave skew [measure|set <ppm>|off]  B timing skew (ppm of a period from 0.5); measure needs a 5-50 MHz tone\r\n"),
+          "fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
+          "fpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
-    CMD_A("fpga scope trigmode", cmd_fpga_scope_trigmode, 0,
-          "fpga scope trigmode [auto|normal|single]  Acq wait policy (EXP-43)\r\n"),
     CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,
-          "fpga scope trigger              Trigger settings, reg 0x06/0x08, status, record kind (C3)\r\n"),
-    CMD_A("fpga scope source", cmd_fpga_scope_source, 0,
-          "fpga scope source [ch1|ch2]     Trigger source -> reg 0x06 (C3)\r\n"),
-    CMD_A("fpga scope single", cmd_fpga_scope_single, 0,
-          "fpga scope single               SINGLE: arm the one-shot (OK after a capture does the same)\r\n"),
-    CMD_A("fpga scope level", cmd_fpga_scope_level, 0,
-          "fpga scope level [-100..100]    Digital trigger level -> reg 0x08 code (EXP-41)\r\n"),
-    CMD_A("fpga scope timebase", cmd_fpga_scope_timebase, 0,
-          "fpga scope timebase [code]      Set timebase in BOTH display state and reg 0x01 (hex)\r\n"),
+          "fpga scope trigger              Trigger: trig.* in force, reg 0x06/0x08, status, record kind, where the window landed\r\n"),
     CMD_A("fpga roll", cmd_fpga_roll, 0,
-          "fpga roll [off|0-8|code <hex>|code stock]  Roll mode (C11): step 0-8 = 50ms..20s/div, status\r\n"),
+          "fpga roll [code <hex>|code stock]  Roll (tb.roll, tb.rollstep) status: fifo, op03, newest point; code = entry byte\r\n"),
     CMD_A("fpga scope center", cmd_fpga_scope_center, 0,
           "fpga scope center [ch2] [0-9]   Auto-center offset ref per range (CH1/DAC1 default); all if omitted\r\n"),
-    CMD_A("meter func", cmd_meter_func, SC_NEEDARGS,
-          "meter func <0-11>               Change function (11 = Auto, word 0x14) (one word, no SoC restart) and time it\r\n"),
     CMD_V("meter state", cmd_meter_state, SC_EXACT,
           "meter state                     Decoded frame, range, status text, link, beep, cal guard\r\n"),
     CMD_A("meter relays", cmd_meter_relays, 0,
           "meter relays [on|off]           Meter entry moves the scope's range relays (default off)\r\n"),
-    CMD_A("meter degf", cmd_meter_degf, 0,
-          "meter degf [on|off]             Temperature in degF (stock MOVE key in Temp)\r\n"),
     CMD_A("persist", cmd_persist, 0,
           "persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n"),
     CMD_A("batt", cmd_batt, 0,
           "batt                            Battery gauge: raw/resting mV, percent, external power\r\n"),
-    CMD_A("mode", cmd_mode, 0,
-          "mode meter [submode] [layout]   Switch UI + FPGA to DMM frontend ('mode 1' = same)\r\n" "mode scope                      Switch UI + FPGA to scope frontend ('mode 0' = same)\r\n" "mode startup [scope|meter]      Get/set Settings > Startup on Boot\r\n"),
     CMD_A("meter auto", cmd_meter_auto_async, 0,
           "meter auto [start|status|cancel] Async DMM function auto-select\r\n"),
     CMD_V("ui dump", cmd_ui_dump, SC_EXACT,
-          "ui dump                         Show current UI mode/redraw state\r\n"),
+          "ui dump                         UI state: mode, redraws, meter page, measurement strip, graticule, key timing\r\n"),
     CMD_V("reboot bootloader", cmd_reboot_bootloader, SC_EXACT,
           "reboot bootloader               Reboot into USB HID updater\r\n"),
     CMD_V("uptime", cmd_uptime, SC_EXACT,

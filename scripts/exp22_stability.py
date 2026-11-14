@@ -32,7 +32,7 @@ Cabling: JDS6600 CH1 -> scope CH1, JDS6600 CH2 -> scope CH2 (two cables).
 TRIGGER / ACQUISITION BLOCK (folded in 2026-09-22 from exp54_poll_acceptance.py,
 trigger-modes spec S3, acquisition-record-integrity S3): after the display
 matrix the same run drives the acquisition loop through its own entry points
-(`fpga scope trigmode`, `fpga scope level`, `fpga scope timebase`) and checks
+(the properties trig.mode, trig.level and tb.code) and checks
 
   5. NORMAL ADVANCES  at 0x0E/0x10/0x11/0x12 on a sine, and on a 4 Hz square
                       at 0x10 and a 1 Hz square at 0x12 (EXP-53's open defect,
@@ -451,13 +451,13 @@ def apply_trigger_scenario(sc, sg, scen, state):
         state["mode"] = "auto"
         time.sleep(0.5)
     if scen["hpos"] != state.get("hpos"):
-        sc.cmd("fpga scope hpos %d" % scen["hpos"])
+        sc.cmd("set trig.x %d" % scen["hpos"])
         state["hpos"] = scen["hpos"]
     if scen["unrotate"] != state.get("unrotate"):
         sc.cmd("fpga unrotate %s" % ("on" if scen["unrotate"] else "off"))
         state["unrotate"] = scen["unrotate"]
     if scen["edge"] != state.get("edge"):
-        sc.cmd("fpga scope edge %s" % scen["edge"])
+        sc.cmd("set trig.edge %s" % scen["edge"])
         state["edge"] = scen["edge"]
     if scen["edgefilter"] != state.get("edgefilter"):
         sc.cmd("fpga edgefilter %s" % ("on" if scen["edgefilter"] else "off"))
@@ -663,7 +663,7 @@ def apply_scenario(sc, sg, scen, state):
         sc.timebase(scen["tb"])
         state["tb"] = scen["tb"]
     if scen["softtrig"] != state.get("softtrig"):
-        sc.cmd("fpga scope softtrig %s" % ("on" if scen["softtrig"] else "off"))
+        sc.cmd("set trig.soft %s" % ("on" if scen["softtrig"] else "off"))
         state["softtrig"] = scen["softtrig"]
     for ch, key in ((1, "a1"), (2, "a2")):
         if (scen["wave"], ch) != state.get(("wave", ch)):
@@ -904,7 +904,7 @@ def main():
     sc.vdiv(1, 6)
     sc.vdiv(2, 6)
     sc.timebase(0x10)
-    sc.cmd("fpga scope softtrig on")
+    sc.cmd("set trig.soft on")
 
     sg.waveform("sine", 1); sg.waveform("sine", 2)
     sg.freq(500, 1);        sg.freq(500, 2)
@@ -1000,8 +1000,8 @@ def main():
         # with un-rotation off.
         sc.cmd("fpga unrotate on")
         sc.cmd("fpga edgefilter on")
-        sc.cmd("fpga scope edge rising")
-        sc.cmd("fpga scope hpos 160")
+        sc.cmd("set trig.edge rising")
+        sc.cmd("set trig.x 160")
         sc.trigger_mode("auto")
         sc.trigger_level(0)
         sc.timebase(0x10)

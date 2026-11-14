@@ -28,9 +28,6 @@
  *   TIMEOUT at token 4 (MENU): input task busy (gallery/countdown/selfcal?); 3 of 9 events handled
  *   BUSY at token 2 (UP): key queue full; 1 of 5 events handled
  *
- * `btn` and `keys` are aliases kept for old bench scripts: they print
- * exactly the lines they printed before (ui_shell_btn / ui_shell_keys).
- *
  * The token parser and the one-press wait (ui_press_one) are pure
  * (tests/test_ui_shell.c, make test-ui-shell); the rest is firmware only.
  */
@@ -41,7 +38,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define UI_SEQ_MAX_REPEAT     50u     /* KEY*n and `ui press KEY n`: 1..50, as `btn`      */
+#define UI_SEQ_MAX_REPEAT     50u     /* KEY*n and `ui press KEY n`: 1..50                */
 #define UI_SEQ_MAX_WAIT_MS    5000u   /* wait:<ms>: 0..5000; longer settles go host-side */
 /* One press, whole: a long MENU (mode switch) flushes the settings to the
  * W25Q (plan 2.8: 2 s per press). The budget covers the wait for an earlier
@@ -112,12 +109,10 @@ typedef enum { UI_PRESS_DONE = 0, UI_PRESS_FULL, UI_PRESS_TIMEOUT, UI_PRESS_STAL
  * this one is not sent (STALE). */
 ui_press_t  ui_press_one(const ui_press_port_t *port, uint32_t *target, uint8_t id);
 
-/* usb_debug.c's rows and the two legacy handler bodies (firmware only). */
+/* usb_debug.c's rows (firmware only). */
 void cmd_ui_press(const char *args);
 void cmd_ui_long(const char *args);
 void cmd_ui_seq(const char *args);
 void cmd_ui_screen(void);
-void ui_shell_btn(const char *args);     /* `btn <name> [n|long]`, old output */
-void ui_shell_keys(void);                /* `keys`, old output                */
 
 #endif /* UI_SHELL_H */

@@ -93,6 +93,11 @@ class GateError(RuntimeError):
     pass
 
 
+# A meter function change, worst case, plus a margin: `set meter.func=.. sys.mode=meter`
+# answers when the change is posted (the retired `mode meter` waited for the switch).
+METER_SWITCH_SECONDS = 5.0
+
+
 def run(cmd: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
         cmd,
@@ -1052,11 +1057,11 @@ def verify_live_validation_safety_contract() -> dict[str, Any]:
         raise GateError("could not locate run_live_validation body")
     body = match.group("body")
 
-    allowed_mode_commands = ["mode meter 0 0", "mode meter 1 0", "mode meter 0 0"]
-    mode_commands = re.findall(r'"(mode meter \d+ 0)"', body)
+    allowed_mode_commands = ["set meter.func=0 meter.layout=0 sys.mode=meter", "set meter.func=1 meter.layout=0 sys.mode=meter", "set meter.func=0 meter.layout=0 sys.mode=meter"]
+    mode_commands = re.findall(r'"(set meter.func=\d+ meter.layout=0 sys.mode=meter)"', body)
     forbidden_commands = [
         command for command in mode_commands
-        if command not in {"mode meter 0 0", "mode meter 1 0"}
+        if command not in {"set meter.func=0 meter.layout=0 sys.mode=meter", "set meter.func=1 meter.layout=0 sys.mode=meter"}
     ]
     bad_sequence = mode_commands != allowed_mode_commands
     if forbidden_commands or bad_sequence:
@@ -1207,9 +1212,9 @@ def run_live_validation(args: argparse.Namespace, outdir: Path) -> dict[str, Any
     ])
     result["screen_capture"] = {"path": str(screen_path), "stdout": screen_stdout.strip()}
 
-    live_debug(["command", "mode meter 0 0", "--timeout", str(args.timeout),
+    live_debug(["command", "set meter.func=0 meter.layout=0 sys.mode=meter", "--timeout", str(args.timeout),
                 *([] if args.port is None else ["--port", args.port])])
-    time.sleep(args.settle_seconds)
+    time.sleep(METER_SWITCH_SECONDS + args.settle_seconds)   # `set` answers when posted, not when switched
     dcv_text = live_debug([
         "meter-dump", "--count", "5", "--interval", "0.4",
         "--timeout", str(args.timeout),
@@ -1222,9 +1227,9 @@ def run_live_validation(args: argparse.Namespace, outdir: Path) -> dict[str, Any
     except GateError as exc:
         errors.append(str(exc))
 
-    live_debug(["command", "mode meter 1 0", "--timeout", str(args.timeout),
+    live_debug(["command", "set meter.func=1 meter.layout=0 sys.mode=meter", "--timeout", str(args.timeout),
                 *([] if args.port is None else ["--port", args.port])])
-    time.sleep(args.settle_seconds)
+    time.sleep(METER_SWITCH_SECONDS + args.settle_seconds)   # `set` answers when posted, not when switched
     acv_text = live_debug([
         "meter-dump", "--count", "5", "--interval", "0.4",
         "--timeout", str(args.timeout),
@@ -1237,7 +1242,7 @@ def run_live_validation(args: argparse.Namespace, outdir: Path) -> dict[str, Any
     except GateError as exc:
         errors.append(str(exc))
 
-    live_debug(["command", "mode meter 0 0", "--timeout", str(args.timeout),
+    live_debug(["command", "set meter.func=0 meter.layout=0 sys.mode=meter", "--timeout", str(args.timeout),
                 *([] if args.port is None else ["--port", args.port])])
 
     result["passed"] = not errors

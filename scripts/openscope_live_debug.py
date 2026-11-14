@@ -546,6 +546,8 @@ def parse_meter_trace_text(text: str) -> dict[str, object]:
     return result
 
 
+# A meter function change, worst case, plus a margin (the firmware bounds it at 5 s).
+METER_SWITCH_SECONDS = 5.0
 SHORTED_PROBE_SUBMODES = tuple(range(11))
 METER_SUBMODE_NAMES = {
     0: "DC Voltage",
@@ -657,9 +659,12 @@ def run_shorted_probes_sweep(
     with PosixSerial(port, baud, timeout) as serial:
         serial.drain()
         for submode in SHORTED_PROBE_SUBMODES:
-            mode_command = f"mode meter {submode} 0"
+            mode_command = f"set meter.func={submode} meter.layout=0 sys.mode=meter"
             mode_response = run_command_on_serial(serial, mode_command, timeout)
             serial.drain()
+            # `set` answers when the change is posted; the retired `mode meter`
+            # answered when the meter chip had switched (1.4 s, up to 4.5 s).
+            time.sleep(METER_SWITCH_SECONDS)
             time.sleep(settle_ms / 1000.0)
             trace_samples = []
             dump_samples = []
@@ -1036,7 +1041,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     command_parser = subparsers.add_parser("command", help="send one debug-shell command and print the response")
     add_common_serial_args(command_parser)
-    command_parser.add_argument("command", help='debug-shell command, for example "status", "meter wave", or "mode meter 1 0"')
+    command_parser.add_argument("command", help='debug-shell command, for example "status", "meter wave", or "set meter.func=1 meter.layout=0 sys.mode=meter"')
 
     poll_parser = subparsers.add_parser("poll", help="send one command repeatedly")
     add_common_serial_args(poll_parser)

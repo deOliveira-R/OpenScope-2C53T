@@ -17,12 +17,12 @@ def body_max(v, fs, f):
     return max(np.sqrt(np.mean(r[i:i+32]**2)) for i in range(128, 1024, 32))
 rates = load_rates(); sc = Scope("/dev/ttyACM0")
 print("EXP-50c device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
-sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope level 0"); sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0")
+sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.level 0"); sc.cmd("set trig.mode auto"); sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0")
 N = 8
 for F in (201.2, 50.0):
     jds = JDS6600("/dev/ttyUSB0"); jds.waveform("sine", 1); jds.freq(F, 1); jds.amp(3.0, 1); jds.offset(0.0, 1); jds.output(True, False); jds.close()
     for tb in (0x12, 0x11, 0x10):
-        sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0); time.sleep(0.5)
+        sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0); time.sleep(0.5)
         fill = 1024 / rates[tb] * 1000
         # control first: the arming-read path (single read at fill+230)
         sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge %d" % int(fill + 230)); time.sleep(1.5)
@@ -34,5 +34,5 @@ for F in (201.2, 50.0):
             mx = [body_max(np.asarray(grab_frame(sc)["ch1"], float), rates[tb], F) for _ in range(N)]
             print("drive %5.1f Hz tb 0x%02X fill %4.0f ms  hold fill+%-4d       body %s  median %.0f  >2x ctl: %d/%d" % (F, tb, fill, m, " ".join("%3.0f" % x for x in mx), np.median(mx), sum(x > 2*np.median(ctl) for x in mx), N))
         sc.cmd("fpga holdread 0")
-sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0"); sc.cmd("fpga scope timebase 10", timeout=6.0); sc.close()
+sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); sc.close()
 print("done")

@@ -364,8 +364,8 @@ static void op_meter_layout(uint8_t layout) { CTX(); meter_ui_layout_changed(lay
  * enter_mode: the mode's posture, the settings flush, the repaint). The long
  * mode keys reach it through the same setter (legacy_screens.c globals ->
  * lgc_mode_set -> prop_set_local(sys.mode, ORIGIN_KEY)), so a shell set and a
- * long MOVE are one path. The gallery is closed first, as the shell's
- * `mode scope|meter` does, also when the mode is already the one asked for:
+ * long MOVE are one path. The gallery is closed first, also when the mode
+ * is already the one asked for:
  * a mode change hands the screen to the mode. The Oscilloscope Settings page
  * is closed by enter_mode itself. */
 static bool op_mode(uint8_t m)

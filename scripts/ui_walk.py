@@ -8,7 +8,7 @@ skipped):
     name | command ; command ; wait <seconds> ; command
 
 Each command is any shell line (`ui seq MENU DOWN*2 RIGHT`, `set ch1.vdiv 6`,
-`mode scope`, ...). `wait <seconds>` sleeps on the host (settles longer than the
+`set sys.mode scope`, ...). `wait <seconds>` sleeps on the host (settles longer than the
 firmware's `wait:<ms>` token allows). After the step's commands the script
 waits --settle seconds, then records:
 

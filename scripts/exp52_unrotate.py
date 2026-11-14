@@ -48,9 +48,9 @@ def main():
     rates = load_rates(); sc = Scope("/dev/ttyACM0")
     print("EXP-52  device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
     print("  " + next((l for l in sc.cmd("fpga unrotate").splitlines() if "unrotate" in l and not l.startswith(">")), "?").strip())
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope level 0"); sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0")
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.level 0"); sc.cmd("set trig.mode auto"); sc.cmd("fpga holdread 0"); sc.cmd("fpga postedge 0")
     for tb in (0x10, 0x0E, 0x12):
-        sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0); fs = rates[tb]
+        sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0); fs = rates[tb]
         for f in ((20.0, 201.2, 1000.0) if tb != 0x12 else (20.0, 201.2)):
             drive(f); time.sleep(1.0)
             for state in ("off", "on"):
@@ -61,7 +61,7 @@ def main():
                     r, us = rot(sc); rots.append(r); lats.append(us)
                 print("  tb 0x%02X fs %6.0f drive %6.1f Hz unrotate %-3s seam %-28s whole-record max %-28s rot %s  lat us %s" % (
                     tb, fs, f, state.upper(), seams, " ".join("%.0f" % x for x in wm), rots, lats))
-    sc.cmd("fpga unrotate on"); sc.cmd("fpga scope timebase 10", timeout=6.0); sc.close()
+    sc.cmd("fpga unrotate on"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); sc.close()
 
 if __name__ == "__main__":
     main()

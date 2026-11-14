@@ -11,7 +11,7 @@
 # rates are taken. Wire a signal into CH1 (a square wave is the usual one).
 
 # ── 1. time view: arrows, RUN/STOP, the MOVE stages, every front key ─────────
-w1_base       | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.vdiv 6 ; set view.cursor off
+w1_base       | persist off ; set sys.mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.vdiv 6 ; set view.cursor off
 w1_up         | ui seq UP
 w1_up_wait    | wait 4
 w1_right      | ui seq RIGHT
@@ -48,7 +48,7 @@ w1_save       | ui seq SAVE ; wait 3
 w1_auto       | ui seq AUTO ; wait 8
 
 # ── 2. cursors, math, persistence, the views, long presses, other modes ──────
-w2_base         | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.vdiv 7 ; set view.mode yt ; set view.cursor off ; set view.math off ; set view.persist off
+w2_base         | persist off ; set sys.mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.vdiv 7 ; set view.mode yt ; set view.cursor off ; set view.math off ; set view.persist off
 w2_cur_time     | set view.cursor time
 w2_cur_time_sel | ui seq SELECT RIGHT RIGHT
 w2_cur_volt     | set view.cursor volt
@@ -77,22 +77,22 @@ w2_select_long  | ui seq long:SELECT ; wait 3
 w2_trigger_long | ui seq long:TRIGGER ; wait 3
 w2_prm_long     | ui seq long:PRM ; wait 3
 w2_save_long    | ui seq long:SAVE ; wait 3
-w2_back_scope   | mode scope ; wait 2
+w2_back_scope   | set sys.mode scope ; wait 2
 w2_home         | ui seq long:MENU
 w2_home_right   | ui seq RIGHT
 w2_home_back    | ui seq long:MENU
-w2_meter        | mode meter 0 ; wait 3
+w2_meter        | set meter.func=0 sys.mode=meter ; wait 6
 w2_meter_prm    | ui seq PRM ; wait 2
-w2_meter_res    | mode meter 6 ; wait 3
+w2_meter_res    | set meter.func=6 sys.mode=meter ; wait 6
 w2_gen          | ui seq long:MENU RIGHT RIGHT OK ; wait 3
 w2_gen_ok       | ui seq OK ; wait 2
 w2_gen_up       | ui seq UP ; wait 2
 w2_settings     | ui seq long:MENU RIGHT RIGHT RIGHT OK ; wait 3
 w2_settings_dn  | ui seq DOWN DOWN ; wait 2
-w2_end_scope    | mode scope ; wait 2
+w2_end_scope    | set sys.mode scope ; wait 2
 
 # ── 3. ranges, a held record, autoset, 50 % centre, the gallery ─────────────
-w3_base_1V      | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.pos 0 ; set ch2.pos 0 ; set ch1.vdiv 6 ; set view.cursor off
+w3_base_1V      | persist off ; set sys.mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.pos 0 ; set ch2.pos 0 ; set ch1.vdiv 6 ; set view.cursor off
 w3_v7_2V        | set ch1.vdiv 7
 w3_v5_500mV     | set ch1.vdiv 5
 w3_stop         | set ch1.vdiv 6 ; wait 2 ; ui seq OK
@@ -106,10 +106,10 @@ w3_auto_after   | set tb.code 8 ; set ch1.vdiv 7 ; fpga scope zero
 w3_ok_long      | ui seq long:OK ; wait 6
 w3_ch2_r6_zero  | set ch2.vdiv 6 ; wait 2 ; fpga scope zero
 w3_gallery      | ui seq long:SAVE ; wait 2
-w3_gallery_out  | mode scope ; wait 2
+w3_gallery_out  | set sys.mode scope ; wait 2
 
 # ── 4. cursor moves, a held persistence, every view, the meter graph ────────
-w4_base         | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.pos 0 ; set ch2.pos 0 ; set ch1.vdiv 6 ; set view.mode yt ; set view.cursor off ; set view.math off ; set view.persist off
+w4_base         | persist off ; set sys.mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.pos 0 ; set ch2.pos 0 ; set ch1.vdiv 6 ; set view.mode yt ; set view.cursor off ; set view.math off ; set view.persist off
 w4_cur_time     | set view.cursor time
 w4_cur_time_mv  | ui seq SELECT*3 RIGHT*3
 w4_cur_volt     | set view.cursor volt
@@ -131,5 +131,5 @@ w4_yt_back      | set view.mode yt
 w4_stop         | ui seq OK
 w4_stop_pos     | ui seq SELECT UP ; wait 2
 w4_run          | ui seq OK
-w4_meter_graph  | mode meter 0 ; wait 2 ; ui seq PRM ; wait 2
-w4_end_scope    | mode scope ; wait 2
+w4_meter_graph  | set meter.func=0 sys.mode=meter ; wait 6 ; ui seq PRM ; wait 2
+w4_end_scope    | set sys.mode scope ; wait 2

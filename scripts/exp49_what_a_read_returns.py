@@ -63,9 +63,9 @@ def main():
     rates = load_rates(); fs = rates[0x10]
     sc = Scope("/dev/ttyACM0")
     print("EXP-49  device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
-    sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope level 0"); sc.cmd("fpga postedge 0"); sc.cmd("fpga autowait 0")
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope timebase 10", timeout=6.0); time.sleep(0.5)
-    sc.cmd("fpga scope trigmode single"); time.sleep(2.5)
+    sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.level 0"); sc.cmd("fpga postedge 0"); sc.cmd("fpga autowait 0")
+    sc.cmd("set trig.mode auto"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); time.sleep(0.5)
+    sc.cmd("set trig.mode single"); time.sleep(2.5)
     g = [grab_frame(sc)["gen"] for _ in range(2)]; print("  parked: gen %s (%s)" % (g, "held" if g[0] == g[1] else "NOT HELD"))
 
     print("\n=== A. 201.2 Hz: reads inside and after the bracket ===")
@@ -90,7 +90,7 @@ def main():
             bracket("reg %02X = %02X" % (reg, val))
             sc.cmd("spi3 seq %02x %02x" % (reg, restore)); time.sleep(0.3)
     bracket("restored baseline")
-    sc.cmd("fpga scope trigmode auto"); sc.close()
+    sc.cmd("set trig.mode auto"); sc.close()
 
 if __name__ == "__main__":
     main()

@@ -18,13 +18,16 @@ usb_debug.c through the preprocessor with that set's flags) and checks:
      `bench` are the rows of `full` plus the rows only benchshell brings plus
      the rows only meterdebug brings, and those three do not overlap;
   d. a command that `full` does not have is not caught by a shorter row that it
-     does have (it must answer "Unknown command", not run something else).
+     does have (it must answer "Unknown command", not run something else);
+  e. the retired state commands (RETIRED below: the property model replaced
+     them, docs/shell_profiles.md has the table) are in no set and no shorter
+     row catches them. `fpga roll`, `fpga interleave`, `siggen` and `mask`
+     stay, without their setting forms (their handlers print a usage line
+     that names the property).
 
-The baseline was made from the table before the split with
-    make -s features-shell-table PROFILE=bench SHELL_TABLE_SRC=<old usb_debug.c>
-and `test_shell_profiles.py --dump`. A deliberate change of a command (a new
-row, a changed help line) is made in the fixture too: --update rewrites it
-from the `bench` profile.
+The baseline is the table of profile `bench`. A deliberate change of a command
+(a new row, a retired one, a changed help line) is made in the fixture too:
+--update rewrites it from the `bench` profile.
 
 Usage: test_shell_profiles.py [--make make] [--update] [--dump < table.i]
 """
@@ -47,15 +50,24 @@ CORE = [n.strip() for n in """
 help | ? | version | features | status | tasks
 fwload | fwstat | fwapply | fwswap | reboot bootloader
 get | set | list | describe | settings | persist
-ui press | ui long | ui seq | ui screen | ui dump | btn | keys | mode
+ui press | ui long | ui seq | ui screen | ui dump
 stream
-cal status | cal backup | cal restore
+cal status | cal backup | cal restore | cal page
 screenshot | screen dump | screen dumpbin | usb | logo
 flash jedec | flash read | flash dump
 siggen | mask | can decode | can stats | can screen
-meter state | meter func | meter relays
+meter state | meter relays | batt | uptime
 fpga scope autoset | fpga scope basecal | fpga scope selfcal | fpga cfgsettle
-fpga scope range | fpga scope vdiv | fpga scope trigger | fpga interleave
+fpga scope range | fpga scope trigger | fpga interleave | fpga roll
+""".replace("\n", "|").split("|") if n.strip()]
+
+# Retired: their state is a property (get / set / describe), their key
+# replay is `ui press`. Each must answer "Unknown command" in every image.
+RETIRED = [n.strip() for n in """
+fpga scope vdiv | fpga scope ch | fpga scope probe | fpga scope timebase
+fpga scope hpos | fpga scope trigmode | fpga scope source | fpga scope single
+fpga scope level | fpga scope edge | fpga scope softtrig | fpga scope graticule
+fpga scope prm | cal pos | meter func | meter degf | mode | btn | keys
 """.replace("\n", "|").split("|") if n.strip()]
 
 
@@ -198,6 +210,15 @@ def main():
             hit = dispatch(full, line)
             check(hit is None, "full: %r would run %r" % (line, hit[0] if hit else None))
         check(dispatch(bench, row[0]) == row or (row[2] & 0x02), "bench: %r does not reach its own row" % row[0])
+
+    # e. the retired commands are gone, in every set
+    for label, rows in (("bench", bench), ("full", full)):
+        names = {r[0] for r in rows}
+        for n in RETIRED:
+            check(n not in names, "%s: retired command %r has a row" % (label, n))
+            for line in (n, n + " 1", n + " startup scope"):
+                hit = dispatch(rows, line)
+                check(hit is None, "%s: retired %r would run %r" % (label, line, hit[0] if hit else None))
 
     helped = lambda rows: sum(1 for r in rows if r[3] != "-")
     print("shell profiles: bench %d rows (%d help entries) = baseline; full %d rows; benchshell %d; meterdebug %d"

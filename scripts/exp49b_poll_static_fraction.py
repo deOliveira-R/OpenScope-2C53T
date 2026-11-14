@@ -24,13 +24,13 @@ def body_max(v, fs, f):
     return max(np.sqrt(np.mean(r[i:i+32]**2)) for i in range(128, 1024, 32))
 jds = JDS6600("/dev/ttyUSB0"); jds.output(False, False); jds.waveform("sine", 1); jds.freq(F, 1); jds.amp(3.0, 1); jds.offset(0.0, 1); jds.output(True, False); jds.close()
 rates = load_rates(); sc = Scope("/dev/ttyACM0")
-sc.cmd("fpga scope vdiv 1 5"); sc.cmd("fpga scope level 0"); sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga postedge 1"); sc.cmd("fpga autowait 25")
+sc.cmd("set ch1.vdiv 5"); sc.cmd("set trig.level 0"); sc.cmd("set trig.mode auto"); sc.cmd("fpga postedge 1"); sc.cmd("fpga autowait 25")
 for tb in (0x10, 0x0D):
-    sc.cmd("fpga scope timebase %02x" % tb, timeout=6.0); time.sleep(1.0)
+    sc.cmd("set tb.code=%d tb.roll=off" % tb, timeout=6.0); time.sleep(1.0)
     e0, o0 = counters(sc); t0 = time.time(); mx = [body_max(np.asarray(grab_frame(sc)["ch1"], float), rates[tb], F) for _ in range(20)]; e1, o1 = counters(sc); dt = time.time() - t0
     print("tb 0x%02X: pairs/s %.1f edges/pair %.2f  static (body<20) %d/20   body: %s" % (tb, (o1-o0)/dt, (e1-e0)/max(o1-o0,1), sum(x < 20 for x in mx), " ".join("%.0f" % x for x in mx)))
 print("--- control: derived defaults at 0x10 (all static expected)")
-sc.cmd("fpga postedge 0"); sc.cmd("fpga autowait 0"); sc.cmd("fpga scope timebase 10", timeout=6.0); time.sleep(1.0)
+sc.cmd("fpga postedge 0"); sc.cmd("fpga autowait 0"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); time.sleep(1.0)
 mx = [body_max(np.asarray(grab_frame(sc)["ch1"], float), rates[0x10], F) for _ in range(8)]
 print("derived: static %d/8   body: %s" % (sum(x < 20 for x in mx), " ".join("%.0f" % x for x in mx)))
 sc.close()

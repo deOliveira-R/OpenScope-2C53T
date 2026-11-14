@@ -96,8 +96,8 @@
 #define USERCAL_TABLE_LEN    (60u * 4u)
 
 /* Plausibility bounds a decoded record must meet. The interleave bounds are
- * the shell's (`fpga interleave corr`: gain 5000..20000 x1e-4, |offset| <=
- * 100); a delta can never exceed the DAC's 12 bits. */
+ * the properties' (il.gain 0.5..2.0, il.offset within +-100 record
+ * counts); a delta can never exceed the DAC's 12 bits. */
 #define USERCAL_IL_GAIN_MIN  500000
 #define USERCAL_IL_GAIN_MAX  2000000
 #define USERCAL_IL_OFF_MAX   1000000

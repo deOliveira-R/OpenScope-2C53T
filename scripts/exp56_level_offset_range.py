@@ -40,40 +40,40 @@ def main():
     import os; os.makedirs(OUT, exist_ok=True)
     sc = Scope("/dev/ttyACM0"); saved = {}
     print("EXP-56 device:", next((l for l in sc.version().splitlines() if l.startswith("Build:")), "?"))
-    sc.cmd("fpga scope trigmode auto")
+    sc.cmd("set trig.mode auto")
     for rng, amp in ((5, 2.0), (7, 8.0)):
         jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "3"); jds.freq(2.0, 1); jds.amp(amp, 1); jds.offset(0.0, 1); jds.output(True, False); jds.close()
         # Centre at the fast code (short fills), one range only: with no range
         # argument `fpga scope center` walks ALL ten ranges, minutes at 0x12
         # (the first attempt at this script hung the shell on exactly that).
-        sc.cmd("fpga scope timebase 10", timeout=6.0)
-        print(sc.cmd("fpga scope vdiv 1 %d" % rng, timeout=6.0).strip().splitlines()[-1][:100])
+        sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
+        print(sc.cmd("set ch1.vdiv %d" % rng, timeout=6.0).strip().splitlines()[-1][:100])
         t = sc.cmd("fpga scope center ch1 %d" % rng, timeout=120.0); print("  center:", [l.strip() for l in t.splitlines() if "DAC" in l or "mean" in l][-2:])
-        sc.cmd("fpga scope timebase 12", timeout=6.0); sc.cmd("fpga scope trigmode auto"); time.sleep(2.0)
+        sc.cmd("set tb.code=18 tb.roll=off", timeout=6.0); sc.cmd("set trig.mode auto"); time.sleep(2.0)
         v = np.asarray(grab_frame(sc)["ch1"], float)
         print("  range %d amp %.1f Vpp: record span %d..%d mean %.1f" % (rng, amp, v.min(), v.max(), v.mean()))
         # Levels from the measured span (first run used fixed codes 128/146/110
         # and every range-5 crossing fell outside 113..204): target crossings at
-        # 30/50/70 % of the span, level code = crossing + 28. `fpga scope level n`
+        # 30/50/70 % of the span, level code = crossing + 28. `set trig.level n`
         # maps n -> code 128 + 1.2 n (readback: +15 -> 146, -15 -> 110).
         for frac in (0.5, 0.3, 0.7):
             target = v.min() + frac * (v.max() - v.min()) + 28
             lvl = int(round((target - 128) / 1.2))
-            r = sc.cmd("fpga scope level %d" % lvl); L = int(re.search(r"code 0x([0-9A-Fa-f]+)", r).group(1), 16)
+            r = sc.cmd("set trig.level %d" % lvl); L = int(re.search(r"code 0x([0-9A-Fa-f]+)", r).group(1), 16)
             if not (v.min() + 5 < L - 28 < v.max() - 5):
                 print("  level %+d code %d: crossing %d outside the span, skipped" % (lvl, L, L - 28)); continue
-            sc.cmd("fpga scope trigmode normal"); time.sleep(3.0)
+            sc.cmd("set trig.mode normal"); time.sleep(3.0)
             rows = []
             for i in range(8):
                 x = np.asarray(grab_frame(sc)["ch1"], float); saved["r%d_L%d_%d" % (rng, L, i)] = x
                 rows.append(trig_sample(x)); time.sleep(1.0)
-            sc.cmd("fpga scope trigmode auto")
+            sc.cmd("set trig.mode auto")
             t512 = [r_[1] for r_ in rows]
             print("  range %d level code %3d  predicted L-28 = %3d | r[512] %s | median offset L - r[512] = %.0f | edges %s" % (
                 rng, L, L - 28, " ".join("%3d" % x for x in t512), L - float(np.median(t512)), "".join(r_[2][0] for r_ in rows)))
     np.savez(OUT + "exp56_records.npz", **saved)
-    sc.cmd("fpga scope level 0"); sc.cmd("fpga scope timebase 10", timeout=6.0); sc.cmd("fpga scope vdiv 1 5", timeout=6.0); sc.cmd("fpga scope center ch1 5", timeout=120.0)
-    sc.cmd("fpga scope trigmode auto"); sc.cmd("fpga scope timebase 10", timeout=6.0)
+    sc.cmd("set trig.level 0"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0); sc.cmd("set ch1.vdiv 5", timeout=6.0); sc.cmd("fpga scope center ch1 5", timeout=120.0)
+    sc.cmd("set trig.mode auto"); sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "0"); jds.freq(1000.0, 1); jds.amp(3.0, 1); jds.offset(0.0, 1); jds.close(); sc.close(); print("done")
 
 if __name__ == "__main__":

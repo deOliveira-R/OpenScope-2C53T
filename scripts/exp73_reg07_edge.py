@@ -56,14 +56,14 @@ def main():
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "3"); jds.freq(2.0, 1); jds.amp(2.0, 1)
     jds.offset(0.5, 1); jds.output(True, False); jds.close()
     sc.scope_range(5, 1)
-    sc.cmd("fpga scope timebase 12", timeout=6.0)
-    r = sc.cmd("fpga scope level 0"); L = int(re.search(r"code 0x([0-9A-Fa-f]+)", r).group(1), 16)
+    sc.cmd("set tb.code=18 tb.roll=off", timeout=6.0)
+    r = sc.cmd("set trig.level 0"); L = int(re.search(r"code 0x([0-9A-Fa-f]+)", r).group(1), 16)
     print("level code %d -> expected crossing in record scale %d" % (L, L - 28))
     print(sc.cmd("fpga edgefilter off").strip().splitlines()[-2:])
-    sc.cmd("fpga scope trigmode normal"); time.sleep(3.0)
+    sc.cmd("set trig.mode normal"); time.sleep(3.0)
     for tag, val in (("control", 0x00), ("v01", 0x01), ("v02", 0x02), ("v03", 0x03), ("vFF", 0xFF), ("recovery", 0x00)):
         sc.cmd("spi3 seq 07 %02x" % val, timeout=6.0)
-        sc.cmd("fpga scope timebase 12", timeout=6.0)        # re-arm write, in case the select latches on arm
+        sc.cmd("set tb.code=18 tb.roll=off", timeout=6.0)        # re-arm write, in case the select latches on arm
         time.sleep(3.0)
         e0 = st(sc); rows = []; hashes = set(); t0 = time.time()
         for i in range(10):
@@ -77,8 +77,8 @@ def main():
             val, tag, (e1 - e0) / dt, len(hashes), ed.count("rise"), ed.count("fall"), ed.count("flat"),
             " ".join("%3d" % x[0] for x in rows if not x[3])), flush=True)
     np.savez(OUT + "exp73_records.npz", **saved)
-    sc.cmd("spi3 seq 07 00", timeout=6.0); sc.cmd("fpga edgefilter on"); sc.cmd("fpga scope trigmode auto")
-    sc.cmd("fpga scope timebase 10", timeout=6.0)
+    sc.cmd("spi3 seq 07 00", timeout=6.0); sc.cmd("fpga edgefilter on"); sc.cmd("set trig.mode auto")
+    sc.cmd("set tb.code=16 tb.roll=off", timeout=6.0)
     jds = JDS6600("/dev/ttyUSB0"); jds.write_raw(21, "0"); jds.freq(1000.0, 1); jds.amp(2.0, 1); jds.offset(0.0, 1)
     jds.output(False, False); jds.close(); sc.close(); print("done")
 

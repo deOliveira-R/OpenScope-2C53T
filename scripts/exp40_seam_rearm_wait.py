@@ -98,7 +98,7 @@ def main():
     print("EXP-40  seam vs re-arm settle")
     print("drive %.1f Hz, timebase 0x%02X = %.1f S/s, capture %.0f ms, settle %d ms, %d records/arm\n"
           % (F_DRIVE, a.tb, fs, 1024.0 / fs * 1000.0, wait_ms, a.n))
-    sc.cmd("fpga scope timebase %02x" % a.tb, timeout=6.0)
+    sc.cmd("set tb.code=%d tb.roll=off" % a.tb, timeout=6.0)
     out = {}
     void = False
     for name, rearm, w in arms:

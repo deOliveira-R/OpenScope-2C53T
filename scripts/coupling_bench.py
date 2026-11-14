@@ -3,8 +3,8 @@
 
 Until 2026-10-03 the CH1/CH2 coupling control was INERT: it cycled a DC/AC/GND
 label while the PD12/PD13 relays stayed DC from init. This drives coupling only
-through `btn ch1` / `btn ch2` (the real button handler, injected below the key
-scan) and measures what the input actually does.
+through `ui press CH1` / `ui press CH2` (the real button handler, injected below
+the key scan) and measures what the input actually does.
 
 Method: JDS sine 201.2 Hz, 0.5 Vpp on both channels, range 5. Step the DC
 offset 0 V -> +1.0 V and take the change in the committed record's mean
@@ -63,7 +63,7 @@ def set_coupling(sc, ch, want):
         c = coupling(sc)[ch]
         if c["label"] == want:
             return c
-        sc.cmd("btn ch%d" % ch)
+        sc.cmd("ui press CH%d" % ch)
         time.sleep(0.3)
     return coupling(sc)[ch]
 
@@ -130,7 +130,7 @@ def main():
     check("DC both", abs(d1) >= 30 and abs(d2) >= 30, "d1 %+.1f d2 %+.1f counts" % (d1, d2))
 
     for ch, other in ((1, 2), (2, 1)):
-        sc.cmd("btn ch%d" % ch)                     # DC -> AC
+        sc.cmd("ui press CH%d" % ch)                     # DC -> AC
         time.sleep(0.3)
         c = coupling(sc)
         labels_seen.add(c[ch]["label"])
@@ -141,7 +141,7 @@ def main():
         check("ch%d AC blocks DC" % ch, abs(dc_) <= 6, "delta %+.1f counts" % dc_)
         check("ch%d isolation" % other, abs(dothr) >= 30,
               "CH%d (DC) delta %+.1f while CH%d is AC" % (other, dothr, ch))
-        sc.cmd("btn ch%d" % ch)                     # AC -> DC (GND must not appear)
+        sc.cmd("ui press CH%d" % ch)                     # AC -> DC (GND must not appear)
         time.sleep(0.3)
         c = coupling(sc)
         labels_seen.add(c[ch]["label"])
@@ -162,13 +162,13 @@ def main():
 
     sg.offset(0.0, 1); sg.amp(2.0, 1); time.sleep(1.0)
     for _ in range(2):                       # CH1 active, coupling back where it was
-        sc.cmd("btn ch1"); time.sleep(0.3)
+        sc.cmd("ui press CH1"); time.sleep(0.3)
     cal0 = sc.cmd("fpga scope cal")
     v_1x, p_1x = vpp1(sc)
-    sc.cmd("fpga scope probe 1 10x"); time.sleep(0.5)   # was `btn select` before SELECT became "switch channel"
+    sc.cmd("set ch1.probe 10x"); time.sleep(0.5)   # was a SELECT press before SELECT became "switch channel"
     v_10x, p_10x = vpp1(sc)
     cal1 = sc.cmd("fpga scope cal")
-    sc.cmd("fpga scope probe 1 1x"); time.sleep(0.5)
+    sc.cmd("set ch1.probe 1x"); time.sleep(0.5)
     v_back, p_back = vpp1(sc)
     ratio = (v_10x / v_1x) if v_1x and v_10x else 0.0
     check("probe x10", p_1x == 1 and p_10x == 10 and abs(ratio - 10.0) <= 0.2,

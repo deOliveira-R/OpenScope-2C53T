@@ -49,7 +49,7 @@ was on screen when the device was last switched off; the default).
 | **MOVE** | **Switch CH1/CH2 adjustment**: which channel UP/DOWN act on (stock's "Switch CH1/CH2 Adjustment", manual p.30; a channel that is off is skipped). Mask stage: stop-on-fail |
 
 The probe (1X/10X) is in Settings -> Oscilloscope Settings, and on the bench
-shell as `fpga scope probe <1|2> [1x|10x]`. A 10X probe shows as `10X` after
+shell as `set ch1.probe 1x|10x` (`ch2.probe`). A 10X probe shows as `10X` after
 the coupling in the bottom bar. Until UI round 1 (2026-11) the short meanings
 of MOVE and SELECT were the other way round from stock's; the long ones were
 already right.
@@ -110,8 +110,9 @@ Until 2026-11-12 TRIGGER opened an inline panel over the plot (parity C3); it
 is gone (it kept the plot on the full clear-and-repaint path, which flashed).
 
 The same three are in Settings -> Oscilloscope Settings (Trigger Mode / Edge /
-Source), and on the shell (`fpga scope trigmode`, `fpga scope edge`,
-`fpga scope source`, `fpga scope trigger` for the status). The trigger level
+Source), and on the shell (`set trig.mode auto|normal|single`,
+`set trig.edge rising|falling`, `set trig.source ch1|ch2`; `get trig.*` reads
+them, `fpga scope trigger` prints the registers and the status). The trigger level
 is the Trigger move stage (SELECT, then UP/DOWN); the dotted line and the arrow
 at the right edge show where the hardware fires, the small triangle at the
 top the column where the trigger point landed.
@@ -122,7 +123,7 @@ CH1.
 
 **SINGLE** is stock's one-shot. Selecting it arms it (`Await Trigger...`, badge
 `Await`); the first triggered record after the arm is captured and held (badge
-`STOP`); **OK** then re-arms it (`fpga scope single` does the same). A record
+`STOP`); **OK** then re-arms it (`set trig.mode single` does the same). A record
 the FPGA was holding from before the arm is dropped, not taken.
 
 The badge at the top right of the trace says what the acquisition did, not
@@ -171,8 +172,10 @@ While the Oscilloscope Settings page is up, the scope's own long presses
 (PRM, CH1, CH2, AUTO, OK) do nothing: they act on the plot, which the page
 hides. Long MENU / MOVE / SELECT / TRIGGER / SAVE keep their meaning.
 
-The shell's `btn <name> long` injects the same event, and `keys` prints the
-mode, the arrow stage, the adjusted channel and the channel enables.
+The shell's `ui long <KEY>` injects the same event (`ui press <KEY> [n]` a short
+press, `ui seq` a sequence), and `ui screen` prints where the UI is: the screen,
+the arrow stage (`focus`), the adjusted channel (`ach`). The channel enables are
+`get ch1.enabled ch2.enabled`.
 
 ### Mask pass/fail (time view)
 

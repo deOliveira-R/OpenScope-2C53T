@@ -537,7 +537,7 @@ int32_t il_offset_get(const prop_desc_t *p) { (void)p; gain_e6_t g; int32_t o; i
  * set never calls it for the value the pair already has (get then set is the
  * identity, a readable profile round-trips), and a change is refused while
  * knots are active rather than reducing the map to a line without a word:
- * `cal user clear` (or `fpga interleave corr`) first. */
+ * `cal user clear` (or `set il.knots 0`) first. */
 static prop_status_t il_corr_apply(gain_e6_t g, int32_t o, prop_note_t *note)
 {
     gain_e6_t g0; int32_t o0;
@@ -571,8 +571,8 @@ prop_status_t il_offset_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
  * piecewise` and saved with `cal user save`; it has no value a set could
  * give it. A set of 0 drops it and keeps the line, through the owner's own
  * call (fpga_interleave_corr_set replaces the whole map), so that il.gain
- * and il.offset can be set afterwards: what the old `fpga interleave corr`
- * did in one step and its alias now asks for by name (ARCH-1 M4). The value
+ * and il.offset can be set afterwards (set il.knots=0 il.gain=.. il.offset=..:
+ * what the retired `fpga interleave corr` did in one step). The value
  * it has is accepted and does nothing; any other is refused. The store is
  * empty on purpose: loading defaults or a
  * profile must never drop a calibration. */
