@@ -119,6 +119,12 @@ _Static_assert(FFT_POOL_LAYOUT_END == SHMEM_NEED_FFT,
 /* Current configuration */
 static fft_config_t current_cfg;
 static bool initialized = false;
+/* The transform itself is usable. False only when the CMSIS init refused
+ * FFT_SIZE (its tables are selected at build time, see the Makefile's
+ * FFT_TABLE_DEFS): then fft_process() does nothing and
+ * fft_get_sample_buf() gives NULL, so every view shows "no FFT" instead of
+ * transforming through an instance that was never set up. */
+static bool engine_ok = false;
 static bool avg_primed = false;              /* Has avg_buf been initialized? */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -390,9 +396,10 @@ void fft_init(const fft_config_t *cfg)
 
     compute_window(cfg->window);
 #ifdef USE_CMSIS_DSP
-    arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE);
+    engine_ok = (arm_rfft_fast_init_f32(&fft_instance, FFT_SIZE) == ARM_MATH_SUCCESS);
 #else
     compute_twiddles();
+    engine_ok = true;
 #endif
 
     /* Initialize averaging and max hold buffers */
@@ -410,6 +417,7 @@ void fft_deinit(void)
     if (!initialized)
         return;
     initialized = false;
+    engine_ok = false;
     shared_mem_release();
     /* Null out pointers so accidental use after deinit is safe */
     fft_buf = 0;
@@ -422,7 +430,12 @@ void fft_deinit(void)
 
 int16_t *fft_get_sample_buf(void)
 {
-    return sample_buf;
+    return engine_ok ? sample_buf : 0;
+}
+
+bool fft_engine_ok(void)
+{
+    return engine_ok;
 }
 
 bool fft_is_initialized(void)
@@ -433,7 +446,7 @@ bool fft_is_initialized(void)
 void fft_process(const int16_t *samples, uint16_t num_samples,
                  fft_result_t *result)
 {
-    if (!initialized)
+    if (!initialized || !engine_ok)
         return;
 
     uint16_t i;

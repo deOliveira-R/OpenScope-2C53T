@@ -3696,7 +3696,10 @@ static void fft_region_compose(uint16_t y_top, uint16_t height)
     float fs = 0.0f;
     const fft_src_t src = sbuf ? fft_prepare_input(sbuf, &nsamp, &fs) : FFT_SRC_NONE;
     if (cfg == NULL || src == FFT_SRC_NONE || nsamp == 0) {
-        ctext_add(&T, 4, y_top + 2, "FFT: waiting", COLOR_GRAY, COLOR_BLACK, false);
+        /* An engine that failed its init says so; never a spectrum from it. */
+        ctext_add(&T, 4, y_top + 2,
+                  (fft_is_initialized() && !fft_engine_ok()) ? "FFT: init failed" : "FFT: waiting",
+                  COLOR_GRAY, COLOR_BLACK, false);
         for (uint16_t x = 0; x < LCD_WIDTH; x++) {
             lcd_set_window(x, y_top, 1, height);
             for (uint16_t y = y_top; y < y_bot; y++) {

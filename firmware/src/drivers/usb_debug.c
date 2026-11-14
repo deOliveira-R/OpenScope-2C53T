@@ -8064,6 +8064,11 @@ static void cmd_ui_dump(void)
                          (SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE <= shared_mem_size())
                              ? "fits" : "DOES NOT FIT",
                          (w < 5u) ? wfs[w] : "?", (unsigned)scope_ui_waterfall_row());
+        /* The transform's own setup (the CMSIS tables are selected at build
+         * time for the one size): a refusal must be seen, not drawn. */
+        usb_debug_printf("fft engine: %s\r\n",
+                         !fft_is_initialized() ? "not initialized (enter the FFT view)"
+                         : fft_engine_ok() ? "ok" : "INIT FAILED (no tables for this FFT size)");
 #endif
     }
     usb_debug_printf("meter_ui draws=%lu full_clears=%lu partial_clears=%lu draw_us=%lu max_draw_us=%lu over_budget=%lu rendered_update=%lu last_full=%u live=%u continuity_flash=%u reading_valid=%u "

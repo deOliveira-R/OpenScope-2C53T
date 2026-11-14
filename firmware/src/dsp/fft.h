@@ -79,8 +79,14 @@ void fft_deinit(void);
 /* Check if FFT engine is initialized (has pool ownership). */
 bool fft_is_initialized(void);
 
+/* The transform is usable: initialized, and the engine's own setup accepted
+ * FFT_SIZE. False after an init that failed (the CMSIS tables for FFT_SIZE
+ * are not in the image): the shell's `ui dump` says so, and the views show
+ * no spectrum. */
+bool fft_engine_ok(void);
+
 /* Get the FFT sample scratch buffer (FFT_SIZE int16s, lives in shared pool).
- * Returns NULL if FFT is not initialized. Fill this, then pass to fft_process(). */
+ * Returns NULL if FFT is not initialized or its engine is not usable. Fill this, then pass to fft_process(). */
 int16_t *fft_get_sample_buf(void);
 
 /* Process int16 ADC samples into frequency domain result. */

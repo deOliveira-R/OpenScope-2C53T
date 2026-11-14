@@ -235,6 +235,24 @@ ifneq ($(findstring FFT,$(FEATURES)),)
     C_SOURCES += $(CMSIS_DSP)/Source/BasicMathFunctions/arm_scale_f32.c
     FFT_INCLUDES = -I$(CMSIS_DSP)/Include
     FFT_DEFS += -DUSE_CMSIS_DSP -DARM_MATH_CM4
+    # Only the tables the one transform size needs. FFT_SIZE is a compile-time
+    # 4096 (src/dsp/fft.h), but arm_rfft_fast_init_f32() picks its tables with
+    # a run-time switch over 32..4096, so without this every size's tables are
+    # linked (about 80 KB that no code path reaches). With ARM_DSP_CONFIG_TABLES
+    # CMSIS builds only what is named:
+    #   ARM_FFT_ALLOW_TABLES                  opens the table blocks at all
+    #                                         (arm_common_tables.c, arm_const_structs.c)
+    #   ARM_TABLE_TWIDDLECOEF_F32_2048   \    the 2048-point complex FFT inside a
+    #   ARM_TABLE_BITREVIDX_FLT_2048     /    4096-point real one (arm_cfft_init_f32.c)
+    #   ARM_TABLE_TWIDDLECOEF_RFFT_F32_4096   the real FFT's own twiddles
+    # which is exactly the guard of the 4096 case in arm_rfft_fast_init_f32.c.
+    # Any other length now makes the init return ARM_MATH_ARGUMENT_ERROR, which
+    # fft_init() checks (fft_engine_ok). Host test on these tables:
+    # make test-fft-cmsis-tables.
+    FFT_TABLE_DEFS = -DARM_DSP_CONFIG_TABLES -DARM_FFT_ALLOW_TABLES \
+                     -DARM_TABLE_TWIDDLECOEF_F32_2048 -DARM_TABLE_BITREVIDX_FLT_2048 \
+                     -DARM_TABLE_TWIDDLECOEF_RFFT_F32_4096
+    FFT_DEFS += $(FFT_TABLE_DEFS)
   endif
 endif
 
@@ -1006,6 +1024,43 @@ $(BUILD_DIR)/test_fft_live: tests/test_fft_live.c src/dsp/fft_live.c src/dsp/fft
 
 test-fft-live: $(BUILD_DIR)/test_fft_live
 	$<
+
+# The firmware's FFT path on the host: src/dsp/fft.c with USE_CMSIS_DSP, the
+# CMSIS-DSP sources the image links and the same table selection
+# (FFT_TABLE_DEFS). The init must succeed for 4096 and a known tone must peak
+# in its bin; a length whose tables are not built must be refused, and
+# fft.c must then report the engine as not usable. (CMSIS's generic C code
+# runs here, not the Cortex-M4 paths; the tables are the same bytes.
+# __GNUC_PYTHON__ is CMSIS-DSP's own switch for a host build: no Cortex
+# compiler header.)
+FFT_CMSIS_HOST_SRCS = CMSIS-DSP/Source/TransformFunctions/arm_rfft_fast_f32.c \
+                      CMSIS-DSP/Source/TransformFunctions/arm_rfft_fast_init_f32.c \
+                      CMSIS-DSP/Source/TransformFunctions/arm_cfft_f32.c \
+                      CMSIS-DSP/Source/TransformFunctions/arm_cfft_init_f32.c \
+                      CMSIS-DSP/Source/TransformFunctions/arm_cfft_radix8_f32.c \
+                      CMSIS-DSP/Source/CommonTables/arm_common_tables.c \
+                      CMSIS-DSP/Source/CommonTables/arm_const_structs.c \
+                      CMSIS-DSP/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c \
+                      CMSIS-DSP/Source/BasicMathFunctions/arm_scale_f32.c
+$(BUILD_DIR)/test_fft_cmsis_tables: tests/test_fft_cmsis_tables.c src/dsp/fft.c src/dsp/fft.h \
+                                    src/dsp/shared_mem.c $(FFT_CMSIS_HOST_SRCS) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -D__GNUC_PYTHON__ -DUSE_CMSIS_DSP $(FFT_TABLE_DEFS) \
+		-Isrc/dsp -ICMSIS-DSP/Include $< src/dsp/fft.c src/dsp/shared_mem.c \
+		$(FFT_CMSIS_HOST_SRCS) -lm -o $@
+
+# The same sources with the real FFT's twiddle table left out: the init must
+# refuse, and fft.c must report it and transform nothing.
+$(BUILD_DIR)/test_fft_cmsis_tables_missing: tests/test_fft_cmsis_tables.c src/dsp/fft.c src/dsp/fft.h \
+                                            src/dsp/shared_mem.c $(FFT_CMSIS_HOST_SRCS) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -D__GNUC_PYTHON__ -DUSE_CMSIS_DSP -DEXPECT_ENGINE_FAIL \
+		$(filter-out -DARM_TABLE_TWIDDLECOEF_RFFT_F32_4096,$(FFT_TABLE_DEFS)) \
+		-Isrc/dsp -ICMSIS-DSP/Include $< src/dsp/fft.c src/dsp/shared_mem.c \
+		$(FFT_CMSIS_HOST_SRCS) -lm -o $@
+
+.PHONY: test-fft-cmsis-tables
+test-fft-cmsis-tables: $(BUILD_DIR)/test_fft_cmsis_tables $(BUILD_DIR)/test_fft_cmsis_tables_missing
+	$(BUILD_DIR)/test_fft_cmsis_tables
+	$(BUILD_DIR)/test_fft_cmsis_tables_missing
 
 $(BUILD_DIR)/test_fuse: tests/test_fuse.c src/ui/fuse_model.c src/ui/fuse_model.h src/ui/fuse_table.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -Werror -Isrc/ui $< src/ui/fuse_model.c -lm -o $@
