@@ -166,7 +166,16 @@ scope_cal_tier_t scope_cal_get_tier(uint8_t ch, uint8_t range_idx)
 
 float scope_cal_volts_per_div(uint8_t ch, uint8_t range_idx)
 {
-    return scope_cal_volts_per_count(ch, range_idx) * SCOPE_CAL_COUNTS_PER_DIV;
+    if (!(scope_cal_volts_per_count(ch, range_idx) > 0.0f))
+        return 0.0f;
+    return stock_nominal_mv[range_idx] * SCOPE_CAL_COUNTS_PER_DIV / 1000.0f *
+           scope_cal_probe_factor(ch);
+}
+
+float scope_cal_codes_per_div(uint8_t ch, uint8_t range_idx)
+{
+    const float vpc = scope_cal_volts_per_count(ch, range_idx);
+    return (vpc > 0.0f) ? scope_cal_volts_per_div(ch, range_idx) / vpc : 0.0f;
 }
 
 int scope_cal_true_scale_ok(uint8_t ch, uint8_t range_idx)
@@ -202,7 +211,10 @@ static void format_range_label(uint8_t ch, uint8_t range_idx, float v,
         snprintf(out, n, "%s%umV", mark, (unsigned)(v * 1000.0f + 0.5f));
     } else {
         const unsigned centivolts = (unsigned)(v * 100.0f + 0.5f);
-        snprintf(out, n, "%s%u.%02uV", mark, centivolts / 100u, centivolts % 100u);
+        if (centivolts % 100u == 0u)
+            snprintf(out, n, "%s%uV", mark, centivolts / 100u);
+        else
+            snprintf(out, n, "%s%u.%02uV", mark, centivolts / 100u, centivolts % 100u);
     }
 }
 
@@ -213,7 +225,6 @@ void scope_cal_range_label(uint8_t ch, uint8_t range_idx, char *out, uint32_t n)
 
 void scope_cal_range_label_bnc(uint8_t ch, uint8_t range_idx, char *out, uint32_t n)
 {
-    format_range_label(ch, range_idx,
-                       scope_cal_mv_per_count(ch, range_idx) / 1000.0f * SCOPE_CAL_COUNTS_PER_DIV,
-                       out, n);
+    const float pf = scope_cal_probe_factor(ch);
+    format_range_label(ch, range_idx, scope_cal_volts_per_div(ch, range_idx) / pf, out, n);
 }

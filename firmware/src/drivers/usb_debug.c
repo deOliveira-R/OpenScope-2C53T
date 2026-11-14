@@ -5031,12 +5031,12 @@ static void cmd_fpga_scope_cal(void)
             usb_debug_printf("CH%u: compiled table (bench unit #1, EXP-08 2026-08-17)\r\n",
                              (unsigned)ch);
     }
-    usb_debug_printf("source scale %d.%03d  counts/div %d\r\n",
+    usb_debug_printf("source scale %d.%03d  nominal counts/div %d (drawn: codes/div)\r\n",
                      (int)SCOPE_CAL_SOURCE_SCALE,
                      (int)((SCOPE_CAL_SOURCE_SCALE - (int)SCOPE_CAL_SOURCE_SCALE)
                            * 1000.0f + 0.5f),
                      (int)SCOPE_CAL_COUNTS_PER_DIV);
-    usb_send_str("rng  CH1 uV/ct  CH1 V/div  CH2 uV/ct  CH2 V/div  tier\r\n");
+    usb_send_str("rng  CH1 uV/ct  CH1 V/div  c/div  CH2 uV/ct  CH2 V/div  c/div  tier\r\n");
 
     for (uint8_t r = 0; r < SCOPE_CAL_RANGE_COUNT; r++) {
         char l1[12], l2[12];
@@ -5051,12 +5051,14 @@ static void cmd_fpga_scope_cal(void)
 
         /* Microvolts per count keeps this integer-only — the shell printf is
          * not guaranteed to carry %f on every build. */
-        usb_debug_printf("%2u  %9lu  %9s  %9lu  %9s  %s\r\n",
+        const unsigned c1 = (unsigned)(scope_cal_codes_per_div(1u, r) * 10.0f + 0.5f);
+        const unsigned c2 = (unsigned)(scope_cal_codes_per_div(2u, r) * 10.0f + 0.5f);
+        usb_debug_printf("%2u  %9lu  %9s  %2u.%u  %9lu  %9s  %2u.%u  %s\r\n",
                          (unsigned)r,
                          (unsigned long)(scope_cal_mv_per_count(1u, r) * 1000.0f + 0.5f),
-                         l1,
+                         l1, c1 / 10u, c1 % 10u,
                          (unsigned long)(scope_cal_mv_per_count(2u, r) * 1000.0f + 0.5f),
-                         l2,
+                         l2, c2 / 10u, c2 % 10u,
                          tn);
     }
 

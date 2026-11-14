@@ -61,6 +61,9 @@
 #define SCOPE_H         (SCOPE_BOT - SCOPE_TOP)
 #define SCOPE_MID_Y     (SCOPE_TOP + SCOPE_H / 2)
 #define SCOPE_DIV_PX    26      /* graticule division, rows (grid + math scale) */
+/* The graticule's centre line: the 4th of the lines ruled every SCOPE_DIV_PX
+ * rows from SCOPE_TOP. True scale puts 0 V (position 0) on it. */
+#define SCOPE_GRID_MID_Y (SCOPE_TOP + 4 * SCOPE_DIV_PX)
 #ifdef SCOPE_DEBUG_OVERLAY
 #define SCOPE_DBG_Y     (LCD_HEIGHT - 60)  /* top of the debug strip */
 #endif
@@ -232,7 +235,7 @@ void draw_scope_grid(void)
 
     /* Center crosshair (solid) */
     for (x = 0; x < SCOPE_GEOM_COLS; x++)
-        lcd_set_pixel(x, SCOPE_MID_Y, th->grid_center);
+        lcd_set_pixel(x, SCOPE_GRID_MID_Y, th->grid_center);
     for (y = SCOPE_TOP; y < SCOPE_BOT; y++)
         lcd_set_pixel(SCOPE_GEOM_CENTER_COL, y, th->grid_center);
 }
@@ -480,15 +483,13 @@ static void fmt_seconds(char *b, size_t n, float s)
  * 6.49. The full provenance and the reason the replacement is tiered rather
  * than a flat table is in scope_cal.h.
  *
- * The compile-time check below is what keeps the volts/div label honest.
- * SCOPE_CAL_COUNTS_PER_DIV is a claim about THIS renderer's geometry — the
- * 26-pixel grid pitch against a 206-pixel plot showing 256 counts. If either
- * changes, the label silently starts meaning something else, so make that a
- * build failure instead.
+ * The volts/div label is the range's nominal value; true scale draws one
+ * SCOPE_DIV_PX-row division as scope_cal_codes_per_div() codes (yt_vmap.h),
+ * so the grid means what the label says. The renderer and the map must agree
+ * on the division height.
  */
-_Static_assert((26 * 256 + SCOPE_H / 2) / SCOPE_H == (int)SCOPE_CAL_COUNTS_PER_DIV,
-               "grid pitch no longer matches SCOPE_CAL_COUNTS_PER_DIV — "
-               "the volts/div labels in the status bar would be wrong");
+_Static_assert(SCOPE_DIV_PX == YT_VMAP_DIV_PX,
+               "grid pitch no longer matches the true-scale map's division");
 
 /* The cal table is indexed by the frontend range index, so its length and
  * the UI's range count are the same quantity counted twice. */
@@ -990,13 +991,21 @@ static void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
 static inline int autofit_y_raw(const autofit_t *a, int v)
 {
     if (a->fx_ch >= 0)
-        v = pv_vscale((uint8_t)v, YT_VMAP_CENTRE, a->fx_ch);
+        v = pv_vscale((uint8_t)v, a->mn, a->fx_ch);
     return yt_vmap_raw(a, v);
 }
 
 static inline int16_t autofit_y(const autofit_t *a, uint8_t v)
 {
     return yt_vmap_clip(a, autofit_y_raw(a, v));
+}
+
+/* The record code true scale puts on the centre line: 0 V at position 0
+ * (raw 128, stock's zero, record 100 with the calibration page; the legacy
+ * centring targets record 128). Position moves the signal in the record. */
+static uint8_t yt_centre_code(void)
+{
+    return scope_measure_zero_for(scope_vpos_active(), 0, (int)FPGA_ADC_OFFSET);
 }
 
 /* Record code of the channel's 0 V (ch 0/1): the ground tag, the badges and
@@ -1012,7 +1021,7 @@ static int chan_zero_code(const scope_state_t *ss, uint8_t ch)
  * What the renderer ACTUALLY did to the vertical axis, recorded per band for
  * the cursor readout.
  *
- * The cursor cannot assume the fixed 256/SCOPE_H transform, because a band
+ * The cursor cannot assume the true-scale transform, because a band
  * may be autofit (a range without calibration, or view.truescale off), and
  * autofit's pixels-per-count is a property of the frame that was drawn — it
  * rescales from the record's own min/max, every frame. Reading the scale off the drawing rather than off an assumption is
@@ -1167,7 +1176,9 @@ static void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
     for (uint8_t ch = 0; ch < 2u; ch++) {
         *a[ch] = (autofit_t){ .fx_ch = -1, .span = YT_VMAP_MIN_SPAN };
         if (fx[ch]) {
-            yt_vmap_true(a[ch], SCOPE_TOP, SCOPE_BOT, (int8_t)ch);
+            const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
+            yt_vmap_true(a[ch], SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, (int8_t)ch,
+                         yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
         } else if (en[ch]) {
             int16_t t, b;
             yt_vmap_band(SCOPE_TOP, SCOPE_BOT, split, ch, &t, &b);
@@ -1380,12 +1391,10 @@ static inline void persist_note(uint16_t x, int16_t prev_y, int16_t y)
 /* Draw one channel through its map (yt_fits). Returns the ADC counts one
  * screen row is worth, for the cursor readout.
  *
- * True scale is the graticule-honesty path (M3): a constant 256/SCOPE_H
- * counts per pixel, SCOPE_CAL_COUNTS_PER_DIV counts per 26 px division (the
- * _Static_assert near the top ties the two), so one division is worth the
- * volts/div the status bar prints. The trace sits at its real ADC code about
- * 128; an uncentred DC offset shifts it and may clip it at the plot edge,
- * which is what a real scope at a fixed volts/div does. */
+ * True scale is the graticule-honesty path (M3), in stock's geometry: 0 V
+ * at position 0 on the centre line, one 26 px division = the range's nominal
+ * volts/div (scope_cal_codes_per_div codes). An offset shifts the trace and
+ * may clip it at the plot edge, as on any scope at a fixed volts/div. */
 static float draw_channel(const volatile uint8_t *buf, uint16_t color,
                           const autofit_t *a, int8_t mask_ch)
 {
@@ -1807,7 +1816,7 @@ static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
          * any other math unit leaves counts_per_pixel 0 -> pixels. */
         vm.channel   = 0u;                 /* named "m" by draw_cursors */
         vm.mid_known = 1u;
-        vm.mid_row   = (int16_t)SCOPE_MID_Y;
+        vm.mid_row   = (int16_t)SCOPE_GRID_MID_Y;
         vm.direct         = g_math_cur.direct;
         vm.direct_conf    = g_math_cur.conf;
         vm.unit_per_pixel = g_math_cur.unit_per_px;
@@ -2153,7 +2162,7 @@ static void draw_math_waveform(void)
             b[i] = s2 ? yt_cols[1][x0 + i] : 0u;
         }
         math_compute(op, a, b, nc, &in, v);
-        math_to_rows(v, nc, step, SCOPE_DIV_PX, SCOPE_MID_Y, SCOPE_TOP, SCOPE_BOT, rows);
+        math_to_rows(v, nc, step, SCOPE_DIV_PX, SCOPE_GRID_MID_Y, SCOPE_TOP, SCOPE_BOT, rows);
         for (uint16_t i = 0; i < nc; i++) {
             int16_t lo = rows[i], hi = rows[i];
             if (prev >= 0) {
@@ -2185,7 +2194,7 @@ static void draw_math_waveform(void)
     }
     /* Zero marker of the math trace: a tick at the left edge. */
     for (uint16_t x = 0; x < 6; x++)
-        lcd_set_pixel(x, SCOPE_MID_Y, th->warning);
+        lcd_set_pixel(x, SCOPE_GRID_MID_Y, th->warning);
 
     char sc[16];
     math_scale_label(scale_idx, unit, sc, sizeof(sc));
@@ -2984,7 +2993,7 @@ void draw_scope_live_frame(void)
                 c = th->text_secondary;
             else if ((int16_t)y == trig_y && (x & trig_step) == 0 && x < LCD_WIDTH - 6)
                 c = th->trigger;
-            else if (inwin && (y == SCOPE_MID_Y || x == SCOPE_GEOM_CENTER_COL))
+            else if (inwin && (y == SCOPE_GRID_MID_Y || x == SCOPE_GEOM_CENTER_COL))
                 c = th->grid_center;
             else if (inwin &&
                      ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
@@ -3117,9 +3126,16 @@ void draw_roll_screen(bool full)
         m2.y_top = SCOPE_MID_Y + 1;
     }
     bool on1 = en1, on2 = en2;
-    if (fx1) m1.fixed = true;
+    /* True scale: the Y-T map itself (yt_vmap.h), so a switch between the
+     * views never moves the trace. */
+    yt_vmap_t t1, t2;
+    if (fx1)
+        yt_vmap_true(&t1, SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, 0, yt_centre_code(),
+                     scope_cal_codes_per_div(1u, ss->ch1.vdiv_idx));
     else on1 = on1 && scope_roll_fit(&roll_snap, 0u, nvis, &m1);
-    if (fx2) m2.fixed = true;
+    if (fx2)
+        yt_vmap_true(&t2, SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, 1, yt_centre_code(),
+                     scope_cal_codes_per_div(2u, ss->ch2.vdiv_idx));
     else on2 = on2 && scope_roll_fit(&roll_snap, 1u, nvis, &m2);
 
     const uint16_t band_bot = strip_top(ss);
@@ -3141,7 +3157,7 @@ void draw_roll_screen(bool full)
         uint8_t v;
         int16_t lo1 = -1, hi1 = -2, lo2 = -1, hi2 = -2;
         if (on1 && inwin && scope_roll_fifo_get(&roll_snap, 0u, age, &v)) {
-            int16_t y = scope_roll_y(&m1, v);
+            int16_t y = fx1 ? yt_vmap_clip(&t1, yt_vmap_raw(&t1, v)) : scope_roll_y(&m1, v);
             lo1 = y; hi1 = (int16_t)(y + 1);
             if (p1 >= 0) { if (p1 < lo1) lo1 = p1; if (p1 > hi1) hi1 = p1; }
             p1 = y;
@@ -3149,7 +3165,7 @@ void draw_roll_screen(bool full)
             p1 = -1;
         }
         if (on2 && inwin && scope_roll_fifo_get(&roll_snap, 1u, age, &v)) {
-            int16_t y = scope_roll_y(&m2, v);
+            int16_t y = fx2 ? yt_vmap_clip(&t2, yt_vmap_raw(&t2, v)) : scope_roll_y(&m2, v);
             lo2 = y; hi2 = (int16_t)(y + 1);
             if (p2 >= 0) { if (p2 < lo2) lo2 = p2; if (p2 > hi2) hi2 = p2; }
             p2 = y;
@@ -3185,7 +3201,7 @@ void draw_roll_screen(bool full)
                     c = th->ch2;
                 else if ((int16_t)y >= lo1 && (int16_t)y <= hi1)
                     c = th->ch1;
-                else if (inwin && (y == SCOPE_MID_Y ||
+                else if (inwin && (y == SCOPE_GRID_MID_Y ||
                                    x == (uint16_t)SCOPE_GEOM_CENTER_COL))
                     c = th->grid_center;
                 else if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||

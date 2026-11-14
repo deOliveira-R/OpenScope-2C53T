@@ -65,7 +65,7 @@
 #define SC_REC_MAX          227u   /* clamp(255 - 28): the upper rail */
 #define SC_ZERO_REC         100    /* record level of 0 V at pos 0 (page in use) */
 #define SC_POS_MAX          100
-#define SC_COUNTS_PER_DIV   32     /* OpenScope's graticule (SCOPE_CAL_COUNTS_PER_DIV) */
+#define SC_COUNTS_PER_DIV   25     /* codes per division at the nominal gain (SCOPE_CAL_COUNTS_PER_DIV) */
 #define SC_MEAN_N           500u   /* stock's 500-sample mean (0x08022E6C) */
 
 /* ── One record, reduced ───────────────────────────────────────────── */

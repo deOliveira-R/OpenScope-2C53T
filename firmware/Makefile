@@ -723,13 +723,13 @@ $(BUILD_DIR)/test_scope_geom: tests/test_scope_geom.c src/ui/scope_geom.c src/ui
 test-scope-geom: $(BUILD_DIR)/test_scope_geom
 	$<
 
-# The Y-T vertical transform (yt_vmap.h): true scale (code 128 on the centre
-# row, 256 counts over the plot, clipping), equal to the former fixed renderer
-# and the roll view's fixed map; autofit equal to the former autofit, code for
-# code; split bands only when both channels autofit.
-$(BUILD_DIR)/test_yt_vmap: tests/test_yt_vmap.c src/ui/yt_vmap.h src/ui/scope_roll.c \
-                           src/ui/scope_roll.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< src/ui/scope_roll.c -lm -o $@
+# The Y-T vertical transform (yt_vmap.h): true scale (stock geometry: 0 V at
+# position 0 on the centre line, one division = the range's nominal volts/div,
+# rails, clipping); autofit equal to the former autofit, code for code; split
+# bands only when both channels autofit.
+$(BUILD_DIR)/test_yt_vmap: tests/test_yt_vmap.c src/ui/yt_vmap.h src/ui/scope_cal.c \
+                           src/ui/scope_cal.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< src/ui/scope_cal.c -lm -o $@
 
 .PHONY: test-yt-vmap
 test-yt-vmap: $(BUILD_DIR)/test_yt_vmap

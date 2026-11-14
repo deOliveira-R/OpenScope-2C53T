@@ -102,19 +102,18 @@ extern "C" {
 #define SCOPE_CAL_RANGE_COUNT   10u
 
 /*
- * Counts per screen division, fixed by the renderer, NOT by the hardware.
+ * Stock's vertical geometry: 25 codes per division at the NOMINAL gain.
  *
- * scope_ui.c maps a sample to y as SCOPE_MID_Y - (sample-128)*SCOPE_H/256 and
- * rules a horizontal grid line every 26 px, with SCOPE_H = 206. So one
- * division is 26 * 256/206 = 32.3 counts. 32 is that rounded, and it is also
- * 256/8 — a full ADC span across eight divisions, which is the convention the
- * grid spacing was chosen to produce.
- *
- * scope_ui.c carries a compile-time assertion that its geometry still agrees
- * with this constant, so changing the grid without changing this is a build
- * error rather than a silently wrong volts/div label.
+ * Stock draws a record code per screen unit, 25 units per division, clamped
+ * to 28..228 (8 divisions) about 128 + pos (0x080212BC..0x08021348,
+ * docs/re/parity2_static.md s3.5), and its range table is 10, 20, 50 mV ...
+ * 10 V per division (u16 0x080465CC) = 25 x the nominal mV/count ladder
+ * (0x0804BFB8). So a range's volts/div is the nominal 1-2-5 value, and a
+ * unit's own gain g only changes how many codes one division holds:
+ * scope_cal_codes_per_div() = 25 g (about 25.8 on unit #1), which is the
+ * slope the true-scale renderer uses, per channel and range.
  */
-#define SCOPE_CAL_COUNTS_PER_DIV   32.0f
+#define SCOPE_CAL_COUNTS_PER_DIV   25.0f
 
 /*
  * Correction for the calibration source's true-vs-commanded amplitude.
@@ -227,12 +226,16 @@ scope_cal_tier_t scope_cal_get_tier(uint8_t ch, uint8_t range_idx);
 int scope_cal_true_scale_ok(uint8_t ch, uint8_t range_idx);
 
 /*
- * Volts per screen division, derived from the measured gain and the
- * renderer's counts-per-division. This is the number the status bar should
- * show, because it is the number the grid actually means. Returns 0.0f when
- * uncalibrated.
+ * Volts per screen division: the range's nominal 1-2-5 value (stock's table,
+ * 10 mV .. 10 V at the BNC) times the probe factor. The true-scale renderer
+ * draws one division as exactly this, with scope_cal_codes_per_div() codes,
+ * so the label is what the grid means. 0.0f when the range has no gain.
  */
 float scope_cal_volts_per_div(uint8_t ch, uint8_t range_idx);
+
+/* ADC codes in one division of scope_cal_volts_per_div(): volts/div over the
+ * calibrated volts/count (the probe factor cancels). 0.0f when uncalibrated. */
+float scope_cal_codes_per_div(uint8_t ch, uint8_t range_idx);
 
 /*
  * Status-bar label for a range, e.g. "1.37V", "699mV", "~8.9V" (provisional,

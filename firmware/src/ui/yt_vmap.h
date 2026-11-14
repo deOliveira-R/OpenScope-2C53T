@@ -8,10 +8,12 @@
  *
  *   row = y0 - ((code - mn) * h) / span          (C division, toward zero)
  *
- *   true scale  y0 = band middle, mn = 128, h = band height, span = 256:
- *               256 counts over the full plot (SCOPE_H = 206 px), so code 128
- *               sits on the centre row and 32 counts are 25.75 px, one 26 px
- *               division to within a pixel. Both channels share the full plot.
+ *   true scale  y0 = the graticule's centre row, mn = the record code of
+ *               0 V at position 0 (100 with the calibration page, else 128),
+ *               h = YT_VMAP_DIV_PX x 100 rows per span = codes/div x 100:
+ *               one 26 px division is exactly the range's volts/div
+ *               (scope_cal_codes_per_div, ~25.8 codes on unit #1). Both
+ *               channels share the full plot; position is in the record.
  *   autofit     y0 = y_bot - 2, mn = the window's minimum, span = its range
  *               (>= 8 counts), h = band height - 3: the record stretched to
  *               its band, split into halves when both channels autofit.
@@ -27,7 +29,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define YT_VMAP_CENTRE      128     /* the code true scale puts on the centre row */
+#define YT_VMAP_DIV_PX      26      /* rows per graticule division */
 #define YT_VMAP_MIN_SPAN    8       /* autofit: don't zoom pure noise to full band */
 
 typedef struct {
@@ -39,16 +41,21 @@ typedef struct {
     uint8_t mn;
 } yt_vmap_t;
 
-static inline void yt_vmap_true(yt_vmap_t *a, int16_t y_top, int16_t y_bot, int8_t ch)
+/* centre_code on row y_mid, codes_per_div codes per YT_VMAP_DIV_PX rows
+ * (kept to 1/100 code), clipped to [y_top, y_bot). */
+static inline void yt_vmap_true(yt_vmap_t *a, int16_t y_top, int16_t y_bot, int16_t y_mid,
+                                int8_t ch, uint8_t centre_code, float codes_per_div)
 {
+    int span = (int)(codes_per_div * 100.0f + 0.5f);
+    if (span < 100) span = 100;
     a->on    = true;
     a->fx_ch = ch;
     a->y_top = y_top;
     a->y_bot = y_bot;
-    a->y0    = (int16_t)((y_top + y_bot) / 2);
-    a->h     = y_bot - y_top;
-    a->span  = 256;
-    a->mn    = YT_VMAP_CENTRE;
+    a->y0    = y_mid;
+    a->h     = YT_VMAP_DIV_PX * 100;
+    a->span  = span;
+    a->mn    = centre_code;
 }
 
 static inline void yt_vmap_autofit(yt_vmap_t *a, uint8_t mn, uint8_t mx,

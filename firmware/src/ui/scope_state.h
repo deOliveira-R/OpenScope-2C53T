@@ -146,9 +146,9 @@ typedef struct {
     cursor_state_t  cursor;         /* Cursor measurement state */
 
     /* Vertical graticule mode (view.truescale). true (default) = TRUE SCALE:
-     * the trace is drawn at a FIXED SCOPE_CAL_COUNTS_PER_DIV counts per
-     * division over the full plot, both channels overlaid, so one grid
-     * division means exactly the volts/div the status bar prints — but only
+     * stock's geometry over the full plot, both channels overlaid: 0 V at
+     * position 0 on the centre line, one grid division exactly the (nominal)
+     * volts/div the status bar prints — but only
      * on ranges scope_cal calls usable; a NONE range always autofits. The
      * vertical position is the offset DAC's (in the record); an uncentred
      * baseline shifts the trace and may clip it at the plot edge.

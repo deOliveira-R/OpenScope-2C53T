@@ -150,16 +150,30 @@ static void test_provisional_ranges_still_produce_a_number(void)
     }
 }
 
+/* Stock's geometry: volts/div is the nominal 1-2-5 ladder (25 x the nominal
+ * mV/count, stock's u16 table 0x080465CC), wherever a gain exists, and one
+ * division holds volts/div / volts-per-count codes (25 g with a page). */
 static void test_volts_per_div_is_derived(void)
 {
+    static const float stock_vdiv[SCOPE_CAL_RANGE_COUNT] = {
+        0.01f, 0.02f, 0.05f, 0.1f, 0.2f, 0.5f, 1.0f, 2.0f, 5.0f, 10.0f };
     for (uint8_t ch = 1; ch <= 2; ch++) {
         for (uint8_t r = 0; r < SCOPE_CAL_RANGE_COUNT; r++) {
-            const float want = scope_cal_volts_per_count(ch, r) *
-                               SCOPE_CAL_COUNTS_PER_DIV;
+            const float vpc = scope_cal_volts_per_count(ch, r);
+            const float want = (vpc > 0.0f) ? stock_vdiv[r] : 0.0f;
             CHECK(fabsf(scope_cal_volts_per_div(ch, r) - want) < 1e-6f,
-                  "ch%u r%u: volts/div must be gain * counts-per-div", ch, r);
+                  "ch%u r%u: volts/div must be the nominal ladder", ch, r);
+            CHECK(vpc > 0.0f ? fabsf(scope_cal_codes_per_div(ch, r) * vpc - want) < 1e-5f
+                             : scope_cal_codes_per_div(ch, r) == 0.0f,
+                  "ch%u r%u: codes/div x volts/count == volts/div", ch, r);
         }
     }
+    /* With unit #1's page (g = 1.032) a division is 25 g = 25.8 codes. */
+    scope_cal_set_stock_gain(1, 1.032f);
+    CHECK(fabsf(scope_cal_codes_per_div(1, 6) - 25.8f) < 1e-3f,
+          "page g 1.032: %.3f codes/div", scope_cal_codes_per_div(1, 6));
+    CHECK(fabsf(scope_cal_volts_per_div(1, 0) - 0.01f) < 1e-7f, "page: r0 is 10 mV/div");
+    scope_cal_set_stock_gain(1, 0.0f);
 }
 
 static void test_labels(void)
@@ -175,23 +189,24 @@ static void test_labels(void)
     CHECK(buf[0] != '~', "r6 is MEASURED and must not be marked, got \"%s\"", buf);
     CHECK(strchr(buf, 'V') != NULL, "r6 label should carry units, got \"%s\"", buf);
 
-    /* 42.95 mV/count * 0.92 source-scale * 32 counts/div = 1.2645 V/div. */
-    CHECK(strcmp(buf, "1.26V") == 0,
-          "r6 label should be derived as 1.26V, got \"%s\"", buf);
+    /* Stock's ladder: range 6 is 1 V/div. */
+    CHECK(strcmp(buf, "1V") == 0,
+          "r6 label should be 1V, got \"%s\"", buf);
 
     /* Provisional -> same number, marked. */
     scope_cal_range_label(1, 9, buf, sizeof(buf));
     CHECK(buf[0] == '~', "r9 is PROVISIONAL and must be marked, got \"%s\"", buf);
 
-    /* Sub-volt divisions read in mV. 21.83 * 0.92 * 32 = 642.7 mV. */
+    /* Sub-volt divisions read in mV. */
     scope_cal_range_label(1, 5, buf, sizeof(buf));
-    CHECK(strcmp(buf, "643mV") == 0,
-          "r5 label should be derived as 643mV, got \"%s\"", buf);
+    CHECK(strcmp(buf, "500mV") == 0,
+          "r5 label should be 500mV, got \"%s\"", buf);
+    scope_cal_range_label(1, 9, buf, sizeof(buf));
+    CHECK(strcmp(buf, "~10V") == 0, "r9 label should be ~10V, got \"%s\"", buf);
 
     /*
-     * And the point of the whole exercise: the derived label must NOT equal
-     * the nominal vdiv_table label it replaces. r5's nominal label was
-     * "200mV" and r6's was "500mV", both roughly 3x out.
+     * The old OpenScope vdiv_table was one step off stock's index (r5
+     * "200mV", r6 "500mV"); the index here is stock's (0x080465CC).
      */
     scope_cal_range_label(1, 5, buf, sizeof(buf));
     CHECK(strcmp(buf, "200mV") != 0, "r5 must not still read as the nominal 200mV");
