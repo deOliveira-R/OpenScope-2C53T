@@ -180,6 +180,21 @@ void lcd_reset(void);           /* Hardware reset via GPIO (if RST pin wired) */
 /* Drawing window control */
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
+/* ── The one drawer (ARCH-1 V2b) ────────────────────────────────────────
+ * Only the display task may draw: two drawers interleave a multi-write
+ * frame. The display task names itself here once it runs; from then on every
+ * drawing call made by another task is counted (and still carried out: this
+ * only measures). A drawing call is a window set-up (every fill, blit,
+ * pixel and glyph starts with one) or a lcd_write_pixels() stream. Nothing
+ * is counted before the owner is named (main() paints the splash and the
+ * boot logo before the scheduler starts) or while no task runs.
+ * `current` answers the running task (xTaskGetCurrentTaskHandle), so this
+ * driver needs no RTOS header. */
+typedef void *(*lcd_task_fn)(void);
+void lcd_set_owner_task(void *owner, lcd_task_fn current);
+extern volatile uint32_t lcd_foreign_calls;      /* drawing calls by a task that is not the owner */
+extern void *volatile    lcd_foreign_last_task;  /* the task of the latest one (a TaskHandle_t)   */
+
 /* ── Frame-memory read-back (an experiment: `lcd readback`) ─────────────
  * One row of the panel's frame memory, read through the ST7789's RAMRD
  * (0x2E) on the EXMC read path, handed out pixel by pixel (nothing is

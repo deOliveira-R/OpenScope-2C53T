@@ -564,8 +564,31 @@ void lcd_panel_init(void)
  *   [0x0C] = 0x2B (RASET)
  *   [0x08] = 0x2C (RAMWR)
  * ======================================================================== */
+/* The one drawer (lcd.h). */
+static void       *lcd_owner_task;
+static lcd_task_fn lcd_current_task;
+volatile uint32_t  lcd_foreign_calls;
+void *volatile     lcd_foreign_last_task;
+
+void lcd_set_owner_task(void *owner, lcd_task_fn current)
+{
+    lcd_current_task = current;
+    lcd_owner_task = owner;
+}
+
+static inline void lcd_note_drawer(void)
+{
+    if (lcd_owner_task == 0) return;
+    void *const t = lcd_current_task ? lcd_current_task() : 0;
+    if (t != 0 && t != lcd_owner_task) {
+        lcd_foreign_calls++;
+        lcd_foreign_last_task = t;
+    }
+}
+
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
+    lcd_note_drawer();
     uint16_t x_end = x + w - 1;
     uint16_t y_end = y + h - 1;
 
@@ -695,6 +718,7 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count)
      * do: until 2026-11-13 this path skipped it, so whatever was streamed
      * through here (the waterfall rows, the boot logo) was black in every
      * screenshot (`screen dumpbin`, SAVE) though it was on the panel. */
+    lcd_note_drawer();
     while (count--) {
         const uint16_t p = *pixels++;
         *LCD_DATA_ADDR = p;

@@ -206,6 +206,7 @@ ui_press_t ui_press_one(const ui_press_port_t *p, uint32_t *target, uint8_t id)
 #include "input_handler.h"    /* scope_key_focus */
 #include "fpga.h"             /* fpga_interleave_active (keys) */
 #include "screen.h"           /* the router's snapshot (`ui screen`) */
+#include "lcd.h"              /* lcd_foreign_calls (`ui screen`) */
 #include "legacy_screens.h"   /* the describe hooks below */
 
 #include <stdio.h>
@@ -308,11 +309,12 @@ static void screen_line(void)
         snprintf(stack + o, sizeof stack - o, "%s%s", i ? ">" : "", sc && sc->name ? sc->name : "?");
     }
     usb_debug_printf("screen=%s instrument=%s overlay=%s %s %s %s "
-                     "focus=%s ach=CH%u run=%s view=%s meter=%s popup=%u stack=%s %s %s\r\n",
+                     "focus=%s ach=CH%u run=%s view=%s meter=%s popup=%u stack=%s %s %s lcdforeign=%lu\r\n",
                      base && base->name ? base->name : "?", inst, overlay,
                      osc, set, home, focus, (unsigned)active_channel + 1u,
                      prop_get(P(VIEW_RUN)) ? "run" : "stop", view, meter,
-                     scope_popup_active() ? 1u : 0u, stack[0] ? stack : "-", gen, mview);
+                     scope_popup_active() ? 1u : 0u, stack[0] ? stack : "-", gen, mview,
+                     (unsigned long)lcd_foreign_calls);
 }
 
 void cmd_ui_screen(void) { screen_line(); }

@@ -542,11 +542,17 @@ static void scope_render(uint32_t frame, redraw_action_t action)
  * Receives display commands via queue and renders the appropriate screen.
  * This is the only task that writes to the LCD.
  */
+static void *display_current_task(void) { return (void *)xTaskGetCurrentTaskHandle(); }
+
 static void vDisplayTask(void *pvParameters)
 {
     (void)pvParameters;
     uint8_t cmd;
     uint32_t frame = 0;
+
+    /* From here on this task is the only drawer; a drawing call by any
+     * other task is counted (lcd.h lcd_foreign_calls, `ui screen`). */
+    lcd_set_owner_task((void *)xTaskGetCurrentTaskHandle(), display_current_task);
 
     /* The splash is already on screen — main() paints it before the backlight
      * comes up and before the FPGA config sequence, so by the time this task
