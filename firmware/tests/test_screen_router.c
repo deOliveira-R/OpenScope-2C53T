@@ -498,6 +498,7 @@ typedef struct {
     bool          osc_open, osc_locked;
     uint8_t       opener;
     bool          gallery, busy, editor, tv, cursors, mask;
+    bool          logo, prompt;      /* the small layers (B5): the logo, the POWER prompt */
     key_focus_t   focus;
     uint8_t       ach;
 } lw_t;
@@ -537,6 +538,7 @@ static key_ctx_t w_ctx(void)
 void lgc_state(lgc_state_t *s)
 {
     s->mode = W.mode; s->settings_depth = W.depth; s->osc_open = W.osc_open; s->gallery_open = W.gallery;
+    s->logo_up = W.logo; s->prompt_up = W.prompt;
 }
 key_ctx_t lgc_ctx(void)                      { lg("ctx", 0, 0, 0); return w_ctx(); }   /* key_ctx_now */
 void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
@@ -572,6 +574,16 @@ static void fake_layer_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)
 const screen_t gallery_screen = {
     .name = "gallery", .id = SCR_GALLERY, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
     .flags = SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, .key = fake_gallery_key, .draw = fake_layer_draw,
+};
+/* The small layers' stand-ins (B5): the logo and the POWER prompt have no
+ * keys (make test-overlay-screens has the real ones). */
+const screen_t logo_screen = {
+    .name = "logo", .id = SCR_LOGO, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
+    .flags = SCR_F_OPAQUE | SCR_F_NO_BARS, .draw = fake_layer_draw,
+};
+const screen_t power_prompt_screen = {
+    .name = "power_prompt", .id = SCR_POWER_PROMPT, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
+    .flags = SCR_F_OPAQUE | SCR_F_NO_BARS, .draw = fake_layer_draw,
 };
 /* The POWER global closes it first (it used to be handed POWER and closed
  * itself): the same log line. */
@@ -782,6 +794,8 @@ static bool stack_mirrors(void)
         want[n++] = legacy_settings_page(W.depth);    /* a value that is no page shows the list */
     if (W.mode == MODE_OSCILLOSCOPE && W.osc_open) want[n++] = SCR_OSC_MENU;
     if (W.gallery) want[n++] = SCR_GALLERY;
+    if (W.logo && n < SCR_STACK_MAX) want[n++] = SCR_LOGO;
+    if (W.prompt && n < SCR_STACK_MAX) want[n++] = SCR_POWER_PROMPT;
     if (st.n != n) return false;
     for (uint8_t i = 0; i < n; i++) if (st.id[i] != want[i]) return false;
     return true;
@@ -979,6 +993,28 @@ static void test_legacy_mirror(void)
               SET_ITEM_USB_SHARE == 5 && SET_ITEM_FW_UPDATE == 6 && SET_ITEM_FACTORY_RESET == 7 &&
               SET_ITEM_ABOUT == 8);
     }
+
+    /* The small layers (B5) follow their flags, on top of whatever is up. */
+    W.mode = MODE_MULTIMETER; W.depth = 0; W.osc_open = false; W.gallery = false;
+    W.prompt = true; legacy_screens_sync();
+    CHECK("the POWER prompt up -> meter > power_prompt", stack_mirrors() && screen_top() == SCR_POWER_PROMPT);
+    LG[0] = '\0';
+    (void)screen_route_key(BTN_UP);
+    CHECK("... it has no keys and nothing under it is asked (the input task is counting anyway)",
+          strcmp(LG, "touch click ctx ") == 0 && screen_last_handler() == SCR_COUNT);
+    W.prompt = false; legacy_screens_sync();
+    CHECK("the prompt gone -> meter alone", stack_mirrors() && screen_top() == SCR_METER);
+    W.mode = MODE_OSCILLOSCOPE; W.osc_open = true; W.gallery = true; W.logo = true; W.prompt = true;
+    legacy_screens_sync();
+    CHECK("page, gallery, logo and prompt at once: the stack is full, the prompt is left out, no fault",
+          screen_snapshot().n == SCR_STACK_MAX && screen_top() == SCR_LOGO && stack_mirrors());
+    W.logo = false; legacy_screens_sync();
+    CHECK("the logo gone -> scope > osc_menu > gallery > power_prompt",
+          stack_mirrors() && screen_top() == SCR_POWER_PROMPT);
+    W.osc_open = false; W.gallery = false; W.prompt = false; legacy_screens_sync();
+    W.logo = true; legacy_screens_sync();
+    CHECK("the logo up (boot hold, `logo show`) -> scope > logo", stack_mirrors() && screen_top() == SCR_LOGO);
+    W.logo = false; legacy_screens_sync();
 
     /* The gallery closing itself pops its layer within the same key. */
     W.mode = MODE_OSCILLOSCOPE; W.depth = 0; W.gallery = true; legacy_screens_sync();

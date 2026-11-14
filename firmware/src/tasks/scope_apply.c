@@ -1,11 +1,14 @@
 /*
  * OpenScope 2C53T - the hardware side of a scope setting change (scope_apply.h)
  *
- * Hoisted at the UI round 1 merge from input_handler.c (trigger_after_change,
- * channel_cycle_coupling, the Roll half of display_mode_step,
- * scope_view_select, the Settings list's persistence cycle) and
- * osc_menu_ui.c (trigger_change, roll_set, view_set, persist_select), which
- * were copies of each other.
+ * Hoisted at the UI round 1 merge from input_handler.c (channel_cycle_coupling,
+ * the Roll half of display_mode_step, scope_view_select, the Settings list's
+ * persistence cycle) and osc_menu_ui.c, which were copies of each other.
+ * Since ARCH-1 B5 the Oscilloscope Settings page changes settings only
+ * through the properties (model/props_scope.c: the trigger rules are in
+ * trig.* setters, and scope_apply_trigger_change went with the page's
+ * trigger_change); what is left here is what the plot's keys and the
+ * property ops still call.
  */
 #include "scope_apply.h"
 #include "scope_state.h"
@@ -26,37 +29,6 @@ bool scope_apply_coupling_toggle(uint8_t ch, char *pb, size_t n)
     if (ok) c->coupling = next;
     snprintf(pb, n, ok ? "CH%u %s" : "CH%u %s NOT SET", (unsigned)ch + 1u, coupling_labels[next]);
     return ok;
-}
-
-bool scope_apply_trigger_change(uint8_t what, char *pb, size_t n)
-{
-    scope_state_t *ss = scope_state_get();
-    if (what & TM_REFUSED_OFF) {
-        snprintf(pb, n, "CH%d is off", ss->trigger.source == TRIG_SRC_CH2 ? 1 : 2);
-        return true;
-    }
-    if (what & TM_CHANGED_SOURCE) {
-        const bool ok = fpga_apply_trigger_source();
-        snprintf(pb, n, ok ? "Trig source %s" : "Trig %s NOT SET",
-                 trigger_source_labels[ss->trigger.source]);
-        return !ok;
-    }
-    if (what & TM_CHANGED_MODE) {
-        if (ss->trigger.mode == TRIG_SINGLE) {
-            ss->running = true;
-            fpga_acq_single_rearm();
-            snprintf(pb, n, "Await Trigger...");
-            return true;
-        }
-        snprintf(pb, n, "Trig: %s", trigger_mode_labels[ss->trigger.mode]);
-        return false;
-    }
-    if (what & TM_CHANGED_EDGE) {
-        snprintf(pb, n, "Edge: %s", trigger_edge_labels[ss->trigger.edge]);
-        return false;
-    }
-    if (n) pb[0] = '\0';
-    return false;
 }
 
 bool scope_apply_roll(bool want)

@@ -59,6 +59,7 @@ extern void system_clock_config(void);
 #include "osc_menu_model.h"
 #include "osc_menu_screen.h"
 #include "gallery_ui.h"
+#include "overlay_screens.h"
 #include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
@@ -97,12 +98,13 @@ volatile uint8_t       fuse_rating_idx = 6;          /* 10 A (index 6 in the ATO
 volatile uint8_t       fuse_view = 0;                /* FUSE_VIEW_DETAIL */
 volatile float         fuse_scan_threshold_mv = 0.1f; /* Scan: DRAW at or above this drop */
 
-/* Modal overlay lock. While true, the display task suppresses ALL rendering
- * (queue commands are drained and dropped, periodic repaints skipped) so an
- * overlay painted from another task — currently only the BTN_POWER shutdown
- * countdown in input_handler.c — stays on screen instead of being overdrawn
- * by the next scope frame. The overlay owner clears the flag and sends
- * DCMD_REDRAW_ALL to hand the screen back. */
+/* Foreign screen claim. While true, the display task suppresses ALL rendering
+ * (queue commands are drained and dropped, periodic repaints skipped), so
+ * another task can use the LCD. Since ARCH-1 B5 nothing in the UI sets it:
+ * the POWER countdown, the gallery, the logo and the capture are layers or
+ * commands of the display task (modal_layer below). Its one user left is the
+ * bench shell's `lcd readback` (shell_bench.c), which reads the panel's
+ * frame memory and hands the screen back itself. */
 volatile bool          ui_modal_active = false;
 volatile uint32_t      ui_modal_idle_count = 0;
 
@@ -448,8 +450,8 @@ static bool scope_incremental_available(const scope_state_t *s)
 /* The Oscilloscope Settings page (osc_menu_model.h) is up. It is a full page
  * in scope mode: osc_menu_draw() owns y 16..223, between the two bars, so the
  * scope's own paints (plot, badge rows, mask/CAN rows) stand aside while it
- * is up; the bars keep repainting. Not ui_modal_active: that would drop DCMD_DRAW_OSC_MENU too. The
- * acquisition keeps running behind it (UI_STUDY 2.3). */
+ * is up; the bars keep repainting. Not a layer that owns the LCD (modal_layer):
+ * the acquisition keeps running behind it (UI_STUDY 2.3). */
 static bool osc_page_up(void)
 {
     return current_mode == MODE_OSCILLOSCOPE && osc_menu_is_open();
@@ -524,15 +526,18 @@ static bool layer_paint_update(const screen_t *s, uint32_t frame)
     return true;
 }
 
-/* A layer that owns the whole LCD while it is up (the screenshot gallery):
- * nothing else is drawn, the bars included, no display command but a capture
- * is honoured, the panel health check and the scope's heartbeat rest, as
- * under the old modal claim. It is painted from its epoch every frame, so
- * its commands are only wake-ups; when it goes, what was under it is
- * repainted here. NULL: none. Read from the state that decides it, as the
- * base is from current_mode. */
+/* A layer that owns the LCD while it is up (the POWER prompt, the logo, the
+ * screenshot gallery): nothing else is drawn, the bars included, no display
+ * command but a capture is honoured, the panel health check and the scope's
+ * heartbeat rest, as under the old modal claim. It is painted from its
+ * epoch every frame, so its commands are only wake-ups; when it goes, what
+ * was under it is repainted here. NULL: none. Read from the state that
+ * decides it, as the base is from current_mode. The prompt is over the
+ * others: power-off always shows. */
 static const screen_t *modal_layer(void)
 {
+    if (power_prompt_up())    return &power_prompt_screen;
+    if (logo_screen_up())     return &logo_screen;
     if (gallery_ui_is_open()) return &gallery_screen;
     return NULL;
 }
@@ -643,10 +648,10 @@ static void vDisplayTask(void *pvParameters)
     vTaskDelay(pdMS_TO_TICKS(750));
 
     /* Initial draw, unless the boot logo still owns the screen:
-     * logo_ui_boot_show() claimed it in main() and the key task's ~1 s hold
-     * ends with DCMD_REDRAW_ALL, which paints all of this. Drawing here
-     * regardless cut the logo short at 750 ms. */
-    if (!ui_modal_active) {
+     * logo_ui_boot_show() raised the logo layer in main() and when the key
+     * task's ~1 s hold drops it the loop below paints all of this. Drawing
+     * here regardless cut the logo short at 750 ms. */
+    if (!logo_screen_up()) {
         lcd_clear(COLOR_BLACK);
         draw_status_bar();
         draw_info_bar();
@@ -670,14 +675,10 @@ static void vDisplayTask(void *pvParameters)
         /* The layer that owns the whole screen this frame (one look). One
          * coming up is painted whatever its epoch; when it goes, what was
          * under it is repainted (unless a REDRAW_ALL arrives first). */
-        static const screen_t *modal_was;
-        static bool redraw_pending;
+        static layer_track_t layers;        /* ui/overlay_screens.h */
         const screen_t *const modal = modal_layer();
-        if (modal != modal_was) {
+        if (layer_track_step(&layers, modal))
             layer_painted = NULL;
-            if (modal == NULL) redraw_pending = true;
-            modal_was = modal;
-        }
         meter_link_service();
         if (current_mode != last_rendered_mode) {
             /* PC11 = meter MUX enable. Stock switches it WITH the mode (HIGH in
@@ -736,12 +737,14 @@ static void vDisplayTask(void *pvParameters)
 #endif
 
         /* Check for commands (non-blocking with short timeout for animation).
-         * While a modal overlay owns the screen (ui_modal_active), commands
-         * are still drained — senders must never block — but dropped instead
-         * of rendered: one frame painted here would overdraw the overlay,
-         * which is exactly the countdown flicker this flag exists to stop.
-         * The overlay owner ends with DCMD_REDRAW_ALL, which repaints
-         * everything a dropped command would have. */
+         * While a layer owns the screen (modal_layer: the POWER prompt, the
+         * logo, the gallery) or a shell command claimed it (ui_modal_active),
+         * commands are still drained — senders must never block — but
+         * dropped instead of rendered: one frame painted here would overdraw
+         * the layer, which is exactly the countdown flicker this rule exists
+         * to stop. When the layer goes, this task repaints everything a
+         * dropped command would have (layer_track_take below). A capture is
+         * the exception: it draws nothing. */
         /* The tick is 50 ms of WALL time, not 50 ms of waiting after the
          * work: a frame that took 40 ms used to be followed by a full 50 ms
          * wait, so a 40 ms live frame ran at 11 Hz instead of 20. Wait only
@@ -767,7 +770,7 @@ static void vDisplayTask(void *pvParameters)
                 break;
             case DCMD_REDRAW_ALL:
                 redraw_all(frame);
-                redraw_pending = false;
+                layer_track_redrawn(&layers);
                 break;
             case DCMD_CAPTURE:
                 /* Short SAVE / `screenshot save`: the LCD shadow as it
@@ -861,12 +864,12 @@ static void vDisplayTask(void *pvParameters)
          * 2026-08-13 (B2) via redraw_gate.h — see the epoch functions
          * above. All three data modes are now gated the same way.
          *
-         * ui_modal_active suppresses this whole section: while the shutdown
-         * countdown (or any future modal) owns the screen, a live scope
-         * would otherwise overdraw it within one 50 ms tick — the "flashing
-         * countdown" bug (2026-08-20). Acquisition heartbeats pause with it;
-         * three seconds of paused re-arm is harmless and resumes on the
-         * DCMD_REDRAW_ALL that ends every modal. */
+         * A layer that owns the screen (and the shell's ui_modal_active)
+         * suppresses this whole section: while the shutdown countdown is
+         * up, a live scope would otherwise overdraw it within one 50 ms
+         * tick — the "flashing countdown" bug (2026-08-20). Acquisition
+         * heartbeats pause with it; three seconds of paused re-arm is
+         * harmless and resumes with the repaint that follows the layer. */
         if (ui_modal_active) {
             ui_modal_idle_count++;
             frame++;
@@ -875,12 +878,26 @@ static void vDisplayTask(void *pvParameters)
         if (modal != NULL) {
             /* Its own paint, when what it shows changed (a key, a delete,
              * coming up); nothing else this frame. */
-            (void)layer_paint_update(modal, frame);
+            if (layer_track_take_whole(&layers)) layer_paint(modal, SCR_PAINT_FULL, frame);
+            else                                 (void)layer_paint_update(modal, frame);
             goto frame_end;
         }
-        if (redraw_pending) {
-            redraw_all(frame);
-            redraw_pending = false;
+        {
+            /* What a layer that went left to repaint (once). The POWER
+             * prompt's box over a base that is a real screen: that screen
+             * again, without the clear. Else everything. */
+            const screen_t *const nb_under = native_base();
+            switch (layer_track_take(&layers, nb_under != NULL && !osc_page_up())) {
+            case LAYER_REPAINT_RESTORE:
+                native_paint(nb_under, SCR_PAINT_RESTORE, frame);
+                g_screen_painted = true;            /* a popup still up goes back on top */
+                break;
+            case LAYER_REPAINT_ALL:
+                redraw_all(frame);
+                break;
+            default:
+                break;
+            }
         }
         /* The info bar shows under the Oscilloscope Settings page too, so a
          * channel or trigger change made on the page shows in it at once. */
@@ -1125,7 +1142,7 @@ static void vInputTask(void *pvParameters)
     /* The screen router over the legacy screens: up before the first key and
      * before the shell's `ui screen` can ask for its stack. */
     input_router_init(xDisplayQueue);
-    logo_ui_boot_hold(xInputQueue, xDisplayQueue, 1000u);   /* boot logo, any key skips */
+    logo_ui_boot_hold(xInputQueue, 1000u);   /* boot logo, any key skips */
     /* After the logo: its "any key skips" would take a wake for a key. Until
      * here a shell `set` answers BUSY. */
     model_fw_start(xDisplayQueue);

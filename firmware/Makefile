@@ -136,6 +136,8 @@ C_SOURCES += src/ui/gallery_ui.c
 C_SOURCES += src/ui/gallery_screen.c
 C_SOURCES += src/util/logo_store.c
 C_SOURCES += src/ui/logo_ui.c
+C_SOURCES += src/ui/overlay_screens.c
+C_SOURCES += src/ui/overlay_ui.c
 # UI round 1, R1-C: measurement strip + plot-edge markers
 C_SOURCES += src/ui/measure_strip.c
 C_SOURCES += src/ui/plot_markers.c
@@ -2153,7 +2155,7 @@ check-owners:
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
                                  src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h \
-                                 src/ui/osc_menu_screen.h src/ui/gallery_screen.h \
+                                 src/ui/osc_menu_screen.h src/ui/gallery_screen.h src/ui/overlay_screens.h \
                                  src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
 
@@ -2230,6 +2232,18 @@ $(BUILD_DIR)/test_gallery_screen: tests/test_gallery_screen.c $(GALLERY_SCREEN_T
 
 .PHONY: test-gallery-screen
 test-gallery-screen: $(BUILD_DIR)/test_gallery_screen
+	$<
+
+# The POWER prompt and the logo as layers (ARCH-1 B5): each show painted once
+# by a display task that paints from the epoch, no keys for them or under
+# them, POWER to the globals, and what is repainted when a layer goes.
+$(BUILD_DIR)/test_overlay_screens: tests/test_overlay_screens.c src/ui/overlay_screens.c \
+                                   src/ui/overlay_screens.h src/ui/screen.c src/ui/screen.h src/ui/theme.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui $< src/ui/overlay_screens.c \
+		src/ui/screen.c src/ui/theme.c -o $@
+
+.PHONY: test-overlay-screens
+test-overlay-screens: $(BUILD_DIR)/test_overlay_screens
 	$<
 
 # Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,

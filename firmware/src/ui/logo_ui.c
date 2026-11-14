@@ -3,13 +3,16 @@
  * image streams from the W25Q through a 128-byte stack buffer into one LCD
  * window, so a logo costs no RAM at all.
  *
- * Boot sequence (stock: 0x0802B420..0x0802C124): backlight off, draw,
- * backlight to the stored brightness, hold. Ours splits it in two because the
- * key matrix is only scanned once the key task has started:
- *   logo_ui_boot_show()  from main(), before the tasks: draws, claims the screen
- *   logo_ui_boot_hold()  first thing in the key task: waits, skippable, releases
+ * The logo is a layer of the screen router (ui/overlay_screens.h, SCR_LOGO):
+ * while it is up the display task draws nothing else. Who paints it:
+ *   boot:    main(), before the scheduler runs (logo_ui_boot_show), with the
+ *            backlight off, then on (stock: 0x0802B420..0x0802C124); the key
+ *            task holds it (logo_ui_boot_hold), any key skips.
+ *   preview: the display task (logo_ui_paint), for the shell's `logo show`,
+ *            which only raises the layer and waits (logo_ui_preview).
  */
 #include "logo_ui.h"
+#include "overlay_screens.h"
 
 #include "ui.h"
 #include "lcd.h"
@@ -34,7 +37,6 @@ logo_status_t logo_ui_draw(void)
 }
 
 static bool boot_pending;
-static QueueHandle_t s_dq;   /* display queue, remembered for the shell preview */
 
 bool logo_ui_boot_show(void)
 {
@@ -44,23 +46,29 @@ bool logo_ui_boot_show(void)
     const logo_status_t st = logo_ui_draw();
     sys_pwm_apply_brightness();
     if (st != LOGO_OK) return false;   /* partial draw: the display task repaints */
-    ui_modal_active = true;            /* the display task idles until the hold ends */
+    logo_screen_show(true);            /* it is on the LCD: the display task leaves it there */
     boot_pending = true;
     return true;
 }
 
-void logo_ui_boot_hold(QueueHandle_t keys, QueueHandle_t dq, uint32_t hold_ms)
+void logo_ui_boot_hold(QueueHandle_t keys, uint32_t hold_ms)
 {
-    s_dq = dq;
     if (!boot_pending) return;
     boot_pending = false;
     for (uint32_t t = 0; t < hold_ms; t += 20u) {
         button_id_t key;
         if (xQueueReceive(keys, &key, pdMS_TO_TICKS(20)) == pdTRUE) break;   /* key = skip */
     }
-    ui_modal_active = false;
-    const uint8_t cmd = DCMD_REDRAW_ALL;
-    xQueueSend(dq, &cmd, 0);
+    logo_screen_hide();                /* the display task repaints what is under it */
+}
+
+/* The preview's result, from the display task's paint to the shell. */
+static volatile logo_status_t paint_status;
+
+void logo_ui_paint(void)
+{
+    paint_status = logo_ui_draw();
+    logo_screen_mark_painted();
 }
 
 logo_status_t logo_ui_preview(uint32_t hold_ms)
@@ -69,15 +77,18 @@ logo_status_t logo_ui_preview(uint32_t hold_ms)
     logo_status_t st = logo_info(&info);
     if (st != LOGO_OK) return st;
     if (info.state != LOGO_SLOT_VALID) return LOGO_ERR_NONE;
-    const bool was = ui_modal_active;
-    ui_modal_active = true;
-    const uint32_t c0 = ui_modal_idle_count;   /* wait until the display task saw the claim */
-    for (int i = 0; i < 50 && ui_modal_idle_count == c0; i++)
+    if (logo_screen_up()) return LOGO_ERR_IO;             /* one at a time */
+    logo_screen_show(false);
+    /* Until the display task has painted it (it finishes the frame it is in
+     * first); 2 s is far more than a frame and the stream. */
+    for (int i = 0; i < 200 && !logo_screen_painted(); i++)
         vTaskDelay(pdMS_TO_TICKS(10));
-    st = logo_ui_draw();
+    if (!logo_screen_painted()) {
+        logo_screen_hide();
+        return LOGO_ERR_IO;
+    }
+    st = paint_status;
     vTaskDelay(pdMS_TO_TICKS(hold_ms));
-    if (!was) ui_modal_active = false;
-    const uint8_t cmd = DCMD_REDRAW_ALL;
-    if (s_dq) xQueueSend(s_dq, &cmd, 0);
+    logo_screen_hide();
     return st;
 }

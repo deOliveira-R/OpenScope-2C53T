@@ -208,6 +208,7 @@ ui_press_t ui_press_one(const ui_press_port_t *p, uint32_t *target, uint8_t id)
 #include "screen.h"           /* the router's snapshot (`ui screen`) */
 #include "lcd.h"              /* lcd_foreign_calls (`ui screen`) */
 #include "legacy_screens.h"   /* the describe hooks below */
+#include "overlay_screens.h"  /* the POWER prompt and the logo (`ui screen` overlay=modal) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -283,7 +284,7 @@ static void screen_line(void)
     if (!model_exec_ready())                       overlay = "logo";   /* boot: the logo holds the keys */
     else if (st.n > 1 && top && top->id == SCR_GALLERY)  overlay = "gallery";
     else if (st.n > 1 && top && top->id == SCR_OSC_MENU) overlay = "osc_menu";
-    else if (ui_modal_active)                      overlay = "modal";
+    else if (ui_modal_active || power_prompt_up() || logo_screen_up()) overlay = "modal";
     if (top && top->id == SCR_OSC_MENU && top->describe) top->describe(osc, sizeof osc);
     if (top && top->id == SCR_GALLERY && top->describe) top->describe(gal, sizeof gal);
     if (base && base->id == SCR_SETTINGS && base->describe) base->describe(set, sizeof set);

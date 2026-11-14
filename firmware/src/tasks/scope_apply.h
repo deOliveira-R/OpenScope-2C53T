@@ -28,14 +28,6 @@
  * to pb; returns true if the relay switched. */
 bool scope_apply_coupling_toggle(uint8_t ch, char *pb, size_t n);
 
-/* After trig_menu_change() returned `what` (TM_* flags): reg 0x06 for the
- * source, the SINGLE arm for the mode (stock: selecting Single arms the
- * one-shot, "Await Trigger...", 0x0801C8C2). The edge is the MCU filter and
- * the soft trigger only, no register. Writes the popup text to pb ("" if
- * nothing changed). Returns true when the text is more than an echo of the
- * new value: a refusal, a NOT SET, or the SINGLE arm. */
-bool scope_apply_trigger_change(uint8_t what, char *pb, size_t n);
-
 /* Roll (C11) on/off through the FPGA. On refusal the old mode is kept and
  * false returned. True if the scope is now in the mode asked for. */
 bool scope_apply_roll(bool want);

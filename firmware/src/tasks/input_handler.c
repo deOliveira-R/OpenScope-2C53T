@@ -18,18 +18,16 @@
 #include "trig_menu.h"
 #include "osc_menu_model.h"
 #include "osc_menu_screen.h"
+#include "overlay_screens.h"
 #include "input_handler.h"
 #include "scope_apply.h"
 #include "ui.h"
-#include "lcd.h"
-#include "font.h"
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
 #include "../ui/scope_geom.h"
 #include "../ui/startup_policy.h"   /* startup_mode_step: the Startup row's order */
-#include "theme.h"
 #include "math_channel.h"
 #include "persistence.h"
 #include "shared_mem.h"
@@ -168,14 +166,12 @@ void input_autooff_poll(void)
     }
     if (!sys_autooff_poll(&g_autooff, now)) return;
 
-    const theme_t *th = theme_get();
-    uint16_t bg = 0x0010;
-    ui_modal_active = true;          /* same screen claim as the POWER countdown */
+    /* "Auto power off / Goodbye!": the POWER prompt's layer, painted by the
+     * display task (ui/overlay_screens.h) while this task waits out the
+     * same 120 + 800 ms as when it drew the box itself. */
+    power_prompt_show(POWER_PROMPT_AUTOOFF, 0);
+    legacy_screens_sync();
     vTaskDelay(pdMS_TO_TICKS(120));
-    lcd_fill_rect(60, 80, 200, 80, bg);
-    font_draw_string_center(160, 100, "Auto power off",
-                            th->warning, bg, &font_medium);
-    font_draw_string_center(160, 126, "Goodbye!", th->success, bg, &font_large);
     vTaskDelay(pdMS_TO_TICKS(800));
     power_off_now();
 }
@@ -592,7 +588,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
     case KA_NONE:
     case KA_LEGACY:
     /* Not executed here: the router's POWER global runs the per-key switch
-     * (mode_key) itself, after the gallery handed POWER back. */
+     * (mode_key) itself, after closing the gallery. */
     case KA_POWER_PROMPT:
     /* Nor these: the generator is a screen of its own (ui/siggen_screen.c),
      * which takes its long OK (Run/Stop) and long AUTO (output at boot) as
@@ -644,9 +640,10 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
     }
 
     /* Long SAVE (parity C16): stock's 3x3 screenshot gallery, from every
-     * mode (D1). It owns the screen (ui_modal_active) and every key until it
-     * closes itself; its closing DCMD_REDRAW_ALL repaints whatever was under
-     * it, the Oscilloscope Settings page included. */
+     * mode (D1). A layer of the router (ui/gallery_screen.c): it owns the
+     * screen and every key but POWER until it closes itself; the display
+     * task then repaints whatever was under it, the Oscilloscope Settings
+     * page included. */
     case KA_GALLERY_OPEN:
         gallery_screen_open();              /* the display task paints it; the mirror pushes its layer */
         cmd = DCMD_NONE_MODAL_DROP;
@@ -877,6 +874,8 @@ void lgc_state(lgc_state_t *s)
     s->settings_depth = settings_depth;
     s->osc_open       = osc_menu_is_open();
     s->gallery_open   = gallery_ui_is_open();
+    s->logo_up        = logo_screen_up();
+    s->prompt_up      = power_prompt_up();
 }
 
 key_ctx_t lgc_ctx(void) { return key_ctx_now(); }
@@ -1253,49 +1252,42 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 
     case BTN_POWER:
         {
-            const theme_t *th = theme_get();
-            uint16_t bg = 0x0010;  /* dark background */
-
             /* MENU + POWER (the IAP reset) never gets here: input_handle_button()
              * takes it before the router. */
 
-            /* Claim the screen. The display task keeps repainting live modes
-             * every 50 ms tick, so an overlay drawn inline from this task was
-             * overdrawn within one frame in scope mode ("flashing countdown",
-             * 2026-08-20). ui_modal_active makes the display task drop all
-             * rendering; the short delay lets a frame already in flight
-             * finish before we paint over it. */
-            ui_modal_active = true;
+            /* The countdown is a layer of the screen router (ui/
+             * overlay_screens.h, SCR_POWER_PROMPT): this task says what it
+             * shows and the display task paints the box, over the screen as
+             * it stands, and draws nothing else while it is up (a live scope
+             * would otherwise overdraw it: the "flashing countdown",
+             * 2026-08-20). This task keeps what decides: the count, the PC8
+             * poll and the power-off, with the delays they always had. */
+            power_prompt_show(POWER_PROMPT_HOLD, 3);
+            legacy_screens_sync();
             vTaskDelay(pdMS_TO_TICKS(120));
 
-            /* Countdown 3..2..1 while POWER button held. The full overlay is
-             * repainted each second (cheap: one rect + two strings) so even a
-             * frame that slipped past the modal claim heals within 1 s. */
+            /* Countdown 3..2..1 while POWER button held. The box is painted
+             * again each second, so even a frame that slipped in heals
+             * within 1 s. */
             for (int countdown = 3; countdown > 0; countdown--) {
-                char digit[2] = { '0' + countdown, '\0' };
-                lcd_fill_rect(60, 80, 200, 80, bg);
-                font_draw_string_center(160, 88, "Hold to power off",
-                                        th->warning, bg, &font_medium);
-                font_draw_string_center(160, 115, digit,
-                                        th->text_primary, bg, &font_large);
+                power_prompt_show(POWER_PROMPT_HOLD, (uint8_t)countdown);
 
                 /* Wait 1 second, polling button every 50ms */
                 for (int i = 0; i < 20; i++) {
                     vTaskDelay(pdMS_TO_TICKS(50));
                     /* PC8 active LOW — if released, cancel */
                     if (GPIOC->idt & (1U << 8)) {
-                        /* Button released — cancel, hand the screen back */
-                        ui_modal_active = false;
-                        send_cmd(dq, DCMD_REDRAW_ALL);
+                        /* Button released — cancel: the layer goes and the
+                         * display task repaints what the box covered. */
+                        power_prompt_hide();
+                        legacy_screens_sync();
                         goto power_done;
                     }
                 }
             }
 
             /* Still held after 3 seconds — power off */
-            lcd_fill_rect(60, 80, 200, 80, bg);
-            font_draw_string_center(160, 110, "Goodbye!",
-                                    th->success, bg, &font_large);
+            power_prompt_show(POWER_PROMPT_GOODBYE, 0);
             vTaskDelay(pdMS_TO_TICKS(500));
 
             /* Last chance to persist: an orderly power-off is the one place we

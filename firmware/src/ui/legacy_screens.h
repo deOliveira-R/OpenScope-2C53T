@@ -3,17 +3,19 @@
  * the pre-router key handlers (ARCH-1 B1)
  *
  * One screen per device mode (the bases), one per Settings page (children,
- * mirroring settings_depth), the Oscilloscope Settings page and the gallery
- * (layers). Each key callback forwards to the handler input_handler.c ran for
- * that key before the router existed, in the same order, so every key keeps
- * its meaning; the router only decides who is asked first:
+ * mirroring settings_depth) and the layers: the Oscilloscope Settings page,
+ * the gallery, the logo and the POWER prompt. A legacy screen's key callback
+ * forwards to the handler input_handler.c ran for that key before the router
+ * existed, in the same order, so every key keeps its meaning; the router
+ * only decides who is asked first:
  *
  *   gallery (GRAB) -> self-cal lock -> globals (key_map_global) ->
  *   osc page (OPAQUE) -> settings page / base
  *
  * LEGACY STATE IS AUTHORITATIVE. current_mode, settings_depth,
- * osc_menu_is_open() and gallery_ui_is_open() still decide what is up (the
- * shell writes current_mode and closes the gallery from its own task), and
+ * osc_menu_is_open(), gallery_ui_is_open(), logo_screen_up() and
+ * power_prompt_up() still decide what is up (the shell writes current_mode,
+ * closes the gallery and raises the logo from its own task), and
  * the router's stack MIRRORS them: legacy_screens_sync() matches the stack to
  * them on the input task, before and after every key and on every pass of the
  * input loop. The screens' open()/close() are therefore empty: entering a mode
@@ -23,9 +25,10 @@
  * the shell's `set sys.mode` / `set sys.instrument` path. sys.instrument reads current_mode, so it and the router's
  * base are the same value one sync apart.
  *
- * MIGRATED SCREENS (ARCH-1 B2 on). A base that is a real screen (it has its
- * own file and a draw(): home_screen.c, siggen_screen.c) is registered here in place of its
- * legacy row. The mirror above still decides when it is up; what changes is
+ * MIGRATED SCREENS (ARCH-1 B2 on). A screen that is a real one (it has its
+ * own file and a draw(): the bases home_screen.c, siggen_screen.c,
+ * meter_screen.c; since B5 every layer: osc_menu_screen.c, gallery_screen.c,
+ * overlay_screens.c) is registered here in place of its legacy row. The mirror above still decides when it is up; what changes is
  * who handles its keys and paints it: the screen's key() acts on the model
  * and answers what to repaint, and this file posts that paint and runs the
  * settings hook once per key (lgc_native_after), where each legacy handler
@@ -72,6 +75,8 @@ typedef struct {
     int8_t        settings_depth;
     bool          osc_open;       /* osc_menu_is_open(), any mode          */
     bool          gallery_open;   /* gallery_ui_is_open()                  */
+    bool          logo_up;        /* logo_screen_up(): the boot hold, `logo show` */
+    bool          prompt_up;      /* power_prompt_up(): the POWER countdown, auto-off */
 } lgc_state_t;
 
 void      lgc_state(lgc_state_t *s);

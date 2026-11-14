@@ -5,15 +5,18 @@
  * where each step lives now:
  *
  *   1. auto-off restart, key click              router step 1 (touch/click hooks)
- *   2. gallery open: it takes every key but     SCR_GALLERY, GRAB; POWER: the
- *      POWER, which it hands back closed         POWER global closes it first
+ *   2. gallery open: it takes every key but     SCR_GALLERY (gallery_screen.c, a
+ *      POWER, which it hands back closed         migrated screen), GRAB; POWER:
+ *                                               the POWER global closes it first
  *   3. self-cal running: AUTO/MENU cancel,      router step 3 (locked hook)
  *      the rest "Busy", POWER passes
  *   4. long keys: key_map(long)                 globals (key_map_global; the
  *                                               mode keys as a sys.mode set),
  *                                               then the top screen's key_map(long)
  *   5. short keys key_map claims (SAVE; the     globals (SAVE), then the osc page
- *      scope's keys and its Settings page)      layer / the scope base
+ *      scope's keys and its Settings page)      (SCR_OSC_MENU, osc_menu_screen.c,
+ *                                               a migrated screen: its keys of
+ *                                               steps 4 and 5) / the scope base
  *   6. home page: every key but POWER           SCR_HOME (home_screen.c, a
  *                                               migrated screen: see below)
  *   7. meter softkeys (MOVE/SELECT/TRIGGER/PRM) SCR_METER (meter_screen.c, a
@@ -23,16 +26,18 @@
  *                                               migrated screen: its long OK /
  *                                               long AUTO of step 4, the editor
  *                                               and its keys of step 9)
- *   9. the per-key switch (POWER's countdown)   every base (POWER: the global)
+ *   9. the per-key switch (POWER's countdown)   every base (POWER: the global;
+ *                                               the countdown's box is a layer,
+ *                                               SCR_POWER_PROMPT, with no keys)
  *
  * The osc page is OPAQUE but not GRAB: a grabbing layer is asked before the
  * self-cal lock, and today the lock comes first (a long MOVE during autoset
  * says "Busy", it does not switch mode).
  *
  * No stack_changed hook, and after_key acts for migrated screens only: each
- * forwarded handler keeps its own settings hook (the gallery and the lock
- * never had one) and sends its own display command, so for a key a legacy
- * handler took the router adds no repaint and no settings write.
+ * forwarded handler keeps its own settings hook (the lock never had one)
+ * and sends its own display command, so for a key a legacy handler took the
+ * router adds no repaint and no settings write.
  *
  * Migrated screens (their own files; legacy_screens.h). For a key one of
  * them handles, the order is still the one above: the context is taken
@@ -47,6 +52,7 @@
 #include "meter_screen.h"
 #include "osc_menu_screen.h"
 #include "gallery_screen.h"
+#include "overlay_screens.h"
 #include "model.h"     /* PG_x: the groups each screen shows (pure header) */
 
 _Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
@@ -263,6 +269,11 @@ void legacy_screens_sync(void)
         want[n++] = legacy_settings_page(s.settings_depth);
     if (s.mode == MODE_OSCILLOSCOPE && s.osc_open) want[n++] = SCR_OSC_MENU;
     if (s.gallery_open) want[n++] = SCR_GALLERY;
+    /* The small layers, on top of whatever is up; with all of them the stack
+     * is full and the last is not pushed (the display task reads the flags,
+     * not the stack). */
+    if (s.logo_up && n < SCR_STACK_MAX) want[n++] = SCR_LOGO;
+    if (s.prompt_up && n < SCR_STACK_MAX) want[n++] = SCR_POWER_PROMPT;
 
     screen_stack_t cur = screen_snapshot();
     if (cur.n == n) {
@@ -290,6 +301,8 @@ void legacy_screens_init(void)
     (void)screen_register(&meter_screen);
     (void)screen_register(&osc_menu_screen);
     (void)screen_register(&gallery_screen);
+    (void)screen_register(&logo_screen);
+    (void)screen_register(&power_prompt_screen);
     screen_set_hooks(&ls_hooks);
     lgc_state_t s;
     lgc_state(&s);
