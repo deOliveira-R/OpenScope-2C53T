@@ -41,6 +41,7 @@
 #include "math_channel.h"
 #include "startup_policy.h"
 #include "ui.h"
+#include "meter_link_policy.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -87,6 +88,15 @@ flash_region_status_t flash_regions_bind_w25q(void) { return FLASH_REGION_ERR_NO
 /* ═══════════════════════════════════════════════════════════════════
  * Frozen reference: settings_store.c and config.c before M3, verbatim
  * (renamed only). DO NOT EDIT.
+ *
+ * One extension since (meter.link): the padding byte at offset 11 became the
+ * field meter_link. The reference gained exactly three lines, each marked
+ * "meter.link": ref_capture writes the byte from the property's backing
+ * state, ref_apply clamps it (anything above 1 -> 0, like the other
+ * indices), ref_defaults sets 0. Nothing else in the reference changed, and
+ * every other byte of every record is compared as before. A record written
+ * before the field existed holds 0 there (the zero-init invariant), which
+ * test_meter_link_record below checks against the reference defaults.
  * ═══════════════════════════════════════════════════════════════════ */
 #define REF_TRIGGER_LEVEL_LIMIT  103
 
@@ -146,6 +156,7 @@ static void ref_capture(device_config_t *cfg)
 
     cfg->meter_submode = meter_submode;
     cfg->meter_layout  = meter_layout;
+    cfg->meter_link    = (uint8_t)meter_link_get(NULL);                      /* meter.link */
 
     const siggen_config_t *sg = siggen_get_config();
     cfg->siggen_waveform  = sg->waveform;
@@ -201,6 +212,8 @@ static void ref_apply(const device_config_t *cfg)
 
     meter_submode = ref_clamp_idx(cfg->meter_submode, METER_SUBMODE_COUNT, 0);
     meter_layout  = ref_clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);
+    meter_link_store(NULL, ref_clamp_idx(cfg->meter_link, METER_LINK_POLICY_COUNT,
+                                         METER_LINK_SCREEN));                /* meter.link */
 
     /* v5: the measurement selection (meas_select_set drops bits above 12). */
     meas_select_set(0, cfg->meas_ch1_mask);
@@ -311,6 +324,7 @@ static void ref_defaults(device_config_t *cfg)
     cfg->math_op              = 0;
     cfg->meter_submode        = 0;  /* DCV */
     cfg->meter_layout         = 0;  /* Full */
+    cfg->meter_link           = 0;  /* meter.link: with the screen */
 
     /* v5 block: the same five on both channels, CH1's badges before the
      * selection page existed (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT;
@@ -332,7 +346,7 @@ static void ref_defaults(device_config_t *cfg)
 typedef struct {
     scope_state_t ss;               /* the whole struct: session fields included */
     uint16_t meas2;
-    uint8_t  theme, math_en, math_op, meter_sub, meter_lay, startup;
+    uint8_t  theme, math_en, math_op, meter_sub, meter_lay, meter_link, startup;
     uint8_t  wave, amp, duty, out, start_on;
     uint32_t freq;
     uint8_t  bright, vol, autooff;
@@ -350,6 +364,7 @@ static void snap(snap_t *s)
     s->math_op   = math_op;
     s->meter_sub = meter_submode;
     s->meter_lay = meter_layout;
+    s->meter_link = (uint8_t)meter_link_get(NULL);
     s->startup   = (uint8_t)startup_mode;
     const siggen_config_t *g = siggen_get_config();
     s->wave = g->waveform; s->freq = g->frequency_hz; s->amp = g->amplitude_dv;
@@ -370,6 +385,7 @@ static void restore(const snap_t *s)
     math_op       = s->math_op;
     meter_submode = s->meter_sub;
     meter_layout  = s->meter_lay;
+    meter_link_store(NULL, s->meter_link);
     startup_mode  = (startup_mode_t)s->startup;
     siggen_config_t g;
     memset(&g, 0, sizeof g);
@@ -435,6 +451,7 @@ static void random_state(void)
     math_op       = (uint8_t)R(MATH_COUNT);
     meter_submode = (uint8_t)R(METER_SUBMODE_COUNT);
     meter_layout  = (uint8_t)R(METER_LAYOUT_COUNT);
+    meter_link_store(NULL, (int32_t)R(METER_LINK_POLICY_COUNT));
     startup_mode  = (startup_mode_t)R(STARTUP_COUNT);
     siggen_config_t g;
     memset(&g, 0, sizeof g);
@@ -541,12 +558,13 @@ static void test_table_coverage(void)
         }
     }
     /* every payload byte between the header and the checksum: one row's, or
-     * the struct's padding (11, 22, 23) */
+     * the struct's padding (22, 23; 11 was padding until meter.link took it) */
     for (unsigned b = offsetof(device_config_t, scope_ch1_vdiv); b < offsetof(device_config_t, checksum); b++) {
-        const bool pad = (b == 11u || b == 22u || b == 23u);
+        const bool pad = (b == 22u || b == 23u);
         CHECKF(owner[b] == (pad ? 0 : 1), "record byte %u %s", b, pad ? "is padding but owned" : "has no row");
     }
     CHECK(offsetof(device_config_t, scope_trigger_level) == 12u);
+    CHECK(offsetof(device_config_t, meter_link) == 11u);
     CHECK(offsetof(device_config_t, siggen_frequency) == 24u);
 
     /* Session-only as a result: settable, not an alias, not usercal, no row
@@ -781,6 +799,9 @@ static void test_out_of_range_policy(void)
     FRESH(); c.meter_submode = 12;    CHECK(load_get(&c, PROP_ID_METER_FUNC) == 0);
     FRESH(); c.meter_submode = 11;    CHECK(load_get(&c, PROP_ID_METER_FUNC) == 11);
     FRESH(); c.meter_layout = 5;      CHECK(load_get(&c, PROP_ID_METER_LAYOUT) == 0);
+    FRESH(); c.meter_link = 1;        CHECK(load_get(&c, PROP_ID_METER_LINK) == METER_LINK_ALWAYS);
+    FRESH(); c.meter_link = 2;        CHECK(load_get(&c, PROP_ID_METER_LINK) == METER_LINK_SCREEN);
+    FRESH(); c.meter_link = 0xFF;     CHECK(load_get(&c, PROP_ID_METER_LINK) == METER_LINK_SCREEN);
     FRESH(); c.siggen_waveform = 13;  CHECK(load_get(&c, PROP_ID_GEN_WAVE) == 0);
     FRESH(); c.siggen_duty = 101;     CHECK(load_get(&c, PROP_ID_GEN_DUTY) == 50);
     FRESH(); c.siggen_duty = 100;     CHECK(load_get(&c, PROP_ID_GEN_DUTY) == 100);
@@ -846,7 +867,7 @@ static void test_out_of_range_policy(void)
 
 static void test_stored_only_raw_carry(void)
 {
-    static const unsigned carried[] = { 11, 18, 19, 20, 22, 23, 37, 38 };   /* pad, fft x3, pad x2, persist mode, lang */
+    static const unsigned carried[] = { 18, 19, 20, 22, 23, 37, 38 };   /* fft x3, pad x2, persist mode, lang (11 is meter.link now) */
     for (unsigned n = 0; n < 2000u; n++) {
         device_config_t rec;
         config_init_defaults(&rec);
@@ -1057,6 +1078,50 @@ static void test_notes_by_origin(void)
     model_bind_hw(NULL);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * meter.link: the former padding byte at offset 11
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void test_meter_link_record(void)
+{
+    /* A record from before the field existed: byte 11 is 0 (padding, zeroed
+     * by the defaults' memset and carried by every capture since). It loads
+     * as "screen", from any live state. */
+    device_config_t old;
+    ref_defaults(&old);
+    CHECK(((const uint8_t *)&old)[11] == 0u);
+    meter_link_store(NULL, METER_LINK_ALWAYS);
+    settings_store_apply(&old);
+    CHECK(prop_get(P(METER_LINK)) == METER_LINK_SCREEN);
+    CHECK(prop_default(P(METER_LINK)) == METER_LINK_SCREEN);
+
+    /* Saving it back unchanged gives the same 60 bytes: no record is burnt
+     * by the update alone (the append log's "identical payload" elision). */
+    device_config_t same = old;
+    settings_store_capture(&same);
+    CHECK(memcmp(&same, &old, sizeof old) == 0);
+    if (memcmp(&same, &old, sizeof old)) diff_rec(&old, &same);
+
+    /* "always" changes byte 11 and the checksum, nothing else. */
+    meter_link_store(NULL, METER_LINK_ALWAYS);
+    device_config_t al = old;
+    settings_store_capture(&al);
+    for (size_t i = 0; i < offsetof(device_config_t, checksum); i++) {
+        const uint8_t x = ((const uint8_t *)&old)[i], y = ((const uint8_t *)&al)[i];
+        if (i == 11u) CHECK(x == 0u && y == 1u);
+        else CHECKF(x == y, "byte %zu moved with meter.link: 0x%02x -> 0x%02x", i, x, y);
+    }
+    CHECK(config_validate(&al));
+    CHECK(al.checksum == old.checksum + 1u);
+
+    /* and it comes back */
+    meter_link_store(NULL, METER_LINK_SCREEN);
+    settings_store_apply(&al);
+    CHECK(prop_get(P(METER_LINK)) == METER_LINK_ALWAYS);
+    settings_store_apply(&old);
+    CHECK(prop_get(P(METER_LINK)) == METER_LINK_SCREEN);
+}
+
 int main(void)
 {
     scope_state_init(scope_state_get());
@@ -1075,6 +1140,7 @@ int main(void)
     test_stored_only_codec();
     test_notes_by_origin();
     test_refused_commit_no_note();
+    test_meter_link_record();
 
     printf("test_model_persist: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

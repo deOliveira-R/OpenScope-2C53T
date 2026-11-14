@@ -193,6 +193,12 @@ static volatile bool meter_keepalive_enabled = true;
 /* Set when a full transition ended with the SoC awake and the selector echoed;
  * cleared whenever PC11 is dropped (fpga_meter_reset_transport). */
 static volatile bool meter_soc_live_flag = false;
+/* The meter link (fpga.h, fpga_meter_link_set): unknown until the display
+ * task's first evaluation, then off or on. The function the transition in
+ * flight is for, so a link-on that finds one running need not ask again. */
+enum { METER_LINK_ST_UNKNOWN = 0, METER_LINK_ST_OFF, METER_LINK_ST_ON };
+static volatile uint8_t meter_link_state = METER_LINK_ST_UNKNOWN;
+static volatile uint8_t meter_transition_target = 0xFF;
 volatile uint8_t meter_frame_discard_count;
 volatile uint32_t meter_transition_frame_skip_count;
 
@@ -2730,10 +2736,24 @@ void fpga_request_meter_mode(uint8_t submode)
     xTaskNotifyGive(meter_poll_handle);
 }
 
+/* The poll task serves the meter while its link is on. The meter screen
+ * counts by itself: a key's request (enter_mode, input task) arrives one
+ * frame before the display task has turned the link on, and the screen
+ * being shown always means the link is wanted (meter_link_policy.h). In an
+ * image that cannot run the meter under another screen the screen is the
+ * only condition, exactly as before (the link state trails a screen change
+ * by up to a frame, and the scope side owns the wire from that change on). */
+bool fpga_meter_link_background_capable(void);
+static bool meter_link_serving(void)
+{
+    extern volatile device_mode_t current_mode;  /* from ui.h via main.c */
+    return current_mode == MODE_MULTIMETER ||
+           (meter_link_state == METER_LINK_ST_ON && fpga_meter_link_background_capable());
+}
+
 static void fpga_meter_poll_task(void *pv)
 {
     (void)pv;
-    extern volatile device_mode_t current_mode;  /* from ui.h via main.c */
     extern volatile uint8_t meter_submode;
 
     for (;;) {
@@ -2741,17 +2761,17 @@ static void fpga_meter_poll_task(void *pv)
         int16_t req = meter_mode_request;
         if (req >= 0 && fpga.initialized) {
             meter_mode_request = -1;
-            if (current_mode == MODE_MULTIMETER) {
+            if (meter_link_serving()) {
                 fpga_set_meter_mode((uint8_t)req);
-                /* Left the meter while the chip was switching? The display
-                 * task already put the scope's front end back, and this
-                 * transition just re-postured it for the meter. */
-                if (current_mode != MODE_MULTIMETER)
+                /* The link went off while the chip was switching? The display
+                 * task already switched it off (and put the scope's front end
+                 * back), and this transition just raised PC11 again. */
+                if (!meter_link_serving())
                     fpga_set_meter_mux(false);
             }
             continue;
         }
-        if (fpga.initialized && current_mode == MODE_MULTIMETER &&
+        if (fpga.initialized && meter_link_serving() &&
             !meter_transition_busy) {
             if (fpga_meter_needs_activation) {
                 /* Stock's meter activation, sent once on entry rather than at
@@ -3500,6 +3520,93 @@ void fpga_set_meter_mux(bool enable)
         meter_holds_fe = meter_moves_relays;
     }
 #endif
+}
+
+/* ── The meter link ───────────────────────────────────────────────────────
+ *
+ * PC11 (supply/enable of the isolated meter SoC; every rise restarts it,
+ * ~1.4 s), USART2 and the poll task's serving, as one on/off resource. It
+ * used to follow the meter screen; it now follows the answer of
+ * meter_link_want_on() (meter_link_policy.h), which the display task
+ * evaluates every frame and hands to fpga_meter_link_set(). That is the only
+ * caller, so on/off edges come from one context.
+ *
+ * Edges, and what does not make one:
+ *   - on  (off or unknown -> on): fpga_set_meter_mux(true), then the stored
+ *     function is requested from the poll task, unless a request is already
+ *     waiting, a transition for that function is in flight (one started
+ *     since the link last went off), or the SoC is live on it. The key's
+ *     meter entry and the boot path post their own request first, so for
+ *     them this is one request and one transition, exactly as before.
+ *   - on -> on: nothing at all. fpga_set_meter_mux(true) on a live link
+ *     would zero USART2, forget that the SoC is live (the next function
+ *     change would be a full restart) and re-send the activation words.
+ *     So leaving the meter screen with the link still wanted, and entering
+ *     it with the link already on, move neither PC11 nor USART2.
+ *   - off (on or unknown -> off): fpga_set_meter_mux(false), as every entry
+ *     to another screen did. The first evaluation after boot always runs
+ *     one of the two, as the display task's first pass always did.
+ */
+bool fpga_meter_link_on(void) { return meter_link_state == METER_LINK_ST_ON; }
+
+/* Whether this image can keep the meter running under another screen: the
+ * scope side must be silent on USART2 (it shares the wire with the meter
+ * SoC), and the meter tasks and function changes must exist. Elsewhere the
+ * link follows the screen, whatever the policy says. */
+bool fpga_meter_link_background_capable(void)
+{
+#if FPGA_WARM_HANDOFF_TEST && FPGA_USART_SILENT_SCOPE && FPGA_METER_SUBMODES
+    return true;
+#else
+    return false;
+#endif
+}
+
+/* The stored function is what the SoC runs (or is being switched to). */
+static bool meter_link_function_covered(uint8_t submode)
+{
+    if (meter_mode_request >= 0) return true;                       /* the newest request wins */
+    if (meter_transition_busy) return meter_transition_target == submode;
+    return fpga_meter_soc_live() && fpga.meter_mode_sequence_submode == submode;
+}
+
+void fpga_meter_link_set(bool on)
+{
+    extern volatile uint8_t meter_submode;
+
+    if (on) {
+        if (meter_link_state == METER_LINK_ST_ON) return;
+        const uint8_t submode = meter_submode;
+        const bool covered = meter_link_function_covered(submode);   /* before mux(true) forgets "live" */
+        meter_link_state = METER_LINK_ST_ON;      /* before the request: the poll task drops one while off */
+        fpga_set_meter_mux(true);
+        /* Without a poll task the request would run the whole transition
+         * here, on the display task; those images get the function from
+         * enter_mode's own call, as before. */
+        if (!covered && meter_poll_handle != NULL) fpga_request_meter_mode(submode);
+    } else {
+        if (meter_link_state == METER_LINK_ST_OFF) return;
+        meter_link_state = METER_LINK_ST_OFF;
+        /* A transition in flight is about to lose PC11 and USART2: it no
+         * longer counts as "the function is being applied", so the next
+         * link-on asks again (served once this one has run out). A
+         * transition started after this point, by a meter entry's own
+         * request, counts as before. */
+        if (meter_transition_busy) meter_transition_target = 0xFF;
+        fpga_set_meter_mux(false);
+    }
+}
+
+/* The meter screen was entered (input task, enter_mode). With the link off
+ * this is the request it always posted. With the link already on and the
+ * SoC running the stored function there is nothing to do: no PC11 edge, no
+ * selector word. A link that is on but not live (a transition that timed
+ * out) gets its retry here, as every meter entry used to give one. */
+void fpga_meter_screen_entered(uint8_t submode)
+{
+    if (meter_link_state == METER_LINK_ST_ON && meter_link_function_covered(submode))
+        return;
+    fpga_request_meter_mode(submode);
 }
 
 /* NOTE: deliberately OUTSIDE the FPGA_WARM_HANDOFF_TEST guard below. The debug
@@ -6912,9 +7019,11 @@ QueueHandle_t fpga_create_tasks(void)
      * to say USART2 is dark in these builds and nothing may re-posture the FPGA
      * — the first half is no longer true by choice (PC11 + UEN now follow the UI
      * mode) and the second is respected because every one of these tasks is
-     * gated on current_mode == MODE_MULTIMETER, so scope mode still sees a quiet
-     * wire. Without them PC11 high produces an audible relay click and a frozen
-     * DMM screen: nothing polls, nothing decodes. */
+     * gated on the meter link (meter_link_serving; it was the meter screen
+     * until the link got its own policy), so with the link off the wire is
+     * quiet, and with it on only the meter's own words go out. Without them
+     * PC11 high produces an audible relay click and a frozen DMM screen:
+     * nothing polls, nothing decodes. */
     xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   64,  NULL, 2, &tx_task_handle);
     xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   128, NULL, 3, &rx_task_handle);
     /* 192, not 64: function changes (fpga_set_meter_mode) now run here. */
@@ -7494,6 +7603,7 @@ static void fpga_apply_meter_transition(uint8_t submode, bool wake_preamble)
     uint16_t tx_before;
     uint16_t frame_before;
 
+    meter_transition_target = submode;
     meter_transition_busy = true;
 
     meter_data_invalidate(submode);
@@ -7574,6 +7684,7 @@ static bool fpga_meter_fast_switch(uint8_t submode)
         return false;
     }
 
+    meter_transition_target = submode;
     meter_transition_busy = true;
     meter_data_invalidate(submode);
     fpga.meter_mode_sequence_count++;

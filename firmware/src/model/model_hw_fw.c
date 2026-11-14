@@ -75,11 +75,13 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  * and PA6, so a live range write in the meter would move the meter's mux.
  * Where the stored range is applied:
  *   - FPGA_WARM_HANDOFF_TEST + FPGA_METER_SUBMODES (app-coldtrace-meter, the
- *     bench image): the display task's mode-change block calls
- *     fpga_set_meter_mux(false) on entering ANY screen but the meter, and
- *     that re-applies the mask, both ranges and PA6 from scope_state
+ *     bench image): with `meter relays on` the meter link follows the
+ *     screen (main.c meter_link_service), so the display task calls
+ *     fpga_set_meter_mux(false) on leaving the meter, and that re-applies
+ *     the mask, both ranges and PA6 from scope_state
  *     (fpga_set_scope_frontend_ranges). So the scope front end is live
- *     everywhere but the meter screen.
+ *     everywhere but the meter screen. (By default the meter leaves the
+ *     relays alone and the front end is live on every screen.)
  *   - FPGA_WARM_HANDOFF_TEST without SUBMODES (app-coldtrace): the meter
  *     never touches the relays (fpga_set_meter_mode returns at once) and
  *     nothing re-applies them, so the ranges are written live everywhere.
@@ -96,7 +98,8 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  * (***) as the relays: written at once while the scope front end is live
  * (scope_fe_live), else stored and re-sent from scope_state when the
  * scope's posture is back (fpga_scope_posture_gen moves: fpga_set_meter_mux
- * (false) in the bench image, i.e. leaving the meter for any screen;
+ * (false) in the bench image, i.e. the meter link going off, which with
+ * `meter relays on` is leaving the meter for any screen;
  * fpga_scope_reinit on scope entry in the default image). The re-send runs
  * on the executor (port_service -> model_scope_reapply): reg 0x01 (the roll
  * code with roll on, else tb.code; each also re-runs scope_vpos_apply, DAC1
@@ -107,11 +110,14 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  * in that window is stored too. The default image's scope entry also
  * resends the USART timing and trigger block from scope_state
  * (fpga_send_scope_sequence), as before.
- * meter_func: the posture request is only served in the meter (the poll task
- * drops it elsewhere; without a poll task it would posture the meter SoC
- * under the scope), so outside the meter the op does the state half only,
- * and enter_mode -> fpga_request_meter_mode(meter_submode) (input_handler.c)
- * applies the stored function on meter entry (main.c at boot). */
+ * meter_func: the request is served while the meter link is on (fpga.c
+ * fpga_meter_link_set: the meter screen, a USB host, or meter.link =
+ * always), whatever screen is shown. With the link off the poll task drops
+ * it (and without a poll task it would switch the meter SoC on under the
+ * scope), so the op does the state half only, and the stored function is
+ * applied when the link next comes on: fpga_meter_link_set(true) requests
+ * it, as does meter entry (enter_mode -> fpga_meter_screen_entered,
+ * input_handler.c; main.c at boot). */
 
 static bool scope_fe_live(void)
 {
@@ -291,15 +297,16 @@ static void op_gen_bootout(bool on)      { CTX(); siggen_set_start_on(on); }
 /* meter_function_select (meter_ui.c) is the key's function change: cancel
  * the autoselect, store, reset min/max/hold/rel, post the meter posture. It
  * cancels the autoselect unconditionally, so the autoselect's own pick
- * (keep_autoselect) is not served yet (B6 splits it). Outside the meter the
- * posture request must not go out (it would switch the meter SoC on under
+ * (keep_autoselect) is not served yet (B6 splits it). With the meter link
+ * off the request must not go out (it would switch the meter SoC on under
  * the scope in a build without the poll task): the state half only, and the
- * function is applied on meter entry (see the table above). */
+ * function is applied when the link comes on (see the table above). The
+ * meter screen counts as "on": its link follows within a frame. */
 static bool op_meter_func(uint8_t submode, bool keep_autoselect)
 {
     CTX();
     if (keep_autoselect) return false;
-    if (current_mode == MODE_MULTIMETER) {
+    if (current_mode == MODE_MULTIMETER || fpga_meter_link_on()) {
         meter_function_select(submode);
         return true;
     }
@@ -307,7 +314,7 @@ static bool op_meter_func(uint8_t submode, bool keep_autoselect)
     meter_reset_minmaxavg();
     meter_hold_release();
     if (meter_rel_enabled) meter_toggle_relative();    /* a reference in another function means nothing */
-    model_hw_deferred("stored: meter FE off");
+    model_hw_deferred("stored: meter FE off");            /* the reply text is kept */
     return true;
 }
 
@@ -372,7 +379,7 @@ static const model_hw_ops_t k_fw_ops = {
     .mask_stopfail = op_mask_stopfail,
     .gen_wave = op_gen_wave, .gen_freq = op_gen_freq, .gen_amp = op_gen_amp,
     .gen_duty = op_gen_duty, .gen_out = op_gen_out, .gen_bootout = op_gen_bootout,
-    .meter_func = op_meter_func,
+    .meter_func = op_meter_func, .meter_link_on = fpga_meter_link_on,
     .mode = op_mode, .backlight = op_backlight, .autooff = op_autooff,
     .il_enable = op_il_enable, .il_enabled = op_il_enabled, .il_corr_set = op_il_corr_set,
     .il_corr_get = op_il_corr_get, .il_knots = op_il_knots, .il_skew_set = op_il_skew_set, .il_skew_get = op_il_skew_get,

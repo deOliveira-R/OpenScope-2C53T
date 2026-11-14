@@ -137,6 +137,11 @@ static void buzzer_task(void *arg)
             /* M4: stock's way. An EXTI3 edge restarts the fixed pulse, but
              * only where the stock gate lets the SoC's line sound at all. */
             uint32_t edges = exti3_edges;
+            /* current_mode here means "the meter screen is shown", on
+             * purpose: the meter can now run under another screen (the meter
+             * link, fpga.c), and there the continuity beeper stays silent. A
+             * beep with no meter on screen says nothing a user could act on;
+             * a host reads the short from the stream instead. */
             if (edges != seen_edges) {
                 seen_edges = edges;
                 if (current_mode == MODE_MULTIMETER &&
@@ -162,7 +167,11 @@ static void buzzer_task(void *arg)
             }
             buzzer_active_now = force_active || soc_pulse.active;
         } else {
-            buzzer_active_now = force_active || continuity_short_active(now);
+            /* The software beep, same rule: only with the meter screen
+             * shown. (Until the link policy existed no frame arrived on
+             * another screen, so this path needed no gate.) */
+            buzzer_active_now = force_active ||
+                (current_mode == MODE_MULTIMETER && continuity_short_active(now));
         }
 
         if (buzzer_active_now) {

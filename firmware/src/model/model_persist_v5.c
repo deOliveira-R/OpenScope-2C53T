@@ -27,6 +27,8 @@
  *   sys.brightness/volume/autooff: without sys_prefs_mark 0xC1 -> 100 / 1 / off
  *   chN.enabled         ignored: always on after a load (session state)
  *   sys.lang, fft.*     out of range -> default in the property, byte carried
+ *   meter.link          the former padding byte at offset 11: 0 in every older
+ *                       record = screen (the default); anything above 1 -> default
  */
 #include "model_persist_v5.h"
 #include "model.h"
@@ -37,6 +39,7 @@
 #include "math_channel.h"
 #include "theme.h"
 #include "ui.h"
+#include "meter_link_policy.h"
 
 #include <stddef.h>
 #include <string.h>
@@ -99,6 +102,7 @@ const v5_field_t model_persist_v5_fields[] = {
     { PROP_ID_VIEW_MATH, OFF(math_enabled), 2u, V5_MATH_PAIR, V5_LOAD_DEFAULT, 0, 0, MATH_COUNT - 1 },
     ROW(PROP_ID_METER_FUNC,   meter_submode,        V5_U8,        V5_LOAD_DEFAULT,  0, 0, METER_SUBMODE_COUNT - 1),
     ROW(PROP_ID_METER_LAYOUT, meter_layout,         V5_U8,        V5_LOAD_DEFAULT,  0, 0, METER_LAYOUT_COUNT - 1),
+    ROW(PROP_ID_METER_LINK,   meter_link,           V5_U8,        V5_LOAD_DEFAULT,  0, 0, METER_LINK_POLICY_COUNT - 1),
     ROW(PROP_ID_CH1_MEAS,     meas_ch1_mask,        V5_MASK16,    V5_LOAD_EXACT,    0, 0, 0x0FFF),
     ROW(PROP_ID_CH2_MEAS,     meas_ch2_mask,        V5_MASK16,    V5_LOAD_EXACT,    0, 0, 0x0FFF),
 };

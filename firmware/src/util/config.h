@@ -42,6 +42,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 #define CONFIG_MAGIC    0x4F534332  /* "OSC2" */
 
@@ -90,6 +91,13 @@ typedef struct {
     uint8_t  scope_timebase;     /* Timebase index (0-20) */
     uint8_t  scope_trigger_mode; /* 0=auto, 1=normal, 2=single */
     uint8_t  scope_trigger_edge; /* 0=rising, 1=falling */
+    uint8_t  meter_link;         /* meter.link: 0 = the meter runs with its screen, 1 = always
+                                  * (the policy without a USB host). This is the byte the
+                                  * compiler padded before the int16 below: offset 11, zero in
+                                  * every record written before the field had a name (the
+                                  * zero-init invariant above), so an old record loads as 0 =
+                                  * "screen" and the layout, the size and CONFIG_VERSION are
+                                  * unchanged. An older firmware carries the byte untouched. */
     int16_t  scope_trigger_level;
     uint8_t  scope_ch1_coupling; /* 0=DC, 1=AC, 2=GND */
     uint8_t  scope_ch2_coupling;
@@ -139,6 +147,13 @@ typedef struct {
     /* Checksum */
     uint32_t checksum;           /* Sum of all bytes before this field */
 } device_config_t;
+
+/* meter_link took the padding byte: nothing moved. */
+_Static_assert(offsetof(device_config_t, scope_trigger_edge) == 10u &&
+               offsetof(device_config_t, meter_link) == 11u &&
+               offsetof(device_config_t, scope_trigger_level) == 12u &&
+               offsetof(device_config_t, checksum) == 56u &&
+               sizeof(device_config_t) == 60u, "v5 record layout");
 
 /* Initialize config with defaults. Memsets first — see the zero-init
  * invariant above. */

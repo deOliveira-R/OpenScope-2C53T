@@ -62,6 +62,8 @@ extern void system_clock_config(void);
 #include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
+#include "model.h"
+#include "meter_link_policy.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -284,6 +286,57 @@ static uint32_t info_bar_epoch(void)
         h = redraw_epoch_mix(h, meter_softkeys_epoch());
     }
     return h;
+}
+
+/* ── The meter link policy, evaluated here and nowhere else ──────────────
+ *
+ * Once per display frame (<= 50 ms), in the place the mode-change block has
+ * always switched PC11: the screen, the USB host state and meter.link go
+ * into meter_link_want_on() (meter_link_policy.h) and the answer goes to
+ * fpga_meter_link_set(), which acts only on a change. So a screen change is
+ * seen on the frame it used to be, a `set meter.link` or the Settings row
+ * within one frame, and a USB host appearing or leaving once its state has
+ * held for a second (a re-enumeration must not reach PC11: every rise
+ * restarts the meter SoC, ~1.4 s).
+ *
+ * Two things outside the policy function clamp its inputs:
+ *   - an image whose scope side talks on USART2 cannot keep the meter under
+ *     another screen (fpga_meter_link_background_capable): there the link
+ *     follows the screen, as it always did, and meter.link has no effect;
+ *   - `meter relays on` (the old relay projection, kept for A/B) makes the
+ *     meter take the scope's range relays, so it also gets the old link:
+ *     with the screen only. The same while a projection is still in place
+ *     (fpga_meter_holds_fe: the switch was turned off inside the meter), so
+ *     that leaving the meter puts the scope's relays back once.
+ */
+static struct {
+    meter_link_debounce_t usb;
+    bool usb_host, background, want_on;
+} g_meter_link;
+
+static void meter_link_service(void)
+{
+    const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    const bool usb = meter_link_debounce(&g_meter_link.usb, usb_debug_connected(), now_ms,
+                                         METER_LINK_USB_HOLD_MS);
+    const bool background = fpga_meter_link_background_capable() && !fpga_meter_relays_get() &&
+                            !fpga_meter_holds_fe();
+    const meter_link_policy_t policy =
+        background ? (meter_link_policy_t)prop_get(P(METER_LINK)) : METER_LINK_SCREEN;
+    const bool want = meter_link_want_on(current_mode == MODE_MULTIMETER, background && usb, policy);
+
+    g_meter_link.usb_host   = usb;
+    g_meter_link.background = background;
+    g_meter_link.want_on    = want;
+    fpga_meter_link_set(want);
+}
+
+/* For the shell's `meter state` (read only; the display task writes). */
+void meter_link_status(bool *usb_host, bool *background, bool *want_on)
+{
+    if (usb_host)   *usb_host   = g_meter_link.usb_host;
+    if (background) *background = g_meter_link.background;
+    if (want_on)    *want_on    = g_meter_link.want_on;
 }
 
 static uint32_t scope_ui_epoch(const scope_state_t *s)
@@ -517,13 +570,15 @@ static void vDisplayTask(void *pvParameters)
          * mode switch sees an already-invalidated gate. */
         static device_mode_t last_rendered_mode = (device_mode_t)0xFF;
         static uint32_t scope_entered_frame = 0;
+        meter_link_service();
         if (current_mode != last_rendered_mode) {
             /* PC11 = meter MUX enable. Stock switches it WITH the mode (HIGH in
              * meter mode, LOW in scope mode); we used to pin it LOW forever, so
              * the meter was dead in every scope build and every USART
              * measurement was taken with the far end switched off. Bench A/B/A
-             * 2026-08-17: HIGH -> 276 bytes returned, LOW -> 0, HIGH -> 276. */
-            fpga_set_meter_mux(current_mode == MODE_MULTIMETER);
+             * 2026-08-17: HIGH -> 276 bytes returned, LOW -> 0, HIGH -> 276.
+             * It now follows the meter link policy, evaluated just above
+             * (meter_link_service): the screen is one of its three inputs. */
             if (current_mode == MODE_OSCILLOSCOPE) {
                 scope_entered_frame = frame;
                 ui_popup_overlay_cancel();    /* scope popups are the scope's own */

@@ -64,6 +64,8 @@
 #include "meter_data.h"
 #include "meter_stock.h"
 #include "ui.h"
+#include "model.h"              /* meter state: the link policy (meter.link) */
+#include "meter_link_policy.h"
 #include "../ui/scope_state.h"
 #include "../util/settings_store.h"
 #include "../ui/siggen_edit.h"
@@ -3242,8 +3244,8 @@ static void cmd_meter_func(const char *args)
                          (unsigned)(METER_SUBMODE_COUNT - 1));
         return;
     }
-    if (current_mode != MODE_MULTIMETER) {
-        usb_send_str("meter func: not in meter mode (use `mode meter` first)\r\n");
+    if (current_mode != MODE_MULTIMETER && !fpga_meter_link_on()) {
+        usb_send_str("meter func: the meter link is off (`mode meter`, or see `meter state`)\r\n");
         return;
     }
     plan = fpga_meter_transition_plan_for_submode((uint8_t)sub);
@@ -3297,7 +3299,8 @@ static void cmd_meter_relays(const char *args)
     if (shell_onoff_arg(args, &on)) fpga_meter_relays_set(on);
     else if (*args) { usb_send_str("usage: meter relays [on|off]\r\n"); return; }
     usb_debug_printf("meter relays: %s (on = meter entry moves the scope's range relays, the old"
-                     " behaviour; applies at the next meter entry or function change)\r\n",
+                     " behaviour, and the meter link follows the screen only; applies at the next"
+                     " meter entry or function change)\r\n",
                      onoff(fpga_meter_relays_get()));
 }
 
@@ -3387,13 +3390,23 @@ static void cmd_meter_state(void)
                      (uint32_t)current_mode, (unsigned)meter_submode,
                      meter_submode_name(meter_submode), (unsigned)sel, (unsigned)f36,
                      (unsigned)fpga_meter_stock_cmd_word_for_submode(meter_submode));
-    usb_debug_printf("  link: soc_live=%u PC11=%u fast=%s keepalive=%s fast_switches=%u fallbacks=%u"
-                     " wake_ms=%u echo_ok=%u tries=%u data_frames=%u\r\n",
-                     fpga_meter_soc_live() ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
-                     onoff(fpga_meter_fast_switch_get()), onoff(fpga_meter_keepalive_get()),
-                     (unsigned)fpga.meter_fast_switch_count, (unsigned)fpga.meter_fast_fallback_count,
-                     (unsigned)fpga.meter_soc_wake_ms, (unsigned)fpga.meter_selector_confirmed,
-                     (unsigned)fpga.meter_selector_attempts, (unsigned)fpga.frame_count);
+    {
+        /* The link policy as the display task last evaluated it (main.c). */
+        bool usb_host = false, background = false, want_on = false;
+        meter_link_status(&usb_host, &background, &want_on);
+        usb_debug_printf("  link: on=%u want_on=%u policy=%s usb_host=%u background=%u soc_live=%u PC11=%u"
+                         " fast=%s keepalive=%s fast_switches=%u fallbacks=%u"
+                         " wake_ms=%u echo_ok=%u tries=%u sequences=%u data_frames=%u\r\n",
+                         fpga_meter_link_on() ? 1U : 0U, want_on ? 1U : 0U,
+                         prop_get(P(METER_LINK)) == METER_LINK_ALWAYS ? "always" : "screen",
+                         usb_host ? 1U : 0U, background ? 1U : 0U,
+                         fpga_meter_soc_live() ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
+                         onoff(fpga_meter_fast_switch_get()), onoff(fpga_meter_keepalive_get()),
+                         (unsigned)fpga.meter_fast_switch_count, (unsigned)fpga.meter_fast_fallback_count,
+                         (unsigned)fpga.meter_soc_wake_ms, (unsigned)fpga.meter_selector_confirmed,
+                         (unsigned)fpga.meter_selector_attempts, (unsigned)fpga.meter_mode_sequence_count,
+                         (unsigned)fpga.frame_count);
+    }
     usb_debug_printf("  reading: valid=%u sub=%u class=%u status=%u(%s) text=\"%s\" unit=\"%s\" value=%d.%03d\r\n",
                      r.valid ? 1U : 0U, (unsigned)r.submode, (unsigned)r.result_class,
                      (unsigned)r.status_code,
@@ -7059,7 +7072,7 @@ static void cmd_meter_trace(void)
 {
     meter_reading_t snap;
     bool have_snap = meter_data_snapshot(&snap);
-    bool live = have_snap && current_mode == MODE_MULTIMETER &&
+    bool live = have_snap && (current_mode == MODE_MULTIMETER || fpga_meter_link_on()) &&
                 snap.valid && snap.submode == meter_submode;
     fpga_meter_selector_t selectors = fpga_meter_expected_selectors(meter_submode);
     fpga_meter_transition_plan_t plan =
@@ -7654,7 +7667,7 @@ static void print_meter_mux_stream_line(uint32_t index)
 {
     meter_reading_t snap;
     bool have_snap = meter_data_snapshot(&snap);
-    bool live = current_mode == MODE_MULTIMETER &&
+    bool live = (current_mode == MODE_MULTIMETER || fpga_meter_link_on()) &&
                 have_snap &&
                 snap.valid &&
                 snap.submode == meter_submode;

@@ -7,12 +7,18 @@
  * the meter posture for fpga_service_requests) and the setter stores
  * meter_submode once that was posted. meter.layout and the fuse tester's
  * settings are plain state (main.c globals, fuse_ui.c's rules).
+ *
+ * meter.link is the link policy without a USB host (meter_link_policy.h):
+ * plain state here, read by the display task, which owns the decision and
+ * turns the link on or off within one frame of a set. meter.live reports
+ * what the link is doing now.
  */
 #define MODEL_INTERNAL
 #include "model.h"
 #include "ui.h"
 #include "fuse_model.h"
 #include "fuse_table.h"
+#include "meter_link_policy.h"
 
 #include <stdio.h>
 
@@ -31,6 +37,10 @@ const char *const lbl_meter_func[METER_SUBMODE_COUNT] = {
 const char *const lbl_meter_layout[METER_LAYOUT_COUNT] = { "big", "graph", "stats", "fuse", "limits" };
 /* fuse_type_names, token-safe. */
 const char *const lbl_fuse_type[FUSE_TYPE_COUNT] = { "ato", "mini", "micro2", "maxi", "jcase" };
+
+_Static_assert(METER_LINK_POLICY_COUNT == 2 && METER_LINK_SCREEN == 0 && METER_LINK_ALWAYS == 1,
+               "meter.link 0..1; 0 = screen is what a record without the field holds");
+const char *const lbl_meter_link[METER_LINK_POLICY_COUNT] = { "screen", "always" };
 
 int32_t meter_func_get(const prop_desc_t *p) { (void)p; return meter_submode; }
 void    meter_func_store(const prop_desc_t *p, int32_t v) { (void)p; meter_submode = (uint8_t)v; }
@@ -123,4 +133,29 @@ prop_status_t meter_fusethr_set(const prop_desc_t *p, int32_t v, uint8_t origin,
     (void)origin; (void)note;
     meter_fusethr_store(p, v);
     return PS_OK;
+}
+
+/* meter.link: no hardware in the setter or the store hook (a load runs
+ * before the ops are bound). One byte, written on the executor or by a load
+ * before the scheduler, read by the display task. */
+static volatile uint8_t g_meter_link = METER_LINK_SCREEN;
+
+int32_t meter_link_get(const prop_desc_t *p) { (void)p; return g_meter_link; }
+void    meter_link_store(const prop_desc_t *p, int32_t v)
+{
+    (void)p;
+    g_meter_link = (v == METER_LINK_ALWAYS) ? METER_LINK_ALWAYS : METER_LINK_SCREEN;
+}
+prop_status_t meter_link_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    meter_link_store(p, v);
+    return PS_OK;
+}
+
+/* meter.live: whether the link is on now. Without the op (host tests): off. */
+int32_t meter_live_get(const prop_desc_t *p)
+{
+    (void)p;
+    return (HW->meter_link_on && HW->meter_link_on()) ? 1 : 0;
 }

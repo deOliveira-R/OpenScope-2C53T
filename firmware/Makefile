@@ -175,6 +175,8 @@ R1A_CONFIG_PERSIST_EXTRA = src/ui/meas_select.c
 C_SOURCES += src/model/model.c src/model/props_scope.c src/model/props_gen.c
 C_SOURCES += src/model/props_meter.c src/model/props_sys.c
 C_SOURCES += src/model/model_exec.c src/model/model_hw_fw.c src/model/model_shell.c
+# The meter link policy (pure; host test: make test-meter-link-policy).
+C_SOURCES += src/model/meter_link_policy.c
 C_INCLUDES_M1 = -Isrc/model
 # ── end M1 block ──
 
@@ -923,6 +925,17 @@ $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/
 
 .PHONY: test-model
 test-model: $(BUILD_DIR)/test_model
+	$<
+
+# Meter link policy (src/model/meter_link_policy.c): the truth table of
+# "should the meter link be on" (screen, USB host, meter.link) and the
+# debounce of the USB host state. Pure.
+$(BUILD_DIR)/test_meter_link_policy: tests/test_meter_link_policy.c src/model/meter_link_policy.c \
+                                     src/model/meter_link_policy.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/model $< src/model/meter_link_policy.c -o $@
+
+.PHONY: test-meter-link-policy
+test-meter-link-policy: $(BUILD_DIR)/test_meter_link_policy
 	$<
 
 # Executor (ARCH-1 M1, src/model/model_exec.c) behind a host port: queue

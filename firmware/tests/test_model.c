@@ -106,6 +106,8 @@ static void f_gen_duty(percent_t d)              { logf_("gen_duty(%u);", d.pct)
 static void f_gen_out(bool on)                   { logf_("gen_out(%d);", on); siggen_enable(on); }
 static void f_gen_boot(bool on)                  { logf_("gen_boot(%d);", on); siggen_set_start_on(on); }
 static bool f_meter(uint8_t m, bool keep)        { logf_("meter(%u,%d);", m, keep); g_keep_auto = keep; return !nok(); }
+static bool g_link_on;
+static bool f_meter_link_on(void)                { return g_link_on; }
 static bool f_mode(uint8_t m)                    { logf_("mode(%u);", m); if (nok()) return false; current_mode = (device_mode_t)m; return true; }
 static void f_backlight(uint8_t p)               { logf_("backlight(%u);", p); }
 static void f_autooff(uint8_t m)                 { logf_("autooff(%u);", m); }
@@ -129,7 +131,7 @@ static const model_hw_ops_t k_fake = {
     .persist_mode = f_pers_mode, .mask_present = f_mask_present, .mask_get = f_mask_get,
     .mask_tol = f_mask_tol, .mask_stopfail = f_mask_sf,
     .gen_wave = f_gen_wave, .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_duty = f_gen_duty,
-    .gen_out = f_gen_out, .gen_bootout = f_gen_boot, .meter_func = f_meter, .mode = f_mode,
+    .gen_out = f_gen_out, .gen_bootout = f_gen_boot, .meter_func = f_meter, .meter_link_on = f_meter_link_on, .mode = f_mode,
     .backlight = f_backlight, .autooff = f_autooff, .il_enable = f_il_en, .il_enabled = f_il_enabled,
     .il_corr_set = f_il_corr_set, .il_corr_get = f_il_corr_get, .il_knots = f_il_knots, .il_skew_set = f_il_skew_set,
     .il_skew_get = f_il_skew_get, .selfcal_busy = f_busy, .shell_persist = f_shell_persist,
@@ -865,6 +867,42 @@ static void test_instruments(void)
     CHECK(prop_get(P(SYS_THEME)) == 2 && prop_get(P(TB_CODE)) == 10 && prop_get(P(CH1_VDIV)) == 3);
 }
 
+/* meter.link (the link policy without a USB host) and meter.live. */
+static void test_meter_link(void)
+{
+    fresh();
+    prop_note_t n;
+    int32_t v;
+    char buf[32];
+    const prop_desc_t *l = prop_find("meter.link"), *live = prop_find("meter.live");
+    CHECK(l == P(METER_LINK) && live == P(METER_LIVE));
+
+    /* default: with the screen; persisted; two labels that parse back */
+    CHECK(prop_default(l) == 0 && (l->flags & PF_PERSIST) && prop_is_settable(l));
+    CHECK(prop_parse(l, "screen", &v) == PS_OK && v == 0);
+    CHECK(prop_parse(l, "always", &v) == PS_OK && v == 1);
+    CHECK(prop_parse(l, "on", &v) != PS_OK);
+    prop_format_value(l, 1, buf, sizeof buf);
+    CHECK(strcmp(buf, "always") == 0);
+
+    /* set, step (wraps: the Settings row cycles), range */
+    CHECK(prop_set_local(l, 0, ORIGIN_SHELL, &n) == PS_OK && prop_get(l) == 0);
+    g_log[0] = '\0';
+    CHECK(prop_set_local(l, 1, ORIGIN_KEY, &n) == PS_OK && prop_get(l) == 1);
+    CHECK(strstr(g_log, "meter(") == NULL);                 /* the policy sends nothing to the meter */
+    CHECK(prop_step_local(l, +1, ORIGIN_KEY, &n) == PS_OK && prop_get(l) == 0);
+    CHECK(prop_step_local(l, -1, ORIGIN_KEY, &n) == PS_OK && prop_get(l) == 1);
+    CHECK(prop_set_local(l, 2, ORIGIN_SHELL, &n) == PS_INVALID && prop_get(l) == 1);
+    CHECK(prop_set_local(l, 0, ORIGIN_SHELL, &n) == PS_OK);
+
+    /* meter.live: read only, the link owner's answer */
+    CHECK((live->flags & PF_RO) && !prop_is_settable(live));
+    g_link_on = false; CHECK(prop_get(live) == 0);
+    g_link_on = true;  CHECK(prop_get(live) == 1);
+    CHECK(prop_set_local(live, 0, ORIGIN_SHELL, &n) == PS_INVALID && prop_get(live) == 1);
+    g_link_on = false;
+}
+
 static void test_sizes(void)
 {
     printf("  host: sizeof(prop_desc_t) = %u, table = %u B (%u properties), epochs = %u B\n",
@@ -889,6 +927,7 @@ int main(void)
     test_profile_lines();
     test_profile_write_and_defaults();
     test_instruments();
+    test_meter_link();
     test_sizes();
     printf("test_model: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

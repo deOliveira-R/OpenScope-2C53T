@@ -188,6 +188,15 @@ static void autooff_adjust(int dir, bool wrap)
     g_autooff_ready = true;
 }
 
+/* Settings > Meter on Battery: meter.link through the model (this is the
+ * executor), so the key, the shell's `set meter.link` and a saved record
+ * are one state. The display task turns the link on or off within a frame
+ * (main.c meter_link_service); the key's own capture saves it. */
+static void meter_link_adjust(int dir)
+{
+    (void)prop_step_local(P(METER_LINK), dir, ORIGIN_KEY, NULL);
+}
+
 /* Settings > Sound and Light (depth 7): row 0 volume, row 1 brightness. */
 static void sound_light_adjust(int dir, bool wrap)
 {
@@ -319,6 +328,9 @@ void input_handle_settings_ok(void)
             break;
         case 7: /* Startup on Boot -- cycle target mode */
             startup_mode_adjust(1);
+            break;
+        case 14: /* Meter on Battery: With Screen <-> Always (meter.link) */
+            meter_link_adjust(1);
             break;
         case 8: /* About -- display info screen */
             settings_depth = 2;
@@ -568,16 +580,20 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
     /* Tell the FPGA which mode we're entering.
      * Each mode needs different FPGA commands and analog MUX config. */
     if (current_mode == MODE_MULTIMETER) {
-        fpga_request_meter_mode(meter_submode);   /* background: no frozen buttons */
+        /* Background: no frozen buttons. Nothing is sent when the meter
+         * link is already on and running this function (fpga.c). */
+        fpga_meter_screen_entered(meter_submode);
     } else if (current_mode == MODE_SIGNAL_GEN) {
         fpga_enter_siggen_mode();
     } else if (current_mode == MODE_OSCILLOSCOPE) {
         fpga_enter_scope_mode();
-    } else {
-        /* Settings and home: the FPGA keeps the posture it had; the meter
-         * SoC is switched off as stock's exit to home does (0x0800D874). */
-        GPIOC->clr = (1U << 11);  /* PC11 LOW — meter disable */
     }
+    /* Settings and home: the FPGA keeps the posture it had. PC11 is not
+     * written here any more: the meter link has one owner (the display
+     * task, main.c meter_link_service), which switches the meter SoC off
+     * within a frame when the link policy says so (stock's exit to home,
+     * 0x0800D874, always did) and leaves it running when a USB host or
+     * meter.link = always wants it. */
     /* Leaving a mode, or backing out of the settings menu, is a deliberate
      * boundary: commit now rather than waiting out the settle window. */
     (void)settings_store_flush(settings_now_ms());
@@ -1467,8 +1483,11 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
-            if (settings_selected == 2)
+            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12 ||
+             settings_selected == 14)) {
+            if (settings_selected == 14)
+                meter_link_adjust(-1);
+            else if (settings_selected == 2)
                 autooff_adjust(-1, false);
             else if (settings_selected == 3)
                 display_mode_step(-1);
@@ -1521,8 +1540,11 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
-            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
-            if (settings_selected == 2)
+            (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12 ||
+             settings_selected == 14)) {
+            if (settings_selected == 14)
+                meter_link_adjust(+1);
+            else if (settings_selected == 2)
                 autooff_adjust(+1, false);
             else if (settings_selected == 3)
                 display_mode_step(+1);

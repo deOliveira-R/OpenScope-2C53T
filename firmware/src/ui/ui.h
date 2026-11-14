@@ -123,6 +123,11 @@ extern volatile int8_t        settings_sub_selected; /* Sub-menu selection */
 extern volatile uint8_t       active_channel;      /* 0=CH1, 1=CH2 (for scope adjustments) */
 extern volatile uint8_t       meter_submode;       /* 0-11: current meter sub-mode (11 = Auto) */
 extern volatile uint8_t       meter_layout;        /* 0=full, 1=chart, 2=stats, 3=fuse */
+/* The meter link policy's inputs and answer as the display task last saw
+ * them (main.c meter_link_service): the debounced "a USB host has configured
+ * the device", whether this image (and `meter relays`) lets the meter run
+ * under another screen, and whether the link is wanted on. */
+void meter_link_status(bool *usb_host, bool *background, bool *want_on);
 extern volatile uint32_t      meter_screen_draw_count; /* Incremented by draw_meter_screen() */
 extern volatile uint32_t      meter_screen_full_clear_count;
 extern volatile uint32_t      meter_screen_partial_clear_count;
@@ -157,7 +162,7 @@ extern volatile bool          math_enabled;
 extern volatile uint8_t       math_op;        /* math_op_t cast */
 extern volatile bool          persist_enabled;
 
-#define SETTINGS_ITEM_COUNT     14
+#define SETTINGS_ITEM_COUNT     15
 #define SETTINGS_OSC_ITEM_COUNT 8    /* no 20M Limit rows: stock V1.2.0 has none reachable (C13) */
 #define SETTINGS_ABOUT_LINES    5
 #define METER_SUBMODE_COUNT     12   /* 0-10 stock functions, 11 = Auto (word 0x14) */

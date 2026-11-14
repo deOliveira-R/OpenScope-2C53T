@@ -41,7 +41,6 @@ main.c	main	WDT	6
 main.c	main	XMC	4
 main.c	vApplicationMallocFailedHook	PRIMASK	1
 main.c	vApplicationStackOverflowHook	PRIMASK	1
-tasks/input_handler.c	enter_mode	GPIOC.out	1
 tasks/input_handler.c	input_handle_button	SCS	1
 tasks/input_handler.c	power_off_now	GPIOC.out	1
 tasks/input_handler.c	save_key_short	GPIOC.out	2

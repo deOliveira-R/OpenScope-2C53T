@@ -322,6 +322,7 @@ typedef struct {
      * autoselect unless keep_autoselect, reset min/max/hold/rel, post the
      * meter posture). false = not posted. */
     bool    (*meter_func)(uint8_t submode, bool keep_autoselect);
+    bool    (*meter_link_on)(void);                    /* the meter link is on now (meter.live) */
     /* system */
     bool    (*mode)(uint8_t device_mode);              /* posts the mode switch (enter_mode);
                                                         * model_touch(PG_SYS / PG_UI) on landing */
@@ -414,10 +415,12 @@ extern const char *const lbl_gen_wave[];
 
 /* props_meter.c */
 MODEL_PROP_FNS(meter_func)  MODEL_PROP_FNS(meter_layout) MODEL_PROP_FNS(meter_fusetype)
-MODEL_PROP_FNS(meter_fuserating) MODEL_PROP_FNS(meter_fusethr)
+MODEL_PROP_FNS(meter_fuserating) MODEL_PROP_FNS(meter_fusethr) MODEL_PROP_FNS(meter_link)
+int32_t meter_live_get(const prop_desc_t *p);
 bool meter_fuserating_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 extern const char *const lbl_meter_func[];
 extern const char *const lbl_meter_layout[];
+extern const char *const lbl_meter_link[];
 extern const char *const lbl_fuse_type[];
 
 /* props_sys.c */

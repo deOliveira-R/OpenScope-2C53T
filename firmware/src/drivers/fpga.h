@@ -1155,6 +1155,16 @@ uint8_t fpga_acq_trig_src_code_get(void);      /* reg 0x06 value last written */
 uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while interleaving */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);
+/* The meter link: PC11 + USART2 + the poll task's serving, on or off (see
+ * fpga.c). fpga_meter_link_set() is the display task's (the one context that
+ * evaluates meter_link_want_on); it does nothing when the state is already
+ * the one asked for, so a live link is never restarted. */
+void    fpga_meter_link_set(bool on);
+bool    fpga_meter_link_on(void);
+bool    fpga_meter_link_background_capable(void);
+/* Meter screen entered (input task): request the stored function unless the
+ * link is already on and running it. */
+void    fpga_meter_screen_entered(uint8_t submode);
 extern volatile bool fpga_meter_needs_activation;
 /* The scope's front-end posture: fpga_scope_posture_gen moves each time the
  * scope's posture is put back (fpga_set_meter_mux(false) in a

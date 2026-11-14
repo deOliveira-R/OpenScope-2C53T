@@ -19,6 +19,8 @@
 #include "component_test.h"
 #include "shared_mem.h"
 #include "sys_prefs.h"
+#include "model.h"
+#include "meter_link_policy.h"
 #if defined(USB_MSC) && USB_MSC
 #include "usb_debug.h"
 #endif
@@ -40,6 +42,7 @@ static const char *settings_items[SETTINGS_ITEM_COUNT] = {
     "Factory Reset",
     "Theme",
     "USB Sharing",   /* stock's settings item (OK handler 0x0800BF08); appended so no index moves */
+    "Meter on Battery",   /* meter.link: without a USB host, With Screen / Always; appended */
 };
 
 /* Math / Persistence sub-menu items */
@@ -178,6 +181,10 @@ static void draw_settings_top(void)
 #else
         if (i == 13) value = "n/a";     /* built CDC-only (USB_MSC=0) */
 #endif
+
+        /* Meter on Battery: the property, through the model. With a USB host
+         * the meter runs whatever this says (meter_link_policy.h). */
+        if (i == 14) value = prop_get(P(METER_LINK)) == METER_LINK_ALWAYS ? "Always" : "With Screen";
 
         draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
     }
