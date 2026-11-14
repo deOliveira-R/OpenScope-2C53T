@@ -74,7 +74,7 @@ volatile device_mode_t current_mode = MODE_OSCILLOSCOPE;
 #else
 volatile device_mode_t current_mode = MODE_MULTIMETER;
 #endif
-volatile startup_mode_t startup_mode = STARTUP_METER;
+volatile startup_mode_t startup_mode = STARTUP_RESTORE;   /* the built-in default (sys.startup) */
 volatile uint32_t      uptime_seconds = 0;
 volatile int8_t        settings_selected = 0;
 volatile int8_t        settings_depth = 0;
@@ -122,6 +122,7 @@ const char *startup_mode_name(startup_mode_t mode)
     case STARTUP_METER:  return "Meter";
     case STARTUP_HOME:   return "Home";       /* stock's "None" */
     case STARTUP_SIGGEN: return "Signal Gen";
+    case STARTUP_RESTORE: return "Last Used";  /* the instrument shown at the last save */
     default:             return "?";
     }
 }
@@ -139,9 +140,11 @@ void startup_mode_set(startup_mode_t mode)
 #define FPGA_METER_SUBMODES 0   /* as fpga.c: lifts the "scope-only" half of a warm build */
 #endif
 
-static device_mode_t startup_target_mode(void)
+/* last_screen: STARTUP_SCREEN_* of the loaded record (model_last_screen()),
+ * STARTUP_SCREEN_NONE while there is none yet. Only Restore looks at it. */
+static device_mode_t startup_target_mode(uint8_t last_screen)
 {
-    return startup_boot_mode(startup_mode, FPGA_WARM_HANDOFF_TEST != 0,
+    return startup_boot_mode(startup_mode, last_screen, FPGA_WARM_HANDOFF_TEST != 0,
                              FPGA_METER_SUBMODES != 0);
 }
 
@@ -1355,10 +1358,15 @@ int main(void)
     /* Initialize meter data parser */
     meter_data_init();
     meter_voltage_wave_init();
-    /* The saved startup mode is not known yet (it is in the settings record,
-     * restored below): boot on the factory default for now, nothing before
-     * settings_store_init() looks at current_mode. */
-    current_mode = startup_target_mode();
+    /* The saved startup mode and last screen are not known yet (they are in
+     * the settings record, restored below): a placeholder for now, the
+     * built-in default with no last screen (Home; the scope in a scope-only
+     * warm image). Nothing between here and the second assignment after
+     * settings_store_init() reads current_mode: flash_fs_init /
+     * flash_fs_load_factory_cal, usb_debug_init, fpga_init, the settings
+     * load and scope_freq_lock_init never look at it, and its other readers
+     * are tasks and shell handlers that do not run before the scheduler. */
+    current_mode = startup_target_mode(STARTUP_SCREEN_NONE);
 
     /* Factory calibration boundary: initialize the W25Q wrapper, then
      * leave the calibration mirror unloaded. Stock evidence has not
@@ -1403,8 +1411,9 @@ int main(void)
     settings_store_init();
     scope_freq_lock_init();     /* shell + display share the estimator's FFT scratch */
     /* Startup-on-Boot, now restored (M6): the mode the display and FPGA tasks
-     * and the mode entry below start in. */
-    current_mode = startup_target_mode();
+     * and the mode entry below start in. Restore needs the record's last
+     * screen, so this is the assignment that decides. */
+    current_mode = startup_target_mode(model_last_screen());
 
 #if defined(CAL_BACKUP_AUTO_RESTORE) && CAL_BACKUP_AUTO_RESTORE
     /* OFF by default. Manual `cal restore` is the primary path. Even when built
@@ -1493,7 +1502,8 @@ int main(void)
     if (current_mode == MODE_MULTIMETER) {
 #if FPGA_WARM_HANDOFF_TEST
         /* A warm-handoff image reaches here only with FPGA_METER_SUBMODES
-         * (startup_policy.h). Its USART2 is parked (ctrl1 = 0, IRQ masked,
+         * (startup_policy.h; Startup on Boot = Meter, or Restore after a
+         * save on the meter). Its USART2 is parked (ctrl1 = 0, IRQ masked,
          * FPGA_USART_SILENT_SCOPE) and fpga_meter_reset_transport() re-arms it
          * only with the scheduler running, so a transition from here would
          * busy-wait ~3 s for a SoC frame and 5 x 300 ms for a selector echo
@@ -1510,8 +1520,11 @@ int main(void)
          * so it is safe before the scheduler, like the scope entry below. */
         fpga_enter_siggen_mode();
     } else {
-        /* Scope, and home (stock "None"): home keeps the scope posture, as
-         * the settings page does. */
+        /* Scope, and home (stock "None", and Restore without a last
+         * instrument): home keeps the scope posture, as the settings page
+         * does. A no-op in a warm-handoff image, like the generator entry
+         * above: there the FPGA already is in the scope posture and home
+         * and the generator touch neither it nor the meter link. */
         fpga_enter_scope_mode();
     }
 #endif

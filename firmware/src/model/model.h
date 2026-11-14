@@ -269,6 +269,14 @@ prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t 
  * Returns the number of values that changed. */
 unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool note);
 
+/* The instrument screen the settings record held when it was last loaded
+ * (STARTUP_SCREEN_*, ui/startup_policy.h; 0 = none: before a load, an older
+ * record, Home, Settings, garbage). Startup on Boot = Restore boots into it;
+ * sys.lastscreen reads it. model_last_screen_load is the record codec's
+ * (model_persist_v5.c): it clamps the raw byte. */
+uint8_t model_last_screen(void);
+void    model_last_screen_load(uint8_t raw);
+
 /* ── Change notification ─────────────────────────────────────────────── */
 extern volatile uint32_t prop_epoch[PG_COUNT];   /* bumped by the executor on a change */
 uint32_t prop_group_epoch(uint8_t g);
@@ -428,6 +436,7 @@ MODEL_PROP_FNS(sys_instrument) MODEL_PROP_FNS(sys_mode) MODEL_PROP_FNS(sys_start
 MODEL_PROP_FNS(sys_bright)  MODEL_PROP_FNS(sys_volume)  MODEL_PROP_FNS(sys_autooff)
 MODEL_PROP_FNS(sys_theme)   MODEL_PROP_FNS(sys_lang)    MODEL_PROP_FNS(fft_window)
 MODEL_PROP_FNS(fft_avg)     MODEL_PROP_FNS(fft_maxhold)
+int32_t sys_lastscreen_get(const prop_desc_t *p);
 int32_t ui_focus_get(const prop_desc_t *p);
 int32_t ui_ach_get(const prop_desc_t *p);
 int32_t ui_screen_get(const prop_desc_t *p);
@@ -435,6 +444,7 @@ bool    ui_focus_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 extern const char *const lbl_sys_instrument[];
 extern const char *const lbl_sys_mode[];
 extern const char *const lbl_sys_startup[];
+extern const char *const lbl_sys_lastscreen[];
 extern const char *const lbl_sys_autooff[];
 extern const char *const lbl_sys_theme[];
 extern const char *const lbl_sys_lang[];

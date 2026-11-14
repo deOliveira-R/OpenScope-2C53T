@@ -97,6 +97,17 @@ flash_region_status_t flash_regions_bind_w25q(void) { return FLASH_REGION_ERR_NO
  * every other byte of every record is compared as before. A record written
  * before the field existed holds 0 there (the zero-init invariant), which
  * test_meter_link_record below checks against the reference defaults.
+ *
+ * A second one (Startup on Boot = Restore, the last screen): the first of
+ * the two padding bytes at offset 22 became the field last_screen. Three
+ * more lines, each marked "last screen": ref_capture writes the screen shown
+ * now (current_mode: scope 1, meter 2, generator 3, anything else 0),
+ * ref_apply clamps it (above 3 -> 0) into the model's loaded-screen state,
+ * ref_defaults sets 0. And ONE line of ref_defaults changed its value,
+ * marked "sys.startup default": the built-in default of sys.startup went
+ * from the meter to Restore (an owner decision, 2026-11-14), so the default
+ * record's startup_mode byte is CONFIG_MODE_RESTORE where it was
+ * CONFIG_MODE_MULTIMETER. How stored values decode did not move.
  * ═══════════════════════════════════════════════════════════════════ */
 #define REF_TRIGGER_LEVEL_LIMIT  103
 
@@ -157,6 +168,7 @@ static void ref_capture(device_config_t *cfg)
     cfg->meter_submode = meter_submode;
     cfg->meter_layout  = meter_layout;
     cfg->meter_link    = (uint8_t)meter_link_get(NULL);                      /* meter.link */
+    cfg->last_screen   = startup_screen_of_mode(current_mode);               /* last screen */
 
     const siggen_config_t *sg = siggen_get_config();
     cfg->siggen_waveform  = sg->waveform;
@@ -214,6 +226,7 @@ static void ref_apply(const device_config_t *cfg)
     meter_layout  = ref_clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);
     meter_link_store(NULL, ref_clamp_idx(cfg->meter_link, METER_LINK_POLICY_COUNT,
                                          METER_LINK_SCREEN));                /* meter.link */
+    model_last_screen_load(cfg->last_screen <= STARTUP_SCREEN_MAX ? cfg->last_screen : 0u);   /* last screen */
 
     /* v5: the measurement selection (meas_select_set drops bits above 12). */
     meas_select_set(0, cfg->meas_ch1_mask);
@@ -306,7 +319,7 @@ static void ref_defaults(device_config_t *cfg)
     cfg->display_brightness  = 100;   /* stock factory (C15) */
     cfg->display_persist_mode = 0;
     cfg->language = 0;              /* English */
-    cfg->startup_mode = CONFIG_MODE_MULTIMETER;
+    cfg->startup_mode = CONFIG_MODE_RESTORE;        /* sys.startup default (was CONFIG_MODE_MULTIMETER) */
 
     /* System defaults */
     cfg->auto_shutdown_mins = 0;      /* stock factory: off (C15) */
@@ -325,6 +338,7 @@ static void ref_defaults(device_config_t *cfg)
     cfg->meter_submode        = 0;  /* DCV */
     cfg->meter_layout         = 0;  /* Full */
     cfg->meter_link           = 0;  /* meter.link: with the screen */
+    cfg->last_screen          = 0;  /* last screen: none */
 
     /* v5 block: the same five on both channels, CH1's badges before the
      * selection page existed (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT;
@@ -346,7 +360,7 @@ static void ref_defaults(device_config_t *cfg)
 typedef struct {
     scope_state_t ss;               /* the whole struct: session fields included */
     uint16_t meas2;
-    uint8_t  theme, math_en, math_op, meter_sub, meter_lay, meter_link, startup;
+    uint8_t  theme, math_en, math_op, meter_sub, meter_lay, meter_link, startup, last_screen;
     uint8_t  wave, amp, duty, out, start_on;
     uint32_t freq;
     uint8_t  bright, vol, autooff;
@@ -366,6 +380,7 @@ static void snap(snap_t *s)
     s->meter_lay = meter_layout;
     s->meter_link = (uint8_t)meter_link_get(NULL);
     s->startup   = (uint8_t)startup_mode;
+    s->last_screen = model_last_screen();
     const siggen_config_t *g = siggen_get_config();
     s->wave = g->waveform; s->freq = g->frequency_hz; s->amp = g->amplitude_dv;
     s->duty = g->duty_pct; s->out = g->output_enabled; s->start_on = g->start_on;
@@ -387,6 +402,7 @@ static void restore(const snap_t *s)
     meter_layout  = s->meter_lay;
     meter_link_store(NULL, s->meter_link);
     startup_mode  = (startup_mode_t)s->startup;
+    model_last_screen_load(s->last_screen);
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = s->wave; g.frequency_hz = s->freq; g.amplitude_dv = s->amp;
@@ -453,6 +469,8 @@ static void random_state(void)
     meter_layout  = (uint8_t)R(METER_LAYOUT_COUNT);
     meter_link_store(NULL, (int32_t)R(METER_LINK_POLICY_COUNT));
     startup_mode  = (startup_mode_t)R(STARTUP_COUNT);
+    current_mode  = (device_mode_t)R(MODE_COUNT);          /* the screen a capture records */
+    model_last_screen_load((uint8_t)R(STARTUP_SCREEN_MAX + 1u));   /* a capture must not look at it */
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = (uint8_t)R(SIGGEN_WAVEFORM_COUNT);
@@ -547,7 +565,7 @@ static void test_table_coverage(void)
             if (p && (p->flags & PF_STORED_ONLY)) CHECK(f->flags & V5_F_STORED);
             if (p && (f->flags & V5_F_STORED)) CHECK(p->flags & PF_STORED_ONLY);
         } else {
-            CHECK(f->codec == V5_CONST || f->codec == V5_CARRY);
+            CHECK(f->codec == V5_CONST || f->codec == V5_CARRY || f->codec == V5_SCREEN);
         }
         for (unsigned k = 0; k < f->size; k++) {
             CHECKF(f->offset + k < sizeof owner, "row %u past the record", r);
@@ -558,13 +576,15 @@ static void test_table_coverage(void)
         }
     }
     /* every payload byte between the header and the checksum: one row's, or
-     * the struct's padding (22, 23; 11 was padding until meter.link took it) */
+     * the struct's padding (23; 11 was padding until meter.link took it, 22
+     * until the last screen did) */
     for (unsigned b = offsetof(device_config_t, scope_ch1_vdiv); b < offsetof(device_config_t, checksum); b++) {
-        const bool pad = (b == 22u || b == 23u);
+        const bool pad = (b == 23u);
         CHECKF(owner[b] == (pad ? 0 : 1), "record byte %u %s", b, pad ? "is padding but owned" : "has no row");
     }
     CHECK(offsetof(device_config_t, scope_trigger_level) == 12u);
     CHECK(offsetof(device_config_t, meter_link) == 11u);
+    CHECK(offsetof(device_config_t, last_screen) == 22u);
     CHECK(offsetof(device_config_t, siggen_frequency) == 24u);
 
     /* Session-only as a result: settable, not an alias, not usercal, no row
@@ -842,6 +862,17 @@ static void test_out_of_range_policy(void)
     FRESH(); c.startup_mode = 3; CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_METER);
     FRESH(); c.startup_mode = 4; CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_HOME);
     FRESH(); c.startup_mode = 99; CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_METER);
+    FRESH(); c.startup_mode = 5; CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_RESTORE);
+    FRESH(); c.startup_mode = 6; CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_METER);
+    FRESH(); c.startup_mode = 1; CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_METER);
+    FRESH();                     CHECK(load_get(&c, PROP_ID_SYS_STARTUP) == STARTUP_RESTORE);   /* the default record */
+    /* the last screen: 0..3, anything else none */
+    FRESH();                      CHECK(load_get(&c, PROP_ID_SYS_LASTSCREEN) == STARTUP_SCREEN_NONE);
+    FRESH(); c.last_screen = 1;   CHECK(load_get(&c, PROP_ID_SYS_LASTSCREEN) == STARTUP_SCREEN_SCOPE);
+    FRESH(); c.last_screen = 2;   CHECK(load_get(&c, PROP_ID_SYS_LASTSCREEN) == STARTUP_SCREEN_METER);
+    FRESH(); c.last_screen = 3;   CHECK(load_get(&c, PROP_ID_SYS_LASTSCREEN) == STARTUP_SCREEN_SIGGEN);
+    FRESH(); c.last_screen = 4;   CHECK(load_get(&c, PROP_ID_SYS_LASTSCREEN) == STARTUP_SCREEN_NONE);
+    FRESH(); c.last_screen = 0xFF; CHECK(load_get(&c, PROP_ID_SYS_LASTSCREEN) == STARTUP_SCREEN_NONE);
     /* brightness: 0 or > 100 -> 100, < 25 -> 25, else down to a 5 step */
     FRESH(); c.display_brightness = 0;   CHECK(load_get(&c, PROP_ID_SYS_BRIGHTNESS) == 100);
     FRESH(); c.display_brightness = 101; CHECK(load_get(&c, PROP_ID_SYS_BRIGHTNESS) == 100);
@@ -867,7 +898,7 @@ static void test_out_of_range_policy(void)
 
 static void test_stored_only_raw_carry(void)
 {
-    static const unsigned carried[] = { 18, 19, 20, 22, 23, 37, 38 };   /* fft x3, pad x2, persist mode, lang (11 is meter.link now) */
+    static const unsigned carried[] = { 18, 19, 20, 23, 37, 38 };   /* fft x3, pad, persist mode, lang (11 is meter.link now, 22 the last screen) */
     for (unsigned n = 0; n < 2000u; n++) {
         device_config_t rec;
         config_init_defaults(&rec);
@@ -1090,6 +1121,7 @@ static void test_meter_link_record(void)
     device_config_t old;
     ref_defaults(&old);
     CHECK(((const uint8_t *)&old)[11] == 0u);
+    current_mode = MODE_HOME;       /* a capture records the screen (byte 22): none here */
     meter_link_store(NULL, METER_LINK_ALWAYS);
     settings_store_apply(&old);
     CHECK(prop_get(P(METER_LINK)) == METER_LINK_SCREEN);
@@ -1122,6 +1154,114 @@ static void test_meter_link_record(void)
     CHECK(prop_get(P(METER_LINK)) == METER_LINK_SCREEN);
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * The last screen (Startup on Boot = Restore): the former padding byte at
+ * offset 22, and the new default of sys.startup
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static device_mode_t boot_of(void)       /* the plain image's boot screen after a load */
+{
+    return startup_boot_mode((startup_mode_t)prop_get(P(SYS_STARTUP)), model_last_screen(), false, false);
+}
+
+static void test_last_screen_record(void)
+{
+    /* The built-in default is Restore, and a default record names no
+     * instrument: a unit without a record boots to Home. */
+    CHECK(prop_default(P(SYS_STARTUP)) == STARTUP_RESTORE);
+    device_config_t def;
+    config_init_defaults(&def);
+    CHECK(def.startup_mode == CONFIG_MODE_RESTORE && def.last_screen == STARTUP_SCREEN_NONE);
+    model_last_screen_load(STARTUP_SCREEN_METER);
+    settings_store_apply(&def);
+    CHECK(model_last_screen() == STARTUP_SCREEN_NONE && boot_of() == MODE_HOME);
+
+    /* A record from before the byte existed: byte 22 is 0 (padding, zeroed
+     * by the defaults' memset and carried by every capture since) and its
+     * startup choice is whatever was stored, the old default (meter) here.
+     * The choice is kept; the last screen is unknown. */
+    device_config_t old = def;
+    old.startup_mode = CONFIG_MODE_MULTIMETER;
+    old.checksum = config_compute_checksum(&old);
+    CHECK(((const uint8_t *)&old)[22] == 0u);
+    model_last_screen_load(STARTUP_SCREEN_SIGGEN);
+    settings_store_apply(&old);
+    CHECK(prop_get(P(SYS_STARTUP)) == STARTUP_METER && boot_of() == MODE_MULTIMETER);
+    CHECK(model_last_screen() == STARTUP_SCREEN_NONE);
+    /* ... and if its owner then picks Restore, the next boot is Home */
+    CHECK(startup_boot_mode(STARTUP_RESTORE, model_last_screen(), false, false) == MODE_HOME);
+
+    /* Saved again from Home or Settings it is the same 60 bytes: the update
+     * alone burns no record there. */
+    static const device_mode_t none[2] = { MODE_HOME, MODE_SETTINGS };
+    for (unsigned i = 0; i < 2; i++) {
+        current_mode = none[i];
+        device_config_t same = old;
+        settings_store_capture(&same);
+        CHECK(memcmp(&same, &old, sizeof old) == 0);
+        if (memcmp(&same, &old, sizeof old)) diff_rec(&old, &same);
+    }
+
+    /* Saved on an instrument, byte 22 and the checksum move, nothing else;
+     * the record loads back as that instrument and Restore boots into it. */
+    static const struct { device_mode_t mode; uint8_t code; } inst[3] = {
+        { MODE_OSCILLOSCOPE, STARTUP_SCREEN_SCOPE }, { MODE_MULTIMETER, STARTUP_SCREEN_METER },
+        { MODE_SIGNAL_GEN, STARTUP_SCREEN_SIGGEN },
+    };
+    settings_store_apply(&def);                      /* sys.startup = restore */
+    for (unsigned k = 0; k < 3; k++) {
+        current_mode = inst[k].mode;
+        device_config_t rec = def;
+        settings_store_capture(&rec);
+        for (size_t i = 0; i < offsetof(device_config_t, checksum); i++) {
+            const uint8_t x = ((const uint8_t *)&def)[i], y = ((const uint8_t *)&rec)[i];
+            if (i == 22u) CHECK(x == 0u && y == inst[k].code);
+            else CHECKF(x == y, "byte %zu moved with the last screen: 0x%02x -> 0x%02x", i, x, y);
+        }
+        CHECK(config_validate(&rec));
+        CHECK(rec.checksum == def.checksum + inst[k].code);
+
+        /* the capture did not move what the boot loaded */
+        CHECK(model_last_screen() == STARTUP_SCREEN_NONE);
+        current_mode = MODE_HOME;                    /* a new boot: the screen is not the saved one */
+        settings_store_apply(&rec);
+        CHECK(model_last_screen() == inst[k].code);
+        CHECK(prop_get(P(SYS_LASTSCREEN)) == inst[k].code);
+        CHECK(boot_of() == inst[k].mode);
+        settings_store_apply(&def);
+        CHECK(model_last_screen() == STARTUP_SCREEN_NONE && boot_of() == MODE_HOME);
+    }
+
+    /* Garbage in the byte (it passed the checksum): none, Home. */
+    for (unsigned v = STARTUP_SCREEN_MAX + 1u; v < 256u; v++) {
+        device_config_t g = def;
+        g.last_screen = (uint8_t)v;
+        g.checksum = config_compute_checksum(&g);
+        settings_store_apply(&g);
+        if (model_last_screen() != STARTUP_SCREEN_NONE || boot_of() != MODE_HOME) {
+            CHECKF(0, "last screen byte %u loaded as %u", v, (unsigned)model_last_screen());
+            break;
+        }
+    }
+    checks++;
+
+    /* A fixed choice ignores the byte. */
+    device_config_t fx = def;
+    fx.startup_mode = CONFIG_MODE_OSCILLOSCOPE;
+    fx.last_screen = STARTUP_SCREEN_METER;
+    fx.checksum = config_compute_checksum(&fx);
+    settings_store_apply(&fx);
+    CHECK(boot_of() == MODE_OSCILLOSCOPE);
+
+    /* sys.lastscreen is read only: no setter, no store hook, not in a profile. */
+    const prop_desc_t *ls = P(SYS_LASTSCREEN);
+    CHECK((ls->flags & PF_RO) && !ls->set && !ls->store && !(ls->flags & PF_PERSIST));
+    CHECK(model_persist_v5_find(PROP_ID_SYS_LASTSCREEN) == NULL);
+
+    settings_store_apply(&def);
+    current_mode = MODE_MULTIMETER;
+}
+
 int main(void)
 {
     scope_state_init(scope_state_get());
@@ -1141,6 +1281,7 @@ int main(void)
     test_notes_by_origin();
     test_refused_commit_no_note();
     test_meter_link_record();
+    test_last_screen_record();
 
     printf("test_model_persist: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

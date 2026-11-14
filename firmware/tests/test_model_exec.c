@@ -585,7 +585,7 @@ static void test_shell_get_roundtrip(void)
     sh_reset(); model_shell_list("", collect);
     CHECK(n_out == (unsigned)prop_count() + 1u);
     sh_reset(); model_shell_list("sys.", collect);
-    CHECK(n_out == 8);
+    CHECK(n_out == 9);                       /* sys.lastscreen is the ninth */
     CHECK(strstr(out[1], "NOWIRE") == NULL && strstr(out[5], "NOWIRE") != NULL);   /* sys.mode, sys.autooff */
     sh_reset(); model_shell_describe("ch1.vdiv", collect);
     bool vals = false, owner = false;

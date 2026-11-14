@@ -223,7 +223,8 @@ static bool settings_value_adjust(settings_item_t item, int dir, bool wrap)
     case SET_ITEM_AUTOOFF:      /* Off / 15 / 30 / 60 min */
         settings_prop_step(P(SYS_AUTOOFF), dir, wrap);
         return true;
-    case SET_ITEM_STARTUP:      /* stock's row order (home, meter, scope, generator), always round */
+    case SET_ITEM_STARTUP:      /* stock's row order (home, meter, scope, generator), then
+                                 * Restore ("Last Used"); always round */
         (void)prop_set_local(P(SYS_STARTUP),
                              (int32_t)startup_mode_step((startup_mode_t)prop_get(P(SYS_STARTUP)), dir),
                              ORIGIN_KEY, NULL);

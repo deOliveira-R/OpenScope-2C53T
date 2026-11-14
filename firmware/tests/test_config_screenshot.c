@@ -60,7 +60,8 @@ static void test_config_defaults(void)
     ASSERT_EQ(cfg.scope_ch1_vdiv, 3, "ch1 vdiv default");
     ASSERT_EQ(cfg.display_brightness, 100, "brightness default");
     ASSERT_EQ(cfg.language, 0, "language default");
-    ASSERT_EQ(cfg.startup_mode, CONFIG_MODE_MULTIMETER, "startup mode default");
+    ASSERT_EQ(cfg.startup_mode, CONFIG_MODE_RESTORE, "startup mode default (Restore)");
+    ASSERT_EQ(cfg.last_screen, 0, "no last screen by default (Restore boots to Home)");
     PASS();
 }
 

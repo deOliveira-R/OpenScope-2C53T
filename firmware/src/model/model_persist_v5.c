@@ -21,7 +21,9 @@
  *   gen.amp   (float)   x10 + 0.5 NaN, < 0, > 31 -> default 30; else
  *                       truncated, then 31 -> 30
  *   gen.out             on only with gen.bootout on and a non-zero byte
- *   sys.startup         0 scope, 2 siggen, 4 home, anything else meter
+ *   sys.startup         0 scope, 2 siggen, 4 home, 5 restore, anything else meter
+ *   last screen         the former padding byte at offset 22, no property: 0 in
+ *                       every older record = none; anything above 3 -> none
  *   sys.brightness      0 or > 100 -> 100, < 25 -> 25, else down to a 5 step
  *   sys.autooff         minutes other than 0/15/30/60 -> off
  *   sys.brightness/volume/autooff: without sys_prefs_mark 0xC1 -> 100 / 1 / off
@@ -81,6 +83,7 @@ const v5_field_t model_persist_v5_fields[] = {
     ROW(PROP_ID_FFT_AVG,      fft_avg_count,        V5_FFT_COUNT, V5_LOAD_DEFAULT,  V5_F_STORED, 0, 32),
     ROW(PROP_ID_FFT_MAXHOLD,  fft_max_hold,         V5_BOOL8,     V5_LOAD_EXACT,    V5_F_STORED, 0, 1),
     ROW(PROP_ID_GEN_WAVE,     siggen_waveform,      V5_U8,        V5_LOAD_DEFAULT,  0, 0, SIGGEN_WAVEFORM_COUNT - 1),
+    ROW(0,                    last_screen,          V5_SCREEN,    V5_LOAD_DEFAULT,  0, 0, STARTUP_SCREEN_MAX),
     ROW(PROP_ID_GEN_FREQ,     siggen_frequency,     V5_F32_INT,   V5_LOAD_DEFAULT,  0, 0, SIGGEN_FREQ_MAX_HZ),
     ROW(PROP_ID_GEN_AMP,      siggen_amplitude,     V5_F32_X10,   V5_LOAD_DEFAULT,  0, 0, SIGGEN_AMP_MAX_DV),
     ROW(PROP_ID_GEN_DUTY,     siggen_duty,          V5_U8,        V5_LOAD_DEFAULT,  0, 0, SIGGEN_DUTY_MAX),
@@ -90,7 +93,7 @@ const v5_field_t model_persist_v5_fields[] = {
     ROW(PROP_ID_SYS_BRIGHTNESS, display_brightness, V5_U8,        V5_LOAD_BRIGHT,   V5_F_PREFS, SYS_BRIGHT_MIN, SYS_BRIGHT_MAX),
     ROW(0,                    display_persist_mode, V5_CARRY,     V5_LOAD_EXACT,    0, 0, 0),
     ROW(PROP_ID_SYS_LANG,     language,             V5_U8,        V5_LOAD_DEFAULT,  V5_F_STORED, 0, 0),
-    ROW(PROP_ID_SYS_STARTUP,  startup_mode,         V5_STARTUP,   V5_LOAD_DEFAULT,  0, 0, CONFIG_MODE_HOME),
+    ROW(PROP_ID_SYS_STARTUP,  startup_mode,         V5_STARTUP,   V5_LOAD_DEFAULT,  0, 0, CONFIG_MODE_RESTORE),
     ROW(PROP_ID_SYS_AUTOOFF,  auto_shutdown_mins,   V5_MINUTES,   V5_LOAD_DEFAULT,  V5_F_PREFS, 0, 60),
     ROW(PROP_ID_SYS_VOLUME,   sound_enabled,        V5_U8,        V5_LOAD_DEFAULT,  V5_F_PREFS, 0, SYS_VOL_MAX),
     ROW(PROP_ID_SYS_THEME,    theme,                V5_U8,        V5_LOAD_DEFAULT,  0, 0, THEME_COUNT - 1),
@@ -217,6 +220,10 @@ void model_persist_v5_apply(const device_config_t *cfg)
     for (unsigned i = 0; i < model_persist_v5_field_count; i++) {
         const v5_field_t *f = &model_persist_v5_fields[i];
         const prop_desc_t *p = prop_by_id(f->prop_id);
+        if (f->codec == V5_SCREEN) {             /* no property: kept for the boot policy */
+            model_last_screen_load(rd_u8(cfg, f->offset));
+            continue;
+        }
         if (!p || f->codec == V5_CARRY) continue;
         if (f->codec == V5_MATH_PAIR) {
             const uint8_t op = rd_u8(cfg, f->offset + 1u);
@@ -251,7 +258,7 @@ static void encode(const v5_field_t *f, device_config_t *cfg, int32_t v, int32_t
     case V5_GEN_OUT:   wr_u8(cfg, f->offset, (bootout && v) ? 1u : 0u); break;
     case V5_MATH_PAIR: wr_u8(cfg, f->offset, v ? 1u : 0u);
                        wr_u8(cfg, f->offset + 1u, (uint8_t)(v ? v - 1 : 0)); break;
-    default: break;     /* V5_CARRY */
+    default: break;     /* V5_CARRY; V5_SCREEN: none by default, capture writes it itself */
     }
 }
 
@@ -274,6 +281,10 @@ void model_persist_v5_capture(device_config_t *cfg)
         const v5_field_t *f = &model_persist_v5_fields[i];
         const prop_desc_t *p = prop_by_id(f->prop_id);
         if (f->codec == V5_CARRY) continue;
+        if (f->codec == V5_SCREEN) {             /* the screen shown now, not the loaded one */
+            wr_u8(cfg, f->offset, startup_screen_of_mode(current_mode));
+            continue;
+        }
         if (f->codec == V5_MATH_PAIR) {          /* the variables, not the composite */
             wr_u8(cfg, f->offset, math_enabled ? 1u : 0u);
             wr_u8(cfg, f->offset + 1u, math_op);

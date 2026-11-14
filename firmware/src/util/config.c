@@ -58,8 +58,8 @@ void config_init_defaults(device_config_t *cfg)
      * 200 mV/div CH2, 50 us/div, Auto/rising/CH1 at 0; stock's factory
      * generator (sine, 1 kHz, 3.0 V, 50 %) with the output off at boot;
      * brightness 100, volume 1, auto-off off, sys_prefs_mark set (C15);
-     * startup Meter; the five-measurement set on both channels (v5); FFT
-     * Hanning, no averaging. Fields with no property (display_persist_mode)
+     * startup Restore with no last screen (so the first boot is Home); the
+     * five-measurement set on both channels (v5); FFT Hanning, no averaging. Fields with no property (display_persist_mode)
      * stay zero. tests/test_model_persist.c pins the bytes against the
      * literal list this replaced. */
     model_persist_v5_defaults(cfg);

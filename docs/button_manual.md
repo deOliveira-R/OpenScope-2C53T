@@ -32,7 +32,8 @@ screenshot of the whole screen to the gallery (`Saved <n>.bmp`), long SAVE
 opens the gallery. Stock does both in the scope only.
 
 Settings -> **Startup on Boot** offers stock's four choices: Home (stock calls
-it "None"), Meter, Scope, Signal Gen.
+it "None"), Meter, Scope, Signal Gen, and ours: Last Used (the instrument that
+was on screen when the settings were last saved; the default).
 
 ---
 
@@ -383,16 +384,25 @@ Dark Blue -> Classic Green -> High Contrast -> Night Red -> Dark Blue
 ### Startup on Boot (OK/LEFT/RIGHT to cycle)
 
 ```
-Scope <-> Meter
+Home -> Meter -> Scope -> Signal Gen -> Last Used -> Home
 ```
 
-Fresh or erased settings default to `Meter`: the application starts in
-Multimeter mode and configures the DMM frontend immediately after FPGA
-initialization. Selecting `Scope` keeps the normal oscilloscope startup path. The choice and the
-last meter function (including Auto) are saved with the other settings and
-restored at boot, in the plain image and in the `-meter` image alike (the other
-warm-handoff images are scope-only and always start in the scope). The `mode startup`
-shell command sets it, and it is saved with the next key press.
+`Last Used` (`sys.startup = restore`) boots into the instrument that was on
+screen when the settings were last saved: the scope, the meter or the
+generator. Every save records the screen (entering a screen saves at once, and
+so does the power-off), so powering off on the meter boots the meter. If the
+last save was made on Home or in Settings, or the saved record is older than
+this choice, it boots to Home.
+
+Fresh or erased settings default to `Last Used` (until 2026-11-14 the default
+was stock's `Meter`), so a unit without saved settings boots to Home. A unit
+with saved settings keeps the choice it stored. The choice and the last meter
+function (including Auto) are saved with the other settings and restored at
+boot, in the plain image and in the `-meter` image alike (the other
+warm-handoff images are scope-only and always start in the scope).
+`set sys.startup scope|meter|home|siggen|restore` sets it from the shell
+(saved within 100 ms, unless `persist off`); `get sys.lastscreen` shows the screen the record held when
+it was loaded at boot.
 
 ### Oscilloscope Settings Sub-menu (depth 1)
 

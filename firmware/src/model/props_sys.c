@@ -25,6 +25,7 @@
 #include "key_model.h"
 #include "sys_prefs.h"
 #include "theme.h"
+#include "startup_policy.h"
 
 #define HW model_hw()
 
@@ -32,7 +33,10 @@ _Static_assert(MODE_OSCILLOSCOPE == 0 && MODE_MULTIMETER == 1 && MODE_SIGNAL_GEN
                MODE_SETTINGS == 3 && MODE_HOME == 4 && MODE_COUNT == 5,
                "sys.mode values = device_mode_t; sys.instrument 0..2 = the instrument modes");
 _Static_assert(STARTUP_SCOPE == 0 && STARTUP_METER == 1 && STARTUP_HOME == 2 &&
-               STARTUP_SIGGEN == 3 && STARTUP_COUNT == 4, "sys.startup values = startup_mode_t");
+               STARTUP_SIGGEN == 3 && STARTUP_RESTORE == 4 && STARTUP_COUNT == 5,
+               "sys.startup values = startup_mode_t");
+_Static_assert(STARTUP_SCREEN_NONE == 0 && STARTUP_SCREEN_SCOPE == 1 && STARTUP_SCREEN_METER == 2 &&
+               STARTUP_SCREEN_SIGGEN == 3 && STARTUP_SCREEN_MAX == 3, "sys.lastscreen values = the record's");
 _Static_assert(THEME_COUNT == 4 && THEME_DARK_BLUE == 0, "sys.theme 0..3");
 _Static_assert(SYS_BRIGHT_MIN == 25u && SYS_BRIGHT_MAX == 100u && SYS_BRIGHT_STEP == 5u &&
                SYS_BRIGHT_DEFAULT == 100u, "sys.brightness 25..100 step 5, default 100");
@@ -94,9 +98,23 @@ prop_status_t sys_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop
 /* ═══ startup, display, sound, power ═════════════════════════════════ */
 
 /* startup_mode_t order. The Settings row steps in stock's order instead
- * (home, meter, scope, siggen: startup_mode_step); a later "resume last
- * session" target is appended, so no value moves. */
-const char *const lbl_sys_startup[STARTUP_COUNT] = { "scope", "meter", "home", "siggen" };
+ * (home, meter, scope, siggen, then restore: startup_mode_step). restore was
+ * appended, so no value moved; it is the built-in default. */
+const char *const lbl_sys_startup[STARTUP_COUNT] = { "scope", "meter", "home", "siggen", "restore" };
+
+/* sys.lastscreen: the instrument screen in the settings record as loaded
+ * (at boot), i.e. what sys.startup = restore had to go on. Not the screen
+ * shown now (sys.instrument: every capture writes that one into the record)
+ * and not moved by a save. The record byte has no settable property: the
+ * v5 codec hands it over on a load (model_persist_v5.c, V5_SCREEN), before
+ * the scheduler; main() and this getter read it. */
+static volatile uint8_t g_last_screen = STARTUP_SCREEN_NONE;
+void    model_last_screen_load(uint8_t raw) { g_last_screen = startup_screen_clamp(raw); }
+uint8_t model_last_screen(void) { return g_last_screen; }
+
+const char *const lbl_sys_lastscreen[STARTUP_SCREEN_MAX + 1] = { "none", "scope", "meter", "siggen" };
+int32_t sys_lastscreen_get(const prop_desc_t *p) { (void)p; return (int32_t)g_last_screen; }
+
 int32_t sys_startup_get(const prop_desc_t *p) { (void)p; return (int32_t)startup_mode; }
 void    sys_startup_store(const prop_desc_t *p, int32_t v) { (void)p; startup_mode = (startup_mode_t)v; }
 prop_status_t sys_startup_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)

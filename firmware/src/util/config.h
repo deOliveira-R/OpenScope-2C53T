@@ -71,11 +71,13 @@
 #define CONFIG_MODE_SIGNAL_GEN     2
 #define CONFIG_MODE_SETTINGS       3
 #define CONFIG_MODE_HOME           4   /* startup only: stock "None" boots to home */
+#define CONFIG_MODE_RESTORE        5   /* startup only: the instrument in last_screen, else home.
+                                        * An older firmware reads it as the meter. */
 
 /* All user-configurable settings.
  *
  * WHICH FIELDS ARE LIVE: settings_store.c captures and re-applies the scope
- * block, the theme, the math block, the meter block and startup_mode. The FFT, signal
+ * block, the theme, the math block, the meter block, startup_mode and last_screen. The FFT, signal
  * generator (siggen_waveform, siggen_frequency, siggen_amplitude, siggen_duty,
  * siggen_enabled, siggen_start_on) and language and FFT fields are stored
  * and round-tripped. The generator IS captured and applied (settings_store.c,
@@ -109,6 +111,14 @@ typedef struct {
     bool     fft_max_hold;
     /* Signal Generator */
     uint8_t  siggen_waveform;
+    uint8_t  last_screen;        /* The instrument screen shown at this capture, for Startup on
+                                  * Boot = Restore: 0 = none (Home, Settings), 1 = scope,
+                                  * 2 = meter, 3 = generator (STARTUP_SCREEN_*, startup_policy.h).
+                                  * The first of the two bytes the compiler padded before the
+                                  * float below: offset 22, zero in every record written before
+                                  * it had a name (the zero-init invariant above), so an old
+                                  * record loads as "none" and the layout, the size and
+                                  * CONFIG_VERSION are unchanged. Offset 23 is still padding. */
     float    siggen_frequency;   /* Hz, integer-valued 0..50000 (v4 reads it) */
     float    siggen_amplitude;   /* volts, 0.1 V steps (dV / 10) */
     uint8_t  siggen_duty;        /* v4 (was the unused float siggen_offset): 0..100 % */
@@ -148,10 +158,13 @@ typedef struct {
     uint32_t checksum;           /* Sum of all bytes before this field */
 } device_config_t;
 
-/* meter_link took the padding byte: nothing moved. */
+/* meter_link and last_screen took padding bytes: nothing moved. */
 _Static_assert(offsetof(device_config_t, scope_trigger_edge) == 10u &&
                offsetof(device_config_t, meter_link) == 11u &&
                offsetof(device_config_t, scope_trigger_level) == 12u &&
+               offsetof(device_config_t, siggen_waveform) == 21u &&
+               offsetof(device_config_t, last_screen) == 22u &&
+               offsetof(device_config_t, siggen_frequency) == 24u &&
                offsetof(device_config_t, checksum) == 56u &&
                sizeof(device_config_t) == 60u, "v5 record layout");
 

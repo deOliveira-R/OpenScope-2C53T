@@ -138,29 +138,85 @@ static void test_robust(void)
 
 static void test_startup_policy(void)
 {
-    printf("Startup on Boot (stock 0x0804C208: None, Multimeter, Oscilloscope, Signal Generator)\n");
-    CHECK("None -> home, siggen -> generator, meter, scope",
-          startup_boot_mode(STARTUP_HOME, false, false) == MODE_HOME &&
-          startup_boot_mode(STARTUP_SIGGEN, false, false) == MODE_SIGNAL_GEN &&
-          startup_boot_mode(STARTUP_METER, false, false) == MODE_MULTIMETER &&
-          startup_boot_mode(STARTUP_SCOPE, false, false) == MODE_OSCILLOSCOPE);
-    CHECK("warm-handoff image: home/siggen stay scope",
-          startup_boot_mode(STARTUP_HOME, true, true) == MODE_OSCILLOSCOPE &&
-          startup_boot_mode(STARTUP_SIGGEN, true, false) == MODE_OSCILLOSCOPE);
+    printf("Startup on Boot (stock 0x0804C208: None, Multimeter, Oscilloscope, Signal Generator; ours: Restore)\n");
+    /* The whole table: (choice, last screen, warm handoff, meter submodes).
+     * want[choice][last screen] is the boot screen of every image but the
+     * scope-only warm one. Last screen 4 and 255 are garbage. */
+    static const uint8_t last[6] = { STARTUP_SCREEN_NONE, STARTUP_SCREEN_SCOPE, STARTUP_SCREEN_METER,
+                                     STARTUP_SCREEN_SIGGEN, 4, 255 };
+#define ALL6(m) { m, m, m, m, m, m }
+    static const device_mode_t want[STARTUP_COUNT][6] = {
+        [STARTUP_SCOPE]   = ALL6(MODE_OSCILLOSCOPE),
+        [STARTUP_METER]   = ALL6(MODE_MULTIMETER),
+        [STARTUP_HOME]    = ALL6(MODE_HOME),
+        [STARTUP_SIGGEN]  = ALL6(MODE_SIGNAL_GEN),
+        [STARTUP_RESTORE] = { MODE_HOME, MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN,
+                              MODE_HOME, MODE_HOME },
+    };
+#undef ALL6
+    int plain = 1, bench = 1, scope_only = 1, sub_only = 1;
+    for (int m = 0; m < (int)STARTUP_COUNT; m++) {
+        for (int l = 0; l < 6; l++) {
+            const startup_mode_t sm = (startup_mode_t)m;
+            plain      &= startup_boot_mode(sm, last[l], false, false) == want[m][l];
+            /* submodes without a warm handoff is not a build we make; it is the plain table */
+            sub_only &= startup_boot_mode(sm, last[l], false, true) == want[m][l];
+            bench      &= startup_boot_mode(sm, last[l], true, true) == want[m][l];
+            scope_only &= startup_boot_mode(sm, last[l], true, false) == MODE_OSCILLOSCOPE;
+        }
+    }
+    CHECK("plain image: every choice honoured; Restore = the last instrument, else Home", plain);
+    CHECK("submodes alone change nothing", sub_only);
+    CHECK("bench image (warm handoff + meter submodes): the same table", bench);
+    CHECK("warm handoff without meter submodes: always the scope", scope_only);
+    CHECK("the bug: Startup = Home in the bench image booted the scope",
+          startup_boot_mode(STARTUP_HOME, STARTUP_SCREEN_NONE, true, true) == MODE_HOME &&
+          startup_boot_mode(STARTUP_SIGGEN, STARTUP_SCREEN_NONE, true, true) == MODE_SIGNAL_GEN);
+    CHECK("an unknown choice boots the scope",
+          startup_boot_mode((startup_mode_t)42, STARTUP_SCREEN_METER, false, false) == MODE_OSCILLOSCOPE);
+
+    /* The last screen in the record: mode + 1 for the instruments, 0 otherwise. */
+    CHECK("a capture records scope 1, meter 2, generator 3",
+          startup_screen_of_mode(MODE_OSCILLOSCOPE) == 1 && startup_screen_of_mode(MODE_MULTIMETER) == 2 &&
+          startup_screen_of_mode(MODE_SIGNAL_GEN) == 3);
+    CHECK("home, settings and garbage record none (0)",
+          startup_screen_of_mode(MODE_HOME) == 0 && startup_screen_of_mode(MODE_SETTINGS) == 0 &&
+          startup_screen_of_mode(MODE_COUNT) == 0 && startup_screen_of_mode((device_mode_t)200) == 0);
     int ok = 1;
+    for (int v = 0; v < 256; v++)
+        ok &= startup_screen_clamp((uint8_t)v) == (v <= 3 ? v : 0);
+    CHECK("a load keeps 0..3 and reads anything else as none", ok);
+    ok = 1;
+    for (int m = 0; m <= (int)MODE_SIGNAL_GEN; m++)
+        ok &= startup_boot_mode(STARTUP_RESTORE, startup_screen_of_mode((device_mode_t)m), false, false)
+              == (device_mode_t)m;
+    CHECK("Restore after a save on an instrument boots that instrument", ok);
+
+    /* The Settings row. */
+    ok = 1;
     startup_mode_t m = STARTUP_HOME;
-    const startup_mode_t seq[4] = { STARTUP_METER, STARTUP_SCOPE, STARTUP_SIGGEN, STARTUP_HOME };
-    for (int i = 0; i < 4; i++) { m = startup_mode_step(m, +1); ok &= m == seq[i]; }
-    CHECK("RIGHT steps in stock's row order and wraps", ok);
-    CHECK("LEFT from Home wraps to Signal Gen", startup_mode_step(STARTUP_HOME, -1) == STARTUP_SIGGEN);
-    CHECK("an unknown value steps from the default",
-          startup_mode_step((startup_mode_t)42, +1) == STARTUP_SCOPE);
+    const startup_mode_t seq[5] = { STARTUP_METER, STARTUP_SCOPE, STARTUP_SIGGEN, STARTUP_RESTORE, STARTUP_HOME };
+    for (int i = 0; i < 5; i++) { m = startup_mode_step(m, +1); ok &= m == seq[i]; }
+    CHECK("RIGHT steps Home, Multimeter, Oscilloscope, Signal Gen, Restore and wraps", ok);
+    ok = 1;
+    m = STARTUP_HOME;
+    const startup_mode_t rev[5] = { STARTUP_RESTORE, STARTUP_SIGGEN, STARTUP_SCOPE, STARTUP_METER, STARTUP_HOME };
+    for (int i = 0; i < 5; i++) { m = startup_mode_step(m, -1); ok &= m == rev[i]; }
+    CHECK("LEFT from Home wraps to Restore and walks back", ok);
+    CHECK("an unknown value steps from the default (Restore)",
+          startup_mode_step((startup_mode_t)42, +1) == STARTUP_HOME &&
+          startup_mode_step((startup_mode_t)42, -1) == STARTUP_SIGGEN);
     ok = 1;
     for (int i = 0; i < (int)STARTUP_COUNT; i++)
         ok &= startup_mode_from_config(startup_mode_to_config((startup_mode_t)i)) == (startup_mode_t)i;
     CHECK("every startup choice round-trips through the record", ok);
-    CHECK("settings is not a startup choice (-> default meter)",
-          startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER);
+    CHECK("the stored values did not move: 0 scope, 1 meter, 2 siggen, 4 home; 5 is restore",
+          startup_mode_to_config(STARTUP_SCOPE) == 0 && startup_mode_to_config(STARTUP_METER) == 1 &&
+          startup_mode_to_config(STARTUP_SIGGEN) == 2 && startup_mode_to_config(STARTUP_HOME) == 4 &&
+          startup_mode_to_config(STARTUP_RESTORE) == 5);
+    CHECK("settings (3) and garbage are not startup choices: they read as the meter, as before",
+          startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER &&
+          startup_mode_from_config(6) == STARTUP_METER && startup_mode_from_config(255) == STARTUP_METER);
 }
 
 int main(void)

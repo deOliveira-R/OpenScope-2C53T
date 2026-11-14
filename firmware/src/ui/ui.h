@@ -26,13 +26,15 @@ typedef enum {
 } device_mode_t;
 
 /* Startup on Boot. Stock offers four (0x0804C208: None, Multimeter,
- * Oscilloscope, Signal Generator; "None" boots to home). The values are RAM
- * only: the record stores CONFIG_MODE_* (startup_policy.h). */
+ * Oscilloscope, Signal Generator; "None" boots to home); Restore is ours and
+ * the built-in default. The values are RAM only (and sys.startup's): the
+ * record stores CONFIG_MODE_* (startup_policy.h). */
 typedef enum {
     STARTUP_SCOPE = 0,
     STARTUP_METER,
     STARTUP_HOME,       /* stock "None" */
     STARTUP_SIGGEN,
+    STARTUP_RESTORE,    /* ours: the instrument shown at the last save (startup_policy.h) */
     STARTUP_COUNT
 } startup_mode_t;
 

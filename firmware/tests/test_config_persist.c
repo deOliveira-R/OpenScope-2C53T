@@ -65,6 +65,11 @@
 #include "meas_select.h"
 #include "ui.h"        /* METER_SUBMODE_COUNT / METER_LAYOUT_* and the globals */
 
+/* model.h (not included: this file has its own flash model_* helpers): the
+ * record's last screen as loaded, props_sys.c. */
+uint8_t model_last_screen(void);
+void    model_last_screen_load(uint8_t raw);
+
 /* ═══════════════════════════════════════════════════════════════════
  * Globals that live in main.c on the device. settings_store.c reads and
  * writes exactly these four; anything else it touched would fail to link,
@@ -75,7 +80,7 @@ volatile bool     math_enabled  = false;
 volatile uint8_t  math_op       = 0;
 volatile uint8_t  meter_submode = 0;
 volatile uint8_t  meter_layout  = 0;
-volatile startup_mode_t startup_mode = STARTUP_METER;   /* M6: owned by settings_store now */
+volatile startup_mode_t startup_mode = STARTUP_RESTORE; /* M6: owned by settings_store now; main.c's initialiser */
 
 /* Since ARCH-1 M3 settings_store.c captures and applies through the property
  * table (src/model/model_persist_v5.c), so the model links in, and with it
@@ -462,7 +467,11 @@ static void power_cycle(void)
     math_op = 0;
     meter_submode = 0;
     meter_layout = 0;
-    startup_mode = STARTUP_METER;
+    startup_mode = STARTUP_RESTORE;          /* main.c's initialiser (the built-in default) */
+    model_last_screen_load(0);               /* RAM: nothing loaded yet */
+    current_mode = MODE_HOME;                /* where a unit without a record boots (Restore, no
+                                              * last screen); a capture records the screen, so the
+                                              * tests that save on an instrument say so */
     sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
     sys_prefs_set_volume(SYS_VOL_DEFAULT);
     sys_prefs_set_autooff_mins(0);
@@ -1184,12 +1193,20 @@ static void test_siggen_corrupt_record_values_are_sanitised(void)
  * Parity M6: startup-into-meter and meter-function persistence
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* What main() does after settings_store_init(): the boot screen. */
+static device_mode_t boot_screen(bool warm, bool submodes)
+{
+    return startup_boot_mode(startup_mode, model_last_screen(), warm, submodes);
+}
+
 static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
 {
     fresh_device();
     power_cycle();
     settings_store_init();
-    CHECK(startup_mode == STARTUP_METER, "factory startup is not the meter");
+    CHECK(startup_mode == STARTUP_RESTORE, "factory startup is not Restore (%d)", (int)startup_mode);
+    CHECK(model_last_screen() == STARTUP_SCREEN_NONE && boot_screen(false, false) == MODE_HOME,
+          "a unit without a record does not boot to Home");
 
     /* Scope as the boot target, and stock's Auto as the meter function. */
     startup_mode = STARTUP_SCOPE;
@@ -1197,20 +1214,20 @@ static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
     CHECK(settings_store_flush(1000), "a changed startup mode / function was not written");
 
     power_cycle();
-    CHECK(startup_mode == STARTUP_METER && meter_submode == 0, "power_cycle() did not reset RAM");
+    CHECK(startup_mode == STARTUP_RESTORE && meter_submode == 0, "power_cycle() did not reset RAM");
     settings_store_init();
     CHECK(startup_mode == STARTUP_SCOPE, "startup mode not restored (%d)", (int)startup_mode);
     CHECK(meter_submode == FPGA_METER_SUBMODE_AUTO, "Auto function not restored (%u)",
           (unsigned)meter_submode);
-    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_OSCILLOSCOPE, "boot mode");
+    CHECK(boot_screen(false, false) == MODE_OSCILLOSCOPE, "boot mode");
 
-    /* and back to the meter */
+    /* and the meter */
     startup_mode = STARTUP_METER;
     CHECK(settings_store_flush(5000), "meter startup not written");
     power_cycle();
     settings_store_init();
     CHECK(startup_mode == STARTUP_METER, "meter startup not restored");
-    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_MULTIMETER, "boot mode meter");
+    CHECK(boot_screen(false, false) == MODE_MULTIMETER, "boot mode meter");
 
     /* Stock's other two rows: None (home) and Signal Generator. */
     startup_mode = STARTUP_HOME;
@@ -1218,13 +1235,104 @@ static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
     power_cycle();
     settings_store_init();
     CHECK(startup_mode == STARTUP_HOME, "home startup not restored (%d)", (int)startup_mode);
-    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_HOME, "boot mode home");
+    CHECK(boot_screen(false, false) == MODE_HOME, "boot mode home");
     startup_mode = STARTUP_SIGGEN;
     CHECK(settings_store_flush(13000), "siggen startup not written");
     power_cycle();
     settings_store_init();
     CHECK(startup_mode == STARTUP_SIGGEN, "siggen startup not restored (%d)", (int)startup_mode);
-    CHECK(startup_boot_mode(startup_mode, false, false) == MODE_SIGNAL_GEN, "boot mode siggen");
+    CHECK(boot_screen(false, false) == MODE_SIGNAL_GEN, "boot mode siggen");
+    /* the bench image (warm handoff + meter submodes) honours them too */
+    CHECK(boot_screen(true, true) == MODE_SIGNAL_GEN, "bench image: siggen");
+    CHECK(boot_screen(true, false) == MODE_OSCILLOSCOPE, "scope-only warm image");
+}
+
+/* Startup on Boot = Restore: the instrument shown at the last save. */
+static void test_restore_boots_the_screen_of_the_last_save(void)
+{
+    static const struct { device_mode_t mode; uint8_t code; const char *name; } inst[3] = {
+        { MODE_MULTIMETER, STARTUP_SCREEN_METER, "meter" },
+        { MODE_OSCILLOSCOPE, STARTUP_SCREEN_SCOPE, "scope" },
+        { MODE_SIGNAL_GEN, STARTUP_SCREEN_SIGGEN, "generator" },
+    };
+    uint32_t t = 1000;
+
+    fresh_device();
+    power_cycle();
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_RESTORE && boot_screen(false, false) == MODE_HOME, "first boot");
+    current_mode = boot_screen(false, false);
+    /* Booted to Home with nothing changed: nothing to write. */
+    CHECK(settings_store_flush_ex(t) == SETTINGS_FLUSH_CLEAN, "an untouched first boot wrote a record");
+
+    for (unsigned i = 0; i < 3; i++) {
+        /* Enter the instrument (enter_mode flushes), then power off on it
+         * (power_off_now flushes again: nothing new). */
+        current_mode = inst[i].mode;
+        t += 4000;
+        CHECK(settings_store_flush(t), "entering the %s wrote no record", inst[i].name);
+        CHECK(settings_store_flush_ex(t + 100) == SETTINGS_FLUSH_CLEAN,
+              "power-off on the %s wrote a second record", inst[i].name);
+
+        power_cycle();
+        CHECK(model_last_screen() == STARTUP_SCREEN_NONE, "power_cycle() did not reset RAM");
+        settings_store_init();
+        CHECK(model_last_screen() == inst[i].code, "%s: last screen loaded as %u", inst[i].name,
+              (unsigned)model_last_screen());
+        CHECK(boot_screen(false, false) == inst[i].mode, "%s: plain image boots elsewhere", inst[i].name);
+        CHECK(boot_screen(true, true) == inst[i].mode, "%s: bench image boots elsewhere", inst[i].name);
+        CHECK(boot_screen(true, false) == MODE_OSCILLOSCOPE, "scope-only warm image");
+        current_mode = boot_screen(false, false);
+        /* Back on the same screen: the record already says so. */
+        CHECK(settings_store_flush_ex(t + 200) == SETTINGS_FLUSH_CLEAN,
+              "%s: booting back into it wrote a record", inst[i].name);
+    }
+
+    /* Home and Settings are not instruments: saved there, the next boot is Home. */
+    static const device_mode_t none[2] = { MODE_HOME, MODE_SETTINGS };
+    for (unsigned i = 0; i < 2; i++) {
+        current_mode = MODE_MULTIMETER;
+        t += 4000;
+        (void)settings_store_flush(t);
+        current_mode = none[i];
+        t += 4000;
+        CHECK(settings_store_flush(t), "leaving the meter wrote no record");
+        power_cycle();
+        settings_store_init();
+        CHECK(model_last_screen() == STARTUP_SCREEN_NONE && boot_screen(false, false) == MODE_HOME,
+              "saved on home/settings: not Home at boot");
+    }
+
+    /* A fixed choice does not follow the last screen. */
+    startup_mode = STARTUP_SCOPE;
+    current_mode = MODE_MULTIMETER;
+    t += 4000;
+    CHECK(settings_store_flush(t), "fixed choice not written");
+    power_cycle();
+    settings_store_init();
+    CHECK(model_last_screen() == STARTUP_SCREEN_METER, "the screen is recorded whatever the choice");
+    CHECK(boot_screen(false, false) == MODE_OSCILLOSCOPE, "Startup = Scope followed the last screen");
+
+    /* A record from before the byte existed, with the old default choice
+     * (meter): the choice is kept, the last screen is unknown. */
+    fresh_device();
+    power_cycle();
+    device_config_t old;
+    config_init_defaults(&old);
+    old.startup_mode = CONFIG_MODE_MULTIMETER;
+    CHECK(old.last_screen == 0, "defaults name a last screen");
+    CHECK(config_save(&old), "could not plant the old record");
+    settings_store_init();
+    CHECK(startup_mode == STARTUP_METER && boot_screen(false, false) == MODE_MULTIMETER,
+          "an existing record lost its startup choice");
+    CHECK(model_last_screen() == STARTUP_SCREEN_NONE, "old record: a last screen from nowhere");
+    startup_mode = STARTUP_RESTORE;          /* its owner picks Restore in Settings ... */
+    current_mode = MODE_SETTINGS;
+    CHECK(settings_store_flush(1000), "Restore not written");
+    power_cycle();
+    settings_store_init();                   /* ... and powers off there: Home */
+    CHECK(startup_mode == STARTUP_RESTORE && boot_screen(false, false) == MODE_HOME,
+          "Restore chosen and saved in Settings does not boot to Home");
 }
 
 static void test_system_prefs_survive_a_power_cycle(void)
@@ -1288,8 +1396,13 @@ static void test_startup_mode_from_a_foreign_record_is_the_default(void)
     CHECK(startup_mode_from_config(CONFIG_MODE_HOME) == STARTUP_HOME, "home (stock None)");
     CHECK(startup_mode_to_config(STARTUP_HOME) == CONFIG_MODE_HOME, "to config home");
     CHECK(startup_mode_to_config(STARTUP_SIGGEN) == CONFIG_MODE_SIGNAL_GEN, "to config siggen");
-    CHECK(startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER, "settings -> default");
-    CHECK(startup_mode_from_config(250) == STARTUP_METER, "garbage -> default");
+    CHECK(startup_mode_from_config(CONFIG_MODE_RESTORE) == STARTUP_RESTORE, "restore");
+    CHECK(startup_mode_to_config(STARTUP_RESTORE) == CONFIG_MODE_RESTORE, "to config restore");
+    /* Unknown bytes read as the meter, as they did while the meter was the
+     * default: adding Restore (and making it the default) moved no stored value. */
+    CHECK(startup_mode_from_config(CONFIG_MODE_SETTINGS) == STARTUP_METER, "settings -> meter");
+    CHECK(startup_mode_from_config(CONFIG_MODE_RESTORE + 1) == STARTUP_METER, "6 -> meter");
+    CHECK(startup_mode_from_config(250) == STARTUP_METER, "garbage -> meter");
 
     config_init_defaults(&cfg);
     cfg.startup_mode = 77;
@@ -1306,13 +1419,20 @@ static void test_startup_mode_from_a_foreign_record_is_the_default(void)
 static void test_boot_mode_policy(void)
 {
     /* A release build boots into what was saved. */
-    CHECK(startup_boot_mode(STARTUP_METER, false, false) == MODE_MULTIMETER, "release meter");
-    CHECK(startup_boot_mode(STARTUP_SCOPE, false, false) == MODE_OSCILLOSCOPE, "release scope");
+    CHECK(startup_boot_mode(STARTUP_METER, 0, false, false) == MODE_MULTIMETER, "release meter");
+    CHECK(startup_boot_mode(STARTUP_SCOPE, 0, false, false) == MODE_OSCILLOSCOPE, "release scope");
     /* A warm-handoff image is scope-only, its meter entry points are no-ops ... */
-    CHECK(startup_boot_mode(STARTUP_METER, true, false) == MODE_OSCILLOSCOPE, "warm: scope only");
-    /* ... unless the meter submodes are enabled, which makes the meter real. */
-    CHECK(startup_boot_mode(STARTUP_METER, true, true) == MODE_MULTIMETER, "warm+submodes meter");
-    CHECK(startup_boot_mode(STARTUP_SCOPE, true, true) == MODE_OSCILLOSCOPE, "warm+submodes scope");
+    CHECK(startup_boot_mode(STARTUP_METER, 0, true, false) == MODE_OSCILLOSCOPE, "warm: scope only");
+    CHECK(startup_boot_mode(STARTUP_RESTORE, STARTUP_SCREEN_METER, true, false) == MODE_OSCILLOSCOPE,
+          "warm: scope only, Restore too");
+    /* ... unless the meter submodes are enabled: then every choice is honoured
+     * (the full table is tests/test_home_model.c's). */
+    CHECK(startup_boot_mode(STARTUP_METER, 0, true, true) == MODE_MULTIMETER, "warm+submodes meter");
+    CHECK(startup_boot_mode(STARTUP_SCOPE, 0, true, true) == MODE_OSCILLOSCOPE, "warm+submodes scope");
+    CHECK(startup_boot_mode(STARTUP_HOME, 0, true, true) == MODE_HOME, "warm+submodes home");
+    CHECK(startup_boot_mode(STARTUP_SIGGEN, 0, true, true) == MODE_SIGNAL_GEN, "warm+submodes siggen");
+    CHECK(startup_boot_mode(STARTUP_RESTORE, STARTUP_SCREEN_METER, true, true) == MODE_MULTIMETER,
+          "warm+submodes restore");
     CHECK(startup_mode_to_config(STARTUP_SCOPE) == CONFIG_MODE_OSCILLOSCOPE, "to config scope");
     CHECK(startup_mode_to_config(STARTUP_METER) == CONFIG_MODE_MULTIMETER, "to config meter");
 }
@@ -2716,6 +2836,7 @@ int main(void)
         run("brightness, volume and auto-off survive a power cycle", test_system_prefs_survive_a_power_cycle);
         run("a pre-C15 record gets stock factory brightness / auto-off",
             test_pre_c15_record_gets_stock_factory_prefs);
+        run("Restore boots the screen of the last save", test_restore_boots_the_screen_of_the_last_save);
         run("a foreign startup mode is the default",
             test_startup_mode_from_a_foreign_record_is_the_default);
         run("boot mode policy", test_boot_mode_policy);
