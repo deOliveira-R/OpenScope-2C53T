@@ -138,10 +138,9 @@ static inline void lcd_bus_delay(void) {
 static uint8_t lcd_shadow[LCD_SHADOW_HEIGHT][LCD_SHADOW_STRIDE];
 static uint16_t lcd_shadow_page;
 static uint16_t lcd_shadow_x;
-static uint16_t lcd_shadow_y;
 static uint16_t lcd_shadow_w;
-static uint16_t lcd_shadow_h;
-static uint32_t lcd_shadow_pos;
+static uint32_t lcd_shadow_pos;      /* pixels left in the window */
+static uint16_t lcd_shadow_cx, lcd_shadow_cy;   /* where the next one lands */
 static uint16_t lcd_shadow_last_color;
 static uint8_t lcd_shadow_last_index;
 static bool lcd_shadow_last_valid;
@@ -201,12 +200,16 @@ static uint8_t lcd_shadow_palette_index(uint16_t color)
 
 static void lcd_shadow_write_pixel(uint16_t color)
 {
-    if (lcd_shadow_w == 0 || lcd_shadow_h == 0) return;
-    if (lcd_shadow_pos >= (uint32_t)lcd_shadow_w * lcd_shadow_h) return;
-
-    uint16_t x = lcd_shadow_x + (uint16_t)(lcd_shadow_pos % lcd_shadow_w);
-    uint16_t y = lcd_shadow_y + (uint16_t)(lcd_shadow_pos / lcd_shadow_w);
-    lcd_shadow_pos++;
+    /* Walk the window with a cursor: this runs for every pixel the panel
+     * gets through lcd_write_data(), and the % and / it used to take per
+     * pixel were a measurable part of a live frame. */
+    if (lcd_shadow_pos == 0) return;
+    lcd_shadow_pos--;
+    const uint16_t x = lcd_shadow_cx, y = lcd_shadow_cy;
+    if (++lcd_shadow_cx >= (uint16_t)(lcd_shadow_x + lcd_shadow_w)) {
+        lcd_shadow_cx = lcd_shadow_x;
+        lcd_shadow_cy++;
+    }
 
     if (x >= LCD_WIDTH || y < lcd_shadow_page ||
         y >= (uint16_t)(lcd_shadow_page + LCD_SHADOW_HEIGHT)) {
@@ -586,10 +589,10 @@ void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     lcd_write_cmd(ST7789_RAMWR);
 
     lcd_shadow_x = x;
-    lcd_shadow_y = y;
     lcd_shadow_w = w;
-    lcd_shadow_h = h;
-    lcd_shadow_pos = 0;
+    lcd_shadow_pos = (uint32_t)w * h;
+    lcd_shadow_cx = x;
+    lcd_shadow_cy = y;
 }
 
 /* ========================================================================

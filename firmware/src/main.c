@@ -570,7 +570,19 @@ static void vDisplayTask(void *pvParameters)
          * which is exactly the countdown flicker this flag exists to stop.
          * The overlay owner ends with DCMD_REDRAW_ALL, which repaints
          * everything a dropped command would have. */
-        if (xQueueReceive(xDisplayQueue, &cmd, pdMS_TO_TICKS(50)) == pdTRUE) {
+        /* The tick is 50 ms of WALL time, not 50 ms of waiting after the
+         * work: a frame that took 40 ms used to be followed by a full 50 ms
+         * wait, so a 40 ms live frame ran at 11 Hz instead of 20. Wait only
+         * for what is left of the tick (at least one RTOS tick, so the idle
+         * task still runs). */
+        static TickType_t tick_due;
+        TickType_t wait = 1;
+        {
+            const TickType_t now = xTaskGetTickCount();
+            if ((int32_t)(tick_due - now) > 1)
+                wait = tick_due - now;
+        }
+        if (xQueueReceive(xDisplayQueue, &cmd, wait) == pdTRUE) {
             if (ui_modal_active)
                 cmd = DCMD_NONE_MODAL_DROP;
             switch (cmd) {
@@ -941,6 +953,14 @@ static void vDisplayTask(void *pvParameters)
         g_screen_painted = false;
 
         frame++;
+        {
+            /* Next tick 50 ms after the last; resync after a long stall. */
+            const TickType_t now = xTaskGetTickCount();
+            tick_due += pdMS_TO_TICKS(50);
+            if ((int32_t)(now - tick_due) > (int32_t)pdMS_TO_TICKS(50) ||
+                (int32_t)(tick_due - now) > (int32_t)pdMS_TO_TICKS(50))
+                tick_due = now + pdMS_TO_TICKS(50);
+        }
     }
 }
 
