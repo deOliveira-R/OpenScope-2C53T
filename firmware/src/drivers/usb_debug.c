@@ -7816,6 +7816,12 @@ static void cmd_ui_dump(void)
                      (int)settings_depth,
                      (int)settings_selected,
                      (int)settings_sub_selected);
+    {
+        extern volatile uint32_t ui_scope_full_draws, ui_scope_live_draws, ui_redraw_all_count;
+        usb_debug_printf("draws scope_full=%lu scope_live=%lu redraw_all=%lu\r\n",
+                         (unsigned long)ui_scope_full_draws, (unsigned long)ui_scope_live_draws,
+                         (unsigned long)ui_redraw_all_count);
+    }
     usb_debug_printf("meter_ui draws=%lu full_clears=%lu partial_clears=%lu draw_us=%lu max_draw_us=%lu over_budget=%lu rendered_update=%lu last_full=%u live=%u continuity_flash=%u reading_valid=%u "
                      "reading_submode=%u updates=%lu display_updates=%lu\r\n",
                      meter_screen_draw_count,

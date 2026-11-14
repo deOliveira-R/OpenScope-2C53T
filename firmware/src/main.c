@@ -233,6 +233,7 @@ void delay_ms(uint32_t ms)
  * future overlay without recompiling. */
 volatile uint32_t ui_scope_full_draws  = 0;
 volatile uint32_t ui_scope_live_draws  = 0;
+volatile uint32_t ui_redraw_all_count  = 0;   /* DCMD_REDRAW_ALL handled (any mode) */
 volatile uint32_t ui_scope_skipped     = 0;
 volatile uint32_t ui_siggen_full_draws = 0;
 volatile uint32_t ui_siggen_skipped    = 0;
@@ -580,6 +581,7 @@ static void vDisplayTask(void *pvParameters)
                 draw_splash();
                 break;
             case DCMD_REDRAW_ALL:
+                ui_redraw_all_count++;
                 /* NEVER GATED, deliberately. This is the hard invalidate,
                  * and some of its senders have already scribbled on the
                  * LCD from outside this task — BTN_POWER paints its
