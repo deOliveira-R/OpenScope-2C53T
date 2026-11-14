@@ -36,7 +36,7 @@
 #include "math_channel.h"
 #include "persistence.h"
 #include "shared_mem.h"
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 #include "fft_live.h"
 #endif
 #include "fpga.h"
@@ -53,7 +53,7 @@
 #include "../ui/screen.h"
 #include "../ui/legacy_screens.h"
 #include "model.h"           /* the long mode keys set sys.mode */
-#if defined(USB_MSC) && USB_MSC
+#if FEATURE_USBDRIVE
 #include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
 #include "task.h"
@@ -73,7 +73,7 @@ static uint32_t settings_now_ms(void)
     return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
 
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
 #include "fft.h"
 #include "fft_test_signals.h"
 #endif
@@ -279,7 +279,7 @@ void input_handle_settings_ok(void)
          * keeps the shell and the scope, and falls back to CDC-only by
          * itself if the host does not configure the composite device
          * (usb_mode_sm.h). No property yet: usb_debug.c owns the state. */
-#if defined(USB_MSC) && USB_MSC
+#if FEATURE_USBDRIVE
         usb_share_toggle();
 #endif
         break;
@@ -599,7 +599,7 @@ static key_ctx_t key_ctx_now(void)
     key_ctx_t c;
     c.mode           = current_mode;
     c.settings_depth = settings_depth;
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
     c.scope_time_view = (current_mode == MODE_OSCILLOSCOPE && scope_view == SCOPE_VIEW_TIME);
 #else
     c.scope_time_view = (current_mode == MODE_OSCILLOSCOPE);
@@ -1183,7 +1183,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_METER;
             send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_OSCILLOSCOPE) {
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
             if (scope_view != SCOPE_VIEW_TIME) {
                 /* Auto-configure the spectrum view on what it actually
                  * analyses: the active channel's live record (head skipped,
@@ -1236,7 +1236,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
      * else it does nothing. */
 
     case BTN_SELECT:
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         if (current_mode == MODE_OSCILLOSCOPE &&
             scope_view != SCOPE_VIEW_TIME) {
             fft_cycle_window();
@@ -1263,7 +1263,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
                  scope_view != SCOPE_VIEW_TIME) {
             fft_adjust_ref_level(5.0f);
@@ -1299,7 +1299,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
                  scope_view != SCOPE_VIEW_TIME) {
             fft_adjust_ref_level(-5.0f);
@@ -1346,7 +1346,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             }
             send_cmd(dq, cmd);
         }
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
             scope_view != SCOPE_VIEW_TIME) {
             fft_zoom_in();
@@ -1382,7 +1382,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             }
             send_cmd(dq, cmd);
         }
-#ifdef FEATURE_FFT
+#if FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
             scope_view != SCOPE_VIEW_TIME) {
             fft_zoom_out();
