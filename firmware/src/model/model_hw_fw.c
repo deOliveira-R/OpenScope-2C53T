@@ -41,6 +41,8 @@
 #include "scope_selfcal_run.h"
 #include "watchdog.h"
 #include "meter_autoselect.h"
+#include "meter_data.h"
+#include "meter_voltage_wave.h"
 #include "gallery_ui.h"
 #include "screen.h"
 #include "legacy_screens.h"
@@ -295,10 +297,12 @@ static void op_gen_bootout(bool on)      { CTX(); siggen_set_start_on(on); }
 
 /* ═══ meter ══════════════════════════════════════════════════════════ */
 
-/* meter_function_select (meter_ui.c) is the key's function change: cancel
- * the autoselect, store, reset min/max/hold/rel, post the meter posture. It
- * cancels the autoselect unconditionally, so the autoselect's own pick
- * (keep_autoselect) is not served yet (B6 splits it). With the meter link
+/* The rest of a function change once the setter has stored it (what
+ * meter_ui.c's meter_function_set did): cancel the software autoselect
+ * unless the change is its own candidate (keep_autoselect: meter.func
+ * posted by meter_autoselect.c as ORIGIN_AUTO), reset min/max, release hold
+ * and relative (a candidate keeps them, as it always did, and resets the
+ * voltage waveform instead), post the meter posture. With the meter link
  * off the request must not go out (it would switch the meter SoC on under
  * the scope in a build without the poll task): the state half only, and the
  * function is applied when the link comes on (see the table above). The
@@ -306,18 +310,52 @@ static void op_gen_bootout(bool on)      { CTX(); siggen_set_start_on(on); }
 static bool op_meter_func(uint8_t submode, bool keep_autoselect)
 {
     CTX();
-    if (keep_autoselect) return false;
+    if (keep_autoselect) {
+        meter_reset_minmaxavg();
+        meter_voltage_wave_reset();
+    } else {
+        if (meter_autoselect_is_running()) meter_autoselect_cancel();
+        meter_reset_minmaxavg();
+        meter_hold_release();
+        if (meter_rel_enabled) meter_toggle_relative();    /* a reference in another function means nothing */
+    }
     if (current_mode == MODE_MULTIMETER || fpga_meter_link_on()) {
-        meter_function_select(submode);
+        fpga_request_meter_mode(submode);                  /* in the background: the UI shows dashes meanwhile */
         return true;
     }
-    if (meter_autoselect_is_running()) meter_autoselect_cancel();
-    meter_reset_minmaxavg();
-    meter_hold_release();
-    if (meter_rel_enabled) meter_toggle_relative();    /* a reference in another function means nothing */
     model_hw_deferred("stored: meter FE off");            /* the reply text is kept */
     return true;
 }
+
+/* meter.hold / meter.rel / meter.degf: flags their owners keep. */
+static bool op_meter_flag_get(uint8_t which)
+{
+    switch (which) {
+    case METER_FLAG_HOLD: return meter_hold_enabled;
+    case METER_FLAG_REL:  return meter_rel_enabled;
+    case METER_FLAG_DEGF: return meter_data_fahrenheit();
+    default:              return false;
+    }
+}
+static bool op_meter_flag_set(uint8_t which, bool on, bool user)
+{
+    CTX();
+    switch (which) {
+    case METER_FLAG_HOLD:
+        if (!on) { meter_hold_release(); return true; }
+        return user && meter_ui_hold_set(true);            /* a load cannot hold a reading */
+    case METER_FLAG_REL:
+        meter_ui_rel_set(on);
+        return true;
+    case METER_FLAG_DEGF:
+        if (user) meter_ui_degf_set(on);
+        else      meter_data_set_fahrenheit(on);
+        return true;
+    default:
+        return false;
+    }
+}
+static void op_meter_layout(uint8_t layout) { CTX(); meter_ui_layout_changed(layout); }
 
 /* ═══ system ═════════════════════════════════════════════════════════ */
 
@@ -381,6 +419,7 @@ static const model_hw_ops_t k_fw_ops = {
     .gen_wave = op_gen_wave, .gen_freq = op_gen_freq, .gen_amp = op_gen_amp,
     .gen_duty = op_gen_duty, .gen_out = op_gen_out, .gen_bootout = op_gen_bootout,
     .meter_func = op_meter_func, .meter_link_on = fpga_meter_link_on,
+    .meter_flag_get = op_meter_flag_get, .meter_flag_set = op_meter_flag_set, .meter_layout = op_meter_layout,
     .mode = op_mode, .backlight = op_backlight, .autooff = op_autooff,
     .il_enable = op_il_enable, .il_enabled = op_il_enabled, .il_corr_set = op_il_corr_set,
     .il_corr_get = op_il_corr_get, .il_knots = op_il_knots, .il_skew_set = op_il_skew_set, .il_skew_get = op_il_skew_get,
@@ -393,8 +432,6 @@ static const model_hw_ops_t k_fw_ops = {
 /* The reason fits a prop_note_t (23 characters). */
 static const struct { uint16_t id; const char *why; } k_unwired[] = {
     { PROP_ID_VIEW_RUN,       "RUN/STOP: OK key (B7)" },     /* STOP latches the paused ranges inline   */
-    { PROP_ID_METER_LAYOUT,   "View softkey (B6)" },         /* Fuse forces DC V, Limits inits: inline  */
-    { PROP_ID_METER_FUSETYPE, "fuse type keys (B6)" },       /* keeps the rating in amps: static helper */
     /* Stored only: their record fields are carried by settings_store.c's own
      * image until M3 moves them onto the model, so a set here would neither
      * be saved nor read back from the record. */
@@ -431,16 +468,27 @@ static void port_sleep_ms(uint32_t ms)       { vTaskDelay(pdMS_TO_TICKS(ms)); }
 static void port_checkin(void)               { health_checkin_self(); }
 static bool port_on_executor(void)           { return xTaskGetCurrentTaskHandle() == g_executor; }
 
-/* One full repaint per shell request that changed something the screen
- * shows (the visible screens' property groups, legacy_screens.c), as a
- * key's popup_and_redraw does. A set the screen does not show, e.g. a
- * stored meter.func on the scope, repaints nothing. Never waits (a full
+/* One repaint per shell request that changed something the screen shows
+ * (the visible screens' property groups, legacy_screens.c), as a key's
+ * popup_and_redraw does. A set the screen does not show, e.g. a stored
+ * meter.func on the scope, repaints nothing. A full repaint, except on the
+ * meter screen for a change of the meter's own group only: that screen
+ * paints such a change in place (its epoch; ui/meter_screen.c), so a
+ * `set meter.func ohm` there does not clear the LCD. Never waits (a full
  * display queue drops it, and the periodic redraw gates catch up). */
 static void port_changed(uint16_t groups)
 {
     legacy_screens_sync();             /* a shell `mode` just before: judge the new screen */
-    if (!(groups & screen_groups())) return;
-    const uint8_t cmd = DCMD_REDRAW_ALL;
+    const uint16_t shown = (uint16_t)(groups & screen_groups());
+    if (!shown) return;
+    uint8_t cmd = DCMD_REDRAW_ALL;
+    if (shown == (uint16_t)(1u << PG_METER) && screen_top() == SCR_METER) {
+        /* The software autoselect steps through its candidates as posted
+         * meter.func sets: the page is held still while it runs, as it
+         * always was, and its tick paints the result when it ends. */
+        if (meter_autoselect_is_running()) return;
+        cmd = (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)SCR_METER);
+    }
     if (g_display_q) (void)xQueueSend(g_display_q, &cmd, 0);
 }
 

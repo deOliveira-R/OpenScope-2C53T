@@ -53,7 +53,11 @@ enum {
 
 typedef struct { button_id_t btn; bool is_long; } scr_key_t;
 typedef enum { SCR_UNHANDLED = 0, SCR_HANDLED, SCR_DRAW, SCR_DRAW_FULL, SCR_CLOSE } scr_res_t;
-typedef enum { SCR_PAINT_FULL, SCR_PAINT_UPDATE } scr_paint_t;
+/* FULL: the LCD was cleared under the screen (REDRAW_ALL, boot). UPDATE: in
+ * place, the top screen only. RESTORE: something drawn over the screen has
+ * gone (an expired popup) and the LCD was not cleared: a screen whose FULL
+ * paint clears its area may repaint without the clear. */
+typedef enum { SCR_PAINT_FULL, SCR_PAINT_UPDATE, SCR_PAINT_RESTORE } scr_paint_t;
 
 typedef struct screen {
     const char     *name;            /* `ui screen` and logs */

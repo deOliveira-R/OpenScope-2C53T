@@ -36,6 +36,8 @@ C_SOURCES += src/ui/status_bar.c
 C_SOURCES += src/ui/scope_ui.c
 C_SOURCES += src/ui/meter_ui.c
 C_SOURCES += src/ui/softkey.c
+C_SOURCES += src/ui/softkey_draw.c
+C_SOURCES += src/ui/meter_screen.c
 C_SOURCES += src/ui/fuse_model.c
 C_SOURCES += src/ui/siggen_ui.c
 C_SOURCES += src/ui/siggen_screen.c
@@ -2130,9 +2132,9 @@ check-owners:
 # firmware yet.
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
-                                 src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h \
+                                 src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h \
                                  src/model/model.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util $< src/ui/screen.c -o $@
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
 
 .PHONY: test-screen-router
 test-screen-router: $(BUILD_DIR)/test_screen_router
@@ -2167,6 +2169,19 @@ $(BUILD_DIR)/test_siggen_screen: tests/test_siggen_screen.c src/ui/siggen_screen
 
 .PHONY: test-siggen-screen
 test-siggen-screen: $(BUILD_DIR)/test_siggen_screen
+	$<
+
+# The meter screen on meter.* (ARCH-1 B6): the key table on every softkey
+# bar, every change as a property set, the View softkey and the fuse type
+# keys against `set meter.layout` / `set meter.fusetype` and the pre-B6
+# handlers, a `set` while the screen is up painted in place by the tick.
+$(BUILD_DIR)/test_meter_screen: tests/test_meter_screen.c src/ui/meter_screen.c src/ui/meter_screen.h \
+                                src/ui/softkey.c src/ui/softkey.h src/ui/fuse_model.c $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< src/ui/meter_screen.c src/ui/softkey.c src/ui/fuse_model.c src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-meter-screen
+test-meter-screen: $(BUILD_DIR)/test_meter_screen
 	$<
 
 # Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,

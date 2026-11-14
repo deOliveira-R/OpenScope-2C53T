@@ -62,6 +62,7 @@ extern void system_clock_config(void);
 #include "logo_ui.h"
 #include "model.h"
 #include "meter_link_policy.h"
+#include "meter_screen.h"       /* meter_softkeys_epoch: the softkey bar */
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State (extern'd via ui.h for UI modules)
@@ -457,10 +458,12 @@ static bool osc_page_up(void)
  * this task used to call that mode's draw function. The base is looked up by
  * current_mode, not from the router's stack: the stack follows a shell
  * `mode` one input pass later. FULL is never gated (REDRAW_ALL, the boot
- * paint, the repaint under an expired popup). UPDATE is the screen's
- * in-place paint (DCMD_DRAW_ACTIVE), skipped when the screen has an epoch()
- * and it equals the one last painted; the gate is invalidated on every mode
- * change, as the per-screen gates are. */
+ * paint); nor is RESTORE, the repaint under an expired popup. UPDATE is the
+ * screen's in-place paint (DCMD_DRAW_ACTIVE), skipped when the screen has
+ * an epoch() and it equals the one last painted; the gate is invalidated on
+ * every mode change, as the per-screen gates are. A screen with a tick()
+ * is asked once per frame whether what it shows has changed by itself (the
+ * meter: a new reading): then it paints in place, ungated. */
 static redraw_gate_t native_gate = { 0, 0, 0, false, false };
 
 static const screen_t *native_base(void)
@@ -469,10 +472,15 @@ static const screen_t *native_base(void)
     return (s != NULL && s->draw != NULL) ? s : NULL;
 }
 
+static void native_paint(const screen_t *s, scr_paint_t how, uint32_t frame)
+{
+    s->draw(how, frame);
+    if (s->epoch) redraw_gate_mark(&native_gate, s->epoch(), frame, REDRAW_FULL);
+}
+
 static void native_paint_full(const screen_t *s, uint32_t frame)
 {
-    s->draw(SCR_PAINT_FULL, frame);
-    if (s->epoch) redraw_gate_mark(&native_gate, s->epoch(), frame, REDRAW_FULL);
+    native_paint(s, SCR_PAINT_FULL, frame);
 }
 
 /* false: gated (nothing the screen shows changed since its last paint). */
@@ -480,8 +488,7 @@ static bool native_paint_update(const screen_t *s, uint32_t frame)
 {
     if (s->epoch && native_gate.primed && s->epoch() == native_gate.drawn_epoch)
         return false;
-    s->draw(SCR_PAINT_UPDATE, frame);
-    if (s->epoch) redraw_gate_mark(&native_gate, s->epoch(), frame, REDRAW_FULL);
+    native_paint(s, SCR_PAINT_UPDATE, frame);
     return true;
 }
 
@@ -557,9 +564,7 @@ static void vDisplayTask(void *pvParameters)
         draw_info_bar();
         const screen_t *nb = native_base();
         if (nb != NULL) {
-            nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home, Signal Gen) */
-        } else if (current_mode == MODE_MULTIMETER) {
-            draw_meter_screen();
+            nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home, Meter, Signal Gen) */
         } else {
             draw_scope_screen(0);
         }
@@ -696,9 +701,6 @@ static void vDisplayTask(void *pvParameters)
                     redraw_gate_mark(&scope_gate,
                                      scope_ui_epoch(scope_state_get()),
                                      frame, REDRAW_FULL);
-                } else if (current_mode == MODE_MULTIMETER) {
-                    meter_screen_invalidate();
-                    draw_meter_screen();
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
                 }
@@ -716,12 +718,6 @@ static void vDisplayTask(void *pvParameters)
                                      frame, REDRAW_FULL);
                 }
                 break;
-            case DCMD_DRAW_METER:
-                if (current_mode == MODE_MULTIMETER) {
-                    draw_meter_screen();
-                    g_screen_painted = true;
-                }
-                break;
             case DCMD_DRAW_SETTINGS:
                 if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
@@ -732,10 +728,12 @@ static void vDisplayTask(void *pvParameters)
                 draw_status_bar();
                 break;
             case DCMD_DRAW_HOME:
+            case DCMD_DRAW_METER:
             case DCMD_DRAW_SIGGEN: {
                 /* A migrated screen's in-place paint (DCMD_DRAW_ACTIVE + its
                  * id, resolved above): the home page's selection parts, the
-                 * generator page. Dropped if that screen has gone since. A
+                 * generator page, the meter page after a key or a set of
+                 * meter.* from the shell. Dropped if that screen has gone since. A
                  * screen with an epoch is gated on it: a key that hit a
                  * clamp and changed nothing costs no LCD write. */
                 const screen_t *nb = native_base();
@@ -954,27 +952,15 @@ static void vDisplayTask(void *pvParameters)
                     }
                 }
             }
-        } else if (current_mode == MODE_MULTIMETER) {
-            /* Redraw the meter when the visible reading changes, when the
-             * submode changes, or when a debug/animated panel explicitly
-             * needs a heartbeat. Rejected frames still advance raw counters,
-             * but they must not clear/repaint the LCD. */
-            static uint32_t last_meter_update = 0xFFFFFFFFu;
-            static uint32_t last_meter_frame  = 0;
-            static uint8_t  last_meter_submode = 0xFFu;
-            uint32_t uc = meter_reading.display_update_count;
-            bool auto_select_running = meter_autoselect_is_running();
-            bool submode_changed = (meter_submode != last_meter_submode);
-            bool enough_time = (frame - last_meter_frame) >= 5;  /* 20Hz loop -> max 4Hz redraw */
-            bool periodic_due = meter_screen_needs_periodic_redraw() &&
-                                ((frame - last_meter_frame) >= 20);
-            if (!auto_select_running &&
-                (submode_changed || ((uc != last_meter_update) && enough_time) ||
-                 periodic_due)) {
-                draw_meter_screen();
-                last_meter_update = meter_screen_last_reading_display_update;
-                last_meter_frame  = frame;
-                last_meter_submode = meter_submode;
+        } else {
+            /* A migrated screen that changes by itself (the meter: a new
+             * reading, a setting changed from the shell) says so here and
+             * is painted in place. Its tick() holds the rule; rejected
+             * meter frames still advance raw counters, but they must not
+             * clear or repaint the LCD. */
+            const screen_t *const nb_tick = native_base();   /* one look, as above */
+            if (nb_tick != NULL && nb_tick->tick != NULL && nb_tick->tick(frame) != REDRAW_SKIP) {
+                native_paint(nb_tick, SCR_PAINT_UPDATE, frame);
                 g_screen_painted = true;
             }
         }
@@ -998,12 +984,9 @@ static void vDisplayTask(void *pvParameters)
                     osc_menu_invalidate();   /* the box covered part of the pane */
                     osc_menu_draw();
                 } else if (nb_popup != NULL) {
-                    native_paint_full(nb_popup, frame);
-                } else if (current_mode == MODE_MULTIMETER) {
-                    if (meter_layout != METER_LAYOUT_BIG &&
-                        meter_layout != METER_LAYOUT_LIMITS)
-                        meter_screen_invalidate();
-                    draw_meter_screen();
+                    /* The meter's Big and Limits views repaint in place
+                     * here, without a clear (ui/meter_ui.c). */
+                    native_paint(nb_popup, SCR_PAINT_RESTORE, frame);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
                 }

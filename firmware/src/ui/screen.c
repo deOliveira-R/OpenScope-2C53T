@@ -313,7 +313,7 @@ void screen_draw(scr_paint_t how, uint32_t frame)
     screen_id_t st[SCR_STACK_MAX];
     uint8_t n = copy_stack(st);
     if (!n) return;
-    uint8_t from = (how == SCR_PAINT_FULL) ? visible_from(st, n) : (uint8_t)(n - 1);
+    uint8_t from = (how != SCR_PAINT_UPDATE) ? visible_from(st, n) : (uint8_t)(n - 1);
     for (uint8_t i = from; i < n; i++) {
         const screen_t *s = screen_get(st[i]);
         if (s && s->draw) s->draw(how, frame);

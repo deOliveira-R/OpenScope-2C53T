@@ -69,7 +69,7 @@ static scr_res_t hs_key(scr_key_t k)
 static void hs_draw(scr_paint_t how, uint32_t frame)
 {
     (void)frame;
-    if (how == SCR_PAINT_FULL) home_ui_draw(home_screen_selected());
+    if (how != SCR_PAINT_UPDATE) home_ui_draw(home_screen_selected());
     else                       home_ui_draw_selection(home_screen_selected());
 }
 

@@ -77,7 +77,6 @@ typedef struct {
 void      lgc_state(lgc_state_t *s);
 key_ctx_t lgc_ctx(void);                          /* key_ctx_now()                  */
 void      lgc_exec(key_cmd_t k, button_id_t btn); /* exec_key_cmd + settings hook   */
-bool      lgc_meter_softkey(button_id_t btn);     /* true: a softkey took it        */
 void      lgc_mode_key(button_id_t btn);          /* the per-key switch (+ POWER)   */
 /* The long mode keys: set sys.mode through the model (prop_set_local,
  * ORIGIN_KEY), the path `set sys.mode` / `set sys.instrument` take, then the

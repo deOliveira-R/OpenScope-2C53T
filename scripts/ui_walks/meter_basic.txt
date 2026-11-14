@@ -1,0 +1,169 @@
+# meter_basic.txt -- every key on the multimeter screen, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The meter page is a screen of the router (firmware/src/ui/meter_screen.c)
+# on the meter.* properties: every key that changes the meter is one
+# property set, so a `get` answers a key press at once and a `set meter.*`
+# while the page is shown is painted in place (no full repaint). ui_walk.py
+# records the `ui screen` line after every step and the answer of every
+# `get`; what each must show is on the "# expect" line above the step (one
+# `get` per property: the walk keeps one answer line per command). The last
+# field of the `ui screen` line is new with this screen: mview=- off the
+# meter, mview=<layout> on it (big, graph, stats, limits), mview=fuse/<page>
+# in the fuse tester (detail, table, scan, types). meter=<function> is as
+# before.
+# POWER cannot be sent from the shell: hold it by hand, the countdown must
+# appear and a release must repaint the page.
+#
+# Leads: open, nothing connected, unless a step says otherwise. With open
+# leads DC V shows a small reading near 0 V and ohms shows overload; the
+# steps that need a reading on screen (hold, relative, limits) are run on
+# DC V. With a 1.6 V cell on the leads DC V reads about 1.60 V; with a
+# 120 Ohm resistor ohms reads about 121.5 Ohm and continuity stays silent
+# at "Beep below 30 / 50 / 100 Ohm" (it is above all three).
+#
+# The function and the view are saved settings: the walk starts from a known
+# state and puts DC V / Big back at the end.
+# Redraw rates on this page must be 0 in every step that only waits with a
+# steady reading (`ui dump`: the meter_ui full_clears and partial_clears
+# counters and redraw_all do not move).
+
+# ── 1. the main bar: Function, Reset, Relative, View; arrows, OK, AUTO ───────
+# expect: screen=meter instrument=meter stack=meter meter=dcv mview=big
+#         meter.func = dcv ; meter.layout = big ; meter.hold = off ; meter.rel = off
+m1_base        | set sys.mode meter ; wait 2 ; set meter.layout big ; set meter.func dcv ; set meter.hold off ; set meter.rel off ; set meter.beep 30ohm ; set meter.degf off ; wait 2 ; get meter.func ; get meter.layout ; get meter.hold ; get meter.rel
+# expect: meter.func = acv   (MOVE is the Function softkey; the bar's first cell says "AC V")
+m1_move        | ui seq MOVE ; wait 2 ; get meter.func
+# expect: meter.func = dcma   (RIGHT is the next function too; the whole screen repaints, as before)
+m1_right       | ui seq RIGHT ; wait 2 ; get meter.func
+# expect: meter.func = dcv
+m1_left        | ui seq LEFT*2 ; wait 2 ; get meter.func
+# expect: meter.func = auto   (LEFT on the first function wraps to Auto)
+m1_left_wrap   | ui seq LEFT ; wait 2 ; get meter.func
+# expect: meter.func = dcv   (and RIGHT on Auto wraps to the first)
+m1_right_wrap  | ui seq RIGHT ; wait 2 ; get meter.func
+# expect: meter.func = auto ; popup "AUTO"   (the SoC picks the function; pressed again it stays auto)
+m1_auto        | ui seq AUTO ; wait 2 ; get meter.func ; ui seq AUTO ; wait 2
+# expect: meter.hold = on ; popup "HOLD" ; a HOLD badge, the reading frozen
+m1_ok_hold     | set meter.func dcv ; wait 3 ; ui seq OK ; get meter.hold
+# expect: meter.hold = off ; popup "Live"
+m1_ok_live     | ui seq OK ; get meter.hold
+# expect: meter.rel = on ; popup "Relative: On" ; the bar's third cell says "On" (highlighted), the reading near 0
+m1_rel_on      | ui seq TRIGGER ; get meter.rel
+# expect: meter.rel = off ; popup "Relative: Off"
+m1_rel_off     | ui seq TRIGGER ; get meter.rel
+# expect: popup "Min/Max reset" ; meter.func = dcv ; meter.layout = big   (Reset changes no property)
+m1_reset       | ui seq SELECT ; get meter.func ; get meter.layout
+# expect: meter.hold = off ; meter.rel = off   (a function change releases both)
+m1_func_clears | ui seq OK TRIGGER RIGHT ; wait 2 ; get meter.hold ; get meter.rel ; ui seq LEFT ; wait 2
+# expect: screen=meter meter=dcv mview=big, nothing changed   (UP and DOWN do nothing here; CH1 and CH2 only
+#         repaint the whole screen; the long keys with no meaning here do nothing)
+m1_no_meaning  | ui seq UP DOWN CH1 CH2 long:CH1 long:CH2 long:PRM long:OK long:AUTO ; get meter.func ; get meter.layout ; get meter.hold ; get meter.rel
+
+# ── 2. the views (PRM): Big, Graph, Stats, Limits, Fuse ──────────────────────
+# expect: meter.layout = graph ; mview=graph
+m2_graph       | ui seq PRM ; wait 2 ; get meter.layout
+# expect: meter.layout = stats ; mview=stats
+m2_stats       | ui seq PRM ; wait 2 ; get meter.layout
+# expect: meter.layout = limits ; mview=limits ; the bar reads Function / Low / High / View with limits
+#         taken from the reading (+/- 5 %)
+m2_limits      | ui seq PRM ; wait 2 ; get meter.layout
+# expect: popup "Arrows: Low" or "Low = <reading>" ; then "Arrows: High"   (SELECT is Low, TRIGGER is High)
+m2_low_high    | ui seq SELECT ; wait 1 ; ui seq TRIGGER ; wait 1
+# expect: the High value in the bar moves up one step, then back   (UP / DOWN move the active limit)
+m2_nudge       | ui seq UP ; wait 1 ; ui seq DOWN ; wait 1
+# expect: meter.func = ohm ; mview=limits   (MOVE is still Function; LEFT / RIGHT too)
+m2_limits_func | set meter.func diode ; wait 2 ; ui seq LEFT*2 ; wait 2 ; get meter.func
+# expect: meter.layout = fuse ; meter.func = dcv ; popup "Fuse tester: DC V" ; mview=fuse/detail
+#         (entering the fuse tester from another function selects DC V)
+m2_fuse        | ui seq PRM ; wait 2 ; get meter.layout ; get meter.func
+# expect: meter.layout = big ; mview=big ; meter.func = dcv
+m2_big         | ui seq PRM ; wait 2 ; get meter.layout ; get meter.func
+
+# ── 3. the fuse tester ───────────────────────────────────────────────────────
+# expect: mview=fuse/detail ; meter.fusetype = ato ; meter.fuserating = 10A ; meter.fusethresh = 0.1 mV
+m3_base        | set meter.layout fuse ; set meter.fuseview detail ; set meter.fusetype ato ; set meter.fuserating 6 ; set meter.fusethresh 0.1 ; wait 2 ; get meter.fusetype ; get meter.fuserating ; get meter.fusethresh
+# expect: meter.fuserating = 15A   (UP = larger)
+m3_up          | ui seq UP ; get meter.fuserating
+# expect: meter.fuserating = 7A
+m3_down        | ui seq DOWN*2 ; get meter.fuserating
+# expect: meter.fuserating = 40A   (UP stops at the type's largest)
+m3_up_top      | ui seq UP*12 ; get meter.fuserating
+# expect: meter.fuserating = 1A   (SELECT, the Rating softkey, wraps)
+m3_select_wrap | ui seq SELECT ; get meter.fuserating
+# expect: meter.fusetype = mini ; meter.fuserating = 10A   (RIGHT is the next type; the rating in amps is kept)
+m3_right       | set meter.fuserating 6 ; ui seq RIGHT ; get meter.fusetype ; get meter.fuserating
+# expect: meter.fusetype = maxi ; meter.fuserating = 20A   (Maxi has no 10 A: the smallest)
+m3_right_maxi  | ui seq RIGHT*2 ; get meter.fusetype ; get meter.fuserating
+# expect: meter.fusetype = ato ; meter.fuserating = 20A   (LEFT x3: back, 20 A kept)
+m3_left        | ui seq LEFT*3 ; get meter.fusetype ; get meter.fuserating
+# expect: popup "Hold the tips together" with open leads ("Leads cal: <offset>" with the tips held together)
+m3_cal         | ui seq MOVE ; wait 1
+# expect: meter.fuseview = table ; mview=fuse/table
+m3_show_table  | ui seq TRIGGER ; wait 1 ; get meter.fuseview
+# expect: meter.fuseview = scan ; mview=fuse/scan ; the bar's second cell is "Draw if >"
+m3_show_scan   | ui seq TRIGGER ; wait 1 ; get meter.fuseview
+# expect: meter.fusethresh = 0.3 mV ; meter.fuserating = 20A   (on the Scan page UP / DOWN move the threshold)
+m3_scan_up     | ui seq UP*2 ; get meter.fusethresh ; get meter.fuserating
+# expect: meter.fusethresh = 0.1 mV   (DOWN stops at 0.1 mV)
+m3_scan_down   | ui seq DOWN*5 ; get meter.fusethresh
+# expect: meter.fusethresh = 0.5 mV   (SELECT: the next preset, 0.2 then 0.5)
+m3_scan_preset | ui seq SELECT*2 ; get meter.fusethresh
+# expect: meter.fuseview = types ; mview=fuse/types ; the bar's first cell is "Fuse type"
+m3_show_types  | ui seq TRIGGER ; wait 1 ; get meter.fuseview
+# expect: meter.fusetype = mini   (MOVE on the Types page is the next type)
+m3_types_move  | ui seq MOVE ; get meter.fusetype
+# expect: meter.fuseview = detail ; mview=fuse/detail   (Show wraps)
+m3_show_detail | ui seq TRIGGER ; wait 1 ; get meter.fuseview
+# expect: mview=big ; meter.func = dcv
+m3_leave       | set meter.fusetype ato ; set meter.fuserating 6 ; set meter.fusethresh 0.1 ; ui seq PRM ; wait 2 ; get meter.layout ; get meter.func
+
+# ── 4. continuity (Beep) and temperature (Unit) ──────────────────────────────
+# expect: meter.func = cont ; the bar's third cell is "Beep < 30 Ohm"
+m4_cont        | set meter.func cont ; wait 3 ; get meter.func ; get meter.beep
+# expect: meter.beep = 50ohm ; popup "Beep below 50 Ohm"
+m4_beep        | ui seq TRIGGER ; get meter.beep
+# expect: meter.beep = 30ohm   (100, 10, 30: it wraps) ; open leads: no beep at any of them
+m4_beep_wrap   | ui seq TRIGGER*3 ; get meter.beep
+# expect: meter.func = temp ; the bar's first cell is "Unit degC"
+m4_temp        | set meter.func temp ; wait 3 ; get meter.func ; get meter.degf
+# expect: meter.degf = on ; popup "Temperature: degF"
+m4_degf        | ui seq MOVE ; wait 2 ; get meter.degf
+# expect: meter.degf = off ; popup "Temperature: degC"
+m4_degc        | ui seq MOVE ; wait 2 ; get meter.degf
+# expect: meter.func = cap   (in Temperature the function is on LEFT / RIGHT only)
+m4_temp_left   | ui seq LEFT ; wait 2 ; get meter.func
+
+# ── 5. the direct route, with the page shown and off it ──────────────────────
+# expect: the page shows ohms at once, in place (redraw_all does not move) ; meter.func = ohm ; meter=ohm
+m5_set_func    | set meter.func ohm ; wait 3 ; get meter.func
+# expect: meter.layout = fuse ; meter.func = dcv ; the answer of the set says "Fuse tester: DC V" ;
+#         mview=fuse/detail   (`set meter.layout fuse` does what the View softkey does)
+m5_set_fuse    | set meter.layout fuse ; wait 3 ; get meter.layout ; get meter.func
+# expect: meter.fusetype = micro2 ; meter.fuserating = 10A   (as the type keys: the rating in amps is kept)
+m5_set_type    | set meter.fusetype micro2 ; wait 1 ; get meter.fusetype ; get meter.fuserating
+# expect: meter.layout = limits ; mview=limits ; limits taken from the reading
+m5_set_limits  | set meter.fusetype ato ; set meter.fuserating 6 ; set meter.layout limits ; wait 3 ; get meter.layout
+# expect: meter.hold = on, the page shows HOLD ; then off
+m5_set_hold    | set meter.layout big ; wait 2 ; set meter.hold on ; wait 1 ; get meter.hold ; set meter.hold off ; get meter.hold
+# expect: meter.rel = on, the bar's Relative cell says On ; then off
+m5_set_rel     | set meter.rel on ; wait 1 ; get meter.rel ; set meter.rel off ; get meter.rel
+# expect: a key steps from the set value: meter.func = diode
+m5_key_after   | set meter.func cont ; wait 2 ; ui seq RIGHT ; wait 2 ; get meter.func
+# expect: screen=scope mview=- meter=- ; meter.func = ohm with the scope shown ; meter.live = on with a
+#         USB host (the meter keeps running under the scope)
+m5_off_screen  | set sys.mode scope ; wait 2 ; set meter.func ohm ; wait 2 ; get meter.func ; get meter.live
+# expect: screen=meter meter=ohm mview=big   (back: no SoC restart, the page shows ohms)
+m5_back        | set sys.mode meter ; wait 3 ; get meter.func
+
+# ── 6. MENU, SAVE, the end ───────────────────────────────────────────────────
+# expect: screen=home home=meter   (short MENU at the meter's top level opens Home)
+m6_menu_home   | ui seq MENU ; wait 1
+# expect: screen=meter mview=big   (and MENU on Home goes back)
+m6_menu_back   | ui seq MENU ; wait 2
+# expect: screen=meter   (short SAVE: a screenshot, "Saved <n>.bmp" over the page for about 2 s, the page
+#         whole again after it; this leaves one picture in the gallery: `screenshot delete <n>`)
+m6_save        | ui seq SAVE ; wait 4
+# expect: screen=scope ; meter.func = dcv ; meter.layout = big ; meter.hold = off ; meter.rel = off
+m6_end         | set meter.func dcv ; set meter.layout big ; set meter.hold off ; set meter.rel off ; set meter.beep 30ohm ; set meter.degf off ; set sys.mode scope ; wait 2 ; get meter.func ; get meter.layout ; get meter.hold ; get meter.rel

@@ -27,6 +27,8 @@
 #include "fpga_meter_plan.h"
 #include "meter_autoselect.h"
 #include "softkey.h"
+#include "meter_screen.h"
+#include "model.h"
 #include "fuse_table.h"
 #include "fuse_model.h"
 #include "FreeRTOS.h"
@@ -185,9 +187,16 @@ static void meter_record_draw_time(uint32_t start_cycles, bool full_clear)
 #endif
 }
 
+/* View state with no property changed (statistics, held text, limits, lead
+ * offset, the debug strip): the screen's epoch mixes this, so its next tick
+ * repaints (meter_screen.c). Written by the input task and the shell. */
+static volatile uint32_t meter_ui_generation;
+uint32_t meter_ui_gen(void) { return meter_ui_generation; }
+
 void meter_toggle_debug_overlay(void)
 {
     meter_debug_overlay = !meter_debug_overlay;
+    meter_ui_generation++;
 }
 
 /* Strip chart ring buffer */
@@ -210,7 +219,7 @@ static uint32_t hist_total;
 static float hold_prev_value;
 static uint8_t hold_stable_count;
 
-void meter_reset_minmaxavg(void)
+static void meter_stats_clear(void)
 {
     meter_stats_valid = 0;
     meter_stats_unit[0] = '\0';
@@ -234,6 +243,14 @@ void meter_reset_minmaxavg(void)
     meter_hold_locked = false;
 }
 
+/* From a key, the shell or a function change (not the paint itself: that
+ * one clears without asking for another paint). */
+void meter_reset_minmaxavg(void)
+{
+    meter_stats_clear();
+    meter_ui_generation++;
+}
+
 /* The reading arrives in `unit`; bring everything stored in the stats' unit
  * over to it. Unknown units are left alone (nothing sensible to scale by). */
 /* Quantity of a unit string: 1 volts, 2 ohms, 0 anything else. In Auto the
@@ -253,7 +270,7 @@ static void meter_stats_follow_unit(const char *unit)
     if (meter_stats_valid && meter_stats_unit[0] &&
         unit_quantity(meter_stats_unit) != 0 && unit_quantity(unit) != 0 &&
         unit_quantity(meter_stats_unit) != unit_quantity(unit)) {
-        meter_reset_minmaxavg();
+        meter_stats_clear();
         if (meter_rel_enabled) meter_toggle_relative();
     }
     if (meter_stats_valid && meter_stats_unit[0] &&
@@ -542,16 +559,10 @@ static void draw_main_reading(const meter_mode_info_t *m, const theme_t *th,
 }
 
 
-/* Continuity beeps below this many ohms (2026-10-06). Shorted leads read
- * ~0.14 Ohm as a plain resistance, so the chip's own continuity flag alone
- * never fired. Common DMM practice is 10-50 Ohm; the softkey cycles these. */
-static const float cont_thresholds[] = { 10.0f, 30.0f, 50.0f, 100.0f };
-#define CONT_THRESHOLD_N (sizeof cont_thresholds / sizeof cont_thresholds[0])
-static uint8_t cont_threshold_idx = 1;      /* 30 Ohm */
-
+/* Continuity beeps below this many ohms: meter.beep (model/props_meter.c). */
 float meter_continuity_threshold(void)
 {
-    return cont_thresholds[cont_threshold_idx < CONT_THRESHOLD_N ? cont_threshold_idx : 1];
+    return (float)meter_beep_ohms();
 }
 
 static bool meter_continuity_short_active(const meter_reading_t *reading,
@@ -643,7 +654,7 @@ void meter_screen_invalidate(void)
     meter_screen_retained_valid = false;
 }
 
-bool meter_screen_needs_periodic_redraw(void)
+bool meter_ui_periodic(void)
 {
     return meter_debug_overlay || (meter_hold_enabled && !meter_hold_locked);
 }
@@ -944,19 +955,6 @@ static meter_ext_t *meter_ext(void)
     return mx;
 }
 
-static const char *const meter_short_names[METER_SUBMODE_COUNT] = {
-    "DC V", "AC V", "DC mA", "DC A", "AC mA", "AC A",
-    "Ohms", "Contin.", "Diode", "Cap.", "Temp", "Auto",
-};
-
-static const char *const meter_view_names[METER_LAYOUT_COUNT] = {
-    "Big", "Graph", "Stats", "Fuse", "Limits",
-};
-static const uint8_t meter_view_order[METER_LAYOUT_COUNT] = {
-    METER_LAYOUT_BIG, METER_LAYOUT_CHART, METER_LAYOUT_STATS,
-    METER_LAYOUT_LIMITS, METER_LAYOUT_FUSE,
-};
-
 static int str_decimals(const char *s)
 {
     const char *d = strchr(s, '.');
@@ -1007,6 +1005,7 @@ void meter_hold_release(void)
     meter_hold_locked = false;
     hold_stable_count = 0;
     if (mx) mx->held[0] = '\0';
+    meter_ui_generation++;
 }
 
 bool meter_hold_is_on(void)
@@ -1014,56 +1013,30 @@ bool meter_hold_is_on(void)
     return meter_hold_enabled && meter_hold_locked;
 }
 
-/* OK: freeze the reading on screen now, or go back to live. (Until
- * 2026-10-06 hold was an auto-hold on TRIGGER that waited for 5 stable
- * readings and showed a grey "hold" meanwhile -- undiscoverable, and its
- * held value was re-printed with 2 decimals, F42.) */
-void meter_hold_toggle_now(void)
+/* meter.hold (OK): freeze the reading on screen now, or go back to live.
+ * false: nothing to hold (no reading for this function, or no memory).
+ * (Until 2026-10-06 hold was an auto-hold on TRIGGER that waited for 5
+ * stable readings and showed a grey "hold" meanwhile -- undiscoverable, and
+ * its held value was re-printed with 2 decimals, F42.) */
+bool meter_ui_hold_set(bool on)
 {
-    if (meter_hold_enabled) {
+    if (!on) {
         meter_hold_release();
-        scope_show_popup("Live");
-        return;
+        return true;
     }
     uint8_t mode = meter_submode < METER_SUBMODE_COUNT ? meter_submode : 0;
     meter_ext_t *e = meter_ext();
     meter_reading_t r;
-    if (!e) { scope_show_popup("HOLD: no memory"); return; }
-    if (!meter_data_snapshot(&r) || !live_reading_for_mode(&r, mode)) {
-        scope_show_popup("HOLD: no reading");
-        return;
-    }
+    if (!e) return false;
+    if (!meter_data_snapshot(&r) || !live_reading_for_mode(&r, mode)) return false;
     strncpy(e->held, r.display_str, sizeof(e->held) - 1);
     e->held[sizeof(e->held) - 1] = '\0';
     e->held_unit = live_unit(&meter_modes[mode], &r, mode);
     meter_hold_value = r.value;
     meter_hold_enabled = true;
     meter_hold_locked = true;
-    scope_show_popup("HOLD");
-}
-
-static void meter_function_set(uint8_t m)
-{
-    if (meter_autoselect_is_running()) meter_autoselect_cancel();
-    meter_submode = m;
-    meter_reset_minmaxavg();
-    meter_hold_release();
-    if (meter_rel_enabled) meter_toggle_relative();     /* a reference in another function means nothing */
-    fpga_request_meter_mode(meter_submode);             /* in the background: the UI shows dashes meanwhile */
-}
-
-void meter_function_select(uint8_t submode)
-{
-    if (submode >= METER_SUBMODE_COUNT) return;
-    meter_function_set(submode);
-}
-
-void meter_function_step(int8_t dir)
-{
-    uint8_t m = meter_submode < METER_SUBMODE_COUNT ? meter_submode : 0;
-    if (dir > 0) m = (uint8_t)((m + 1) % METER_SUBMODE_COUNT);
-    else         m = (m == 0) ? (uint8_t)(METER_SUBMODE_COUNT - 1) : (uint8_t)(m - 1);
-    meter_function_set(m);
+    meter_ui_generation++;
+    return true;
 }
 
 /* ── Limits (pass/fail) ───────────────────────────────────────────── */
@@ -1099,9 +1072,10 @@ static bool limits_valid_now(const meter_ext_t *e)
 
 /* UP/DOWN in the Limits view: move the active limit by one count of the
  * digit before last of the reading it came from. */
-void meter_limits_nudge(int8_t dir)
+void meter_ui_limits_nudge(int8_t dir)
 {
     meter_ext_t *e = meter_ext();
+    meter_ui_generation++;
     if (!limits_valid_now(e)) {
         if (!e || !limits_init_from_reading(e)) { scope_show_popup("Limits: no reading"); return; }
     }
@@ -1118,10 +1092,11 @@ void meter_limits_nudge(int8_t dir)
     e->verdict = 0;
 }
 
-static void limit_press(uint8_t which)
+void meter_ui_limit_press(uint8_t which)
 {
     meter_ext_t *e = meter_ext();
     char b[24], v[12];
+    meter_ui_generation++;
     if (!e) { scope_show_popup("Limits: no memory"); return; }
     if (!limits_valid_now(e)) {
         if (!limits_init_from_reading(e)) { scope_show_popup("Limits: no reading"); return; }
@@ -1397,102 +1372,39 @@ static void draw_meter_limits(const meter_mode_info_t *m, uint8_t mode,
     lcd_fill_rect(0, LIM_LAST_Y + font_medium.height, LCD_WIDTH, METER_BOTTOM - (LIM_LAST_Y + font_medium.height), bg);
 }
 
-/* ── Softkey tables ───────────────────────────────────────────────── */
+/* ── What the screen's keys and softkeys reach (meter_screen.h) ───── */
 
-static void skv_function(char *b, uint8_t n)
+/* After meter.layout changed (model_hw_ops_t.meter_layout): the Limits view
+ * takes its limits from the reading when it has none for this function. */
+void meter_ui_layout_changed(uint8_t layout)
 {
-    uint8_t m = meter_submode < METER_SUBMODE_COUNT ? meter_submode : 0;
-    snprintf(b, n, "%s", meter_short_names[m]);
-}
-static void skp_function(void) { meter_function_step(+1); }
-
-static void skv_reset(char *b, uint8_t n) { snprintf(b, n, "Min/Max"); }
-static void skp_reset(void) { meter_reset_minmaxavg(); scope_show_popup("Min/Max reset"); }
-
-static void skv_rel(char *b, uint8_t n) { snprintf(b, n, "%s", meter_rel_enabled ? "On" : "Off"); }
-static bool ska_rel(void) { return meter_rel_enabled; }
-static void skp_rel(void)
-{
-    meter_toggle_relative();
-    scope_show_popup(meter_rel_enabled ? "Relative: On" : "Relative: Off");
+    if (layout == METER_LAYOUT_LIMITS) {
+        meter_ext_t *e = meter_ext();
+        if (e && !limits_valid_now(e)) (void)limits_init_from_reading(e);
+    }
+    meter_ui_generation++;
 }
 
-/* MOVE in Temperature: degC <-> degF, as stock (0x0800D2DC flips ms[0xF39];
- * the parser converts, 0x0803E180). Stock resets min/max/mean on it. The bar
- * keeps its Function key on LEFT/RIGHT. */
-static void skv_tunit(char *b, uint8_t n) { snprintf(b, n, "%s", meter_data_fahrenheit() ? "degF" : "degC"); }
-static void skp_tunit(void)
+/* meter.degf (the Unit softkey in Temperature): stock resets min/max/mean
+ * on it (0x0800D2DC); hold and a relative reference in the other unit mean
+ * nothing. */
+void meter_ui_degf_set(bool f)
 {
-    bool f = !meter_data_fahrenheit();
     meter_data_set_fahrenheit(f);
     meter_reset_minmaxavg();
     meter_hold_release();
     if (meter_rel_enabled) meter_toggle_relative();
     meter_data_invalidate(meter_submode);          /* the next frame is in the new unit */
-    scope_show_popup(f ? "Temperature: degF" : "Temperature: degC");
 }
 
-static void skv_view(char *b, uint8_t n)
-{
-    snprintf(b, n, "%s", meter_view_names[meter_layout < METER_LAYOUT_COUNT ? meter_layout : 0]);
-}
-static void skp_view(void)
-{
-    uint8_t i = 0;
-    while (i < METER_LAYOUT_COUNT && meter_view_order[i] != meter_layout) i++;
-    meter_layout = meter_view_order[(i + 1) % METER_LAYOUT_COUNT];
-    if (meter_layout == METER_LAYOUT_FUSE && meter_submode != 0) {
-        meter_function_set(0);                          /* the fuse tester reads a DC drop */
-        scope_show_popup("Fuse tester: DC V");
-    }
-    if (meter_layout == METER_LAYOUT_LIMITS) {
-        meter_ext_t *e = meter_ext();
-        if (e && !limits_valid_now(e)) (void)limits_init_from_reading(e);
-    }
-}
+void meter_ui_stats_reset(void) { meter_reset_minmaxavg(); scope_show_popup("Min/Max reset"); }
 
-static void skv_low(char *b, uint8_t n)
+void meter_ui_limit_text(uint8_t which, char *b, uint8_t n)
 {
-    if (limits_valid_now(mx)) fmt_float(b, n, mx->lo, mx->lim_dec);
+    if (limits_valid_now(mx)) fmt_float(b, n, which ? mx->hi : mx->lo, mx->lim_dec);
     else snprintf(b, n, "--");
 }
-static void skv_high(char *b, uint8_t n)
-{
-    if (limits_valid_now(mx)) fmt_float(b, n, mx->hi, mx->lim_dec);
-    else snprintf(b, n, "--");
-}
-static bool ska_low(void)  { return limits_valid_now(mx) && mx->lim_active == 0; }
-static bool ska_high(void) { return limits_valid_now(mx) && mx->lim_active == 1; }
-static void skp_low(void)  { limit_press(0); }
-static void skp_high(void) { limit_press(1); }
-
-static void skv_fuse_type(char *b, uint8_t n)
-{
-    snprintf(b, n, "%s", fuse_type_names[fuse_type < FUSE_TYPE_COUNT ? fuse_type : 0]);
-}
-static void skp_fuse_type(void) { fuse_next_type(); }
-static void skv_fuse_show(char *b, uint8_t n)
-{
-    static const char *const v[FUSE_VIEW_COUNT] = { "Detail", "Table", "Scan", "Types" };
-    snprintf(b, n, "%s", v[fuse_view < FUSE_VIEW_COUNT ? fuse_view : 0]);
-}
-static void skp_fuse_show(void) { fuse_cycle_view(); }
-static void skv_fuse_rating(char *b, uint8_t n)
-{
-    const fuse_table_t *t = &fuse_tables[fuse_type < FUSE_TYPE_COUNT ? fuse_type : 0];
-    char l[8];
-    fuse_rating_label(t->entries[fuse_rating_idx < t->count ? fuse_rating_idx : 0].rating_amps,
-                      l, sizeof l);
-    snprintf(b, n, "%s A", l);
-}
-static bool ska_arrows(void) { return true; }          /* UP/DOWN adjust this key */
-static void skp_fuse_rating(void) { fuse_rating_press(); }
-static void skv_fuse_thresh(char *b, uint8_t n)
-{
-    int t = (int)(fuse_scan_threshold_mv * 10.0f + 0.5f);
-    snprintf(b, n, "%d.%d mV", t / 10, t % 10);
-}
-static void skp_fuse_thresh(void) { fuse_threshold_press(); }
+bool meter_ui_limit_active(uint8_t which) { return limits_valid_now(mx) && mx->lim_active == which; }
 
 /* The settling window, from the meter's own frame history: the view only
  * redraws when the shown value changes (~1/s for a steady reading), so
@@ -1514,18 +1426,19 @@ static void fmt_cal(char *b, uint8_t n, float mv)
     int a = v < 0 ? -v : v;
     snprintf(b, n, "%s%d.%02d mV", v < 0 ? "-" : "", a / 100, a % 100);
 }
-static void skv_fuse_cal(char *b, uint8_t n)
+void meter_ui_cal_text(char *b, uint8_t n)
 {
     if (mx && mx->fuse.cal_set) fmt_cal(b, n, mx->fuse.cal_mv);
     else snprintf(b, n, "not set");
 }
-static bool ska_fuse_cal(void) { return mx && mx->fuse.cal_set; }
-static void skp_fuse_cal(void)
+bool meter_ui_cal_set(void) { return mx && mx->fuse.cal_set; }
+void meter_ui_fuse_cal(void)
 {
     meter_ext_t *e = meter_ext();
     char t[40], v[16];
     if (!e) { scope_show_popup("Cal leads: no memory"); return; }
     if (meter_submode != 0) { scope_show_popup("Cal leads: needs DC V"); return; }
+    meter_ui_generation++;
     fuse_input_refresh(&e->fuse);
     switch (fuse_input_calibrate(&e->fuse)) {
     case FUSE_CAL_OK:
@@ -1542,83 +1455,15 @@ static void skp_fuse_cal(void)
     scope_show_popup(t);
 }
 
-static void skv_cont(char *b, uint8_t n) { snprintf(b, n, "< %d Ohm", (int)meter_continuity_threshold()); }
-static void skp_cont(void)
-{
-    char t[24];
-    cont_threshold_idx = (uint8_t)((cont_threshold_idx + 1) % CONT_THRESHOLD_N);
-    snprintf(t, sizeof t, "Beep below %d Ohm", (int)meter_continuity_threshold());
-    scope_show_popup(t);
-}
-
-static const softkey_bar_t meter_bar_cont = {{
-    { "Function", skv_function,  skp_function, NULL },
-    { "Reset",    skv_reset,     skp_reset,    NULL },
-    { "Beep",     skv_cont,      skp_cont,     NULL },
-    { "View",     skv_view,      skp_view,     NULL },
-}};
-static const softkey_bar_t meter_bar_temp = {{
-    { "Unit",     skv_tunit,     skp_tunit,    NULL },
-    { "Reset",    skv_reset,     skp_reset,    NULL },
-    { "Relative", skv_rel,       skp_rel,      ska_rel },
-    { "View",     skv_view,      skp_view,     NULL },
-}};
-static const softkey_bar_t meter_bar_main = {{
-    { "Function", skv_function,  skp_function, NULL },
-    { "Reset",    skv_reset,     skp_reset,    NULL },
-    { "Relative", skv_rel,       skp_rel,      ska_rel },
-    { "View",     skv_view,      skp_view,     NULL },
-}};
-static const softkey_bar_t meter_bar_limits = {{
-    { "Function", skv_function,  skp_function, NULL },
-    { "Low",      skv_low,       skp_low,      ska_low },
-    { "High",     skv_high,      skp_high,     ska_high },
-    { "View",     skv_view,      skp_view,     NULL },
-}};
-/* Fuse type is also on LEFT/RIGHT; the Types page keeps it on a key. */
-static const softkey_bar_t meter_bar_fuse = {{
-    { "Cal leads", skv_fuse_cal,    skp_fuse_cal,    ska_fuse_cal },
-    { "Rating",    skv_fuse_rating, skp_fuse_rating, ska_arrows },
-    { "Show",      skv_fuse_show,   skp_fuse_show,   NULL },
-    { "View",      skv_view,        skp_view,        NULL },
-}};
-static const softkey_bar_t meter_bar_fuse_types = {{
-    { "Fuse type", skv_fuse_type,   skp_fuse_type,   NULL },
-    { "Rating",    skv_fuse_rating, skp_fuse_rating, ska_arrows },
-    { "Show",      skv_fuse_show,   skp_fuse_show,   NULL },
-    { "View",      skv_view,        skp_view,        NULL },
-}};
-static const softkey_bar_t meter_bar_fuse_scan = {{
-    { "Cal leads", skv_fuse_cal,    skp_fuse_cal,    ska_fuse_cal },
-    { "Draw if >", skv_fuse_thresh, skp_fuse_thresh, ska_arrows },
-    { "Show",      skv_fuse_show,   skp_fuse_show,   NULL },
-    { "View",      skv_view,        skp_view,        NULL },
-}};
-
-const softkey_bar_t *meter_softkey_bar(uint8_t layout, uint8_t submode)
-{
-    if (layout == METER_LAYOUT_LIMITS) return &meter_bar_limits;
-    if (layout == METER_LAYOUT_FUSE)
-        return fuse_view == FUSE_VIEW_SCAN  ? &meter_bar_fuse_scan
-             : fuse_view == FUSE_VIEW_TYPES ? &meter_bar_fuse_types : &meter_bar_fuse;
-    if (submode == 7)                  return &meter_bar_cont;   /* continuity: Beep threshold */
-    if (submode == 10)                 return &meter_bar_temp;   /* temperature: degC/degF on MOVE */
-    return &meter_bar_main;
-}
-
-static const softkey_bar_t *meter_bar(void)
-{
-    return meter_softkey_bar(meter_layout, meter_submode);
-}
-
-bool meter_softkey_press(int8_t slot)
+void meter_ui_autoselect_cancel(void)
 {
     if (meter_autoselect_is_running()) meter_autoselect_cancel();
-    return softkey_bar_press(meter_bar(), slot);
 }
+bool meter_ui_autoselect_running(void) { return meter_autoselect_is_running(); }
 
-void meter_softkeys_draw(void)        { softkey_bar_draw(meter_bar()); }
-uint32_t meter_softkeys_epoch(void)   { return softkey_bar_epoch(meter_bar()); }
+/* The softkey bar is the screen's table (meter_screen.c); it is drawn here,
+ * on the display task, with the info bar (status_bar.c). */
+void meter_softkeys_draw(void) { softkey_bar_draw(meter_screen_bar()); }
 
 /* ═══════════════════════════════════════════════════════════════════
  * Main meter screen draw — dispatches by layout
@@ -1645,18 +1490,25 @@ void meter_toggle_relative(void)
     }
 }
 
-/* Toggle auto-hold mode */
-void meter_toggle_hold(void)
+/* meter.rel: on takes the reading shown now as the reference. */
+void meter_ui_rel_set(bool on)
 {
-    meter_hold_enabled = !meter_hold_enabled;
-    if (!meter_hold_enabled) {
-        meter_hold_locked = false;
-        hold_stable_count = 0;
-    } else {
-        meter_hold_locked = false;
-        hold_stable_count = 0;
-        hold_prev_value = 0.0f;
-    }
+    if (on != meter_rel_enabled) meter_toggle_relative();
+}
+
+uint32_t meter_ui_reading_seq(void)  { return meter_reading.display_update_count; }
+uint32_t meter_ui_rendered_seq(void) { return meter_screen_last_reading_display_update; }
+
+/* The screen's paint (meter_screen.c draw()). After the LCD was cleared the
+ * retained frame is gone; after an overlay (a popup) went, the views that
+ * repaint every pixel of their area in place (Big, Limits) need no clear,
+ * the others do. */
+void meter_ui_draw(scr_paint_t how)
+{
+    if (how == SCR_PAINT_FULL ||
+        (how == SCR_PAINT_RESTORE && meter_layout != METER_LAYOUT_BIG && meter_layout != METER_LAYOUT_LIMITS))
+        meter_screen_invalidate();
+    draw_meter_screen();
 }
 
 void draw_meter_screen(void)

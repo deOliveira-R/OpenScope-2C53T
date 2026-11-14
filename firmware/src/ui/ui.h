@@ -327,23 +327,23 @@ uint8_t scope_ui_waterfall_row(void);
 /* Roll view (C11): the roll FIFO right-to-left; full = with labels/STOP/popup. */
 void draw_roll_screen(bool full);
 
-/* meter_ui.c */
+/* meter_ui.c: the meter page's paint module. The screen is
+ * ui/meter_screen.c (its keys, its softkey tables, when to repaint);
+ * meter_screen.h declares what the screen calls here. */
 void draw_meter_screen(void);
 void meter_screen_invalidate(void);
-bool meter_screen_needs_periodic_redraw(void);
 void meter_reset_minmaxavg(void);
 void meter_toggle_relative(void);
-void meter_toggle_hold(void);
-/* Softkey UI (docs/specs/platform/softkey-ui.md) */
-void     meter_hold_toggle_now(void);     /* OK: freeze the shown reading / back to live */
 void     meter_hold_release(void);
 bool     meter_hold_is_on(void);
-void     meter_function_step(int8_t dir); /* next/previous function (MOVE, LEFT/RIGHT) */
-void     meter_limits_nudge(int8_t dir);  /* UP/DOWN in the Limits view */
-bool     meter_softkey_press(int8_t slot);
+/* The owner side of meter.hold / meter.rel / meter.degf / meter.layout
+ * (model_hw_fw.c's ops; input task). */
+bool     meter_ui_hold_set(bool on);         /* false: no reading to hold */
+void     meter_ui_rel_set(bool on);
+void     meter_ui_degf_set(bool f);
+void     meter_ui_layout_changed(uint8_t layout);
 void     meter_softkeys_draw(void);
-uint32_t meter_softkeys_epoch(void);
-float    meter_continuity_threshold(void);   /* continuity beeps below this (Ohm) */
+float    meter_continuity_threshold(void);   /* continuity beeps below this (Ohm): meter.beep */
 void meter_toggle_debug_overlay(void);
 
 /* fuse_ui.c */
@@ -353,18 +353,7 @@ void meter_toggle_debug_overlay(void);
  * the meter just cleared the screen. drop_mv already has the lead cal taken
  * off. */
 void draw_fuse_screen(float drop_mv, int8_t drop_decimals, bool steady, bool repaint);
-void fuse_rating_press(void);
-void fuse_threshold_press(void);
-void fuse_cycle_view(void);
-void fuse_next_rating(void);
-void fuse_prev_rating(void);
-void fuse_next_type(void);
-void fuse_prev_type(void);
 const char *meter_submode_name(uint8_t submode);
-/* Select a meter function as the keys do (resets stats/hold/REL, asks the
- * SoC in the background). Submode 11 is stock's Auto; selecting it again
- * re-sends the word, which is what stock's AUTO key does. */
-void meter_function_select(uint8_t submode);
 const char *startup_mode_name(startup_mode_t mode);
 void startup_mode_set(startup_mode_t mode);
 

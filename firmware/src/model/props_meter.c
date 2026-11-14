@@ -1,12 +1,22 @@
 /*
  * OpenScope 2C53T - meter properties (meter.*)
  *
- * meter.func is meter_function_set (meter_ui.c, input task) split in two:
- * model_hw()->meter_func does what it does to other state (cancel the
- * autoselect unless the change came from it, reset min/max/hold/rel, post
- * the meter posture for fpga_service_requests) and the setter stores
- * meter_submode once that was posted. meter.layout and the fuse tester's
- * settings are plain state (main.c globals, fuse_ui.c's rules).
+ * meter.func: the setter stores meter_submode and model_hw()->meter_func
+ * does the rest of a function change (cancel the software autoselect unless
+ * the change is its own, reset min/max, release hold and relative, post the
+ * meter posture for the poll task). A refusal puts the old function back.
+ *
+ * meter.layout is the View softkey's setter (B6): entering the fuse tester
+ * forces DC V through meter.func's setter (the tester reads a DC drop) and
+ * says so in the note; entering Limits lets the paint module take limits
+ * from the reading (model_hw()->meter_layout). meter.fusetype keeps the
+ * rating in amps, as the TYPE keys always did. So `set meter.layout fuse`
+ * and the key are one path. The fuse tester's other settings and the
+ * beeper threshold are plain state.
+ *
+ * meter.hold, meter.rel and meter.degf are flags their owners keep
+ * (meter_ui.c, meter_data.c: the old shell commands still write them
+ * there), read and set through model_hw()->meter_flag_get/set.
  *
  * meter.link is the link policy without a USB host (meter_link_policy.h):
  * plain state here, read by the display task, which owns the decision and
@@ -46,12 +56,16 @@ int32_t meter_func_get(const prop_desc_t *p) { (void)p; return meter_submode; }
 void    meter_func_store(const prop_desc_t *p, int32_t v) { (void)p; meter_submode = (uint8_t)v; }
 prop_status_t meter_func_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    /* meter_auto posts its pick as ORIGIN_AUTO: that must not cancel itself. */
+    /* Stored first: the poll task that serves the posted request reads
+     * meter_submode (the order meter_function_set had). meter_auto posts its
+     * pick as ORIGIN_AUTO: that must not cancel itself. */
+    const uint8_t old = meter_submode;
+    meter_func_store(p, v);
     if (HW->meter_func && !HW->meter_func((uint8_t)v, origin == ORIGIN_AUTO)) {
+        meter_func_store(p, old);
         model_note(note, "meter posture NOT posted");
         return PS_NOT_SET;
     }
-    meter_func_store(p, v);
     model_note(note, "posture posted");
     return PS_OK;
 }
@@ -60,8 +74,20 @@ int32_t meter_layout_get(const prop_desc_t *p) { (void)p; return meter_layout; }
 void    meter_layout_store(const prop_desc_t *p, int32_t v) { (void)p; meter_layout = (uint8_t)v; }
 prop_status_t meter_layout_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin; (void)note;
+    const bool enter_fuse = (v == METER_LAYOUT_FUSE && meter_layout != METER_LAYOUT_FUSE);
+    bool forced = false;
+    if (enter_fuse && meter_submode != 0) {
+        /* The fuse tester reads a DC drop. Before the layout is stored: a
+         * refusal leaves the view where it was. */
+        if (meter_func_set(P(METER_FUNC), 0, origin, NULL) != PS_OK) {
+            model_note(note, "DC V NOT set");
+            return PS_NOT_SET;
+        }
+        forced = true;
+    }
     meter_layout_store(p, v);
+    if (HW->meter_layout) HW->meter_layout((uint8_t)v);
+    if (forced) model_note(note, "Fuse tester: DC V");
     return PS_OK;
 }
 
@@ -133,6 +159,83 @@ prop_status_t meter_fusethr_set(const prop_desc_t *p, int32_t v, uint8_t origin,
     (void)origin; (void)note;
     meter_fusethr_store(p, v);
     return PS_OK;
+}
+
+/* meter.fuseview: the fuse tester's page (ui.h FUSE_VIEW_*). */
+_Static_assert(FUSE_VIEW_COUNT == 4 && FUSE_VIEW_DETAIL == 0 && FUSE_VIEW_MULTI == 1 &&
+               FUSE_VIEW_SCAN == 2 && FUSE_VIEW_TYPES == 3, "meter.fuseview values = FUSE_VIEW_*");
+const char *const lbl_fuse_view[FUSE_VIEW_COUNT] = { "detail", "table", "scan", "types" };
+int32_t meter_fuseview_get(const prop_desc_t *p) { (void)p; return fuse_view; }
+void    meter_fuseview_store(const prop_desc_t *p, int32_t v) { (void)p; fuse_view = (uint8_t)v; }
+prop_status_t meter_fuseview_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    meter_fuseview_store(p, v);
+    return PS_OK;
+}
+
+/* meter.beep: continuity beeps below this many ohms (2026-10-06). Shorted
+ * leads read ~0.14 Ohm as a plain resistance, so the chip's own continuity
+ * flag alone never fired. Common DMM practice is 10-50 Ohm. One byte,
+ * written on the executor, read by the display and buzzer contexts. */
+static const uint16_t k_beep_ohms[METER_BEEP_COUNT] = { 10, 30, 50, 100 };
+const char *const lbl_meter_beep[METER_BEEP_COUNT] = { "10ohm", "30ohm", "50ohm", "100ohm" };
+static volatile uint8_t g_meter_beep = 1;      /* 30 Ohm */
+uint16_t meter_beep_ohms(void) { return k_beep_ohms[g_meter_beep < METER_BEEP_COUNT ? g_meter_beep : 1]; }
+int32_t meter_beep_get(const prop_desc_t *p) { (void)p; return g_meter_beep; }
+void    meter_beep_store(const prop_desc_t *p, int32_t v)
+{
+    (void)p;
+    g_meter_beep = (uint8_t)((v >= 0 && v < METER_BEEP_COUNT) ? v : 1);
+}
+prop_status_t meter_beep_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    meter_beep_store(p, v);
+    return PS_OK;
+}
+
+/* meter.hold / meter.rel / meter.degf. Without the ops (host tests of the
+ * model alone): off, and a set is refused. */
+static int32_t flag_get(uint8_t which)
+{
+    return (HW->meter_flag_get && HW->meter_flag_get(which)) ? 1 : 0;
+}
+static prop_status_t flag_set(uint8_t which, int32_t v, prop_note_t *note, const char *refused)
+{
+    if (!HW->meter_flag_set || !HW->meter_flag_set(which, v != 0, true)) {
+        model_note(note, refused);
+        return PS_NOT_SET;
+    }
+    return PS_OK;
+}
+static void flag_store(uint8_t which, int32_t v)
+{
+    if (HW->meter_flag_set) (void)HW->meter_flag_set(which, v != 0, false);
+}
+
+int32_t meter_hold_get(const prop_desc_t *p) { (void)p; return flag_get(METER_FLAG_HOLD); }
+void    meter_hold_store(const prop_desc_t *p, int32_t v) { (void)p; flag_store(METER_FLAG_HOLD, v); }
+prop_status_t meter_hold_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)p; (void)origin;
+    return flag_set(METER_FLAG_HOLD, v, note, "HOLD: no reading");
+}
+
+int32_t meter_rel_get(const prop_desc_t *p) { (void)p; return flag_get(METER_FLAG_REL); }
+void    meter_rel_store(const prop_desc_t *p, int32_t v) { (void)p; flag_store(METER_FLAG_REL, v); }
+prop_status_t meter_rel_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)p; (void)origin;
+    return flag_set(METER_FLAG_REL, v, note, "relative NOT set");
+}
+
+int32_t meter_degf_get(const prop_desc_t *p) { (void)p; return flag_get(METER_FLAG_DEGF); }
+void    meter_degf_store(const prop_desc_t *p, int32_t v) { (void)p; flag_store(METER_FLAG_DEGF, v); }
+prop_status_t meter_degf_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)p; (void)origin;
+    return flag_set(METER_FLAG_DEGF, v, note, "unit NOT set");
 }
 
 /* meter.link: no hardware in the setter or the store hook (a load runs

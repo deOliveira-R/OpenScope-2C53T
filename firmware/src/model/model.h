@@ -283,6 +283,12 @@ void    model_last_screen_load(uint8_t raw);
 void    model_last_screen_note_power_off(uint8_t screen);
 uint8_t model_last_screen_record(void);
 
+/* meter.hold / meter.rel / meter.degf: model_hw_ops_t.meter_flag_get/set. */
+enum { METER_FLAG_HOLD = 0, METER_FLAG_REL, METER_FLAG_DEGF };
+/* meter.beep: the continuity beeper's threshold in ohms (10, 30, 50, 100). */
+#define METER_BEEP_COUNT 4
+uint16_t meter_beep_ohms(void);
+
 /* ── Change notification ─────────────────────────────────────────────── */
 extern volatile uint32_t prop_epoch[PG_COUNT];   /* bumped by the executor on a change */
 uint32_t prop_group_epoch(uint8_t g);
@@ -332,11 +338,24 @@ typedef struct {
     void    (*gen_duty)(percent_t duty);
     void    (*gen_out)(bool on);
     void    (*gen_bootout)(bool on);
-    /* meter: everything meter_function_set does except the store (cancel
-     * autoselect unless keep_autoselect, reset min/max/hold/rel, post the
-     * meter posture). false = not posted. */
+    /* meter: the rest of a function change once the setter has stored it
+     * (cancel the software autoselect and release hold / relative unless
+     * keep_autoselect, the autoselect's own candidate; reset min/max; post
+     * the meter posture). false = not posted: the setter puts the old
+     * function back. */
     bool    (*meter_func)(uint8_t submode, bool keep_autoselect);
     bool    (*meter_link_on)(void);                    /* the meter link is on now (meter.live) */
+    /* Meter view state its owners keep (meter_ui.c: hold, relative;
+     * meter_data.c: the temperature unit). which = METER_FLAG_*. A set with
+     * user = true is the key's action (hold freezes the shown reading and
+     * answers false without one; relative takes the reading as its
+     * reference; degF resets min/max, hold and relative as stock does);
+     * user = false is a load: the flag only (a hold cannot be loaded). */
+    bool    (*meter_flag_get)(uint8_t which);
+    bool    (*meter_flag_set)(uint8_t which, bool on, bool user);
+    /* After meter.layout changed: the Limits view takes its limits from the
+     * reading when it has none for this function (meter_ui.c). */
+    void    (*meter_layout)(uint8_t layout);
     /* system */
     bool    (*mode)(uint8_t device_mode);              /* posts the mode switch (enter_mode);
                                                         * model_touch(PG_SYS / PG_UI) on landing */
@@ -430,6 +449,10 @@ extern const char *const lbl_gen_wave[];
 /* props_meter.c */
 MODEL_PROP_FNS(meter_func)  MODEL_PROP_FNS(meter_layout) MODEL_PROP_FNS(meter_fusetype)
 MODEL_PROP_FNS(meter_fuserating) MODEL_PROP_FNS(meter_fusethr) MODEL_PROP_FNS(meter_link)
+MODEL_PROP_FNS(meter_fuseview) MODEL_PROP_FNS(meter_beep) MODEL_PROP_FNS(meter_hold)
+MODEL_PROP_FNS(meter_rel) MODEL_PROP_FNS(meter_degf)
+extern const char *const lbl_fuse_view[];
+extern const char *const lbl_meter_beep[];
 int32_t meter_live_get(const prop_desc_t *p);
 bool meter_fuserating_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 extern const char *const lbl_meter_func[];

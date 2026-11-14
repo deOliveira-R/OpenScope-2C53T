@@ -264,20 +264,23 @@ void ui_describe_settings(char *out, size_t n)
 /* One line, fixed keys in a fixed order, "-" where a key does not apply:
  *   screen=scope instrument=scope overlay=osc_menu row=ch1 pane=pane item=2
  *   settings=- home=- focus=zoom ach=CH1 run=run view=yt meter=- popup=0
- *   stack=scope>osc_menu edit=-
+ *   stack=scope>osc_menu edit=- mview=-
  * From the screen router's snapshot (ui/screen.h): `screen` is its base,
  * `overlay` its top layer, `stack` every screen bottom-up; row/pane/item,
  * settings and home are the describe() of the osc page (when on top), the
  * settings base and the home base; edit (the last key, added with the
  * generator screen) is the generator base's: off, or the digit under the
- * cursor (0..4) while its frequency editor is open. The rest are properties. The stack
+ * cursor (0..4) while its frequency editor is open; mview (after it, added with
+ * the meter screen) is the meter base's: its layout (big, graph, stats, fuse,
+ * limits), in the fuse tester with the page (fuse/detail, fuse/table,
+ * fuse/scan, fuse/types). The rest are properties. The stack
  * mirrors the legacy state on the input task (legacy_screens_sync), so right
  * after a shell `mode` it can lag by one input pass (<= 100 ms). */
 static void screen_line(void)
 {
     char inst[12], focus[12], view[16], meter[16];
     char osc[48] = "row=- pane=- item=-", set[24] = "settings=-", home[16] = "home=-";
-    char gen[16] = "edit=-";
+    char gen[16] = "edit=-", mview[24] = "mview=-";
     char stack[64] = "";
     const screen_stack_t st = screen_snapshot();
     const screen_t *base = st.n ? screen_get(st.id[0]) : NULL;
@@ -298,17 +301,18 @@ static void screen_line(void)
     if (base && base->id == SCR_SETTINGS && base->describe) base->describe(set, sizeof set);
     if (base && base->id == SCR_HOME && base->describe) base->describe(home, sizeof home);
     if (base && base->id == SCR_SIGGEN && base->describe) base->describe(gen, sizeof gen);
+    if (base && base->id == SCR_METER && base->describe) base->describe(mview, sizeof mview);
     for (uint8_t i = 0; i < st.n; i++) {
         const screen_t *sc = screen_get(st.id[i]);
         const size_t o = strlen(stack);
         snprintf(stack + o, sizeof stack - o, "%s%s", i ? ">" : "", sc && sc->name ? sc->name : "?");
     }
     usb_debug_printf("screen=%s instrument=%s overlay=%s %s %s %s "
-                     "focus=%s ach=CH%u run=%s view=%s meter=%s popup=%u stack=%s %s\r\n",
+                     "focus=%s ach=CH%u run=%s view=%s meter=%s popup=%u stack=%s %s %s\r\n",
                      base && base->name ? base->name : "?", inst, overlay,
                      osc, set, home, focus, (unsigned)active_channel + 1u,
                      prop_get(P(VIEW_RUN)) ? "run" : "stop", view, meter,
-                     scope_popup_active() ? 1u : 0u, stack[0] ? stack : "-", gen);
+                     scope_popup_active() ? 1u : 0u, stack[0] ? stack : "-", gen, mview);
 }
 
 void cmd_ui_screen(void) { screen_line(); }

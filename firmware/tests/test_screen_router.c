@@ -504,14 +504,10 @@ static void lg(const char *fmt, int a, int b, int c)
     if (strlen(LG) + strlen(t) + 2 < sizeof LG) { strcat(LG, t); strcat(LG, " "); }
 }
 
-/* A handler-side fact the order depends on, the same for both paths:
- * softkey_slot_for_button() (softkey.c). (The generator's editor claim was
- * the other one until B3: the editor is inside its screen now, W.editor only
- * varies the state around it.) */
-static bool softkey_takes(button_id_t b)
-{
-    return b == BTN_MOVE || b == BTN_SELECT || b == BTN_TRIGGER || b == BTN_PRM;
-}
+/* (Two handler-side facts the order depended on are inside their screens
+ * now: the generator's editor claim since B3, W.editor only varies the state
+ * around it; the meter's softkey claim, softkey_slot_for_button(), since
+ * B6.) */
 
 static key_ctx_t w_ctx(void)
 {
@@ -535,7 +531,6 @@ void lgc_state(lgc_state_t *s)
 key_ctx_t lgc_ctx(void)                      { lg("ctx", 0, 0, 0); return w_ctx(); }   /* key_ctx_now */
 void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
 void lgc_native_after(screen_id_t scr, scr_res_t res) { lg("after:%d:%d", scr, res, 0); }
-bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return false; lg("softkey:%d", b, 0, 0); return true; }
 void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
 void lgc_mode_set(device_mode_t m)           { lg("mode:%d", m, 0, 0); }   /* sys.mode, ORIGIN_KEY */
 /* gallery_ui_key: false = not consumed. POWER: closes, not consumed (handed
@@ -612,6 +607,32 @@ static void want_gen(uint8_t raw)
     lg("after:%d:%d", SCR_SIGGEN, fake_gen_answer(raw), 0);
 }
 
+/* The meter's stand-in (B6): the softkeys, OK, AUTO and the arrows paint in
+ * place or in full, the long keys do nothing. */
+static scr_res_t fake_meter_answer(uint8_t raw)
+{
+    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
+    if (raw == BTN_LEFT || raw == BTN_RIGHT || raw == BTN_CH1 || raw == BTN_CH2) return SCR_DRAW_FULL;
+    if (raw == BTN_MENU || raw == BTN_UP || raw == BTN_DOWN) return SCR_HANDLED;
+    return SCR_DRAW;
+}
+static scr_res_t fake_meter_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("meter:%d", raw, 0, 0);
+    return fake_meter_answer(raw);
+}
+const screen_t meter_screen = {
+    .name = "meter", .id = SCR_METER, .mode = MODE_MULTIMETER, .instrument = MODE_MULTIMETER,
+    .key = fake_meter_key, .draw = fake_draw,
+    .groups = (uint16_t)((1u << PG_METER) | (1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI)),
+};
+static void want_meter(uint8_t raw)
+{
+    lg("meter:%d", raw, 0, 0);
+    lg("after:%d:%d", SCR_METER, fake_meter_answer(raw), 0);
+}
+
 /* input_handle_button() before the router (base 6a8c2ba), step by step. */
 static void old_route(uint8_t raw)
 {
@@ -640,6 +661,8 @@ static void old_route(uint8_t raw)
              * answered KA_NONE and exec_key_cmd ran the settings hook). The
              * screen is asked now, and answers "nothing" itself. */
             if (W.mode == MODE_HOME && k.act == KA_NONE) { want_home(raw); return; }
+            /* The meter (B6): the same; its long keys never had a meaning. */
+            if (W.mode == MODE_MULTIMETER && k.act == KA_NONE) { want_meter(raw); return; }
             /* The generator (B3): its long OK (KA_SIGGEN_RUNSTOP) and long
              * AUTO (KA_SIGGEN_BOOT_TOGGLE) were exec_key_cmd cases and its
              * other long keys did nothing; the screen is asked for all of
@@ -656,7 +679,9 @@ static void old_route(uint8_t raw)
     const key_cmd_t k = key_map(&c, b, false);
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
     if (W.mode == MODE_HOME && b != BTN_POWER) { want_home(raw); return; }   /* was lgc_home(b) */
-    if (W.mode == MODE_MULTIMETER && softkey_takes(b)) { lg("softkey:%d", b, 0, 0); return; }
+    /* was the softkey claim (MOVE/SELECT/TRIGGER/PRM), then the switch: the
+     * meter screen has both. */
+    if (W.mode == MODE_MULTIMETER && b != BTN_POWER) { want_meter(raw); return; }
     /* was siggen_edit_input() (PRM, and the editor's keys while it is open),
      * then the switch: the generator screen has both. */
     if (W.mode == MODE_SIGNAL_GEN && b != BTN_POWER) { want_gen(raw); return; }
@@ -804,8 +829,8 @@ static void test_legacy_table(void)
         { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click ctx switch:15" },
         { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click ctx exec:28:0:10" },
         { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx exec:26:0:9" },
-        { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx softkey:3" },
-        { "LEFT in the meter: the switch",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx switch:12" },
+        { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx meter:3 after:2:2" },
+        { "LEFT in the meter: its screen",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx meter:12 after:2:3" },
         { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx gen:6 after:3:2" },
         { "UP in the generator, editor closed: screen",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx gen:10 after:3:2" },
         { "UP in the generator, editor open: screen",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click ctx gen:10 after:3:2" },
@@ -895,8 +920,8 @@ static void test_legacy_mirror(void)
     gallery_gone = true;
     LG[0] = '\0';
     (void)screen_route_key(BTN_LEFT);
-    CHECK("gallery shut under the key: the key falls through to the meter's switch",
-          strcmp(LG, "touch click gallery:12 ctx switch:12 ") == 0 && !W.gallery && screen_top() == SCR_METER);
+    CHECK("gallery shut under the key: the key falls through to the meter's screen",
+          strcmp(LG, "touch click gallery:12 ctx meter:12 after:2:3 ") == 0 && !W.gallery && screen_top() == SCR_METER);
     W.gallery = true; legacy_screens_sync();
     LG[0] = '\0';
     (void)screen_route_key(BTN_MOVE | BTN_LONG_FLAG);

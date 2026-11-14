@@ -10,13 +10,15 @@
 #include "fpga.h"
 #include "meter_auto.h"
 #include "meter_data.h"
-#include "meter_voltage_wave.h"
+#include "model.h"
+#include "model_exec.h"
 #include "ui.h"
 
 #define METER_AUTOSELECT_DEFAULT_SETTLE_MS 2500U
 #define METER_AUTOSELECT_MAX_SETTLE_MS     3000U
 #define METER_AUTOSELECT_MIN_WAIT_MS       2500U
 #define METER_AUTOSELECT_POLL_MS           100U
+#define METER_AUTOSELECT_POST_MS           500U   /* for the model to take a set */
 
 static volatile bool autoselect_start_pending;
 static volatile bool autoselect_cancel_pending;
@@ -123,18 +125,35 @@ static bool meter_autoselect_mode_changed(void)
     return current_mode != MODE_MULTIMETER;
 }
 
-static void meter_autoselect_prepare_candidate(uint8_t submode)
+/* A set through the model (the input task applies it), retried while its
+ * queue is full. false: not queued within METER_AUTOSELECT_POST_MS. */
+static bool meter_autoselect_post(uint16_t id, int32_t value)
 {
-    meter_submode = submode;
-    meter_reset_minmaxavg();
-    meter_voltage_wave_reset();
-    /*
-     * Follow the same transition path as the UI buttons. `fpga_meter_reinit()`
-     * is a stronger debug recovery path with a DCV wake preamble; using it for
-     * every autoscan candidate makes the physical relay path and producer frames
-     * differ from normal user mode changes.
-     */
-    fpga_set_meter_mode(submode);
+    for (uint32_t waited = 0; waited <= METER_AUTOSELECT_POST_MS; waited += 10U) {
+        if (prop_post(id, value, ORIGIN_AUTO)) return true;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return false;
+}
+
+/*
+ * A candidate is a function change like any other: meter.func, set on the
+ * input task (the same transition path as the keys and the shell; the poll
+ * task serves the posted request). ORIGIN_AUTO tells the setter it is this
+ * scan's own, so it does not cancel the scan and keeps hold / relative
+ * (model_hw_fw.c op_meter_func: min/max and the voltage waveform are reset
+ * there). Returns once the model has stored it; false if it never did (the
+ * queue stayed full, or the set was refused): the scan then ends as
+ * cancelled.
+ */
+static bool meter_autoselect_prepare_candidate(uint8_t submode)
+{
+    if (!meter_autoselect_post(PROP_ID_METER_FUNC, submode)) return false;
+    for (uint32_t waited = 0; waited <= METER_AUTOSELECT_POST_MS; waited += 10U) {
+        if (meter_submode == submode) return true;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    return false;
 }
 
 static uint8_t meter_autoselect_wait_score(uint8_t submode,
@@ -169,7 +188,7 @@ static void meter_autoselect_run_once(uint32_t settle_ms)
         (settle_ms < METER_AUTOSELECT_MIN_WAIT_MS) ?
         METER_AUTOSELECT_MIN_WAIT_MS : settle_ms;
 
-    meter_layout = METER_LAYOUT_FULL;
+    bool failed = !meter_autoselect_post(PROP_ID_METER_LAYOUT, METER_LAYOUT_BIG);
     meter_autoselect_set_status(METER_AUTOSELECT_RUNNING, original_mode, 0,
                                 candidate_count, best_mode, best_score, 0,
                                 settle_ms, wait_budget_ms);
@@ -178,11 +197,14 @@ static void meter_autoselect_run_once(uint32_t settle_ms)
         uint8_t submode = candidates[i];
         uint8_t score;
 
-        if (meter_autoselect_cancel_requested() || meter_autoselect_mode_changed()) {
+        if (failed || meter_autoselect_cancel_requested() || meter_autoselect_mode_changed()) {
             break;
         }
 
-        meter_autoselect_prepare_candidate(submode);
+        if (!meter_autoselect_prepare_candidate(submode)) {
+            failed = true;
+            break;
+        }
         meter_autoselect_set_status(METER_AUTOSELECT_RUNNING, submode, i,
                                     candidate_count, best_mode, best_score, 0,
                                     settle_ms, wait_budget_ms);
@@ -197,19 +219,19 @@ static void meter_autoselect_run_once(uint32_t settle_ms)
                                     score, settle_ms, wait_budget_ms);
     }
 
-    if (meter_autoselect_cancel_requested() ||
+    if (failed || meter_autoselect_cancel_requested() ||
         meter_autoselect_mode_changed()) {
         if (!meter_autoselect_mode_changed()) {
             best_mode = original_mode;
             best_score = 0;
-            meter_autoselect_prepare_candidate(best_mode);
+            (void)meter_autoselect_prepare_candidate(best_mode);
         }
         meter_autoselect_set_status(METER_AUTOSELECT_CANCELLED, best_mode,
                                     candidate_count, candidate_count,
                                     best_mode, best_score, 0,
                                     settle_ms, wait_budget_ms);
     } else {
-        meter_autoselect_prepare_candidate(best_mode);
+        (void)meter_autoselect_prepare_candidate(best_mode);
         meter_autoselect_set_status(METER_AUTOSELECT_DONE, best_mode,
                                     candidate_count, candidate_count,
                                     best_mode, best_score, best_score,

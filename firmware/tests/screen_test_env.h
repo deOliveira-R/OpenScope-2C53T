@@ -4,8 +4,8 @@
  * pure modules it reads, with fake hardware ops that log every owner call,
  * so a test sees a key become a property set and the set become the owner
  * call. The same pattern as tests/test_model.c, cut down to the ops a screen
- * can reach (mode, the generator, the executor services); every other op is
- * unbound (NULL: the setter skips the call).
+ * can reach (mode, the generator, the meter, the executor services); every
+ * other op is unbound (NULL: the setter skips the call).
  *
  * Include once, from the test's .c file.
  */
@@ -91,6 +91,31 @@ static void f_gen_amp(uint8_t a)     { if (env_log_ops) env_logf("gen_amp(%u);",
 static void f_gen_duty(percent_t d)  { if (env_log_ops) env_logf("gen_duty(%u);", d.pct); siggen_set_duty(d.pct); }
 static void f_gen_out(bool on)       { if (env_log_ops) env_logf("gen_out(%d);", on); siggen_enable(on); }
 static void f_gen_boot(bool on)      { if (env_log_ops) env_logf("gen_boot(%d);", on); siggen_set_start_on(on); }
+/* The meter's owners: the function change (what model_hw_fw.c's op does to
+ * the other state: a key's change releases hold and relative, the
+ * autoselect's own does not), the three flags, the layout hook. */
+static bool env_meter_flag[3];         /* METER_FLAG_HOLD / REL / DEGF */
+static bool env_meter_reading = true;  /* a reading to hold */
+static bool env_meter_func_ok = true;
+static bool f_meter_func(uint8_t m, bool keep_autoselect)
+{
+    if (env_log_ops) env_logf("meter_func(%u%s);", m, keep_autoselect ? ",auto" : "");
+    if (!env_meter_func_ok) return false;
+    if (!keep_autoselect) env_meter_flag[METER_FLAG_HOLD] = env_meter_flag[METER_FLAG_REL] = false;
+    return true;
+}
+static bool f_meter_flag_get(uint8_t which) { return which < 3 && env_meter_flag[which]; }
+static bool f_meter_flag_set(uint8_t which, bool on, bool user)
+{
+    if (env_log_ops) env_logf("meter_flag(%u,%d%s);", which, on, user ? "" : ",load");
+    if (which >= 3) return false;
+    if (which == METER_FLAG_HOLD && on && (!user || !env_meter_reading)) return false;
+    if (which == METER_FLAG_DEGF && user)
+        env_meter_flag[METER_FLAG_HOLD] = env_meter_flag[METER_FLAG_REL] = false;
+    env_meter_flag[which] = on;
+    return true;
+}
+static void f_meter_layout(uint8_t l) { if (env_log_ops) env_logf("meter_layout(%u);", l); }
 static bool f_busy(void)             { return env_busy; }
 static bool f_shell_persist(void)    { return true; }
 static void f_note(void)             { env_notes++; }
@@ -98,6 +123,8 @@ static void f_note(void)             { env_notes++; }
 static const model_hw_ops_t env_ops = {
     .gen_wave = f_gen_wave, .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_duty = f_gen_duty,
     .gen_out = f_gen_out, .gen_bootout = f_gen_boot, .mode = f_mode,
+    .meter_func = f_meter_func, .meter_flag_get = f_meter_flag_get, .meter_flag_set = f_meter_flag_set,
+    .meter_layout = f_meter_layout,
     .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note,
 };
 
@@ -114,9 +141,13 @@ static void env_fresh(device_mode_t mode)
     current_mode = mode; startup_mode = STARTUP_SCOPE; active_channel = 0;
     meter_submode = 0; meter_layout = 0; math_enabled = false; math_op = 0;
     persist_enabled = false; scope_view = SCOPE_VIEW_TIME;
+    fuse_type = 0; fuse_rating_idx = 6; fuse_view = 0; fuse_scan_threshold_mv = 0.1f;
+    env_meter_flag[0] = env_meter_flag[1] = env_meter_flag[2] = false;
+    env_meter_reading = true; env_meter_func_ok = true;
     env_busy = false; env_mode_applies = true; env_log_dac = false; env_log_ops = true;
     model_bind_hw(&env_ops);
     (void)model_load_defaults(PF_PERSIST, NULL, false);
+    (void)prop_set_local(P(METER_BEEP), 1, ORIGIN_BOOT, NULL);
     current_mode = mode;
     env_notes = 0;
     env_log_clear();

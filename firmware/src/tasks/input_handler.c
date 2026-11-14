@@ -20,7 +20,6 @@
 #include "input_handler.h"
 #include "scope_apply.h"
 #include "ui.h"
-#include "softkey.h"
 #include "lcd.h"
 #include "font.h"
 #include "scope_state.h"
@@ -40,7 +39,6 @@
 #include "scope_vpos.h"
 #include "scope_selfcal_run.h"
 #include "meter_autoselect.h"
-#include "fpga_meter_plan.h"
 #include "at32f403a_407.h"
 #include "button_scan.h"
 #include "settings_store.h"
@@ -917,7 +915,10 @@ void lgc_exec(key_cmd_t k, button_id_t btn)
  * switch the mode through the model, which repaints. The generator
  * (siggen_screen.c): every key that sets a gen.* property or moves the
  * frequency editor answers SCR_DRAW (the page, gated on its epoch by the
- * display task), CH1/CH2/TRIGGER/MOVE answer SCR_DRAW_FULL. */
+ * display task), CH1/CH2/TRIGGER/MOVE answer SCR_DRAW_FULL. The meter
+ * (meter_screen.c): the softkeys, OK, AUTO and the Limits arrows answer
+ * SCR_DRAW (in place, gated on its epoch), LEFT/RIGHT, the fuse tester's
+ * arrows and CH1/CH2 SCR_DRAW_FULL, as their handlers sent before B6. */
 void lgc_native_after(screen_id_t scr, scr_res_t res)
 {
     if (res == SCR_DRAW_FULL) {
@@ -930,23 +931,6 @@ void lgc_native_after(screen_id_t scr, scr_res_t res)
         g_cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
     }
     settings_after_button();
-}
-
-/* Softkeys (docs/specs/platform/softkey-ui.md): in the meter, the four
- * buttons under the screen do what the bar above them says. Asked before the
- * per-button cases, so the meter never falls into another mode's meaning for
- * MOVE/SELECT/TRIGGER/PRM. */
-bool lgc_meter_softkey(button_id_t button)
-{
-    int8_t sk = softkey_slot_for_button(button);
-    if (sk < 0) return false;
-    (void)meter_softkey_press(sk);
-    g_cmd = DCMD_DRAW_METER;
-    send_cmd(g_dq, legacy_screens_active_cmd());          /* the meter: DCMD_DRAW_METER */
-    /* Same settings hook as every other key: a softkey changes saved state
-     * (function, view) like any other button. */
-    settings_after_button();
-    return true;
 }
 
 void lgc_mode_key(button_id_t button) { g_cmd = mode_key(button, g_dq); }
@@ -1111,17 +1095,9 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
     /* -- Auto ----------------------------------------------------- */
 
     case BTN_AUTO:
-        if (current_mode == MODE_MULTIMETER) {
-            /* Stock's AUTO key in the meter (0x0800CB50) sends word 0x0514
-             * and lets the SoC pick the function (V or Ohm, AC or DC); it
-             * resets hold/REL/min/max like any function change. Pressed
-             * again it re-arms the SoC. The software autoscan this key used
-             * to start stays reachable as the shell's `meter auto`. */
-            meter_function_select(FPGA_METER_SUBMODE_AUTO);
-            scope_show_popup("AUTO");
-            cmd = DCMD_DRAW_METER;
-            send_cmd(dq, legacy_screens_active_cmd());
-        } else if (current_mode == MODE_OSCILLOSCOPE) {
+        /* The meter's AUTO (the SoC's own function pick) is its screen's
+         * (ui/meter_screen.c). */
+        if (current_mode == MODE_OSCILLOSCOPE) {
 #if FEATURE_FFT
             if (scope_view != SCOPE_VIEW_TIME) {
                 /* Auto-configure the spectrum view on what it actually
@@ -1205,17 +1181,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, cmd);
         }
 #endif
-        else if (current_mode == MODE_MULTIMETER &&
-                 meter_layout == METER_LAYOUT_FUSE) {
-            fuse_next_rating();   /* UP = larger */
-            send_cmd(dq, cmd);
-        }
-        else if (current_mode == MODE_MULTIMETER &&
-                 meter_layout == METER_LAYOUT_LIMITS) {
-            meter_limits_nudge(+1);
-            cmd = DCMD_DRAW_METER;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
         break;
 
     case BTN_DOWN:
@@ -1236,17 +1201,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, cmd);
         }
 #endif
-        else if (current_mode == MODE_MULTIMETER &&
-                 meter_layout == METER_LAYOUT_FUSE) {
-            fuse_prev_rating();
-            send_cmd(dq, cmd);
-        }
-        else if (current_mode == MODE_MULTIMETER &&
-                 meter_layout == METER_LAYOUT_LIMITS) {
-            meter_limits_nudge(-1);
-            cmd = DCMD_DRAW_METER;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
         break;
 
     /* -- LEFT / RIGHT --------------------------------------------- */
@@ -1261,15 +1215,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                  settings_value_adjust((settings_item_t)settings_selected, -1, false)) {
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
-        }
-        /* Meter: fuse type or previous sub-mode */
-        else if (current_mode == MODE_MULTIMETER) {
-            if (meter_layout == METER_LAYOUT_FUSE) {
-                fuse_prev_type();
-            } else {
-                meter_function_step(-1);
-            }
-            send_cmd(dq, cmd);
         }
 #if FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
@@ -1291,15 +1236,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-        /* Meter: fuse type or next sub-mode */
-        else if (current_mode == MODE_MULTIMETER) {
-            if (meter_layout == METER_LAYOUT_FUSE) {
-                fuse_next_type();
-            } else {
-                meter_function_step(+1);
-            }
-            send_cmd(dq, cmd);
-        }
 #if FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
             scope_view != SCOPE_VIEW_TIME) {
@@ -1315,11 +1251,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS) {
             input_handle_settings_ok();
             send_cmd(dq, cmd);
-        } else if (current_mode == MODE_MULTIMETER) {
-            /* OK = Hold (softkey UI): freeze the reading on screen now. */
-            meter_hold_toggle_now();
-            cmd = DCMD_DRAW_METER;
-            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_OSCILLOSCOPE) {
             if (scope_mask_hold_active()) {
                 /* A mask failure is being held (stop-on-fail): OK resumes
