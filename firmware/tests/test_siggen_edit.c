@@ -90,6 +90,39 @@ int main(void)
     CHECK("MENU with nothing changed is just a close",
           key(SGE_KEY_CANCEL) == SGE_ACCEPTED && !E.active);
 
+    /* following the live frequency (a `set gen.freq` while the editor is
+     * open): the next key steps from the live value, undo keeps the value
+     * the edit began with */
+    begin(1000); cursor(2);
+    siggen_edit_track(&E, 4321);
+    CHECK("track: the working value follows the live one; cursor and undo stay",
+          E.active && E.value == 4321 && E.digit == 2 && E.original == 1000);
+    CHECK("the next UP steps from the live value",
+          key(SGE_KEY_UP) == SGE_CHANGED && E.value == 4421);
+    siggen_edit_track(&E, 4421);
+    CHECK("track with the value already live changes nothing", E.value == 4421 && E.original == 1000);
+    siggen_edit_track(&E, 777);
+    CHECK("MENU after an outside change still restores the original, and says so",
+          key(SGE_KEY_CANCEL) == SGE_CANCELLED && !E.active && E.value == 1000);
+    begin(1000);
+    siggen_edit_track(&E, 5000);
+    CHECK("OK after an outside change keeps the live value",
+          key(SGE_KEY_ACCEPT) == SGE_ACCEPTED && !E.active && E.value == 5000);
+    begin(1000);
+    siggen_edit_track(&E, 1000);
+    CHECK("MENU with the live value equal to the original is just a close",
+          key(SGE_KEY_CANCEL) == SGE_ACCEPTED && !E.active);
+    begin(1000);
+    siggen_edit_track(&E, 99999);
+    CHECK("track clamps an out-of-range live value", E.value == SIGGEN_EDIT_MAX_HZ);
+    memset(&E, 0, sizeof E);
+    siggen_edit_track(&E, 1234);
+    CHECK("track leaves a closed editor alone", !E.active && E.value == 0);
+    begin(50000); cursor(0);
+    siggen_edit_track(&E, 0);
+    CHECK("a live 0 Hz (output off): DOWN stays, UP leaves it",
+          key(SGE_KEY_DOWN) == SGE_MOVED && key(SGE_KEY_UP) == SGE_CHANGED && E.value == 1);
+
     /* digit extraction used by the screen */
     CHECK("digit_of reads each decade",
           siggen_edit_digit_of(40302, 4) == 4 && siggen_edit_digit_of(40302, 3) == 0 &&

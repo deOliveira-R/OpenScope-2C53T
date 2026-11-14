@@ -38,6 +38,7 @@ C_SOURCES += src/ui/meter_ui.c
 C_SOURCES += src/ui/softkey.c
 C_SOURCES += src/ui/fuse_model.c
 C_SOURCES += src/ui/siggen_ui.c
+C_SOURCES += src/ui/siggen_screen.c
 C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
 C_SOURCES += src/ui/home_model.c
@@ -2110,7 +2111,8 @@ check-owners:
 # firmware yet.
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
-                                 src/ui/legacy_screens.h src/ui/home_screen.h src/model/model.h | $(BUILD_DIR)
+                                 src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h \
+                                 src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util $< src/ui/screen.c -o $@
 
 .PHONY: test-screen-router
@@ -2133,6 +2135,19 @@ $(BUILD_DIR)/test_home_screen: tests/test_home_screen.c src/ui/home_screen.c src
 
 .PHONY: test-home-screen
 test-home-screen: $(BUILD_DIR)/test_home_screen
+	$<
+
+# The generator screen on gen.* (ARCH-1 B3): the key table with the editor
+# closed and open, every change as a property set (get, epoch, settings
+# note), a `set` while the screen is up, and the dac_output calls of every
+# key against the pre-B3 handlers over 750 generator states.
+$(BUILD_DIR)/test_siggen_screen: tests/test_siggen_screen.c src/ui/siggen_screen.c src/ui/siggen_screen.h \
+                                 src/ui/siggen_edit.c src/ui/siggen_edit.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< src/ui/siggen_screen.c src/ui/siggen_edit.c src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-siggen-screen
+test-siggen-screen: $(BUILD_DIR)/test_siggen_screen
 	$<
 
 # Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,

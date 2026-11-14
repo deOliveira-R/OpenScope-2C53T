@@ -7,9 +7,18 @@
  * Any value in range is reachable, not a preset list.
  *
  * This is the pure state machine; no hardware and no siggen_* calls, so it
- * builds on the host (make test-siggen-edit). The input handler feeds it
- * keys and pushes `value` to the generator after every SGE_CHANGED, so the
- * output follows the edit as in stock.
+ * builds on the host (make test-siggen-edit). The generator screen
+ * (siggen_screen.c) feeds it keys and commits `value` to the gen.freq
+ * property after every SGE_CHANGED / SGE_CANCELLED, so the output follows
+ * the edit as in stock.
+ *
+ * The frequency itself lives in the generator (gen.freq), not here. The
+ * editor's own state is the cursor (`active`, `digit`) and the undo value
+ * (`original`). `value` is the working register of one key: the screen
+ * loads it from gen.freq before every key (siggen_edit_track), so a
+ * frequency set from anywhere else while the editor is open is what the
+ * next key steps from, and it is never shown from here (the screen draws
+ * the live frequency).
  */
 
 #ifndef SIGGEN_EDIT_H
@@ -42,15 +51,20 @@ typedef enum {
 typedef struct {
     bool     active;
     uint8_t  digit;      /* cursor: 0 = 1 Hz .. 4 = 10 kHz */
-    uint32_t value;      /* working frequency, 0..50000 */
-    uint32_t original;   /* value at siggen_edit_begin() */
+    uint32_t value;      /* working frequency of the key in hand, 0..50000 */
+    uint32_t original;   /* value at siggen_edit_begin(): what MENU restores */
 } siggen_edit_t;
 
 void siggen_edit_begin(siggen_edit_t *e, uint32_t current_hz);
 
+/* Follow the live frequency before a key: the working value becomes
+ * `live_hz` (clamped to the range), the cursor and the undo value stay. A
+ * closed editor is left alone. */
+void siggen_edit_track(siggen_edit_t *e, uint32_t live_hz);
+
 siggen_edit_result_t siggen_edit_key(siggen_edit_t *e, siggen_edit_key_t key);
 
-/* The one live editor, owned by siggen_ui.c (device build only). */
+/* The one live editor, owned by the generator screen (siggen_screen.c). */
 siggen_edit_t *siggen_ui_editor(void);
 
 /* 10^digit (digit 0..4). */

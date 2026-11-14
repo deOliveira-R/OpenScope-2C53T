@@ -1,0 +1,122 @@
+# gen_basic.txt -- every key on the signal generator screen, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The generator page is a screen of the router (firmware/src/ui/
+# siggen_screen.c) on the gen.* properties: every key that changes the
+# generator is one property set, so a `get` answers a key edit at once and
+# a `set gen.*` while the page is shown repaints it. ui_walk.py records the
+# `ui screen` line after every step and the answer of every `get`; what each
+# must show is on the "# expect" line above the step (one `get` per property:
+# the walk keeps one answer line per command). The last field of the
+# `ui screen` line is new with this screen: edit=- off the generator, edit=off
+# on it, edit=<digit> while the frequency editor is open (0 = the 1 Hz digit
+# .. 4 = the 10 kHz digit).
+# POWER cannot be sent from the shell: hold it by hand, the countdown must
+# appear and a release must repaint the page.
+#
+# The generator's settings are saved settings: the walk starts from a known
+# state and puts stock's defaults back at the end (output off).
+# With a scope probe on the generator output (DAC2 / PA5) each step's output
+# is given too ("out:").
+# Redraw rates on this page must be 0 in every step that only waits.
+
+# ── 1. top level: waveform, amplitude, duty, Run/Stop, boot policy ───────────
+# expect: screen=siggen instrument=gen stack=siggen edit=off
+#         gen.wave = sine ; gen.freq = 1000 Hz ; gen.amp = 3.0 V ; gen.duty = 50 % ; gen.out = off ; gen.bootout = off
+#         out: nothing
+g1_base        | set sys.mode siggen ; wait 1 ; set gen.out off ; set gen.wave sine ; set gen.freq 1000 ; set gen.amp 3.0 ; set gen.duty 50 ; set gen.bootout off ; get gen.wave ; get gen.freq ; get gen.amp ; get gen.duty ; get gen.out ; get gen.bootout
+# expect: gen.wave = square   (the preview shows two square cycles)
+g1_select      | ui seq SELECT ; get gen.wave
+# expect: gen.duty = 55 %   (the "Duty" row and the preview follow)
+g1_right       | ui seq RIGHT ; get gen.duty
+# expect: gen.duty = 45 %
+g1_left        | ui seq LEFT*2 ; get gen.duty
+# expect: gen.duty = 100 %   (RIGHT at the top stays; the page is not repainted)
+g1_duty_top    | set gen.duty 100 ; ui seq RIGHT ; get gen.duty
+# expect: gen.wave = sawtooth ; gen.duty = 95 %   (the row is named "Symmetry" for a sawtooth)
+g1_sawtooth    | ui seq SELECT LEFT ; get gen.wave ; get gen.duty
+# expect: gen.wave = halfwave ; gen.duty = 95 %   (LEFT / RIGHT do nothing on a waveform without duty)
+g1_no_duty     | ui seq SELECT LEFT RIGHT ; get gen.wave ; get gen.duty
+# expect: gen.wave = sine   (SELECT after the last waveform wraps to the first)
+g1_wave_wrap   | set gen.wave lorentz ; ui seq SELECT ; get gen.wave
+# expect: gen.amp = 2.9 V
+g1_down        | ui seq DOWN ; get gen.amp
+# expect: gen.amp = 3.0 V   (UP at the top stays)
+g1_up_top      | ui seq UP*2 ; get gen.amp
+# expect: gen.amp = 0.0 V   (DOWN at the bottom stays)
+g1_down_bottom | set gen.amp 0.1 ; ui seq DOWN*2 ; get gen.amp
+# expect: gen.out = on ; the page says OUTPUT ON ; out: 1 kHz sine, 3.0 V peak to peak
+g1_ok_run      | set gen.amp 3.0 ; ui seq OK ; get gen.out
+# expect: gen.out = off ; OUTPUT OFF ; out: nothing
+g1_ok_stop     | ui seq OK ; get gen.out
+# expect: gen.out = on   (long OK is Run/Stop too) ; out: the sine again
+g1_long_ok     | ui seq long:OK ; get gen.out
+# expect: gen.out = off
+g1_long_ok_off | ui seq long:OK ; get gen.out
+# expect: gen.bootout = on ; the page says "Boot: ON"
+g1_long_auto   | ui seq long:AUTO ; get gen.bootout
+# expect: gen.bootout = off ; "Boot: OFF"
+g1_long_auto2  | ui seq long:AUTO ; get gen.bootout
+# expect: screen=siggen edit=off, every gen.* as the step before left it (sine, 1000 Hz, 3.0 V, 95 %,
+#         off, off)   (CH1, CH2, TRIGGER and MOVE only repaint the whole screen, AUTO does nothing)
+g1_front_keys  | ui seq CH1 CH2 TRIGGER MOVE AUTO ; get gen.wave ; get gen.freq ; get gen.amp ; get gen.duty ; get gen.out ; get gen.bootout
+# expect: screen=siggen edit=off, every gen.* unchanged   (long keys with no meaning here)
+g1_long_keys   | ui seq long:CH1 long:CH2 long:PRM ; get gen.wave ; get gen.freq ; get gen.amp ; get gen.duty ; get gen.out ; get gen.bootout
+
+# ── 2. the frequency editor (PRM) ────────────────────────────────────────────
+# expect: edit=3   (five digits 01000, the 1 kHz digit highlighted; the hint line changes)
+g2_prm         | ui seq PRM
+# expect: gen.freq = 2000 Hz   (live at once; with the output on it would move at once)
+g2_up          | ui seq UP ; get gen.freq
+# expect: edit=4   (LEFT: the 10 kHz digit; a second LEFT stays there)
+g2_left        | ui seq LEFT*2
+# expect: gen.freq = 12000 Hz
+g2_up_10k      | ui seq UP ; get gen.freq
+# expect: edit=0   (RIGHT x5: the 1 Hz digit, and it stops there)
+g2_right       | ui seq RIGHT*5
+# expect: gen.freq = 12002 Hz
+g2_fine        | ui seq UP*3 DOWN ; get gen.freq
+# expect: edit=0, the digits read 04321 (a set from the shell shows while the editor is open) ;
+#         then UP steps from it: gen.freq = 4322 Hz
+g2_set_in_edit | set gen.freq 4321 ; wait 1 ; ui seq UP ; get gen.freq
+# expect: gen.wave = square, edit=0   (SELECT is not the editor's key: it still works, the editor stays)
+g2_select      | ui seq SELECT ; get gen.wave
+# expect: gen.out = on then off, edit=0   (long OK is Run/Stop with the editor open too)
+g2_long_ok     | ui seq long:OK ; get gen.out ; ui seq long:OK ; get gen.out
+# expect: edit=off ; gen.freq = 4322 Hz ; gen.out = off   (OK closes the editor and keeps the value; it is
+#         not Run/Stop while the editor is open)
+g2_ok_accept   | ui seq OK ; get gen.freq ; get gen.out
+# expect: gen.freq = 6322 Hz, edit=3
+g2_edit_again  | ui seq PRM UP*2 ; get gen.freq
+# expect: edit=off screen=siggen ; gen.freq = 4322 Hz   (MENU undoes the edit; it does not leave the page)
+g2_menu_undo   | ui seq MENU ; get gen.freq
+# expect: gen.freq = 50000 Hz, edit=3   (the top; a second UP stays)
+g2_top         | set gen.freq 49500 ; ui seq PRM UP*2 ; get gen.freq
+# expect: edit=off   (PRM closes the editor and keeps the value)
+g2_prm_accept  | ui seq PRM ; get gen.freq
+# expect: gen.freq = 0 Hz ; after OK the page says "0 Hz (off)" and OUTPUT OFF
+g2_zero        | set gen.freq 500 ; ui seq PRM DOWN OK ; get gen.freq
+# expect: screen=scope edit=- ; gen.freq = 2000 Hz   (leaving with the editor open keeps the value)
+g2_leave_open  | set gen.freq 1000 ; ui seq PRM UP long:SELECT ; wait 1 ; get gen.freq
+# expect: screen=siggen edit=off   (the editor is closed on return)
+g2_return      | ui seq long:TRIGGER ; wait 1
+
+# ── 3. the direct route, MENU, SAVE ──────────────────────────────────────────
+# expect: the page shows each value as it is set: Square, 1234 Hz, 1.5 V, Duty 25 %
+#         gen.wave = square ; gen.freq = 1234 Hz ; gen.amp = 1.5 V ; gen.duty = 25 %
+g3_set_shown   | set gen.wave square ; set gen.freq 1234 ; set gen.amp 1.5 ; set gen.duty 25 ; wait 1 ; get gen.wave ; get gen.freq ; get gen.amp ; get gen.duty ; get gen.out ; get gen.bootout
+# expect: UP steps from the set value: gen.amp = 1.6 V
+g3_key_after   | ui seq UP ; get gen.amp
+# expect: screen=scope ; gen.out = on with the scope shown (out: 1234 Hz square, 1.6 V, 25 %) ; then off
+g3_set_off_scr | set sys.mode scope ; wait 1 ; set gen.out on ; get gen.out ; wait 2 ; set gen.out off ; get gen.out
+# expect: screen=home home=siggen   (short MENU at the generator's top level opens Home)
+g3_menu_home   | set sys.mode siggen ; wait 1 ; ui seq MENU
+# expect: screen=siggen edit=off   (and MENU on Home goes back)
+g3_menu_back   | ui seq MENU ; wait 1
+# expect: screen=siggen   (short SAVE: a screenshot, "Saved <n>.bmp" over the page for about 2 s, the page
+#         whole again after it; this leaves one picture in the gallery: `screenshot delete <n>`)
+g3_save        | ui seq SAVE ; wait 4
+# expect: screen=scope ; gen.wave = sine ; gen.freq = 1000 Hz ; gen.amp = 3.0 V ; gen.duty = 50 % ;
+#         gen.out = off ; gen.bootout = off
+g3_end         | set gen.out off ; set gen.wave sine ; set gen.freq 1000 ; set gen.amp 3.0 ; set gen.duty 50 ; set gen.bootout off ; set sys.mode scope ; wait 1 ; get gen.wave ; get gen.freq ; get gen.amp ; get gen.duty ; get gen.out ; get gen.bootout

@@ -368,8 +368,7 @@ void startup_mode_set(startup_mode_t mode);
 
 /* The home page: home_screen.h (the screen) and home_ui.c (its painting). */
 
-/* siggen_ui.c */
-void draw_siggen_screen(uint32_t frame);
+/* The generator page: siggen_screen.h (the screen) and siggen_ui.c (its painting). */
 
 /* settings_ui.c */
 void draw_settings_screen(void);

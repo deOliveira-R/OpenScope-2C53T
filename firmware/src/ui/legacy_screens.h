@@ -24,7 +24,7 @@
  * base are the same value one sync apart.
  *
  * MIGRATED SCREENS (ARCH-1 B2 on). A base that is a real screen (it has its
- * own file and a draw(): home_screen.c) is registered here in place of its
+ * own file and a draw(): home_screen.c, siggen_screen.c) is registered here in place of its
  * legacy row. The mirror above still decides when it is up; what changes is
  * who handles its keys and paints it: the screen's key() acts on the model
  * and answers what to repaint, and this file posts that paint and runs the
@@ -78,7 +78,6 @@ void      lgc_state(lgc_state_t *s);
 key_ctx_t lgc_ctx(void);                          /* key_ctx_now()                  */
 void      lgc_exec(key_cmd_t k, button_id_t btn); /* exec_key_cmd + settings hook   */
 bool      lgc_meter_softkey(button_id_t btn);     /* true: a softkey took it        */
-bool      lgc_siggen_edit(button_id_t btn);       /* true: the digit editor took it */
 void      lgc_mode_key(button_id_t btn);          /* the per-key switch (+ POWER)   */
 /* The long mode keys: set sys.mode through the model (prop_set_local,
  * ORIGIN_KEY), the path `set sys.mode` / `set sys.instrument` take, then the

@@ -24,7 +24,6 @@ extern void system_clock_config(void);
 #include "lcd_health.h"
 #include "ui.h"
 #include "signal_gen.h"
-#include "ui/siggen_edit.h"
 #include "ui/scope_freq.h"
 #include "watchdog.h"
 #include "scope_state.h"
@@ -191,10 +190,11 @@ void delay_ms(uint32_t ms)
  * siggen full-cleared the whole 320x240 on every button press, including
  * presses that hit a clamp and changed nothing.
  *
- * The gate itself is in ui/redraw_gate.h (pure C, host-tested). This
- * file supplies the two "epochs" — hashes over exactly the state each
- * screen renders. Equal epoch + no new samples => the next draw would
- * produce identical pixels.
+ * The gate itself is in ui/redraw_gate.h (pure C, host-tested). The
+ * "epochs" are hashes over exactly the state each screen renders: the
+ * scope's is below, the generator's is its screen's (ui/siggen_screen.c
+ * epoch(), gated in native_paint_update). Equal epoch + no new samples =>
+ * the next draw would produce identical pixels.
  *
  * Cadences below are in display-task ticks (50 ms each).
  * ═══════════════════════════════════════════════════════════════════ */
@@ -235,11 +235,10 @@ volatile uint32_t ui_scope_full_draws  = 0;
 volatile uint32_t ui_scope_live_draws  = 0;
 volatile uint32_t ui_redraw_all_count  = 0;   /* DCMD_REDRAW_ALL handled (any mode) */
 volatile uint32_t ui_scope_skipped     = 0;
-volatile uint32_t ui_siggen_full_draws = 0;
-volatile uint32_t ui_siggen_skipped    = 0;
+volatile uint32_t ui_siggen_full_draws = 0;   /* the generator page painted (its screen's draw) */
+volatile uint32_t ui_siggen_skipped    = 0;   /* an in-place paint its epoch gate dropped */
 
 static redraw_gate_t scope_gate  = { 0, 0, 0, false, false };
-static redraw_gate_t siggen_gate = { 0, 0, 0, false, false };
 
 /* Hash of everything draw_scope_screen()/draw_fft_screen()/
  * draw_waterfall_screen() read out of program state. Sample data is NOT
@@ -400,30 +399,6 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
     return h;
 }
 
-/* Hash of everything draw_siggen_screen() renders. */
-static uint32_t siggen_ui_epoch(void)
-{
-    uint32_t h = REDRAW_EPOCH_SEED;
-    const siggen_config_t *c = siggen_get_config();
-
-    h = redraw_epoch_mix(h, (uint32_t)theme_get_id());
-    if (c == NULL) return h;
-
-    h = redraw_epoch_mix(h, (uint32_t)c->waveform
-                            | ((uint32_t)c->duty_pct << 8)
-                            | ((uint32_t)c->output_enabled << 16)
-                            | ((uint32_t)c->amplitude_dv << 24));
-    h = redraw_epoch_mix(h, c->frequency_hz);
-    /* Editor state and boot policy: a cursor move changes neither the
-     * frequency nor the waveform, so without these it would not repaint. */
-    {
-        const siggen_edit_t *ed = siggen_ui_editor();
-        h = redraw_epoch_mix(h, (uint32_t)ed->active | ((uint32_t)ed->digit << 1)
-                                | ((uint32_t)c->start_on << 8));
-    }
-    return h;
-}
-
 /* Is the scope showing the roll view (C11)? Time view with roll on. */
 static bool s_roll_view(void)
 {
@@ -579,11 +554,9 @@ static void vDisplayTask(void *pvParameters)
         draw_info_bar();
         const screen_t *nb = native_base();
         if (nb != NULL) {
-            nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home) */
+            nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home, Signal Gen) */
         } else if (current_mode == MODE_MULTIMETER) {
             draw_meter_screen();
-        } else if (current_mode == MODE_SIGNAL_GEN) {
-            draw_siggen_screen(0);        /* Startup on Boot = Signal Gen */
         } else {
             draw_scope_screen(0);
         }
@@ -612,7 +585,6 @@ static void vDisplayTask(void *pvParameters)
                 ui_popup_overlay_cancel();    /* scope popups are the scope's own */
             }
             redraw_gate_invalidate(&scope_gate);
-            redraw_gate_invalidate(&siggen_gate);
             redraw_gate_invalidate(&native_gate);
             last_rendered_mode = current_mode;
         }
@@ -714,6 +686,7 @@ static void vDisplayTask(void *pvParameters)
                 /* Draw current mode's screen */
                 const screen_t *const nb = native_base();   /* one look: the mode can move under us */
                 if (nb != NULL) {
+                    if (nb->id == SCR_SIGGEN) ui_siggen_full_draws++;
                     native_paint_full(nb, frame);
                 } else if (current_mode == MODE_OSCILLOSCOPE) {
                     scope_render(frame, REDRAW_FULL);
@@ -723,11 +696,6 @@ static void vDisplayTask(void *pvParameters)
                 } else if (current_mode == MODE_MULTIMETER) {
                     meter_screen_invalidate();
                     draw_meter_screen();
-                } else if (current_mode == MODE_SIGNAL_GEN) {
-                    ui_siggen_full_draws++;
-                    draw_siggen_screen(frame);
-                    redraw_gate_mark(&siggen_gate, siggen_ui_epoch(),
-                                     frame, REDRAW_FULL);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
                 }
@@ -751,20 +719,6 @@ static void vDisplayTask(void *pvParameters)
                     g_screen_painted = true;
                 }
                 break;
-            case DCMD_DRAW_SIGGEN:
-                if (current_mode == MODE_SIGNAL_GEN) {
-                    if (siggen_gate.primed &&
-                        siggen_ui_epoch() == siggen_gate.drawn_epoch) {
-                        ui_siggen_skipped++;
-                        break;
-                    }
-                    ui_siggen_full_draws++;
-                    draw_siggen_screen(frame);
-                    redraw_gate_mark(&siggen_gate, siggen_ui_epoch(),
-                                     frame, REDRAW_FULL);
-                    g_screen_painted = true;
-                }
-                break;
             case DCMD_DRAW_SETTINGS:
                 if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
@@ -774,13 +728,21 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_STATUS_BAR:
                 draw_status_bar();
                 break;
-            case DCMD_DRAW_HOME: {
-                /* A migrated screen's in-place paint (the home page: the
-                 * parts that follow its selection). */
-                const screen_t *const hb = native_base();
-                if (hb != NULL && hb->id == SCR_HOME) {
-                    if (native_paint_update(hb, frame))
-                        g_screen_painted = true;
+            case DCMD_DRAW_HOME:
+            case DCMD_DRAW_SIGGEN: {
+                /* A migrated screen's in-place paint (DCMD_DRAW_ACTIVE + its
+                 * id, resolved above): the home page's selection parts, the
+                 * generator page. Dropped if that screen has gone since. A
+                 * screen with an epoch is gated on it: a key that hit a
+                 * clamp and changed nothing costs no LCD write. */
+                const screen_t *nb = native_base();
+                if (nb != NULL && legacy_screens_update_cmd(nb->id) == cmd) {
+                    const bool painted = native_paint_update(nb, frame);
+                    if (painted) g_screen_painted = true;
+                    if (nb->id == SCR_SIGGEN) {
+                        if (painted) ui_siggen_full_draws++;
+                        else         ui_siggen_skipped++;
+                    }
                 }
                 break;
             }
@@ -989,11 +951,6 @@ static void vDisplayTask(void *pvParameters)
                     }
                 }
             }
-        } else if (current_mode == MODE_SIGNAL_GEN) {
-            /* Siggen UI is static: no animation, no live data. It is
-             * drawn only from queue commands, and those are gated on the
-             * siggen epoch above, so a settled generator screen costs
-             * zero LCD writes per tick. */
         } else if (current_mode == MODE_MULTIMETER) {
             /* Redraw the meter when the visible reading changes, when the
              * submode changes, or when a debug/animated panel explicitly
@@ -1044,10 +1001,6 @@ static void vDisplayTask(void *pvParameters)
                         meter_layout != METER_LAYOUT_LIMITS)
                         meter_screen_invalidate();
                     draw_meter_screen();
-                } else if (current_mode == MODE_SIGNAL_GEN) {
-                    draw_siggen_screen(frame);
-                    redraw_gate_mark(&siggen_gate, siggen_ui_epoch(),
-                                     frame, REDRAW_FULL);
                 } else if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
                 }

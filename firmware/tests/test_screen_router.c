@@ -471,8 +471,9 @@ static void test_locking_and_reentry(void)
  * short and long, in every mode, settings page and overlay must reach the same
  * handler with the same action in both.
  *
- * Migrated screens (B2 on: home) are not legacy rows any more. Their real
- * files are tested with the real model (make test-home-screen); here each is
+ * Migrated screens (B2 on: home, the generator) are not legacy rows any more.
+ * Their real files are tested with the real model (make test-home-screen,
+ * make test-siggen-screen); here each is
  * a fake screen_t that logs the key it is asked, so the table and the
  * equivalence below still say WHO is asked, in which order, and that the
  * wiring posts the screen's answer once (lgc_native_after: "after:<screen>:
@@ -503,21 +504,13 @@ static void lg(const char *fmt, int a, int b, int c)
     if (strlen(LG) + strlen(t) + 2 < sizeof LG) { strcat(LG, t); strcat(LG, " "); }
 }
 
-/* Two handler-side facts the order depends on, the same for both paths:
- * softkey_slot_for_button() (softkey.c) and siggen_edit_input()'s claim. */
+/* A handler-side fact the order depends on, the same for both paths:
+ * softkey_slot_for_button() (softkey.c). (The generator's editor claim was
+ * the other one until B3: the editor is inside its screen now, W.editor only
+ * varies the state around it.) */
 static bool softkey_takes(button_id_t b)
 {
     return b == BTN_MOVE || b == BTN_SELECT || b == BTN_TRIGGER || b == BTN_PRM;
-}
-static bool editor_takes(button_id_t b)
-{
-    if (W.mode != MODE_SIGNAL_GEN) return false;
-    if (!W.editor) return b == BTN_PRM;
-    switch (b) {
-    case BTN_LEFT: case BTN_RIGHT: case BTN_UP: case BTN_DOWN:
-    case BTN_OK: case BTN_PRM: case BTN_MENU: return true;
-    default: return false;
-    }
 }
 
 static key_ctx_t w_ctx(void)
@@ -543,7 +536,6 @@ key_ctx_t lgc_ctx(void)                      { lg("ctx", 0, 0, 0); return w_ctx(
 void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
 void lgc_native_after(screen_id_t scr, scr_res_t res) { lg("after:%d:%d", scr, res, 0); }
 bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return false; lg("softkey:%d", b, 0, 0); return true; }
-bool lgc_siggen_edit(button_id_t b)          { if (!editor_takes(b)) return false; lg("edit:%d", b, 0, 0); return true; }
 void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
 void lgc_mode_set(device_mode_t m)           { lg("mode:%d", m, 0, 0); }   /* sys.mode, ORIGIN_KEY */
 /* gallery_ui_key: false = not consumed. POWER: closes, not consumed (handed
@@ -595,6 +587,31 @@ static void want_home(uint8_t raw)
     lg("after:%d:%d", SCR_HOME, fake_home_answer(raw), 0);
 }
 
+/* The generator's stand-in, the same way: the three answers a screen can
+ * give (its page, a full repaint, nothing). */
+static scr_res_t fake_gen_answer(uint8_t raw)
+{
+    if (raw == BTN_CH1 || raw == BTN_CH2 || raw == BTN_TRIGGER || raw == BTN_MOVE) return SCR_DRAW_FULL;
+    if (raw == BTN_AUTO || (raw & BTN_LONG_FLAG)) return SCR_HANDLED;
+    return SCR_DRAW;
+}
+static scr_res_t fake_gen_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("gen:%d", raw, 0, 0);
+    return fake_gen_answer(raw);
+}
+const screen_t siggen_screen = {
+    .name = "siggen", .id = SCR_SIGGEN, .mode = MODE_SIGNAL_GEN, .instrument = MODE_SIGNAL_GEN,
+    .key = fake_gen_key, .draw = fake_draw,
+    .groups = (uint16_t)((1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI)),
+};
+static void want_gen(uint8_t raw)
+{
+    lg("gen:%d", raw, 0, 0);
+    lg("after:%d:%d", SCR_SIGGEN, fake_gen_answer(raw), 0);
+}
+
 /* input_handle_button() before the router (base 6a8c2ba), step by step. */
 static void old_route(uint8_t raw)
 {
@@ -623,6 +640,15 @@ static void old_route(uint8_t raw)
              * answered KA_NONE and exec_key_cmd ran the settings hook). The
              * screen is asked now, and answers "nothing" itself. */
             if (W.mode == MODE_HOME && k.act == KA_NONE) { want_home(raw); return; }
+            /* The generator (B3): its long OK (KA_SIGGEN_RUNSTOP) and long
+             * AUTO (KA_SIGGEN_BOOT_TOGGLE) were exec_key_cmd cases and its
+             * other long keys did nothing; the screen is asked for all of
+             * them now. The globals (long SAVE: the gallery) stay globals. */
+            if (W.mode == MODE_SIGNAL_GEN &&
+                (k.act == KA_NONE || k.act == KA_SIGGEN_RUNSTOP || k.act == KA_SIGGEN_BOOT_TOGGLE)) {
+                want_gen(raw);
+                return;
+            }
             lgc_exec(k, b);
             return;
         }
@@ -631,7 +657,9 @@ static void old_route(uint8_t raw)
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
     if (W.mode == MODE_HOME && b != BTN_POWER) { want_home(raw); return; }   /* was lgc_home(b) */
     if (W.mode == MODE_MULTIMETER && softkey_takes(b)) { lg("softkey:%d", b, 0, 0); return; }
-    if (editor_takes(b)) { lg("edit:%d", b, 0, 0); return; }    /* siggen_edit_input */
+    /* was siggen_edit_input() (PRM, and the editor's keys while it is open),
+     * then the switch: the generator screen has both. */
+    if (W.mode == MODE_SIGNAL_GEN && b != BTN_POWER) { want_gen(raw); return; }
     lgc_mode_key(b);                                             /* switch (button) */
 }
 
@@ -760,7 +788,13 @@ static void test_legacy_table(void)
         { "long AUTO in the scope -> baseline",           MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx exec:12:0:7" },
         { "long CH2 in the scope -> CH2 on/off",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,     "touch click ctx exec:7:1:2" },
         { "long CH1 under the osc page: nothing",         MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,     "touch click ctx exec:1:0:1" },
-        { "long OK in the generator -> run/stop",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx exec:9:0:14" },
+        { "long OK in the generator: its screen",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx gen:142 after:3:1" },
+        { "long AUTO in the generator: its screen",       MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx gen:135 after:3:1" },
+        { "CH1 in the generator: screen, full repaint",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_CH1,                     "touch click ctx gen:1 after:3:3" },
+        { "MENU in the generator: its screen",            MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx gen:9 after:3:2" },
+        { "POWER in the generator -> the countdown",      MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
+        { "long TRIGGER in the generator: global, itself", MODE_SIGNAL_GEN,  0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click ctx mode:2" },
+        { "UP in the generator during autoset: Busy",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 1, 0, BTN_UP,                      "touch click busy" },
         { "POWER in the meter -> the countdown",          MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
         { "POWER on home -> the countdown",               MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
         { "POWER with the gallery up: closes it, then",   MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_POWER,                   "touch click gallery:15 ctx switch:15" },
@@ -772,9 +806,9 @@ static void test_legacy_table(void)
         { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx exec:26:0:9" },
         { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx softkey:3" },
         { "LEFT in the meter: the switch",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx switch:12" },
-        { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx edit:6" },
-        { "UP in the generator, editor closed: switch",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx switch:10" },
-        { "UP in the generator, editor open: editor",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click ctx edit:10" },
+        { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx gen:6 after:3:2" },
+        { "UP in the generator, editor closed: screen",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx gen:10 after:3:2" },
+        { "UP in the generator, editor open: screen",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click ctx gen:10 after:3:2" },
         { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx home:14 after:0:1" },
         { "RIGHT on home: home, and its selection paint", MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_RIGHT,                   "touch click ctx home:13 after:0:2" },
         { "long OK on home: home (nothing), no exec",     MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx home:142 after:0:1" },
@@ -783,7 +817,7 @@ static void test_legacy_table(void)
         { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx switch:3" },
     };
     _Static_assert(KA_ENTER_HOME == 2 && KA_ENTER_METER == 3 && KA_ENTER_SCOPE == 4 && KA_ENTER_SIGGEN == 5 &&
-                   KA_CH_ENABLE_TOGGLE == 7 && KA_SIGGEN_RUNSTOP == 9 && KA_GALLERY_OPEN == 10 &&
+                   KA_CH_ENABLE_TOGGLE == 7 && KA_GALLERY_OPEN == 10 &&
                    KA_SCREENSHOT == 11 && KA_BASECAL == 12 && KA_CENTER50 == 13 && KA_OSCMENU_OPEN == 26 &&
                    KA_OSCMENU_KEY == 28 && KA_NONE == 1, "the action numbers the table spells");
     int bad = 0;

@@ -61,6 +61,7 @@ static void env_log_clear(void) { env_log[0] = '\0'; }
 static bool env_log_is(const char *want) { return strcmp(env_log, want) == 0; }
 
 static bool env_log_dac;               /* log the driver calls too (the register side) */
+static bool env_log_ops = true;        /* log the owner calls the ops make */
 static uint16_t env_dac_buf[SIGGEN_CYCLE_SAMPLES];
 void dac_output_apply(const siggen_timing_t *t) { (void)t; if (env_log_dac) env_logf("dac_apply;"); }
 void dac_output_stop(void) { if (env_log_dac) env_logf("dac_stop;"); }
@@ -84,12 +85,12 @@ static bool f_mode(uint8_t m)
     }
     return true;
 }
-static void f_gen_wave(uint8_t w)    { env_logf("gen_wave(%u);", w); siggen_set_waveform(w); }
-static void f_gen_freq(uint32_t f)   { env_logf("gen_freq(%u);", (unsigned)f); siggen_set_frequency(f); }
-static void f_gen_amp(uint8_t a)     { env_logf("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
-static void f_gen_duty(percent_t d)  { env_logf("gen_duty(%u);", d.pct); siggen_set_duty(d.pct); }
-static void f_gen_out(bool on)       { env_logf("gen_out(%d);", on); siggen_enable(on); }
-static void f_gen_boot(bool on)      { env_logf("gen_boot(%d);", on); siggen_set_start_on(on); }
+static void f_gen_wave(uint8_t w)    { if (env_log_ops) env_logf("gen_wave(%u);", w); siggen_set_waveform(w); }
+static void f_gen_freq(uint32_t f)   { if (env_log_ops) env_logf("gen_freq(%u);", (unsigned)f); siggen_set_frequency(f); }
+static void f_gen_amp(uint8_t a)     { if (env_log_ops) env_logf("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
+static void f_gen_duty(percent_t d)  { if (env_log_ops) env_logf("gen_duty(%u);", d.pct); siggen_set_duty(d.pct); }
+static void f_gen_out(bool on)       { if (env_log_ops) env_logf("gen_out(%d);", on); siggen_enable(on); }
+static void f_gen_boot(bool on)      { if (env_log_ops) env_logf("gen_boot(%d);", on); siggen_set_start_on(on); }
 static bool f_busy(void)             { return env_busy; }
 static bool f_shell_persist(void)    { return true; }
 static void f_note(void)             { env_notes++; }
@@ -113,7 +114,7 @@ static void env_fresh(device_mode_t mode)
     current_mode = mode; startup_mode = STARTUP_SCOPE; active_channel = 0;
     meter_submode = 0; meter_layout = 0; math_enabled = false; math_op = 0;
     persist_enabled = false; scope_view = SCOPE_VIEW_TIME;
-    env_busy = false; env_mode_applies = true; env_log_dac = false;
+    env_busy = false; env_mode_applies = true; env_log_dac = false; env_log_ops = true;
     model_bind_hw(&env_ops);
     (void)model_load_defaults(PF_PERSIST, NULL, false);
     current_mode = mode;

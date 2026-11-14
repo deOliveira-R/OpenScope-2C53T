@@ -17,7 +17,10 @@
  *   6. home page: every key but POWER           SCR_HOME (home_screen.c, a
  *                                               migrated screen: see below)
  *   7. meter softkeys (MOVE/SELECT/TRIGGER/PRM) SCR_METER
- *   8. generator digit editor                   SCR_SIGGEN
+ *   8. generator digit editor                   SCR_SIGGEN (siggen_screen.c, a
+ *                                               migrated screen: its long OK /
+ *                                               long AUTO of step 4, the editor
+ *                                               and its keys of step 9)
  *   9. the per-key switch (POWER's countdown)   every base (POWER: the global)
  *
  * The osc page is OPAQUE but not GRAB: a grabbing layer is asked before the
@@ -38,6 +41,7 @@
  */
 #include "legacy_screens.h"
 #include "home_screen.h"
+#include "siggen_screen.h"
 #include "model.h"     /* PG_x: the groups each screen shows (pure header) */
 
 _Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
@@ -82,13 +86,6 @@ static scr_res_t ls_key_meter(scr_key_t k)
 {
     ls_legacy_done = true;
     if (!ls_mapped(k) && !lgc_meter_softkey(k.btn)) lgc_mode_key(k.btn);
-    return SCR_HANDLED;
-}
-
-static scr_res_t ls_key_siggen(scr_key_t k)
-{
-    ls_legacy_done = true;
-    if (!ls_mapped(k) && !lgc_siggen_edit(k.btn)) lgc_mode_key(k.btn);
     return SCR_HANDLED;
 }
 
@@ -144,7 +141,6 @@ static scr_res_t ls_key_gallery(scr_key_t k)
 #define G_SCOPE     (G_BARS | G(PG_CH1) | G(PG_CH2) | G(PG_TB) | G(PG_TRIG) | G(PG_VIEW) | \
                      G(PG_FFT) | G(PG_IL) | G(PG_MASK))
 #define G_METER     (G_BARS | G(PG_METER))
-#define G_SIGGEN    G_BARS
 #define G_ALL       ((uint16_t)((1u << PG_COUNT) - 1u))
 
 #define LBASE(id, nm, md, ins, keyfn, desc, grp) \
@@ -152,11 +148,11 @@ static scr_res_t ls_key_gallery(scr_key_t k)
 #define LPAGE(id, nm, fl, keyfn, desc, grp) \
     { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
 
-/* The legacy rows. SCR_HOME is not one: home_screen (home_screen.c). */
+/* The legacy rows. SCR_HOME and SCR_SIGGEN are not among them: home_screen
+ * (home_screen.c) and siggen_screen (siggen_screen.c). */
 static const screen_t ls_table[] = {
     LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL,                 G_SCOPE),
     LBASE(SCR_METER,    "meter",    MODE_MULTIMETER,   MODE_MULTIMETER,     ls_key_meter,    NULL,                 G_METER),
-    LBASE(SCR_SIGGEN,   "siggen",   MODE_SIGNAL_GEN,   MODE_SIGNAL_GEN,     ls_key_siggen,   NULL,                 G_SIGGEN),
     LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
@@ -321,6 +317,7 @@ void legacy_screens_init(void)
     for (unsigned i = 0; i < sizeof ls_table / sizeof ls_table[0]; i++)
         (void)screen_register(&ls_table[i]);
     (void)screen_register(&home_screen);
+    (void)screen_register(&siggen_screen);
     screen_set_hooks(&ls_hooks);
     lgc_state_t s;
     lgc_state(&s);

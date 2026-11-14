@@ -23,6 +23,13 @@ void siggen_edit_begin(siggen_edit_t *e, uint32_t current_hz)
     e->original = current_hz;
 }
 
+void siggen_edit_track(siggen_edit_t *e, uint32_t live_hz)
+{
+    if (!e->active) return;
+    if (live_hz > SIGGEN_EDIT_MAX_HZ) live_hz = SIGGEN_EDIT_MAX_HZ;
+    e->value = live_hz;
+}
+
 siggen_edit_result_t siggen_edit_key(siggen_edit_t *e, siggen_edit_key_t key)
 {
     if (!e->active) return SGE_IGNORED;

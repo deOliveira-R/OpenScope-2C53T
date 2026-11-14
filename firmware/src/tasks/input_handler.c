@@ -28,8 +28,6 @@
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_roll.h"
 #include "../ui/scope_geom.h"
-#include "signal_gen.h"
-#include "../ui/siggen_edit.h"
 #include "../ui/startup_policy.h"   /* startup_mode_step: the Startup row's order */
 #include "theme.h"
 #include "math_channel.h"
@@ -438,7 +436,6 @@ static void mask_auto_key(char *pb, size_t n)
 static void enter_mode(device_mode_t m, QueueHandle_t dq)
 {
     meter_autoselect_cancel();
-    siggen_ui_editor()->active = false;   /* a long-press mode switch keeps the value */
     osc_menu_close();                    /* never reappears over another mode's return */
     /* The router's base is the mode being left (a shell `mode` may have
      * moved it since the last pass): the screen entered is told where from
@@ -549,43 +546,6 @@ static void osc_menu_after_key(cursor_mode_t was)
         set_focus(key_focus_after_cursor_change(scope_key_focus, ss->cursor.mode != CURSOR_OFF));
 }
 
-/* Frequency digit editor (parity G4). While it is open the arrows move the
- * digit cursor / change the digit, OK or PRM accept, MENU cancels. Every
- * other key (POWER included) falls through to the normal handlers. Returns
- * true when the key was consumed. The value goes live after every change,
- * as in stock. */
-static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
-{
-    if (current_mode != MODE_SIGNAL_GEN) return false;
-    siggen_edit_t *ed = siggen_ui_editor();
-    siggen_edit_key_t k;
-
-    if (!ed->active) {
-        if (button != BTN_PRM) return false;
-        siggen_edit_begin(ed, siggen_get_config()->frequency_hz);
-    } else {
-        /* The shell (`siggen freq`) can change the frequency while the
-         * editor is open; step from the live value, not a stale copy. */
-        if (ed->value != siggen_get_config()->frequency_hz)
-            ed->value = siggen_get_config()->frequency_hz;
-        switch (button) {
-        case BTN_LEFT:  k = SGE_KEY_LEFT;   break;
-        case BTN_RIGHT: k = SGE_KEY_RIGHT;  break;
-        case BTN_UP:    k = SGE_KEY_UP;     break;
-        case BTN_DOWN:  k = SGE_KEY_DOWN;   break;
-        case BTN_OK:
-        case BTN_PRM:   k = SGE_KEY_ACCEPT; break;
-        case BTN_MENU:  k = SGE_KEY_CANCEL; break;
-        default: return false;
-        }
-        siggen_edit_result_t r = siggen_edit_key(ed, k);
-        if (r == SGE_CHANGED || r == SGE_CANCELLED)
-            siggen_set_frequency(ed->value);
-    }
-    send_cmd(dq, legacy_screens_active_cmd());       /* the generator: DCMD_DRAW_SIGGEN */
-    return true;
-}
-
 /* A long mode key: sys.mode through the model, the path `set sys.mode` and
  * `set sys.instrument` take (props_sys.c -> model_hw_fw.c op_mode ->
  * input_mode_switch -> enter_mode). */
@@ -634,6 +594,11 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
     /* Not executed here: the router's POWER global runs the per-key switch
      * (mode_key) itself, after the gallery handed POWER back. */
     case KA_POWER_PROMPT:
+    /* Nor these: the generator is a screen of its own (ui/siggen_screen.c),
+     * which takes its long OK (Run/Stop) and long AUTO (output at boot) as
+     * gen.out / gen.bootout sets before key_map() is asked. */
+    case KA_SIGGEN_RUNSTOP:
+    case KA_SIGGEN_BOOT_TOGGLE:
         break;
 
     /* -- long presses: mode shortcuts, from any mode -------------------- */
@@ -670,23 +635,6 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         snprintf(pb, sizeof(pb), "CH%d %s%s", dir + 1, c->enabled ? "ON" : "OFF",
                  fpga_interleave_active() ? " 250MS/s" : "");
         popup_and_redraw(dq, pb);
-        break;
-    }
-
-    case KA_SIGGEN_RUNSTOP: {
-        /* Same effect as the short OK of the previous build; stock moved
-         * Run/Stop to the long confirm. An open frequency edit is not
-         * interrupted: its value is already live. */
-        siggen_enable(!siggen_get_config()->output_enabled);
-        cmd = DCMD_DRAW_SIGGEN;
-        send_cmd(dq, legacy_screens_active_cmd());
-        break;
-    }
-
-    case KA_SIGGEN_BOOT_TOGGLE: {
-        siggen_set_start_on(!siggen_get_config()->start_on);
-        cmd = DCMD_DRAW_SIGGEN;
-        send_cmd(dq, legacy_screens_active_cmd());
         break;
     }
 
@@ -959,8 +907,11 @@ void lgc_exec(key_cmd_t k, button_id_t btn)
 
 /* A key a migrated screen handled (ui/legacy_screens.h): post the paint its
  * key() answered, then the settings hook every key runs. The home page
- * (home_screen.c) is the first: LEFT/RIGHT answer SCR_DRAW (its selection),
- * OK and MENU switch the mode through the model, which repaints. */
+ * (home_screen.c): LEFT/RIGHT answer SCR_DRAW (its selection), OK and MENU
+ * switch the mode through the model, which repaints. The generator
+ * (siggen_screen.c): every key that sets a gen.* property or moves the
+ * frequency editor answers SCR_DRAW (the page, gated on its epoch by the
+ * display task), CH1/CH2/TRIGGER/MOVE answer SCR_DRAW_FULL. */
 void lgc_native_after(screen_id_t scr, scr_res_t res)
 {
     if (res == SCR_DRAW_FULL) {
@@ -988,14 +939,6 @@ bool lgc_meter_softkey(button_id_t button)
     send_cmd(g_dq, legacy_screens_active_cmd());          /* the meter: DCMD_DRAW_METER */
     /* Same settings hook as every other key: a softkey changes saved state
      * (function, view) like any other button. */
-    settings_after_button();
-    return true;
-}
-
-bool lgc_siggen_edit(button_id_t button)
-{
-    if (!siggen_edit_input(button, g_dq)) return false;
-    g_cmd = DCMD_DRAW_SIGGEN;
     settings_after_button();
     return true;
 }
@@ -1098,9 +1041,9 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
     case BTN_MENU:
         /* Short MENU (stock's BACK). Inside a level it goes up one, as in
          * stock (0x08009FE8: settings / generator sub-levels; the trigger
-         * panel and the frequency editor are closed earlier, by key_map()
-         * and siggen_edit_input()). At a mode's top level it opens the home
-         * page. That is ours where stock differs: stock's short BACK does
+         * panel is closed earlier, by key_map(); the generator is a
+         * screen of its own, ui/siggen_screen.c, and never reaches here). At
+         * a mode's top level it opens the home page. That is ours where stock differs: stock's short BACK does
          * nothing at the top of the meter, generator and settings (owner
          * decision D2 keeps ours). The scope never reaches here: its short
          * MENU opens the Oscilloscope Settings page (key_model.c, stock
@@ -1231,14 +1174,10 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             scope_view != SCOPE_VIEW_TIME) {
             fft_cycle_window();
             send_cmd(dq, cmd);
-        } else
-#endif
-        if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_cycle_waveform();
-            cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, legacy_screens_active_cmd());
         }
-        /* Scope time view: SELECT cycles the arrow stage -- key_model.c */
+#endif
+        /* Scope time view: SELECT cycles the arrow stage -- key_model.c.
+         * Generator: the waveform -- ui/siggen_screen.c. */
         break;
 
     /* -- UP / DOWN ------------------------------------------------ */
@@ -1269,11 +1208,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                  meter_layout == METER_LAYOUT_LIMITS) {
             meter_limits_nudge(+1);
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_amplitude_up();
-            cmd = DCMD_DRAW_SIGGEN;
             send_cmd(dq, legacy_screens_active_cmd());
         }
         break;
@@ -1307,11 +1241,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_METER;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-        else if (current_mode == MODE_SIGNAL_GEN) {
-            siggen_amplitude_down();
-            cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
         break;
 
     /* -- LEFT / RIGHT --------------------------------------------- */
@@ -1343,13 +1272,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, cmd);
         }
 #endif
-        else if (current_mode == MODE_SIGNAL_GEN) {
-            /* Duty is editable for Square and Sawtooth only (stock 0x0800A478). */
-            if (siggen_wave_uses_duty(siggen_get_config()->waveform))
-                siggen_duty_cycle_down();
-            cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
         break;
 
     case BTN_RIGHT:
@@ -1379,13 +1301,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             send_cmd(dq, cmd);
         }
 #endif
-        else if (current_mode == MODE_SIGNAL_GEN) {
-            /* Duty is editable for Square and Sawtooth only (stock 0x0800A478). */
-            if (siggen_wave_uses_duty(siggen_get_config()->waveform))
-                siggen_duty_cycle_up();
-            cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
         break;
 
     /* -- OK ------------------------------------------------------- */
@@ -1394,11 +1309,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS) {
             input_handle_settings_ok();
             send_cmd(dq, cmd);
-        } else if (current_mode == MODE_SIGNAL_GEN) {
-            const siggen_config_t *sc = siggen_get_config();
-            siggen_enable(!sc->output_enabled);
-            cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_MULTIMETER) {
             /* OK = Hold (softkey UI): freeze the reading on screen now. */
             meter_hold_toggle_now();
