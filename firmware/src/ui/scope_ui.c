@@ -1029,7 +1029,7 @@ typedef struct {
     float   counts_per_pixel;
     uint8_t channel;            /* 1 or 2 */
     uint8_t range_idx;
-    bool    mid_known;          /* band-middle row anchors a fixed ADC code  */
+    bool    mid_known;          /* mid_row is the channel's 0 V (true scale) */
     int16_t mid_row;
     float   mid_counts;         /* that code relative to 0 V (centred = 0)   */
 } vband_t;
@@ -1160,6 +1160,10 @@ static void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
         en[0] && ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
         en[1] && ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx) };
     const bool split = yt_vmap_split(en[0], en[1], fx[0], fx[1]);
+    /* While running, keep the ranges of the record on screen latched, so a
+     * stop by any route (key, view.run, shell) rescales from the right one. */
+    if (ss->running)
+        scope_ui_paused_latch();
     for (uint8_t ch = 0; ch < 2u; ch++) {
         *a[ch] = (autofit_t){ .fx_ch = -1, .span = YT_VMAP_MIN_SPAN };
         if (fx[ch]) {

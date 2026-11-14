@@ -111,10 +111,10 @@ typedef struct {
     uint8_t channel;            /* 1 or 2; anything else => no volts */
     uint8_t range_idx;
 
-    /* Absolute Y (C7). Where the band's middle row sits relative to 0 V, in
-     * counts: known (mid_known != 0) only for a renderer that anchors a fixed
-     * ADC code to that row (the true-scale path: code 128 at the band middle,
-     * so mid_counts = 0 for a centred baseline). Autofit rescales and
+    /* Absolute Y (C7). Where mid_row sits relative to 0 V, in counts: known
+     * (mid_known != 0) only for a renderer that anchors a fixed ADC code to
+     * that row (the true-scale path puts mid_row on the channel's 0 V code,
+     * so mid_counts = 0). Autofit rescales and
      * re-anchors every frame, so it leaves this zero and absolute Y is "--".
      * Zero-initialised by the existing `{ cpp, ch, rng }` initialisers. */
     int16_t mid_row;
