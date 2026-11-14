@@ -1,0 +1,134 @@
+# scope_basic.txt -- the scope's key paths, step by step, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# Keys go through `ui seq` (exact presses, each waited for until the input task
+# has handled it). `set` / `mode` put the scope in a known state first; a mode
+# switch is followed by a host wait so the `set`s land in the scope (a scope
+# property is refused while another instrument is active). Host waits after a
+# step let a held record, autoset or a slow view settle before the redraw
+# rates are taken. Wire a signal into CH1 (a square wave is the usual one).
+
+# ── 1. time view: arrows, RUN/STOP, the MOVE stages, every front key ─────────
+w1_base       | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.vdiv 6 ; set view.cursor off
+w1_up         | ui seq UP
+w1_up_wait    | wait 4
+w1_right      | ui seq RIGHT
+w1_left_back  | ui seq LEFT ; wait 3
+w1_stop       | ui seq OK
+w1_stop_up    | ui seq UP
+w1_stop_up_w  | wait 6
+w1_stop_down  | ui seq DOWN ; wait 4
+w1_stop_right | ui seq RIGHT ; wait 4
+w1_stop_left  | ui seq LEFT ; wait 4
+w1_run        | ui seq OK
+w1_select1    | ui seq SELECT
+w1_select1_up | ui seq UP ; wait 3
+w1_select2    | ui seq DOWN SELECT
+w1_select2_up | ui seq UP ; wait 3
+w1_select3    | ui seq DOWN SELECT
+w1_select3_rt | ui seq RIGHT ; wait 3
+w1_select4    | ui seq SELECT
+w1_select4_up | ui seq UP ; wait 3
+w1_select5    | ui seq SELECT
+w1_move       | ui seq MOVE
+w1_move2      | ui seq MOVE
+w1_ch1        | ui seq CH1
+w1_ch1_again  | ui seq CH1
+w1_ch2        | ui seq CH2
+w1_ch2_again  | ui seq CH2
+w1_trigger    | ui seq TRIGGER
+w1_trigger_ag | ui seq TRIGGER
+w1_prm        | ui seq PRM
+w1_prm_again  | ui seq PRM
+w1_menu       | ui seq MENU
+w1_menu_again | ui seq MENU
+w1_save       | ui seq SAVE ; wait 3
+w1_auto       | ui seq AUTO ; wait 8
+
+# ── 2. cursors, math, persistence, the views, long presses, other modes ──────
+w2_base         | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.vdiv 7 ; set view.mode yt ; set view.cursor off ; set view.math off ; set view.persist off
+w2_cur_time     | set view.cursor time
+w2_cur_time_sel | ui seq SELECT RIGHT RIGHT
+w2_cur_volt     | set view.cursor volt
+w2_cur_volt_up  | ui seq UP UP
+w2_cur_both     | set view.cursor both
+w2_cur_both_stp | ui seq OK
+w2_cur_both_run | ui seq OK
+w2_cur_off      | set view.cursor off
+w2_math         | set view.math A+B
+w2_math_off     | set view.math off
+w2_persist      | set view.persist 1s
+w2_persist_off  | set view.persist off
+w2_roll         | set view.mode roll
+w2_roll_up      | ui seq UP ; wait 3
+w2_xy           | set view.mode xy
+w2_fft          | set view.mode fft
+w2_fft_right    | ui seq RIGHT ; wait 2
+w2_split        | set view.mode split
+w2_waterfall    | set view.mode waterfall
+w2_yt_back      | set view.mode yt
+w2_ch2_long_off | ui seq long:CH2
+w2_ch2_long_on  | ui seq long:CH2
+w2_ok_long      | ui seq long:OK ; wait 6
+w2_move_long    | ui seq long:MOVE ; wait 3
+w2_select_long  | ui seq long:SELECT ; wait 3
+w2_trigger_long | ui seq long:TRIGGER ; wait 3
+w2_prm_long     | ui seq long:PRM ; wait 3
+w2_save_long    | ui seq long:SAVE ; wait 3
+w2_back_scope   | mode scope ; wait 2
+w2_home         | ui seq long:MENU
+w2_home_right   | ui seq RIGHT
+w2_home_back    | ui seq long:MENU
+w2_meter        | mode meter 0 ; wait 3
+w2_meter_prm    | ui seq PRM ; wait 2
+w2_meter_res    | mode meter 6 ; wait 3
+w2_gen          | ui seq long:MENU RIGHT RIGHT OK ; wait 3
+w2_gen_ok       | ui seq OK ; wait 2
+w2_gen_up       | ui seq UP ; wait 2
+w2_settings     | ui seq long:MENU RIGHT RIGHT RIGHT OK ; wait 3
+w2_settings_dn  | ui seq DOWN DOWN ; wait 2
+w2_end_scope    | mode scope ; wait 2
+
+# ── 3. ranges, a held record, autoset, 50 % centre, the gallery ─────────────
+w3_base_1V      | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.pos 0 ; set ch2.pos 0 ; set ch1.vdiv 6 ; set view.cursor off
+w3_v7_2V        | set ch1.vdiv 7
+w3_v5_500mV     | set ch1.vdiv 5
+w3_stop         | set ch1.vdiv 6 ; wait 2 ; ui seq OK
+w3_stop_up      | ui seq UP
+w3_stop_down2   | ui seq DOWN DOWN
+w3_stop_right   | ui seq UP RIGHT
+w3_stop_chmove  | ui seq LEFT SELECT UP UP
+w3_run          | ui seq SELECT SELECT OK
+w3_auto         | ui seq AUTO ; wait 9
+w3_auto_after   | set tb.code 8 ; set ch1.vdiv 7 ; fpga scope zero
+w3_ok_long      | ui seq long:OK ; wait 6
+w3_ch2_r6_zero  | set ch2.vdiv 6 ; wait 2 ; fpga scope zero
+w3_gallery      | ui seq long:SAVE ; wait 2
+w3_gallery_out  | mode scope ; wait 2
+
+# ── 4. cursor moves, a held persistence, every view, the meter graph ────────
+w4_base         | persist off ; mode scope ; wait 1 ; set ch2.enabled on ; set tb.code 8 ; set ch1.pos 0 ; set ch2.pos 0 ; set ch1.vdiv 6 ; set view.mode yt ; set view.cursor off ; set view.math off ; set view.persist off
+w4_cur_time     | set view.cursor time
+w4_cur_time_mv  | ui seq SELECT*3 RIGHT*3
+w4_cur_volt     | set view.cursor volt
+w4_cur_both     | set view.cursor both
+w4_cur_both_stp | ui seq OK
+w4_cur_both_run | ui seq OK
+w4_cur_off      | set view.cursor off
+w4_math         | set view.math A+B
+w4_math_off     | set view.math off
+w4_persist      | set view.persist 1s
+w4_persist_stop | ui seq OK
+w4_persist_off  | ui seq OK ; set view.persist off
+w4_roll         | set view.mode roll
+w4_xy           | set view.mode xy
+w4_fft          | set view.mode fft
+w4_split        | set view.mode split
+w4_waterfall    | set view.mode waterfall ; wait 6
+w4_yt_back      | set view.mode yt
+w4_stop         | ui seq OK
+w4_stop_pos     | ui seq SELECT UP ; wait 2
+w4_run          | ui seq OK
+w4_meter_graph  | mode meter 0 ; wait 2 ; ui seq PRM ; wait 2
+w4_end_scope    | mode scope ; wait 2

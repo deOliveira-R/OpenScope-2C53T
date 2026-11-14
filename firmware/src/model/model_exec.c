@@ -64,9 +64,11 @@ const char *prop_unwired_reason(const prop_desc_t *p)
 }
 
 /* Validation both sides share: the model's all-or-nothing check, then the
- * not-wired list. PS_OK or the status, with *failed and the note set. */
-static prop_status_t check_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t *failed,
-                                 prop_note_t *note)
+ * not-wired list, then the instrument rule (prop_instrument_refusal: a
+ * property of another instrument than the active one is REFUSED for a
+ * shell origin). PS_OK or the status, with *failed and the note set. */
+static prop_status_t check_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t origin,
+                                 uint8_t *failed, prop_note_t *note)
 {
     prop_status_t s = prop_validate_pairs(pairs, n, failed);
     if (s != PS_OK) {
@@ -77,6 +79,10 @@ static prop_status_t check_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t *f
     }
     for (uint8_t i = 0; i < n; i++) {
         const char *why = unwired_id(pairs[i].id);
+        if (why) { *failed = i; note_set(note, why); return PS_REFUSED; }
+    }
+    for (uint8_t i = 0; i < n; i++) {
+        const char *why = prop_instrument_refusal(prop_by_id(pairs[i].id), origin);
         if (why) { *failed = i; note_set(note, why); return PS_REFUSED; }
     }
     *failed = n;
@@ -173,7 +179,7 @@ prop_status_t prop_request(const prop_pair_t *pairs, uint8_t n, uint8_t origin,
         note_set(&out->note, "called on the executor");
         return (prop_status_t)(out->status = PS_BUSY);
     }
-    prop_status_t s = check_pairs(pairs, n, &out->failed, &out->note);
+    prop_status_t s = check_pairs(pairs, n, origin, &out->failed, &out->note);
     if (s != PS_OK) return (prop_status_t)(out->status = (uint8_t)s);
 
     model_req_t req;
@@ -233,7 +239,7 @@ static void run(const model_req_t *r, model_result_t *res)
 {
     memset(res, 0, sizeof *res);
     res->failed = r->n;
-    prop_status_t s = check_pairs(r->pairs, r->n, &res->failed, &res->note);
+    prop_status_t s = check_pairs(r->pairs, r->n, r->origin, &res->failed, &res->note);
     if (s != PS_OK) { res->status = (uint8_t)s; return; }
 
     const uint32_t before = epoch_sum();

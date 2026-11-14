@@ -504,6 +504,27 @@ int32_t prop_instrument_default(const prop_desc_t *p, const instrument_desc_t *i
     return prop_default(p);
 }
 
+const instrument_desc_t *model_instrument_active(void)
+{
+    const int32_t v = prop_get(P(SYS_INSTRUMENT));
+    for (uint8_t i = 0; i < N_INSTRUMENTS; i++)
+        if (k_instruments[i].value == v) return &k_instruments[i];
+    return NULL;                                  /* "none": Home or Settings */
+}
+
+const char *prop_instrument_refusal(const prop_desc_t *p, uint8_t origin)
+{
+    /* Reasons fit prop_note_t (24): "instrument is " + the longest name. */
+    static const char *const k_why[] = { "instrument is scope", "instrument is meter",
+                                         "instrument is gen" };
+    _Static_assert(sizeof k_why / sizeof k_why[0] == N_INSTRUMENTS, "one reason per instrument");
+    if (!p || p->inst == 0u) return NULL;
+    if (origin != ORIGIN_SHELL && origin != ORIGIN_KEY) return NULL;
+    const instrument_desc_t *in = model_instrument_active();
+    if (!in || (p->inst & in->member)) return NULL;
+    return k_why[in - k_instruments];
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Setting
  * ═══════════════════════════════════════════════════════════════════ */

@@ -215,7 +215,9 @@ static void test_basic(void)
     /* the same value again: OK, no change, no redraw */
     CHECK(req1(PROP_ID_CH1_VDIV, 4, 600, &r) == PS_OK && r.seq == 2);
     CHECK(n_changed == 1);
-    /* an int is clamped: CLAMPED and the clamped value */
+    /* an int is clamped: CLAMPED and the clamped value (gen.* is the
+     * generator's: its instrument must be the active one) */
+    current_mode = MODE_SIGNAL_GEN;
     CHECK(req1(PROP_ID_GEN_FREQ, 99999, 600, &r) == PS_CLAMPED);
     CHECK(prop_get(P(GEN_FREQ)) == 50000);
     model_exec_stats_t st;
@@ -412,7 +414,7 @@ static void test_threaded_in_progress(void)
     CHECK(pthread_create(&exec_thread, NULL, exec_main, NULL) == 0);
 
     model_result_t r;
-    CHECK(req1(PROP_ID_GEN_AMP, 15, 600, &r) == PS_OK && r.seq == 1);   /* the executor runs */
+    CHECK(req1(PROP_ID_CH1_PROBE, 1, 600, &r) == PS_OK && r.seq == 1);  /* the executor runs */
 
     g_block_vdiv = true;                 /* the owner call holds, like a 1 s fpga_acq_pause */
     CHECK(req1(PROP_ID_CH1_VDIV, 7, 40, &r) == PS_TIMEOUT);
@@ -427,7 +429,7 @@ static void test_threaded_in_progress(void)
     CHECK(req1(PROP_ID_CH2_VDIV, 1, 600, &r) == PS_NOT_SET);
     CHECK(r.seq == 3 && r.failed == 0 && r.applied == 0);
     g_fail = false;
-    CHECK(req1(PROP_ID_GEN_OUT, 1, 600, &r) == PS_OK && r.seq == 4);
+    CHECK(req1(PROP_ID_CH1_BWLIMIT, 1, 600, &r) == PS_OK && r.seq == 4);
     CHECK(model_foreign_sets == 0);
 
     exec_stop = true;
@@ -451,10 +453,12 @@ static void test_shell_set(void)
     fresh(1);
     sh_reset(); model_shell_set("ch1.vdiv 4", collect);
     CHECKF(n_out == 1 && starts(0, "OK ch1.vdiv=4  # "), "%s", out[0]);
+    current_mode = MODE_SIGNAL_GEN;      /* gen.* needs the generator active */
     sh_reset(); model_shell_set("gen.amp 1.5 V", collect);
     CHECKF(n_out == 1 && strcmp(out[0], "OK gen.amp=1.5 V") == 0, "%s", out[0]);
     sh_reset(); model_shell_set("gen.freq 99999", collect);
     CHECKF(n_out == 1 && strcmp(out[0], "CLAMPED gen.freq=50000 Hz") == 0, "%s", out[0]);
+    current_mode = MODE_OSCILLOSCOPE;
     sh_reset(); model_shell_set("ch1.coupling=AC ch1.vdiv=+1", collect);
     CHECKF(n_out == 2 && strcmp(out[0], "OK ch1.coupling=AC") == 0 && starts(1, "OK ch1.vdiv=5"),
            "%s | %s", out[0], out[1]);
@@ -561,14 +565,14 @@ static void test_shell_pair_limits(void)
     fresh(1);
     sh_reset();
     model_shell_set("ch1.probe=10x ch2.probe=10x ch1.bwlimit=on ch2.bwlimit=on trig.edge=1 "
-                    "view.truescale=1 gen.wave=1 ch2.meas=0 ch1.meas=0", collect);
+                    "view.truescale=1 trig.soft=0 ch2.meas=0 ch1.meas=0", collect);
     CHECKF(n_out == 1 && strcmp(out[0], "INVALID ch1.meas (more than 8 pairs); nothing applied") == 0, "%s", out[0]);
     CHECK(n_sent == 0 && q_count == 0 && n_wakes == 0);
     CHECK(prop_get(P(CH1_PROBE)) == 0 && prop_get(P(CH2_MEAS)) != 0);
     /* exactly 8: applied */
     sh_reset();
     model_shell_set("ch1.probe=10x ch2.probe=10x ch1.bwlimit=on ch2.bwlimit=on trig.edge=1 "
-                    "view.truescale=1 gen.wave=1 ch2.meas=0", collect);
+                    "view.truescale=1 trig.soft=0 ch2.meas=0", collect);
     CHECKF(n_out == 8 && starts(0, "OK ch1.probe=10X") && starts(7, "OK ch2.meas="), "%u %s", n_out, out[7]);
     CHECK(n_sent == 1);
     /* 5 PF_HW pairs: the HW note */
@@ -577,6 +581,75 @@ static void test_shell_pair_limits(void)
     CHECKF(n_out == 1 && strcmp(out[0], "INVALID (more than 4 HW pairs); nothing applied") == 0,
            "%s", out[0]);
     CHECK(n_sent == 1 && g_log[0] == '\0' && prop_get(P(CH1_VDIV)) == 3);
+}
+
+/* The owner's rule (2026-11-13): a property of an instrument is REFUSED from
+ * the shell while another instrument is active (no key sequence reaches that
+ * state); sys.* never; get always; a multi-set stays all or nothing; AUTO /
+ * PROFILE origins are not gated; Home/Settings (no instrument) gate nothing. */
+static void test_instrument_gate(void)
+{
+    fresh(1);
+    current_mode = MODE_MULTIMETER;
+    CHECK(model_instrument_active() && strcmp(model_instrument_active()->name, "meter") == 0);
+    sh_reset(); model_shell_set("view.mode fft", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "REFUSED view.mode (instrument is meter); old value kept: yt") == 0,
+           "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.vdiv 4", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED ch1.vdiv (instrument is meter); old value kept: 3"), "%s", out[0]);
+    CHECK(prop_get(P(CH1_VDIV)) == 3 && n_sent == 0 && g_log[0] == '\0');   /* refused before the queue */
+    sh_reset(); model_shell_set("gen.out on", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED gen.out (instrument is meter)"), "%s", out[0]);
+    /* all or nothing: the allowed sys pair before it is not applied */
+    sh_reset(); model_shell_set("sys.volume=5 ch1.coupling=AC", collect);
+    CHECKF(n_out >= 1 && starts(0, "REFUSED ch1.coupling (instrument is meter)") &&
+           strstr(out[0], "nothing applied") != NULL, "%s", out[0]);
+    CHECK(prop_get(P(SYS_VOLUME)) == SYS_VOL_DEFAULT && prop_get(P(CH1_COUPLING)) == 0);
+    /* the meter's own properties and sys.* are allowed */
+    sh_reset(); model_shell_set("meter.layout 2", collect);
+    CHECKF(n_out == 1 && starts(0, "OK meter.layout="), "%s", out[0]);
+    sh_reset(); model_shell_set("sys.volume 5", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK sys.volume=5") == 0, "%s", out[0]);
+    /* sys.instrument / sys.mode are never gated by this rule (their REFUSED
+     * here is the not-wired list's, M1) */
+    CHECK(prop_instrument_refusal(P(SYS_INSTRUMENT), ORIGIN_SHELL) == NULL);
+    CHECK(prop_instrument_refusal(P(SYS_MODE), ORIGIN_SHELL) == NULL);
+    CHECK(prop_instrument_refusal(P(SYS_BRIGHTNESS), ORIGIN_SHELL) == NULL);
+    CHECK(prop_instrument_refusal(P(METER_FUNC), ORIGIN_SHELL) == NULL);
+    CHECK(prop_instrument_refusal(P(IL_GAIN), ORIGIN_SHELL) != NULL);   /* il.* is the scope's */
+    /* get always works */
+    sh_reset(); model_shell_get("ch1.vdiv view.mode", collect);
+    CHECKF(n_out == 2 && starts(0, "ch1.vdiv=3") && strcmp(out[1], "view.mode=yt") == 0, "%s | %s", out[0], out[1]);
+    /* origins that are not a person at a prompt are not gated */
+    model_result_t r;
+    prop_pair_t p = pr(PROP_ID_CH1_VDIV, 5);
+    CHECK(prop_request(&p, 1, ORIGIN_PROFILE, 600, &r) == PS_OK && prop_get(P(CH1_VDIV)) == 5);
+    CHECK(prop_post(PROP_ID_CH1_VDIV, 6, ORIGIN_AUTO));
+    run_executor();
+    CHECK(prop_get(P(CH1_VDIV)) == 6);
+    /* the executor checks again: a shell-origin request that reaches the
+     * queue after the instrument changed is refused there */
+    CHECK(prop_post(PROP_ID_CH1_VDIV, 7, ORIGIN_SHELL));
+    run_executor();
+    CHECK(prop_get(P(CH1_VDIV)) == 6);
+    /* the generator: scope properties refused, gen.* allowed */
+    current_mode = MODE_SIGNAL_GEN;
+    sh_reset(); model_shell_set("trig.edge falling", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED trig.edge (instrument is gen)"), "%s", out[0]);
+    sh_reset(); model_shell_set("gen.freq 2000", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK gen.freq=2000 Hz") == 0, "%s", out[0]);
+    /* Home / Settings: no instrument is active, nothing is gated */
+    current_mode = MODE_HOME;
+    CHECK(model_instrument_active() == NULL);
+    sh_reset(); model_shell_set("ch1.vdiv 4", collect);
+    CHECKF(n_out == 1 && starts(0, "OK ch1.vdiv=4"), "%s", out[0]);
+    current_mode = MODE_SETTINGS;
+    sh_reset(); model_shell_set("gen.amp 1.0", collect);
+    CHECKF(n_out == 1 && starts(0, "OK gen.amp=1.0 V"), "%s", out[0]);
+    /* back in the scope: scope properties allowed again */
+    current_mode = MODE_OSCILLOSCOPE;
+    sh_reset(); model_shell_set("view.mode fft", collect);
+    CHECKF(n_out == 1 && starts(0, "OK view.mode=fft"), "%s", out[0]);
 }
 
 int main(void)
@@ -596,6 +669,7 @@ int main(void)
     test_shell_get_roundtrip();
     test_shell_origin();
     test_shell_pair_limits();
+    test_instrument_gate();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }
