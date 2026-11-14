@@ -37,6 +37,7 @@ import binascii
 import math
 import os
 import random
+import re
 import struct
 import sys
 import time
@@ -186,6 +187,8 @@ def decode(ftype, payload):
         (d["proto_major"], d["proto_minor"], d["caps"], d["on"], d["max_payload"], d["rec_samples"],
          d["n_props"], d["table_crc"]) = r.take("BBBBHHHI")
         d["fw"] = r.str()
+        if len(payload) - r.o >= 4:     # 1.2: the build's feature mask; absent from a 1.0 / 1.1 device
+            d["features"] = r.take("I")
     elif ftype == T_PROPDESC:
         (d["id"], d["type_"], d["unit"], d["decimals"], d["group"], d["flags"], d["min"], d["max"],
          d["def"]) = r.take("HBBBBHiii")
@@ -233,6 +236,39 @@ def decode(ftype, payload):
     return d
 
 
+# ── HELLO feature mask (protocol 1.2) ───────────────────────────────────────
+def feature_bits(path=None):
+    """{bit: name} from the firmware's manifest (firmware/features.mk: `NAME_bit := n`).
+    Empty if the file is not there; the names are then shown as bit numbers."""
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "firmware", "features.mk")
+    bits = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                m = re.match(r"^([A-Z][A-Z0-9_]*)_bit\s*:=\s*(\d+)\s*(#.*)?$", line)
+                if m:
+                    bits[int(m.group(2))] = m.group(1).lower()
+    except OSError:
+        pass
+    return bits
+
+
+def feature_names(mask, bits=None):
+    """Names of the set bits, lowest first; a bit the manifest does not know is `bit<n>`."""
+    if bits is None:
+        bits = feature_bits()
+    return [bits.get(b, "bit%d" % b) for b in range(32) if mask >> b & 1]
+
+
+def hello_features_text(hello, bits=None):
+    """What a HELLO says about the build's features, for a status line."""
+    if hello.get("features") is None:
+        return "features=? (protocol %d.%d does not report them)" % (hello["proto_major"], hello["proto_minor"])
+    names = feature_names(hello["features"], bits)
+    return "features=%s (0x%08x)" % (",".join(names) if names else "none", hello["features"])
+
+
 # ── payload encoders (the decoders' inverse: fake devices, synthetic tests) ──
 def _pstr(v):
     b = v.encode("latin-1") if isinstance(v, str) else bytes(v)
@@ -243,8 +279,9 @@ def encode_payload(d):
     """Payload bytes for a decoded dict (the types this host decodes)."""
     t = d["type"]
     if t == T_HELLO:
-        return struct.pack("<BBBBHHHI", d["proto_major"], d["proto_minor"], d["caps"], d["on"], d["max_payload"],
-                           d["rec_samples"], d["n_props"], d["table_crc"]) + _pstr(d["fw"])
+        out = struct.pack("<BBBBHHHI", d["proto_major"], d["proto_minor"], d["caps"], d["on"], d["max_payload"],
+                          d["rec_samples"], d["n_props"], d["table_crc"]) + _pstr(d["fw"])
+        return out + (struct.pack("<I", d["features"]) if d.get("features") is not None else b"")
     if t == T_PROPDESC:
         return struct.pack("<HBBBBHiii", d["id"], d["type_"], d["unit"], d["decimals"], d["group"], d["flags"],
                            d["min"], d["max"], d["def"]) + _pstr(d["name"]) + _pstr(d["unit_sym"])
@@ -377,8 +414,8 @@ class Stats:
         p = lambda *a: print(*a, file=out)
         if self.hello:
             h = self.hello
-            p("HELLO proto=%d.%d fw=%r props=%d table_crc=%08x"
-              % (h["proto_major"], h["proto_minor"], h["fw"], h["n_props"], h["table_crc"]))
+            p("HELLO proto=%d.%d fw=%r props=%d table_crc=%08x %s"
+              % (h["proto_major"], h["proto_minor"], h["fw"], h["n_props"], h["table_crc"], hello_features_text(h)))
         p("duration_s=%.2f bytes=%d bytes_per_s=%.0f frame_bytes_per_s=%.0f"
           % (dt, self.total_bytes, rate(self.total_bytes), rate(self.frame_bytes)))
         for t in sorted(self.count):
@@ -1579,6 +1616,49 @@ def selftest():
             else:
                 check_frame(e[1], g, fail)
     ref = got
+
+    # 1b. protocol versions: the vectors are 1.2 (HELLO carries the feature mask); the frozen
+    #     1.1 vectors (v1_1/, the encoder before the field existed) must decode as before,
+    #     with no mask; a 1.0 HELLO too. An unknown bit keeps its number.
+    hello = decode(T_HELLO, [g for g in got if g[0] == "frame" and g[1] == T_HELLO][0][4])
+    if hello.get("proto_minor") != 2 or hello.get("features") != 0x80000005:
+        fail("1.2 HELLO: minor %r features %r" % (hello.get("proto_minor"), hello.get("features")))
+    bits = {0: "stream", 1: "fft", 2: "usbdrive"}
+    if feature_names(0x80000005, bits) != ["stream", "usbdrive", "bit31"]:
+        fail("feature names: %s" % feature_names(0x80000005, bits))
+    if hello_features_text(hello, bits) != "features=stream,usbdrive,bit31 (0x80000005)":
+        fail("feature text: %s" % hello_features_text(hello, bits))
+    if encode_payload(hello) != [g for g in got if g[0] == "frame" and g[1] == T_HELLO][0][4]:
+        fail("1.2 HELLO does not re-encode to the same bytes")
+    mk = feature_bits()
+    if mk and (mk.get(0) != "stream" or len(set(mk.values())) != len(mk)):
+        fail("features.mk bits: %s" % mk)
+    fx11 = os.path.join(fx, "v1_1")
+    with open(os.path.join(fx11, "vectors.bin"), "rb") as f:
+        vec11 = f.read()
+    exp11 = parse_expect(os.path.join(fx11, "vectors_expect.txt"))
+    got11 = shape(collect([vec11]))
+    if [g[0] for g in got11] != [e[0] for e in exp11]:
+        fail("1.1 vectors: event kinds %s, expected %s" % ([g[0] for g in got11], [e[0] for e in exp11]))
+    else:
+        for g, e in zip(got11, exp11):
+            if e[0] == "frame":
+                check_frame(e[1], g, fail)
+        h11 = decode(T_HELLO, [g for g in got11 if g[0] == "frame" and g[1] == T_HELLO][0][4])
+        if h11.get("proto_minor") != 1 or "features" in h11:
+            fail("1.1 HELLO: minor %r, features %r" % (h11.get("proto_minor"), h11.get("features")))
+        if "does not report" not in hello_features_text(h11):
+            fail("1.1 HELLO text: %s" % hello_features_text(h11))
+        st11 = Stats()
+        for e in collect([vec11]):
+            st11.event(e)
+        if st11.decode_errors or st11.crc_errors or st11.hello is None:
+            fail("1.1 vectors through Stats: decode_errors=%d crc=%d" % (st11.decode_errors, st11.crc_errors))
+    h10 = decode(T_HELLO, encode_payload({"type": T_HELLO, "proto_major": 1, "proto_minor": 0, "caps": 7, "on": 7,
+                                          "max_payload": 4096, "rec_samples": 1024, "n_props": 1, "table_crc": 1,
+                                          "fw": "old"}))
+    if "features" in h10 or h10["fw"] != "old":
+        fail("1.0 HELLO: %r" % h10)
 
     # 2. split across reads, every size from 1 byte, and random splits
     for size in list(range(1, 80)) + [511, 4096]:

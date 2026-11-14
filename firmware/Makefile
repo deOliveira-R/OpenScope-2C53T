@@ -2158,6 +2158,15 @@ $(BUILD_DIR)/test_stream: tests/test_stream.c src/stream/stream_frame.c src/stre
 test-stream: $(BUILD_DIR)/test_stream
 	$<
 
+# The host side of the stream (scripts/scope_stream.py, scripts/scope_broker.py):
+# demultiplexer and decoders against the C encoder's vectors above (protocol
+# 1.2) and the frozen 1.1 vectors (fixtures/stream/v1_1), the HELLO feature
+# mask, and the broker against a fake device that speaks 1.2 and then 1.1.
+.PHONY: test-stream-host
+test-stream-host:
+	cd .. && python3 -I scripts/scope_stream.py --selftest
+	cd .. && python3 -I scripts/scope_broker.py --selftest
+
 # test-all: every host test, from scratch. Stale binaries are removed first so
 # a test that no longer builds cannot pass on an old executable. All tests run
 # even after a failure; the target fails if any did, and names them.

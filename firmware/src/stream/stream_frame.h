@@ -37,7 +37,7 @@
 #define SF_PACKET          64u          /* USB full-speed bulk packet */
 
 #define SF_PROTO_MAJOR     1u
-#define SF_PROTO_MINOR     1u     /* 1.1: RECORD capture block, STALE flag */
+#define SF_PROTO_MINOR     2u     /* 1.1: RECORD capture block, STALE flag; 1.2: HELLO features */
 
 /* Frame types. Codes are never reused. */
 enum {
@@ -140,6 +140,7 @@ typedef struct {
     uint16_t    n_props;
     uint32_t    table_crc;          /* sf_table_crc over the property table */
     const char *fw;                 /* firmware build text */
+    uint32_t    features;           /* 1.2: feature mask of the build (features.h; bit = NAME_bit) */
 } sf_hello_t;
 
 typedef struct {
