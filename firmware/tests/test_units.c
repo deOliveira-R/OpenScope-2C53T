@@ -172,21 +172,38 @@ static void test_roundtrip(void)
         }
 }
 
-/* The rails in record units: 0 and REC_CODE_MAX (raw 0..28 and raw 255). */
+/* Clipping = a run of REC_RAIL_RUN_MIN samples on one rail (0 or
+ * REC_CODE_MAX); one-sample outliers at fast edges are not clipping. */
 static void test_rail(void)
 {
     uint8_t r[1024];
     memset(r, 100, sizeof r);
-    CHECK(!rec_touches_rail(r, sizeof r));
-    r[1023] = REC_CODE_MAX;     CHECK(rec_touches_rail(r, sizeof r));
-    CHECK(!rec_touches_rail(r, 1023));                 /* only the samples asked about */
-    r[1023] = REC_CODE_MAX - 1; CHECK(!rec_touches_rail(r, sizeof r));
-    r[0] = 0;                   CHECK(rec_touches_rail(r, sizeof r));
-    r[0] = 1;                   CHECK(!rec_touches_rail(r, sizeof r));
-    CHECK(rec_touches_rail(&(uint8_t){ rec_from_raw(R(255)).v }, 1));
-    CHECK(rec_touches_rail(&(uint8_t){ rec_from_raw(R(20)).v }, 1));
-    CHECK(!rec_touches_rail(&(uint8_t){ rec_from_raw(R(254)).v }, 1));
-    CHECK(!rec_touches_rail(NULL, 4));
+    CHECK(REC_RAIL_RUN_MIN == 3u);
+    CHECK(!rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    /* the bench case: single-sample spikes to both rails at edges */
+    for (unsigned k = 50; k < 1000; k += 100) { r[k] = 0; r[k + 50] = REC_CODE_MAX; }
+    CHECK(!rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    r[300] = r[301] = 0;                                /* two in a row: still not */
+    CHECK(!rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    r[302] = 0;                                         /* three: clipped (bottom) */
+    CHECK(rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    CHECK(!rec_rail_run(r, 302, REC_RAIL_RUN_MIN));     /* only the samples asked about */
+    memset(r, 100, sizeof r);
+    r[1021] = r[1022] = r[1023] = REC_CODE_MAX;         /* a run at the end, top rail */
+    CHECK(rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    r[1022] = REC_CODE_MAX - 1;                         /* broken run */
+    CHECK(!rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    memset(r, 100, sizeof r);
+    r[10] = 0; r[11] = REC_CODE_MAX; r[12] = 0;         /* alternating rails: not one rail */
+    CHECK(!rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    /* a clipped square: flat at the top rail for half its period */
+    for (unsigned k = 0; k < 1024; k++) r[k] = ((k / 64u) & 1u) ? rec_from_raw(R(255)).v : 120u;
+    CHECK(rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    /* raw at or below the offset reads 0: three such samples clip */
+    memset(r, 100, sizeof r);
+    r[5] = r[6] = r[7] = rec_from_raw(R(20)).v;
+    CHECK(rec_rail_run(r, sizeof r, REC_RAIL_RUN_MIN));
+    CHECK(!rec_rail_run(NULL, 4, REC_RAIL_RUN_MIN));
 }
 
 int main(void)

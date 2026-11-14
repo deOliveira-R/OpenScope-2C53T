@@ -28,7 +28,7 @@
 #include "battery.h"
 #include "at32f403a_407.h"
 #include "fpga.h"
-#include "units.h"              /* rec_touches_rail */
+#include "units.h"              /* rec_rail_run */
 #include <stdio.h>
 #include <string.h>
 
@@ -370,15 +370,21 @@ static uint32_t s_info_drawn_epoch;
 static bool s_info_drawn;
 static uint8_t s_info_drawn_clip;      /* info_clip() as last drawn */
 
-/* Bit 0 CH1, bit 1 CH2: the channel is on and its last record touches an
- * ADC rail (units.h rec_touches_rail). 0 before the first record. */
+/* Bit 0 CH1, bit 1 CH2: the channel is on and its last record holds an ADC
+ * rail for REC_RAIL_RUN_MIN samples in a row (units.h rec_rail_run). Over
+ * the record's valid part: samples 1..1023 (sample 0 is the one the seam
+ * search also skips, a stray head value on unit #1, trig_edge.c). 0 before
+ * the first record and in Roll, which draws its own point FIFO, not these
+ * buffers. */
+#define INFO_CLIP_FIRST 1u
 static uint8_t info_clip(void)
 {
-    if (!fpga_data_ready()) return 0u;
     const scope_state_t *ss = scope_state_get();
+    if (!fpga_data_ready() || ss->roll) return 0u;
+    const uint32_t n = FPGA_ADC_BUF_SIZE - INFO_CLIP_FIRST;
     uint8_t m = 0u;
-    if (ss->ch1.enabled && rec_touches_rail(fpga_get_ch1_buf(), FPGA_ADC_BUF_SIZE)) m |= 1u;
-    if (ss->ch2.enabled && rec_touches_rail(fpga_get_ch2_buf(), FPGA_ADC_BUF_SIZE)) m |= 2u;
+    if (ss->ch1.enabled && rec_rail_run(fpga_get_ch1_buf() + INFO_CLIP_FIRST, n, REC_RAIL_RUN_MIN)) m |= 1u;
+    if (ss->ch2.enabled && rec_rail_run(fpga_get_ch2_buf() + INFO_CLIP_FIRST, n, REC_RAIL_RUN_MIN)) m |= 2u;
     return m;
 }
 

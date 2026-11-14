@@ -61,13 +61,32 @@ static inline rec_code_t rec_from_raw(adc_raw_t r)
     return c;
 }
 
-/* The record touches an ADC rail: a sample at record code 0 (raw at or below
- * the offset) or REC_CODE_MAX (raw 255). A clipped input adds harmonics an
- * FFT shows as real, and a flat top a Y-T trace shows as the signal. */
-static inline int rec_touches_rail(const volatile uint8_t *rec, uint32_t n)
+/* The input is clipped: at least REC_RAIL_RUN_MIN consecutive samples sit
+ * on the same ADC rail, record code 0 (raw at or below the offset) or
+ * REC_CODE_MAX (raw 255). A clipped input adds harmonics an FFT shows as
+ * real, and a flat top a Y-T trace shows as the signal.
+ *
+ * A run, not a sample: records carry isolated one-sample outliers at fast
+ * edges (bench 2026-11-14: a 0..3.3 V square at 1 V/div, codes ~93..195,
+ * with single samples reaching a rail), and a sample alone is not a clipped
+ * input. Three: a real clip holds the rail for as long as the input exceeds
+ * the range, which is many samples at every timebase for anything the
+ * front end passes (at the fastest code, 250 MS/s merged, 3 samples are
+ * 12 ns; at the slowest Y-T code, ~1.25 kS/s, 2.4 ms), while the outliers
+ * seen are one sample wide. What it misses: an input that grazes a rail for
+ * one or two samples per period (a barely clipped tone near the sample
+ * rate, or an undersampled one at a slow code). */
+#define REC_RAIL_RUN_MIN 3u
+static inline int rec_rail_run(const volatile uint8_t *rec, uint32_t n, uint32_t min_run)
 {
-    for (uint32_t i = 0; rec && i < n; i++)
-        if (rec[i] == 0u || rec[i] >= REC_CODE_MAX) return 1;
+    uint32_t lo = 0, hi = 0;
+    if (min_run == 0u) min_run = 1u;
+    for (uint32_t i = 0; rec && i < n; i++) {
+        const uint8_t v = rec[i];
+        lo = (v == 0u) ? lo + 1u : 0u;
+        hi = (v >= REC_CODE_MAX) ? hi + 1u : 0u;
+        if (lo >= min_run || hi >= min_run) return 1;
+    }
     return 0;
 }
 
