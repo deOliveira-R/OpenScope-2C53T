@@ -70,6 +70,7 @@ C_SOURCES += src/drivers/dfu_boot.c
 C_SOURCES += src/drivers/battery.c
 C_SOURCES += src/drivers/battery_gauge.c
 C_SOURCES += src/drivers/fpga.c
+C_SOURCES += src/drivers/fpga_cal_table.c
 C_SOURCES += src/drivers/fpga_meter_plan.c
 C_SOURCES += src/drivers/fpga_scanner.c
 C_SOURCES += src/drivers/dac.c
@@ -1007,6 +1008,16 @@ test-math-channel: $(BUILD_DIR)/test_math_channel
 	$<
 .PHONY: test-math-channel test-persistence
 
+# The FPGA payload: one copy, the stock bytes (size + CRC32). See
+# tests/test_fpga_cal_table.c.
+$(BUILD_DIR)/test_fpga_cal_table: tests/test_fpga_cal_table.c src/drivers/fpga_cal_table.c \
+                                  src/drivers/fpga_cal_table.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/drivers $< src/drivers/fpga_cal_table.c -o $@
+
+.PHONY: test-fpga-cal-table
+test-fpga-cal-table: $(BUILD_DIR)/test_fpga_cal_table
+	$<
+
 $(BUILD_DIR)/test_persistence: tests/test_persistence.c src/ui/persistence.c src/ui/persistence.h src/ui/scope_state.h src/dsp/shared_mem.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< src/ui/persistence.c src/dsp/shared_mem.c -lm -o $@
 
@@ -1781,7 +1792,7 @@ guest-coldtrace-faithful: clean all
 
 # [BENCH 2026-08-16] guest-debugclk — guest-coldtrace with a DIFFERENT FPGA
 # payload: the debugclk_hw_top diagnostic image instead of the stock bitstream
-# (-DFPGA_ALT_BITSTREAM=1 swaps fpga_cal_table.h's array for
+# (-DFPGA_ALT_BITSTREAM=1 swaps fpga_cal_table.c's array for
 # src/drivers/fpga_bitstream_alt.h; everything else is bit-for-bit the
 # coldtrace configuration, so the bit-bang config path being exercised is the
 # one already proven to break the config-entry wall).

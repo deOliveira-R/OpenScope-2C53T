@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Convert a Gowin bitstream into the C header shape the firmware compiles in.
 
-The firmware uploads its FPGA configuration from a `static const uint8_t[]`
-compiled into the image (`firmware/src/drivers/fpga_cal_table.h`, extracted from
-stock).  This script produces a header of the *same shape* from any other
+The firmware uploads its FPGA configuration from a `const uint8_t[]` compiled
+into the image once (`firmware/src/drivers/fpga_cal_table.c`, extracted from
+stock; fpga_cal_table.h declares it).  This script produces a header of the *same shape* from any other
 bitstream, so an alternate image (e.g. a diagnostic design) can be built in via
 `-DFPGA_ALT_BITSTREAM=1` without touching the default payload.
 
@@ -18,8 +18,10 @@ Input formats
   *.bin  Raw bitstream bytes, already packed (use --raw, or let the .bin
          extension select it).
 
-The output is byte-identical in structure to fpga_cal_table.h: a size macro, a
-`static const uint8_t` array, 16 bytes per line, `0xNN` uppercase hex.
+The output has the structure of fpga_cal_table.c's array: a size macro, a
+`const uint8_t` array (external: the header is included by fpga_cal_table.c
+only, which keeps one copy in the image), 16 bytes per line, `0xNN` uppercase
+hex.
 
 Usage
 -----
@@ -111,7 +113,7 @@ def emit(data, out_path, symbol, size_macro, guard, name, banner, placeholder):
             )
         f.write(f"#define FPGA_BITSTREAM_NAME  \"{name}\"\n")
         f.write(f"#define {size_macro}  {len(data)}u\n\n")
-        f.write(f"static const uint8_t {symbol}[{size_macro}] = {{\n")
+        f.write(f"const uint8_t {symbol}[{size_macro}] = {{\n")
         for i in range(0, len(data), 16):
             row = ", ".join(f"0x{b:02X}" for b in data[i:i + 16])
             f.write(f"    {row},\n")
