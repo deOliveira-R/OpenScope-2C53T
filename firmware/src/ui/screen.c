@@ -190,7 +190,11 @@ uint8_t screen_route_key(button_id_t raw)
     screen_id_t st[SCR_STACK_MAX];
     uint8_t n = copy_stack(st);
 
-    /* 2. A grabbing top layer takes everything but POWER. */
+    /* 2. A grabbing top layer takes everything but POWER. If it leaves the
+     * key AND is no longer open (it found itself closed under the key, e.g.
+     * by another task since the caller's last sync, and popped its layer),
+     * the key routes as if the layer had not been there: from step 3, on
+     * the stack as it is now. */
     bool grabbed = false;
     if (n > 1 && k.btn != BTN_POWER) {
         const screen_t *t = screen_get(st[n - 1]);
@@ -199,6 +203,14 @@ uint8_t screen_route_key(button_id_t raw)
             res = t->key ? t->key(k) : SCR_UNHANDLED;
             if (res == SCR_CLOSE) { screen_close(st[n - 1]); res = SCR_DRAW_FULL; }
             if (res != SCR_UNHANDLED) goto done;
+            screen_id_t now[SCR_STACK_MAX];
+            const uint8_t m = copy_stack(now);
+            bool still = false;
+            for (uint8_t i = 0; i < m; i++) if (now[i] == st[n - 1]) still = true;
+            if (!still) {
+                grabbed = false;
+                n = copy_stack(st);
+            }
         }
     }
 

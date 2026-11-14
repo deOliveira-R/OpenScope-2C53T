@@ -1134,10 +1134,10 @@ void lgc_mode_set(device_mode_t m)
 /* The screenshot gallery (long SAVE) takes every key while it is open; it
  * hands POWER back after closing itself so power-off always works. No
  * settings hook, as before the router. */
-void lgc_gallery_key(uint8_t raw)
+bool lgc_gallery_key(uint8_t raw)
 {
-    (void)gallery_ui_key(raw, g_dq);
     g_cmd = DCMD_NONE_MODAL_DROP;
+    return gallery_ui_key(raw, g_dq);
 }
 
 /* While autoset or the baseline correction runs the keys are locked, as

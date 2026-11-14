@@ -77,7 +77,8 @@ void      lgc_mode_key(button_id_t btn);          /* the per-key switch (+ POWER
  * ORIGIN_KEY), the path `set sys.mode` / `set sys.instrument` take, then the
  * settings hook as for every key. */
 void      lgc_mode_set(device_mode_t m);
-void      lgc_gallery_key(uint8_t raw);           /* gallery_ui_key                 */
+bool      lgc_gallery_key(uint8_t raw);           /* gallery_ui_key; false: not consumed
+                                                   * (it was closed, or POWER)      */
 bool      lgc_selfcal_busy(void);
 void      lgc_selfcal_cancel(void);               /* AUTO / MENU while locked       */
 void      lgc_selfcal_refuse(void);               /* "Busy: AUTO cancels"           */

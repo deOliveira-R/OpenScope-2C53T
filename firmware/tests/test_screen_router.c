@@ -539,10 +539,17 @@ bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return fal
 bool lgc_siggen_edit(button_id_t b)          { if (!editor_takes(b)) return false; lg("edit:%d", b, 0, 0); return true; }
 void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
 void lgc_mode_set(device_mode_t m)           { lg("mode:%d", m, 0, 0); }   /* sys.mode, ORIGIN_KEY */
-void lgc_gallery_key(uint8_t raw)
+/* gallery_ui_key: false = not consumed. POWER: closes, not consumed (handed
+ * back). gallery_gone: it was closed by another task after the pre-key sync,
+ * so it is shut when the key arrives and consumes nothing. */
+static bool gallery_gone;
+bool lgc_gallery_key(uint8_t raw)
 {
     lg("gallery:%d", raw, 0, 0);
-    if ((raw & (uint8_t)~BTN_LONG_FLAG) == BTN_POWER || raw == gallery_close_key) W.gallery = false;
+    if (gallery_gone) { W.gallery = false; return false; }
+    if ((raw & (uint8_t)~BTN_LONG_FLAG) == BTN_POWER) { W.gallery = false; return false; }
+    if (raw == gallery_close_key) W.gallery = false;
+    return true;
 }
 bool lgc_selfcal_busy(void)   { return W.busy; }
 void lgc_selfcal_cancel(void) { lg("cancel", 0, 0, 0); }
@@ -561,10 +568,9 @@ static void old_route(uint8_t raw)
     const button_id_t b = (button_id_t)(raw & (uint8_t)~BTN_LONG_FLAG);
     const bool lng = (raw & BTN_LONG_FLAG) != 0;
     lg("touch", 0, 0, 0); lg("click", 0, 0, 0);                 /* autooff_touch, sys_pwm_click */
-    if (W.gallery) {                                             /* gallery_ui_key: all but POWER */
-        lgc_gallery_key(raw);
-        if (b != BTN_POWER) return;
-    }
+    /* gallery_ui_is_open() && gallery_ui_key(): all it consumes (not POWER,
+     * nothing once it is shut) */
+    if (W.gallery && lgc_gallery_key(raw)) return;
     if (W.busy) {                                                /* scope_selfcal_busy() */
         if (b == BTN_AUTO || b == BTN_MENU) { lg("cancel", 0, 0, 0); return; }
         if (b != BTN_POWER) { lg("busy", 0, 0, 0); return; }
@@ -670,7 +676,7 @@ static void test_legacy_equivalence(void)
     for (int mode = 0; mode < MODE_COUNT; mode++)
     for (int depth = 0; depth < (mode == MODE_SETTINGS ? 8 : 1); depth++)
     for (unsigned o = 0; o < sizeof osc / sizeof osc[0]; o++)
-    for (int gal = 0; gal < 2; gal++)
+    for (int gal = 0; gal < 3; gal++)              /* 2: open at the sync, shut at the key */
     for (int busy = 0; busy < 2; busy++)
     for (int ed = 0; ed < (mode == MODE_SIGNAL_GEN ? 2 : 1); ed++)
     for (int tv = 0; tv < (mode == MODE_OSCILLOSCOPE ? 2 : 1); tv++)
@@ -681,10 +687,12 @@ static void test_legacy_equivalence(void)
         memset(&W, 0, sizeof W);
         W.mode = (device_mode_t)mode; W.depth = (int8_t)depth;
         W.osc_open = osc[o].open; W.osc_locked = osc[o].locked; W.opener = osc[o].opener;
-        W.gallery = gal; W.busy = busy; W.editor = ed; W.tv = tv;
+        W.gallery = gal != 0; W.busy = busy; W.editor = ed; W.tv = tv;
         W.focus = foc[f].f; W.cursors = foc[f].cursors; W.mask = foc[f].mask;
+        gallery_gone = (gal == 2);
         bad += all_keys(&cases, why, sizeof why);
     }
+    gallery_gone = false;
     printf("    %d cases\n", cases);
     if (bad) printf("    first difference: %s\n", why);
     CHECK("every key, short and long, every mode/page/overlay: same handler, same action",
@@ -789,6 +797,24 @@ static void test_legacy_mirror(void)
     CHECK("gallery closes on its key -> its layer is popped by the router",
           !W.gallery && screen_top() == SCR_SCOPE);
     gallery_close_key = 0xFF;
+
+    /* The gallery shut by another task after the pre-key sync: the key it
+     * did not consume reaches the base's handler, once, with one click, and
+     * its layer is gone (before the router: gallery_ui_key() false -> fall
+     * through). */
+    W.mode = MODE_MULTIMETER; W.gallery = true; legacy_screens_sync();
+    gallery_gone = true;
+    LG[0] = '\0';
+    (void)screen_route_key(BTN_LEFT);
+    CHECK("gallery shut under the key: the key falls through to the meter's switch",
+          strcmp(LG, "touch click gallery:12 ctx switch:12 ") == 0 && !W.gallery && screen_top() == SCR_METER);
+    W.gallery = true; legacy_screens_sync();
+    LG[0] = '\0';
+    (void)screen_route_key(BTN_MOVE | BTN_LONG_FLAG);
+    CHECK("... and a long mode key reaches the mode switch",
+          strcmp(LG, "touch click gallery:131 ctx mode:1 ") == 0 && screen_top() == SCR_METER);
+    gallery_gone = false;
+    W.mode = MODE_OSCILLOSCOPE;
 
     /* Instruments: a base's instrument id is the sys.instrument value. */
     CHECK("bases by instrument: 0 scope, 1 meter, 2 generator; home/settings none",

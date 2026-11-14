@@ -42,7 +42,9 @@ typedef enum {
 
 enum {
     SCR_F_OPAQUE  = 1u << 0,    /* hides everything below: drawing and ticks start here */
-    SCR_F_GRAB    = 1u << 1,    /* takes every key but POWER; leftovers go to the globals only */
+    SCR_F_GRAB    = 1u << 1,    /* takes every key but POWER; leftovers go to the globals only,
+                                 * unless the layer closed itself under the key: then the key
+                                 * routes as if it had not been there */
     SCR_F_CHILD   = 1u << 2,    /* a page of its base (settings pages) */
     SCR_F_NO_BARS = 1u << 3     /* the status/title bars are not drawn */
 };

@@ -92,10 +92,18 @@ static scr_res_t ls_key_osc_menu(scr_key_t k)
     return SCR_HANDLED;
 }
 
-/* The gallery closes itself (MENU, ...): then its layer goes too. */
+/* The gallery closes itself (MENU, ...): then its layer goes too. A key it
+ * did not consume means it was already closed (the shell's `mode`, or
+ * another task, between the pre-key sync and here): its layer goes and the
+ * key falls through to the normal handlers, as before the router
+ * (`gallery_ui_is_open() && gallery_ui_key()`); the router routes it from
+ * the self-cal lock on (screen.c step 2). */
 static scr_res_t ls_key_gallery(scr_key_t k)
 {
-    lgc_gallery_key((uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u)));
+    if (!lgc_gallery_key((uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u)))) {
+        (void)screen_close(SCR_GALLERY);
+        return SCR_UNHANDLED;
+    }
     lgc_state_t s;
     lgc_state(&s);
     return s.gallery_open ? SCR_HANDLED : SCR_CLOSE;
@@ -203,7 +211,7 @@ static bool ls_globals(button_id_t b, bool is_long)
         lgc_state_t s;
         lgc_state(&s);
         if (s.gallery_open) {
-            lgc_gallery_key((uint8_t)BTN_POWER);
+            (void)lgc_gallery_key((uint8_t)BTN_POWER);
             (void)screen_close(SCR_GALLERY);
         }
         (void)lgc_ctx();
