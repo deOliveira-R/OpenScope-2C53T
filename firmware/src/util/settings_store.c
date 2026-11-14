@@ -14,6 +14,7 @@
 
 #include "flash_regions.h"
 #include "model_persist_v5.h"
+#include "model.h"               /* model_last_screen_note_power_off */
 
 #include <string.h>
 
@@ -174,6 +175,12 @@ settings_flush_outcome_t settings_store_flush_ex(uint32_t now_ms)
 bool settings_store_flush(uint32_t now_ms)
 {
     return settings_store_flush_ex(now_ms) == SETTINGS_FLUSH_SAVED;
+}
+
+bool settings_store_flush_power_off(uint32_t now_ms, uint8_t screen)
+{
+    model_last_screen_note_power_off(screen);
+    return settings_store_flush(now_ms);
 }
 
 const char *settings_flush_outcome_text(settings_flush_outcome_t o)

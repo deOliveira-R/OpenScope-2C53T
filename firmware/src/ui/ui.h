@@ -34,7 +34,7 @@ typedef enum {
     STARTUP_METER,
     STARTUP_HOME,       /* stock "None" */
     STARTUP_SIGGEN,
-    STARTUP_RESTORE,    /* ours: the instrument shown at the last save (startup_policy.h) */
+    STARTUP_RESTORE,    /* ours: the instrument shown at the last power-off (startup_policy.h) */
     STARTUP_COUNT
 } startup_mode_t;
 

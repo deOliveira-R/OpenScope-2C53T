@@ -276,6 +276,12 @@ unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool no
  * (model_persist_v5.c): it clamps the raw byte. */
 uint8_t model_last_screen(void);
 void    model_last_screen_load(uint8_t raw);
+/* The value a capture writes into the record's last-screen byte: the loaded
+ * one until model_last_screen_note_power_off() names the screen shown at an
+ * orderly power-off (settings_store_flush_power_off; nothing else calls
+ * it). sys.lastscreen does not follow it. */
+void    model_last_screen_note_power_off(uint8_t screen);
+uint8_t model_last_screen_record(void);
 
 /* ── Change notification ─────────────────────────────────────────────── */
 extern volatile uint32_t prop_epoch[PG_COUNT];   /* bumped by the executor on a change */

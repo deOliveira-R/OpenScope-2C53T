@@ -79,6 +79,15 @@ bool settings_store_service(uint32_t now_ms);
  * if a record was written. */
 bool settings_store_flush(uint32_t now_ms);
 
+/* The flush of an orderly power-off, and the one place the record's
+ * last-screen byte moves (Startup on Boot = Restore): `screen` is the
+ * STARTUP_SCREEN_* of the screen shown now (startup_policy.h). Every other
+ * capture carries the byte the record already holds, so a screen change
+ * alone writes nothing and a setting changed on another screen does not
+ * move it. Writes one record when the screen or anything else differs from
+ * flash. */
+bool settings_store_flush_power_off(uint32_t now_ms, uint8_t screen);
+
 /* What a flush actually did. settings_store_flush()'s bool cannot tell "nothing
  * to write" (fine: already saved) from "write refused" (not saved), and the
  * shell prints a promise to the operator, so it needs the difference. */

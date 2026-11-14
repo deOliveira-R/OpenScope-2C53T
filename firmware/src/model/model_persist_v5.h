@@ -56,9 +56,11 @@ typedef enum {
     V5_MATH_PAIR,   /* math_enabled + math_op (the next byte) <-> the variables     */
     V5_FFT_COUNT,   /* fft averaging count in the record, an index in the property  */
     V5_CARRY,       /* no property: the bytes are kept as loaded, zero by default   */
-    V5_SCREEN,      /* no property: the instrument screen at the capture
-                     * (STARTUP_SCREEN_*, from current_mode); a load hands it to
-                     * model_last_screen_load(), out of range -> none                */
+    V5_SCREEN,      /* no property: the instrument screen at the last orderly
+                     * power-off (STARTUP_SCREEN_*). A load hands it to
+                     * model_last_screen_load(), out of range -> none; a capture
+                     * writes model_last_screen_record(): that loaded value,
+                     * until a power-off names the screen shown then            */
 } v5_codec_t;
 
 /* What a load does with a value outside lo..hi (record units). */

@@ -111,7 +111,7 @@ typedef struct {
     bool     fft_max_hold;
     /* Signal Generator */
     uint8_t  siggen_waveform;
-    uint8_t  last_screen;        /* The instrument screen shown at this capture, for Startup on
+    uint8_t  last_screen;        /* The instrument screen shown at the last power-off, for Startup on
                                   * Boot = Restore: 0 = none (Home, Settings), 1 = scope,
                                   * 2 = meter, 3 = generator (STARTUP_SCREEN_*, startup_policy.h).
                                   * The first of the two bytes the compiler padded before the

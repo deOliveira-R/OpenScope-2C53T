@@ -104,13 +104,22 @@ const char *const lbl_sys_startup[STARTUP_COUNT] = { "scope", "meter", "home", "
 
 /* sys.lastscreen: the instrument screen in the settings record as loaded
  * (at boot), i.e. what sys.startup = restore had to go on. Not the screen
- * shown now (sys.instrument: every capture writes that one into the record)
- * and not moved by a save. The record byte has no settable property: the
- * v5 codec hands it over on a load (model_persist_v5.c, V5_SCREEN), before
- * the scheduler; main() and this getter read it. */
-static volatile uint8_t g_last_screen = STARTUP_SCREEN_NONE;
-void    model_last_screen_load(uint8_t raw) { g_last_screen = startup_screen_clamp(raw); }
+ * shown now (sys.instrument) and not moved by a save. The record byte has
+ * no settable property: the v5 codec hands it over on a load
+ * (model_persist_v5.c, V5_SCREEN), before the scheduler; main() and this
+ * getter read it.
+ *
+ * g_screen_record is the value every capture writes into the record: the
+ * loaded one, until an orderly power-off names the screen shown then
+ * (model_last_screen_note_power_off). So a screen change writes nothing, a
+ * record written because a setting changed carries the byte it already
+ * held, and the byte only moves at power-off. */
+static volatile uint8_t g_last_screen   = STARTUP_SCREEN_NONE;
+static volatile uint8_t g_screen_record = STARTUP_SCREEN_NONE;
+void    model_last_screen_load(uint8_t raw) { g_last_screen = g_screen_record = startup_screen_clamp(raw); }
 uint8_t model_last_screen(void) { return g_last_screen; }
+void    model_last_screen_note_power_off(uint8_t screen) { g_screen_record = startup_screen_clamp(screen); }
+uint8_t model_last_screen_record(void) { return g_screen_record; }
 
 const char *const lbl_sys_lastscreen[STARTUP_SCREEN_MAX + 1] = { "none", "scope", "meter", "siggen" };
 int32_t sys_lastscreen_get(const prop_desc_t *p) { (void)p; return (int32_t)g_last_screen; }

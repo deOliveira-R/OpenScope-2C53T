@@ -100,8 +100,10 @@ flash_region_status_t flash_regions_bind_w25q(void) { return FLASH_REGION_ERR_NO
  *
  * A second one (Startup on Boot = Restore, the last screen): the first of
  * the two padding bytes at offset 22 became the field last_screen. Three
- * more lines, each marked "last screen": ref_capture writes the screen shown
- * now (current_mode: scope 1, meter 2, generator 3, anything else 0),
+ * more lines, each marked "last screen": ref_capture writes the screen the
+ * model holds for the record (the loaded one, or the one the last orderly
+ * power-off named: scope 1, meter 2, generator 3, anything else 0; never
+ * the screen shown now, current_mode),
  * ref_apply clamps it (above 3 -> 0) into the model's loaded-screen state,
  * ref_defaults sets 0. And ONE line of ref_defaults changed its value,
  * marked "sys.startup default": the built-in default of sys.startup went
@@ -168,7 +170,7 @@ static void ref_capture(device_config_t *cfg)
     cfg->meter_submode = meter_submode;
     cfg->meter_layout  = meter_layout;
     cfg->meter_link    = (uint8_t)meter_link_get(NULL);                      /* meter.link */
-    cfg->last_screen   = startup_screen_of_mode(current_mode);               /* last screen */
+    cfg->last_screen   = model_last_screen_record();                        /* last screen */
 
     const siggen_config_t *sg = siggen_get_config();
     cfg->siggen_waveform  = sg->waveform;
@@ -469,8 +471,9 @@ static void random_state(void)
     meter_layout  = (uint8_t)R(METER_LAYOUT_COUNT);
     meter_link_store(NULL, (int32_t)R(METER_LINK_POLICY_COUNT));
     startup_mode  = (startup_mode_t)R(STARTUP_COUNT);
-    current_mode  = (device_mode_t)R(MODE_COUNT);          /* the screen a capture records */
-    model_last_screen_load((uint8_t)R(STARTUP_SCREEN_MAX + 1u));   /* a capture must not look at it */
+    current_mode  = (device_mode_t)R(MODE_COUNT);          /* the screen shown: a capture must not look at it */
+    model_last_screen_load((uint8_t)R(STARTUP_SCREEN_MAX + 1u));   /* the loaded screen: a capture carries it ... */
+    if (R(2)) model_last_screen_note_power_off((uint8_t)R(STARTUP_SCREEN_MAX + 1u));   /* ... until a power-off */
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = (uint8_t)R(SIGGEN_WAVEFORM_COUNT);
@@ -1121,7 +1124,7 @@ static void test_meter_link_record(void)
     device_config_t old;
     ref_defaults(&old);
     CHECK(((const uint8_t *)&old)[11] == 0u);
-    current_mode = MODE_HOME;       /* a capture records the screen (byte 22): none here */
+    current_mode = MODE_HOME;
     meter_link_store(NULL, METER_LINK_ALWAYS);
     settings_store_apply(&old);
     CHECK(prop_get(P(METER_LINK)) == METER_LINK_SCREEN);
@@ -1191,27 +1194,34 @@ static void test_last_screen_record(void)
     /* ... and if its owner then picks Restore, the next boot is Home */
     CHECK(startup_boot_mode(STARTUP_RESTORE, model_last_screen(), false, false) == MODE_HOME);
 
-    /* Saved again from Home or Settings it is the same 60 bytes: the update
-     * alone burns no record there. */
-    static const device_mode_t none[2] = { MODE_HOME, MODE_SETTINGS };
-    for (unsigned i = 0; i < 2; i++) {
-        current_mode = none[i];
+    /* Saved again on any screen it is the same 60 bytes: a capture does not
+     * look at the screen shown, so the update alone burns no record and a
+     * screen change is not a change of the record. */
+    static const device_mode_t every[5] = { MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN,
+                                            MODE_SETTINGS, MODE_HOME };
+    for (unsigned i = 0; i < 5; i++) {
+        current_mode = every[i];
         device_config_t same = old;
         settings_store_capture(&same);
         CHECK(memcmp(&same, &old, sizeof old) == 0);
         if (memcmp(&same, &old, sizeof old)) diff_rec(&old, &same);
     }
 
-    /* Saved on an instrument, byte 22 and the checksum move, nothing else;
-     * the record loads back as that instrument and Restore boots into it. */
+    /* A power-off on an instrument: byte 22 and the checksum move, nothing
+     * else; the record loads back as that instrument and Restore boots into
+     * it. */
     static const struct { device_mode_t mode; uint8_t code; } inst[3] = {
         { MODE_OSCILLOSCOPE, STARTUP_SCREEN_SCOPE }, { MODE_MULTIMETER, STARTUP_SCREEN_METER },
         { MODE_SIGNAL_GEN, STARTUP_SCREEN_SIGGEN },
     };
-    settings_store_apply(&def);                      /* sys.startup = restore */
     for (unsigned k = 0; k < 3; k++) {
+        settings_store_apply(&def);                  /* sys.startup = restore, no last screen */
         current_mode = inst[k].mode;
         device_config_t rec = def;
+        settings_store_capture(&rec);                /* on the instrument, no power-off: nothing */
+        CHECK(memcmp(&rec, &def, sizeof def) == 0);
+        model_last_screen_note_power_off(startup_screen_of_mode(current_mode));
+        current_mode = MODE_HOME;                    /* the byte is the one named, not the screen shown */
         settings_store_capture(&rec);
         for (size_t i = 0; i < offsetof(device_config_t, checksum); i++) {
             const uint8_t x = ((const uint8_t *)&def)[i], y = ((const uint8_t *)&rec)[i];
@@ -1221,16 +1231,34 @@ static void test_last_screen_record(void)
         CHECK(config_validate(&rec));
         CHECK(rec.checksum == def.checksum + inst[k].code);
 
-        /* the capture did not move what the boot loaded */
-        CHECK(model_last_screen() == STARTUP_SCREEN_NONE);
-        current_mode = MODE_HOME;                    /* a new boot: the screen is not the saved one */
-        settings_store_apply(&rec);
+        /* the power-off did not move what the boot loaded (sys.lastscreen) */
+        CHECK(model_last_screen() == STARTUP_SCREEN_NONE && model_last_screen_record() == inst[k].code);
+        settings_store_apply(&rec);                  /* a new boot */
         CHECK(model_last_screen() == inst[k].code);
         CHECK(prop_get(P(SYS_LASTSCREEN)) == inst[k].code);
         CHECK(boot_of() == inst[k].mode);
+
+        /* A record written for another reason on every other screen carries
+         * that byte: only the changed field and the checksum move. */
+        for (unsigned i = 0; i < 5; i++) {
+            current_mode = every[i];
+            device_config_t next = rec;
+            meter_layout = (uint8_t)(1u + i % (METER_LAYOUT_COUNT - 1u));    /* never the 0 `rec` holds */
+            settings_store_capture(&next);
+            CHECK(next.last_screen == inst[k].code && next.meter_layout == meter_layout);
+            CHECK(memcmp(&next, &rec, sizeof rec) != 0);
+        }
+        meter_layout = 0;
         settings_store_apply(&def);
-        CHECK(model_last_screen() == STARTUP_SCREEN_NONE && boot_of() == MODE_HOME);
+        CHECK(model_last_screen() == STARTUP_SCREEN_NONE && model_last_screen_record() == STARTUP_SCREEN_NONE &&
+              boot_of() == MODE_HOME);
     }
+    /* Home and Settings name no instrument; a value out of range neither. */
+    model_last_screen_note_power_off(STARTUP_SCREEN_METER);
+    model_last_screen_note_power_off(startup_screen_of_mode(MODE_HOME));
+    CHECK(model_last_screen_record() == STARTUP_SCREEN_NONE);
+    model_last_screen_note_power_off(200);
+    CHECK(model_last_screen_record() == STARTUP_SCREEN_NONE);
 
     /* Garbage in the byte (it passed the checksum): none, Home. */
     for (unsigned v = STARTUP_SCREEN_MAX + 1u; v < 256u; v++) {

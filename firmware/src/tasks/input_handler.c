@@ -95,10 +95,15 @@ static void autooff_touch(void)
 }
 
 /* The one orderly power-off: flush settings FIRST (the rail is about to stop),
- * backlight to 0 like stock's saver (0x080293EE), then release the PC9 hold. */
+ * backlight to 0 like stock's saver (0x080293EE), then release the PC9 hold.
+ * The POWER hold and the auto power-off end here. It is also the only place
+ * the last screen is saved (Startup on Boot = Restore): a screen change by
+ * itself writes no record. The resets (MENU + POWER into the bootloader,
+ * Settings > Firmware Update, the shell's reboot) flush the settings and
+ * leave that byte as the last power-off wrote it. */
 static void power_off_now(void)
 {
-    (void)settings_store_flush(settings_now_ms());
+    (void)settings_store_flush_power_off(settings_now_ms(), startup_screen_of_mode(current_mode));
     sys_pwm_backlight_off();
     GPIOC->clr = (1U << 9);
     while (1) { }

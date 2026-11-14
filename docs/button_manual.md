@@ -33,7 +33,7 @@ opens the gallery. Stock does both in the scope only.
 
 Settings -> **Startup on Boot** offers stock's four choices: Home (stock calls
 it "None"), Meter, Scope, Signal Gen, and ours: Last Used (the instrument that
-was on screen when the settings were last saved; the default).
+was on screen when the device was last switched off; the default).
 
 ---
 
@@ -388,11 +388,12 @@ Home -> Meter -> Scope -> Signal Gen -> Last Used -> Home
 ```
 
 `Last Used` (`sys.startup = restore`) boots into the instrument that was on
-screen when the settings were last saved: the scope, the meter or the
-generator. Every save records the screen (entering a screen saves at once, and
-so does the power-off), so powering off on the meter boots the meter. If the
-last save was made on Home or in Settings, or the saved record is older than
-this choice, it boots to Home.
+screen when the device was last switched off (POWER held, or the auto
+power-off): the scope, the meter or the generator. Only a power-off records
+the screen, so powering off on the meter boots the meter, and changing
+screens writes nothing. A reset (MENU + POWER, a firmware update) does not
+record it. If the device was switched off on Home or in Settings, or the
+saved record is older than this choice, it boots to Home.
 
 Fresh or erased settings default to `Last Used` (until 2026-11-14 the default
 was stock's `Meter`), so a unit without saved settings boots to Home. A unit

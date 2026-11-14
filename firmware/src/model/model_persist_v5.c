@@ -281,8 +281,8 @@ void model_persist_v5_capture(device_config_t *cfg)
         const v5_field_t *f = &model_persist_v5_fields[i];
         const prop_desc_t *p = prop_by_id(f->prop_id);
         if (f->codec == V5_CARRY) continue;
-        if (f->codec == V5_SCREEN) {             /* the screen shown now, not the loaded one */
-            wr_u8(cfg, f->offset, startup_screen_of_mode(current_mode));
+        if (f->codec == V5_SCREEN) {             /* the loaded byte, or the power-off's screen */
+            wr_u8(cfg, f->offset, model_last_screen_record());
             continue;
         }
         if (f->codec == V5_MATH_PAIR) {          /* the variables, not the composite */

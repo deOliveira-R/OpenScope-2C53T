@@ -470,8 +470,7 @@ static void power_cycle(void)
     startup_mode = STARTUP_RESTORE;          /* main.c's initialiser (the built-in default) */
     model_last_screen_load(0);               /* RAM: nothing loaded yet */
     current_mode = MODE_HOME;                /* where a unit without a record boots (Restore, no
-                                              * last screen); a capture records the screen, so the
-                                              * tests that save on an instrument say so */
+                                              * last screen); only a power-off records the screen */
     sys_prefs_set_brightness(SYS_BRIGHT_DEFAULT);
     sys_prefs_set_volume(SYS_VOL_DEFAULT);
     sys_prefs_set_autooff_mins(0);
@@ -1247,14 +1246,32 @@ static void test_startup_mode_and_meter_function_survive_a_power_cycle(void)
     CHECK(boot_screen(true, false) == MODE_OSCILLOSCOPE, "scope-only warm image");
 }
 
-/* Startup on Boot = Restore: the instrument shown at the last save. */
-static void test_restore_boots_the_screen_of_the_last_save(void)
+/* What power_off_now() does (input_handler.c): the flush that names the
+ * screen shown now. */
+static bool power_off(uint32_t now_ms)
+{
+    return settings_store_flush_power_off(now_ms, startup_screen_of_mode(current_mode));
+}
+
+/* The newest record in flash, read as a boot would. */
+static uint8_t stored_last_screen(void)
+{
+    device_config_t c;
+    memset(&c, 0xEE, sizeof c);
+    return config_load(&c) ? c.last_screen : 0xEEu;
+}
+
+/* Startup on Boot = Restore: the instrument shown at the last orderly
+ * power-off, and only a power-off saves it (owner decision, 2026-11-14). */
+static void test_restore_boots_the_screen_of_the_last_power_off(void)
 {
     static const struct { device_mode_t mode; uint8_t code; const char *name; } inst[3] = {
         { MODE_MULTIMETER, STARTUP_SCREEN_METER, "meter" },
         { MODE_OSCILLOSCOPE, STARTUP_SCREEN_SCOPE, "scope" },
         { MODE_SIGNAL_GEN, STARTUP_SCREEN_SIGGEN, "generator" },
     };
+    static const device_mode_t every[5] = { MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN,
+                                            MODE_SETTINGS, MODE_HOME };
     uint32_t t = 1000;
 
     fresh_device();
@@ -1265,14 +1282,30 @@ static void test_restore_boots_the_screen_of_the_last_save(void)
     /* Booted to Home with nothing changed: nothing to write. */
     CHECK(settings_store_flush_ex(t) == SETTINGS_FLUSH_CLEAN, "an untouched first boot wrote a record");
 
+    /* A screen change alone writes nothing: not at the flush enter_mode
+     * makes, not at the per-key note, not after the settle window. */
+    const uint32_t writes0 = settings_store_get_status()->writes;
+    for (unsigned i = 0; i < 5; i++) {
+        current_mode = every[i];
+        t += 4000;
+        CHECK(settings_store_flush_ex(t) == SETTINGS_FLUSH_CLEAN, "entering screen %u wrote a record", i);
+        settings_store_note_change(t + 10);
+        CHECK(!settings_store_service(t + 3900), "a key on screen %u wrote a record", i);
+    }
+    CHECK(settings_store_get_status()->writes == writes0 && model.programs == 0,
+          "screen changes reached the flash (%lu programs)", (unsigned long)model.programs);
+
     for (unsigned i = 0; i < 3; i++) {
-        /* Enter the instrument (enter_mode flushes), then power off on it
-         * (power_off_now flushes again: nothing new). */
+        /* Power off on the instrument: one record, the byte = that screen. */
         current_mode = inst[i].mode;
         t += 4000;
-        CHECK(settings_store_flush(t), "entering the %s wrote no record", inst[i].name);
-        CHECK(settings_store_flush_ex(t + 100) == SETTINGS_FLUSH_CLEAN,
-              "power-off on the %s wrote a second record", inst[i].name);
+        CHECK(settings_store_flush_ex(t) == SETTINGS_FLUSH_CLEAN, "entering the %s wrote a record", inst[i].name);
+        CHECK(power_off(t + 100), "power-off on the %s wrote no record", inst[i].name);
+        CHECK(stored_last_screen() == inst[i].code, "%s: byte 22 in flash is %u", inst[i].name,
+              (unsigned)stored_last_screen());
+        /* sys.lastscreen is the value loaded at boot: the power-off did not move it. */
+        CHECK(model_last_screen() == (i ? inst[i - 1].code : STARTUP_SCREEN_NONE),
+              "the power-off moved the loaded last screen");
 
         power_cycle();
         CHECK(model_last_screen() == STARTUP_SCREEN_NONE, "power_cycle() did not reset RAM");
@@ -1283,31 +1316,68 @@ static void test_restore_boots_the_screen_of_the_last_save(void)
         CHECK(boot_screen(true, true) == inst[i].mode, "%s: bench image boots elsewhere", inst[i].name);
         CHECK(boot_screen(true, false) == MODE_OSCILLOSCOPE, "scope-only warm image");
         current_mode = boot_screen(false, false);
-        /* Back on the same screen: the record already says so. */
+        /* Back on the same screen, and off again there: the record already says so. */
         CHECK(settings_store_flush_ex(t + 200) == SETTINGS_FLUSH_CLEAN,
               "%s: booting back into it wrote a record", inst[i].name);
+        CHECK(!power_off(t + 300), "%s: a second power-off on the same screen wrote a record", inst[i].name);
     }
 
-    /* Home and Settings are not instruments: saved there, the next boot is Home. */
+    /* The record says "generator" now. A setting changed on another screen
+     * (by a key or from the shell: both end in a capture) writes a record
+     * that still says "generator": the byte is the stored one, not the
+     * screen shown. */
+    for (unsigned i = 0; i < 5; i++) {
+        current_mode = every[i];
+        t += 4000;
+        meter_layout = (uint8_t)((meter_layout + 1u) % METER_LAYOUT_COUNT);
+        CHECK(settings_store_flush(t), "a changed setting on screen %u was not written", i);
+        CHECK(stored_last_screen() == STARTUP_SCREEN_SIGGEN,
+              "a setting saved on screen %u moved the last screen to %u", i, (unsigned)stored_last_screen());
+    }
+    /* ... through the settle window too (the path a key takes). */
+    current_mode = MODE_MULTIMETER;
+    t += 4000;
+    meter_layout = (uint8_t)((meter_layout + 1u) % METER_LAYOUT_COUNT);
+    settings_store_note_change(t);
+    CHECK(settings_store_service(t + 3900), "the settled change was not written");
+    CHECK(stored_last_screen() == STARTUP_SCREEN_SIGGEN, "a settled save moved the last screen");
+    /* A cut without a power-off (reflash, reset, flat battery): still the generator. */
+    power_cycle();
+    settings_store_init();
+    CHECK(model_last_screen() == STARTUP_SCREEN_SIGGEN && boot_screen(false, false) == MODE_SIGNAL_GEN,
+          "an unclean end on the meter did not keep the last power-off's screen");
+
+    /* Home and Settings are not instruments: switched off there, the next boot is Home. */
     static const device_mode_t none[2] = { MODE_HOME, MODE_SETTINGS };
     for (unsigned i = 0; i < 2; i++) {
         current_mode = MODE_MULTIMETER;
         t += 4000;
-        (void)settings_store_flush(t);
+        CHECK(power_off(t), "power-off on the meter wrote no record");
         current_mode = none[i];
         t += 4000;
-        CHECK(settings_store_flush(t), "leaving the meter wrote no record");
+        CHECK(power_off(t), "power-off on home/settings wrote no record");
         power_cycle();
         settings_store_init();
         CHECK(model_last_screen() == STARTUP_SCREEN_NONE && boot_screen(false, false) == MODE_HOME,
-              "saved on home/settings: not Home at boot");
+              "switched off on home/settings: not Home at boot");
     }
+
+    /* A power-off with a pending setting: one record holds both. */
+    current_mode = MODE_OSCILLOSCOPE;
+    t += 4000;
+    meter_submode = 6;
+    settings_store_note_change(t);           /* inside the settle window */
+    const uint32_t w1 = settings_store_get_status()->writes;
+    CHECK(power_off(t + 50) && settings_store_get_status()->writes == w1 + 1u, "power-off with a pending change");
+    power_cycle();
+    settings_store_init();
+    CHECK(meter_submode == 6 && model_last_screen() == STARTUP_SCREEN_SCOPE, "the pending change or the screen was lost");
 
     /* A fixed choice does not follow the last screen. */
     startup_mode = STARTUP_SCOPE;
     current_mode = MODE_MULTIMETER;
     t += 4000;
-    CHECK(settings_store_flush(t), "fixed choice not written");
+    CHECK(power_off(t), "fixed choice not written");
     power_cycle();
     settings_store_init();
     CHECK(model_last_screen() == STARTUP_SCREEN_METER, "the screen is recorded whatever the choice");
@@ -1329,10 +1399,12 @@ static void test_restore_boots_the_screen_of_the_last_save(void)
     startup_mode = STARTUP_RESTORE;          /* its owner picks Restore in Settings ... */
     current_mode = MODE_SETTINGS;
     CHECK(settings_store_flush(1000), "Restore not written");
+    current_mode = MODE_MULTIMETER;          /* ... looks at the meter, and the unit is reflashed: */
+    (void)settings_store_flush(5000);
     power_cycle();
-    settings_store_init();                   /* ... and powers off there: Home */
+    settings_store_init();                   /* no power-off yet, so Home */
     CHECK(startup_mode == STARTUP_RESTORE && boot_screen(false, false) == MODE_HOME,
-          "Restore chosen and saved in Settings does not boot to Home");
+          "Restore with no power-off since does not boot to Home");
 }
 
 static void test_system_prefs_survive_a_power_cycle(void)
@@ -2836,7 +2908,7 @@ int main(void)
         run("brightness, volume and auto-off survive a power cycle", test_system_prefs_survive_a_power_cycle);
         run("a pre-C15 record gets stock factory brightness / auto-off",
             test_pre_c15_record_gets_stock_factory_prefs);
-        run("Restore boots the screen of the last save", test_restore_boots_the_screen_of_the_last_save);
+        run("Restore boots the screen of the last power-off; a screen change writes nothing", test_restore_boots_the_screen_of_the_last_power_off);
         run("a foreign startup mode is the default",
             test_startup_mode_from_a_foreign_record_is_the_default);
         run("boot mode policy", test_boot_mode_policy);

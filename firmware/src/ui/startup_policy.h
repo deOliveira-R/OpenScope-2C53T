@@ -7,10 +7,12 @@
  * settings_store_init() has restored it.
  *
  * Restore (ours, and the built-in default): boot into the instrument that
- * was shown when the settings were last saved. The record keeps that screen
- * in device_config_t.last_screen (STARTUP_SCREEN_*), written by every
- * capture from current_mode. Home, Settings, a record from before the byte
- * existed (0) and garbage all mean "no instrument": Restore boots to Home.
+ * was shown at the last orderly power-off (POWER hold, auto power-off). The
+ * record keeps that screen in device_config_t.last_screen
+ * (STARTUP_SCREEN_*); it is written at power-off only
+ * (settings_store_flush_power_off), every other save carries it. Home,
+ * Settings, a record from before the byte existed (0) and garbage all mean
+ * "no instrument": Restore boots to Home.
  */
 #ifndef STARTUP_POLICY_H
 #define STARTUP_POLICY_H
@@ -21,7 +23,7 @@
 #include "config.h"
 #include "ui.h"
 
-/* device_config_t.last_screen: the instrument screen at the last capture.
+/* device_config_t.last_screen: the instrument screen at the last power-off.
  * device_mode_t + 1 for the three instruments, so that 0 (what every record
  * written before the byte had a name holds) is "none". */
 #define STARTUP_SCREEN_NONE    0u   /* Home, Settings, unknown */
@@ -30,7 +32,7 @@
 #define STARTUP_SCREEN_SIGGEN  3u
 #define STARTUP_SCREEN_MAX     STARTUP_SCREEN_SIGGEN
 
-/* What a capture writes for the screen shown now. */
+/* What a power-off writes for the screen shown then. */
 static inline uint8_t startup_screen_of_mode(device_mode_t m)
 {
     switch (m) {
