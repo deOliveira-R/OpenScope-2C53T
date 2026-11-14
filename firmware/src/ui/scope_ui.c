@@ -994,6 +994,21 @@ static uint8_t rec_zero(const scope_state_t *ss, uint8_t ch)
     return rec_held_cap(ss) ? g_cap.zero[ch] : (uint8_t)chan_zero_code(ss, ch);
 }
 
+int16_t scope_ui_lowest_visible_pos(uint8_t ch)
+{
+    const scope_state_t *ss = scope_state_get();
+    const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
+    const float cpd = scope_cal_codes_per_div((uint8_t)(ch + 1u), r);
+    if (!ss->true_scale || !(cpd > 0.0f) || !scope_vpos_active())
+        return -100;
+    /* rows from the centre line down to half a division above the strip */
+    const int rows = (int)strip_top(ss) - SCOPE_GRID_MID_Y - SCOPE_DIV_PX / 2;
+    int p = -(int)((float)rows * cpd / (float)SCOPE_DIV_PX);
+    if (p < -100) p = -100;
+    if (p > 0) p = 0;
+    return (int16_t)p;
+}
+
 uint32_t scope_ui_view_ratio(void)
 {
     uint32_t r = PV_RATIO_ONE;

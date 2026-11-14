@@ -270,8 +270,9 @@ static void do_center50(QueueHandle_t dq)
 {
     scope_state_t *ss = scope_state_get();
     int16_t pos[2];
+    const int16_t min_pos[2] = { scope_ui_lowest_visible_pos(0u), scope_ui_lowest_visible_pos(1u) };
     int lvl = sc_center50(ss->ch1.enabled, ss->ch2.enabled,
-                          ss->trigger.source == TRIG_SRC_CH2 ? 1u : 0u, pos);
+                          ss->trigger.source == TRIG_SRC_CH2 ? 1u : 0u, min_pos, pos);
     /* Without the page the position does not move the trace (scope_vpos is
      * inactive), so 0 V is not at raw 128 + pos: keep the level at mid. */
     if (!scope_vpos_active()) lvl = 0;

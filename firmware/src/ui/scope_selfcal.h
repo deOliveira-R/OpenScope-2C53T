@@ -111,9 +111,14 @@ int sc_level_for_raw(float raw);
 /* Stock 0x0800DA3A: with both channels on (ms[0x14] == 3, ms[0x34] == 0)
  * CH1 goes to +50 and CH2 to -50, otherwise both to 0; the horizontal
  * offsets are zeroed and the trigger level follows the trigger channel's
- * position (ms[0x1C] = ms[4 + src]). Fills pos[2] and returns the trigger
- * level that puts reg 0x08 on that channel's 0 V (raw 128 + pos). */
-int sc_center50(bool ch1_on, bool ch2_on, uint8_t trig_src, int16_t pos[SC_CH]);
+ * position (ms[0x1C] = ms[4 + src]). In stock's geometry +-50 is +-2 div
+ * about the centre line. OpenScope's measurement strip covers the bottom of
+ * the plot, so a channel's position is not taken below min_pos[ch] (the
+ * lowest position whose 0 V stays visible; -100 = no limit). Fills pos[2]
+ * and returns the trigger level that puts reg 0x08 on the trigger
+ * channel's 0 V (raw 128 + pos). */
+int sc_center50(bool ch1_on, bool ch2_on, uint8_t trig_src, const int16_t min_pos[SC_CH],
+                int16_t pos[SC_CH]);
 
 /* ── Autoset ───────────────────────────────────────────────────────── */
 typedef enum {

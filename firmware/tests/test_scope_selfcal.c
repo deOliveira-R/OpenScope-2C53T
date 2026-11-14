@@ -86,13 +86,22 @@ static void test_stats(void)
     CHECK(sc_level_for_raw(0.0f) == -100 && sc_level_for_raw(255.0f) == 100, "level clamps");
 
     int16_t pos[2];
-    int lvl = sc_center50(true, true, 0, pos);
+    const int16_t free_[2] = { -100, -100 };
+    int lvl = sc_center50(true, true, 0, free_, pos);
     CHECK(pos[0] == 50 && pos[1] == -50 && lvl == 40,
           "both on: +50/-50, trigger on CH1's 0 V (got %d/%d level %d)", pos[0], pos[1], lvl);
-    lvl = sc_center50(true, true, 1, pos);
+    lvl = sc_center50(true, true, 1, free_, pos);
     CHECK(lvl == -40, "both on, CH2 source: level on CH2's 0 V (%d)", lvl);
-    lvl = sc_center50(true, false, 0, pos);
+    lvl = sc_center50(true, false, 0, free_, pos);
     CHECK(pos[0] == 0 && pos[1] == 0 && lvl == 0, "one channel: both 0");
+    /* The measurement strip leaves 1.5 div under the centre line: CH2 stops
+     * where its 0 V is still visible (-26 here), and the trigger follows. */
+    const int16_t strip[2] = { -26, -26 };
+    lvl = sc_center50(true, true, 1, strip, pos);
+    CHECK(pos[0] == 50 && pos[1] == -26 && lvl == sc_level_for_raw(128.0f - 26.0f),
+          "strip: CH2 at %d (not -50), CH1 at %d, level %d on CH2's 0 V", pos[1], pos[0], lvl);
+    lvl = sc_center50(true, true, 0, NULL, pos);
+    CHECK(pos[1] == -50, "no limit given: stock's -50");
 
     uint16_t cb, cu;
     CHECK(sc_corr_pair(1000, 2580, -10, 12, &cb, &cu) && cb == 990 && cu == 2592, "corr pair");

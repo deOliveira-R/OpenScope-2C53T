@@ -149,13 +149,16 @@ int sc_level_for_raw(float raw)
     return level;
 }
 
-int sc_center50(bool ch1_on, bool ch2_on, uint8_t trig_src, int16_t pos[SC_CH])
+int sc_center50(bool ch1_on, bool ch2_on, uint8_t trig_src, const int16_t min_pos[SC_CH],
+                int16_t pos[SC_CH])
 {
     /* 0x0800DA3A: eor ms[0x14] with 3, or ms[0x34]; zero -> strb #50 to
      * ms[4] and #-50 (mvn #49) to ms[5], else 0 to both. */
     const bool both = ch1_on && ch2_on;
     pos[0] = both ? 50 : 0;
     pos[1] = both ? -50 : 0;
+    for (unsigned c = 0; c < SC_CH; c++)
+        if (min_pos != NULL && pos[c] < min_pos[c] && min_pos[c] <= 0) pos[c] = min_pos[c];
     /* ms[0x1C] = ms[4 + src]: the trigger sits on the trigger channel's 0 V,
      * which is raw 128 + pos. */
     const int16_t p = pos[trig_src ? 1u : 0u];

@@ -207,6 +207,10 @@ void scope_ui_paused_latch(void);
  *                (fpga_interleave_active) while a record is held. */
 uint8_t  scope_ui_view_factor(void);
 uint32_t scope_ui_view_ratio(void);
+/* The lowest vertical position (-100..0) at which channel ch's (0/1) 0 V is
+ * still drawn half a division above the measurement strip, in true scale on
+ * the range now selected; -100 when nothing limits it. */
+int16_t  scope_ui_lowest_visible_pos(uint8_t ch);
 bool     scope_ui_view_merged(void);
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
  * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the column
