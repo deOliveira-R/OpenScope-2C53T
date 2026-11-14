@@ -40,6 +40,7 @@
 #include "scope_selfcal_run.h"
 #include "watchdog.h"
 #include "meter_autoselect.h"
+#include "gallery_ui.h"
 
 bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's mailbox) */
 
@@ -221,10 +222,20 @@ static bool op_meter_func(uint8_t submode, bool keep_autoselect)
 
 /* ═══ system ═════════════════════════════════════════════════════════ */
 
-/* Not reachable through the executor (fw_unwired), bound only so that a
- * NULL op never stands for "done": props_sys.c writes current_mode itself
- * when the op is missing. */
-static bool op_mode(uint8_t m)           { CTX(); (void)m; return false; }
+/* sys.mode / sys.instrument: the keys' mode switch (input_mode_switch ->
+ * enter_mode: the mode's posture, the settings flush, the repaint). The long
+ * mode keys reach it through the same setter (legacy_screens.c globals ->
+ * lgc_mode_set -> prop_set_local(sys.mode, ORIGIN_KEY)), so a shell set and a
+ * long MOVE are one path. The gallery is closed first, as the shell's
+ * `mode scope|meter` does, also when the mode is already the one asked for:
+ * a mode change hands the screen to the mode. The Oscilloscope Settings page
+ * is closed by enter_mode itself. */
+static bool op_mode(uint8_t m)
+{
+    CTX();
+    gallery_ui_close();
+    return input_mode_switch((device_mode_t)m);
+}
 static void op_backlight(uint8_t pct)    { CTX(); (void)pct; sys_pwm_apply_brightness(); }  /* reads sys_prefs */
 static void op_autooff(uint8_t mins)     { CTX(); (void)mins; }                             /* not wired */
 
@@ -282,8 +293,6 @@ static const model_hw_ops_t k_fw_ops = {
 
 /* The reason fits a prop_note_t (23 characters). */
 static const struct { uint16_t id; const char *why; } k_unwired[] = {
-    { PROP_ID_SYS_INSTRUMENT, "mode switch: keys (B1)" },    /* enter_mode is static in input_handler.c */
-    { PROP_ID_SYS_MODE,       "mode switch: keys (B1)" },
     { PROP_ID_SYS_AUTOOFF,    "idle timer: keys (B4)" },     /* the timer re-arm is static there too    */
     { PROP_ID_VIEW_RUN,       "RUN/STOP: OK key (B7)" },     /* STOP latches the paused ranges inline   */
     { PROP_ID_METER_LAYOUT,   "View softkey (B6)" },         /* Fuse forces DC V, Limits inits: inline  */

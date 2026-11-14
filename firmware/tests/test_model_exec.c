@@ -113,6 +113,8 @@ static void f_gen_freq(uint32_t f)            { logf_("gen_freq(%u);", (unsigned
 static void f_gen_amp(uint8_t a)              { logf_("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
 static void f_gen_out(bool on)                { logf_("gen_out(%d);", on); siggen_enable(on); }
 static bool f_busy(void)                      { return g_busy; }
+/* The mode switch (op_mode -> input_mode_switch -> enter_mode). */
+static bool f_mode(uint8_t m)                 { logf_("mode(%u);", m); current_mode = (device_mode_t)m; return !nok(); }
 static bool     g_shell_persist = true;      /* `persist off` for bench sweeps when false */
 static unsigned g_notes;                     /* settings_store_note_change calls */
 static bool f_shell_persist(void)             { return g_shell_persist; }
@@ -121,7 +123,7 @@ static void f_note_change(void)               { g_notes++; }
 static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .timebase = f_timebase,
     .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out, .meter_func = f_meter_func,
-    .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note_change,
+    .mode = f_mode, .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note_change,
 };
 
 /* ═══ the single-threaded host port ═════════════════════════════════ */
@@ -157,9 +159,10 @@ static void tp_checkin(void)   { n_checkins++; }
 static void tp_changed(void)   { n_changed++; }
 static void tp_service(void)   { n_service++; }
 static bool tp_on_exec(void)   { return in_exec; }
+/* As the firmware's list (model_hw_fw.c): the idle timer is not callable yet. */
 static const char *tp_unwired(uint16_t id)
 {
-    return (id == PROP_ID_SYS_MODE || id == PROP_ID_SYS_INSTRUMENT) ? "mode switch: keys (B1)" : NULL;
+    return (id == PROP_ID_SYS_AUTOOFF) ? "idle timer: keys (B4)" : NULL;
 }
 
 static const model_exec_port_t k_port = {
@@ -313,15 +316,17 @@ static void test_unwired(void)
 {
     fresh(1);
     model_result_t r;
-    CHECK(req1(PROP_ID_SYS_MODE, MODE_MULTIMETER, 600, &r) == PS_REFUSED);
+    CHECK(req1(PROP_ID_SYS_AUTOOFF, 2, 600, &r) == PS_REFUSED);
     CHECK(r.failed == 0 && q_count == 0 && n_wakes == 0);
-    CHECK(strcmp(r.note.text, "mode switch: keys (B1)") == 0);
-    CHECK(prop_unwired_reason(P(SYS_INSTRUMENT)) != NULL);
+    CHECK(strcmp(r.note.text, "idle timer: keys (B4)") == 0);
+    CHECK(prop_unwired_reason(P(SYS_AUTOOFF)) != NULL);
     CHECK(prop_unwired_reason(P(CH1_VDIV)) == NULL);
+    /* sys.mode / sys.instrument are wired (B1's input_mode_switch) */
+    CHECK(prop_unwired_reason(P(SYS_MODE)) == NULL && prop_unwired_reason(P(SYS_INSTRUMENT)) == NULL);
     /* the drain refuses a post too */
-    CHECK(prop_post(PROP_ID_SYS_MODE, MODE_MULTIMETER, ORIGIN_AUTO));
+    CHECK(prop_post(PROP_ID_SYS_AUTOOFF, 2, ORIGIN_AUTO));
     run_executor();
-    CHECK(current_mode == MODE_OSCILLOSCOPE);
+    CHECK(prop_get(P(SYS_AUTOOFF)) == 0);
 }
 
 static void test_timeout_withdrawn(void)
@@ -493,10 +498,10 @@ static void test_shell_set(void)
     CHECKF(n_out == 1 && starts(0, "INVALID ch1.coupling=GND (bad value"), "%s", out[0]);
     sh_reset(); model_shell_set("ch1.coupling 2", collect);
     CHECKF(n_out == 1 && starts(0, "INVALID ch1.coupling=2 (read only/out of range); nothing applied"), "%s", out[0]);
-    sh_reset(); model_shell_set("sys.mode meter", collect);
-    CHECKF(n_out == 1 && starts(0, "REFUSED sys.mode (mode switch: keys (B1)); old value kept: scope"), "%s", out[0]);
-    sh_reset(); model_shell_set("ch1.vdiv=4 sys.mode=meter", collect);
-    CHECKF(n_out == 1 && starts(0, "REFUSED sys.mode (mode switch: keys (B1)); old value kept: scope; nothing applied"),
+    sh_reset(); model_shell_set("sys.autooff 15min", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED sys.autooff (idle timer: keys (B4)); old value kept: off"), "%s", out[0]);
+    sh_reset(); model_shell_set("ch1.vdiv=4 sys.autooff=15min", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED sys.autooff (idle timer: keys (B4)); old value kept: off; nothing applied"),
            "%s", out[0]);
     CHECK(prop_get(P(CH1_VDIV)) == 1);   /* unchanged by the refused pair set */
     sh_reset(); model_shell_set("ch1.vdiv", collect);
@@ -537,7 +542,7 @@ static void test_shell_get_roundtrip(void)
     CHECK(n_out == (unsigned)prop_count() + 1u);
     sh_reset(); model_shell_list("sys.", collect);
     CHECK(n_out == 8);
-    CHECK(strstr(out[1], "NOWIRE") != NULL);   /* sys.mode */
+    CHECK(strstr(out[1], "NOWIRE") == NULL && strstr(out[5], "NOWIRE") != NULL);   /* sys.mode, sys.autooff */
     sh_reset(); model_shell_describe("ch1.vdiv", collect);
     bool vals = false, owner = false;
     for (unsigned i = 0; i < n_out && i < 64; i++) {
@@ -545,8 +550,10 @@ static void test_shell_get_roundtrip(void)
         if (strstr(out[i], "owner:   fpga_apply_vdiv")) owner = true;
     }
     CHECK(vals && owner && starts(0, "ch1.vdiv: enum 0..9"));
-    sh_reset(); model_shell_describe("sys.mode", collect);
-    CHECK(strstr(out[n_out - 1], "get only for now: mode switch") != NULL);
+    sh_reset(); model_shell_describe("sys.autooff", collect);
+    CHECK(strstr(out[n_out - 1], "get only for now: idle timer") != NULL);
+    sh_reset(); model_shell_describe("sys.instrument", collect);
+    CHECK(strcmp(out[n_out - 1], "  shell:   set sys.instrument <value> (the input task applies it)") == 0);
     for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strlen(out[i]) < 128);
 }
 
@@ -677,7 +684,7 @@ static void test_bindings_multi(void)
            "%s", out[0]);
     CHECK(prop_get(P(CH1_VDIV)) == 3 && prop_get(P(GEN_FREQ)) != 3000 && g_log[0] == '\0' && n_sent == 0);
     model_result_t r;
-    prop_pair_t pp[2] = { pr(PROP_ID_CH1_VDIV, 5), pr(PROP_ID_SYS_MODE, 0) };
+    prop_pair_t pp[2] = { pr(PROP_ID_CH1_VDIV, 5), pr(PROP_ID_SYS_AUTOOFF, 1) };
     CHECK(prop_request(pp, 2, ORIGIN_SHELL, 600, &r) == PS_REFUSED && r.failed == 1);
     CHECK(prop_get(P(CH1_VDIV)) == 3 && g_log[0] == '\0');
 
@@ -696,6 +703,38 @@ static void test_bindings_multi(void)
     sh_reset(); model_shell_set("ch1.vdiv 7", collect);
     CHECKF(n_out == 1 && strstr(out[0], "stored") == NULL && strcmp(g_log, "vdiv(0,7);") == 0,
            "%s %s", out[0], g_log);
+}
+
+/* B1's mode switch on the property: `set sys.instrument meter` and `set
+ * sys.mode ...` run the op the long mode keys run (model_hw_fw.c op_mode ->
+ * input_mode_switch), and answer when it is made. Self-cal holds it, as the
+ * router's lock holds the long keys. */
+static void test_mode_switch(void)
+{
+    fresh(1);
+    sh_reset(); model_shell_set("sys.instrument meter", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK sys.instrument=meter ; posted") == 0, "%s", out[0]);
+    CHECKF(strcmp(g_log, "mode(1);") == 0 && current_mode == MODE_MULTIMETER, "%s", g_log);
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("sys.mode home", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK sys.mode=home ; posted") == 0, "%s", out[0]);
+    CHECK(strcmp(g_log, "mode(4);") == 0 && prop_get(P(SYS_INSTRUMENT)) == 3);
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("sys.instrument none", collect);
+    CHECKF(n_out == 1 && starts(0, "REFUSED sys.instrument (not an instrument)"), "%s", out[0]);
+    CHECK(g_log[0] == '\0' && current_mode == MODE_HOME);
+    /* the long keys' origin goes the same way (lgc_mode_set) */
+    prop_note_t n;
+    CHECK(prop_set_local(P(SYS_MODE), MODE_OSCILLOSCOPE, ORIGIN_KEY, &n) == PS_OK &&
+          strcmp(g_log, "mode(0);") == 0 && current_mode == MODE_OSCILLOSCOPE);
+    /* self-cal running: BUSY, nothing switched */
+    g_log[0] = '\0';
+    g_busy = true;
+    sh_reset(); model_shell_set("sys.instrument gen", collect);
+    CHECKF(n_out == 1 && starts(0, "BUSY sys.instrument (self-cal running)"), "%s", out[0]);
+    CHECK(g_log[0] == '\0' && current_mode == MODE_OSCILLOSCOPE);
+    g_busy = false;
+    CHECK(model_foreign_sets == 0);
 }
 
 int main(void)
@@ -717,6 +756,7 @@ int main(void)
     test_shell_pair_limits();
     test_bindings_state();
     test_bindings_multi();
+    test_mode_switch();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

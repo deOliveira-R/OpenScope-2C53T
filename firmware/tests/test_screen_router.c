@@ -538,6 +538,7 @@ void lgc_home(button_id_t b)                 { lg("home:%d", b, 0, 0); }
 bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return false; lg("softkey:%d", b, 0, 0); return true; }
 bool lgc_siggen_edit(button_id_t b)          { if (!editor_takes(b)) return false; lg("edit:%d", b, 0, 0); return true; }
 void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
+void lgc_mode_set(device_mode_t m)           { lg("mode:%d", m, 0, 0); }   /* sys.mode, ORIGIN_KEY */
 void lgc_gallery_key(uint8_t raw)
 {
     lg("gallery:%d", raw, 0, 0);
@@ -569,7 +570,18 @@ static void old_route(uint8_t raw)
         if (b != BTN_POWER) { lg("busy", 0, 0, 0); return; }
     }
     const key_ctx_t c = lgc_ctx();                               /* key_ctx_now(), once */
-    if (lng) { lgc_exec(key_map(&c, b, true), b); return; }      /* every long key */
+    if (lng) {                                                   /* every long key */
+        const key_cmd_t k = key_map(&c, b, true);
+        /* exec_key_cmd's KA_ENTER_* cases: enter_mode then, a sys.mode set
+         * now (the same input_mode_switch -> enter_mode underneath). */
+        switch (k.act) {
+        case KA_ENTER_HOME:   lg("mode:%d", MODE_HOME, 0, 0);         return;
+        case KA_ENTER_METER:  lg("mode:%d", MODE_MULTIMETER, 0, 0);   return;
+        case KA_ENTER_SCOPE:  lg("mode:%d", MODE_OSCILLOSCOPE, 0, 0); return;
+        case KA_ENTER_SIGGEN: lg("mode:%d", MODE_SIGNAL_GEN, 0, 0);   return;
+        default:              lgc_exec(k, b);                         return;
+        }
+    }
     const key_cmd_t k = key_map(&c, b, false);
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
     if (W.mode == MODE_HOME && b != BTN_POWER) { lgc_home(b); return; }
@@ -689,11 +701,11 @@ static void test_legacy_table(void)
         const char *what; device_mode_t mode; int8_t depth; bool osc, locked, gal, busy, ed;
         uint8_t raw; const char *want;
     } T[] = {
-        { "long MOVE in the scope -> meter (global)",     MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx exec:3:0:3" },
-        { "long SELECT in the meter -> scope (global)",   MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_SELECT | BTN_LONG_FLAG,  "touch click ctx exec:4:0:4" },
-        { "long TRIGGER on home -> generator (global)",   MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click ctx exec:5:0:5" },
-        { "long MENU on a settings page -> home",         MODE_SETTINGS,     3, 0, 0, 0, 0, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click ctx exec:2:0:9" },
-        { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx exec:3:0:3" },
+        { "long MOVE in the scope -> meter (global)",     MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx mode:1" },
+        { "long SELECT in the meter -> scope (global)",   MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_SELECT | BTN_LONG_FLAG,  "touch click ctx mode:0" },
+        { "long TRIGGER on home -> generator (global)",   MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click ctx mode:2" },
+        { "long MENU on a settings page -> home",         MODE_SETTINGS,     3, 0, 0, 0, 0, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click ctx mode:4" },
+        { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx mode:1" },
         { "long SAVE in the generator -> gallery",        MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_SAVE | BTN_LONG_FLAG,    "touch click ctx exec:10:0:8" },
         { "short SAVE on home -> screenshot",             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click ctx exec:11:0:8" },
         { "long OK in the scope -> 50 % centre",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx exec:13:0:14" },

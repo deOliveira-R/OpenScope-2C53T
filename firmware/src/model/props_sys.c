@@ -7,8 +7,11 @@
  * While Home or Settings is up no instrument view is, and it reads "none"
  * (there is no "last instrument" variable to report instead). sys.mode is
  * the old mode enum, Settings and Home included, kept as an alias over the
- * same current_mode. Both post the mode switch (enter_mode, the input task's
- * owner of the mode posture) and return when posted.
+ * same current_mode. Both run the keys' mode switch (model_hw_fw.c op_mode ->
+ * input_mode_switch -> enter_mode, the input task's owner of the mode
+ * posture) and return when the switch is made and its posture posted; the
+ * long mode keys come through sys.mode too (ORIGIN_KEY), so keys and shell
+ * share the path.
  *
  * STORED ONLY. sys.lang and fft.window/avg/maxhold are in the settings
  * record but nothing in the firmware owns or applies them (config.h). Today
@@ -43,8 +46,15 @@ _Static_assert(KF_COUNT == 5, "ui.focus 0..4");
 const char *const lbl_sys_instrument[4] = { "scope", "meter", "gen", "none" };
 const char *const lbl_sys_mode[MODE_COUNT] = { "scope", "meter", "siggen", "settings", "home" };
 
-static prop_status_t mode_post(uint8_t m, prop_note_t *note)
+/* While autoset or the baseline correction runs, a mode switch would pull
+ * the front end out from under the servo: the long mode keys answer "Busy"
+ * (the router's lock), and a shell set answers BUSY the same way. */
+static prop_status_t mode_post(uint8_t m, uint8_t origin, prop_note_t *note)
 {
+    if (origin != ORIGIN_AUTO && HW->selfcal_busy && HW->selfcal_busy()) {
+        model_note(note, "self-cal running");
+        return PS_BUSY;
+    }
     if (HW->mode) {
         if (!HW->mode(m)) { model_note(note, "mode switch NOT posted"); return PS_NOT_SET; }
         model_note(note, "posted");
@@ -67,18 +77,18 @@ void sys_instrument_store(const prop_desc_t *p, int32_t v)
 }
 prop_status_t sys_instrument_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)p; (void)origin;
+    (void)p;
     if (v == INSTRUMENT_NONE) { model_note(note, "not an instrument"); return PS_REFUSED; }
     const instrument_desc_t *in = model_instrument_at((uint8_t)v);
-    return mode_post(in ? in->mode : (uint8_t)v, note);
+    return mode_post(in ? in->mode : (uint8_t)v, origin, note);
 }
 
 int32_t sys_mode_get(const prop_desc_t *p) { (void)p; return (int32_t)current_mode; }
 void    sys_mode_store(const prop_desc_t *p, int32_t v) { (void)p; current_mode = (device_mode_t)v; }
 prop_status_t sys_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)p; (void)origin;
-    return mode_post((uint8_t)v, note);
+    (void)p;
+    return mode_post((uint8_t)v, origin, note);
 }
 
 /* ═══ startup, display, sound, power ═════════════════════════════════ */

@@ -19,7 +19,8 @@
  * input loop. The screens' open()/close() are therefore empty: entering a mode
  * is still enter_mode() (input_handler.c), which posts the mode's hardware
  * posture and so applies that instrument's stored state (model_hw_fw.c's
- * posture table). sys.instrument reads current_mode, so it and the router's
+ * posture table). The long mode keys reach it as a sys.mode set (lgc_mode_set),
+ * the shell's `set sys.mode` / `set sys.instrument` path. sys.instrument reads current_mode, so it and the router's
  * base are the same value one sync apart.
  *
  * This file is pure (no FreeRTOS, no driver header): the router order is
@@ -72,6 +73,10 @@ void      lgc_home(button_id_t btn);              /* the home page's keys       
 bool      lgc_meter_softkey(button_id_t btn);     /* true: a softkey took it        */
 bool      lgc_siggen_edit(button_id_t btn);       /* true: the digit editor took it */
 void      lgc_mode_key(button_id_t btn);          /* the per-key switch (+ POWER)   */
+/* The long mode keys: set sys.mode through the model (prop_set_local,
+ * ORIGIN_KEY), the path `set sys.mode` / `set sys.instrument` take, then the
+ * settings hook as for every key. */
+void      lgc_mode_set(device_mode_t m);
 void      lgc_gallery_key(uint8_t raw);           /* gallery_ui_key                 */
 bool      lgc_selfcal_busy(void);
 void      lgc_selfcal_cancel(void);               /* AUTO / MENU while locked       */

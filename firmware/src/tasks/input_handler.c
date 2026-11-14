@@ -52,6 +52,7 @@
 #include "../ui/gallery_ui.h"
 #include "../ui/screen.h"
 #include "../ui/legacy_screens.h"
+#include "model.h"           /* the long mode keys set sys.mode */
 #if defined(USB_MSC) && USB_MSC
 #include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
@@ -696,6 +697,14 @@ static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
     return true;
 }
 
+/* A long mode key: sys.mode through the model, the path `set sys.mode` and
+ * `set sys.instrument` take (props_sys.c -> model_hw_fw.c op_mode ->
+ * input_mode_switch -> enter_mode). */
+static void key_mode_set(device_mode_t m)
+{
+    (void)prop_set_local(prop_by_id(PROP_ID_SYS_MODE), (int32_t)m, ORIGIN_KEY, NULL);
+}
+
 static key_ctx_t key_ctx_now(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -739,21 +748,15 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         break;
 
     /* -- long presses: mode shortcuts, from any mode -------------------- */
-    case KA_ENTER_HOME:
-        /* Long BACK: stock's mode-selection page from any mode, with the mode
-         * left preselected (0x0800D834). On home itself it does nothing, as
-         * in stock (the handler exits on ms[0xF68] == 0). */
-        if (current_mode != MODE_HOME) enter_mode(MODE_HOME, dq);
-        break;
-    case KA_ENTER_METER:
-        if (current_mode != MODE_MULTIMETER) enter_mode(MODE_MULTIMETER, dq);
-        break;
-    case KA_ENTER_SCOPE:
-        if (current_mode != MODE_OSCILLOSCOPE) enter_mode(MODE_OSCILLOSCOPE, dq);
-        break;
-    case KA_ENTER_SIGGEN:
-        if (current_mode != MODE_SIGNAL_GEN) enter_mode(MODE_SIGNAL_GEN, dq);
-        break;
+    /* The router's globals take these first (legacy_screens.c ->
+     * lgc_mode_set); kept here so key_map's answer means the same wherever
+     * it is executed. Long BACK: stock's mode-selection page from any mode,
+     * with the mode left preselected (0x0800D834); on home itself it does
+     * nothing, as in stock (input_mode_switch: nothing if it is the mode). */
+    case KA_ENTER_HOME:   key_mode_set(MODE_HOME);         break;
+    case KA_ENTER_METER:  key_mode_set(MODE_MULTIMETER);   break;
+    case KA_ENTER_SCOPE:  key_mode_set(MODE_OSCILLOSCOPE); break;
+    case KA_ENTER_SIGGEN: key_mode_set(MODE_SIGNAL_GEN);   break;
 
     case KA_MEAS_HIDE_TOGGLE:
         ss->prm_hidden = !ss->prm_hidden;
@@ -1120,6 +1123,13 @@ bool lgc_siggen_edit(button_id_t button)
 }
 
 void lgc_mode_key(button_id_t button) { g_cmd = mode_key(button, g_dq); }
+
+void lgc_mode_set(device_mode_t m)
+{
+    g_cmd = DCMD_REDRAW_ALL;
+    key_mode_set(m);
+    settings_after_button();
+}
 
 /* The screenshot gallery (long SAVE) takes every key while it is open; it
  * hands POWER back after closing itself so power-off always works. No

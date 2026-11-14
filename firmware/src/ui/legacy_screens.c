@@ -9,8 +9,9 @@
  *      POWER, which it hands back closed         POWER global closes it first
  *   3. self-cal running: AUTO/MENU cancel,      router step 3 (locked hook)
  *      the rest "Busy", POWER passes
- *   4. long keys: key_map(long)                 globals (key_map_global), then
- *                                               the top screen's key_map(long)
+ *   4. long keys: key_map(long)                 globals (key_map_global; the
+ *                                               mode keys as a sys.mode set),
+ *                                               then the top screen's key_map(long)
  *   5. short keys key_map claims (SAVE; the     globals (SAVE), then the osc page
  *      scope's keys and its Settings page)      layer / the scope base
  *   6. home page: every key but POWER           SCR_HOME
@@ -180,10 +181,23 @@ static bool ls_locked(button_id_t b, bool is_long)
  * is still taken before a global runs, where the old dispatch took it for
  * every key past the lock: lgc_ctx() drops an arrow stage that no longer
  * exists (cursors switched off, mask cleared from the shell). */
+/* The long mode keys' target, or MODE_COUNT for any other action. */
+static device_mode_t ls_mode_of(key_action_t a)
+{
+    switch (a) {
+    case KA_ENTER_HOME:   return MODE_HOME;
+    case KA_ENTER_METER:  return MODE_MULTIMETER;
+    case KA_ENTER_SCOPE:  return MODE_OSCILLOSCOPE;
+    case KA_ENTER_SIGGEN: return MODE_SIGNAL_GEN;
+    default:              return MODE_COUNT;
+    }
+}
+
 static bool ls_globals(button_id_t b, bool is_long)
 {
     const key_cmd_t g = key_map_global(NULL, b, is_long);
     if (g.act == KA_LEGACY) return false;
+    const device_mode_t m = ls_mode_of((key_action_t)g.act);
     if (g.act == KA_POWER_PROMPT) {
         /* The gallery hands POWER back after closing itself. */
         lgc_state_t s;
@@ -194,6 +208,10 @@ static bool ls_globals(button_id_t b, bool is_long)
         }
         (void)lgc_ctx();
         lgc_mode_key(BTN_POWER);
+    } else if (m != MODE_COUNT) {
+        /* Long MENU/SELECT/MOVE/TRIGGER: a sys.mode set, as the shell's. */
+        (void)lgc_ctx();
+        lgc_mode_set(m);
     } else {
         (void)lgc_ctx();
         lgc_exec(g, b);
