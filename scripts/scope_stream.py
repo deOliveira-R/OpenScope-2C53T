@@ -291,6 +291,7 @@ class Stats:
         self.dev_t = None          # (first, last) device t_ms seen
         self.replayed = 0
         self.filtered = 0
+        self.rec_kinds = {}       # (kind, has trigger index) -> records
 
     def props_by_name(self):
         """Latest PROPS as {name: value} (names from PROPDESC)."""
@@ -346,6 +347,8 @@ class Stats:
             self.fw_stats = d
         elif ftype == T_RECORD:
             self.records += 1
+            k = (d["kind"], d["trig_idx"] != TRIG_NONE)
+            self.rec_kinds[k] = self.rec_kinds.get(k, 0) + 1
             if now is not None:
                 self.rec_times.append(now)
             if d["torn"]:
@@ -374,6 +377,10 @@ class Stats:
             self.crc_errors, self.truncated, self.decode_errors, self.replayed))
         p("records=%d torn=%d gen_missed=%d (records published but not received)" % (
             self.records, self.torn, self.gen_missed))
+        if self.rec_kinds:
+            p("records by kind: " + " ".join("%s/%s=%d" % (KIND_NAMES.get(k, k).replace(" ", "_"),
+                                                           "index" if i else "no_index", n)
+                                             for (k, i), n in sorted(self.rec_kinds.items())))
         if self.fw_stats:
             s = self.fw_stats
             p("firmware: bytes=%d rec_missed=%d rec_torn=%d aborts=%d" % (
