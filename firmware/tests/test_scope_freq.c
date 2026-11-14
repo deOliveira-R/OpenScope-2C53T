@@ -295,9 +295,28 @@ static void test_single_edge_terminates(void)
     printf("single-edge records: %u estimated, %u answered (all returned)\n", n, answered);
 }
 
+/* An open input: a few counts of noise, even with a periodic component
+ * (pickup), is not a signal and gets no frequency. Just above the floor a
+ * clean tone is still measured. */
+static void test_no_signal_no_frequency(void)
+{
+    static uint8_t rec[MAXN];
+    scope_freq_t f;
+    srand(7);
+    for (unsigned i = 0; i < MAXN; i++)
+        rec[i] = (uint8_t)(100 + lroundf(2.0f * sinf(6.2831853f * (float)i / 17.0f)) + rand() % 2);
+    CHECK(!scope_freq_estimate(rec, MAXN, 1.25e6f, &f) && f.hz == 0.0f,
+          "open input (5 counts p-p, a clean 17-sample line in it): no frequency, got %.0f Hz", f.hz);
+    for (unsigned i = 0; i < MAXN; i++)
+        rec[i] = (uint8_t)(100 + lroundf(6.0f * sinf(6.2831853f * (float)i / 17.0f)));
+    CHECK(scope_freq_estimate(rec, MAXN, 1.25e6f, &f) && fabsf(f.hz - 1.25e6f / 17.0f) < 0.02f * 1.25e6f / 17.0f,
+          "12-count tone at 17 samples: measured (%.0f Hz)", f.hz);
+}
+
 int main(int argc, char **argv)
 {
     test_single_edge_terminates();
+    test_no_signal_no_frequency();
     const char *path = (argc > 1) ? argv[1]
                                   : "tests/fixtures/scope_records.txt";
     test_synthetic();

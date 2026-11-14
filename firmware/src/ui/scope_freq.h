@@ -94,6 +94,10 @@
  * rather than measuring a tone. A bound from the window, not from a fit. */
 #define SCOPE_FREQ_MIN_BIN      4.0f
 
+/* Below this record peak-to-peak, in counts, there is no signal to time
+ * (an open input reads 2-5 counts of noise). */
+#define SCOPE_FREQ_MIN_PP       8u
+
 typedef struct {
     float    hz;         /* 0.0f when the module declines                    */
     float    bin;        /* interpolated peak, in full-record bins           */

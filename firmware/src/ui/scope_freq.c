@@ -196,6 +196,20 @@ bool scope_freq_estimate(const uint8_t *samples, uint16_t n,
     if (!(sample_rate_hz > 0.0f))
         return false;
 
+    /* No signal, no frequency: an open input's few counts of noise can still
+     * have a "sharp" spectral line (bench, CH2 open: 73.2 kHz, every frame).
+     * The first 1/16 of the record is skipped (the record head is invalid,
+     * scope_record.h). */
+    {
+        uint8_t mn = 255u, mx = 0u;
+        for (uint16_t i = (uint16_t)(n / 16u); i < n; i++) {
+            if (samples[i] < mn) mn = samples[i];
+            if (samples[i] > mx) mx = samples[i];
+        }
+        if ((int)mx - (int)mn < (int)SCOPE_FREQ_MIN_PP)
+            return false;
+    }
+
     /* Everything from here to the last use of fft_re/fft_im is the critical
      * section; the early returns above touch no shared scratch. */
     if (g_lock != NULL) g_lock();

@@ -50,9 +50,10 @@
 
 /* Strip chart constants */
 #define CHART_X         10
-#define CHART_Y         80
+#define CHART_Y         86          /* the Min/Max line (METER_TOP + 54, 12 px) ends at 84 */
 #define CHART_W         300
-#define CHART_H         108         /* labels below end at y=202, clear of the softkey bar (210) */
+#define CHART_H         102         /* same bottom: labels below end at y=202, clear of the softkey bar (210) */
+_Static_assert(CHART_Y - 1 > METER_TOP + 54 + 12, "chart border must clear the Min/Max line");
 #define CHART_SAMPLES   300         /* One sample per pixel column */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -766,7 +767,7 @@ static void draw_meter_chart(const meter_mode_info_t *m, uint8_t mode,
 
     /* Y-axis scale labels */
     fmt_float(val_buf, sizeof(val_buf), chart_max, 1);
-    font_draw_string_right(CHART_X + CHART_W, CHART_Y - 1, val_buf,
+    font_draw_string_right(CHART_X + CHART_W, CHART_Y - 13, val_buf,   /* above the border */
                            th->text_secondary, th->background, &font_small);
     fmt_float(val_buf, sizeof(val_buf), chart_min, 1);
     font_draw_string_right(CHART_X + CHART_W, CHART_Y + CHART_H + 2, val_buf,

@@ -221,6 +221,7 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
  * when scope_mask_epoch() moves. */
 void scope_ui_mask_slot_refresh(void);
 void scope_ui_cursor_row_refresh(void); /* cursor readout in the AUX row, when its text changed */
+void scope_ui_strip_refresh(void);      /* measurement cells in place, no blanking */
 void scope_ui_request_live(void);        /* next display tick: one live frame */
 bool scope_ui_take_live_request(void);
 void scope_ui_can_row_refresh(void);   /* CAN readout on badge row 2 (can_scope.h) */

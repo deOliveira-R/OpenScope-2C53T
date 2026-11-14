@@ -215,6 +215,21 @@ void ui_popup_overlay_cancel(void)
     ov_drawn = false;
 }
 
+/* The measurement strip between full frames. The live frame never touches
+ * it, and plain Y-T has no full frames in a steady state, so without this
+ * the badges (Freq included) kept whatever the last full frame showed. The
+ * cells are repainted in place (draw_strip_cell boxed), never blanked. The
+ * measurement passes are tear-checked against the acquisition's generation
+ * (measure_live_channel, freq_held), as in the full path that already runs
+ * them from this task; the 2026-08-14 acquisition stall predates that. */
+static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh);
+void scope_ui_strip_refresh(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->roll || !fpga_data_ready()) return;
+    draw_measurement_badges(ss, theme_get(), true);
+}
+
 /* A change the live frame can show by itself (cursor moved or reselected):
  * the display task runs one live frame instead of a clear-and-repaint. */
 static volatile bool g_live_req;
@@ -329,7 +344,7 @@ static void strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
  * guarantees the two never overlap; when they would not fit it keeps the
  * value only (the host test shows no stock label/value pair gets there). */
 static void draw_strip_cell(const mstrip_cell_t *c, const scope_prm_t *p,
-                            const theme_t *th)
+                            const theme_t *th, bool boxed)
 {
     char buf[16];
     const uint16_t chc = c->ch ? th->ch2 : th->ch1;
@@ -347,22 +362,35 @@ static void draw_strip_cell(const mstrip_cell_t *c, const scope_prm_t *p,
     if (both)
         font_draw_string(lx, (uint16_t)(c->y + 1), label,
                          measure_strip_dim(chc, th->background), th->background, &font_small);
-    font_draw_string(vx, (uint16_t)(c->y + 1), buf, vc, th->background, &font_small);
+    if (!boxed) {
+        font_draw_string(vx, (uint16_t)(c->y + 1), buf, vc, th->background, &font_small);
+        return;
+    }
+    /* In-place update: the value's whole box is painted (glyphs, gaps and
+     * the rest of the box), so a shorter value leaves nothing behind and the
+     * row is never blanked first. */
+    const uint16_t end = (uint16_t)(c->x + MSTRIP_CELL_W - MSTRIP_PAD);
+    const uint16_t bx = both ? vx : (uint16_t)(c->x + MSTRIP_PAD);
+    if (end > bx)
+        font_draw_string_box(bx, (uint16_t)(c->y + 1), (uint16_t)(end - bx), buf, vc,
+                             th->background, &font_small,
+                             both ? FONT_ALIGN_LEFT : FONT_ALIGN_RIGHT);
 }
 
 /* Paint the measurement rows: clear them (full width, so the live band and
  * the strip meet on one row edge), then every cell. p[ch] NULL = no record. */
 static void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
-                             const scope_params_t *p2, const theme_t *th)
+                             const scope_params_t *p2, const theme_t *th, bool refresh)
 {
     if (L->rows == 0u)
         return;
     const uint16_t y0 = (uint16_t)(L->bottom - L->rows * MSTRIP_ROW_H);
-    lcd_fill_rect(0, y0, LCD_WIDTH, (uint16_t)(L->rows * MSTRIP_ROW_H), th->background);
+    if (!refresh)
+        lcd_fill_rect(0, y0, LCD_WIDTH, (uint16_t)(L->rows * MSTRIP_ROW_H), th->background);
     for (unsigned k = 0; k < L->n; k++) {
         const mstrip_cell_t *c = &L->cell[k];
         const scope_params_t *pp = c->ch ? p2 : p1;
-        draw_strip_cell(c, pp ? &pp->v[c->prm] : NULL, th);
+        draw_strip_cell(c, pp ? &pp->v[c->prm] : NULL, th, refresh);
     }
 }
 
@@ -743,7 +771,9 @@ static float freq_held(uint8_t ch, bool need, bool have,
 static float   rec_vpc(const scope_state_t *ss, uint8_t ch);
 static uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
 
-static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
+/* refresh: in place (boxed cells, no row clear, AUX row untouched), for the
+ * steady-state update between full frames (scope_ui_strip_refresh). */
+static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
 {
     mstrip_layout_t L;
     strip_layout(ss, &L);   /* long PRM (prm_hidden) = no rows; the AUX row stays */
@@ -782,12 +812,12 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th)
         ctx.zero_count      = rec_zero(ss, 1u);
         scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
 
-        draw_strip_cells(&L, &p1, &p2, th);
+        draw_strip_cells(&L, &p1, &p2, th, refresh);
     }
 
     /* The AUX row: the CAN analyser's line, else the cursor readout, else
      * the mask readout. */
-    if (L.aux) {
+    if (L.aux && !refresh) {
         if (can_scope_screen_on())
             scope_ui_can_row_refresh();
         else if (ss->cursor.mode != CURSOR_OFF)
@@ -2868,7 +2898,7 @@ void draw_scope_screen(uint32_t frame)
     draw_run_stop(ss, th);
 
     /* Layer 10: Measurement badges */
-    draw_measurement_badges(ss, th);
+    draw_measurement_badges(ss, th, false);
 
     /* Layer 11: Quick-change popup (on top of everything) */
     draw_popup(th);
@@ -3275,7 +3305,7 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
 
     mstrip_layout_t L;
     strip_layout(ss, &L);
-    draw_strip_cells(&L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th);
+    draw_strip_cells(&L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th, !full);
 }
 
 void draw_roll_screen(bool full)
@@ -3390,7 +3420,12 @@ void draw_roll_screen(bool full)
              (unsigned)SCOPE_ROLL_POINTS);
     if (full)
         lcd_fill_rect(0, SCOPE_TOP, ROLL_LABEL_W, ROLL_LABEL_H, th->background);
-    font_draw_string(4, SCOPE_TOP + 2, buf, th->highlight, th->background, &font_small);
+    /* Boxed: the whole label box is painted every time. font_draw_string()
+     * paints glyph cells only, so the spaces of "ROLL   0/301" and the gaps
+     * between glyphs kept the previous count's pixels (the "drawn twice"
+     * header seen on entering roll). */
+    font_draw_string_box(4, SCOPE_TOP + 2, (uint16_t)(ROLL_LABEL_W - 4), buf,
+                         th->highlight, th->background, &font_small, FONT_ALIGN_LEFT);
     draw_roll_badges(ss, th, nvis, full);
     if (!full)
         return;

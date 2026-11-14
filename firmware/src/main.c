@@ -226,6 +226,7 @@ void delay_ms(uint32_t ms)
  * not available the heartbeat is a full clear-and-repaint, and that is
  * the one that was flashing a settled screen once a second forever. */
 #define SCOPE_IDLE_LIVE_FRAMES  20    /* 1 s, flicker-free */
+#define SCOPE_STRIP_REFRESH_FRAMES 10 /* 500 ms: measurement cells in place */
 #define SCOPE_IDLE_FULL_FRAMES  100   /* 5 s, blanks — back it off */
 
 /* Draw accounting. Non-static on purpose: these are the evidence that
@@ -841,7 +842,10 @@ static void vDisplayTask(void *pvParameters)
                                       (persist_enabled && q.incremental_ok))
                                      ? SCOPE_FULL_MIN_FRAMES
                                      : SCOPE_ANIM_TICK_FRAMES;
-                q.idle_tick_frames = q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
+                /* Stopped, nothing a hash cannot see changes: no heartbeat
+                 * (it drew one live frame a second while stopped). */
+                q.idle_tick_frames = !ss_anim->running ? 0u
+                                   : q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
                                                       : SCOPE_IDLE_FULL_FRAMES;
 
                 redraw_action_t act = page_up ? REDRAW_SKIP
@@ -851,11 +855,25 @@ static void vDisplayTask(void *pvParameters)
                 else
                     scope_render(frame, act);
 #ifdef FEATURE_FFT
-                if (act != REDRAW_SKIP && !page_up && scope_view == SCOPE_VIEW_TIME)
+                const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
 #else
-                if (act != REDRAW_SKIP && !page_up)
+                const bool yt_view = !page_up;
 #endif
+                if (act != REDRAW_SKIP && yt_view)
                     scope_ui_cursor_row_refresh();   /* only when its text changed */
+                /* The badges between full frames (the live frame does not
+                 * touch the strip): in place, twice a second, running only
+                 * (a held record's values do not change). */
+                {
+                    static uint32_t last_strip;
+                    if (act == REDRAW_FULL)
+                        last_strip = frame;
+                    else if (yt_view && ss_anim->running &&
+                             (frame - last_strip) >= SCOPE_STRIP_REFRESH_FRAMES) {
+                        scope_ui_strip_refresh();
+                        last_strip = frame;
+                    }
+                }
             }
         } else if (current_mode == MODE_SIGNAL_GEN) {
             /* Siggen UI is static: no animation, no live data. It is
