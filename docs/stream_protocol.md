@@ -13,13 +13,14 @@ stays on the direct route (`get` / `set` text commands, answered while the strea
 
 ```text
 stream on [scope] [meter] [props] [fast]   no names = all three; `fast` = spin-paced packets (section 7)
-stream off                                 a last STATS frame, then the counters as text
+stream off                                 the counters as text; a last STATS frame follows the prompt
 stream status                              two lines: state, then sent/dropped per type
 ```
 
 `stream on` prints its reply and the prompt first; frames follow. The stream also stops by itself when USB is
-unplugged (`off_reason=usb disconnected`) or when no frame could leave for 5 s (`off_reason=host not
-reading`), so a terminal opened later sees the shell, not binary. It is never on after boot.
+unplugged (`off_reason=usb disconnected`) or when every frame it tried for 5 s failed (`off_reason=host not
+reading`), so a terminal opened later sees the shell, not binary. A long command or a firmware load is not a
+failure: only failed attempts start that clock. It is never on after boot.
 
 Not a property group: see section 8.
 
@@ -35,7 +36,8 @@ it received and before it idles. Consequences:
   text is still exactly the shell's bytes, in order.
 - No frames while the firmware loader is receiving, while it drains an aborted image, or during a raw
   `logo blk` upload.
-- Frames are also mirrored to RTT, as all shell output is (a probe attached to RTT receives them too).
+- Frames are also mirrored to RTT, as all shell output is. With an RTT reader attached, `rtt_write` can
+  wait for it before each packet, outside the stream's own time limits: measure with no RTT reader.
 
 ## 3. Frame
 
@@ -177,7 +179,8 @@ command, or a send was in progress).
   then decides to send or drop. It never sends the same generation twice and never waits for one.
 - **Drop, don't wait.** A frame starts only if the CDC IN endpoint is free within 2 ms; otherwise it is dropped
   and counted. Within a frame, one packet that cannot leave within 50 ms abandons the frame (`aborts`); the
-  host resynchronises on the next marker. A host that stopped reading costs at most one 50 ms stall.
+  host resynchronises on the next marker. A host that stopped reading costs at most one 50 ms stall per
+  frame (with no RTT reader attached).
 - **No buffers.** Samples go from the published record buffers through one 64-byte packet on the stack. The
   CRC is taken over that copy, so it always matches what was sent; tearing is reported by `gen_end`, not by a
   CRC error.
@@ -203,10 +206,14 @@ the encoder to `stream_frame.c` with a case in `tests/test_stream.c` and the vec
   IN completion and the host's controller turn around is not known without hardware. With `fast` the
   shell task does not yield while a frame goes out, which holds off the display (prio 1) and the prio-2
   tasks for the length of one frame.
-- No lock is taken. The exposure window is the send time of one record (about 34 ms tick-paced). The sender
-  sees a new record within 10 ms of its commit (the loop's idle period), so a tear needs the next commit within
-  about 45 ms of the previous one, i.e. more than about 22 records/s. In Y-T at 4.6 records/s none are
-  expected.
+- No lock is taken. The exposure window is the send time of one record (about 34 ms tick-paced, 17 ms for
+  one channel). The sender sees a new record within 10 ms of its commit (the loop's idle period, none
+  while it is busy sending), so a record torn means the next commit came within about 35-45 ms.
+  The commit cadence depends on the trigger state (fpga.c, EXP-72): a triggering input gives handed-over
+  records only (about 3.4-4.6/s): no tears expected, and the sender keeps up. **AUTO with no trigger**
+  (`fpga autolive on`, the default) commits every roll read, about 33/s (every ~30 ms poll): a
+  tick-paced 2-channel record cannot keep up (missed records) and most of those sent will be torn. Use
+  `fast`, one channel, or a triggering input. Which of these holds on the bench is to be measured.
 - Roll (reserved type 0x0A): the fastest roll step is 2 ms per point, 500 points/s, 1 KB/s for both channels.
   Bytes are not the limit; frames are. One frame per point would spend 500 of the 1000 packets/s. A batch per
   shell-loop pass (about every 10 ms, 5 point pairs, one packet) costs about 100 packets/s. The 301-point

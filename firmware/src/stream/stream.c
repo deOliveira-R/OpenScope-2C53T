@@ -25,9 +25,11 @@
  * DROP, DON'T WAIT. A frame starts only if the IN endpoint is free within
  * STREAM_START_WAIT_MS; otherwise it is dropped and counted. Mid-frame, a
  * packet that cannot leave within STREAM_PKT_WAIT_MS abandons the frame (the
- * host resynchronises on the next marker) and counts an abort. A host that
- * stops reading for STREAM_IDLE_OFF_MS turns the stream off, so a terminal
- * opened later sees the shell, not binary.
+ * host resynchronises on the next marker) and counts an abort. When every
+ * frame attempted for STREAM_IDLE_OFF_MS has failed (the host stopped
+ * reading), the stream turns itself off, so a terminal opened later sees the
+ * shell, not binary. Time spent in a long command or a firmware load is not
+ * failure: only failed attempts start that clock, and a success clears it.
  *
  * RAM: the state below (~170 B .bss); the writer (~84 B) and a meter
  * snapshot (~130 B) are on the shell task's stack, only inside a send.
@@ -58,7 +60,7 @@ void usb_delay_us(uint32_t us);              /* usb_debug.c (usb_conf.h) */
 
 #define STREAM_START_WAIT_MS   2u     /* IN endpoint must be free this soon, else drop  */
 #define STREAM_PKT_WAIT_MS     50u    /* one packet stalled this long: abandon the frame */
-#define STREAM_IDLE_OFF_MS     5000u  /* nothing left for this long: stream off          */
+#define STREAM_IDLE_OFF_MS     5000u  /* every frame failing for this long: stream off  */
 #define STREAM_STATS_MS        1000u
 #define STREAM_PROPS_CHECK_MS  50u
 #define STREAM_SPIN_POLLS      100u   /* `fast`: ~100 x 2 us polls before yielding    */
@@ -66,11 +68,11 @@ void usb_delay_us(uint32_t us);              /* usb_debug.c (usb_conf.h) */
 #define CAP_ALL (SF_CAP_SCOPE | SF_CAP_METER | SF_CAP_PROPS)
 
 static struct {
-    bool        on, fast, hello_pending, props_pending, have_gen, have_meter;
+    bool        on, fast, hello_pending, props_pending, have_gen, have_meter, closing;
     uint8_t     want;                       /* SF_CAP_* */
     uint16_t    seq, desc_next;
     uint32_t    last_gen, last_meter, props_hash, table_crc;
-    uint32_t    props_ms, stats_ms, ok_ms, gen_end;
+    uint32_t    props_ms, stats_ms, fail_ms, gen_end;   /* fail_ms: first failure in a row, 0 = none */
     const char *off_reason;
     sf_stats_t  st;
 } s;
@@ -100,11 +102,17 @@ static bool sink(const uint8_t *data, uint16_t len, void *ctx)
     return wait_ready(STREAM_PKT_WAIT_MS) && usb_debug_stream_write(data, len);
 }
 
+static void note_failure(void)
+{
+    if (s.fail_ms == 0u) s.fail_ms = now_ms() | 1u;       /* never 0 while set */
+}
+
 /* Before a frame: may it start? Counts the drop when not. */
 static bool frame_gate(uint8_t type)
 {
     if (wait_ready(STREAM_START_WAIT_MS)) return true;
     s.st.dropped[type]++;
+    note_failure();
     return false;
 }
 
@@ -115,10 +123,11 @@ static bool frame_done(uint8_t type, const sf_writer_t *w, bool ok)
     s.st.bytes += w->sent;
     if (ok) {
         s.st.sent[type]++;
-        s.ok_ms = now_ms();
+        s.fail_ms = 0u;
     } else {
         s.st.aborts++;
         s.st.dropped[type]++;
+        note_failure();
     }
     return ok;
 }
@@ -318,7 +327,15 @@ bool stream_poll(void)
     if (!usb_debug_connected()) { stream_stop("usb disconnected"); return false; }
     if (fw_loader_active()) return false;                 /* the loader owns the channel */
     const uint32_t now = now_ms();
-    if ((uint32_t)(now - s.ok_ms) > STREAM_IDLE_OFF_MS) { stream_stop("host not reading"); return false; }
+    if (s.fail_ms != 0u && (uint32_t)(now - s.fail_ms) > STREAM_IDLE_OFF_MS) {
+        stream_stop("host not reading");
+        return false;
+    }
+    if (s.closing) {                                      /* `stream off`: the last STATS, after the prompt */
+        const bool ok = send_stats();
+        stream_stop("off");
+        return ok;
+    }
 
     if (s.hello_pending) return send_hello();
     if (s.want & SF_CAP_PROPS) {
@@ -341,7 +358,7 @@ static void print_status(void)
     const sf_stats_t *t = &s.st;
     usb_debug_printf("stream: on=%u scope=%u meter=%u props=%u fast=%u seq=%u gen=%lu bytes=%lu "
                      "aborts=%lu%s%s\r\n",
-                     s.on, !!(s.want & SF_CAP_SCOPE), !!(s.want & SF_CAP_METER),
+                     (unsigned)(s.on && !s.closing), !!(s.want & SF_CAP_SCOPE), !!(s.want & SF_CAP_METER),
                      !!(s.want & SF_CAP_PROPS), s.fast, s.seq,
                      (unsigned long)fpga_acq_frame_generation(), (unsigned long)t->bytes,
                      (unsigned long)t->aborts,
@@ -390,7 +407,7 @@ void cmd_stream(const char *args)
         s.table_crc = table_crc();
         s.hello_pending = true;
         s.props_pending = true;
-        s.ok_ms = s.props_ms = s.stats_ms = now_ms();
+        s.props_ms = s.stats_ms = now_ms();
         s.on = true;
         usb_debug_printf("stream: on%s%s%s%s (frames follow; docs/stream_protocol.md)\r\n",
                          (want & SF_CAP_SCOPE) ? " scope" : "", (want & SF_CAP_METER) ? " meter" : "",
@@ -398,8 +415,9 @@ void cmd_stream(const char *args)
         return;
     }
     if (strcmp(args, "off") == 0) {
-        if (s.on) (void)send_stats();                     /* the last counters, before the reply */
-        stream_stop("off");
+        /* No frame inside this reply: the shell loop sends the last STATS
+         * after the prompt, then stops. Already off: nothing follows. */
+        if (s.on) s.closing = true;
         print_status();
         return;
     }

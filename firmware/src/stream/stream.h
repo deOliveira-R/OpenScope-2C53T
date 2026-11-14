@@ -2,7 +2,7 @@
  * OpenScope 2C53T - binary stream over the shell's CDC channel (FEATURE_STREAM)
  *
  *   stream on [scope] [meter] [props] [fast]   start (no names = all three)
- *   stream off                                 stop (a last STATS frame first)
+ *   stream off                                 stop (a last STATS frame after the prompt)
  *   stream status                              counters, one key=value line
  *
  * The sender runs on the shell task (usb_dbg, prio 2), between commands: the
