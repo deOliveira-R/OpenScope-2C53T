@@ -22,9 +22,11 @@
 # the countdown must appear over the gallery's picture and a release must
 # show the screen that was under the gallery, not the gallery.
 #
-# The walk saves four screenshots and deletes one; it leaves three more than
-# it found (delete them with `screenshot delete <n>`). With fewer than four
-# free slots the saves answer "full": free some first (`screenshot list`).
+# The walk saves five screenshots and deletes one; it leaves four more than
+# it found (delete them with `screenshot delete <n>`). With fewer than five
+# free slots a save answers "full": free some first (`screenshot list`). The
+# step names below assume the gallery was empty at the start (the cell
+# numbers in gal= count from the newest shot).
 
 # ── 0. a known state, and four shots to browse ───────────────────────────────
 # expect: screen=scope overlay=none stack=scope gal=- lcdforeign=0
