@@ -84,6 +84,7 @@
 #include "../util/lcd_health.h"
 #include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
+#include "shared_mem.h"
 #include "../util/gallery_store.h"
 #include "../ui/logo_ui.h"
 #include "watchdog.h"
@@ -7874,6 +7875,21 @@ static void cmd_ui_dump(void)
         usb_debug_printf("draws scope_full=%lu scope_live=%lu redraw_all=%lu\r\n",
                          (unsigned long)ui_scope_full_draws, (unsigned long)ui_scope_live_draws,
                          (unsigned long)ui_redraw_all_count);
+#ifdef FEATURE_FFT
+        static const char *const wfs[] = { "never drawn", "drawn", "no FFT", "waiting for capture",
+                                           "pool not FFT's" };
+        const uint8_t w = scope_ui_waterfall_status();
+        usb_debug_printf("pool size=%lu owner=%s transitions=%lu | waterfall rows %u x %u at %lu..%lu "
+                         "(%s), last frame: %s, newest row %u\r\n",
+                         (unsigned long)shared_mem_size(), shared_mem_owner_name(),
+                         (unsigned long)shared_mem_transition_count(),
+                         (unsigned)SHMEM_FFT_WATERFALL_ROWS, (unsigned)SHMEM_FFT_WATERFALL_COLS,
+                         (unsigned long)SHMEM_FFT_WATERFALL_OFFSET,
+                         (unsigned long)(SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE),
+                         (SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE <= shared_mem_size())
+                             ? "fits" : "DOES NOT FIT",
+                         (w < 5u) ? wfs[w] : "?", (unsigned)scope_ui_waterfall_row());
+#endif
     }
     usb_debug_printf("meter_ui draws=%lu full_clears=%lu partial_clears=%lu draw_us=%lu max_draw_us=%lu over_budget=%lu rendered_update=%lu last_full=%u live=%u continuity_flash=%u reading_valid=%u "
                      "reading_submode=%u updates=%lu display_updates=%lu\r\n",

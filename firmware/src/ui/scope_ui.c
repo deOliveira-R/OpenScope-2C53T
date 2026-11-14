@@ -3905,16 +3905,27 @@ static uint16_t intensity_to_color(uint8_t intensity)
     return RGB565(255, (uint8_t)(255 - t), 0);                      /* yellow->red  */
 }
 
+/* What the last waterfall frame did, for `ui dump` (scope_ui_waterfall_status). */
+static uint8_t g_wf_status;   /* WF_ST_* */
+enum { WF_ST_NEVER = 0, WF_ST_DRAWN, WF_ST_NO_FFT, WF_ST_WAITING, WF_ST_NOT_OWNER };
+
+uint8_t scope_ui_waterfall_status(void) { return g_wf_status; }
+uint8_t scope_ui_waterfall_row(void)    { return waterfall_row_idx; }
+
 void draw_waterfall_screen(void)
 {
     const fft_config_t *cfg = fft_get_config();
 
     int16_t *sbuf = fft_get_sample_buf();
-    if (!sbuf) return;  /* FFT not initialized */
+    if (!sbuf) {                    /* FFT not initialized */
+        g_wf_status = WF_ST_NO_FFT;
+        return;
+    }
     uint16_t nsamp = 0;
     float fs = 0.0f;
     fft_src_t src = fft_prepare_input(sbuf, &nsamp, &fs);
     if (src == FFT_SRC_NONE || nsamp == 0) {
+        g_wf_status = WF_ST_WAITING;
         lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, SCOPE_H, COLOR_BLACK);
         font_draw_string(4, SCOPE_TOP + 2, "WFALL: waiting for capture",
                          COLOR_GRAY, COLOR_GRAY, &font_small);
@@ -3929,7 +3940,11 @@ void draw_waterfall_screen(void)
      * a stricter check than the fft_get_sample_buf() guard above, which only
      * proves the FFT was initialised at some point. */
     uint8_t *wf_pool = shared_mem_get(SHMEM_OWNER_FFT);
-    if (!wf_pool) return;
+    if (!wf_pool) {
+        g_wf_status = WF_ST_NOT_OWNER;
+        return;
+    }
+    g_wf_status = WF_ST_DRAWN;
     uint8_t (*waterfall_buf)[WATERFALL_COLS] =
         (uint8_t (*)[WATERFALL_COLS])(wf_pool + SHMEM_FFT_WATERFALL_OFFSET);
 

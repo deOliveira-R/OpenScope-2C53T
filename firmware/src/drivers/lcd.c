@@ -644,9 +644,16 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count)
 {
     /* No window setup here by design — the caller owns the window, which is
      * the entire point (see lcd.h). Writes go straight at the EXMC data
-     * address with no bus delay, exactly like the lcd_fill_rect() inner loop. */
-    while (count--)
-        *LCD_DATA_ADDR = *pixels++;
+     * address with no bus delay, exactly like the lcd_fill_rect() inner loop.
+     * Every pixel also goes to the screenshot shadow, as lcd_write_data()'s
+     * do: until 2026-11-13 this path skipped it, so whatever was streamed
+     * through here (the waterfall rows, the boot logo) was black in every
+     * screenshot (`screen dumpbin`, SAVE) though it was on the panel. */
+    while (count--) {
+        const uint16_t p = *pixels++;
+        *LCD_DATA_ADDR = p;
+        lcd_shadow_write_pixel(p);
+    }
 }
 
 void lcd_clear(uint16_t color)

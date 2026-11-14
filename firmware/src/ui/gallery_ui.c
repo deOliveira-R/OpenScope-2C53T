@@ -102,10 +102,11 @@ void gallery_ui_result_text(gallery_status_t st, uint32_t seq, char *out, uint32
 #define THUMB_DX  ((CELL_W - THUMB_W) / 2u)
 #define THUMB_DY  2u
 
-/* lcd_write_data(), not lcd_write_pixels(): it also feeds the LCD's indexed
- * shadow, so `screen dumpbin` / scripts/screenshot.py (and a SAVE from the
- * shell while the gallery is open) see the gallery as drawn. The stored
- * colours are the shadow's own palette, so the shadow copy is exact. */
+/* Through lcd_write_data(), which feeds the LCD's indexed shadow (so does
+ * lcd_write_pixels() since 2026-11-13), so `screen dumpbin` /
+ * scripts/screenshot.py (and a SAVE from the shell while the gallery is open)
+ * see the gallery as drawn. The stored colours are the shadow's own palette,
+ * so the shadow copy is exact. */
 static void push(const uint16_t *px, uint32_t n)
 {
     for (uint32_t i = 0; i < n; i++) lcd_write_data(px[i]);

@@ -272,6 +272,10 @@ void draw_fft_screen(bool full);
 void draw_split_screen(uint32_t frame, bool full);
 void draw_waterfall_screen(void);
 void draw_xy_screen(bool full);
+/* Last waterfall frame: 0 never drawn, 1 drawn, 2 no FFT (not initialised),
+ * 3 waiting for a capture, 4 the shared pool is not the FFT's. */
+uint8_t scope_ui_waterfall_status(void);
+uint8_t scope_ui_waterfall_row(void);
 #endif
 /* Roll view (C11): the roll FIFO right-to-left; full = with labels/STOP/popup. */
 void draw_roll_screen(bool full);
