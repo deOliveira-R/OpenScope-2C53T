@@ -80,12 +80,31 @@ static void logf_(const char *fmt, ...)
 }
 static bool nok(void) { return g_fail || (g_fail_at && ++g_calls == g_fail_at); }
 
+/* The two ops that defer, as model_hw_fw.c does in the bench image: the
+ * range relays are the meter's on the meter screen, and the meter function
+ * is posted only on it (model.h DEFERRED). */
 static bool f_vdiv(uint8_t ch, uint8_t i)
 {
     g_in_vdiv = true;
     while (g_block_vdiv) usleep(1000);
     g_in_vdiv = false;
+    if (current_mode == MODE_MULTIMETER) {
+        logf_("vdiv-stored(%u,%u);", ch, i);
+        model_hw_deferred("stored: scope FE off");
+        return true;
+    }
     logf_("vdiv(%u,%u);", ch, i);
+    return !nok();
+}
+static bool f_meter_func(uint8_t m, bool keep)
+{
+    (void)keep;
+    if (current_mode != MODE_MULTIMETER) {
+        logf_("meter-stored(%u);", m);
+        model_hw_deferred("stored: meter FE off");
+        return true;
+    }
+    logf_("meter_func(%u);", m);
     return !nok();
 }
 static bool f_coupling(uint8_t ch, uint8_t c) { logf_("coupling(%u,%u);", ch, c); return !nok(); }
@@ -101,7 +120,7 @@ static void f_note_change(void)               { g_notes++; }
 
 static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .timebase = f_timebase,
-    .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out,
+    .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out, .meter_func = f_meter_func,
     .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note_change,
 };
 
@@ -215,9 +234,7 @@ static void test_basic(void)
     /* the same value again: OK, no change, no redraw */
     CHECK(req1(PROP_ID_CH1_VDIV, 4, 600, &r) == PS_OK && r.seq == 2);
     CHECK(n_changed == 1);
-    /* an int is clamped: CLAMPED and the clamped value (gen.* is the
-     * generator's: its instrument must be the active one) */
-    current_mode = MODE_SIGNAL_GEN;
+    /* an int is clamped: CLAMPED and the clamped value */
     CHECK(req1(PROP_ID_GEN_FREQ, 99999, 600, &r) == PS_CLAMPED);
     CHECK(prop_get(P(GEN_FREQ)) == 50000);
     model_exec_stats_t st;
@@ -414,7 +431,7 @@ static void test_threaded_in_progress(void)
     CHECK(pthread_create(&exec_thread, NULL, exec_main, NULL) == 0);
 
     model_result_t r;
-    CHECK(req1(PROP_ID_CH1_PROBE, 1, 600, &r) == PS_OK && r.seq == 1);  /* the executor runs */
+    CHECK(req1(PROP_ID_GEN_AMP, 15, 600, &r) == PS_OK && r.seq == 1);   /* the executor runs */
 
     g_block_vdiv = true;                 /* the owner call holds, like a 1 s fpga_acq_pause */
     CHECK(req1(PROP_ID_CH1_VDIV, 7, 40, &r) == PS_TIMEOUT);
@@ -429,7 +446,7 @@ static void test_threaded_in_progress(void)
     CHECK(req1(PROP_ID_CH2_VDIV, 1, 600, &r) == PS_NOT_SET);
     CHECK(r.seq == 3 && r.failed == 0 && r.applied == 0);
     g_fail = false;
-    CHECK(req1(PROP_ID_CH1_BWLIMIT, 1, 600, &r) == PS_OK && r.seq == 4);
+    CHECK(req1(PROP_ID_GEN_OUT, 1, 600, &r) == PS_OK && r.seq == 4);
     CHECK(model_foreign_sets == 0);
 
     exec_stop = true;
@@ -453,12 +470,10 @@ static void test_shell_set(void)
     fresh(1);
     sh_reset(); model_shell_set("ch1.vdiv 4", collect);
     CHECKF(n_out == 1 && starts(0, "OK ch1.vdiv=4  # "), "%s", out[0]);
-    current_mode = MODE_SIGNAL_GEN;      /* gen.* needs the generator active */
     sh_reset(); model_shell_set("gen.amp 1.5 V", collect);
     CHECKF(n_out == 1 && strcmp(out[0], "OK gen.amp=1.5 V") == 0, "%s", out[0]);
     sh_reset(); model_shell_set("gen.freq 99999", collect);
     CHECKF(n_out == 1 && strcmp(out[0], "CLAMPED gen.freq=50000 Hz") == 0, "%s", out[0]);
-    current_mode = MODE_OSCILLOSCOPE;
     sh_reset(); model_shell_set("ch1.coupling=AC ch1.vdiv=+1", collect);
     CHECKF(n_out == 2 && strcmp(out[0], "OK ch1.coupling=AC") == 0 && starts(1, "OK ch1.vdiv=5"),
            "%s | %s", out[0], out[1]);
@@ -565,14 +580,14 @@ static void test_shell_pair_limits(void)
     fresh(1);
     sh_reset();
     model_shell_set("ch1.probe=10x ch2.probe=10x ch1.bwlimit=on ch2.bwlimit=on trig.edge=1 "
-                    "view.truescale=1 trig.soft=0 ch2.meas=0 ch1.meas=0", collect);
+                    "view.truescale=1 gen.wave=1 ch2.meas=0 ch1.meas=0", collect);
     CHECKF(n_out == 1 && strcmp(out[0], "INVALID ch1.meas (more than 8 pairs); nothing applied") == 0, "%s", out[0]);
     CHECK(n_sent == 0 && q_count == 0 && n_wakes == 0);
     CHECK(prop_get(P(CH1_PROBE)) == 0 && prop_get(P(CH2_MEAS)) != 0);
     /* exactly 8: applied */
     sh_reset();
     model_shell_set("ch1.probe=10x ch2.probe=10x ch1.bwlimit=on ch2.bwlimit=on trig.edge=1 "
-                    "view.truescale=1 trig.soft=0 ch2.meas=0", collect);
+                    "view.truescale=1 gen.wave=1 ch2.meas=0", collect);
     CHECKF(n_out == 8 && starts(0, "OK ch1.probe=10X") && starts(7, "OK ch2.meas="), "%u %s", n_out, out[7]);
     CHECK(n_sent == 1);
     /* 5 PF_HW pairs: the HW note */
@@ -583,73 +598,104 @@ static void test_shell_pair_limits(void)
     CHECK(n_sent == 1 && g_log[0] == '\0' && prop_get(P(CH1_VDIV)) == 3);
 }
 
-/* The owner's rule (2026-11-13): a property of an instrument is REFUSED from
- * the shell while another instrument is active (no key sequence reaches that
- * state); sys.* never; get always; a multi-set stays all or nothing; AUTO /
- * PROFILE origins are not gated; Home/Settings (no instrument) gate nothing. */
-static void test_instrument_gate(void)
+/* The owner's model (2026-11-13): sys.instrument is only the UI binding.
+ * The raw route sets every instrument's properties in every binding; the
+ * state always updates, and the answer says whether the hardware followed
+ * at once or the value was stored for the posture's entry code. */
+static const device_mode_t k_bindings[] = {
+    MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS, MODE_HOME,
+};
+
+static void test_bindings_state(void)
 {
+    for (unsigned b = 0; b < sizeof k_bindings / sizeof k_bindings[0]; b++) {
+        fresh(1);
+        current_mode = k_bindings[b];
+        const bool meter = (current_mode == MODE_MULTIMETER);
+        char want[64];
+
+        sh_reset(); model_shell_set("ch1.vdiv 6", collect);
+        CHECKF(n_out == 1 && starts(0, "OK ch1.vdiv=6") &&
+               (strstr(out[0], " ; stored: scope FE off") != NULL) == meter, "[%u] %s", b, out[0]);
+        CHECK(prop_get(P(CH1_VDIV)) == 6);
+        CHECKF(strcmp(g_log, meter ? "vdiv-stored(0,6);" : "vdiv(0,6);") == 0, "[%u] %s", b, g_log);
+        CHECK(meter ? prop_last_deferred() != NULL : prop_last_deferred() == NULL);
+
+        g_log[0] = '\0';
+        sh_reset(); model_shell_set("meter.func acv", collect);
+        snprintf(want, sizeof want, "OK meter.func=acv ; %s",
+                 meter ? "posture posted" : "stored: meter FE off");
+        CHECKF(n_out == 1 && strcmp(out[0], want) == 0, "[%u] %s", b, out[0]);
+        CHECK(prop_get(P(METER_FUNC)) == 1);
+
+        /* the generator (MCU DAC2) and the state-only properties: live everywhere */
+        sh_reset(); model_shell_set("gen.freq 2000", collect);
+        CHECKF(n_out == 1 && strcmp(out[0], "OK gen.freq=2000 Hz") == 0, "[%u] %s", b, out[0]);
+        CHECK(prop_get(P(GEN_FREQ)) == 2000);
+        sh_reset(); model_shell_set("view.mode fft", collect);
+        CHECKF(n_out == 1 && strcmp(out[0], "OK view.mode=fft") == 0, "[%u] %s", b, out[0]);
+        sh_reset(); model_shell_set("ch1.coupling AC", collect);
+        CHECKF(n_out == 1 && strcmp(out[0], "OK ch1.coupling=AC") == 0, "[%u] %s", b, out[0]);
+        sh_reset(); model_shell_set("trig.edge 1", collect);
+        CHECKF(n_out == 1 && starts(0, "OK trig.edge="), "[%u] %s", b, out[0]);
+        /* get reads every instrument whatever is bound */
+        sh_reset(); model_shell_get("ch1.vdiv meter.func gen.freq", collect);
+        CHECKF(n_out == 3 && starts(0, "ch1.vdiv=6") && strcmp(out[1], "meter.func=acv") == 0 &&
+               strcmp(out[2], "gen.freq=2000 Hz") == 0, "[%u] %s | %s | %s", b, out[0], out[1], out[2]);
+        CHECK(model_foreign_sets == 0);
+    }
+}
+
+static void test_bindings_multi(void)
+{
+    /* one request across three instruments in the meter binding: all
+     * applied, the stored ones named by position on the last line */
     fresh(1);
     current_mode = MODE_MULTIMETER;
-    CHECK(model_instrument_active() && strcmp(model_instrument_active()->name, "meter") == 0);
-    sh_reset(); model_shell_set("view.mode fft", collect);
-    CHECKF(n_out == 1 && strcmp(out[0], "REFUSED view.mode (instrument is meter); old value kept: yt") == 0,
+    sh_reset(); model_shell_set("ch1.vdiv=5 gen.freq=3000 ch2.vdiv=4 meter.func=ohm", collect);
+    CHECKF(n_out == 4 && starts(0, "OK ch1.vdiv=5") && strcmp(out[1], "OK gen.freq=3000 Hz") == 0 &&
+           starts(2, "OK ch2.vdiv=4") && strcmp(out[3], "OK meter.func=ohm ; stored, FE off: 1,3") == 0,
+           "%s | %s | %s | %s", out[0], out[1], out[2], out[3]);
+    CHECK(prop_get(P(CH1_VDIV)) == 5 && prop_get(P(CH2_VDIV)) == 4 && prop_get(P(METER_FUNC)) == 6);
+    CHECKF(strcmp(g_log, "vdiv-stored(0,5);gen_freq(3000);vdiv-stored(1,4);meter_func(6);") == 0, "%s", g_log);
+
+    /* the same request in the scope binding: the meter function is the stored one */
+    fresh(1);
+    sh_reset(); model_shell_set("ch1.vdiv=5 gen.freq=3000 meter.func=ohm", collect);
+    CHECKF(n_out == 3 && strcmp(out[2], "OK meter.func=ohm ; stored, FE off: 3") == 0, "%s", out[2]);
+
+    /* a single pair keeps the op's reason; a live multi-set has no note */
+    sh_reset(); model_shell_set("ch1.vdiv=2 gen.freq=1000", collect);
+    CHECKF(n_out == 2 && strcmp(out[1], "OK gen.freq=1000 Hz") == 0, "%s", out[1]);
+
+    /* still all or nothing: a bad pair in a cross-instrument request
+     * applies none, deferred or live */
+    fresh(1);
+    current_mode = MODE_MULTIMETER;
+    sh_reset(); model_shell_set("ch1.vdiv=5 gen.freq=3000 ch1.coupling=2", collect);
+    CHECKF(n_out == 1 && starts(0, "INVALID ch1.coupling=2") && strstr(out[0], "nothing applied"),
            "%s", out[0]);
-    sh_reset(); model_shell_set("ch1.vdiv 4", collect);
-    CHECKF(n_out == 1 && starts(0, "REFUSED ch1.vdiv (instrument is meter); old value kept: 3"), "%s", out[0]);
-    CHECK(prop_get(P(CH1_VDIV)) == 3 && n_sent == 0 && g_log[0] == '\0');   /* refused before the queue */
-    sh_reset(); model_shell_set("gen.out on", collect);
-    CHECKF(n_out == 1 && starts(0, "REFUSED gen.out (instrument is meter)"), "%s", out[0]);
-    /* all or nothing: the allowed sys pair before it is not applied */
-    sh_reset(); model_shell_set("sys.volume=5 ch1.coupling=AC", collect);
-    CHECKF(n_out >= 1 && starts(0, "REFUSED ch1.coupling (instrument is meter)") &&
-           strstr(out[0], "nothing applied") != NULL, "%s", out[0]);
-    CHECK(prop_get(P(SYS_VOLUME)) == SYS_VOL_DEFAULT && prop_get(P(CH1_COUPLING)) == 0);
-    /* the meter's own properties and sys.* are allowed */
-    sh_reset(); model_shell_set("meter.layout 2", collect);
-    CHECKF(n_out == 1 && starts(0, "OK meter.layout="), "%s", out[0]);
-    sh_reset(); model_shell_set("sys.volume 5", collect);
-    CHECKF(n_out == 1 && strcmp(out[0], "OK sys.volume=5") == 0, "%s", out[0]);
-    /* sys.instrument / sys.mode are never gated by this rule (their REFUSED
-     * here is the not-wired list's, M1) */
-    CHECK(prop_instrument_refusal(P(SYS_INSTRUMENT), ORIGIN_SHELL) == NULL);
-    CHECK(prop_instrument_refusal(P(SYS_MODE), ORIGIN_SHELL) == NULL);
-    CHECK(prop_instrument_refusal(P(SYS_BRIGHTNESS), ORIGIN_SHELL) == NULL);
-    CHECK(prop_instrument_refusal(P(METER_FUNC), ORIGIN_SHELL) == NULL);
-    CHECK(prop_instrument_refusal(P(IL_GAIN), ORIGIN_SHELL) != NULL);   /* il.* is the scope's */
-    /* get always works */
-    sh_reset(); model_shell_get("ch1.vdiv view.mode", collect);
-    CHECKF(n_out == 2 && starts(0, "ch1.vdiv=3") && strcmp(out[1], "view.mode=yt") == 0, "%s | %s", out[0], out[1]);
-    /* origins that are not a person at a prompt are not gated */
+    CHECK(prop_get(P(CH1_VDIV)) == 3 && prop_get(P(GEN_FREQ)) != 3000 && g_log[0] == '\0' && n_sent == 0);
     model_result_t r;
-    prop_pair_t p = pr(PROP_ID_CH1_VDIV, 5);
-    CHECK(prop_request(&p, 1, ORIGIN_PROFILE, 600, &r) == PS_OK && prop_get(P(CH1_VDIV)) == 5);
-    CHECK(prop_post(PROP_ID_CH1_VDIV, 6, ORIGIN_AUTO));
-    run_executor();
-    CHECK(prop_get(P(CH1_VDIV)) == 6);
-    /* the executor checks again: a shell-origin request that reaches the
-     * queue after the instrument changed is refused there */
-    CHECK(prop_post(PROP_ID_CH1_VDIV, 7, ORIGIN_SHELL));
-    run_executor();
-    CHECK(prop_get(P(CH1_VDIV)) == 6);
-    /* the generator: scope properties refused, gen.* allowed */
-    current_mode = MODE_SIGNAL_GEN;
-    sh_reset(); model_shell_set("trig.edge falling", collect);
-    CHECKF(n_out == 1 && starts(0, "REFUSED trig.edge (instrument is gen)"), "%s", out[0]);
-    sh_reset(); model_shell_set("gen.freq 2000", collect);
-    CHECKF(n_out == 1 && strcmp(out[0], "OK gen.freq=2000 Hz") == 0, "%s", out[0]);
-    /* Home / Settings: no instrument is active, nothing is gated */
-    current_mode = MODE_HOME;
-    CHECK(model_instrument_active() == NULL);
-    sh_reset(); model_shell_set("ch1.vdiv 4", collect);
-    CHECKF(n_out == 1 && starts(0, "OK ch1.vdiv=4"), "%s", out[0]);
-    current_mode = MODE_SETTINGS;
-    sh_reset(); model_shell_set("gen.amp 1.0", collect);
-    CHECKF(n_out == 1 && starts(0, "OK gen.amp=1.0 V"), "%s", out[0]);
-    /* back in the scope: scope properties allowed again */
+    prop_pair_t pp[2] = { pr(PROP_ID_CH1_VDIV, 5), pr(PROP_ID_SYS_MODE, 0) };
+    CHECK(prop_request(pp, 2, ORIGIN_SHELL, 600, &r) == PS_REFUSED && r.failed == 1);
+    CHECK(prop_get(P(CH1_VDIV)) == 3 && g_log[0] == '\0');
+
+    /* stop at a failure: the stored pair before it stays stored (no roll
+     * back, as for a live one), the note is the failing pair's */
+    g_fail = true;
+    sh_reset(); model_shell_set("ch1.vdiv=7 ch1.coupling=AC", collect);
+    CHECKF(n_out == 2 && starts(0, "OK ch1.vdiv=7") && strstr(out[0], "stored") == NULL &&
+           starts(1, "NOT_SET ch1.coupling (relay readback failed)"), "%s | %s", out[0], out[1]);
+    CHECK(prop_get(P(CH1_VDIV)) == 7 && prop_get(P(CH1_COUPLING)) == 0);
+    g_fail = false;
+
+    /* back on the scope screen the next set is live again */
     current_mode = MODE_OSCILLOSCOPE;
-    sh_reset(); model_shell_set("view.mode fft", collect);
-    CHECKF(n_out == 1 && starts(0, "OK view.mode=fft"), "%s", out[0]);
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("ch1.vdiv 7", collect);
+    CHECKF(n_out == 1 && strstr(out[0], "stored") == NULL && strcmp(g_log, "vdiv(0,7);") == 0,
+           "%s %s", out[0], g_log);
 }
 
 int main(void)
@@ -669,7 +715,8 @@ int main(void)
     test_shell_get_roundtrip();
     test_shell_origin();
     test_shell_pair_limits();
-    test_instrument_gate();
+    test_bindings_state();
+    test_bindings_multi();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

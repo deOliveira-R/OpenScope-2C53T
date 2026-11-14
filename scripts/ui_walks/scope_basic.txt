@@ -4,8 +4,9 @@
 #
 # Keys go through `ui seq` (exact presses, each waited for until the input task
 # has handled it). `set` / `mode` put the scope in a known state first; a mode
-# switch is followed by a host wait so the `set`s land in the scope (a scope
-# property is refused while another instrument is active). Host waits after a
+# switch is followed by a host wait so the scope front end is back before the
+# `set`s (a range set while the meter holds the front end is stored and applied
+# when the scope posture returns: its answer says "stored"). Host waits after a
 # step let a held record, autoset or a slow view settle before the redraw
 # rates are taken. Wire a signal into CH1 (a square wave is the usual one).
 

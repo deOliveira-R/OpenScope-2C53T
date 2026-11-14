@@ -218,20 +218,11 @@ const instrument_desc_t *model_instrument_find(const char *name);
 bool                     prop_in_instrument(const prop_desc_t *p, const instrument_desc_t *in);
 /* The default of p when `in` starts on defaults: its override, else prop_default(). */
 int32_t                  prop_instrument_default(const prop_desc_t *p, const instrument_desc_t *in);
-/* The active instrument (sys.instrument), or NULL while none is (Home,
- * Settings). */
+/* The instrument the screen and keys are bound to (sys.instrument), or NULL
+ * while none is (Home, Settings). The binding limits the UI route only (keys
+ * act on what the screen shows); the raw route (get / set) reaches every
+ * instrument's properties whatever is bound: see DEFERRED below. */
 const instrument_desc_t *model_instrument_active(void);
-/* The owner's rule (2026-11-13): a property that belongs to an instrument
- * cannot be set from the shell while another instrument is active, because
- * no key sequence reaches that state ("set view.mode fft" in the meter).
- * NULL = allowed, else the reason ("instrument is meter"). Allowed: every
- * property of no instrument (sys.*, including sys.instrument / sys.mode
- * themselves), any property while no instrument is active, and the origins
- * that are not a person at a prompt (AUTO: meter_auto and self-cal run
- * inside their own instrument; BOOT / PROFILE load whole profiles that span
- * instruments). `get` is never gated. The executor's validation calls it
- * (model_exec.c), so a multi-set stays all or nothing. */
-const char              *prop_instrument_refusal(const prop_desc_t *p, uint8_t origin);
 
 /* ── Setting (EXECUTOR ONLY) ─────────────────────────────────────────── */
 /* The single path: (1) RO/NULL -> INVALID; (2) self-cal busy -> BUSY for
@@ -345,6 +336,24 @@ typedef struct {
     bool    (*shell_persist)(void);                    /* shell_persist on (bench sweeps: off)  */
     void    (*note_change)(void);                      /* settings_store_note_change(now)       */
 } model_hw_ops_t;
+
+/* DEFERRED (the owner's model, 2026-11-13). The device is a measuring
+ * instrument that happens to have a screen and keys: each instrument keeps
+ * its own state, and the UI binding (sys.instrument) only says which one the
+ * screen and keys act on. A set of a property whose instrument is not the
+ * bound one ALWAYS updates the state. Its hardware apply happens at once when
+ * that instrument's hardware path is live in the current front-end posture;
+ * otherwise the op skips the hardware, calls model_hw_deferred(why) and
+ * returns true, the setter stores as on success, and the posture's entry
+ * code applies the stored value when that posture is next entered
+ * (model_hw_fw.c lists, per op, what is live in which posture and where the
+ * re-apply happens). prop_set_local then puts `why` in the note ("stored:
+ * scope FE off"), so the answer says which happened, and
+ * prop_last_deferred() gives it to the executor. Executor only. */
+void        model_hw_deferred(const char *why);
+/* The deferral reason of the last prop_set_local (NULL: applied live, or no
+ * hardware, or it failed). Executor only. */
+const char *prop_last_deferred(void);
 
 /* Bind the ops (NULL entries are allowed: the call is skipped and the setter
  * treats it as done, or as refused where it needs an answer). */

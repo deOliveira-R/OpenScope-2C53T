@@ -39,14 +39,90 @@
 #include "shell_persist.h"
 #include "scope_selfcal_run.h"
 #include "watchdog.h"
+#include "meter_autoselect.h"
 
 bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's mailbox) */
 
 #define CTX() model_exec_check_context()
 
+/* ═══ live or deferred (model.h DEFERRED) ════════════════════════════
+ *
+ * Every instrument's properties can be set whatever the screen is bound
+ * to. The state always updates; the hardware apply is live when that
+ * instrument's hardware path is live in the current front-end posture, else
+ * deferred to the posture's entry code. Read from the code, per op, for the
+ * bench image (app-coldtrace-meter); the other builds differ at (*):
+ *
+ *   op (property)                  scope screen  meter screen  gen/home/settings
+ *   vdiv relays (chN.vdiv)         live          DEFERRED *    live *
+ *   vdiv offset half, vpos (DAC1 / TMR13: chN.vdiv, chN.pos)  live in every posture **
+ *   coupling (PD12/PD13)           live          live          live
+ *   channel_enables (PC1/PC2 mask, reg 0x06, offsets)          live in every posture
+ *   timebase/roll/trigger (SPI3 regs 0x01/0x06/0x08, parked acq task)  live in every posture ***
+ *   view/persist/mask/il (MCU state, acq-task requests)        live in every posture
+ *   generator (DAC2/PA5, TMR7, DMA2)                           live in every posture
+ *   meter_func (meter SoC function, USART2)  DEFERRED  live    DEFERRED
+ *   state-only properties (probe, bw, meas, edge, x, soft, math, cursor, ...): no hardware
+ *
+ * Why the relays defer: the meter's posture (fpga.c
+ * fpga_set_meter_frontend_for_submode -> fpga_apply_meter_mux_gpio_state)
+ * drives PC12/PE4..6 (CH1's range relays) and PA15/PB11/PB10/PA10 (CH2's)
+ * and PA6, so a live range write in the meter would move the meter's mux.
+ * Where the stored range is applied:
+ *   - FPGA_WARM_HANDOFF_TEST + FPGA_METER_SUBMODES (app-coldtrace-meter, the
+ *     bench image): the display task's mode-change block calls
+ *     fpga_set_meter_mux(false) on entering ANY screen but the meter, and
+ *     that re-applies the mask, both ranges and PA6 from scope_state
+ *     (fpga_set_scope_frontend_ranges). So the scope front end is live
+ *     everywhere but the meter screen.
+ *   - FPGA_WARM_HANDOFF_TEST without SUBMODES (app-coldtrace): the meter
+ *     never touches the relays (fpga_set_meter_mode returns at once) and
+ *     nothing re-applies them, so the ranges are written live everywhere.
+ *   - no warm handoff (the default image): the meter's transition writes the
+ *     relays and only fpga_enter_scope_mode -> fpga_scope_reinit puts the
+ *     scope's back (on scope entry; leaving the meter for Home keeps the
+ *     meter's), so the relays are live on the scope screen only (*).
+ * (**) DAC1/TMR13 are not in the meter's pin set, so the offset half of a
+ * range change is applied live even when the relays defer (the relay
+ * re-apply does not redo it). scope_vpos skips CH1 while
+ * dac_output_is_running(), a guard from when the generator was on DAC1
+ * (A1 removes it); with the generator running CH1's offset is then not
+ * applied in any posture, as before this change.
+ * (***) the acquisition task parks in every mode, and in the warm builds no
+ * posture rewrites these registers. In the default image scope entry resets
+ * the FPGA and resends the timing from scope_state (fpga_send_scope_sequence).
+ * meter_func: the posture request is only served in the meter (the poll task
+ * drops it elsewhere; without a poll task it would posture the meter SoC
+ * under the scope), so outside the meter the op does the state half only,
+ * and enter_mode -> fpga_request_meter_mode(meter_submode) (input_handler.c)
+ * applies the stored function on meter entry (main.c at boot). */
+
+static bool scope_fe_live(void)
+{
+#if defined(FPGA_WARM_HANDOFF_TEST) && FPGA_WARM_HANDOFF_TEST && \
+    !(defined(FPGA_METER_SUBMODES) && FPGA_METER_SUBMODES)
+    return true;                                       /* the meter never takes the relays */
+#elif defined(FPGA_WARM_HANDOFF_TEST) && FPGA_WARM_HANDOFF_TEST
+    return current_mode != MODE_MULTIMETER;            /* mux(false) re-applies on any other */
+#else
+    return current_mode == MODE_OSCILLOSCOPE;          /* only scope entry re-applies */
+#endif
+}
+
 /* ═══ scope front end and acquisition ════════════════════════════════ */
 
-static bool op_vdiv(uint8_t ch, uint8_t idx)          { CTX(); return fpga_apply_vdiv((uint8_t)(ch + 1u), idx); }
+static bool op_vdiv(uint8_t ch, uint8_t idx)
+{
+    CTX();
+    if (scope_fe_live()) return fpga_apply_vdiv((uint8_t)(ch + 1u), idx);
+    /* The relays wait for the scope posture; the offset reference (DAC1 /
+     * TMR13, outside the meter's pins) follows the new range now, because
+     * the relay re-apply does not redo it. */
+    if (idx >= VDIV_COUNT) return false;
+    scope_vpos_apply_ch((uint8_t)(ch + 1u), idx);
+    model_hw_deferred("stored: scope FE off");
+    return true;
+}
 static bool op_coupling(uint8_t ch, uint8_t c)        { CTX(); return fpga_apply_coupling(ch, c); }
 static bool op_channel_enables(void)                  { CTX(); return fpga_apply_channel_enables(); }
 static bool op_interleave_active(void)                { return fpga_interleave_active(); }
@@ -118,13 +194,22 @@ static void op_gen_bootout(bool on)      { CTX(); siggen_set_start_on(on); }
  * the autoselect, store, reset min/max/hold/rel, post the meter posture. It
  * cancels the autoselect unconditionally, so the autoselect's own pick
  * (keep_autoselect) is not served yet (B6 splits it). Outside the meter the
- * old `meter func` refuses too: a posture request then would switch the
- * meter SoC on under the scope. */
+ * posture request must not go out (it would switch the meter SoC on under
+ * the scope in a build without the poll task): the state half only, and the
+ * function is applied on meter entry (see the table above). */
 static bool op_meter_func(uint8_t submode, bool keep_autoselect)
 {
     CTX();
-    if (keep_autoselect || current_mode != MODE_MULTIMETER) return false;
-    meter_function_select(submode);
+    if (keep_autoselect) return false;
+    if (current_mode == MODE_MULTIMETER) {
+        meter_function_select(submode);
+        return true;
+    }
+    if (meter_autoselect_is_running()) meter_autoselect_cancel();
+    meter_reset_minmaxavg();
+    meter_hold_release();
+    if (meter_rel_enabled) meter_toggle_relative();    /* a reference in another function means nothing */
+    model_hw_deferred("stored: meter FE off");
     return true;
 }
 
