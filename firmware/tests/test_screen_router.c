@@ -543,11 +543,12 @@ void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg,
 void lgc_native_after(screen_id_t scr, scr_res_t res) { lg("after:%d:%d", scr, res, 0); }
 void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
 void lgc_mode_set(device_mode_t m)           { lg("mode:%d", m, 0, 0); }   /* sys.mode, ORIGIN_KEY */
-/* gallery_ui_key: false = not consumed. POWER: closes, not consumed (handed
- * back). gallery_gone: it was closed by another task after the pre-key sync,
- * so it is shut when the key arrives and consumes nothing. */
+/* The gallery before the router (gallery_ui_key): false = not consumed.
+ * POWER: closes, not consumed (handed back). gallery_gone: it was closed by
+ * another task after the pre-key sync, so it is shut when the key arrives
+ * and consumes nothing. */
 static bool gallery_gone;
-bool lgc_gallery_key(uint8_t raw)
+static bool old_gallery_key(uint8_t raw)
 {
     lg("gallery:%d", raw, 0, 0);
     if (gallery_gone) { W.gallery = false; return false; }
@@ -555,6 +556,26 @@ bool lgc_gallery_key(uint8_t raw)
     if (raw == gallery_close_key) W.gallery = false;
     return true;
 }
+/* The gallery's stand-in (B5): a GRAB layer that takes every key it is
+ * asked (never POWER: the router does not ask), closes itself on its close
+ * key, and pops its own layer when it finds itself shut under the key. (The
+ * real one, its navigation and its deletes are in make test-gallery-screen.) */
+static scr_res_t fake_gallery_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("gallery:%d", raw, 0, 0);
+    if (gallery_gone) { W.gallery = false; (void)screen_close(SCR_GALLERY); return SCR_UNHANDLED; }
+    if (raw == gallery_close_key) { W.gallery = false; return SCR_CLOSE; }
+    return SCR_HANDLED;
+}
+static void fake_layer_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; }
+const screen_t gallery_screen = {
+    .name = "gallery", .id = SCR_GALLERY, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
+    .flags = SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, .key = fake_gallery_key, .draw = fake_layer_draw,
+};
+/* The POWER global closes it first (it used to be handed POWER and closed
+ * itself): the same log line. */
+void gallery_ui_close(void) { lg("gallery:%d", BTN_POWER, 0, 0); W.gallery = false; }
 bool lgc_selfcal_busy(void)   { return W.busy; }
 void lgc_selfcal_cancel(void) { lg("cancel", 0, 0, 0); }
 void lgc_selfcal_refuse(void) { lg("busy", 0, 0, 0); }
@@ -682,7 +703,13 @@ static void old_route(uint8_t raw)
     lg("touch", 0, 0, 0); lg("click", 0, 0, 0);                 /* autooff_touch, sys_pwm_click */
     /* gallery_ui_is_open() && gallery_ui_key(): all it consumes (not POWER,
      * nothing once it is shut) */
-    if (W.gallery && lgc_gallery_key(raw)) return;
+    if (W.gallery && old_gallery_key(raw)) {
+        /* It had no settings hook and painted itself. As a screen (B5) the
+         * wiring posts its answer once: nothing to paint, or, when it closed
+         * itself, the full repaint of what was under it. */
+        lg("after:%d:%d", SCR_GALLERY, W.gallery ? SCR_HANDLED : SCR_DRAW_FULL, 0);
+        return;
+    }
     if (W.busy) {                                                /* scope_selfcal_busy() */
         if (b == BTN_AUTO || b == BTN_MENU) { lg("cancel", 0, 0, 0); return; }
         if (b != BTN_POWER) { lg("busy", 0, 0, 0); return; }
@@ -872,7 +899,7 @@ static void test_legacy_table(void)
         { "POWER in the meter -> the countdown",          MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
         { "POWER on home -> the countdown",               MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
         { "POWER with the gallery up: closes it, then",   MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_POWER,                   "touch click gallery:15 ctx switch:15" },
-        { "long MOVE with the gallery up: the gallery's", MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click gallery:131" },
+        { "long MOVE with the gallery up: the gallery's", MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click gallery:131 after:8:1" },
         { "long MOVE during autoset: Busy",               MODE_OSCILLOSCOPE, 0, 1, 0, 0, 1, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click busy" },
         { "long MENU during autoset: cancel",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click cancel" },
         { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click ctx switch:15" },
@@ -886,7 +913,7 @@ static void test_legacy_table(void)
         { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx home:14 after:0:1" },
         { "RIGHT on home: home, and its selection paint", MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_RIGHT,                   "touch click ctx home:13 after:0:2" },
         { "long OK on home: home (nothing), no exec",     MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx home:142 after:0:1" },
-        { "MENU on home with the gallery up: gallery's",  MODE_HOME,         0, 0, 0, 1, 0, 0, BTN_MENU,                    "touch click gallery:9" },
+        { "MENU on home with the gallery up: gallery's",  MODE_HOME,         0, 0, 0, 1, 0, 0, BTN_MENU,                    "touch click gallery:9 after:8:1" },
         { "MENU on Settings > Oscilloscope: switch",      MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx switch:9" },
         { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx switch:3" },
     };

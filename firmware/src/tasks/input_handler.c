@@ -648,7 +648,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
      * closes itself; its closing DCMD_REDRAW_ALL repaints whatever was under
      * it, the Oscilloscope Settings page included. */
     case KA_GALLERY_OPEN:
-        gallery_ui_open(dq);
+        gallery_screen_open();              /* the display task paints it; the mirror pushes its layer */
         cmd = DCMD_NONE_MODAL_DROP;
         break;
 
@@ -923,15 +923,6 @@ void lgc_mode_set(device_mode_t m)
     settings_after_button();
 }
 
-/* The screenshot gallery (long SAVE) takes every key while it is open; it
- * hands POWER back after closing itself so power-off always works. No
- * settings hook, as before the router. */
-bool lgc_gallery_key(uint8_t raw)
-{
-    g_cmd = DCMD_NONE_MODAL_DROP;
-    return gallery_ui_key(raw, g_dq);
-}
-
 /* While autoset or the baseline correction runs the keys are locked, as
  * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
  * timebase press would pull the front end out from under the servo.
@@ -952,6 +943,7 @@ void lgc_unlock(void) { taskEXIT_CRITICAL(); }
 void input_router_init(void *display_queue)
 {
     g_dq = (QueueHandle_t)display_queue;
+    gallery_ui_bind(g_dq);              /* where a capture is posted (DCMD_CAPTURE) */
     legacy_screens_init();
 }
 

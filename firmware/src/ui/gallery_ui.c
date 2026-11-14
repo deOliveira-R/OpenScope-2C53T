@@ -1,5 +1,6 @@
 /*
- * gallery_ui.c — screenshot capture and the 3x3 gallery (parity C16).
+ * gallery_ui.c — screenshot capture and the paint of the 3x3 gallery
+ * (parity C16).
  *
  * Stock V1.2.0: SAVE writes `2:/Screenshot file/%d.bmp` (string 0x080BC1B4)
  * with the "Saving..."/"Saved"/"Save failed" popups (ms[0xE10] = 1/2/3,
@@ -7,13 +8,21 @@
  * delete (manual p. 31). Ours keeps the keys and the grid, stores into our own
  * scratch region instead of stock's FAT (gallery_store.h says why).
  *
+ * EVERYTHING HERE THAT TOUCHES THE LCD RUNS ON THE DISPLAY TASK (ARCH-1 B5).
+ * The gallery is a screen of the router (gallery_screen.c: its state and its
+ * keys, on the input task); gallery_ui_paint() is its draw(). A capture is a
+ * display command (DCMD_CAPTURE): the display task saves the LCD shadow
+ * between two of its own frames, so the shot is one whole frame with no
+ * claim and no handshake, and the caller only waits for the result.
+ *
  * RAM: no static buffers. Rows are read from the W25Q into small stack
- * buffers and pushed to the LCD; the only state kept between key presses is
- * the 4-byte nav struct and two flags. Runs in the key task (384-word stack):
- * the deepest path here is ~400 B.
+ * buffers and pushed to the LCD; what is kept between paints is the view
+ * last drawn (8 bytes). The deepest path here is ~400 B of the display
+ * task's stack (768 words).
  */
 #include "gallery_ui.h"
-#include "gallery_nav.h"
+#include "gallery_screen.h"
+#include "gallery_nav.h"      /* GALLERY_NAV_COLS */
 
 #include "ui.h"
 #include "lcd.h"
@@ -25,38 +34,40 @@
 #include <string.h>
 #include <stdio.h>
 
-static gallery_nav_t nav;
-static bool          is_open;
-static bool          modal_was_set;     /* modal claimed before we opened (do not drop it) */
-static volatile bool capture_busy;
+/* ── Capture (short SAVE, the shell's `screenshot save`) ──────────────── */
 
-/* ── Screen claim ─────────────────────────────────────────────────────── */
+static QueueHandle_t      cap_dq;          /* the display queue (gallery_ui_bind) */
+static volatile bool      capture_busy;    /* one at a time                        */
+static volatile uint32_t  cap_req, cap_done;
+static volatile gallery_status_t cap_status;
+static volatile uint32_t  cap_seq;
 
-/* Claim the screen and wait until the display task has SEEN the claim (it
- * counts ui_modal_idle_count only on its modal branch), so no frame is half
- * drawn when we read the shadow or paint over the LCD. The POWER countdown
- * uses a fixed 120 ms delay for the same purpose; a scope frame can take
- * longer than that, and for a screenshot a torn frame is the defect. */
-static bool claim_screen(void)
-{
-    const bool was = ui_modal_active;
-    ui_modal_active = true;
-    const uint32_t c0 = ui_modal_idle_count;
-    for (int i = 0; i < 50 && ui_modal_idle_count == c0; i++)
-        vTaskDelay(pdMS_TO_TICKS(10));
-    return was;
-}
+void gallery_ui_bind(QueueHandle_t display_queue) { cap_dq = display_queue; }
 
 /* Between flash operations: check in with the health monitor and yield, so
- * the display task (priority 1) still checks in while the key task (4)
- * busy-polls the W25Q. A sector erase is up to 400 ms; ten in a row would
- * otherwise starve it past HEALTH_DEADLINE_MS. */
+ * the other tasks run while this one busy-polls the W25Q. A sector erase is
+ * up to 400 ms; ten in a row would otherwise run past HEALTH_DEADLINE_MS. */
 static void save_tick(void)
 {
     health_checkin_self();
     vTaskDelay(1);
 }
 
+/* Display task, on DCMD_CAPTURE: the LCD shadow as it stands, no frame in
+ * flight (this task is the drawer). */
+void gallery_ui_capture_run(void)
+{
+    if (cap_done == cap_req) return;           /* no request behind this command */
+    const uint32_t req = cap_req;
+    uint32_t seq = 0;
+    cap_status = gallery_save(lcd_shadow_bits(), lcd_shadow_palette_get(), save_tick, &seq);
+    cap_seq = seq;
+    cap_done = req;
+    capture_busy = false;
+}
+
+/* Any task but the display task: post the capture and wait for its result.
+ * The screen is still for the ~0.5 s of the write, as it always was. */
 gallery_status_t gallery_ui_capture(uint32_t *seq_out)
 {
     taskENTER_CRITICAL();
@@ -65,11 +76,23 @@ gallery_status_t gallery_ui_capture(uint32_t *seq_out)
     taskEXIT_CRITICAL();
     if (busy) return GALLERY_ERR_IO;
 
-    const bool was = claim_screen();
-    gallery_status_t st = gallery_save(lcd_shadow_bits(), lcd_shadow_palette_get(), save_tick, seq_out);
-    if (!was) ui_modal_active = false;
-    capture_busy = false;
-    return st;
+    const uint32_t req = ++cap_req;
+    const uint8_t cmd = DCMD_CAPTURE;
+    if (cap_dq == NULL || xQueueSend(cap_dq, &cmd, pdMS_TO_TICKS(500)) != pdTRUE) {
+        cap_done = req;                        /* never posted: nothing will run */
+        capture_busy = false;
+        return GALLERY_ERR_IO;
+    }
+    /* A full slot is ten sector erases and ten sector programs: seconds at
+     * the worst. The display task clears capture_busy when it is done, also
+     * after this wait has given up. */
+    for (uint32_t waited = 0; cap_done != req; waited += 10u) {
+        if (waited >= 30000u) return GALLERY_ERR_IO;
+        health_checkin_self();
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (seq_out) *seq_out = cap_seq;
+    return cap_status;
 }
 
 void gallery_ui_result_text(gallery_status_t st, uint32_t seq, char *out, uint32_t out_size)
@@ -156,13 +179,15 @@ static void draw_frame(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t 
 
 /* with_thumb = false repaints only the selection frame and the name, which is
  * all a cursor move changes. */
+static uint8_t g_sel;        /* the selection being painted (the view's) */
+
 static void draw_cell(const gallery_index_t *idx, uint32_t cell, bool with_thumb)
 {
     const theme_t *th = theme_get();
     uint16_t x, y;
     cell_origin(cell, &x, &y);
     const uint16_t tx = (uint16_t)(x + THUMB_DX), ty = (uint16_t)(y + THUMB_DY);
-    const bool sel = (cell == nav.sel);
+    const bool sel = (cell == g_sel);
     draw_frame((uint16_t)(tx - 3u), (uint16_t)(ty - 2u), THUMB_W + 6u, THUMB_H + 4u,
                sel ? th->highlight : th->background);
     if (cell >= idx->count) {
@@ -212,8 +237,8 @@ static void draw_grid(const gallery_index_t *idx)
 static void draw_full(const gallery_index_t *idx)
 {
     const theme_t *th = theme_get();
-    if (nav.sel >= idx->count) return;
-    const uint32_t slot = idx->slot[nav.sel];
+    if (g_sel >= idx->count) return;
+    const uint32_t slot = idx->slot[g_sel];
     uint16_t pal[16];
     uint8_t  row[GALLERY_ROW_BYTES];
     uint16_t px[64];
@@ -232,14 +257,14 @@ fail:
     font_draw_string_center(LCD_WIDTH / 2u, 110, "read error", th->warning, th->background, &font_medium);
 }
 
-static void draw_delete_prompt(const gallery_index_t *idx)
+static void draw_delete_prompt(const gallery_index_t *idx, bool full)
 {
     const theme_t *th = theme_get();
     char name[16], t[40];
-    if (nav.sel >= idx->count) return;
-    gallery_name(idx->seq[nav.sel], name, sizeof name);
+    if (g_sel >= idx->count) return;
+    gallery_name(idx->seq[g_sel], name, sizeof name);
     snprintf(t, sizeof t, "SAVE again: delete %s", name);
-    if (nav.full) {
+    if (full) {
         lcd_fill_rect(0, LCD_HEIGHT - TITLE_H, LCD_WIDTH, TITLE_H, th->status_bar_bg);
         font_draw_string(4, LCD_HEIGHT - TITLE_H + 3u, t, th->warning, th->status_bar_bg, &font_small);
     } else {
@@ -247,108 +272,38 @@ static void draw_delete_prompt(const gallery_index_t *idx)
     }
 }
 
-/* ── Open / keys ──────────────────────────────────────────────────────── */
+/* ── The paint (display task): the view against the one last drawn ─────── */
 
-bool gallery_ui_is_open(void) { return is_open; }
+static gallery_view_t drawn;        /* the view on the LCD */
+static bool           drawn_valid;
 
-static QueueHandle_t open_dq;     /* the display queue it was opened with */
-
-static void close_gallery(QueueHandle_t dq)
+void gallery_ui_paint(scr_paint_t how)
 {
-    is_open = false;
-    if (!modal_was_set) ui_modal_active = false;
-    const uint8_t cmd = DCMD_REDRAW_ALL;
-    xQueueSend(dq, &cmd, 0);
-}
+    const gallery_view_t v = gallery_screen_view();     /* one look: the input task writes it */
+    if (!v.open) { drawn_valid = false; return; }
+    g_sel = v.sel;
 
-void gallery_ui_close(void)
-{
-    if (!is_open) return;
-    if (open_dq != NULL) {
-        close_gallery(open_dq);
-    } else {
-        is_open = false;
-        if (!modal_was_set) ui_modal_active = false;
-    }
-}
-
-void gallery_ui_open(QueueHandle_t dq)
-{
-    if (is_open) return;
-    open_dq = dq;
-    gallery_nav_open(&nav);
-    modal_was_set = claim_screen();
-    is_open = true;
     gallery_index_t idx;
     if (gallery_scan(&idx) != GALLERY_OK) {
         memset(&idx, 0, sizeof idx);
         lcd_fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, theme_get()->background);
         draw_title(&idx, "Gallery: flash not ready  (MENU exit)");
+        drawn_valid = false;
         return;
     }
-    draw_grid(&idx);
-}
 
-static gallery_nav_key_t map_key(uint8_t button)
-{
-    const bool lng = (button & BTN_LONG_FLAG) != 0u;
-    switch ((button_id_t)(button & (uint8_t)~BTN_LONG_FLAG)) {
-    case BTN_LEFT:  return GNK_LEFT;
-    case BTN_RIGHT: return GNK_RIGHT;
-    case BTN_UP:    return GNK_UP;
-    case BTN_DOWN:  return GNK_DOWN;
-    case BTN_OK:    return lng ? GNK_OTHER : GNK_OK;
-    case BTN_SAVE:  return lng ? GNK_SAVE_LONG : GNK_SAVE;
-    case BTN_MENU:  return GNK_MENU;
-    default:        return GNK_OTHER;
+    const uint8_t plan = gallery_paint_plan(drawn_valid ? &drawn : NULL, &v, how);
+    const char *const msg = (v.msg == GALLERY_MSG_DELETE_FAILED) ? "Delete failed" : NULL;
+    if (plan & GALLERY_PAINT_ALL) {
+        if (v.full) draw_full(&idx); else draw_grid(&idx);
     }
-}
-
-bool gallery_ui_key(uint8_t button, QueueHandle_t dq)
-{
-    if (!is_open) return false;
-    if ((button & (uint8_t)~BTN_LONG_FLAG) == BTN_POWER) {
-        close_gallery(dq);
-        return false;
+    if (plan & GALLERY_PAINT_CELLS) {
+        draw_cell(&idx, drawn.sel, false);
+        draw_cell(&idx, v.sel, false);
     }
-    gallery_index_t idx;
-    if (gallery_scan(&idx) != GALLERY_OK) {
-        /* nothing to browse; any key leaves */
-        close_gallery(dq);
-        return true;
-    }
-    switch (gallery_nav_key(&nav, map_key(button), idx.count)) {
-    case GNA_NONE:
-        break;
-    case GNA_MOVE:
-        draw_cell(&idx, nav.prev_sel, false);
-        draw_cell(&idx, nav.sel, false);
-        break;
-    case GNA_SHOW_FULL:
-        draw_full(&idx);
-        break;
-    case GNA_SHOW_GRID:
-        draw_grid(&idx);
-        break;
-    case GNA_ARM_DELETE:
-        draw_delete_prompt(&idx);
-        break;
-    case GNA_DISARM:
-        if (nav.full) draw_full(&idx); else draw_title(&idx, NULL);
-        break;
-    case GNA_DELETE: {
-        const uint32_t seq = idx.seq[nav.sel];
-        const gallery_status_t st = gallery_delete(seq);
-        gallery_index_t after;
-        if (gallery_scan(&after) != GALLERY_OK) { close_gallery(dq); break; }
-        if (gallery_nav_deleted(&nav, after.count) == GNA_SHOW_FULL) draw_full(&after);
-        else draw_grid(&after);
-        if (st != GALLERY_OK && !nav.full) draw_title(&after, "Delete failed");
-        break;
-    }
-    case GNA_CLOSE:
-        close_gallery(dq);
-        break;
-    }
-    return true;
+    if (plan & GALLERY_PAINT_SHOT)   draw_full(&idx);
+    if (plan & GALLERY_PAINT_PROMPT) draw_delete_prompt(&idx, v.full);
+    if (plan & GALLERY_PAINT_TITLE)  draw_title(&idx, msg);
+    drawn = v;
+    drawn_valid = true;
 }

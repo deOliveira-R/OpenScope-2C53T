@@ -58,6 +58,7 @@ extern void system_clock_config(void);
 #include "can_scope.h"
 #include "osc_menu_model.h"
 #include "osc_menu_screen.h"
+#include "gallery_ui.h"
 #include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
@@ -523,6 +524,56 @@ static bool layer_paint_update(const screen_t *s, uint32_t frame)
     return true;
 }
 
+/* A layer that owns the whole LCD while it is up (the screenshot gallery):
+ * nothing else is drawn, the bars included, no display command but a capture
+ * is honoured, the panel health check and the scope's heartbeat rest, as
+ * under the old modal claim. It is painted from its epoch every frame, so
+ * its commands are only wake-ups; when it goes, what was under it is
+ * repainted here. NULL: none. Read from the state that decides it, as the
+ * base is from current_mode. */
+static const screen_t *modal_layer(void)
+{
+    if (gallery_ui_is_open()) return &gallery_screen;
+    return NULL;
+}
+
+static void scope_render(uint32_t frame, redraw_action_t action);
+
+/* DCMD_REDRAW_ALL: the hard invalidate. NEVER GATED, deliberately: an epoch
+ * comparison cannot see what a layer or a shell command left on the LCD.
+ * Screens that want cheap, gate-able repaints send their own DCMD_DRAW_*
+ * instead. */
+static void redraw_all(uint32_t frame)
+{
+    ui_redraw_all_count++;
+    lcd_clear(COLOR_BLACK);
+    status_bar_invalidate();
+    draw_status_bar();
+    draw_info_bar();
+    g_info_bar_epoch = info_bar_epoch();
+    if (osc_page_up()) {
+        /* The page covers y 16..223; both bars stay visible. Also what
+         * repaints the page after the gallery or an LCD-health reinit: the
+         * LCD was cleared under it, so the page repaints its background
+         * too. */
+        layer_paint(&osc_menu_screen, SCR_PAINT_FULL, frame);
+        g_screen_painted = true;
+        return;
+    }
+    /* Draw current mode's screen */
+    const screen_t *const nb = native_base();   /* one look: the mode can move under us */
+    if (nb != NULL) {
+        if (nb->id == SCR_SIGGEN) ui_siggen_full_draws++;
+        native_paint_full(nb, frame);
+    } else if (current_mode == MODE_OSCILLOSCOPE) {
+        scope_render(frame, REDRAW_FULL);
+        redraw_gate_mark(&scope_gate, scope_ui_epoch(scope_state_get()), frame, REDRAW_FULL);
+    } else if (current_mode == MODE_SETTINGS) {
+        draw_settings_screen();
+    }
+    g_screen_painted = true;
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
 #if FEATURE_FFT
@@ -616,6 +667,17 @@ static void vDisplayTask(void *pvParameters)
          * mode switch sees an already-invalidated gate. */
         static device_mode_t last_rendered_mode = (device_mode_t)0xFF;
         static uint32_t scope_entered_frame = 0;
+        /* The layer that owns the whole screen this frame (one look). One
+         * coming up is painted whatever its epoch; when it goes, what was
+         * under it is repainted (unless a REDRAW_ALL arrives first). */
+        static const screen_t *modal_was;
+        static bool redraw_pending;
+        const screen_t *const modal = modal_layer();
+        if (modal != modal_was) {
+            layer_painted = NULL;
+            if (modal == NULL) redraw_pending = true;
+            modal_was = modal;
+        }
         meter_link_service();
         if (current_mode != last_rendered_mode) {
             /* PC11 = meter MUX enable. Stock switches it WITH the mode (HIGH in
@@ -641,7 +703,7 @@ static void vDisplayTask(void *pvParameters)
         {
             static TickType_t last_lcd_check;
             const TickType_t now = xTaskGetTickCount();
-            if (!ui_modal_active && (now - last_lcd_check) >= pdMS_TO_TICKS(500)) {
+            if (!ui_modal_active && modal == NULL && (now - last_lcd_check) >= pdMS_TO_TICKS(500)) {
                 last_lcd_check = now;
                 taskENTER_CRITICAL();
                 uint8_t pm = lcd_read_power_mode();
@@ -693,7 +755,7 @@ static void vDisplayTask(void *pvParameters)
                 wait = tick_due - now;
         }
         if (xQueueReceive(xDisplayQueue, &cmd, wait) == pdTRUE) {
-            if (ui_modal_active)
+            if ((ui_modal_active || modal != NULL) && cmd != DCMD_CAPTURE)
                 cmd = DCMD_NONE_MODAL_DROP;
             /* DCMD_DRAW_ACTIVE + the sender's screen: that screen's own
              * command below, whose checks drop it if the screen has gone
@@ -704,43 +766,14 @@ static void vDisplayTask(void *pvParameters)
                 draw_splash();
                 break;
             case DCMD_REDRAW_ALL:
-                ui_redraw_all_count++;
-                /* NEVER GATED, deliberately. This is the hard invalidate,
-                 * and some of its senders have already scribbled on the
-                 * LCD from outside this task — BTN_POWER paints its
-                 * "Hold to power off" overlay inline (input_handler.c) and
-                 * relies on REDRAW_ALL to erase it on release. An epoch
-                 * comparison cannot see that, so gating here would strand
-                 * the overlay on screen. Screens that want cheap,
-                 * gate-able repaints send their own DCMD_DRAW_* instead. */
-                lcd_clear(COLOR_BLACK);
-                status_bar_invalidate();
-                draw_status_bar();
-                draw_info_bar();
-                g_info_bar_epoch = info_bar_epoch();
-                if (osc_page_up()) {
-                    /* The page covers y 16..223; both bars stay visible.
-                     * Also what repaints the page after the gallery or an
-                     * LCD-health reinit: the LCD was cleared under it, so
-                     * the page repaints its background too. */
-                    layer_paint(&osc_menu_screen, SCR_PAINT_FULL, frame);
-                    g_screen_painted = true;
-                    break;
-                }
-                /* Draw current mode's screen */
-                const screen_t *const nb = native_base();   /* one look: the mode can move under us */
-                if (nb != NULL) {
-                    if (nb->id == SCR_SIGGEN) ui_siggen_full_draws++;
-                    native_paint_full(nb, frame);
-                } else if (current_mode == MODE_OSCILLOSCOPE) {
-                    scope_render(frame, REDRAW_FULL);
-                    redraw_gate_mark(&scope_gate,
-                                     scope_ui_epoch(scope_state_get()),
-                                     frame, REDRAW_FULL);
-                } else if (current_mode == MODE_SETTINGS) {
-                    draw_settings_screen();
-                }
-                g_screen_painted = true;
+                redraw_all(frame);
+                redraw_pending = false;
+                break;
+            case DCMD_CAPTURE:
+                /* Short SAVE / `screenshot save`: the LCD shadow as it
+                 * stands between two frames, saved from this task (the
+                 * drawer), so nothing is half drawn in it. */
+                gallery_ui_capture_run();
                 break;
             case DCMD_DRAW_SCOPE:
                 /* Always honoured: the sender changed scope state or
@@ -838,6 +871,16 @@ static void vDisplayTask(void *pvParameters)
             ui_modal_idle_count++;
             frame++;
             continue;
+        }
+        if (modal != NULL) {
+            /* Its own paint, when what it shows changed (a key, a delete,
+             * coming up); nothing else this frame. */
+            (void)layer_paint_update(modal, frame);
+            goto frame_end;
+        }
+        if (redraw_pending) {
+            redraw_all(frame);
+            redraw_pending = false;
         }
         /* The info bar shows under the Oscilloscope Settings page too, so a
          * channel or trigger change made on the page shows in it at once. */
@@ -1035,6 +1078,7 @@ static void vDisplayTask(void *pvParameters)
                 }
             }
         }
+frame_end:
         g_screen_painted = false;
 
         frame++;

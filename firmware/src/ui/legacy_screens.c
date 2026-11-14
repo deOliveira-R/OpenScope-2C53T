@@ -46,6 +46,7 @@
 #include "siggen_screen.h"
 #include "meter_screen.h"
 #include "osc_menu_screen.h"
+#include "gallery_screen.h"
 #include "model.h"     /* PG_x: the groups each screen shows (pure header) */
 
 _Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
@@ -93,24 +94,6 @@ static scr_res_t ls_key_settings(scr_key_t k)
     return SCR_HANDLED;
 }
 
-/* The gallery closes itself (MENU, ...): then its layer goes too. A key it
- * did not consume means it was already closed (the shell's `mode`, or
- * another task, between the pre-key sync and here): its layer goes and the
- * key falls through to the normal handlers, as before the router
- * (`gallery_ui_is_open() && gallery_ui_key()`); the router routes it from
- * the self-cal lock on (screen.c step 2). */
-static scr_res_t ls_key_gallery(scr_key_t k)
-{
-    if (!lgc_gallery_key((uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u)))) {
-        (void)screen_close(SCR_GALLERY);
-        return SCR_UNHANDLED;
-    }
-    ls_legacy_done = true;
-    lgc_state_t s;
-    lgc_state(&s);
-    return s.gallery_open ? SCR_HANDLED : SCR_CLOSE;
-}
-
 /* ── the screens ───────────────────────────────────────────────────── */
 
 /* The property groups each screen shows (screen_t.groups, bit = PG_x): a
@@ -131,15 +114,15 @@ static scr_res_t ls_key_gallery(scr_key_t k)
 #define LPAGE(id, nm, fl, keyfn, desc, grp) \
     { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
 
-/* The legacy rows. SCR_HOME, SCR_SIGGEN, SCR_METER and SCR_OSC_MENU are not
- * among them: home_screen (home_screen.c), siggen_screen (siggen_screen.c),
- * meter_screen (meter_screen.c) and osc_menu_screen (osc_menu_screen.c). */
+/* The legacy rows. SCR_HOME, SCR_SIGGEN, SCR_METER, SCR_OSC_MENU and
+ * SCR_GALLERY are not among them: home_screen (home_screen.c), siggen_screen
+ * (siggen_screen.c), meter_screen (meter_screen.c), osc_menu_screen
+ * (osc_menu_screen.c) and gallery_screen (gallery_screen.c). */
 static const screen_t ls_table[] = {
     LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL,                 G_SCOPE),
     LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_GALLERY,  "gallery",  SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, ls_key_gallery,  NULL,                 0),
 };
 _Static_assert(PG_COUNT <= 16, "screen_t.groups holds one bit per property group");
 
@@ -220,11 +203,12 @@ static bool ls_globals(button_id_t b, bool is_long)
     ls_legacy_done = true;
     const device_mode_t m = ls_mode_of((key_action_t)g.act);
     if (g.act == KA_POWER_PROMPT) {
-        /* The gallery hands POWER back after closing itself. */
+        /* POWER is never a layer's key: the gallery is closed first, so
+         * power-off always works. */
         lgc_state_t s;
         lgc_state(&s);
         if (s.gallery_open) {
-            (void)lgc_gallery_key((uint8_t)BTN_POWER);
+            gallery_ui_close();
             (void)screen_close(SCR_GALLERY);
         }
         (void)lgc_ctx();
@@ -305,6 +289,7 @@ void legacy_screens_init(void)
     (void)screen_register(&siggen_screen);
     (void)screen_register(&meter_screen);
     (void)screen_register(&osc_menu_screen);
+    (void)screen_register(&gallery_screen);
     screen_set_hooks(&ls_hooks);
     lgc_state_t s;
     lgc_state(&s);

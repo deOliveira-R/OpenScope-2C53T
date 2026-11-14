@@ -133,6 +133,7 @@ C_SOURCES += src/util/screenshot.c
 C_SOURCES += src/util/gallery_store.c
 C_SOURCES += src/ui/gallery_nav.c
 C_SOURCES += src/ui/gallery_ui.c
+C_SOURCES += src/ui/gallery_screen.c
 C_SOURCES += src/util/logo_store.c
 C_SOURCES += src/ui/logo_ui.c
 # UI round 1, R1-C: measurement strip + plot-edge markers
@@ -2152,7 +2153,7 @@ check-owners:
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
                                  src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h \
-                                 src/ui/osc_menu_screen.h \
+                                 src/ui/osc_menu_screen.h src/ui/gallery_screen.h \
                                  src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
 
@@ -2215,6 +2216,20 @@ $(BUILD_DIR)/test_osc_menu_screen: tests/test_osc_menu_screen.c src/ui/osc_menu_
 
 .PHONY: test-osc-menu-screen
 test-osc-menu-screen: $(BUILD_DIR)/test_osc_menu_screen
+	$<
+
+# The screenshot gallery as a screen (ARCH-1 B5): navigation, arm / delete
+# against the real store on a NOR model, closing, the GRAB order (first,
+# never POWER), the epoch and the paint plan the display task executes.
+GALLERY_SCREEN_TEST_SRCS = src/ui/gallery_screen.c src/ui/gallery_nav.c src/ui/screen.c src/ui/theme.c \
+                           src/util/gallery_store.c src/drivers/flash_regions.c src/util/cal_backup_core.c
+$(BUILD_DIR)/test_gallery_screen: tests/test_gallery_screen.c $(GALLERY_SCREEN_TEST_SRCS) \
+                                  src/ui/gallery_screen.h src/ui/gallery_nav.h src/ui/screen.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/util -Isrc/drivers $< \
+		$(GALLERY_SCREEN_TEST_SRCS) -o $@
+
+.PHONY: test-gallery-screen
+test-gallery-screen: $(BUILD_DIR)/test_gallery_screen
 	$<
 
 # Capture configuration (src/dsp/acq_cfg.c): every field counts as a change,

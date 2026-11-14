@@ -52,6 +52,7 @@ typedef enum {
 #endif
     DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
     DCMD_DRAW_OSC_MENU, /* scope: the Oscilloscope Settings page (osc_menu_draw) */
+    DCMD_CAPTURE,       /* save the screen to the gallery (gallery_ui_capture posts it and waits) */
     /* DCMD_DRAW_ACTIVE + screen id (ui/screen.h screen_id_t): repaint that
      * screen in place, sent by a handler that only repaints the screen it is
      * on. The id is the SENDER's top screen, taken at send time; the display
