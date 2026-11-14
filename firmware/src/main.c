@@ -593,10 +593,10 @@ static void vDisplayTask(void *pvParameters)
         if (xQueueReceive(xDisplayQueue, &cmd, wait) == pdTRUE) {
             if (ui_modal_active)
                 cmd = DCMD_NONE_MODAL_DROP;
-            /* The router's top screen, in place: its own legacy command
-             * below, with that command's checks (ui/legacy_screens.c). */
-            if (cmd == DCMD_DRAW_ACTIVE)
-                cmd = legacy_screens_update_cmd(screen_top());
+            /* DCMD_DRAW_ACTIVE + the sender's screen: that screen's own
+             * command below, whose checks drop it if the screen has gone
+             * since (ui/legacy_screens.c). */
+            cmd = legacy_screens_resolve_cmd(cmd);
             switch (cmd) {
             case DCMD_DRAW_SPLASH:
                 draw_splash();

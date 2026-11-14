@@ -532,7 +532,7 @@ void lgc_state(lgc_state_t *s)
 {
     s->mode = W.mode; s->settings_depth = W.depth; s->osc_open = W.osc_open; s->gallery_open = W.gallery;
 }
-key_ctx_t lgc_ctx(void)                      { return w_ctx(); }
+key_ctx_t lgc_ctx(void)                      { lg("ctx", 0, 0, 0); return w_ctx(); }   /* key_ctx_now */
 void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
 void lgc_home(button_id_t b)                 { lg("home:%d", b, 0, 0); }
 bool lgc_meter_softkey(button_id_t b)        { if (!softkey_takes(b)) return false; lg("softkey:%d", b, 0, 0); return true; }
@@ -568,7 +568,7 @@ static void old_route(uint8_t raw)
         if (b == BTN_AUTO || b == BTN_MENU) { lg("cancel", 0, 0, 0); return; }
         if (b != BTN_POWER) { lg("busy", 0, 0, 0); return; }
     }
-    const key_ctx_t c = w_ctx();
+    const key_ctx_t c = lgc_ctx();                               /* key_ctx_now(), once */
     if (lng) { lgc_exec(key_map(&c, b, true), b); return; }      /* every long key */
     const key_cmd_t k = key_map(&c, b, false);
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
@@ -689,35 +689,35 @@ static void test_legacy_table(void)
         const char *what; device_mode_t mode; int8_t depth; bool osc, locked, gal, busy, ed;
         uint8_t raw; const char *want;
     } T[] = {
-        { "long MOVE in the scope -> meter (global)",     MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click exec:3:0:3" },
-        { "long SELECT in the meter -> scope (global)",   MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_SELECT | BTN_LONG_FLAG,  "touch click exec:4:0:4" },
-        { "long TRIGGER on home -> generator (global)",   MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click exec:5:0:5" },
-        { "long MENU on a settings page -> home",         MODE_SETTINGS,     3, 0, 0, 0, 0, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click exec:2:0:9" },
-        { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click exec:3:0:3" },
-        { "long SAVE in the generator -> gallery",        MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_SAVE | BTN_LONG_FLAG,    "touch click exec:10:0:8" },
-        { "short SAVE on home -> screenshot",             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click exec:11:0:8" },
-        { "long OK in the scope -> 50 % centre",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click exec:13:0:14" },
-        { "long AUTO in the scope -> baseline",           MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click exec:12:0:7" },
-        { "long CH2 in the scope -> CH2 on/off",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,     "touch click exec:7:1:2" },
-        { "long CH1 under the osc page: nothing",         MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,     "touch click exec:1:0:1" },
-        { "long OK in the generator -> run/stop",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click exec:9:0:14" },
-        { "POWER in the meter -> the countdown",          MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click switch:15" },
-        { "POWER on home -> the countdown",               MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click switch:15" },
-        { "POWER with the gallery up: closes it, then",   MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_POWER,                   "touch click gallery:15 switch:15" },
+        { "long MOVE in the scope -> meter (global)",     MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx exec:3:0:3" },
+        { "long SELECT in the meter -> scope (global)",   MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_SELECT | BTN_LONG_FLAG,  "touch click ctx exec:4:0:4" },
+        { "long TRIGGER on home -> generator (global)",   MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click ctx exec:5:0:5" },
+        { "long MENU on a settings page -> home",         MODE_SETTINGS,     3, 0, 0, 0, 0, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click ctx exec:2:0:9" },
+        { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx exec:3:0:3" },
+        { "long SAVE in the generator -> gallery",        MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_SAVE | BTN_LONG_FLAG,    "touch click ctx exec:10:0:8" },
+        { "short SAVE on home -> screenshot",             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click ctx exec:11:0:8" },
+        { "long OK in the scope -> 50 % centre",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx exec:13:0:14" },
+        { "long AUTO in the scope -> baseline",           MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx exec:12:0:7" },
+        { "long CH2 in the scope -> CH2 on/off",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,     "touch click ctx exec:7:1:2" },
+        { "long CH1 under the osc page: nothing",         MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,     "touch click ctx exec:1:0:1" },
+        { "long OK in the generator -> run/stop",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx exec:9:0:14" },
+        { "POWER in the meter -> the countdown",          MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
+        { "POWER on home -> the countdown",               MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
+        { "POWER with the gallery up: closes it, then",   MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_POWER,                   "touch click gallery:15 ctx switch:15" },
         { "long MOVE with the gallery up: the gallery's", MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click gallery:131" },
         { "long MOVE during autoset: Busy",               MODE_OSCILLOSCOPE, 0, 1, 0, 0, 1, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click busy" },
         { "long MENU during autoset: cancel",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click cancel" },
-        { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click switch:15" },
-        { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click exec:28:0:10" },
-        { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click exec:26:0:9" },
-        { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click softkey:3" },
-        { "LEFT in the meter: the switch",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click switch:12" },
-        { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click edit:6" },
-        { "UP in the generator, editor closed: switch",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click switch:10" },
-        { "UP in the generator, editor open: editor",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click edit:10" },
-        { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click home:14" },
-        { "MENU on Settings > Oscilloscope: switch",      MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click switch:9" },
-        { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click switch:3" },
+        { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click ctx switch:15" },
+        { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click ctx exec:28:0:10" },
+        { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx exec:26:0:9" },
+        { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx softkey:3" },
+        { "LEFT in the meter: the switch",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx switch:12" },
+        { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx edit:6" },
+        { "UP in the generator, editor closed: switch",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx switch:10" },
+        { "UP in the generator, editor open: editor",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click ctx edit:10" },
+        { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx home:14" },
+        { "MENU on Settings > Oscilloscope: switch",      MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx switch:9" },
+        { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx switch:3" },
     };
     _Static_assert(KA_ENTER_HOME == 2 && KA_ENTER_METER == 3 && KA_ENTER_SCOPE == 4 && KA_ENTER_SIGGEN == 5 &&
                    KA_CH_ENABLE_TOGGLE == 7 && KA_SIGGEN_RUNSTOP == 9 && KA_GALLERY_OPEN == 10 &&
@@ -788,6 +788,15 @@ static void test_legacy_mirror(void)
           strcmp(screen_get(SCR_SIGGEN)->name, "siggen") == 0 && strcmp(screen_get(SCR_HOME)->name, "home") == 0);
 
     /* DCMD_DRAW_ACTIVE: each screen's in-place paint. */
+    W.mode = MODE_MULTIMETER; W.depth = 0; W.gallery = false; W.osc_open = false; legacy_screens_sync();
+    const uint8_t act = legacy_screens_active_cmd();
+    CHECK("DRAW_ACTIVE carries the sender's screen and resolves to its command",
+          act == DCMD_DRAW_ACTIVE + SCR_METER && legacy_screens_resolve_cmd(act) == DCMD_DRAW_METER &&
+          legacy_screens_resolve_cmd(DCMD_DRAW_ACTIVE + SCR_HOME) == DCMD_DRAW_HOME &&
+          legacy_screens_resolve_cmd(DCMD_REDRAW_ALL) == DCMD_REDRAW_ALL &&
+          legacy_screens_resolve_cmd(DCMD_NONE_MODAL_DROP) == DCMD_NONE_MODAL_DROP &&
+          legacy_screens_resolve_cmd(DCMD_DRAW_ACTIVE + SCR_COUNT) == DCMD_NONE_MODAL_DROP);
+    W.mode = MODE_OSCILLOSCOPE; legacy_screens_sync();
     CHECK("DRAW_ACTIVE -> the screen's own draw command",
           legacy_screens_update_cmd(SCR_SCOPE) == DCMD_DRAW_SCOPE &&
           legacy_screens_update_cmd(SCR_METER) == DCMD_DRAW_METER &&

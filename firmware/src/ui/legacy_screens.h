@@ -43,10 +43,16 @@
 void    legacy_screens_init(void);
 /* Match the stack to the legacy state (input task only). Cheap when equal. */
 void    legacy_screens_sync(void);
-/* DCMD_DRAW_ACTIVE: the legacy draw command that repaints screen `top`
- * in place (its DCMD_DRAW_<mode>, or DCMD_DRAW_OSC_MENU); DCMD_NONE_MODAL_DROP
- * for a screen with no in-place paint (the gallery). Display task. */
+/* DCMD_DRAW_ACTIVE for the screen on top now (DCMD_DRAW_ACTIVE + its id).
+ * Input task, when a handler repaints the screen it is on. */
+uint8_t legacy_screens_active_cmd(void);
+/* The legacy draw command that repaints screen `top` in place (its
+ * DCMD_DRAW_<mode>, or DCMD_DRAW_OSC_MENU); DCMD_NONE_MODAL_DROP for a
+ * screen with no in-place paint (the gallery) or an id out of range. */
 uint8_t legacy_screens_update_cmd(screen_id_t top);
+/* Display task: a received command; a DCMD_DRAW_ACTIVE + id becomes
+ * legacy_screens_update_cmd(id), anything else is returned as it is. */
+uint8_t legacy_screens_resolve_cmd(uint8_t cmd);
 /* Settings page shown at settings_depth d (SCR_SETTINGS for 0). */
 screen_id_t legacy_settings_page(int8_t depth);
 

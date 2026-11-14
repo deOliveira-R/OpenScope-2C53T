@@ -28,6 +28,8 @@
  */
 #include "legacy_screens.h"
 
+_Static_assert((unsigned)SCR_COUNT <= (unsigned)(DCMD_DRAW_ACTIVE_END - DCMD_DRAW_ACTIVE),
+               "every screen id fits the DCMD_DRAW_ACTIVE range");
 _Static_assert(MODE_OSCILLOSCOPE == 0 && MODE_MULTIMETER == 1 && MODE_SIGNAL_GEN == 2,
                "a base screen's instrument id is its mode value (sys.instrument 0..2)");
 
@@ -150,6 +152,19 @@ uint8_t legacy_screens_update_cmd(screen_id_t top)
     }
 }
 
+uint8_t legacy_screens_active_cmd(void)
+{
+    const screen_id_t top = screen_top();
+    return (unsigned)top < (unsigned)SCR_COUNT ? (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)top)
+                                               : (uint8_t)DCMD_NONE_MODAL_DROP;
+}
+
+uint8_t legacy_screens_resolve_cmd(uint8_t cmd)
+{
+    if (cmd < (uint8_t)DCMD_DRAW_ACTIVE || cmd >= (uint8_t)DCMD_DRAW_ACTIVE_END) return cmd;
+    return legacy_screens_update_cmd((screen_id_t)(cmd - (uint8_t)DCMD_DRAW_ACTIVE));
+}
+
 /* ── hooks ─────────────────────────────────────────────────────────── */
 
 static bool ls_locked(button_id_t b, bool is_long)
@@ -161,6 +176,10 @@ static bool ls_locked(button_id_t b, bool is_long)
     return true;
 }
 
+/* The globals do not depend on the context (key_map_global), but the context
+ * is still taken before a global runs, where the old dispatch took it for
+ * every key past the lock: lgc_ctx() drops an arrow stage that no longer
+ * exists (cursors switched off, mask cleared from the shell). */
 static bool ls_globals(button_id_t b, bool is_long)
 {
     const key_cmd_t g = key_map_global(NULL, b, is_long);
@@ -173,8 +192,10 @@ static bool ls_globals(button_id_t b, bool is_long)
             lgc_gallery_key((uint8_t)BTN_POWER);
             (void)screen_close(SCR_GALLERY);
         }
+        (void)lgc_ctx();
         lgc_mode_key(BTN_POWER);
     } else {
+        (void)lgc_ctx();
         lgc_exec(g, b);
     }
     return true;

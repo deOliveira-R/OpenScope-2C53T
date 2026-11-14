@@ -643,7 +643,7 @@ static void save_key_short(QueueHandle_t dq)
         /* Home repaints only its selection on key presses; the popup
          * overlay (main.c) draws itself and asks for the repaint when it
          * expires. */
-        send_cmd(dq, DCMD_DRAW_ACTIVE);   /* the home page: DCMD_DRAW_HOME */
+        send_cmd(dq, legacy_screens_active_cmd());   /* the home page: DCMD_DRAW_HOME */
     } else {
         send_cmd(dq, DCMD_REDRAW_ALL);
     }
@@ -692,7 +692,7 @@ static bool siggen_edit_input(button_id_t button, QueueHandle_t dq)
         if (r == SGE_CHANGED || r == SGE_CANCELLED)
             siggen_set_frequency(ed->value);
     }
-    send_cmd(dq, DCMD_DRAW_ACTIVE);       /* the generator: DCMD_DRAW_SIGGEN */
+    send_cmd(dq, legacy_screens_active_cmd());       /* the generator: DCMD_DRAW_SIGGEN */
     return true;
 }
 
@@ -787,14 +787,14 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
          * interrupted: its value is already live. */
         siggen_enable(!siggen_get_config()->output_enabled);
         cmd = DCMD_DRAW_SIGGEN;
-        send_cmd(dq, DCMD_DRAW_ACTIVE);
+        send_cmd(dq, legacy_screens_active_cmd());
         break;
     }
 
     case KA_SIGGEN_BOOT_TOGGLE: {
         siggen_set_start_on(!siggen_get_config()->start_on);
         cmd = DCMD_DRAW_SIGGEN;
-        send_cmd(dq, DCMD_DRAW_ACTIVE);
+        send_cmd(dq, legacy_screens_active_cmd());
         break;
     }
 
@@ -992,7 +992,7 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         osc_menu_after_key(was);
         if (r == OSC_RES_REDRAW) {
             cmd = DCMD_DRAW_OSC_MENU;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);  /* the page stays up: DCMD_DRAW_OSC_MENU */
+            send_cmd(dq, legacy_screens_active_cmd());  /* the page stays up: DCMD_DRAW_OSC_MENU */
         } else if (r == OSC_RES_CLOSE) {
             osc_menu_close();               /* idempotent: the model may have closed already */
             osc_menu_opener = BTN_NONE;
@@ -1084,7 +1084,7 @@ void lgc_home(button_id_t button)
     const home_result_t r = home_key(home_ui_model(), hk);
     if (r.act == HOME_MOVED) {
         cmd = DCMD_DRAW_HOME;
-        send_cmd(g_dq, DCMD_DRAW_ACTIVE);      /* the home page: DCMD_DRAW_HOME */
+        send_cmd(g_dq, legacy_screens_active_cmd());      /* the home page: DCMD_DRAW_HOME */
     } else if (r.act == HOME_ENTER) {
         enter_mode(r.mode, g_dq);
     } else {
@@ -1104,7 +1104,7 @@ bool lgc_meter_softkey(button_id_t button)
     if (sk < 0) return false;
     (void)meter_softkey_press(sk);
     g_cmd = DCMD_DRAW_METER;
-    send_cmd(g_dq, DCMD_DRAW_ACTIVE);          /* the meter: DCMD_DRAW_METER */
+    send_cmd(g_dq, legacy_screens_active_cmd());          /* the meter: DCMD_DRAW_METER */
     /* Same settings hook as every other key: a softkey changes saved state
      * (function, view) like any other button. */
     settings_after_button();
@@ -1283,7 +1283,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             meter_function_select(FPGA_METER_SUBMODE_AUTO);
             scope_show_popup("AUTO");
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_OSCILLOSCOPE) {
 #ifdef FEATURE_FFT
             if (scope_view != SCOPE_VIEW_TIME) {
@@ -1346,19 +1346,19 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SIGNAL_GEN) {
             siggen_cycle_waveform();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_SETTINGS &&
                    settings_depth == 5) {
             /* Resistor calc: simulate measurement */
             resistor_calc_simulate_measure();
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_SETTINGS &&
                    settings_depth == 4) {
             /* Component tester: cycle component type */
             comp_test_cycle_type();
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         /* Scope time view: SELECT cycles the arrow stage -- key_model.c */
         break;
@@ -1377,7 +1377,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                 if (settings_sub_selected > 0) settings_sub_selected--;
             }
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
 #ifdef FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
@@ -1395,12 +1395,12 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                  meter_layout == METER_LAYOUT_LIMITS) {
             meter_limits_nudge(+1);
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SIGNAL_GEN) {
             siggen_amplitude_up();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         break;
 
@@ -1421,7 +1421,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                     settings_sub_selected++;
             }
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
 #ifdef FEATURE_FFT
         else if (current_mode == MODE_OSCILLOSCOPE &&
@@ -1439,12 +1439,12 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                  meter_layout == METER_LAYOUT_LIMITS) {
             meter_limits_nudge(-1);
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SIGNAL_GEN) {
             siggen_amplitude_down();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         break;
 
@@ -1454,7 +1454,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS && settings_depth == 7) {
             sound_light_adjust(-1, false);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
             (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
@@ -1467,17 +1467,17 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             else
                 startup_mode_adjust(-1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 1) {
             osc_settings_adjust(-1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 5) {
             resistor_calc_move_band(-1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         /* Meter: fuse type or previous sub-mode */
         else if (current_mode == MODE_MULTIMETER) {
@@ -1500,7 +1500,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             if (siggen_wave_uses_duty(siggen_get_config()->waveform))
                 siggen_duty_cycle_down();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         break;
 
@@ -1508,7 +1508,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS && settings_depth == 7) {
             sound_light_adjust(+1, false);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 0 &&
             (settings_selected == 2 || settings_selected == 3 || settings_selected == 7 || settings_selected == 12)) {
@@ -1521,17 +1521,17 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             else
                 startup_mode_adjust(1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 1) {
             osc_settings_adjust(+1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         else if (current_mode == MODE_SETTINGS && settings_depth == 5) {
             resistor_calc_move_band(1);
             cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         /* Meter: fuse type or next sub-mode */
         else if (current_mode == MODE_MULTIMETER) {
@@ -1554,7 +1554,7 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             if (siggen_wave_uses_duty(siggen_get_config()->waveform))
                 siggen_duty_cycle_up();
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         }
         break;
 
@@ -1568,12 +1568,12 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             const siggen_config_t *sc = siggen_get_config();
             siggen_enable(!sc->output_enabled);
             cmd = DCMD_DRAW_SIGGEN;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_MULTIMETER) {
             /* OK = Hold (softkey UI): freeze the reading on screen now. */
             meter_hold_toggle_now();
             cmd = DCMD_DRAW_METER;
-            send_cmd(dq, DCMD_DRAW_ACTIVE);
+            send_cmd(dq, legacy_screens_active_cmd());
         } else if (current_mode == MODE_OSCILLOSCOPE) {
             if (scope_mask_hold_active()) {
                 /* A mask failure is being held (stop-on-fail): OK resumes
