@@ -469,6 +469,12 @@ static void collect(const char *line)
 }
 static void sh_reset(void) { n_out = 0; }
 static bool starts(unsigned i, const char *s) { return i < n_out && i < 64 && strncmp(out[i], s, strlen(s)) == 0; }
+static bool ends(unsigned i, const char *s)
+{
+    if (i >= n_out || i >= 64) return false;
+    const size_t l = strlen(out[i]), k = strlen(s);
+    return l >= k && strcmp(out[i] + l - k, s) == 0;
+}
 
 static void test_shell_set(void)
 {
@@ -656,12 +662,14 @@ static void test_bindings_state(void)
 static void test_bindings_multi(void)
 {
     /* one request across three instruments in the meter binding: all
-     * applied, the stored ones named by position on the last line */
+     * applied, each stored pair's own line says so, the live ones do not */
     fresh(1);
     current_mode = MODE_MULTIMETER;
     sh_reset(); model_shell_set("ch1.vdiv=5 gen.freq=3000 ch2.vdiv=4 meter.func=ohm", collect);
-    CHECKF(n_out == 4 && starts(0, "OK ch1.vdiv=5") && strcmp(out[1], "OK gen.freq=3000 Hz") == 0 &&
-           starts(2, "OK ch2.vdiv=4") && strcmp(out[3], "OK meter.func=ohm ; stored, FE off: 1,3") == 0,
+    CHECKF(n_out == 4 && starts(0, "OK ch1.vdiv=5") && ends(0, " ; stored: scope FE off") &&
+           strcmp(out[1], "OK gen.freq=3000 Hz") == 0 &&
+           starts(2, "OK ch2.vdiv=4") && ends(2, " ; stored: scope FE off") &&
+           strcmp(out[3], "OK meter.func=ohm ; posture posted") == 0,
            "%s | %s | %s | %s", out[0], out[1], out[2], out[3]);
     CHECK(prop_get(P(CH1_VDIV)) == 5 && prop_get(P(CH2_VDIV)) == 4 && prop_get(P(METER_FUNC)) == 6);
     CHECKF(strcmp(g_log, "vdiv-stored(0,5);gen_freq(3000);vdiv-stored(1,4);meter_func(6);") == 0, "%s", g_log);
@@ -669,7 +677,14 @@ static void test_bindings_multi(void)
     /* the same request in the scope binding: the meter function is the stored one */
     fresh(1);
     sh_reset(); model_shell_set("ch1.vdiv=5 gen.freq=3000 meter.func=ohm", collect);
-    CHECKF(n_out == 3 && strcmp(out[2], "OK meter.func=ohm ; stored, FE off: 3") == 0, "%s", out[2]);
+    CHECKF(n_out == 3 && strstr(out[0], "stored") == NULL && strstr(out[1], "stored") == NULL &&
+           strcmp(out[2], "OK meter.func=ohm ; stored: meter FE off") == 0, "%s", out[2]);
+    /* a stored pair's reason never lands on a later live pair's line, and a
+     * live pair's note stays on its own line */
+    sh_reset(); model_shell_set("meter.func=dcv trig.mode=single gen.freq=1500", collect);
+    CHECKF(n_out == 3 && strcmp(out[0], "OK meter.func=dcv ; stored: meter FE off") == 0 &&
+           strcmp(out[1], "OK trig.mode=Single ; Await Trigger...") == 0 &&
+           strcmp(out[2], "OK gen.freq=1500 Hz") == 0, "%s | %s | %s", out[0], out[1], out[2]);
 
     /* a single pair keeps the op's reason; a live multi-set has no note */
     sh_reset(); model_shell_set("ch1.vdiv=2 gen.freq=1000", collect);
@@ -689,11 +704,16 @@ static void test_bindings_multi(void)
     CHECK(prop_get(P(CH1_VDIV)) == 3 && g_log[0] == '\0');
 
     /* stop at a failure: the stored pair before it stays stored (no roll
-     * back, as for a live one), the note is the failing pair's */
+     * back, as for a live one) and its line still says so; the note is the
+     * failing pair's, on the failing line */
     g_fail = true;
     sh_reset(); model_shell_set("ch1.vdiv=7 ch1.coupling=AC", collect);
-    CHECKF(n_out == 2 && starts(0, "OK ch1.vdiv=7") && strstr(out[0], "stored") == NULL &&
+    CHECKF(n_out == 2 && starts(0, "OK ch1.vdiv=7") && ends(0, " ; stored: scope FE off") &&
            starts(1, "NOT_SET ch1.coupling (relay readback failed)"), "%s | %s", out[0], out[1]);
+    model_result_t rr;
+    prop_pair_t pf[3] = { pr(PROP_ID_CH2_VDIV, 2), pr(PROP_ID_GEN_FREQ, 1200), pr(PROP_ID_CH1_COUPLING, 1) };
+    CHECK(prop_request(pf, 3, ORIGIN_SHELL, 600, &rr) == PS_NOT_SET && rr.failed == 2 && rr.applied == 2 &&
+          rr.deferred == 1u && rr.note_from == 2);
     CHECK(prop_get(P(CH1_VDIV)) == 7 && prop_get(P(CH1_COUPLING)) == 0);
     g_fail = false;
 

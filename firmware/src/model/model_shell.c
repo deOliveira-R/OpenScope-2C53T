@@ -10,7 +10,10 @@
  *   get ch1.vdiv         ch1.vdiv=3  # 1.00V
  *   get gen.amp          gen.amp=1.5 V
  *   set ch1.vdiv 4       OK ch1.vdiv=4  # 2.00V
+ *   (on the meter)       OK ch1.vdiv=4  # 2.00V ; stored: scope FE off
  *   set gen.freq 99999   CLAMPED gen.freq=50000 Hz
+ *   multi-set            one line per pair; each stored pair's line says
+ *                        "stored: ...", a line without it was applied live
  *   (relay fails)        NOT_SET ch1.vdiv (relay apply failed); old value kept: 3  # 1.00V
  *   set ch1.coupling 2   INVALID ch1.coupling=2 (out of range 0..1); nothing applied
  *   (input task busy)    TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing applied
@@ -206,7 +209,25 @@ static bool add_pair(set_req_t *r, const char *name, const char *val, model_emit
     return true;
 }
 
-static void emit_applied(const set_req_t *r, uint8_t upto, bool clamped, const char *note,
+/* The stored answer of pair p (model.h DEFERRED): the value is in force in
+ * the model and the instrument's hardware path takes it when it is next
+ * entered. "stored: scope FE off" / "stored: meter FE off", the texts the
+ * ops give (model_hw_fw.c). */
+static void stored_text(const prop_desc_t *p, char *out, size_t n)
+{
+    const char *inst = "its";
+    for (uint8_t k = 0; k < model_instrument_count(); k++) {
+        const instrument_desc_t *in = model_instrument_at(k);
+        if (in && prop_in_instrument(p, in)) { inst = in->name; break; }
+    }
+    join(out, n, "stored: ", inst, " FE off", NULL);
+}
+
+/* One line per applied pair: OK / CLAMPED, the value read back, and after
+ * " ; " either "stored: ..." (pair i was stored, not applied live) or the
+ * note that pair i produced. A line without "stored" was applied live, or
+ * has no hardware. */
+static void emit_applied(const set_req_t *r, uint8_t upto, bool clamped, const model_result_t *res,
                          model_emit_fn emit)
 {
     char line[LINE_MAX_], t[LINE_MAX_];
@@ -214,7 +235,14 @@ static void emit_applied(const set_req_t *r, uint8_t upto, bool clamped, const c
         const int32_t now = prop_get(r->p[i]);
         model_shell_get_line(r->p[i], now, t, sizeof t);
         join(line, sizeof line, (clamped && now != r->asked[i]) ? "CLAMPED " : "OK ", t, NULL);
-        if (note && note[0] && i + 1 == upto) { cat(line, sizeof line, " ; "); cat(line, sizeof line, note); }
+        if (res->deferred & (1u << i)) {
+            stored_text(r->p[i], t, sizeof t);
+            cat(line, sizeof line, " ; ");
+            cat(line, sizeof line, t);
+        } else if (res->note_from == i && res->note.text[0]) {
+            cat(line, sizeof line, " ; ");
+            cat(line, sizeof line, res->note.text);
+        }
         emit(line);
     }
 }
@@ -268,7 +296,7 @@ void model_shell_set(const char *args, model_emit_fn emit)
     switch (st) {
     case PS_OK:
     case PS_CLAMPED:
-        emit_applied(&r, r.n, st == PS_CLAMPED, res.note.text, emit);
+        emit_applied(&r, r.n, st == PS_CLAMPED, &res, emit);
         return;
     case PS_TIMEOUT:
         emit(res.in_progress
@@ -285,7 +313,7 @@ void model_shell_set(const char *args, model_emit_fn emit)
         return;
     }
     const prop_desc_t *fp = r.p[res.failed];
-    emit_applied(&r, res.applied, false, NULL, emit);
+    emit_applied(&r, res.applied, false, &res, emit);
     if (st == PS_INVALID) {
         value_text(fp, r.asked[res.failed], t, sizeof t);
         join(line, sizeof line, "INVALID ", fp->name, "=", t, " (",

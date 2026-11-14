@@ -91,6 +91,8 @@ static void slot_publish(uint32_t seq, const model_result_t *r)
     s->failed = r->failed;
     s->applied = r->applied;
     s->in_progress = false;
+    s->deferred = r->deferred;
+    s->note_from = r->note_from;
     for (size_t i = 0; i < sizeof r->note.text; i++) s->note.text[i] = r->note.text[i];
     s->seq = seq;                             /* the tag last */
 }
@@ -103,6 +105,8 @@ static bool slot_take(uint32_t seq, model_result_t *out)
     out->failed = s->failed;
     out->applied = s->applied;
     out->in_progress = false;
+    out->deferred = s->deferred;
+    out->note_from = s->note_from;
     for (size_t i = 0; i < sizeof out->note.text; i++) out->note.text[i] = s->note.text[i];
     out->note.text[sizeof out->note.text - 1] = '\0';
     if (s->seq != seq) return false;          /* rewritten while copying */
@@ -229,57 +233,37 @@ bool prop_post(uint16_t id, int32_t value, uint8_t origin)
 
 /* ═══ executor side ══════════════════════════════════════════════════ */
 
-/* The answer of a request whose pairs were all applied and some only stored
- * (model.h DEFERRED). The shell prints the note once, after the last pair,
- * so one pair keeps the op's reason ("stored: scope FE off") and a multi-set
- * names the stored pairs by position, 1-based ("stored, FE off: 1,3"; at
- * most MODEL_MAX_HW_PAIRS of them, since only a PF_HW pair can defer: 23
- * characters at most, the note's size). */
-static void deferred_note(prop_note_t *note, uint8_t n, uint8_t mask, const char *why)
-{
-    if (n == 1u) { note_set(note, why); return; }
-    char t[sizeof note->text];
-    size_t l = 0;
-    const char *head = "stored, FE off: ";
-    while (*head && l + 1u < sizeof t) t[l++] = *head++;
-    for (uint8_t i = 0; i < n && i < 8u; i++) {
-        if (!(mask & (1u << i))) continue;
-        if (t[l - 1u] != ' ' && l + 1u < sizeof t) t[l++] = ',';
-        if (l + 1u < sizeof t) t[l++] = (char)('1' + i);
-    }
-    t[l] = '\0';
-    note_set(note, t);
-}
-
 static void run(const model_req_t *r, model_result_t *res)
 {
     memset(res, 0, sizeof *res);
     res->failed = r->n;
+    res->note_from = r->n;
     prop_status_t s = check_pairs(r->pairs, r->n, &res->failed, &res->note);
     if (s != PS_OK) { res->status = (uint8_t)s; return; }
 
     const uint32_t before = epoch_sum();
     prop_status_t worst = PS_OK;
-    uint8_t i, deferred = 0;                              /* bit i: pair i only stored */
-    const char *why = NULL;
+    uint8_t i;
     for (i = 0; i < r->n; i++) {
         if (i && g_port->checkin) g_port->checkin();      /* one apply per check-in gap */
         s = prop_set_local(prop_by_id(r->pairs[i].id), r->pairs[i].value, r->origin, &g_note);
-        if (g_note.text[0]) res->note = g_note;
         if (s != PS_OK && s != PS_CLAMPED) break;
         if (s == PS_CLAMPED) worst = PS_CLAMPED;
-        if (prop_last_deferred()) { deferred |= (uint8_t)(1u << i); why = prop_last_deferred(); }
+        /* Stored, not applied live: its own line says so (the shell), and
+         * its reason never becomes the note of a later live pair's line. */
+        if (prop_last_deferred()) { res->deferred |= (uint8_t)(1u << i); continue; }
+        if (g_note.text[0]) { res->note = g_note; res->note_from = i; }
     }
     if (i < r->n) {
         res->status = (uint8_t)s;
         res->failed = i;
         res->applied = i;
-        if (!g_note.text[0]) res->note.text[0] = '\0';   /* the failing pair's note only */
+        res->note = g_note;                               /* the failing pair's note only */
+        res->note_from = i;
     } else {
         res->status = (uint8_t)worst;
         res->failed = r->n;
         res->applied = r->n;
-        if (deferred) deferred_note(&res->note, r->n, deferred, why);   /* the fact that matters most */
     }
     if (r->origin != ORIGIN_KEY && epoch_sum() != before && g_port->changed)
         g_port->changed();                                 /* one redraw per request */

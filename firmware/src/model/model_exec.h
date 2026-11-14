@@ -56,14 +56,21 @@ typedef struct {
 
 /* The answer. status is a prop_status_t. failed = the index of the pair that
  * stopped the request (n when none did); applied = how many pairs were set
- * before it (they stay set: no roll back, model.h). note = the failing pair's
- * note, else the last non-empty one. */
+ * before it (they stay set: no roll back, model.h). deferred: bit i = pair i
+ * was stored, not applied live (model.h DEFERRED; its hardware path was not
+ * live), on the success and the failure path alike. note = the failing
+ * pair's note, else the last non-empty note of a pair applied live
+ * ("posted", "Await Trigger..."); note_from = the index of the pair it
+ * belongs to (n: the request as a whole). A deferral's own note is not
+ * copied: the shell prints "stored" on each deferred pair's line. */
 typedef struct {
     uint32_t    seq;
     uint8_t     status;
     uint8_t     failed;
     uint8_t     applied;
     bool        in_progress;    /* TIMEOUT only: the executor had started it */
+    uint8_t     deferred;       /* bit i: pair i stored, not applied live    */
+    uint8_t     note_from;      /* the pair the note belongs to (n: none)    */
     prop_note_t note;
 } model_result_t;
 
