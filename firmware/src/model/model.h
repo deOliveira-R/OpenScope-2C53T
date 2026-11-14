@@ -354,6 +354,16 @@ void        model_hw_deferred(const char *why);
 /* The deferral reason of the last prop_set_local (NULL: applied live, or no
  * hardware, or it failed). Executor only. */
 const char *prop_last_deferred(void);
+/* Scope entry: re-send the scope's SPI3 registers from scope_state through
+ * the ops, for timebase, roll and trigger sets that were stored while the
+ * scope front end was not live: reg 0x01 (the roll code with roll on, else
+ * the timebase; never both), reg 0x06 (trigger source), reg 0x08 (trigger
+ * level). model_hw_fw.c calls it on the executor once the scope's posture is
+ * back. between (may be NULL) runs before each op after the first: the
+ * health check-in, so one acquisition park is the longest gap (plan 2.5).
+ * Stops at the first refusal (a park that failed once would fail again and
+ * cost 1 s each): false, the rest not sent; the state stays. */
+bool        model_scope_reapply(void (*between)(void));
 
 /* Bind the ops (NULL entries are allowed: the call is skipped and the setter
  * treats it as done, or as refused where it needs an answer). */

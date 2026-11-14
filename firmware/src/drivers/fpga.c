@@ -3428,6 +3428,10 @@ void fpga_set_channel_mask(uint8_t mask)
  * switched off. A/B/A on the bench: HIGH -> 276 bytes received, LOW -> 0,
  * HIGH -> 276. */
 volatile bool fpga_meter_needs_activation = false;
+volatile uint8_t fpga_scope_posture_gen;      /* fpga.h: moves when the scope's posture is back */
+static volatile bool meter_holds_fe;          /* mux(true) .. the scope's posture back          */
+
+bool fpga_meter_holds_fe(void) { return meter_holds_fe; }
 
 void fpga_set_meter_mux(bool enable)
 {
@@ -3461,6 +3465,14 @@ void fpga_set_meter_mux(bool enable)
     if (!enable) {
         GPIOB->scr = PB11_MASK;   /* PB11 HIGH — FPGA active */
         fpga_set_scope_frontend_ranges(scope_state_get());
+        /* The posture is the scope's again: the model re-sends the SPI3
+         * registers (0x01/0x06/0x08) a set stored while the meter held the
+         * front end (model_hw_fw.c), on the input task. Nothing is written
+         * here, so a hop between non-meter screens costs nothing. */
+        meter_holds_fe = false;
+        fpga_scope_posture_gen++;
+    } else {
+        meter_holds_fe = true;
     }
 #endif
 }
@@ -7149,6 +7161,7 @@ void fpga_scope_reinit(void)
     fpga_set_scope_frontend_ranges(ss);
     fpga_scope_delay_ms(10);
     fpga_send_scope_sequence(ss);
+    fpga_scope_posture_gen++;     /* fpga.h: the model re-sends stored SPI3 sets */
 }
 
 void fpga_request_scope_reinit(void)

@@ -231,6 +231,20 @@ prop_status_t tb_rollstep_set(const prop_desc_t *p, int32_t v, uint8_t origin, p
     return roll_apply(true, (uint8_t)v, note);
 }
 
+/* ═══ scope entry: the stored SPI3 registers (model.h) ════════════════ */
+
+bool model_scope_reapply(void (*between)(void))
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->roll) { if (HW->roll && !HW->roll()) return false; }
+    else if (HW->timebase && !HW->timebase(ss->timebase_idx)) return false;
+    if (between) between();
+    if (HW->trigger_source && !HW->trigger_source()) return false;
+    if (between) between();
+    if (HW->trigger_level && !HW->trigger_level(ss->trigger.level)) return false;
+    return true;
+}
+
 /* ═══ trig ═══════════════════════════════════════════════════════════ */
 
 int32_t trig_mode_get(const prop_desc_t *p) { (void)p; return (int32_t)scope_state_get()->trigger.mode; }

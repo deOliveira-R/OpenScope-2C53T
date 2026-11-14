@@ -108,7 +108,42 @@ static bool f_meter_func(uint8_t m, bool keep)
     return !nok();
 }
 static bool f_coupling(uint8_t ch, uint8_t c) { logf_("coupling(%u,%u);", ch, c); return !nok(); }
-static bool f_timebase(uint8_t c)             { logf_("tb(%u);", c); return !nok(); }
+/* SPI3 regs 0x01/0x06/0x08: stored in the meter like the relays (model_hw_fw.c) */
+static bool fe_off(const char *what, int v)
+{
+    if (current_mode != MODE_MULTIMETER) return false;
+    char t[24];
+    snprintf(t, sizeof t, "%s-stored(%d);", what, v);
+    logf_("%s", t);
+    model_hw_deferred("stored: scope FE off");
+    return true;
+}
+static bool f_timebase(uint8_t c)
+{
+    if (fe_off("tb", c)) return true;
+    logf_("tb(%u);", c);
+    return !nok();
+}
+static bool f_roll(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (fe_off("roll", ss->roll)) return true;
+    logf_("roll(%d,%u);", ss->roll, ss->roll_step);
+    return !nok();
+}
+static bool f_trig_src(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (fe_off("src", ss->trigger.source)) return true;
+    logf_("src(%d);", ss->trigger.source);
+    return !nok();
+}
+static bool f_trig_level(int16_t l)
+{
+    if (fe_off("lvl", l)) return true;
+    logf_("lvl(%d);", l);
+    return !nok();
+}
 static void f_gen_freq(uint32_t f)            { logf_("gen_freq(%u);", (unsigned)f); siggen_set_frequency(f); }
 static void f_gen_amp(uint8_t a)              { logf_("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
 static void f_gen_out(bool on)                { logf_("gen_out(%d);", on); siggen_enable(on); }
@@ -123,6 +158,7 @@ static void f_note_change(void)               { g_notes++; }
 static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .timebase = f_timebase,
     .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out, .meter_func = f_meter_func,
+    .roll = f_roll, .trigger_source = f_trig_src, .trigger_level = f_trig_level,
     .mode = f_mode, .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note_change,
 };
 
@@ -757,6 +793,61 @@ static void test_mode_switch(void)
     CHECK(model_foreign_sets == 0);
 }
 
+/* Timebase, roll and trigger behave like chN.vdiv: stored while the scope
+ * front end is not live (the meter), said so on the line, and re-sent from
+ * the state on scope entry (model_scope_reapply, what model_hw_fw.c runs
+ * once the scope's posture is back): reg 0x01 as the roll code with roll on
+ * or the timebase without (never both), then reg 0x06 and reg 0x08. */
+static void test_scope_regs_stored(void)
+{
+    fresh(1);
+    current_mode = MODE_MULTIMETER;
+    sh_reset(); model_shell_set("tb.code=5 trig.level=30 trig.source=CH2", collect);
+    CHECKF(n_out == 3 && starts(0, "OK tb.code=5") && ends(0, " ; stored: scope FE off") &&
+           strcmp(out[1], "OK trig.level=30 px ; stored: scope FE off") == 0 &&
+           strcmp(out[2], "OK trig.source=CH2 ; stored: scope FE off") == 0,
+           "%s | %s | %s", out[0], out[1], out[2]);
+    CHECKF(strcmp(g_log, "tb-stored(5);lvl-stored(30);src-stored(1);") == 0, "%s", g_log);
+    const scope_state_t *ss = scope_state_get();
+    CHECK(ss->timebase_idx == 5 && ss->trigger.level == 30 && ss->trigger.source == TRIG_SRC_CH2);
+
+    /* scope entry: every stored register from the state, no roll write */
+    current_mode = MODE_OSCILLOSCOPE;
+    g_log[0] = '\0';
+    CHECK(model_scope_reapply(NULL));
+    CHECKF(strcmp(g_log, "tb(5);src(1);lvl(30);") == 0, "%s", g_log);
+
+    /* roll on in the meter: stored; on entry the roll code, not the timebase */
+    current_mode = MODE_MULTIMETER;
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("tb.roll on", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK tb.roll=on ; stored: scope FE off") == 0, "%s", out[0]);
+    CHECK(ss->roll && strcmp(g_log, "roll-stored(1);") == 0);
+    current_mode = MODE_OSCILLOSCOPE;
+    g_log[0] = '\0';
+    CHECK(model_scope_reapply(NULL));
+    CHECKF(strcmp(g_log, "roll(1,0);src(1);lvl(30);") == 0, "%s", g_log);
+
+    /* live on the scope screen: written at once, no "stored" */
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("trig.level -20", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK trig.level=-20 px") == 0 && strcmp(g_log, "lvl(-20);") == 0,
+           "%s %s", out[0], g_log);
+
+    /* a refused re-send says so and stops at the refusal: one park tried,
+     * not three (the state stays what was set) */
+    g_fail = true;
+    g_log[0] = '\0';
+    n_checkins = 0;
+    CHECKF(!model_scope_reapply(tp_checkin) && ss->trigger.level == -20 && strcmp(g_log, "roll(1,0);") == 0 &&
+           n_checkins == 0, "%s", g_log);
+    g_fail = false;
+    /* a check-in between the parks: one park per gap (plan 2.5) */
+    g_log[0] = '\0';
+    CHECK(model_scope_reapply(tp_checkin) && n_checkins == 2);
+    CHECK(model_foreign_sets == 0);
+}
+
 int main(void)
 {
     test_not_up();
@@ -777,6 +868,7 @@ int main(void)
     test_bindings_state();
     test_bindings_multi();
     test_mode_switch();
+    test_scope_regs_stored();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

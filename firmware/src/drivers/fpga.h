@@ -1140,6 +1140,14 @@ uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while i
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);
 extern volatile bool fpga_meter_needs_activation;
+/* The scope's front-end posture: fpga_scope_posture_gen moves each time the
+ * scope's posture is put back (fpga_set_meter_mux(false) in a
+ * FPGA_METER_SUBMODES build, fpga_scope_reinit() elsewhere), and
+ * fpga_meter_holds_fe() is true from fpga_set_meter_mux(true) until then.
+ * Read only: the model re-sends the scope's SPI3 registers stored while the
+ * front end was not live once the generation moves (model_hw_fw.c). */
+extern volatile uint8_t fpga_scope_posture_gen;
+bool    fpga_meter_holds_fe(void);
 
 void    fpga_acq_rearm_set(bool on);
 bool    fpga_acq_rearm_get(void);

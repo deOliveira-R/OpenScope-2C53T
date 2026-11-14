@@ -58,8 +58,10 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  *   vdiv relays (chN.vdiv)         live          DEFERRED *    live *
  *   vdiv offset half, vpos (DAC1 / TMR13: chN.vdiv, chN.pos)  live in every posture **
  *   coupling (PD12/PD13)           live          live          live
- *   channel_enables (PC1/PC2 mask, reg 0x06, offsets)          live in every posture
- *   timebase/roll/trigger (SPI3 regs 0x01/0x06/0x08, parked acq task)  written in every posture ***
+ *   channel_enables (PC1/PC2 mask, offsets)                     live in every posture
+ *     (its reg 0x06 write when the source moves: as *** below; re-sent too)
+ *   timebase/roll/trigger (SPI3 regs 0x01/0x06/0x08, parked acq task)
+ *                                  live          DEFERRED ***  live * ***
  *   view/persist/mask/il (MCU state, the FFT/persistence pool, acq-task requests): live in every posture
  *   generator (DAC2/PA5, TMR7, DMA2)                           live in every posture
  *   meter_func (meter SoC function, USART2)  DEFERRED  live    DEFERRED
@@ -89,15 +91,20 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  * dac_output_is_running(), a guard from when the generator was on DAC1
  * (A1 removes it); with the generator running CH1's offset is then not
  * applied in any posture, as before this change.
- * (***) written at once in every posture: the acquisition task parks in
- * every mode (only `fpga bus release` keeps it off the bus), and in the warm
- * builds no posture rewrites these registers. NOT PROVEN to be in force
- * while the meter holds the front end: its PA/PB table drives PB11 (the
- * "FPGA active" line, also a CH2 range bit) low for some functions, and
- * nothing re-sends the registers on scope entry in the warm builds. Bench
- * check: set tb.code in the meter, back to the scope, `fpga status` / the
- * axis and the trace agree. In the default image scope entry resets the
- * FPGA and resends the timing from scope_state (fpga_send_scope_sequence).
+ * (***) as the relays: written at once while the scope front end is live
+ * (scope_fe_live), else stored and re-sent from scope_state when the
+ * scope's posture is back (fpga_scope_posture_gen moves: fpga_set_meter_mux
+ * (false) in the bench image, i.e. leaving the meter for any screen;
+ * fpga_scope_reinit on scope entry in the default image). The re-send runs
+ * on the executor (port_service -> model_scope_reapply): reg 0x01 (the roll
+ * code with roll on, else tb.code; each also re-runs scope_vpos_apply, DAC1
+ * and TMR13), reg 0x06, reg 0x08, each in its own acquisition park. Only
+ * after such a stored set: with none, scope entry adds no SPI3 write. In
+ * the bench image the front end counts as not live from meter entry until
+ * the display task has run mux(false) (fpga_meter_holds_fe), so a set made
+ * in that window is stored too. The default image's scope entry also
+ * resends the USART timing and trigger block from scope_state
+ * (fpga_send_scope_sequence), as before.
  * meter_func: the posture request is only served in the meter (the poll task
  * drops it elsewhere; without a poll task it would posture the meter SoC
  * under the scope), so outside the meter the op does the state half only,
@@ -110,10 +117,50 @@ static bool scope_fe_live(void)
     !(defined(FPGA_METER_SUBMODES) && FPGA_METER_SUBMODES)
     return true;                                       /* the meter never takes the relays */
 #elif defined(FPGA_WARM_HANDOFF_TEST) && FPGA_WARM_HANDOFF_TEST
-    return current_mode != MODE_MULTIMETER;            /* mux(false) re-applies on any other */
+    /* mux(false) re-applies on any other screen. Until the display task has
+     * run it after leaving the meter, the meter's posture still holds the
+     * front end (PB11 may be low): not live yet. */
+    return current_mode != MODE_MULTIMETER && !fpga_meter_holds_fe();
 #else
     return current_mode == MODE_OSCILLOSCOPE;          /* only scope entry re-applies */
 #endif
+}
+
+/* SPI3 registers stored while the scope front end was not live (timebase,
+ * roll, trigger source and level): re-sent from scope_state by
+ * model_scope_reapply() on the executor (port_service) once the scope's
+ * posture has been put back after the deferral (fpga_scope_posture_gen
+ * moved) and the front end is live. 2 bytes. */
+static bool    g_scope_regs_stored;
+static uint8_t g_scope_gen_seen;
+
+/* Mark the registers for the re-send on the scope's return. */
+static void scope_regs_mark(void)
+{
+    if (!g_scope_regs_stored) {
+        g_scope_regs_stored = true;
+        g_scope_gen_seen = fpga_scope_posture_gen;
+    }
+}
+
+static void scope_regs_defer(void)
+{
+    scope_regs_mark();
+    model_hw_deferred("stored: scope FE off");
+}
+
+static void scope_regs_service(void)
+{
+    if (!g_scope_regs_stored || fpga_scope_posture_gen == g_scope_gen_seen || !scope_fe_live())
+        return;
+    g_scope_regs_stored = false;
+    /* A park that fails leaves the registers as they were: try again on the
+     * next posture return, never on every pass (one park can take 1 s).
+     * The check-in between the parks keeps one park the longest gap. */
+    if (!model_scope_reapply(health_checkin_self)) {
+        g_scope_regs_stored = true;
+        g_scope_gen_seen = fpga_scope_posture_gen;
+    }
 }
 
 /* ═══ scope front end and acquisition ════════════════════════════════ */
@@ -131,13 +178,52 @@ static bool op_vdiv(uint8_t ch, uint8_t idx)
     return true;
 }
 static bool op_coupling(uint8_t ch, uint8_t c)        { CTX(); return fpga_apply_coupling(ch, c); }
-static bool op_channel_enables(void)                  { CTX(); return fpga_apply_channel_enables(); }
+/* The converter routing (PC1/PC2) is live in every posture. When it moves
+ * the trigger source off a channel that went off, fpga_apply_channel_enables
+ * writes reg 0x06 itself; with the scope front end not live that write is as
+ * unproven as a stored trigger set, so the registers are re-sent on the
+ * scope's return too (the answer stays live: the routing is). */
+static bool op_channel_enables(void)
+{
+    CTX();
+    const bool live = scope_fe_live();
+    if (!fpga_apply_channel_enables()) return false;
+    if (!live) scope_regs_mark();
+    return true;
+}
 static bool op_interleave_active(void)                { return fpga_interleave_active(); }
 static bool op_vpos(uint8_t ch, int16_t pos)          { CTX(); return scope_vpos_set((uint8_t)(ch + 1u), pos); }
-static bool op_timebase(uint8_t code)                 { CTX(); return fpga_apply_timebase(code); }
-static bool op_roll(void)                             { CTX(); return fpga_apply_roll(); }
-static bool op_trigger_source(void)                   { CTX(); return fpga_apply_trigger_source(); }
-static bool op_trigger_level(int16_t level)           { CTX(); return fpga_apply_trigger_level(level); }
+/* SPI3 regs 0x01 / 0x06 / 0x08: live when the scope front end is; else
+ * stored (the setter keeps the state) and re-sent on scope entry. */
+static bool op_timebase(uint8_t code)
+{
+    CTX();
+    if (scope_fe_live()) return fpga_apply_timebase(code);
+    if (code >= TIMEBASE_COUNT) return false;
+    scope_regs_defer();
+    return true;
+}
+static bool op_roll(void)
+{
+    CTX();
+    if (scope_fe_live()) return fpga_apply_roll();
+    scope_regs_defer();
+    return true;
+}
+static bool op_trigger_source(void)
+{
+    CTX();
+    if (scope_fe_live()) return fpga_apply_trigger_source();
+    scope_regs_defer();
+    return true;
+}
+static bool op_trigger_level(int16_t level)
+{
+    CTX();
+    if (scope_fe_live()) return fpga_apply_trigger_level(level);
+    scope_regs_defer();
+    return true;
+}
 static void op_single_rearm(void)                     { CTX(); fpga_acq_single_rearm(); }
 
 /* ═══ views and the shared pool (scope_apply.c) ══════════════════════ */
@@ -344,6 +430,7 @@ static void port_changed(void)
 
 static void port_service(void)
 {
+    scope_regs_service();
     if (g_mask_pending && scope_mask_acked(g_mask_pending)) {
         g_mask_pending = 0u;
         model_touch(PG_MASK);
