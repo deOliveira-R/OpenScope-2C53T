@@ -21,7 +21,7 @@
  * this order:
  *
  * 1. Level map, B into A's units. Either the line B' = (B - offset) / gain
- *    (`fpga interleave corr`, a v1 user-cal record), or — when knots are set
+ *    (il.gain / il.offset, a v1 user-cal record), or — when knots are set
  *    — the piecewise-linear inverse through the self-cal's levels (`fpga
  *    interleave cal`): knot i says "B reads knot_b[i] where A reads
  *    knot_a[i]". Unit #2's B is not a line of A (the linear fit left -1.02 /

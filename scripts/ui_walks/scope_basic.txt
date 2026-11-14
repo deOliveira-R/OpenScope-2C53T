@@ -81,9 +81,9 @@ w2_back_scope   | set sys.mode scope ; wait 2
 w2_home         | ui seq long:MENU
 w2_home_right   | ui seq RIGHT
 w2_home_back    | ui seq long:MENU
-w2_meter        | set meter.func=0 sys.mode=meter ; wait 3
+w2_meter        | set meter.func=0 sys.mode=meter ; wait 6
 w2_meter_prm    | ui seq PRM ; wait 2
-w2_meter_res    | set meter.func=6 sys.mode=meter ; wait 3
+w2_meter_res    | set meter.func=6 sys.mode=meter ; wait 6
 w2_gen          | ui seq long:MENU RIGHT RIGHT OK ; wait 3
 w2_gen_ok       | ui seq OK ; wait 2
 w2_gen_up       | ui seq UP ; wait 2
@@ -131,5 +131,5 @@ w4_yt_back      | set view.mode yt
 w4_stop         | ui seq OK
 w4_stop_pos     | ui seq SELECT UP ; wait 2
 w4_run          | ui seq OK
-w4_meter_graph  | set meter.func=0 sys.mode=meter ; wait 2 ; ui seq PRM ; wait 2
+w4_meter_graph  | set meter.func=0 sys.mode=meter ; wait 6 ; ui seq PRM ; wait 2
 w4_end_scope    | set sys.mode scope ; wait 2

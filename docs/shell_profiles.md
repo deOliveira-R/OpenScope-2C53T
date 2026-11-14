@@ -46,7 +46,7 @@ Instrument state is the property model (`firmware/src/model/`), and the shell re
 | command | what |
 |---|---|
 | `get <prop\|glob> [...]` | values: `get ch1.vdiv`, `get trig.*`, `get *`. One line per property, `name=value  # label` |
-| `set <prop> <value>`, `set p=v [p=v ...]` | a change, applied by the input task exactly as a key applies it. A value is a label (`normal`, `10x`, `on`), a number in the property's unit (`gen.amp 1.5`), or a step (`+=1`, `-=5`). Up to 8 pairs, applied in the order given |
+| `set <prop> <value>`, `set p=v [p=v ...]` | a change, applied by the input task exactly as a key applies it. A value is a label (`normal`, `10x`, `on`), a number in the property's unit (`gen.amp 1.5`), or a step (`+=1`, `-=5`). Up to 8 pairs, of which at most 4 change hardware (`list` marks them `HW`), applied in the order given; more answers `INVALID (more than 4 HW pairs); nothing applied` |
 | `list [prefix\|glob]` | every property: name, type, range, value, flags |
 | `describe <prop>` | range or labels, default, unit, where it is saved, the owner call |
 
@@ -167,8 +167,8 @@ be maintained for no gain. They answer `Unknown command`. Labels are matched wit
 | `siggen duty <pct>` | `set gen.duty <pct>` | `OK gen.duty=50 %` (with a note when the waveform has no duty) |
 | `siggen on\|off` | `set gen.out on\|off` | `OK gen.out=on` |
 | `siggen boot on\|off` | `set gen.bootout on\|off` | `OK gen.bootout=off` |
-| `siggen wave 3 amp 15 freq 2000 on` | `set gen.wave=3 gen.amp=1.5 gen.freq=2000 gen.out=on` | one line per pair |
-| `mask tol <v> [h]` | `set mask.tolv=<v> mask.tolh=<h>` (v 0..64 record counts, h 0..16 samples; the old default of h was 2) | `OK` per pair, `; posted`: the acquisition task applies it, `mask` shows the tolerance in force |
+| `siggen wave 3 amp 15 freq 2000 on` | `set gen.wave=3 gen.amp=1.5 gen.freq=2000 gen.out=on` (four hardware pairs is the most one `set` takes: a fifth, `gen.duty`, goes in a second `set`) | one line per pair |
+| `mask tol <v> [h]` | `set mask.tolv=<v> mask.tolh=<h>` (v 0..64 record counts, h 0..16 samples; the old default of h was 2) | `OK` per pair, `; posted`: the acquisition task applies it. The two are two posts, each built from the tolerance in force: read them back (`get mask.tolv mask.tolh`, or `mask`) before relying on them, and send again if one did not land |
 | `mask stop on\|off` | `set mask.stopfail on\|off` | `OK mask.stopfail=on ; posted` |
 | `meter func <0-11>` | `set meter.func <0-11>` or its name (`dcv`, `ohm`, ...) | `OK meter.func=ohm ; posture posted`, or `; stored: meter FE off` when the meter link is off |
 | `meter degf on\|off` | `set meter.degf on\|off`; read: `get meter.degf` (also `degF=` in `meter state`) | `OK meter.degf=on` |
@@ -196,6 +196,9 @@ be maintained for no gain. They answer `Unknown command`. Labels are matched wit
   dirty like any saved property; `settings` shows the store's state, and `persist on` asks for a flush and
   prints its outcome.
 - **`fpga scope timebase` took hex.** `tb.code` is decimal (`0x10` is `16`).
+
+The replies in the table were read from a host build of the model (`make test-model-exec`'s fakes); those
+of `il.*`, `mask.*` and `meter.degf` are from the setters' code, their owners are not in that build.
 
 Read-outs that no property carries were moved, text unchanged, so a script's pattern still matches:
 `status` (timebase in force, boot reconcile), `fpga scope trigger` (level code and reconcile code, trigger

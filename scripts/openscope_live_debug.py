@@ -546,6 +546,8 @@ def parse_meter_trace_text(text: str) -> dict[str, object]:
     return result
 
 
+# A meter function change, worst case, plus a margin (the firmware bounds it at 5 s).
+METER_SWITCH_SECONDS = 5.0
 SHORTED_PROBE_SUBMODES = tuple(range(11))
 METER_SUBMODE_NAMES = {
     0: "DC Voltage",
@@ -660,6 +662,9 @@ def run_shorted_probes_sweep(
             mode_command = f"set meter.func={submode} meter.layout=0 sys.mode=meter"
             mode_response = run_command_on_serial(serial, mode_command, timeout)
             serial.drain()
+            # `set` answers when the change is posted; the retired `mode meter`
+            # answered when the meter chip had switched (1.4 s, up to 4.5 s).
+            time.sleep(METER_SWITCH_SECONDS)
             time.sleep(settle_ms / 1000.0)
             trace_samples = []
             dump_samples = []

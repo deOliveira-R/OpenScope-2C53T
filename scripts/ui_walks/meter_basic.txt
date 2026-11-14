@@ -32,7 +32,7 @@
 # ── 1. the main bar: Function, Reset, Relative, View; arrows, OK, AUTO ───────
 # expect: screen=meter instrument=meter stack=meter meter=dcv mview=big
 #         meter.func = dcv ; meter.layout = big ; meter.hold = off ; meter.rel = off
-m1_base        | set sys.mode meter ; wait 2 ; set meter.layout big ; set meter.func dcv ; set meter.hold off ; set meter.rel off ; set meter.beep 30ohm ; set meter.degf off ; wait 2 ; get meter.func ; get meter.layout ; get meter.hold ; get meter.rel
+m1_base        | set sys.mode meter ; wait 6 ; set meter.layout big ; set meter.func dcv ; set meter.hold off ; set meter.rel off ; set meter.beep 30ohm ; set meter.degf off ; wait 2 ; get meter.func ; get meter.layout ; get meter.hold ; get meter.rel
 # expect: meter.func = acv   (MOVE is the Function softkey; the bar's first cell says "AC V")
 m1_move        | ui seq MOVE ; wait 2 ; get meter.func
 # expect: meter.func = dcma   (RIGHT is the next function too; the whole screen repaints, as before)
@@ -155,7 +155,7 @@ m5_key_after   | set meter.func cont ; wait 2 ; ui seq RIGHT ; wait 2 ; get mete
 #         USB host (the meter keeps running under the scope)
 m5_off_screen  | set sys.mode scope ; wait 2 ; set meter.func ohm ; wait 2 ; get meter.func ; get meter.live
 # expect: screen=meter meter=ohm mview=big   (back: no SoC restart, the page shows ohms)
-m5_back        | set sys.mode meter ; wait 3 ; get meter.func
+m5_back        | set sys.mode meter ; wait 6 ; get meter.func
 
 # ── 6. MENU, SAVE, the end ───────────────────────────────────────────────────
 # expect: screen=home home=meter   (short MENU at the meter's top level opens Home)

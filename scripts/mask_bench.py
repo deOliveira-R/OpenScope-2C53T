@@ -76,6 +76,22 @@ def status(sc):
     return d
 
 
+def mask_set(sc, **want):
+    """mask.tolv / mask.tolh / mask.stopfail through the property model. The
+    acquisition task applies them (the reply says `posted`), and tolv and tolh
+    are two posts of one request, so wait until every value reads back: the
+    retired `mask tol` / `mask stop` did that wait on the device."""
+    sc.set(*["mask.%s=%s" % kv for kv in want.items()])
+    t0 = time.time()
+    while True:
+        r = sc.cmd("get " + " ".join("mask.%s" % k for k in want))
+        if all(re.search(r"^\s*mask\.%s=%s\b" % (k, v), r, re.M) for k, v in want.items()):
+            return
+        if time.time() - t0 > 1.0:
+            raise SystemExit("mask settings did not read back (%s): %s" % (want, r.strip()))
+        time.sleep(0.05)
+
+
 def hpos(sc):
     m = re.search(r"asked column (\d+)", sc.cmd("fpga scope trigger"))
     return int(m.group(1)) if m else None
@@ -129,8 +145,8 @@ def main():
 
     # A -- teach
     sc.cmd("mask clear")
-    sc.cmd("set mask.stopfail off")
-    sc.cmd("set mask.tolv=8 mask.tolh=2")
+    mask_set(sc, stopfail="off")
+    mask_set(sc, tolv=8, tolh=2)
     print(sc.cmd("mask teach 8 ch1", timeout=5.0).strip())
     t0 = time.time()
     s = status(sc)
@@ -184,7 +200,7 @@ def main():
                         "tested %d pass %d" % (s["tested"], s["pass"])))
 
     # F -- stop on fail holds the failing record
-    sc.cmd("set mask.stopfail on")
+    mask_set(sc, stopfail="on")
     sc.cmd("mask reset")
     sg.amp(AMP * 1.3, 1)
     t0 = time.time()
@@ -205,11 +221,11 @@ def main():
     results.append(line("F hold", held and n1 == n0 and n2 > n1 and not s3["hold"],
                         "held %s; judged %d -> %d while held, %d after release; still held %s [%s]"
                         % (held, n0, n1, n2, s3["hold"], s3["skips"])))
-    sc.cmd("set mask.stopfail off")
+    mask_set(sc, stopfail="off")
     missed_ok &= s3["missed"] == 0
 
     # H -- the same controls from the buttons
-    sc.cmd("mask clear"); sc.cmd("set mask.stopfail off"); sc.cmd("set mask.tolv=8 mask.tolh=2")
+    sc.cmd("mask clear"); mask_set(sc, stopfail="off"); mask_set(sc, tolv=8, tolh=2)
     for _ in range(4):                               # normalise the arrow stage (SELECT cycles it since UI round 1)
         if status(sc)["focus"] == "zoom":
             break
@@ -252,7 +268,7 @@ def main():
     msg.append("auto->%s focus %s" % (s["state"], s["focus"]))
     h_ok = h_ok and ctl and msk and stop_on and held and released and \
         s["state"] == "EMPTY" and s["focus"] != "mask"
-    sc.cmd("set mask.stopfail off"); sc.cmd("set mask.tolv=8 mask.tolh=2")
+    mask_set(sc, stopfail="off"); mask_set(sc, tolv=8, tolh=2)
     results.append(line("H buttons", h_ok, "; ".join(msg)))
 
     results.append(line("G health", missed_ok, "missed commits 0 throughout" if missed_ok

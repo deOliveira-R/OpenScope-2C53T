@@ -93,6 +93,11 @@ class GateError(RuntimeError):
     pass
 
 
+# A meter function change, worst case, plus a margin: `set meter.func=.. sys.mode=meter`
+# answers when the change is posted (the retired `mode meter` waited for the switch).
+METER_SWITCH_SECONDS = 5.0
+
+
 def run(cmd: list[str], *, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
     proc = subprocess.run(
         cmd,
@@ -1209,7 +1214,7 @@ def run_live_validation(args: argparse.Namespace, outdir: Path) -> dict[str, Any
 
     live_debug(["command", "set meter.func=0 meter.layout=0 sys.mode=meter", "--timeout", str(args.timeout),
                 *([] if args.port is None else ["--port", args.port])])
-    time.sleep(args.settle_seconds)
+    time.sleep(METER_SWITCH_SECONDS + args.settle_seconds)   # `set` answers when posted, not when switched
     dcv_text = live_debug([
         "meter-dump", "--count", "5", "--interval", "0.4",
         "--timeout", str(args.timeout),
@@ -1224,7 +1229,7 @@ def run_live_validation(args: argparse.Namespace, outdir: Path) -> dict[str, Any
 
     live_debug(["command", "set meter.func=1 meter.layout=0 sys.mode=meter", "--timeout", str(args.timeout),
                 *([] if args.port is None else ["--port", args.port])])
-    time.sleep(args.settle_seconds)
+    time.sleep(METER_SWITCH_SECONDS + args.settle_seconds)   # `set` answers when posted, not when switched
     acv_text = live_debug([
         "meter-dump", "--count", "5", "--interval", "0.4",
         "--timeout", str(args.timeout),
