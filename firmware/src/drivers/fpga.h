@@ -693,6 +693,9 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
 /* Name of the slot design the boot upload sent, or NULL when it sent the
  * compiled-in design (FPGA_CONFIG_B only). */
 const char *fpga_boot_design(void);
+/* What the boot found on the FPGA: 0 empty (cold boot), 1 a running design, removed
+ * through PC6 and replaced, 2 a running design that stayed (nothing uploaded). */
+uint8_t fpga_boot_live(void);
 
 /* ═══════════════════════════════════════════════════════════════════
  * API

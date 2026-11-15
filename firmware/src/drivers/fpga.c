@@ -5397,6 +5397,7 @@ static void           *bb_src_ctx;
 static uint32_t        bb_src_len;
 static bool            bb_require_empty;
 static uint8_t         bb_outcome;       /* 0 ok, 1 not empty (nothing sent), 2 source failed mid-upload */
+static bool            bb_arm_live;      /* outcome 1: still run the arm writes (a design is running and stays) */
 
 uint8_t fpga_bitbang_config_sequence(void)
 {
@@ -5525,8 +5526,9 @@ bb_restore_pins:
     SPI3_CS_DEASSERT();
 
     /* fpga_reload() refused or lost its source: no design was loaded, so there
-     * is nothing to arm. (bb_outcome is always 0 on the boot path.) */
-    if (bb_outcome != 0) {
+     * is nothing to arm. The boot path asks for the arm writes even so when a
+     * running design could not be removed (bb_arm_live): that design stays. */
+    if (bb_outcome != 0 && !(bb_outcome == 1 && bb_arm_live)) {
         if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
         return 0;
     }
@@ -5659,12 +5661,48 @@ static bool boot_slot_payload(void *ctx, uint32_t off, uint8_t *buf, uint32_t n)
                                    buf, n) == FLASH_FS_OK;
 }
 
+/* What the boot found: 0 = an empty FPGA (cold boot), 1 = a running design that
+ * PC6 removed, 2 = a running design that stayed (nothing was uploaded). */
+static uint8_t  fpga_boot_live_state;
+
+/* One upload attempt of the boot design (slot if allowed and good, else the
+ * compiled-in one), sending nothing unless the FPGA answers its IDCODE.
+ * Returns the sequence's outcome (0 sent, 1 not empty). */
+static uint8_t fpga_boot_upload_once(bool slot_ok, const fslot_info_t *info, bool arm_live)
+{
+    uint8_t outcome;
+
+    fpga_boot_from_slot = 0;
+    bb_require_empty = true;
+    bb_arm_live = arm_live;
+    if (slot_ok) {
+        bb_src_fn = boot_slot_payload; bb_src_ctx = NULL; bb_src_len = info->len;
+        (void)fpga_bitbang_config_sequence();
+        outcome = bb_outcome;
+        bb_src_fn = NULL; bb_src_len = 0; bb_outcome = 0;
+        if (outcome == 0) {
+            fpga_boot_from_slot = 1;
+            memcpy(fpga_boot_slot_name, info->name, sizeof fpga_boot_slot_name);
+        }
+        if (outcome != 2) goto done;
+        /* the flash read failed mid-upload: the FPGA is still empty */
+    }
+    (void)fpga_bitbang_config_sequence();
+    outcome = bb_outcome;
+    bb_outcome = 0;
+done:
+    bb_require_empty = false;
+    bb_arm_live = false;
+    return outcome;
+}
+
 static void fpga_boot_upload(void)
 {
     uint8_t      hdr[FSLOT_HDR_LEN];
     fslot_info_t info;
+    bool         slot_ok = false;
 
-    fpga_boot_from_slot = 0;
+    fpga_boot_live_state = 0;
     /* Only in images that carry the bench shell: `fpga slot boot off` lives
      * there, and the flag is on the W25Q, where a reflash does not clear it. An
      * image without the shell must never be steered by a flag it cannot reset. */
@@ -5686,21 +5724,40 @@ static void fpga_boot_upload(void)
                 ok = boot_slot_payload(NULL, off, buf, n);
                 if (ok) c = cal_backup_crc32_update(c, buf, n);
             }
-            if (ok && cal_backup_crc32_final(c) == info.crc) {
-                bb_src_fn = boot_slot_payload; bb_src_ctx = NULL; bb_src_len = info.len;
-                (void)fpga_bitbang_config_sequence();
-                const uint8_t outcome = bb_outcome;
-                bb_src_fn = NULL; bb_src_len = 0; bb_outcome = 0;
-                if (outcome == 0) {
-                    fpga_boot_from_slot = 1;
-                    memcpy(fpga_boot_slot_name, info.name, sizeof fpga_boot_slot_name);
-                    return;
-                }
-                /* the flash read failed mid-upload: the FPGA is still empty */
-            }
+            slot_ok = ok && cal_backup_crc32_final(c) == info.crc;
         }
     }
+
+#if FPGA_CONFIG_B_FAITHFUL
+    /* That upload variant reads nothing back, so it cannot tell a running FPGA. */
+    (void)slot_ok;
     (void)fpga_bitbang_config_sequence();
+#else
+    /* An MCU reset that kept the unit powered (a firmware flash) finds the FPGA
+     * still running its design. The upload would then be 115 KB of stray bytes
+     * into that design's own SPI port. So: nothing is sent unless the FPGA
+     * answers its IDCODE. If it does not, switch its supply off through PC6
+     * (SPI lines released, as fpga_reload does) and try again. A design that
+     * survives that (input clamps on: the stock design) stays and is armed. */
+    if (fpga_boot_upload_once(slot_ok, &info, false) == 1) {
+        gpio_init_type g;
+        gpio_default_para_init(&g);
+        g.gpio_pins = BB_SCK | BB_MOSI | BB_CS;
+        g.gpio_mode = GPIO_MODE_INPUT;
+        g.gpio_pull = GPIO_PULL_NONE;
+        gpio_init(GPIOB, &g);            /* Hi-Z: no back-feed through the SPI lines */
+        GPIOC->clr = PC6_MASK;           /* FPGA supply off */
+        fpga_scope_delay_ms(FPGA_RELOAD_OFF_MS);
+        GPIOC->scr = PC6_MASK;
+        fpga_scope_delay_ms(FPGA_RELOAD_ON_MS);
+        fpga_boot_live_state = (fpga_boot_upload_once(slot_ok, &info, true) == 1) ? 2 : 1;
+    }
+#endif
+}
+
+uint8_t fpga_boot_live(void)
+{
+    return fpga_boot_live_state;
 }
 
 const char *fpga_boot_design(void)

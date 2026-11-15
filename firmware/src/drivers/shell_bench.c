@@ -1828,7 +1828,7 @@ void cmd_fpga_bus_reacquire(void)
  * and a failure says "err".
  */
 static fslot_upload_t s_fslot_up;
-static char s_fpga_loaded[FSLOT_NAME_LEN + 16];   /* "" until a reload: then what the boot upload sent */
+static char s_fpga_loaded[FSLOT_NAME_LEN + 88];   /* "" until a reload: then what the boot upload sent */
 
 static void fslot_tick(void)
 {
@@ -1876,8 +1876,10 @@ void cmd_fpga_slot(const char *args)
 #if FPGA_CONFIG_B
         if (s_fpga_loaded[0] == '\0') {
             const char *b = fpga_boot_design();
-            if (b) snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "slot '%s' (boot)", b);
-            else   snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "builtin (boot)");
+            const uint8_t live = fpga_boot_live();
+            if (live == 2) snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "nothing (boot found a running design that PC6 did not remove; it stays)");
+            else if (b)    snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "slot '%s' (boot%s)", b, live ? ", after removing a running design" : "");
+            else           snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "builtin (boot%s)", live ? ", after removing a running design" : "");
         }
 #endif
         usb_debug_printf("fpga slot: FPGA was sent: %s\r\n", s_fpga_loaded);
