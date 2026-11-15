@@ -277,6 +277,8 @@ bool          model_prop_batches(const prop_desc_t *p);
  * fpga.c, mask.* in scope_mask.c) the store IS that owner's setter through
  * model_hw(), and does nothing while the ops are unbound. view.persist's is
  * a no-op: a load never claims the shared pool (settings_store.c's rule).
+ * view.mode's store is not called by a load either (the record's view is
+ * kept and set through the setter later: model_view_boot_apply below).
  * So a store is a boot / start-up tool, not a runtime apply: at run time
  * "Reset to defaults" goes through the setters (model_reset_to_defaults).
  *
@@ -342,6 +344,33 @@ void    model_last_screen_load(uint8_t raw);
  * it). sys.lastscreen does not follow it. */
 void    model_last_screen_note_power_off(uint8_t screen);
 uint8_t model_last_screen_record(void);
+
+/* view.mode across a power cycle. The settings record holds the display view
+ * (offset 23, model_persist_v5.c V5_VIEW), but a load cannot put it in force:
+ * a view other than yt goes through its owners (scope_view_select claims the
+ * shared pool, Roll is an FPGA write in an acquisition park), which need the
+ * scheduler. So a load only KEEPS the value (model_view_boot_load: the codec's,
+ * before the scheduler, no live state moved; above MODEL_VIEW_MODE_MAX -> yt),
+ * and model_view_boot_apply() sets it through the normal setter, ORIGIN_BOOT
+ * (no settings note, not refused by a self-cal run), on the executor once the
+ * ops are bound (model_fw_start). It returns true when the kept view is the
+ * one in force.
+ *
+ * model_view_record() is the value every capture writes into the record: the
+ * kept one until it is in force, then the live view.mode. A boot whose apply
+ * was refused (no pool, the Roll write failed, a build without the FFT views
+ * holding a record that names one) therefore comes up in yt and still saves
+ * the view it could not show, whatever else is saved in that session. The
+ * kept value is dropped by the first change of the view that is not the boot
+ * apply: a set of view.mode that succeeds (the value in force included),
+ * tb.roll changing, view.persist evicting a spectrum view, and Reset to
+ * defaults (model_view_boot_forget; the reset loop skips a property already
+ * at its default, and yt is where a refused boot left it). */
+#define MODEL_VIEW_MODE_MAX  5u     /* view.mode: yt, roll, xy, fft, split, waterfall */
+void    model_view_boot_load(uint8_t raw);
+bool    model_view_boot_apply(void);            /* EXECUTOR ONLY */
+void    model_view_boot_forget(void);
+uint8_t model_view_record(void);
 
 /* meter.hold / meter.rel / meter.degf: model_hw_ops_t.meter_flag_get/set. */
 enum { METER_FLAG_HOLD = 0, METER_FLAG_REL, METER_FLAG_DEGF };

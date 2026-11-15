@@ -20,11 +20,15 @@
  * accepted, and the apply comparison covers what it then does with it.
  *
  * Also: the per-field out-of-range policy, field by field; the stored-only
- * bytes (sys.lang, fft.*, display_persist_mode, padding) carried through a
+ * bytes (sys.lang, fft.*, display_persist_mode) carried through a
  * load/save cycle and saved once set; table coverage (every PF_PERSIST
  * property has one row, every row a persisted property or a const one, every
- * record byte is one row's or padding); the session-only list; settings
- * notes by origin (key, shell with persist on/off, boot, load).
+ * record byte is one row's: no padding is left); the session-only list;
+ * settings notes by origin (key, shell with persist on/off, boot, load); and
+ * the display view (view.mode, the former padding byte 23): kept by a load,
+ * put in force by the boot apply, kept in the record when that is refused.
+ * The same file is also built with FEATURE_FFT=0 (test_model_persist_nofft):
+ * a build without the spectrum views against a record that names one.
  *
  * Build/run:  make -C firmware test-model-persist
  */
@@ -64,12 +68,25 @@ volatile uint8_t        meter_layout  = 0;
 volatile bool           math_enabled  = false;
 volatile uint8_t        math_op       = 0;
 volatile bool           persist_enabled = false;
+#if FEATURE_FFT
 volatile scope_view_t   scope_view    = SCOPE_VIEW_TIME;
+#endif
 volatile uint8_t        fuse_type     = 0;
 volatile uint8_t        fuse_rating_idx = 6;
 volatile uint8_t        fuse_view     = 0;
 volatile float          fuse_scan_threshold_mv = 0.1f;
 uint8_t key_focus_get(void) { return 0; }
+/* scope_view through one pair, so the file also builds without the spectrum
+ * views (FEATURE_FFT=0: no scope_view, the time view only). */
+#if FEATURE_FFT
+static uint8_t tv_view(void)        { return (uint8_t)scope_view; }
+static void    tv_view_set(uint8_t v) { scope_view = (scope_view_t)v; }
+#define TV_VIEW_COUNT  ((uint32_t)SCOPE_VIEW_COUNT)
+#else
+static uint8_t tv_view(void)        { return 0u; }
+static void    tv_view_set(uint8_t v) { (void)v; }
+#define TV_VIEW_COUNT  1u
+#endif
 
 /* signal_gen.c's output driver: what the GEN lead would be doing */
 static bool     dac_running;
@@ -110,6 +127,14 @@ flash_region_status_t flash_regions_bind_w25q(void) { return FLASH_REGION_ERR_NO
  * from the meter to Restore (an owner decision, 2026-11-14), so the default
  * record's startup_mode byte is CONFIG_MODE_RESTORE where it was
  * CONFIG_MODE_MULTIMETER. How stored values decode did not move.
+ *
+ * A third (the display view, view.mode): the last padding byte, offset 23,
+ * became the field view_mode. Three more lines, each marked "view.mode":
+ * ref_capture writes the view the model holds for the record (the loaded
+ * one until the boot apply put it in force or the user changed the view,
+ * then the live view.mode), ref_apply clamps it (above 5 -> 0) into the
+ * model's kept-view state and moves no live state (scope_view and the roll
+ * flag are the owners', set later through the setter), ref_defaults sets 0.
  * ═══════════════════════════════════════════════════════════════════ */
 #define REF_TRIGGER_LEVEL_LIMIT  103
 
@@ -171,6 +196,7 @@ static void ref_capture(device_config_t *cfg)
     cfg->meter_layout  = meter_layout;
     cfg->meter_link    = (uint8_t)meter_link_get(NULL);                      /* meter.link */
     cfg->last_screen   = model_last_screen_record();                        /* last screen */
+    cfg->view_mode     = model_view_record();                               /* view.mode */
 
     const siggen_config_t *sg = siggen_get_config();
     cfg->siggen_waveform  = sg->waveform;
@@ -229,6 +255,7 @@ static void ref_apply(const device_config_t *cfg)
     meter_link_store(NULL, ref_clamp_idx(cfg->meter_link, METER_LINK_POLICY_COUNT,
                                          METER_LINK_SCREEN));                /* meter.link */
     model_last_screen_load(cfg->last_screen <= STARTUP_SCREEN_MAX ? cfg->last_screen : 0u);   /* last screen */
+    model_view_boot_load(cfg->view_mode <= 5u ? cfg->view_mode : 0u);       /* view.mode */
 
     /* v5: the measurement selection (meas_select_set drops bits above 12). */
     meas_select_set(0, cfg->meas_ch1_mask);
@@ -341,6 +368,7 @@ static void ref_defaults(device_config_t *cfg)
     cfg->meter_layout         = 0;  /* Full */
     cfg->meter_link           = 0;  /* meter.link: with the screen */
     cfg->last_screen          = 0;  /* last screen: none */
+    cfg->view_mode            = 0;  /* view.mode: yt */
 
     /* v5 block: the same five on both channels, CH1's badges before the
      * selection page existed (meas_select.h MEAS_SELECT_CH1/CH2_DEFAULT;
@@ -363,6 +391,7 @@ typedef struct {
     scope_state_t ss;               /* the whole struct: session fields included */
     uint16_t meas2;
     uint8_t  theme, math_en, math_op, meter_sub, meter_lay, meter_link, startup, last_screen;
+    uint8_t  view, view_rec;        /* scope_view (a load must not move it) and the view kept for the record */
     uint8_t  wave, amp, duty, out, start_on;
     uint32_t freq;
     uint8_t  bright, vol, autooff;
@@ -383,6 +412,8 @@ static void snap(snap_t *s)
     s->meter_link = (uint8_t)meter_link_get(NULL);
     s->startup   = (uint8_t)startup_mode;
     s->last_screen = model_last_screen();
+    s->view      = tv_view();
+    s->view_rec  = model_view_record();
     const siggen_config_t *g = siggen_get_config();
     s->wave = g->waveform; s->freq = g->frequency_hz; s->amp = g->amplitude_dv;
     s->duty = g->duty_pct; s->out = g->output_enabled; s->start_on = g->start_on;
@@ -405,6 +436,8 @@ static void restore(const snap_t *s)
     meter_link_store(NULL, s->meter_link);
     startup_mode  = (startup_mode_t)s->startup;
     model_last_screen_load(s->last_screen);
+    tv_view_set(s->view);
+    model_view_boot_load(s->view_rec);      /* the same record value, kept */
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = s->wave; g.frequency_hz = s->freq; g.amplitude_dv = s->amp;
@@ -474,6 +507,9 @@ static void random_state(void)
     current_mode  = (device_mode_t)R(MODE_COUNT);          /* the screen shown: a capture must not look at it */
     model_last_screen_load((uint8_t)R(STARTUP_SCREEN_MAX + 1u));   /* the loaded screen: a capture carries it ... */
     if (R(2)) model_last_screen_note_power_off((uint8_t)R(STARTUP_SCREEN_MAX + 1u));   /* ... until a power-off */
+    tv_view_set((uint8_t)R(TV_VIEW_COUNT));                /* with ss->roll above: any view.mode */
+    model_view_boot_load((uint8_t)R(MODEL_VIEW_MODE_MAX + 1u));   /* the loaded view: a capture carries it ... */
+    if (R(2)) model_view_boot_forget();                    /* ... until it is in force: then the live one */
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = (uint8_t)R(SIGGEN_WAVEFORM_COUNT);
@@ -570,6 +606,12 @@ static void test_table_coverage(void)
         } else {
             CHECK(f->codec == V5_CONST || f->codec == V5_CARRY || f->codec == V5_SCREEN);
         }
+        /* a row that keeps its value for a later apply is view.mode's only */
+        CHECK((f->codec == V5_VIEW) == (f->prop_id == PROP_ID_VIEW_MODE));
+        if (f->codec == V5_VIEW) {
+            CHECK(f->offset == 23u && f->size == 1u && f->lo == 0 && f->hi == (int32_t)MODEL_VIEW_MODE_MAX);
+            CHECK(p && p->max == (int32_t)MODEL_VIEW_MODE_MAX && (p->flags & PF_HW));
+        }
         for (unsigned k = 0; k < f->size; k++) {
             CHECKF(f->offset + k < sizeof owner, "row %u past the record", r);
             if (f->offset + k < sizeof owner) {
@@ -578,17 +620,18 @@ static void test_table_coverage(void)
             }
         }
     }
-    /* every payload byte between the header and the checksum: one row's, or
-     * the struct's padding (23; 11 was padding until meter.link took it, 22
-     * until the last screen did) */
-    for (unsigned b = offsetof(device_config_t, scope_ch1_vdiv); b < offsetof(device_config_t, checksum); b++) {
-        const bool pad = (b == 23u);
-        CHECKF(owner[b] == (pad ? 0 : 1), "record byte %u %s", b, pad ? "is padding but owned" : "has no row");
-    }
+    /* every payload byte between the header and the checksum is one row's:
+     * the struct has no padding left (11 was padding until meter.link took
+     * it, 22 until the last screen did, 23 until view.mode did) */
+    for (unsigned b = offsetof(device_config_t, scope_ch1_vdiv); b < offsetof(device_config_t, checksum); b++)
+        CHECKF(owner[b] == 1, "record byte %u has no row", b);
     CHECK(offsetof(device_config_t, scope_trigger_level) == 12u);
     CHECK(offsetof(device_config_t, meter_link) == 11u);
     CHECK(offsetof(device_config_t, last_screen) == 22u);
+    CHECK(offsetof(device_config_t, view_mode) == 23u);
     CHECK(offsetof(device_config_t, siggen_frequency) == 24u);
+    CHECK(sizeof(device_config_t) == 60u && CONFIG_VERSION == 5);
+    CHECK((P(VIEW_MODE)->flags & PF_PERSIST) && !(P(VIEW_MODE)->flags & PF_SESSION));
 
     /* Session-only as a result: settable, not an alias, not usercal, no row
      * (or a const row that the record forces). Printed for the report. */
@@ -636,6 +679,10 @@ static void test_defaults_identical(void)
     for (uint16_t i = 0; i < prop_count(); i++) {
         const prop_desc_t *p = prop_at(i);
         if (!(p->flags & PF_PERSIST)) continue;
+        if (p->id == PROP_ID_VIEW_MODE) {       /* kept by the load, in force after the boot apply */
+            CHECK(model_view_record() == (uint8_t)prop_default(p));
+            CHECK(model_view_boot_apply());
+        }
         CHECKF(prop_get(p) == prop_default(p), "%s = %ld after a defaults load, default %ld",
                p->name, (long)prop_get(p), (long)prop_default(p));
     }
@@ -765,6 +812,7 @@ static void test_round_trip_through_properties(void)
 {
     for (unsigned n = 0; n < 2000u; n++) {
         random_state();
+        model_view_boot_forget();               /* the live view is the one to save */
         int32_t want[PROP_IX_COUNT];
         for (uint16_t i = 0; i < prop_count(); i++) want[i] = prop_get(prop_at(i));
         const bool men = math_enabled; const uint8_t mop = math_op;
@@ -776,11 +824,20 @@ static void test_round_trip_through_properties(void)
         device_config_t d;
         config_init_defaults(&d);
         settings_store_apply(&d);
+        /* a power cycle for the view: RAM comes up in Y-T, the load keeps
+         * the record's view, the boot apply sets it */
+        tv_view_set(0);
+        scope_state_get()->roll = false;
         settings_store_apply(&rec);
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && model_view_record() == (uint8_t)want[PROP_IX_VIEW_MODE]);
+        CHECK(model_view_boot_apply());
         for (uint16_t i = 0; i < prop_count(); i++) {
             const prop_desc_t *p = prop_at(i);
             if (!(p->flags & PF_PERSIST)) continue;
             int32_t w = want[i];
+#if !FEATURE_FFT
+            if (p->id == PROP_ID_VIEW_MODE && w > 1) w = 0;    /* not reachable: scope_view is not this build's */
+#endif
             /* gen.out is saved only with gen.bootout on */
             if (p->id == PROP_ID_GEN_OUT && !want[PROP_IX_GEN_BOOTOUT]) w = 0;
             if (prop_get(p) != w) { CHECKF(0, "%s: %ld back as %ld", p->name, (long)w, (long)prop_get(p)); break; }
@@ -901,7 +958,7 @@ static void test_out_of_range_policy(void)
 
 static void test_stored_only_raw_carry(void)
 {
-    static const unsigned carried[] = { 18, 19, 20, 23, 37, 38 };   /* fft x3, pad, persist mode, lang (11 is meter.link now, 22 the last screen) */
+    static const unsigned carried[] = { 18, 19, 20, 37, 38 };   /* fft x3, persist mode, lang (11 is meter.link now, 22 the last screen, 23 view.mode) */
     for (unsigned n = 0; n < 2000u; n++) {
         device_config_t rec;
         config_init_defaults(&rec);
@@ -1290,6 +1347,306 @@ static void test_last_screen_record(void)
     current_mode = MODE_MULTIMETER;
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * view.mode (the display view): the former padding byte at offset 23
+ *
+ * A load keeps the value and moves no live state; the boot apply
+ * (model_view_boot_apply, the firmware calls it on the input task once the
+ * ops are bound) sets it through the setter. Refused: Y-T, and the record
+ * keeps the view until the user changes it.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static bool g_view_fail, g_roll_fail;
+static unsigned g_view_calls, g_roll_calls;
+static bool fv_view(uint8_t v)
+{
+    g_view_calls++;
+    if (g_view_fail && v != 0u) return false;       /* the pool: only leaving Y-T can fail */
+#if FEATURE_FFT
+    scope_view = (scope_view_t)v;
+    return true;
+#else
+    return v == 0u;
+#endif
+}
+static bool fv_roll(void) { g_roll_calls++; return !g_roll_fail; }
+/* scope_apply_persist_on: a spectrum view goes back to Y-T for the pool */
+static bool fv_persist_on(uint8_t m)
+{
+    (void)m;
+#if FEATURE_FFT
+    if (scope_view != SCOPE_VIEW_TIME && scope_view != SCOPE_VIEW_XY) scope_view = SCOPE_VIEW_TIME;
+#endif
+    persist_enabled = true;
+    return true;
+}
+static void fv_persist_off(void) { persist_enabled = false; }
+static const model_hw_ops_t k_view_ops = {
+    .vdiv = f_ok_u8, .view_select = fv_view, .roll = fv_roll,
+    .persist_on = fv_persist_on, .persist_off = fv_persist_off,
+    .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note,
+};
+
+/* RAM after a power cycle (scope_state_init: Y-T, not rolling), then the
+ * load of *rec as main() makes it before the scheduler. */
+static void view_power_cycle(const device_config_t *rec)
+{
+    tv_view_set(0);
+    scope_state_get()->roll = false;
+    persist_enabled = false;
+    settings_store_apply(rec);
+    g_notes = 0; g_view_calls = 0; g_roll_calls = 0;
+}
+
+static device_config_t view_rec_of(const device_config_t *base, uint8_t v)
+{
+    device_config_t r = *base;
+    r.view_mode = v;
+    r.checksum = config_compute_checksum(&r);
+    return r;
+}
+
+static void test_view_mode_record(void)
+{
+    static const char *const name[6] = { "yt", "roll", "xy", "fft", "split", "waterfall" };
+    model_bind_hw(&k_view_ops);
+    g_view_fail = g_roll_fail = false;
+    g_real_note = false;
+    for (unsigned v = 0; v < 6; v++) CHECK(strcmp(P(VIEW_MODE)->labels[v], name[v]) == 0);
+    CHECK(prop_default(P(VIEW_MODE)) == 0);
+
+    /* A record from before the field existed: byte 23 is 0 (padding, zeroed
+     * by the defaults' memset and carried by every capture since). It loads
+     * as yt. */
+    device_config_t old;
+    ref_defaults(&old);
+    CHECK(((const uint8_t *)&old)[23] == 0u && config_validate(&old));
+    view_power_cycle(&old);
+    CHECK(model_view_record() == 0u);
+    CHECK(model_view_boot_apply());
+    CHECK(prop_get(P(VIEW_MODE)) == 0 && g_view_calls == 0 && g_roll_calls == 0 && g_notes == 0);
+    /* Saving it back unchanged gives the same 60 bytes: no record is burnt
+     * by the update alone. */
+    device_config_t same = old;
+    settings_store_capture(&same);
+    CHECK(memcmp(&same, &old, sizeof old) == 0);
+    if (memcmp(&same, &old, sizeof old)) diff_rec(&old, &same);
+
+    /* A load moves no live state, whatever view is live (the store hook
+     * would have written scope_view and the roll flag behind their owners). */
+    for (unsigned v = 0; v < 6; v++) {
+        const device_config_t r = view_rec_of(&old, (uint8_t)v);
+#if FEATURE_FFT
+        scope_view = SCOPE_VIEW_SPLIT;
+#endif
+        scope_state_get()->roll = false;
+        const int32_t live = prop_get(P(VIEW_MODE));
+        settings_store_apply(&r);
+        CHECK(prop_get(P(VIEW_MODE)) == live && !scope_state_get()->roll);
+        CHECK(model_view_record() == v);
+    }
+
+    /* Each of the six values: set by the user, saved in byte 23 and nowhere
+     * else, and back after a power cycle through the setter. */
+    for (unsigned v = 0; v < 6; v++) {
+#if !FEATURE_FFT
+        if (v > 1u) continue;                       /* this build cannot show it: below */
+#endif
+        view_power_cycle(&old);
+        CHECK(model_view_boot_apply());
+        CHECK(prop_set_local(P(VIEW_MODE), (int32_t)v, ORIGIN_KEY, NULL) == PS_OK);
+        CHECKF(g_notes == (v ? 1u : 0u), "%s: %u settings notes", name[v], g_notes);   /* saved when it changes */
+        device_config_t rec = old;
+        settings_store_capture(&rec);
+        for (size_t i = 0; i < offsetof(device_config_t, checksum); i++) {
+            const uint8_t x = ((const uint8_t *)&old)[i], y = ((const uint8_t *)&rec)[i];
+            if (i == 23u) CHECKF(y == v, "%s saved as %u", name[v], y);
+            else CHECKF(x == y, "byte %zu moved with view.mode: 0x%02x -> 0x%02x", i, x, y);
+        }
+        CHECK(config_validate(&rec) && rec.checksum == old.checksum + v);
+
+        view_power_cycle(&rec);
+        /* before the apply: Y-T on screen, no owner called, and a save made
+         * in this window (any other setting) still writes the view */
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && g_view_calls == 0 && g_roll_calls == 0);
+        CHECK(model_view_record() == v);
+        device_config_t early = rec;
+        settings_store_capture(&early);
+        CHECK(memcmp(&early, &rec, sizeof rec) == 0);
+
+        CHECK(model_view_boot_apply());
+        CHECKF(prop_get(P(VIEW_MODE)) == (int32_t)v, "%s came back as %ld", name[v], (long)prop_get(P(VIEW_MODE)));
+        CHECK(scope_state_get()->roll == (v == 1u));
+        CHECK(g_roll_calls == (v == 1u ? 1u : 0u));                 /* the FPGA is told about Roll */
+#if FEATURE_FFT
+        CHECK(g_view_calls == (v >= 2u ? 1u : 0u));                 /* the pool's owner is asked */
+#endif
+        CHECK(g_notes == 0);                                        /* a boot apply is not a change */
+        CHECK(!model_view_boot_apply());                            /* once */
+        device_config_t again = rec;
+        settings_store_capture(&again);
+        CHECK(memcmp(&again, &rec, sizeof rec) == 0);               /* and burns no record */
+        if (memcmp(&again, &rec, sizeof rec)) diff_rec(&rec, &again);
+    }
+
+    /* A self-cal run does not refuse the boot apply (ORIGIN_BOOT). */
+    {
+        const device_config_t r = view_rec_of(&old, 1);
+        view_power_cycle(&r);
+        g_selfcal = true;
+        CHECK(model_view_boot_apply() && prop_get(P(VIEW_MODE)) == 1);
+        g_selfcal = false;
+    }
+
+    /* A byte no view has: yt, and the record then says so (like every
+     * other index field). */
+    for (unsigned v = 6; v < 256; v++) {
+        const device_config_t r = view_rec_of(&old, (uint8_t)v);
+        view_power_cycle(&r);
+        if (model_view_record() != 0u || !model_view_boot_apply() || prop_get(P(VIEW_MODE)) != 0 ||
+            g_view_calls || g_roll_calls) {
+            CHECKF(0, "view byte %u loaded as %u", v, (unsigned)model_view_record());
+            break;
+        }
+        device_config_t back = r;
+        settings_store_capture(&back);
+        if (back.view_mode != 0u) { CHECKF(0, "view byte %u saved back as %u", v, back.view_mode); break; }
+    }
+    checks++;
+
+    /* Roll refused at boot (the acquisition park timed out): Y-T, the roll
+     * flag not left set, and the record keeps roll through other saves. */
+    {
+        const device_config_t r = view_rec_of(&old, 1);
+        view_power_cycle(&r);
+        g_roll_fail = true;
+        CHECK(!model_view_boot_apply());
+        g_roll_fail = false;
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && !scope_state_get()->roll && g_notes == 0);
+        CHECK(prop_set_local(P(CH1_VDIV), 7, ORIGIN_KEY, NULL) == PS_OK && g_notes == 1);
+        device_config_t next = r;
+        settings_store_capture(&next);
+        CHECK(next.view_mode == 1u && next.scope_ch1_vdiv == 7u);
+        /* the next boot shows it */
+        view_power_cycle(&next);
+        CHECK(model_view_boot_apply() && prop_get(P(VIEW_MODE)) == 1);
+        CHECK(prop_set_local(P(CH1_VDIV), prop_default(P(CH1_VDIV)), ORIGIN_KEY, NULL) == PS_OK);
+    }
+
+#if FEATURE_FFT
+    /* The pool refused at boot (view_select says no): the same, for each
+     * view that needs its owner. */
+    for (unsigned v = 2; v < 6; v++) {
+        const device_config_t r = view_rec_of(&old, (uint8_t)v);
+        view_power_cycle(&r);
+        g_view_fail = true;
+        CHECK(!model_view_boot_apply());
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && scope_view == SCOPE_VIEW_TIME && !scope_state_get()->roll);
+        CHECK(g_notes == 0 && model_view_record() == v);
+        device_config_t next = r;
+        settings_store_capture(&next);
+        CHECK(memcmp(&next, &r, sizeof r) == 0);            /* that boot alone destroys nothing */
+        CHECK(!model_view_boot_apply() && model_view_record() == v);    /* still refused, still kept */
+        g_view_fail = false;
+        view_power_cycle(&next);
+        CHECK(model_view_boot_apply() && prop_get(P(VIEW_MODE)) == (int32_t)v);
+    }
+
+    /* After a refused boot the user's own change of the view is what the
+     * record holds from then on ... */
+    {
+        const device_config_t r = view_rec_of(&old, 5);
+        /* ... another view */
+        view_power_cycle(&r);
+        g_view_fail = true;  CHECK(!model_view_boot_apply());  g_view_fail = false;
+        CHECK(prop_set_local(P(VIEW_MODE), 3, ORIGIN_KEY, NULL) == PS_OK && g_notes == 1);
+        CHECK(model_view_record() == 3u);
+        /* ... a set that is refused changes nothing: still kept */
+        view_power_cycle(&r);
+        g_view_fail = true;  CHECK(!model_view_boot_apply());
+        CHECK(prop_set_local(P(VIEW_MODE), 4, ORIGIN_KEY, NULL) == PS_NOT_SET && g_notes == 0);
+        g_view_fail = false;
+        CHECK(model_view_record() == 5u);
+        /* ... Y-T chosen while Y-T is shown: the user's choice, no hardware */
+        CHECK(prop_set_local(P(VIEW_MODE), 0, ORIGIN_SHELL, NULL) == PS_OK);
+        CHECK(model_view_record() == 0u);
+        /* ... Roll through the timebase ladder (tb.roll, not persisted itself) */
+        view_power_cycle(&r);
+        g_view_fail = true;  CHECK(!model_view_boot_apply());  g_view_fail = false;
+        CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, NULL) == PS_OK);
+        CHECK(model_view_record() == 1u && g_notes == 1);
+        CHECK(prop_set_local(P(TB_ROLL), 0, ORIGIN_KEY, NULL) == PS_OK);
+        CHECK(model_view_record() == 0u && g_notes == 2);
+    }
+
+    /* Persistence takes the pool from a spectrum view: view.mode goes back
+     * to yt through view.persist's setter, and that is saved too. */
+    {
+        view_power_cycle(&old);
+        CHECK(model_view_boot_apply());
+        CHECK(prop_set_local(P(VIEW_MODE), 5, ORIGIN_KEY, NULL) == PS_OK && g_notes == 1);
+        CHECK(prop_set_local(P(VIEW_PERSIST), 2, ORIGIN_KEY, NULL) == PS_OK);
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && model_view_record() == 0u);
+        CHECKF(g_notes == 2, "%u notes: the view persistence evicted was not noted", g_notes);
+        CHECK(prop_set_local(P(VIEW_PERSIST), 0, ORIGIN_KEY, NULL) == PS_OK && g_notes == 2);
+        /* in X-Y nothing is evicted: no note */
+        CHECK(prop_set_local(P(VIEW_MODE), 2, ORIGIN_KEY, NULL) == PS_OK && g_notes == 3);
+        CHECK(prop_set_local(P(VIEW_PERSIST), 1, ORIGIN_KEY, NULL) == PS_OK);
+        CHECK(prop_get(P(VIEW_MODE)) == 2 && g_notes == 3);
+        CHECK(prop_set_local(P(VIEW_PERSIST), 0, ORIGIN_KEY, NULL) == PS_OK);
+    }
+#else
+    /* A build without the spectrum views, a record that names one (saved by
+     * another image): Y-T, cleanly, and the byte is left as it is. */
+    for (unsigned v = 2; v < 6; v++) {
+        const device_config_t r = view_rec_of(&old, (uint8_t)v);
+        view_power_cycle(&r);
+        CHECK(!model_view_boot_apply());
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && !scope_state_get()->roll && g_roll_calls == 0 && g_notes == 0);
+        CHECK(model_view_record() == v);
+        CHECK(prop_set_local(P(CH1_VDIV), 7, ORIGIN_KEY, NULL) == PS_OK && g_notes == 1);
+        device_config_t next = r;
+        settings_store_capture(&next);
+        CHECKF(next.view_mode == v && next.scope_ch1_vdiv == 7u, "%s saved back as %u", name[v], next.view_mode);
+        CHECK(prop_set_local(P(CH1_VDIV), prop_default(P(CH1_VDIV)), ORIGIN_KEY, NULL) == PS_OK);
+        /* asking for it says why, and does not drop it either */
+        prop_note_t n;
+        CHECK(prop_set_local(P(VIEW_MODE), (int32_t)v, ORIGIN_KEY, &n) == PS_REFUSED);
+        CHECK(strcmp(n.text, "Not in this build") == 0 && model_view_record() == v);
+        /* the views this build has replace it */
+        CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, NULL) == PS_OK && model_view_record() == 1u);
+        CHECK(prop_set_local(P(VIEW_MODE), 0, ORIGIN_KEY, NULL) == PS_OK && model_view_record() == 0u);
+    }
+#endif
+
+    /* Reset to defaults after a refused boot: the view is on its default
+     * already, so the reset loop never calls its setter; the kept view goes
+     * all the same, or the reset's own save would write it back. */
+    {
+        const device_config_t r = view_rec_of(&old, 5);
+        view_power_cycle(&r);
+        g_view_fail = true;
+        (void)model_view_boot_apply();                      /* refused (or not in this build) */
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && model_view_record() == 5u);
+        (void)model_reset_to_defaults(NULL, NULL);
+        g_view_fail = false;
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && model_view_record() == 0u);
+        CHECK(prop_reset_keeps(P(VIEW_MODE)) == NULL);
+    }
+    /* ... and a view that is in force goes back to yt through its setter */
+    {
+        view_power_cycle(&old);
+        CHECK(model_view_boot_apply());
+        CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, NULL) == PS_OK);
+        (void)model_reset_to_defaults(NULL, NULL);
+        CHECK(prop_get(P(VIEW_MODE)) == 0 && !scope_state_get()->roll && model_view_record() == 0u);
+    }
+
+    view_power_cycle(&old);
+    (void)model_view_boot_apply();
+    model_bind_hw(NULL);
+}
+
 int main(void)
 {
     scope_state_init(scope_state_get());
@@ -1310,6 +1667,7 @@ int main(void)
     test_refused_commit_no_note();
     test_meter_link_record();
     test_last_screen_record();
+    test_view_mode_record();
 
     printf("test_model_persist: %d checks, %d failed\n", checks, fails);
     return fails ? 1 : 0;

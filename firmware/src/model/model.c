@@ -748,6 +748,10 @@ prop_status_t model_reset_to_defaults(void (*between)(void), model_reset_report_
     memset(rep, 0, sizeof *rep);
     if (g_ops->selfcal_busy && g_ops->selfcal_busy()) return (prop_status_t)(rep->status = PS_BUSY);
 
+    /* A view the boot kept but could not show is a saved setting too: gone,
+     * or the save that follows would write it back (model.h). */
+    model_view_boot_forget();
+
     /* view.math = off keeps the operator the Math pane remembers (math_op,
      * a record byte of its own). A reset forgets it too: "A+B" first, and
      * the loop below then switches math off. No hardware either way. */

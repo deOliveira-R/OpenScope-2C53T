@@ -212,7 +212,14 @@ static bool f_roll(void)                         { logf_("roll;"); return true; 
 static bool f_trig_src(void)                     { logf_("trigsrc;"); return true; }
 static bool f_trig_lvl(int16_t l)                { logf_("triglvl(%d);", l); return true; }
 static void f_rearm(void)                        { logf_("rearm;"); }
-static bool f_view(uint8_t v)                    { logf_("view(%u);", v); scope_view = (scope_view_t)v; return true; }
+static bool     g_fail_view;                      /* the shared pool says no (not reset by boot()) */
+static bool f_view(uint8_t v)
+{
+    logf_("view(%u);", v);
+    if (g_fail_view && v != 0u) return false;
+    scope_view = (scope_view_t)v;
+    return true;
+}
 static bool f_pers_on(uint8_t m)                 { logf_("pers_on(%u);", m); persist_enabled = true; g_pmode = m; return true; }
 static void f_pers_off(void)                     { logf_("pers_off;"); persist_enabled = false; g_pmode = 0; }
 static uint8_t f_pers_mode(void)                 { return g_pmode; }
@@ -292,6 +299,7 @@ static void boot(void)
     (void)model_load_defaults(PF_SESSION, NULL, false);
     current_mode = MODE_SETTINGS;
     (void)settings_store_load_and_apply();
+    (void)model_view_boot_apply();      /* the input task's first step (model_fw_start) */
     g_log[0] = '\0';
     g_between = 0;
     g_notes = 0;
@@ -594,11 +602,12 @@ static void test_carried_bytes_go_back(void)
     rec.fft_avg_count = 16;
     rec.fft_max_hold = 1;
     rec.last_screen = STARTUP_SCREEN_SIGGEN;
-    ((uint8_t *)&rec)[23] = 0xA5;                  /* padding */
+    ((uint8_t *)&rec)[23] = 0xA5;                  /* view.mode, a byte no view has: yt */
     rec.checksum = config_compute_checksum(&rec);
     CHECK(config_save(&rec));
     boot();
     CHECK(model_last_screen() == STARTUP_SCREEN_SIGGEN);
+    CHECK(prop_get(P(VIEW_MODE)) == 0 && model_view_record() == 0u);
     CHECK(prop_get(P(FFT_WINDOW)) == 3 && prop_get(P(FFT_AVG)) == 4 && prop_get(P(FFT_MAXHOLD)) == 1);
     nor_take_snapshot();
 
@@ -609,6 +618,62 @@ static void test_carried_bytes_go_back(void)
     CHECK(memcmp(&now, &defaults, sizeof now) == 0);
     CHECK(now.display_persist_mode == 0 && now.language == 0 && ((uint8_t *)&now)[23] == 0);
     CHECK(nor_outside == 0 && everything_else_intact());
+}
+
+/* The display view (view.mode, record byte 23). In force: the reset takes it
+ * back to Y-T through its owner. Kept by a boot that could not show it (the
+ * pool refused): view.mode already reads its default, so the reset loop never
+ * calls the setter, and the kept view must go all the same or the reset's own
+ * save writes it straight back. Self-cal running: it stays kept. */
+static void test_view_goes_back(void)
+{
+    device_config_t rec, now, defaults;
+    config_init_defaults(&defaults);
+
+    /* in force */
+    fresh_device();
+    CHECK(prop_set_local(P(VIEW_MODE), 5, ORIGIN_KEY, NULL) == PS_OK);
+    g_now += 5000u; key_pressed(); g_now += 5000u; key_pressed();
+    CHECK(record_in_flash(&now) && now.view_mode == 5u);
+    boot();                                         /* a power cycle: it comes back */
+    CHECK(prop_get(P(VIEW_MODE)) == 5 && scope_view == SCOPE_VIEW_WATERFALL);
+    CHECK(g_notes == 0);
+    g_now += 5000u; key_pressed(); g_now += 5000u; key_pressed();
+    CHECK(record_in_flash(&rec) && memcmp(&rec, &now, sizeof rec) == 0);    /* and wrote nothing */
+    nor_take_snapshot();
+    g_log[0] = '\0';
+    settings_reset_result_t r = settings_store_reset_to_defaults(g_now, between);
+    CHECK(r.status == PS_OK && r.left == 0 && r.saved == SETTINGS_FLUSH_SAVED);
+    CHECK(strstr(g_log, "view(0);") != NULL && prop_get(P(VIEW_MODE)) == 0 && scope_view == SCOPE_VIEW_TIME);
+    CHECK(record_in_flash(&now) && memcmp(&now, &defaults, sizeof now) == 0);
+    boot();
+    CHECK(prop_get(P(VIEW_MODE)) == 0);
+
+    /* kept, not in force */
+    fresh_device();
+    rec = defaults;
+    rec.view_mode = 5;
+    rec.checksum = config_compute_checksum(&rec);
+    CHECK(config_save(&rec));
+    g_fail_view = true;
+    boot();
+    CHECK(prop_get(P(VIEW_MODE)) == 0 && scope_view == SCOPE_VIEW_TIME && model_view_record() == 5u);
+    g_now += 5000u; key_pressed(); g_now += 5000u; key_pressed();
+    CHECK(record_in_flash(&now) && memcmp(&now, &rec, sizeof now) == 0);    /* that boot alone: nothing written */
+    /* self-cal running: refused, and the view is still kept */
+    g_busy = true;
+    r = settings_store_reset_to_defaults(g_now, between);
+    g_busy = false;
+    CHECK(r.status == PS_BUSY && model_view_record() == 5u);
+    nor_take_snapshot();
+    r = settings_store_reset_to_defaults(g_now, between);
+    CHECK(r.status == PS_OK && r.left == 0 && r.saved == SETTINGS_FLUSH_SAVED);
+    CHECK(model_view_record() == 0u);
+    CHECK(record_in_flash(&now) && memcmp(&now, &defaults, sizeof now) == 0);
+    CHECK(nor_outside == 0 && everything_else_intact());
+    g_fail_view = false;
+    boot();                                         /* the pool is free again: still Y-T */
+    CHECK(prop_get(P(VIEW_MODE)) == 0 && scope_view == SCOPE_VIEW_TIME);
 }
 
 /* Self-cal running: nothing at all. */
@@ -748,6 +813,7 @@ int main(void)
     test_reset_everything();
     test_reset_twice_and_untouched_device();
     test_carried_bytes_go_back();
+    test_view_goes_back();
     test_busy();
     test_owner_refuses();
     test_reset_when_the_log_compacts();

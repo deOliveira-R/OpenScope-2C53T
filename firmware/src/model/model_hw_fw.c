@@ -568,4 +568,15 @@ void model_fw_start(void *display_queue)
     g_executor = xTaskGetCurrentTaskHandle();
     model_bind_hw(&k_fw_ops);
     model_exec_init(&k_fw_port);
+    /* The display view the settings record holds (model.h, "view.mode across
+     * a power cycle"): through its setter, here, because this is the first
+     * point where the owners can be called: the input task, the scheduler
+     * running, the ops bound. Refused (no pool, the Roll park timed out):
+     * the scope stays in Y-T and the record keeps the view. The groups it
+     * moved go to the screen as after any request. A check-in first: the
+     * boot logo's hold (~1 s, no check-in) is behind us and a Roll park can
+     * take 1 s more, against a 2 s health deadline. */
+    port_checkin();
+    (void)model_view_boot_apply();
+    port_changed(model_touched_take());
 }

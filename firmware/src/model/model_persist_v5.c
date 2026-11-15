@@ -31,6 +31,12 @@
  *   sys.lang, fft.*     out of range -> default in the property, byte carried
  *   meter.link          the former padding byte at offset 11: 0 in every older
  *                       record = screen (the default); anything above 1 -> default
+ *   view.mode           the former padding byte at offset 23: 0 in every older
+ *                       record = yt (the default); anything above 5 -> yt. The
+ *                       range is the same in every build: a build without the
+ *                       FFT views keeps a saved xy / fft / split / waterfall
+ *                       in the record and comes up in yt (model.h,
+ *                       model_view_boot_apply)
  */
 #include "model_persist_v5.h"
 #include "model.h"
@@ -84,6 +90,7 @@ const v5_field_t model_persist_v5_fields[] = {
     ROW(PROP_ID_FFT_MAXHOLD,  fft_max_hold,         V5_BOOL8,     V5_LOAD_EXACT,    V5_F_STORED, 0, 1),
     ROW(PROP_ID_GEN_WAVE,     siggen_waveform,      V5_U8,        V5_LOAD_DEFAULT,  0, 0, SIGGEN_WAVEFORM_COUNT - 1),
     ROW(0,                    last_screen,          V5_SCREEN,    V5_LOAD_DEFAULT,  0, 0, STARTUP_SCREEN_MAX),
+    ROW(PROP_ID_VIEW_MODE,    view_mode,            V5_VIEW,      V5_LOAD_DEFAULT,  0, 0, MODEL_VIEW_MODE_MAX),
     ROW(PROP_ID_GEN_FREQ,     siggen_frequency,     V5_F32_INT,   V5_LOAD_DEFAULT,  0, 0, SIGGEN_FREQ_MAX_HZ),
     ROW(PROP_ID_GEN_AMP,      siggen_amplitude,     V5_F32_X10,   V5_LOAD_DEFAULT,  0, 0, SIGGEN_AMP_MAX_DV),
     ROW(PROP_ID_GEN_DUTY,     siggen_duty,          V5_U8,        V5_LOAD_DEFAULT,  0, 0, SIGGEN_DUTY_MAX),
@@ -157,7 +164,8 @@ int32_t model_persist_v5_decode(const v5_field_t *f, const device_config_t *cfg)
 
     int32_t r;
     switch (f->codec) {
-    case V5_U8:      r = rd_u8(cfg, f->offset); break;
+    case V5_U8:
+    case V5_VIEW:    r = rd_u8(cfg, f->offset); break;
     case V5_I16:     r = rd_i16(cfg, f->offset); break;
     case V5_BOOL8:   return rd_u8(cfg, f->offset) != 0u;
     case V5_MASK16:  return (int32_t)(rd_u16(cfg, f->offset) & (uint16_t)f->hi);
@@ -225,6 +233,10 @@ void model_persist_v5_apply(const device_config_t *cfg)
             continue;
         }
         if (!p || f->codec == V5_CARRY) continue;
+        if (f->codec == V5_VIEW) {               /* kept, not stored: the setter applies it later */
+            model_view_boot_load((uint8_t)model_persist_v5_decode(f, cfg));
+            continue;
+        }
         if (f->codec == V5_MATH_PAIR) {
             const uint8_t op = rd_u8(cfg, f->offset + 1u);
             math_enabled = (rd_u8(cfg, f->offset) != 0u);
@@ -243,7 +255,8 @@ void model_persist_v5_apply(const device_config_t *cfg)
 static void encode(const v5_field_t *f, device_config_t *cfg, int32_t v, int32_t bootout)
 {
     switch (f->codec) {
-    case V5_U8:        wr_u8(cfg, f->offset, (uint8_t)v); break;
+    case V5_U8:
+    case V5_VIEW:      wr_u8(cfg, f->offset, (uint8_t)v); break;
     case V5_BOOL8:     wr_u8(cfg, f->offset, v ? 1u : 0u); break;
     case V5_I16:       wr_i16(cfg, f->offset, (int16_t)v); break;
     case V5_MASK16:    wr_u16(cfg, f->offset, (uint16_t)v); break;
@@ -283,6 +296,10 @@ void model_persist_v5_capture(device_config_t *cfg)
         if (f->codec == V5_CARRY) continue;
         if (f->codec == V5_SCREEN) {             /* the loaded byte, or the power-off's screen */
             wr_u8(cfg, f->offset, model_last_screen_record());
+            continue;
+        }
+        if (f->codec == V5_VIEW) {               /* the loaded view until it is in force */
+            wr_u8(cfg, f->offset, model_view_record());
             continue;
         }
         if (f->codec == V5_MATH_PAIR) {          /* the variables, not the composite */

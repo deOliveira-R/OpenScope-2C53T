@@ -61,6 +61,13 @@ typedef enum {
                      * model_last_screen_load(), out of range -> none; a capture
                      * writes model_last_screen_record(): that loaded value,
                      * until a power-off names the screen shown then            */
+    V5_VIEW,        /* uint8_t = view.mode, but a load moves no live state: it
+                     * hands the value (out of range -> yt) to
+                     * model_view_boot_load(), and the view is put in force
+                     * through its setter once the scheduler runs
+                     * (model_view_boot_apply). A capture writes
+                     * model_view_record(): that loaded value until the view
+                     * is in force or the user changes it, then the live one   */
 } v5_codec_t;
 
 /* What a load does with a value outside lo..hi (record units). */

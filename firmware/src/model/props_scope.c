@@ -244,12 +244,15 @@ static prop_status_t roll_apply(bool want, uint8_t step, prop_note_t *note)
 
 int32_t tb_roll_get(const prop_desc_t *p) { (void)p; return scope_state_get()->roll ? 1 : 0; }
 void    tb_roll_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->roll = (v != 0); }
+static void view_moved(uint8_t origin);
 prop_status_t tb_roll_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)p; (void)origin;
+    (void)p;
     const scope_state_t *ss = scope_state_get();
     if ((v != 0) == ss->roll) return PS_OK;
-    return roll_apply(v != 0, ss->roll_step, note);
+    const prop_status_t s = roll_apply(v != 0, ss->roll_step, note);
+    if (s == PS_OK) view_moved(origin);         /* Roll is a value of view.mode, which is saved */
+    return s;
 }
 
 int32_t tb_rollstep_get(const prop_desc_t *p) { (void)p; return scope_state_get()->roll_step; }
@@ -400,6 +403,39 @@ static const uint8_t k_view_of[VM_COUNT] = {
 #define VIEW_OF(v) ((void)(v), 0u)     /* the time view: yt and roll only */
 #endif
 
+/* The view the settings record held at the last load, while it is not in
+ * force yet (model.h, "view.mode across a power cycle"). 2 bytes. */
+static uint8_t g_view_kept = VM_YT;
+static bool    g_view_keeping;
+
+void    model_view_boot_load(uint8_t raw)
+{
+    g_view_kept = (raw < (uint8_t)VM_COUNT) ? raw : (uint8_t)VM_YT;
+    g_view_keeping = true;
+}
+void    model_view_boot_forget(void) { g_view_keeping = false; }
+uint8_t model_view_record(void)
+{
+    return g_view_keeping ? g_view_kept : (uint8_t)view_mode_get(P(VIEW_MODE));
+}
+bool model_view_boot_apply(void)
+{
+    if (!g_view_keeping) return false;
+    (void)prop_set_local(P(VIEW_MODE), g_view_kept, ORIGIN_BOOT, NULL);
+    if (view_mode_get(P(VIEW_MODE)) != (int32_t)g_view_kept) return false;   /* refused: yt, still kept */
+    g_view_keeping = false;
+    return true;
+}
+
+/* view.mode moved through another property's setter (tb.roll, view.persist
+ * evicting a spectrum view): its epoch, the settings note its own set would
+ * have made, and the boot's kept view is no longer what the user has. */
+static void view_moved(uint8_t origin)
+{
+    g_view_keeping = false;
+    model_changed_also(P(VIEW_MODE), origin);
+}
+
 void view_mode_store(const prop_desc_t *p, int32_t v)
 {
     (void)p;
@@ -427,9 +463,8 @@ static bool view_switch(uint8_t view)
  * undone if a later one is refused, so a failure leaves the old view:
  * Roll off first when the target is not Roll (split needs it off, as
  * channel_change does), then the view, then Roll on for Roll. */
-prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, prop_note_t *note)
 {
-    (void)origin;
 #if !FEATURE_FFT
     if (v != VM_YT && v != VM_ROLL) { model_note(note, "Not in this build"); return PS_REFUSED; }
 #endif
@@ -452,6 +487,14 @@ prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
     }
     return PS_OK;
 }
+prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    const prop_status_t s = view_mode_apply(p, v, note);
+    /* The user's own choice (the view in force included) replaces a view the
+     * boot kept but could not show; the boot apply drops it itself. */
+    if (s == PS_OK && origin != ORIGIN_BOOT) g_view_keeping = false;
+    return s;
+}
 
 const char *const lbl_view_persist[5] = { "off", "500ms", "1s", "2s", "inf" };
 
@@ -472,12 +515,15 @@ void view_persist_store(const prop_desc_t *p, int32_t v)
  * goes back to Y-T first). */
 prop_status_t view_persist_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)p; (void)origin;
+    (void)p;
     if (v == PERSIST_OFF) {
         if (HW->persist_off) HW->persist_off();
         return PS_OK;
     }
-    if (!HW->persist_on || !HW->persist_on((uint8_t)v)) {
+    const int32_t view_was = view_mode_get(P(VIEW_MODE));
+    const bool on = HW->persist_on && HW->persist_on((uint8_t)v);
+    if (view_mode_get(P(VIEW_MODE)) != view_was) view_moved(origin);   /* a spectrum view went back to Y-T */
+    if (!on) {
         model_note(note, "No memory for persistence");
         return PS_NOT_SET;
     }

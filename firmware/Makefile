@@ -1096,9 +1096,21 @@ $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/mo
 		src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
 		$(MODEL_TEST_LINK) -lm -o $@
 
+# The same test as a build without the spectrum views (FEATURE_FFT=0): what
+# such an image does with a record whose view.mode byte names one of them.
+$(BUILD_DIR)/test_model_persist_nofft: tests/test_model_persist.c $(MODEL_SRCS) src/model/model_persist_v5.c \
+                                 src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
+                                 src/util/config.c src/util/config.h src/util/settings_store.c \
+                                 src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=0 -Isrc/model -Isrc/util \
+		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
+		src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+		$(MODEL_TEST_LINK) -lm -o $@
+
 .PHONY: test-model-persist
-test-model-persist: $(BUILD_DIR)/test_model_persist
-	$<
+test-model-persist: $(BUILD_DIR)/test_model_persist $(BUILD_DIR)/test_model_persist_nofft
+	$(BUILD_DIR)/test_model_persist
+	$(BUILD_DIR)/test_model_persist_nofft
 
 # Reset to defaults (ARCH-1 M5): the built-in defaults over the user settings
 # through the setters; every property back to its default, the hardware ops
