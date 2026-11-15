@@ -359,15 +359,31 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
         /* "Select Function for Directional Keys" (m.p30). FFT views keep
          * their window cycle on this key. */
         if (!c->scope_time_view)
-            return cmd(KA_LEGACY, 0);
+            return cmd(KA_FFT_WINDOW, 0);
         return cmd(KA_FOCUS_NEXT, 0);
 
     case BTN_UP: case BTN_DOWN: case BTN_LEFT: case BTN_RIGHT:
-        if (!c->scope_time_view)
-            return cmd(KA_LEGACY, 0);       /* FFT reference level / zoom */
+        if (!c->scope_time_view) {          /* FFT reference level / zoom */
+            if (btn == BTN_UP || btn == BTN_DOWN)
+                return cmd(KA_FFT_REF, btn == BTN_UP ? +1 : -1);
+            return cmd(KA_FFT_ZOOM, btn == BTN_LEFT ? -1 : +1);
+        }
         return map_scope_arrow(c, btn);
 
+    /* Short CH1/CH2, every view: the channel becomes the one the arrows
+     * adjust and its coupling flips (manual 1.1). */
+    case BTN_CH1: return cmd(KA_COUPLING_TOGGLE, 0);
+    case BTN_CH2: return cmd(KA_COUPLING_TOGGLE, 1);
+
+    case BTN_OK:
+        return cmd(KA_RUNSTOP, 0);
+
+    /* Time view: autoset (parity C9). The other views: the spectrum's span
+     * from the record they analyse. */
+    case BTN_AUTO:
+        return c->scope_time_view ? cmd(KA_AUTOSET, 0) : cmd(KA_FFT_AUTO, 0);
+
     default:
-        return cmd(KA_LEGACY, 0);
+        return cmd(KA_LEGACY, 0);           /* POWER: the router's global */
     }
 }

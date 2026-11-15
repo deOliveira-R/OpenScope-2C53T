@@ -675,6 +675,35 @@ static void want_meter(uint8_t raw)
     lg("after:%d:%d", SCR_METER, fake_meter_answer(raw), 0);
 }
 
+/* The scope's stand-in (B7): the arrows, CH1/CH2, OK and the stage keys
+ * repaint in full, the keys that open the page paint it, a long key the
+ * view does not use nothing. (The real one, every key as a property set, is
+ * in make test-scope-screen.) */
+#define G_SCOPE ((uint16_t)((1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI) | (1u << PG_CH1) | (1u << PG_CH2) | \
+                            (1u << PG_TB) | (1u << PG_TRIG) | (1u << PG_VIEW) | (1u << PG_FFT) | (1u << PG_IL) | \
+                            (1u << PG_MASK)))
+static scr_res_t fake_scope_answer(uint8_t raw)
+{
+    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
+    if (raw == BTN_MENU || raw == BTN_PRM || raw == BTN_TRIGGER) return SCR_DRAW;
+    return SCR_DRAW_FULL;
+}
+static scr_res_t fake_scope_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("scope:%d", raw, 0, 0);
+    return fake_scope_answer(raw);
+}
+const screen_t scope_screen = {
+    .name = "scope", .id = SCR_SCOPE, .mode = MODE_OSCILLOSCOPE, .instrument = MODE_OSCILLOSCOPE,
+    .key = fake_scope_key, .draw = fake_draw, .groups = G_SCOPE,
+};
+static void want_scope(uint8_t raw)
+{
+    lg("scope:%d", raw, 0, 0);
+    lg("after:%d:%d", SCR_SCOPE, fake_scope_answer(raw), 0);
+}
+
 /* The Oscilloscope Settings page's stand-in (B5), a layer over the scope:
  * the arrows and OK repaint it in place, the rest change nothing. (The real
  * one, its property sets and its close are in make test-osc-menu-screen.) */
@@ -756,6 +785,11 @@ static void old_route(uint8_t raw)
              * nothing while it was up (key_map: KA_NONE); the page is asked
              * now and answers "nothing" itself. */
             if (c.osc_menu_open && k.act == KA_NONE) { want_osc(raw); return; }
+            /* The scope (B7): its long keys (measurements, channel enable,
+             * baseline, 50 %) were exec_key_cmd cases and the rest did
+             * nothing; the screen is asked for all of them now. Long SAVE
+             * (the gallery) stays a global. */
+            if (W.mode == MODE_OSCILLOSCOPE && k.act != KA_GALLERY_OPEN) { want_scope(raw); return; }
             lgc_exec(k, b);
             return;
         }
@@ -765,6 +799,11 @@ static void old_route(uint8_t raw)
      * the ones that do nothing) were exec_key_cmd cases; the page is asked
      * now. SAVE stays a global, POWER the switch. */
     if (c.osc_menu_open && is_osc_action(k.act)) { want_osc(raw); return; }
+    /* The scope (B7): the plot's short keys were exec_key_cmd cases
+     * (key_map's claims) or the switch's scope arms (CH1/CH2, OK, AUTO, the
+     * spectrum views' SELECT and arrows); the screen is asked for all of
+     * them now. SAVE stays a global, POWER the switch. */
+    if (W.mode == MODE_OSCILLOSCOPE && k.act != KA_SCREENSHOT && b != BTN_POWER) { want_scope(raw); return; }
     if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
     if (W.mode == MODE_HOME && b != BTN_POWER) { want_home(raw); return; }   /* was lgc_home(b) */
     /* was the softkey claim (MOVE/SELECT/TRIGGER/PRM), then the switch: the
@@ -899,9 +938,9 @@ static void test_legacy_table(void)
         { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx mode:1" },
         { "long SAVE in the generator -> gallery",        MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_SAVE | BTN_LONG_FLAG,    "touch click ctx exec:10:0:8" },
         { "short SAVE on home -> screenshot",             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click ctx exec:11:0:8" },
-        { "long OK in the scope -> 50 % centre",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx exec:13:0:14" },
-        { "long AUTO in the scope -> baseline",           MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx exec:12:0:7" },
-        { "long CH2 in the scope -> CH2 on/off",          MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,     "touch click ctx exec:7:1:2" },
+        { "long OK in the scope: its screen (50 % centre)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,    "touch click ctx scope:142 after:1:1" },
+        { "long AUTO in the scope: its screen (baseline)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,   "touch click ctx scope:135 after:1:1" },
+        { "long CH2 in the scope: its screen (CH2 on/off)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,   "touch click ctx scope:130 after:1:1" },
         { "long CH1 under the osc page: the page (nothing)", MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,  "touch click ctx osc:129 after:7:1" },
         { "long OK in the generator: its screen",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx gen:142 after:3:1" },
         { "long AUTO in the generator: its screen",       MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx gen:135 after:3:1" },
@@ -918,7 +957,10 @@ static void test_legacy_table(void)
         { "long MENU during autoset: cancel",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click cancel" },
         { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click ctx switch:15" },
         { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click ctx osc:10 after:7:2" },
-        { "MENU in the scope opens the page",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx exec:26:0:9" },
+        { "MENU in the scope: its screen (opens the page)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                  "touch click ctx scope:9 after:1:2" },
+        { "UP in the scope: its screen",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx scope:10 after:1:3" },
+        { "OK in the scope: its screen",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx scope:14 after:1:3" },
+        { "SAVE in the scope stays a global",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click ctx exec:11:0:8" },
         { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx meter:3 after:2:2" },
         { "LEFT in the meter: its screen",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx meter:12 after:2:3" },
         { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx gen:6 after:3:2" },

@@ -315,6 +315,8 @@ prop_status_t trig_level_set(const prop_desc_t *p, int32_t v, uint8_t origin, pr
 
 int32_t trig_code_get(const prop_desc_t *p) { (void)p; return HW->trigger_code ? HW->trigger_code() : 0; }
 
+int32_t trig_held_get(const prop_desc_t *p) { (void)p; return (HW->single_done && HW->single_done()) ? 1 : 0; }
+
 int32_t trig_x_get(const prop_desc_t *p) { (void)p; return scope_state_get()->trig_x; }
 void    trig_x_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->trig_x = (int16_t)v; }
 prop_status_t trig_x_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)

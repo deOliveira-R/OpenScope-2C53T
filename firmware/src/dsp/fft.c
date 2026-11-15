@@ -380,6 +380,9 @@ static void label_harmonics(fft_peak_t *peaks, uint8_t num_peaks)
  * Public API
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* FFT AUTO asked for and not served yet (fft.h fft_auto_request). */
+static volatile bool fft_auto_req;
+
 void fft_init(const fft_config_t *cfg)
 {
     /* Acquire shared memory pool for FFT buffers */
@@ -414,6 +417,7 @@ void fft_init(const fft_config_t *cfg)
 
 void fft_deinit(void)
 {
+    fft_auto_req = false;          /* a request dies with the view it was made in */
     if (!initialized)
         return;
     initialized = false;
@@ -685,6 +689,18 @@ void fft_zoom_out(void)
     current_cfg.zoom_end_bin = current_cfg.zoom_start_bin + new_span;
     if (current_cfg.zoom_end_bin >= FFT_BINS)
         current_cfg.zoom_end_bin = FFT_BINS - 1;
+}
+
+void fft_auto_request(void)
+{
+    if (fft_is_initialized()) fft_auto_req = true;
+}
+
+bool fft_auto_take(void)
+{
+    if (!fft_auto_req) return false;
+    fft_auto_req = false;
+    return true;
 }
 
 void fft_auto_configure(const int16_t *samples, uint16_t num_samples)

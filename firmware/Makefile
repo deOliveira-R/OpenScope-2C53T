@@ -168,6 +168,7 @@ C_SOURCES += src/ui/icons.c
 C_SOURCES += src/ui/osc_menu_model.c
 C_SOURCES += src/ui/osc_menu_ui.c
 C_SOURCES += src/ui/osc_menu_screen.c
+C_SOURCES += src/ui/scope_screen.c
 C_SOURCES += src/ui/menu_frame.c
 C_SOURCES += src/ui/meas_select.c
 R1A_OSC_MENU_TEST_SRCS = src/ui/osc_menu_model.c src/ui/meas_select.c src/ui/scope_state.c \
@@ -2155,7 +2156,7 @@ check-owners:
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
                                  src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h \
-                                 src/ui/osc_menu_screen.h src/ui/gallery_screen.h src/ui/overlay_screens.h \
+                                 src/ui/osc_menu_screen.h src/ui/gallery_screen.h src/ui/overlay_screens.h src/ui/scope_screen.h \
                                  src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
 
@@ -2218,6 +2219,19 @@ $(BUILD_DIR)/test_osc_menu_screen: tests/test_osc_menu_screen.c src/ui/osc_menu_
 
 .PHONY: test-osc-menu-screen
 test-osc-menu-screen: $(BUILD_DIR)/test_osc_menu_screen
+	$<
+
+# The scope screen on chN.* / tb.* / trig.* / view.* / mask.* (ARCH-1 B7):
+# every key in every arrow stage and view against the pre-B7 handlers over
+# random states, each change as a property set, a key against the direct
+# route's `set`, RUN/STOP and SINGLE, the mask stage, the two display epochs.
+$(BUILD_DIR)/test_scope_screen: tests/test_scope_screen.c src/ui/scope_screen.c src/ui/scope_screen.h \
+                                src/ui/osc_menu_screen.c src/ui/osc_menu_screen.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< src/ui/scope_screen.c src/ui/osc_menu_screen.c src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-scope-screen
+test-scope-screen: $(BUILD_DIR)/test_scope_screen
 	$<
 
 # The screenshot gallery as a screen (ARCH-1 B5): navigation, arm / delete

@@ -241,11 +241,28 @@ static void test_short_map(void)
 
     printf("short-press map (FFT views, other modes)\n");
     key_ctx_t fv = z; fv.scope_time_view = false;
-    CHECK("FFT view: arrows and SELECT (window) stay legacy; MOVE switches the channel",
-          key_map(&fv, BTN_UP, false).act == KA_LEGACY &&
-          key_map(&fv, BTN_LEFT, false).act == KA_LEGACY &&
-          key_map(&fv, BTN_SELECT, false).act == KA_LEGACY &&
+    CHECK("FFT view: UP/DOWN = reference level, LEFT = zoom in, RIGHT = zoom out",
+          is(key_map(&fv, BTN_UP, false), KA_FFT_REF, +1) &&
+          is(key_map(&fv, BTN_DOWN, false), KA_FFT_REF, -1) &&
+          is(key_map(&fv, BTN_LEFT, false), KA_FFT_ZOOM, -1) &&
+          is(key_map(&fv, BTN_RIGHT, false), KA_FFT_ZOOM, +1));
+    CHECK("FFT view: SELECT = next window, AUTO = fit the span; MOVE switches the channel",
+          is(key_map(&fv, BTN_SELECT, false), KA_FFT_WINDOW, 0) &&
+          is(key_map(&fv, BTN_AUTO, false), KA_FFT_AUTO, 0) &&
           key_map(&fv, BTN_MOVE, false).act == KA_ADJ_CH_SWITCH);
+    {
+        /* whatever the arrow stage was in the time view, it has no say there */
+        int same = 1;
+        for (int f = KF_ZOOM; f < KF_COUNT; f++) {
+            key_ctx_t c = fv; c.focus = (key_focus_t)f; c.cursors_on = true; c.mask_present = true;
+            same &= is(key_map(&c, BTN_UP, false), KA_FFT_REF, +1) &&
+                    is(key_map(&c, BTN_RIGHT, false), KA_FFT_ZOOM, +1) &&
+                    is(key_map(&c, BTN_SELECT, false), KA_FFT_WINDOW, 0) &&
+                    is(key_map(&c, BTN_OK, false), KA_RUNSTOP, 0) &&
+                    is(key_map(&c, BTN_CH2, false), KA_COUPLING_TOGGLE, 1);
+        }
+        CHECK("FFT view: the same in every arrow stage; OK and CH1/CH2 as in the time view", same);
+    }
     CHECK("FFT view: PRM no longer cycles the views, it opens the Measure pane",
           is(key_map(&fv, BTN_PRM, false), KA_OSCMENU_PANE, OSC_ROW_PARAM));
     CHECK("FFT view: TRIGGER opens the Trigger pane (no more trigger-mode cycle)",
@@ -261,10 +278,41 @@ static void test_short_map(void)
             leg &= key_map(&c, keys[k], false).act == KA_LEGACY;
         }
     CHECK("meter / siggen / settings / home: every short press but SAVE is legacy", leg);
-    CHECK("scope CH1/OK/AUTO short stay legacy",
-          key_map(&z, BTN_CH1, false).act == KA_LEGACY &&
-          key_map(&z, BTN_OK, false).act == KA_LEGACY &&
-          key_map(&z, BTN_AUTO, false).act == KA_LEGACY);
+    {
+        int ok = 1;
+        for (int f = KF_ZOOM; f < KF_COUNT; f++) {
+            key_ctx_t c = ctx(MODE_OSCILLOSCOPE, (key_focus_t)f); c.cursors_on = true; c.mask_present = true;
+            ok &= is(key_map(&c, BTN_CH1, false), KA_COUPLING_TOGGLE, 0) &&
+                  is(key_map(&c, BTN_CH2, false), KA_COUPLING_TOGGLE, 1) &&
+                  is(key_map(&c, BTN_OK, false), KA_RUNSTOP, 0) &&
+                  is(key_map(&c, BTN_AUTO, false), KA_AUTOSET, 0);
+        }
+        CHECK("scope short CH1/CH2 = coupling of that channel, OK = RUN/STOP, AUTO = autoset: every stage", ok);
+    }
+    {
+        /* B7: the scope's table is complete. With the page closed every key
+         * but POWER has an action of its own in every view and stage. */
+        static const button_id_t all[] = { BTN_CH1, BTN_CH2, BTN_MOVE, BTN_SELECT, BTN_TRIGGER, BTN_PRM,
+                                           BTN_AUTO, BTN_SAVE, BTN_MENU, BTN_UP, BTN_DOWN, BTN_LEFT,
+                                           BTN_RIGHT, BTN_OK };
+        int claimed = 1, n = 0;
+        for (int tv = 0; tv < 2; tv++)
+            for (int f = KF_ZOOM; f < KF_COUNT; f++)
+                for (int cur = 0; cur < 2; cur++)
+                    for (int mk = 0; mk < 2; mk++)
+                        for (unsigned k = 0; k < sizeof all / sizeof all[0]; k++)
+                            for (int lng = 0; lng < 2; lng++) {
+                                key_ctx_t c = ctx(MODE_OSCILLOSCOPE,
+                                                  key_focus_sanitize((key_focus_t)f, cur, mk));
+                                c.scope_time_view = tv; c.cursors_on = cur; c.mask_present = mk;
+                                claimed &= key_map(&c, all[k], lng).act != KA_LEGACY;
+                                n++;
+                            }
+        CHECK("scope, page closed: no key but POWER is KA_LEGACY (2 views x stages x 14 keys x short/long)",
+              claimed && n == 2 * KF_COUNT * 2 * 2 * 14 * 2);
+        CHECK("scope POWER short stays with the router's global",
+              key_map(&z, BTN_POWER, false).act == KA_LEGACY && key_map(&fv, BTN_POWER, false).act == KA_LEGACY);
+    }
 }
 
 static void test_save(void)
@@ -546,14 +594,53 @@ static uint32_t km_grid(key_cmd_t (*fn)(const key_ctx_t *, button_id_t, bool), u
 #define KM_GRID_PRE_B1_HASH   0x7C31BE65u
 #define KM_GRID_PRE_B1_COUNT  864000u
 
+/* B7 gave the scope's last per-key cases names (KA_COUPLING_TOGGLE ..
+ * KA_FFT_ZOOM), where key_map answered KA_LEGACY. key_map with those answers
+ * read as KA_LEGACY again is the pre-B1 function over the whole grid: so
+ * nothing else moved, and a B7 action appears only where a per-key case
+ * was. */
+static bool is_b7_action(key_action_t a)
+{
+    return a == KA_COUPLING_TOGGLE || a == KA_RUNSTOP || a == KA_AUTOSET || a == KA_FFT_AUTO ||
+           a == KA_FFT_WINDOW || a == KA_FFT_REF || a == KA_FFT_ZOOM;
+}
+static key_cmd_t key_map_pre_b7(const key_ctx_t *c, button_id_t b, bool lng)
+{
+    key_cmd_t k = key_map(c, b, lng);
+    if (is_b7_action(k.act)) { k.act = KA_LEGACY; k.arg = 0; }
+    return k;
+}
+
 static void test_global(void)
 {
     printf("key_map_global (router step 4)\n");
 
     unsigned n = 0;
-    const uint32_t h = km_grid(key_map, &n);
-    CHECK("key_map: every answer over the whole context grid as before the split",
+    const uint32_t h = km_grid(key_map_pre_b7, &n);
+    CHECK("key_map: every answer over the whole context grid as before the split (B7 names read as legacy)",
           h == KM_GRID_PRE_B1_HASH && n == KM_GRID_PRE_B1_COUNT);
+    {
+        /* ... and a B7 action is only ever answered for a short key of the
+         * scope with the page closed. */
+        static const uint8_t openers[] = { BTN_NONE, BTN_PRM };
+        int stray = 0, seen = 0;
+        for (int mode = 0; mode < MODE_COUNT; mode++)
+        for (int tv = 0; tv < 2; tv++)
+        for (int f = 0; f < KF_COUNT; f++)
+        for (int op = 0; op < 2; op++)
+        for (int lk = 0; lk < 2; lk++)
+        for (unsigned o = 0; o < sizeof openers; o++)
+        for (int b = BTN_CH1; b <= BTN_POWER; b++)
+        for (int lng = 0; lng < 2; lng++) {
+            key_ctx_t c = ctx((device_mode_t)mode, (key_focus_t)f);
+            c.scope_time_view = tv; c.cursors_on = true; c.mask_present = true;
+            c.osc_menu_open = op; c.osc_menu_locked = lk; c.osc_menu_opener = openers[o];
+            if (!is_b7_action(key_map(&c, (button_id_t)b, lng != 0).act)) continue;
+            seen++;
+            if (mode != MODE_OSCILLOSCOPE || op || lng) stray++;
+        }
+        CHECK("the B7 actions: scope only, short only, never with the page open", stray == 0 && seen > 0);
+    }
 
     /* Exactly these are global, with these actions, in every context. */
     static const struct { button_id_t b; bool lng; key_action_t a; } glob[] = {

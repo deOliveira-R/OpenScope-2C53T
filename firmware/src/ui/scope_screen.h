@@ -1,0 +1,107 @@
+/*
+ * OpenScope 2C53T - the oscilloscope as a screen (ARCH-1 B7)
+ *
+ * The scope's base screen of the router (screen.h), in place of the legacy
+ * row that forwarded its keys to input_handler.c's exec_key_cmd / mode_key.
+ * The Oscilloscope Settings page stays a layer of its own over it
+ * (osc_menu_screen.h).
+ *
+ * KEYS (input task). key_model.c says what a key means in the scope
+ * (key_map: view, arrow stage, cursors, mask); this file executes every
+ * answer, and every change of scope state is ONE property set
+ * (prop_set_local / prop_step_local, ORIGIN_KEY), the function `set` on the
+ * direct route ends in. Nothing here calls scope_apply.c or a driver:
+ *
+ *   key (stage / view)            action              property
+ *   UP/DOWN   (zoom)              KA_VDIV_STEP        chN.vdiv of the active channel
+ *   LEFT/RIGHT (zoom)             KA_TB_STEP          tb.code, past its end tb.roll / tb.rollstep
+ *   UP/DOWN   (channel move)      KA_CHPOS_STEP       chN.pos
+ *   LEFT/RIGHT (channel / trigger move)  KA_TRIGCOL_STEP  trig.x
+ *   UP/DOWN   (trigger move)      KA_TRIGLVL_STEP     trig.level
+ *   UP/DOWN   (cursor)            KA_CURSOR_MOVE      view.curv1 / curv2 / curh1 / curh2 (the selected one)
+ *   LEFT/RIGHT (cursor)           KA_CURSOR_NEXT      view.cursel
+ *   UP/DOWN, LEFT/RIGHT (mask)    KA_MASK_TOL_V / _H  mask.tolv / mask.tolh
+ *   MOVE      (mask)              KA_MASK_STOPFAIL    mask.stopfail
+ *   CH1 / CH2                     KA_COUPLING_TOGGLE  chN.coupling (and the active channel)
+ *   long CH1 / CH2                KA_CH_ENABLE_TOGGLE chN.enabled
+ *   long PRM                      KA_MEAS_HIDE_TOGGLE view.meashide
+ *   OK                            KA_RUNSTOP          view.run (the setter latches at STOP and
+ *                                                     re-arms SINGLE)
+ *
+ * An arrow at the end of its range still sets the value in force, as the
+ * key always re-applied it (the setter runs for a set of the same value).
+ *
+ * UI state, not settings (model.h 2.9: screens own it; ui.focus / ui.ach
+ * report it read-only): the arrow stage (SELECT), the active channel (MOVE,
+ * CH1/CH2), opening the Oscilloscope Settings page (MENU, PRM, TRIGGER).
+ *
+ * Procedures: one named request each, the one the shell's row makes too:
+ *   AUTO (time view)   scope_selfcal_request_autoset()        `fpga scope autoset`
+ *   long AUTO          scope_selfcal_request_basecal(0x03)    `fpga scope basecal`
+ *   long OK            scope_selfcal_request_center50()       `fpga scope center50`
+ *   AUTO, a mask or its stage up   scope_mask_key_auto()      `mask teach` / `mask clear`
+ *   OK, a mask failure held        SCOPE_MASK_REQ_RELEASE     `mask run`
+ *   AUTO (spectrum views)          fft_auto_request()         `fft auto`
+ *   OK in SINGLE, stopped or its record taken: `set view.run on` (re-arm)
+ *
+ * State with no property: the live FFT configuration (window, reference
+ * level, zoom: SELECT and the arrows in the spectrum views). fft.window /
+ * fft.avg / fft.maxhold are stored-only by design until an FFT pane exists.
+ *
+ * DISPLAY (display task). draw / tick / epoch are the scope's paint module
+ * (scope_view_*, main.c in the firmware): the per-column compositor, the
+ * heartbeat and the redraw gate, moved behind the screen's hooks as they
+ * were. scope_screen_epochs() says what changed for it: see there.
+ *
+ * `ui screen`: no describe() of its own; focus=, ach=, run=, view= are the
+ * properties ui.focus, ui.ach, view.run, view.mode, as before.
+ */
+#ifndef SCOPE_SCREEN_H
+#define SCOPE_SCREEN_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include "screen.h"
+#include "key_model.h"
+#include "redraw_gate.h"
+
+extern const screen_t scope_screen;
+
+/* The arrow stage (key_model.h KF_*) and what the renderer reads of it. The
+ * scope screen is their one writer. */
+extern volatile key_focus_t scope_key_focus;
+
+/* The scope's key context as it stands (cursors, mask, view, page), mode
+ * MODE_OSCILLOSCOPE. Input task. It also drops an arrow stage that no
+ * longer exists (the mask cleared or the cursors switched off from the
+ * shell) before a key can be steered by it. */
+key_ctx_t scope_screen_ctx(void);
+
+/* What the scope shows, hashed in two parts, for the display task:
+ *   *layout  what moves or resizes something between the bars (channel on /
+ *            off, the cursor mode, the measurement rows, math, persistence,
+ *            the view, roll, RUN/STOP, the theme, the FFT configuration):
+ *            a change repaints the plot area once;
+ *   *soft    values the per-column live frame, the measurement strip's
+ *            in-place refresh and the bars' own epochs repaint by
+ *            themselves (ranges, positions, coupling, probe, the timebase
+ *            code, the trigger settings, the active channel): a change
+ *            costs one live frame, no clear.
+ * Cursor positions and the selection are in neither: the live frame draws
+ * them (scope_ui_request_live). */
+void scope_screen_epochs(uint32_t *layout, uint32_t *soft);
+/* The cursor lines' own hash: a change wants one live frame. */
+uint32_t scope_screen_cursor_epoch(void);
+
+/* ── environment: the paint module (main.c; a fake in the host test) ── */
+void            scope_view_draw(scr_paint_t how, uint32_t frame);
+redraw_action_t scope_view_tick(uint32_t frame);
+uint32_t        scope_view_fft_epoch(void);     /* the live FFT configuration, 0 without one */
+
+/* ── environment: the procedures (their owners; fakes in the host test) ── */
+bool scope_selfcal_request_autoset(void);
+bool scope_selfcal_request_basecal(uint8_t banks);
+bool scope_selfcal_request_center50(void);
+
+#endif /* SCOPE_SCREEN_H */

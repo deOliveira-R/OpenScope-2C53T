@@ -54,6 +54,7 @@ extern void system_clock_config(void);
 #include "redraw_gate.h"
 #include "screen.h"
 #include "legacy_screens.h"
+#include "scope_screen.h"
 #include "scope_mask.h"
 #include "can_scope.h"
 #include "osc_menu_model.h"
@@ -407,6 +408,28 @@ static uint32_t scope_ui_epoch(const scope_state_t *s)
     return h;
 }
 
+/* The live FFT configuration as the spectrum views draw it (ui/
+ * scope_screen.h: part of the scope's layout epoch). */
+uint32_t scope_view_fft_epoch(void)
+{
+    uint32_t h = REDRAW_EPOCH_SEED;
+#if FEATURE_FFT
+    const fft_config_t *fc = fft_get_config();
+    if (fc != NULL) {
+        h = redraw_epoch_mix_f(h, fc->ref_level_db);
+        h = redraw_epoch_mix_f(h, fc->db_range);
+        h = redraw_epoch_mix_f(h, fc->sample_rate_hz);
+        h = redraw_epoch_mix(h, (uint32_t)fc->window
+                                | ((uint32_t)fc->peak_count << 8)
+                                | ((uint32_t)fc->avg_count  << 16)
+                                | ((uint32_t)fc->max_hold   << 24));
+        h = redraw_epoch_mix(h, ((uint32_t)fc->zoom_start_bin << 16)
+                                | fc->zoom_end_bin);
+    }
+#endif
+    return h;
+}
+
 /* Is the scope showing the roll view (C11)? Time view with roll on. */
 static bool s_roll_view(void)
 {
@@ -569,10 +592,7 @@ static void redraw_all(uint32_t frame)
     const screen_t *const nb = native_base();   /* one look: the mode can move under us */
     if (nb != NULL) {
         if (nb->id == SCR_SIGGEN) ui_siggen_full_draws++;
-        native_paint_full(nb, frame);
-    } else if (current_mode == MODE_OSCILLOSCOPE) {
-        scope_render(frame, REDRAW_FULL);
-        redraw_gate_mark(&scope_gate, scope_ui_epoch(scope_state_get()), frame, REDRAW_FULL);
+        native_paint_full(nb, frame);       /* the scope: scope_view_draw (the full render of its view) */
     } else if (current_mode == MODE_SETTINGS) {
         draw_settings_screen();
     }
@@ -619,6 +639,158 @@ static void scope_render(uint32_t frame, redraw_action_t action)
     draw_scope_screen(frame);
 }
 
+/* ── The scope's paint module (ui/scope_screen.h) ────────────────────
+ * The scope screen's draw() and tick(), display task. Until ARCH-1 B7 these
+ * were the scope arms of redraw_all() and of the display loop; they are the
+ * same code behind the screen's hooks. */
+static uint32_t g_scope_entered_frame;      /* for the acquisition warm-up */
+
+/* draw(): FULL (REDRAW_ALL, after the bars) and RESTORE are the full render
+ * of the view. UPDATE (a key or a `set` posted DCMD_DRAW_ACTIVE + scope) is
+ * only a wake-up: the tick below, later in the same frame, paints what
+ * changed from the epochs. */
+void scope_view_draw(scr_paint_t how, uint32_t frame)
+{
+    if (how == SCR_PAINT_UPDATE) return;
+    scope_render(frame, REDRAW_FULL);
+    redraw_gate_mark(&scope_gate, scope_ui_epoch(scope_state_get()), frame, REDRAW_FULL);
+}
+
+/* tick(): once per frame while the scope is the base screen. It paints by
+ * itself (the gate picks skip / live frame / full) and answers REDRAW_SKIP. */
+redraw_action_t scope_view_tick(uint32_t frame)
+{
+    const bool page_up = osc_page_up();
+    const scope_state_t *ss_anim = scope_state_get();
+        /* Mask pass/fail readout (badge row 2, below the live band): its
+         * own epoch, like the info bar, so a counter never sits stale
+         * waiting for a full repaint. Time view only -- the slot belongs
+         * to the time-view badge layout. */
+        {
+            static uint32_t g_mask_slot_epoch;
+            uint32_t me = scope_mask_epoch();
+#if FEATURE_FFT
+            const bool time_view = (scope_view == SCOPE_VIEW_TIME);
+#else
+            const bool time_view = true;
+#endif
+            if (me != g_mask_slot_epoch && time_view && !page_up) {
+                scope_ui_mask_slot_refresh();
+                g_mask_slot_epoch = me;
+            }
+            /* CAN readout (`can screen on`): 5 Hz, its own row. */
+            if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
+                scope_ui_can_row_refresh();
+        }
+        if (ss_anim->running) {
+            /* ── Scope heartbeat / acquisition re-arm ───────────
+             * Keep the existing warmup and cadence for now, but use the
+             * stock-like cmd-3 path instead of a bare SPI trigger. That
+             * re-applies timebase state before each queued read, matching
+             * the live shell experiments more closely. */
+#ifndef EMULATOR_BUILD
+            if ((frame - g_scope_entered_frame) >= 10 /* 500ms warmup */
+                && (frame % 7) == 0
+                && fpga.initialized) {
+                fpga_scope_heartbeat();
+            }
+#endif
+        }
+        {
+            /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
+             * nothing new arrives then, so the gate skips, but a popup
+             * still has to be shown and erased on wall-clock time
+             * (until 2026-11-13 this block was inside the running test
+             * and a popup raised while stopped stayed up for good).
+             *
+             * Previously: popup OR new SPI3 data OR an unconditional
+             * 1 s tick. The 1 s arm repainted a settled screen once a
+             * second forever, and the data arm ran the full
+             * clear-and-repaint at the capture rate in every view the
+             * live compositor cannot serve — the flash observed on
+             * the bench 2026-08-12.
+             *
+             * Now: redraw_gate_step() picks between skipping, the
+             * flicker-free compositor (unthrottled, so the live trace
+             * still updates at the capture rate) and a rate-capped
+             * full repaint, using an epoch over everything the screen
+             * renders. Rendering pass note (2026-08-12) still holds:
+             * the full clear-then-redraw path stays for popups (they
+             * overwrite the band and need erasing afterward), cursors
+             * (drawn only by the full path), the demo/pre-data state,
+             * and all button-driven DCMD redraws. */
+            static uint16_t last_spi3_ok = 0;
+            uint16_t spi3_now = fpga.spi3_ok_count;
+            bool new_data = (spi3_now != last_spi3_ok);
+            last_spi3_ok = spi3_now;
+
+            redraw_query_t q;
+            q.frame            = frame;
+            q.epoch            = scope_ui_epoch(ss_anim);
+            /* A live popup counts as new data so the compositor runs on
+             * every 50 ms tick while it is up, and once more to erase it
+             * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
+            q.new_data         = new_data || scope_popup_active()
+                                 || scope_ui_take_live_request();
+            q.incremental_ok   = scope_incremental_available(ss_anim);
+            /* Only the full path can show a popup when the compositor is
+             * unavailable (demo trace, cursors on, FFT views). When it IS
+             * available the popup rides along as an overlay, so forcing
+             * here would reinstate exactly the flashing this replaced. */
+            q.force            = scope_popup_active() && !q.incremental_ok;
+            /* Both of these genuinely produce new pixels every tick
+             * from `frame` alone: the synthetic demo waveform (only
+             * drawn before the first real sample) and the
+             * persistence overlay (which decays once per draw). */
+            /* X-Y draws its own phosphor decay every frame, so it must
+             * tick at the fast floor (200 ms) rather than the 1 s anim
+             * cadence — otherwise the trail fades in visible 1 s steps. */
+            q.animating        = !scope_acquisition_ready() || persist_enabled
+                                 || scope_view == SCOPE_VIEW_XY;
+            q.full_min_frames  = SCOPE_FULL_MIN_FRAMES;
+            /* Persistence fades on wall time: with the live frame serving
+             * it, a tick every 200 ms keeps a stopped trace fading
+             * smoothly at no blanking cost. */
+            q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY ||
+                                  (persist_enabled && q.incremental_ok))
+                                 ? SCOPE_FULL_MIN_FRAMES
+                                 : SCOPE_ANIM_TICK_FRAMES;
+            /* Stopped, nothing a hash cannot see changes: no heartbeat
+             * (it drew one live frame a second while stopped). */
+            q.idle_tick_frames = !ss_anim->running ? 0u
+                               : q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
+                                                  : SCOPE_IDLE_FULL_FRAMES;
+
+            redraw_action_t act = page_up ? REDRAW_SKIP
+                                          : redraw_gate_step(&scope_gate, &q);
+            if (act == REDRAW_SKIP)
+                ui_scope_skipped++;
+            else
+                scope_render(frame, act);
+#if FEATURE_FFT
+            const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
+#else
+            const bool yt_view = !page_up;
+#endif
+            if (act != REDRAW_SKIP && yt_view)
+                scope_ui_cursor_row_refresh();   /* only when its text changed */
+            /* The badges between full frames (the live frame does not
+             * touch the strip): in place, twice a second, running only
+             * (a held record's values do not change). */
+            {
+                static uint32_t last_strip;
+                if (act == REDRAW_FULL)
+                    last_strip = frame;
+                else if (yt_view && ss_anim->running &&
+                         (frame - last_strip) >= SCOPE_STRIP_REFRESH_FRAMES) {
+                    scope_ui_strip_refresh();
+                    last_strip = frame;
+                }
+            }
+        }
+    return REDRAW_SKIP;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * FreeRTOS Tasks
  * ═══════════════════════════════════════════════════════════════════ */
@@ -656,10 +828,10 @@ static void vDisplayTask(void *pvParameters)
         draw_status_bar();
         draw_info_bar();
         const screen_t *nb = native_base();
-        if (nb != NULL) {
+        if (nb != NULL && nb->id != SCR_SCOPE) {
             nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home, Meter, Signal Gen) */
         } else {
-            draw_scope_screen(0);
+            draw_scope_screen(0);         /* the scope's first paint, as always: no record yet, no gate */
         }
     }
 
@@ -671,7 +843,6 @@ static void vDisplayTask(void *pvParameters)
          * handling (2026-08-13) so a DCMD arriving on the same tick as a
          * mode switch sees an already-invalidated gate. */
         static device_mode_t last_rendered_mode = (device_mode_t)0xFF;
-        static uint32_t scope_entered_frame = 0;
         /* The layer that owns the whole screen this frame (one look). One
          * coming up is painted whatever its epoch; when it goes, what was
          * under it is repainted (unless a REDRAW_ALL arrives first). */
@@ -689,7 +860,7 @@ static void vDisplayTask(void *pvParameters)
              * It now follows the meter link policy, evaluated just above
              * (meter_link_service): the screen is one of its three inputs. */
             if (current_mode == MODE_OSCILLOSCOPE) {
-                scope_entered_frame = frame;
+                g_scope_entered_frame = frame;
                 ui_popup_overlay_cancel();    /* scope popups are the scope's own */
             }
             redraw_gate_invalidate(&scope_gate);
@@ -778,18 +949,6 @@ static void vDisplayTask(void *pvParameters)
                  * drawer), so nothing is half drawn in it. */
                 gallery_ui_capture_run();
                 break;
-            case DCMD_DRAW_SCOPE:
-                /* Always honoured: the sender changed scope state or
-                 * raised a popup. Marking the gate stops the periodic
-                 * path from immediately repeating the same paint. Not while
-                 * the Oscilloscope Settings page covers the plot. */
-                if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
-                    scope_render(frame, REDRAW_FULL);
-                    redraw_gate_mark(&scope_gate,
-                                     scope_ui_epoch(scope_state_get()),
-                                     frame, REDRAW_FULL);
-                }
-                break;
             case DCMD_DRAW_SETTINGS:
                 if (current_mode == MODE_SETTINGS) {
                     draw_settings_screen();
@@ -799,6 +958,7 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_STATUS_BAR:
                 draw_status_bar();
                 break;
+            case DCMD_DRAW_SCOPE:       /* the scope: a wake-up, its tick paints (scope_view_draw) */
             case DCMD_DRAW_HOME:
             case DCMD_DRAW_METER:
             case DCMD_DRAW_SIGGEN: {
@@ -846,7 +1006,7 @@ static void vDisplayTask(void *pvParameters)
 
 #ifndef EMULATOR_BUILD
         if (fpga_service_requests()) {
-            scope_entered_frame = frame;
+            g_scope_entered_frame = frame;
         }
 #endif
 
@@ -887,7 +1047,10 @@ static void vDisplayTask(void *pvParameters)
              * prompt's box over a base that is a real screen: that screen
              * again, without the clear. Else everything. */
             const screen_t *const nb_under = native_base();
-            switch (layer_track_take(&layers, nb_under != NULL && !osc_page_up())) {
+            /* (The scope under a layer is repainted with everything, as
+             * before it was a screen: its plot has no restore paint.) */
+            switch (layer_track_take(&layers, nb_under != NULL && nb_under->id != SCR_SCOPE &&
+                                              !osc_page_up())) {
             case LAYER_REPAINT_RESTORE:
                 native_paint(nb_under, SCR_PAINT_RESTORE, frame);
                 g_screen_painted = true;            /* a popup still up goes back on top */
@@ -927,140 +1090,14 @@ static void vDisplayTask(void *pvParameters)
                 g_info_bar_epoch = ib;
             }
         }
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            const scope_state_t *ss_anim = scope_state_get();
-            /* Mask pass/fail readout (badge row 2, below the live band): its
-             * own epoch, like the info bar, so a counter never sits stale
-             * waiting for a full repaint. Time view only -- the slot belongs
-             * to the time-view badge layout. */
-            {
-                static uint32_t g_mask_slot_epoch;
-                uint32_t me = scope_mask_epoch();
-#if FEATURE_FFT
-                const bool time_view = (scope_view == SCOPE_VIEW_TIME);
-#else
-                const bool time_view = true;
-#endif
-                if (me != g_mask_slot_epoch && time_view && !page_up) {
-                    scope_ui_mask_slot_refresh();
-                    g_mask_slot_epoch = me;
-                }
-                /* CAN readout (`can screen on`): 5 Hz, its own row. */
-                if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
-                    scope_ui_can_row_refresh();
-            }
-            if (ss_anim->running) {
-                /* ── Scope heartbeat / acquisition re-arm ───────────
-                 * Keep the existing warmup and cadence for now, but use the
-                 * stock-like cmd-3 path instead of a bare SPI trigger. That
-                 * re-applies timebase state before each queued read, matching
-                 * the live shell experiments more closely. */
-#ifndef EMULATOR_BUILD
-                if ((frame - scope_entered_frame) >= 10 /* 500ms warmup */
-                    && (frame % 7) == 0
-                    && fpga.initialized) {
-                    fpga_scope_heartbeat();
-                }
-#endif
-            }
-            {
-                /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
-                 * nothing new arrives then, so the gate skips, but a popup
-                 * still has to be shown and erased on wall-clock time
-                 * (until 2026-11-13 this block was inside the running test
-                 * and a popup raised while stopped stayed up for good).
-                 *
-                 * Previously: popup OR new SPI3 data OR an unconditional
-                 * 1 s tick. The 1 s arm repainted a settled screen once a
-                 * second forever, and the data arm ran the full
-                 * clear-and-repaint at the capture rate in every view the
-                 * live compositor cannot serve — the flash observed on
-                 * the bench 2026-08-12.
-                 *
-                 * Now: redraw_gate_step() picks between skipping, the
-                 * flicker-free compositor (unthrottled, so the live trace
-                 * still updates at the capture rate) and a rate-capped
-                 * full repaint, using an epoch over everything the screen
-                 * renders. Rendering pass note (2026-08-12) still holds:
-                 * the full clear-then-redraw path stays for popups (they
-                 * overwrite the band and need erasing afterward), cursors
-                 * (drawn only by the full path), the demo/pre-data state,
-                 * and all button-driven DCMD redraws. */
-                static uint16_t last_spi3_ok = 0;
-                uint16_t spi3_now = fpga.spi3_ok_count;
-                bool new_data = (spi3_now != last_spi3_ok);
-                last_spi3_ok = spi3_now;
-
-                redraw_query_t q;
-                q.frame            = frame;
-                q.epoch            = scope_ui_epoch(ss_anim);
-                /* A live popup counts as new data so the compositor runs on
-                 * every 50 ms tick while it is up, and once more to erase it
-                 * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
-                q.new_data         = new_data || scope_popup_active()
-                                     || scope_ui_take_live_request();
-                q.incremental_ok   = scope_incremental_available(ss_anim);
-                /* Only the full path can show a popup when the compositor is
-                 * unavailable (demo trace, cursors on, FFT views). When it IS
-                 * available the popup rides along as an overlay, so forcing
-                 * here would reinstate exactly the flashing this replaced. */
-                q.force            = scope_popup_active() && !q.incremental_ok;
-                /* Both of these genuinely produce new pixels every tick
-                 * from `frame` alone: the synthetic demo waveform (only
-                 * drawn before the first real sample) and the
-                 * persistence overlay (which decays once per draw). */
-                /* X-Y draws its own phosphor decay every frame, so it must
-                 * tick at the fast floor (200 ms) rather than the 1 s anim
-                 * cadence — otherwise the trail fades in visible 1 s steps. */
-                q.animating        = !scope_acquisition_ready() || persist_enabled
-                                     || scope_view == SCOPE_VIEW_XY;
-                q.full_min_frames  = SCOPE_FULL_MIN_FRAMES;
-                /* Persistence fades on wall time: with the live frame serving
-                 * it, a tick every 200 ms keeps a stopped trace fading
-                 * smoothly at no blanking cost. */
-                q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY ||
-                                      (persist_enabled && q.incremental_ok))
-                                     ? SCOPE_FULL_MIN_FRAMES
-                                     : SCOPE_ANIM_TICK_FRAMES;
-                /* Stopped, nothing a hash cannot see changes: no heartbeat
-                 * (it drew one live frame a second while stopped). */
-                q.idle_tick_frames = !ss_anim->running ? 0u
-                                   : q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
-                                                      : SCOPE_IDLE_FULL_FRAMES;
-
-                redraw_action_t act = page_up ? REDRAW_SKIP
-                                              : redraw_gate_step(&scope_gate, &q);
-                if (act == REDRAW_SKIP)
-                    ui_scope_skipped++;
-                else
-                    scope_render(frame, act);
-#if FEATURE_FFT
-                const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
-#else
-                const bool yt_view = !page_up;
-#endif
-                if (act != REDRAW_SKIP && yt_view)
-                    scope_ui_cursor_row_refresh();   /* only when its text changed */
-                /* The badges between full frames (the live frame does not
-                 * touch the strip): in place, twice a second, running only
-                 * (a held record's values do not change). */
-                {
-                    static uint32_t last_strip;
-                    if (act == REDRAW_FULL)
-                        last_strip = frame;
-                    else if (yt_view && ss_anim->running &&
-                             (frame - last_strip) >= SCOPE_STRIP_REFRESH_FRAMES) {
-                        scope_ui_strip_refresh();
-                        last_strip = frame;
-                    }
-                }
-            }
-        } else {
-            /* A migrated screen that changes by itself (the meter: a new
-             * reading, a setting changed from the shell) says so here and
-             * is painted in place. Its tick() holds the rule; rejected
-             * meter frames still advance raw counters, but they must not
-             * clear or repaint the LCD. */
+        {
+            /* A screen that changes by itself says so here and is painted in
+             * place: the meter (a new reading, a setting changed from the
+             * shell), whose tick() holds the rule (rejected meter frames
+             * still advance raw counters, but they must not clear or
+             * repaint the LCD). The scope's tick is its heartbeat and its
+             * redraw gate (scope_view_tick below): it paints by itself and
+             * answers REDRAW_SKIP. */
             const screen_t *const nb_tick = native_base();   /* one look, as above */
             if (nb_tick != NULL && nb_tick->tick != NULL && nb_tick->tick(frame) != REDRAW_SKIP) {
                 native_paint(nb_tick, SCR_PAINT_UPDATE, frame);

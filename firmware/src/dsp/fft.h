@@ -135,4 +135,14 @@ void fft_zoom_out(void);
 /* Auto-configure: estimate fundamental from zero crossings, set zoom/scale. */
 void fft_auto_configure(const int16_t *samples, uint16_t num_samples);
 
+/* FFT AUTO as a request (ARCH-1 B7). The AUTO key in a spectrum view and the
+ * shell's `fft auto` only ask; the display task, which owns the sample
+ * buffer and prepares the record the view analyses, takes the request the
+ * next time it has prepared one and runs fft_auto_configure() on exactly
+ * that input (scope_ui.c fft_prepare_input). Until B7 the key prepared a
+ * record of its own into the same buffer from the input task. Any task may
+ * ask; a request made while the FFT holds no memory is dropped. */
+void fft_auto_request(void);
+bool fft_auto_take(void);      /* display task: true once per request */
+
 #endif /* FFT_H */

@@ -3695,6 +3695,8 @@ static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
         *fs_out = sel->rate_hz;
         fft_set_sample_rate(*fs_out);
         *n_out = n;
+        /* FFT AUTO (the key, `fft auto`): on the record this frame analyses. */
+        if (n > 0 && fft_auto_take()) fft_auto_configure(sbuf, n);
         return FFT_SRC_LIVE;
     }
     sel->note[0] = '\0';                         /* no capture yet: "waiting", not the channel */
@@ -3707,6 +3709,7 @@ static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
                          1000.0f, 0.0f, 0.8f);
     *fs_out = FFT_DEMO_SAMPLE_RATE_HZ;
     *n_out = FFT_SIZE;
+    if (fft_auto_take()) fft_auto_configure(sbuf, FFT_SIZE);
     return FFT_SRC_DEMO;
 #else
     return FFT_SRC_NONE;

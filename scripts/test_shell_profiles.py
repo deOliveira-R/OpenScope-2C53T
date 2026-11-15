@@ -57,7 +57,7 @@ screenshot | screen dump | screen dumpbin | usb | logo
 flash jedec | flash read | flash dump
 siggen | mask | can decode | can stats | can screen
 meter state | meter relays | batt | uptime
-fpga scope autoset | fpga scope basecal | fpga scope selfcal | fpga cfgsettle
+fpga scope autoset | fpga scope basecal | fpga scope selfcal | fpga cfgsettle | fft auto
 fpga scope range | fpga scope trigger | fpga interleave | fpga roll
 """.replace("\n", "|").split("|") if n.strip()]
 

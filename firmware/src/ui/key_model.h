@@ -7,9 +7,11 @@
  *   key_scan_tick()  the per-key press state machine. button_scan.c's TMR3 ISR
  *                    reads the matrix and calls it once per 2 ms tick; it says
  *                    which keys produced a short or a long press this tick.
- *   key_map()        (context, key, short/long) -> what to do. input_handler.c
- *                    executes the answer. Anything this does not claim comes
- *                    back KA_LEGACY and the older per-mode handlers keep it.
+ *   key_map()        (context, key, short/long) -> what to do. The scope's
+ *                    screen (ui/scope_screen.c) executes the scope's answers
+ *                    and the Oscilloscope Settings page its own; anything
+ *                    this does not claim comes back KA_LEGACY (POWER, and
+ *                    the keys of a mode whose screen has its own table).
  *
  * Stock evidence (V1.2.0): the scanner at 0x080403A4-0x080404DE keeps one
  * counter per key, fires a code at 70 ticks (0x08040 3CE: cmp #70), fires a
@@ -175,8 +177,20 @@ typedef enum {
     KA_OSCMENU_PANE,      /* arg = osc_row_t: open it locked inside that pane (PRM, TRIGGER) */
     KA_OSCMENU_KEY,       /* arg = osc_key_t: arrows/OK, MENU = OSC_KEY_BACK */
     KA_OSCMENU_CLOSE,     /* the key that opened it, pressed again */
-    KA_POWER_PROMPT       /* short POWER, every screen: MENU+POWER IAP reset, else the
+    KA_POWER_PROMPT,      /* short POWER, every screen: MENU+POWER IAP reset, else the
                            * hold-to-power-off countdown (key_map_global only) */
+    /* The rest of the scope's plot keys (ARCH-1 B7: until then KA_LEGACY and
+     * a per-key switch). ui/scope_screen.c executes every scope action. */
+    KA_COUPLING_TOGGLE,   /* short CH1/CH2, every view: arg = channel (0/1); it becomes the
+                           * active channel and its coupling flips DC <-> AC */
+    KA_RUNSTOP,           /* short OK, every view: RUN/STOP (SINGLE: re-arm; a held mask
+                           * failure: resume) */
+    KA_AUTOSET,           /* short AUTO, time view: autoset (stock 0x0800CB50), or the
+                           * mask's cancel / clear while a mask exists */
+    KA_FFT_AUTO,          /* short AUTO, the other views: fit the spectrum's span */
+    KA_FFT_WINDOW,        /* short SELECT, the other views: next FFT window */
+    KA_FFT_REF,           /* UP/DOWN, the other views: reference level, arg = +1 UP */
+    KA_FFT_ZOOM           /* LEFT/RIGHT, the other views: arg = -1 in (LEFT), +1 out */
 } key_action_t;
 
 typedef struct {

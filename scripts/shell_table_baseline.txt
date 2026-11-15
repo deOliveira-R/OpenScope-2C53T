@@ -19,6 +19,7 @@ can screen	cmd_can_screen	0x00	can screen [on|off]             CAN readout on th
 can stats	cmd_can_stats	0x00	can stats [n]                   CAN over n records: IDs, ACK/NAK, CRC\r\n
 describe	cmd_model_describe	0x02	describe <prop>                 Range/labels, default, unit, saved where, owner\r\n
 features	cmd_features	0x01	features                        Features of this build: name, on/off, HELLO bit\r\n
+fft auto	cmd_fft_auto	0x01	fft auto                        Fit the spectrum's span, as AUTO in a spectrum view\r\n
 flash diag	cmd_flash_diag	0x01	flash diag                      W25Q SR1/SR2/SR3 + WEL-latch check\r\n
 flash dump	cmd_flash_dump	0x02	flash dump <addr> <len>         Stream external flash bytes (max 4096)\r\n
 flash jedec	cmd_flash_jedec	0x01	flash jedec                     Read external W25Q128 JEDEC ID\r\n

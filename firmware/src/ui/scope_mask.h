@@ -40,6 +40,20 @@ uint32_t scope_mask_post(scope_mask_req_t kind, uint8_t a, uint8_t b, uint16_t n
 /* true once request `seq` has been applied. */
 bool     scope_mask_acked(uint32_t seq);
 
+/* The mask's procedures as the keys ask for them (ARCH-1 B7; the shell's
+ * `mask teach / clear / run` post the same requests). Input task: they wait
+ * up to ~100 ms for the acknowledgement (the acquisition loop services
+ * requests every poll, ~30 ms) and report what the mask says afterwards,
+ * NOT SET when no acknowledgement came.
+ *
+ * scope_mask_key_auto(): the AUTO key while a mask exists or the arrows are
+ * on its stage: teach when there is none, cancel a teach in progress, clear
+ * a finished mask. `text` gets the popup (24 characters). Returns true when
+ * it asked for the mask to go (cancel / clear): the mask stage goes with
+ * it. */
+bool scope_mask_request(scope_mask_req_t kind, uint8_t a, uint8_t b, uint16_t n);
+bool scope_mask_key_auto(char *text, unsigned n);
+
 /* Acquisition-task hooks. */
 void scope_mask_service(void);
 void scope_mask_on_commit(const volatile uint8_t *ch1, const volatile uint8_t *ch2,

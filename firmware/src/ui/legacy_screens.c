@@ -16,7 +16,10 @@
  *   5. short keys key_map claims (SAVE; the     globals (SAVE), then the osc page
  *      scope's keys and its Settings page)      (SCR_OSC_MENU, osc_menu_screen.c,
  *                                               a migrated screen: its keys of
- *                                               steps 4 and 5) / the scope base
+ *                                               steps 4 and 5) / SCR_SCOPE
+ *                                               (scope_screen.c, a migrated
+ *                                               screen: the plot's keys of
+ *                                               steps 4, 5 and 9)
  *   6. home page: every key but POWER           SCR_HOME (home_screen.c, a
  *                                               migrated screen: see below)
  *   7. meter softkeys (MOVE/SELECT/TRIGGER/PRM) SCR_METER (meter_screen.c, a
@@ -50,6 +53,7 @@
 #include "home_screen.h"
 #include "siggen_screen.h"
 #include "meter_screen.h"
+#include "scope_screen.h"
 #include "osc_menu_screen.h"
 #include "gallery_screen.h"
 #include "overlay_screens.h"
@@ -85,13 +89,6 @@ static bool ls_mapped(scr_key_t k)
     return true;
 }
 
-static scr_res_t ls_key_scope(scr_key_t k)
-{
-    ls_legacy_done = true;
-    if (!ls_mapped(k)) lgc_mode_key(k.btn);
-    return SCR_HANDLED;
-}
-
 /* The settings base and every settings page: settings_depth decides inside. */
 static scr_res_t ls_key_settings(scr_key_t k)
 {
@@ -110,9 +107,6 @@ static scr_res_t ls_key_settings(scr_key_t k)
  * are sys.* and meter.link today; a repaint there is cheap): all of them. The
  * gallery shows none of them. */
 #define G(g)        ((uint16_t)(1u << (g)))
-#define G_BARS      (G(PG_GEN) | G(PG_SYS) | G(PG_UI))
-#define G_SCOPE     (G_BARS | G(PG_CH1) | G(PG_CH2) | G(PG_TB) | G(PG_TRIG) | G(PG_VIEW) | \
-                     G(PG_FFT) | G(PG_IL) | G(PG_MASK))
 #define G_ALL       ((uint16_t)((1u << PG_COUNT) - 1u))
 
 #define LBASE(id, nm, md, ins, keyfn, desc, grp) \
@@ -120,12 +114,12 @@ static scr_res_t ls_key_settings(scr_key_t k)
 #define LPAGE(id, nm, fl, keyfn, desc, grp) \
     { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
 
-/* The legacy rows. SCR_HOME, SCR_SIGGEN, SCR_METER, SCR_OSC_MENU and
- * SCR_GALLERY are not among them: home_screen (home_screen.c), siggen_screen
- * (siggen_screen.c), meter_screen (meter_screen.c), osc_menu_screen
- * (osc_menu_screen.c) and gallery_screen (gallery_screen.c). */
+/* The legacy rows: the Settings base and its pages. Every other screen is a
+ * real one: home_screen (home_screen.c), siggen_screen (siggen_screen.c),
+ * meter_screen (meter_screen.c), scope_screen (scope_screen.c, B7),
+ * osc_menu_screen (osc_menu_screen.c), gallery_screen (gallery_screen.c)
+ * and the two small layers (overlay_screens.c). */
 static const screen_t ls_table[] = {
-    LBASE(SCR_SCOPE,    "scope",    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE,   ls_key_scope,    NULL,                 G_SCOPE),
     LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
     LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
@@ -299,6 +293,7 @@ void legacy_screens_init(void)
     (void)screen_register(&home_screen);
     (void)screen_register(&siggen_screen);
     (void)screen_register(&meter_screen);
+    (void)screen_register(&scope_screen);
     (void)screen_register(&osc_menu_screen);
     (void)screen_register(&gallery_screen);
     (void)screen_register(&logo_screen);

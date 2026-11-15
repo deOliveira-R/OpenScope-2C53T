@@ -5,37 +5,23 @@
  * The input task (in main.c) handles GPIO polling and debounce,
  * then calls input_handle_button() for the actual logic.
  *
- * Integrated features from 4 agent worktrees:
- *   - Cursor measurement mode (the Oscilloscope Settings page's Cursors
- *     row; TRIGGER opens its Trigger pane, osc_menu_model.h)
- *   - Meter sub-modes (LEFT/RIGHT cycle, SELECT resets min/max/avg)
- *   - Signal gen: amplitude stepping, duty cycle, frequency presets
- *   - Math channel, persistence, component tester (settings sub-menus)
+ * Every instrument's keys are its screen's (ui/home_screen.c, meter_screen.c,
+ * siggen_screen.c, scope_screen.c, osc_menu_screen.c, gallery_screen.c).
+ * What is left here: the globals (the mode switch, SAVE, the POWER
+ * countdown), the Settings pages, the auto power-off and the settings
+ * flush.
  */
 
-#include "../ui/scope_mask.h"
 #include "key_model.h"
-#include "trig_menu.h"
 #include "osc_menu_model.h"
 #include "osc_menu_screen.h"
+#include "scope_screen.h"
 #include "overlay_screens.h"
 #include "input_handler.h"
-#include "scope_apply.h"
 #include "ui.h"
 #include "scope_state.h"
-#include "scope_cal.h"
-#include "../ui/scope_timebase.h"
-#include "../ui/scope_roll.h"
-#include "../ui/scope_geom.h"
 #include "../ui/startup_policy.h"   /* startup_mode_step: the Startup row's order */
-#include "math_channel.h"
-#include "persistence.h"
-#include "shared_mem.h"
-#if FEATURE_FFT
-#include "fft_live.h"
-#endif
 #include "fpga.h"
-#include "scope_vpos.h"
 #include "scope_selfcal_run.h"
 #include "meter_autoselect.h"
 #include "at32f403a_407.h"
@@ -66,11 +52,6 @@ static uint32_t settings_now_ms(void)
 {
     return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
 }
-
-#if FEATURE_FFT
-#include "fft.h"
-#include "fft_test_signals.h"
-#endif
 
 /* ── System preferences (parity C15) ─────────────────────────────────
  * Auto power-off: stock resets its idle counter on every handled key event
@@ -241,8 +222,6 @@ static bool settings_value_adjust(settings_item_t item, int dir, bool wrap)
     }
 }
 
-static void set_focus(key_focus_t f);
-
 /* ═══════════════════════════════════════════════════════════════════
  * Settings OK handler
  * ═══════════════════════════════════════════════════════════════════ */
@@ -306,121 +285,12 @@ static void send_cmd(QueueHandle_t q, uint8_t cmd)
 
 static uint8_t mode_key(button_id_t button, QueueHandle_t dq);
 
-/* What the arrow keys adjust in the scope time view (key_model.h). Short
- * SELECT cycles it: zoom -> channel move -> trigger move -> [cursor] -> [mask]. The three
- * bools are derived from it (set_focus) because the renderer and the shell
- * read them. */
-volatile key_focus_t scope_key_focus = KF_ZOOM;
-volatile bool scope_trig_level_focus = false;
-volatile bool scope_hpos_focus = false;
-/* The mask stage, offered only while a mask exists: UP/DOWN = vertical
- * tolerance, LEFT/RIGHT = horizontal, SELECT = stop-on-fail. */
-volatile bool scope_mask_focus = false;
-
-static void set_focus(key_focus_t f)
-{
-    scope_key_focus        = f;
-    scope_trig_level_focus = (f == KF_TRIGMOVE);
-    scope_hpos_focus       = (f == KF_CHMOVE || f == KF_TRIGMOVE);
-    scope_mask_focus       = (f == KF_MASK);
-}
-
-/* key_model.h: read-only views for the status bar. */
-uint8_t key_focus_get(void)          { return (uint8_t)scope_key_focus; }
-uint8_t key_active_channel_get(void) { return active_channel; }
-
 /* Helper: show popup and send redraw */
 static void popup_and_redraw(QueueHandle_t q, const char *text)
 {
     scope_show_popup(text);
     uint8_t cmd = DCMD_REDRAW_ALL;
     send_cmd(q, cmd);
-}
-
-/* ── Mask pass/fail from the buttons (docs/specs/scope/mask-pass-fail.md) ──
- *
- * Every change is a request the acquisition task applies (scope_mask.h). The
- * popup reports what the mask says AFTER the acknowledgement -- the applied
- * tolerance, not the one asked for -- and says NOT SET when no ack arrives
- * (the inert-controls lesson: report the wire, not the setter's intent).
- * The wait is bounded at ~100 ms; the acquisition loop services requests
- * every poll (~30 ms). */
-static bool mask_req(scope_mask_req_t k, uint8_t a, uint8_t b, uint16_t n)
-{
-    uint32_t seq = scope_mask_post(k, a, b, n);
-    for (int i = 0; i < 20; i++) {
-        if (scope_mask_acked(seq)) return true;
-        vTaskDelay(pdMS_TO_TICKS(5));
-    }
-    return false;
-}
-
-/* tol_v steps of 2 counts (1/16 division), tol_h steps of 1 sample. The
- * popup shows the tolerance the mask reports after the ack. */
-/* Consecutive presses build on the request still in flight, not on the
- * applied value (2026-10-06). The acquisition task can sleep fill + 100 ms
- * after a handover -- longer than mask_req's 100 ms wait -- so a second press
- * read the old tolerance and re-asked for the same step (mask_bench H: two
- * UPs from 8 landed on 10, 2 of 3 runs). The mailbox keeps only the newest
- * request, so posting on top of a pending one is exactly right. */
-static uint32_t tol_pending_seq;
-static uint8_t  tol_pending_v, tol_pending_h;
-
-static void mask_adjust_tol(int dv, int dh, char *pb, size_t n)
-{
-    scope_mask_summary_t m;
-    scope_mask_summary(&m);
-    int base_v = m.tol_v, base_h = m.tol_h;
-    if (tol_pending_seq && !scope_mask_acked(tol_pending_seq)) {
-        base_v = tol_pending_v;
-        base_h = tol_pending_h;
-    }
-    int v = base_v + dv, h = base_h + dh;
-    if (v < 0) v = 0;
-    if (v > 64) v = 64;
-    if (h < 0) h = 0;
-    if (h > (int)MASK_PF_HMAX) h = (int)MASK_PF_HMAX;
-    tol_pending_v = (uint8_t)v;
-    tol_pending_h = (uint8_t)h;
-    tol_pending_seq = scope_mask_post(SCOPE_MASK_REQ_TOL, (uint8_t)v, (uint8_t)h, 0);
-    for (int i = 0; i < 20 && !scope_mask_acked(tol_pending_seq); i++)
-        vTaskDelay(pdMS_TO_TICKS(5));
-    if (!scope_mask_acked(tol_pending_seq)) {
-        /* Not lost: the acquisition task applies it on its next poll. */
-        snprintf(pb, n, "Mask V%u H%u ...", (unsigned)v, (unsigned)h);
-        return;
-    }
-    scope_mask_summary(&m);
-    snprintf(pb, n, "Mask V%u H%u", (unsigned)m.tol_v, (unsigned)m.tol_h);
-}
-
-/* AUTO in the scope time view: teach when there is no mask, cancel a teach
- * in progress, clear a finished mask. AUTO did nothing in the time view
- * before 2026-10-03 (it only acts in the FFT views). */
-static void mask_auto_key(char *pb, size_t n)
-{
-    mask_pf_state_t st = scope_mask_state();
-    if (st == MASK_PF_EMPTY) {
-        if (!mask_req(SCOPE_MASK_REQ_TEACH, 0, 0, 0)) {
-            snprintf(pb, n, "MASK: NOT SET");
-        } else if (scope_mask_teach_refusal() != NULL) {
-            /* The refusals a user can cause, in words that fit 24 chars. */
-            const char *why = scope_mask_teach_refusal();
-            snprintf(pb, n, "%s", strstr(why, "CH2") ? "MASK: needs CH1 trig" :
-                                  strstr(why, "heap") ? "MASK: no memory" :
-                                  strstr(why, "channel") ? "MASK: no channel on" :
-                                  "MASK: refused");
-        } else {
-            scope_mask_summary_t m;
-            scope_mask_summary(&m);
-            snprintf(pb, n, "MASK: teach %u", (unsigned)m.teach_target);
-        }
-    } else {
-        bool ok = mask_req(SCOPE_MASK_REQ_CLEAR, 0, 0, 0);
-        if (scope_key_focus == KF_MASK) set_focus(KF_ZOOM);   /* the stage went with the mask */
-        snprintf(pb, n, "%s", !ok ? "MASK: NOT SET" :
-                              st == MASK_PF_TEACHING ? "MASK: cancelled" : "MASK: off");
-    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -533,15 +403,6 @@ static void save_key_short(QueueHandle_t dq)
     }
 }
 
-/* The Oscilloscope Settings page changed the cursor mode (osc_menu_screen.h):
- * the cursors switched on from its Cursors row put the arrows on the cursor
- * stage, as TRIGGER's old cursor cycle did (stock behaviour [inferred],
- * UI_STUDY 2.3). */
-void osc_menu_env_cursors(bool on)
-{
-    set_focus(key_focus_after_cursor_change(scope_key_focus, on));
-}
-
 /* A long mode key: sys.mode through the model, the path `set sys.mode` and
  * `set sys.instrument` take (props_sys.c -> model_hw_fw.c op_mode ->
  * input_mode_switch -> enter_mode). */
@@ -550,58 +411,32 @@ static void key_mode_set(device_mode_t m)
     (void)prop_set_local(prop_by_id(PROP_ID_SYS_MODE), (int32_t)m, ORIGIN_KEY, NULL);
 }
 
+/* The key context of the globals and the Settings screens (ui/
+ * legacy_screens.c): the mode and the Settings page, with the scope's part
+ * from its screen (ui/scope_screen.c), which also drops an arrow stage that
+ * no longer exists before any key acts. */
 static key_ctx_t key_ctx_now(void)
 {
-    const scope_state_t *ss = scope_state_get();
-    key_ctx_t c;
-    c.mode           = current_mode;
-    c.settings_depth = settings_depth;
-#if FEATURE_FFT
-    c.scope_time_view = (current_mode == MODE_OSCILLOSCOPE && scope_view == SCOPE_VIEW_TIME);
-#else
-    c.scope_time_view = (current_mode == MODE_OSCILLOSCOPE);
-#endif
-    c.cursors_on     = (ss->cursor.mode != CURSOR_OFF);
-    c.mask_present   = (scope_mask_state() != MASK_PF_EMPTY);
-    /* A stage that no longer exists (mask cleared from the shell, cursors
-     * switched off) is dropped here, before it can steer an arrow press. */
-    const key_focus_t f = key_focus_sanitize(scope_key_focus, c.cursors_on, c.mask_present);
-    if (f != scope_key_focus) set_focus(f);
-    c.focus          = f;
-    c.active_channel = active_channel;
-    c.osc_menu_open  = (current_mode == MODE_OSCILLOSCOPE) && osc_menu_is_open();
-    c.osc_menu_locked = c.osc_menu_open && osc_menu_is_locked();
-    c.osc_menu_opener = osc_menu_screen_opener();
+    key_ctx_t c = scope_screen_ctx();
+    const bool scope = (current_mode == MODE_OSCILLOSCOPE);
+    c.mode            = current_mode;
+    c.settings_depth  = settings_depth;
+    c.scope_time_view = scope && c.scope_time_view;
+    c.osc_menu_open   = scope && c.osc_menu_open;
+    c.osc_menu_locked = c.osc_menu_open && c.osc_menu_locked;
     return c;
 }
 
-/* Execute one answer of key_map() for key `btn`. Returns the display command sent. */
+/* Execute one answer of key_map() that is not a screen's own: the globals
+ * the router did not take itself. Every scope action is executed by the
+ * scope's screen (ui/scope_screen.c), the generator's and the page's by
+ * theirs. Returns the display command sent. */
 static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
 {
-    scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
-    char pb[24];
-    channel_state_t *ach = (active_channel == 0) ? &ss->ch1 : &ss->ch2;
-    const int dir = k.arg;
+    (void)btn;
 
     switch (k.act) {
-    case KA_NONE:
-    case KA_LEGACY:
-    /* Not executed here: the router's POWER global runs the per-key switch
-     * (mode_key) itself, after closing the gallery. */
-    case KA_POWER_PROMPT:
-    /* Nor these: the generator is a screen of its own (ui/siggen_screen.c),
-     * which takes its long OK (Run/Stop) and long AUTO (output at boot) as
-     * gen.out / gen.bootout sets before key_map() is asked. */
-    case KA_SIGGEN_RUNSTOP:
-    case KA_SIGGEN_BOOT_TOGGLE:
-    /* Nor these: while the Oscilloscope Settings page is up it is a screen
-     * of its own (ui/osc_menu_screen.c), which takes its keys before
-     * key_map() is asked here. */
-    case KA_OSCMENU_KEY:
-    case KA_OSCMENU_CLOSE:
-        break;
-
     /* -- long presses: mode shortcuts, from any mode -------------------- */
     /* The router's globals take these first (legacy_screens.c ->
      * lgc_mode_set); kept here so key_map's answer means the same wherever
@@ -613,32 +448,6 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
     case KA_ENTER_SCOPE:  key_mode_set(MODE_OSCILLOSCOPE); break;
     case KA_ENTER_SIGGEN: key_mode_set(MODE_SIGNAL_GEN);   break;
 
-    case KA_MEAS_HIDE_TOGGLE:
-        ss->prm_hidden = !ss->prm_hidden;
-        popup_and_redraw(dq, ss->prm_hidden ? "Measurements hidden" : "Measurements shown");
-        break;
-
-    case KA_CH_ENABLE_TOGGLE: {
-        /* Same path as the shell's `fpga scope ch`: flip, apply the converter
-         * routing, and put it back if the hardware refuses (both off). The
-         * popup reports the routing in force, not the request: CH2 off at a
-         * fast timebase is what gives the interleaved 250 MS/s record. */
-        channel_state_t *c = (dir == 0) ? &ss->ch1 : &ss->ch2;
-        const bool was = c->enabled;
-        c->enabled = !was;
-        if (!fpga_apply_channel_enables()) {
-            c->enabled = was;
-            popup_and_redraw(dq, "Keep one CH on");
-            break;
-        }
-        if (!c->enabled && (active_channel == (uint8_t)dir))
-            active_channel = (uint8_t)(1u - (uint8_t)dir);   /* the arrows follow the live one */
-        snprintf(pb, sizeof(pb), "CH%d %s%s", dir + 1, c->enabled ? "ON" : "OFF",
-                 fpga_interleave_active() ? " 250MS/s" : "");
-        popup_and_redraw(dq, pb);
-        break;
-    }
-
     /* Long SAVE (parity C16): stock's 3x3 screenshot gallery, from every
      * mode (D1). A layer of the router (ui/gallery_screen.c): it owns the
      * screen and every key but POWER until it closes itself; the display
@@ -649,194 +458,14 @@ static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
         cmd = DCMD_NONE_MODAL_DROP;
         break;
 
-    /* Long AUTO / long OK (parity C10): queued for the key task's selfcal
-     * service, which runs right after this returns and shows its own
-     * popups. Baseline correction walks banks 0 and 1 (stock's order); bank
-     * 2, the interleaved single-channel regime, is `fpga scope basecal 7`. */
-    case KA_BASECAL:
-        if (!scope_selfcal_request_basecal(0x03u)) popup_and_redraw(dq, "Busy");
-        break;
-    case KA_CENTER50:
-        if (!scope_selfcal_request_center50()) popup_and_redraw(dq, "Busy");
-        break;
-
-    /* -- short presses -------------------------------------------------- */
-    case KA_FOCUS_NEXT: {
-        const key_focus_t f = key_focus_next(
-            scope_key_focus, ss->cursor.mode != CURSOR_OFF,
-            scope_mask_state() != MASK_PF_EMPTY);
-        set_focus(f);
-        popup_and_redraw(dq, key_focus_popup(f));
-        break;
-    }
-
-    case KA_ADJ_CH_SWITCH: {
-        /* "Switch CH1/CH2 Adjustment": which channel UP/DOWN act on. A
-         * channel that is off is not offered: it has nothing to adjust. */
-        const uint8_t other = (uint8_t)(1u - active_channel);
-        const channel_state_t *oc = (other == 0) ? &ss->ch1 : &ss->ch2;
-        if (oc->enabled) {
-            active_channel = other;
-            snprintf(pb, sizeof(pb), "Adjust CH%d", other + 1);
-        } else {
-            snprintf(pb, sizeof(pb), "CH%d is off", other + 1);
-        }
-        popup_and_redraw(dq, pb);
-        break;
-    }
-
     case KA_SCREENSHOT:
         save_key_short(dq);
         break;
 
-    case KA_TB_STEP: {
-        /* Past the last FPGA code the ladder continues into roll (C11,
-         * stock 0x14..0x1C): a roll change re-applies roll, anything else
-         * the Y-T code. Holding at the slowest roll step changes nothing. */
-        const bool was_roll = ss->roll;
-        const uint8_t was_step = ss->roll_step;
-        const bool roll_changed = scope_adjust_timebase(ss, dir);
-        /* Push it to the FPGA. Before 2026-08-19 this line did not exist
-         * and the button only relabelled the axis while the hardware kept
-         * sampling at whatever the arm block left in reg 0x01 — so the
-         * derived s/div below was a confident, wrong number. If the write
-         * fails the rate did NOT change, so say so rather than print a
-         * label for a rate that is not in force. */
-        const bool tb_ok = roll_changed ? fpga_apply_roll()
-                         : (was_roll ? true : fpga_apply_timebase(ss->timebase_idx));
-        if (roll_changed && !tb_ok) {
-            /* Nothing was written. Unlike a Y-T code, a later press need not
-             * re-apply (the slowest step holds), so put the state back. */
-            ss->roll = was_roll;
-            ss->roll_step = was_step;
-        }
-        /* The status bar's H= shows the new code; only a failed write,
-         * which the bar cannot show, gets a popup. */
-        if (tb_ok) {
-            send_cmd(dq, DCMD_REDRAW_ALL);
-            break;
-        }
-        char tb[12];
-        if (ss->roll)
-            scope_roll_label(ss->roll_step, tb, sizeof(tb));
-        else
-            /* The status bar's label (merge x2, fast-code zoom; C5). */
-            scope_timebase_view_label(ss->timebase_idx,
-                                      scope_ui_view_merged(),
-                                      tb, sizeof(tb));
-        snprintf(pb, sizeof(pb), "H=%s NOT SET", tb);
-        popup_and_redraw(dq, pb);
+    /* KA_NONE (a long key with no meaning on a Settings page), and what a
+     * screen of its own executes. */
+    default:
         break;
-    }
-
-    case KA_VDIV_STEP: {
-        scope_adjust_vdiv(ach, dir);
-        /* Push it to the RELAYS. Before 2026-08-20 (EXP-19) this line did
-         * not exist and the button only changed the label and the
-         * counts->volts k while the frontend stayed at the boot range —
-         * the decorative-timebase-button bug (EXP-17), on the axis where
-         * it prints a confidently wrong VOLTAGE. */
-        const bool vd_ok = fpga_apply_vdiv((uint8_t)(active_channel + 1), ach->vdiv_idx);
-        /* The bottom bar shows the new volts/div; only a failed relay
-         * write, which the bar cannot show, gets a popup. */
-        if (vd_ok) {
-            send_cmd(dq, DCMD_REDRAW_ALL);
-            break;
-        }
-        char vd[12];
-        scope_cal_range_label((uint8_t)(active_channel + 1), ach->vdiv_idx, vd, sizeof(vd));
-        snprintf(pb, sizeof(pb), "CH%d %s NOT SET", active_channel + 1, vd);
-        popup_and_redraw(dq, pb);
-        break;
-    }
-
-    case KA_CHPOS_STEP:
-        /* Stock's channel move: the vertical position drives the channel's
-         * offset DAC from the calibration page (scope_vpos, parity C4). With no
-         * usable page scope_vpos_set() is a no-op and only the ground marker
-         * moves. fpga.c keeps the 0x1B/0x1D offset bytes pinned at 128. */
-        scope_adjust_position(ach, dir);
-        scope_vpos_set((uint8_t)(active_channel + 1), ach->position);
-        snprintf(pb, sizeof(pb), "CH%d pos %+d", active_channel + 1, (int)ach->position);
-        popup_and_redraw(dq, pb);
-        break;
-
-    case KA_TRIGCOL_STEP: {
-        /* Move the trigger point across the screen, 16 px per press,
-         * over stock's 150 + hpos, hpos +-150 (parity C5, scope_geom.h).
-         * The popup reports the column it was ASKED for; the marker at
-         * the top shows where it actually landed. */
-        int tx = ss->trig_x + dir * 16;
-        if (tx < SCOPE_GEOM_TRIG_COL_MIN) tx = SCOPE_GEOM_TRIG_COL_MIN;
-        if (tx > SCOPE_GEOM_TRIG_COL_MAX) tx = SCOPE_GEOM_TRIG_COL_MAX;
-        ss->trig_x = (int16_t)tx;
-        snprintf(pb, sizeof(pb), "Trig at x=%d", tx);
-        popup_and_redraw(dq, pb);
-        break;
-    }
-
-    case KA_TRIGLVL_STEP: {
-        scope_adjust_trigger_level(ss, dir);
-        /* Through the ONE writer of reg 0x08, so the register, the
-         * persisted level and the marker cannot diverge. The popup shows
-         * the code the firmware records as in force, not a recomputation:
-         * the inert-controls lesson is to report the wire, not the
-         * setter's intent. */
-        const bool lv_ok = fpga_apply_trigger_level(ss->trigger.level);
-        snprintf(pb, sizeof(pb), lv_ok ? "Trig %+d  code %u" : "Trig %+d  NOT SET",
-                 ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
-        popup_and_redraw(dq, pb);
-        break;
-    }
-
-    /* The live frame draws the cursors and the AUX row their readout, so a
-     * move is one live frame, not a clear-and-repaint (scope_ui.c). */
-    case KA_CURSOR_MOVE:
-        scope_cursor_move((int16_t)(dir * 4));
-        scope_ui_request_live();
-        break;
-
-    case KA_CURSOR_NEXT:
-        scope_cursor_next_sel();
-        scope_ui_request_live();
-        break;
-
-    case KA_MASK_TOL_V:
-        mask_adjust_tol(dir * 2, 0, pb, sizeof(pb));
-        popup_and_redraw(dq, pb);
-        break;
-
-    case KA_MASK_TOL_H:
-        mask_adjust_tol(0, dir, pb, sizeof(pb));
-        popup_and_redraw(dq, pb);
-        break;
-
-    /* -- the Oscilloscope Settings page (osc_menu_model.h) -------------- */
-    case KA_OSCMENU_OPEN:
-        /* From the plot: MENU or a deep-link key opens the full page. The
-         * layer is pushed by the stack mirror after this key. */
-        osc_menu_screen_open((osc_row_t)dir, false, (uint8_t)btn);
-        cmd = DCMD_DRAW_OSC_MENU;
-        send_cmd(dq, cmd);
-        break;
-    case KA_OSCMENU_PANE:
-        /* PRM / TRIGGER: the page locked inside their pane (stock V1.2.0);
-         * that key, or MENU, closes it. */
-        osc_menu_screen_open((osc_row_t)dir, true, (uint8_t)btn);
-        cmd = DCMD_DRAW_OSC_MENU;
-        send_cmd(dq, cmd);
-        break;
-
-    case KA_MASK_STOPFAIL: {
-        scope_mask_summary_t m;
-        scope_mask_summary(&m);
-        bool ok = mask_req(SCOPE_MASK_REQ_STOPFAIL, m.stop_on_fail ? 0u : 1u, 0, 0);
-        scope_mask_summary(&m);
-        snprintf(pb, sizeof(pb), ok ? "Mask stop-on-fail %s" : "Mask stop NOT SET",
-                 m.stop_on_fail ? "ON" : "OFF");
-        popup_and_redraw(dq, pb);
-        break;
-    }
     }
     return cmd;
 }
@@ -992,9 +621,7 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
  * from the router's globals. */
 static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 {
-    scope_state_t *ss = scope_state_get();
     uint8_t cmd = DCMD_REDRAW_ALL;
-    char pb[24];
 
     switch (button) {
 
@@ -1024,24 +651,10 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 
     /* -- Channel buttons ------------------------------------------ */
 
+    /* The scope's CH1/CH2 (coupling) are its screen's (ui/scope_screen.c). */
     case BTN_CH1:
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            active_channel = 0;
-            (void)scope_apply_coupling_toggle(0, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        } else {
-            send_cmd(dq, cmd);
-        }
-        break;
-
     case BTN_CH2:
-        if (current_mode == MODE_OSCILLOSCOPE) {
-            active_channel = 1;
-            (void)scope_apply_coupling_toggle(1, pb, sizeof(pb));
-            popup_and_redraw(dq, pb);
-        } else {
-            send_cmd(dq, cmd);
-        }
+        send_cmd(dq, cmd);
         break;
 
     /* -- Trigger -------------------------------------------------- */
@@ -1066,73 +679,9 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 
     /* -- Auto ----------------------------------------------------- */
 
-    case BTN_AUTO:
-        /* The meter's AUTO (the SoC's own function pick) is its screen's
-         * (ui/meter_screen.c). */
-        if (current_mode == MODE_OSCILLOSCOPE) {
-#if FEATURE_FFT
-            if (scope_view != SCOPE_VIEW_TIME) {
-                /* Auto-configure the spectrum view on what it actually
-                 * analyses: the active channel's live record (head skipped,
-                 * as the views do) when there is one, the demo signal only
-                 * with no capture at all, and never in the live-capture
-                 * builds, where the demo is compiled out (scope_ui.c
-                 * fft_prepare_input). An active channel that is off has
-                 * nothing to configure on. */
-                int16_t *sbuf = fft_get_sample_buf();
-                const volatile uint8_t *b = scope_ui_fft_record();
-                if (sbuf && b != NULL) {
-                    uint16_t n = fft_live_prepare((const uint8_t *)b,
-                                                  FPGA_ADC_BUF_SIZE,
-                                                  sbuf, FFT_SIZE);
-                    if (n > 0)
-                        fft_auto_configure(sbuf, n);
-                }
-#if !(defined(FPGA_WARM_HANDOFF_TEST) && FPGA_WARM_HANDOFF_TEST)
-                else if (sbuf && !fpga_data_ready()) {
-                    test_signal_generate(TEST_SIG_SQUARE, sbuf,
-                                         FFT_SIZE, fft_get_config()->sample_rate_hz,
-                                         1000.0f, 0.0f, 0.8f);
-                    fft_auto_configure(sbuf, FFT_SIZE);
-                }
-#endif
-                send_cmd(dq, cmd);
-                break;
-            }
-#endif
-            /* Time view: autoset (parity C9; stock 0x0800CB50). While a
-             * mask exists, or the arrows are on its stage, AUTO keeps its
-             * mask meaning (cancel a teach / clear): the mask is ours, and
-             * an autoset would move the picture it was taught on. Teaching
-             * a new one is `mask teach` in the shell. */
-            if (scope_mask_state() != MASK_PF_EMPTY || scope_key_focus == KF_MASK) {
-                mask_auto_key(pb, sizeof(pb));
-                popup_and_redraw(dq, pb);
-            } else if (!scope_selfcal_request_autoset()) {
-                popup_and_redraw(dq, "Busy");
-            }
-        }
-        break;
-
-    /* -- PRM / SELECT --------------------------------------------- */
-
-    /* BTN_PRM: in the scope key_map() claims it (the Oscilloscope Settings
-     * page at Parameter Measurement; the FFT views it used to cycle are
-     * chosen on that page, through scope_view_select()). The meter's
-     * softkey and the generator's frequency editor took it above; anywhere
-     * else it does nothing. */
-
-    case BTN_SELECT:
-#if FEATURE_FFT
-        if (current_mode == MODE_OSCILLOSCOPE &&
-            scope_view != SCOPE_VIEW_TIME) {
-            fft_cycle_window();
-            send_cmd(dq, cmd);
-        }
-#endif
-        /* Scope time view: SELECT cycles the arrow stage -- key_model.c.
-         * Generator: the waveform -- ui/siggen_screen.c. */
-        break;
+    /* BTN_AUTO, BTN_PRM, BTN_SELECT: the scope's (autoset, the mask, the
+     * spectrum views), the meter's and the generator's are their screens';
+     * on a Settings page they do nothing. */
 
     /* -- UP / DOWN ------------------------------------------------ */
 
@@ -1146,13 +695,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-#if FEATURE_FFT
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-                 scope_view != SCOPE_VIEW_TIME) {
-            fft_adjust_ref_level(5.0f);
-            send_cmd(dq, cmd);
-        }
-#endif
         break;
 
     case BTN_DOWN:
@@ -1166,13 +708,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-#if FEATURE_FFT
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-                 scope_view != SCOPE_VIEW_TIME) {
-            fft_adjust_ref_level(-5.0f);
-            send_cmd(dq, cmd);
-        }
-#endif
         break;
 
     /* -- LEFT / RIGHT --------------------------------------------- */
@@ -1188,13 +723,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-#if FEATURE_FFT
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-            scope_view != SCOPE_VIEW_TIME) {
-            fft_zoom_in();
-            send_cmd(dq, cmd);
-        }
-#endif
         break;
 
     case BTN_RIGHT:
@@ -1208,13 +736,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             cmd = DCMD_DRAW_SETTINGS;
             send_cmd(dq, legacy_screens_active_cmd());
         }
-#if FEATURE_FFT
-        else if (current_mode == MODE_OSCILLOSCOPE &&
-            scope_view != SCOPE_VIEW_TIME) {
-            fft_zoom_out();
-            send_cmd(dq, cmd);
-        }
-#endif
         break;
 
     /* -- OK ------------------------------------------------------- */
@@ -1223,29 +744,8 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
         if (current_mode == MODE_SETTINGS) {
             input_handle_settings_ok();
             send_cmd(dq, cmd);
-        } else if (current_mode == MODE_OSCILLOSCOPE) {
-            if (scope_mask_hold_active()) {
-                /* A mask failure is being held (stop-on-fail): OK resumes
-                 * testing rather than toggling RUN/STOP, which would leave
-                 * the acquisition frozen behind a STOP the user never set. */
-                (void)scope_mask_post(SCOPE_MASK_REQ_RELEASE, 0, 0, 0);
-                scope_show_popup("MASK: RESUME");
-            } else if (ss->trigger.mode == TRIG_SINGLE &&
-                       (!ss->running || fpga_acq_single_done())) {
-                /* Stock's SINGLE: after the capture the scope is STOPPED
-                 * (0x0802163E) and RUN re-arms it. A STOP the user pressed
-                 * while armed re-arms the same way. */
-                ss->running = true;
-                fpga_acq_single_rearm();
-                scope_show_popup("Await Trigger...");
-            } else {
-                scope_toggle_running(ss);
-                if (!ss->running)
-                    scope_ui_paused_latch();   /* ranges at STOP, for the zoom (C14) */
-                /* No popup: the status bar's RUN/STOP tab says it. */
-            }
-            send_cmd(dq, cmd);
         }
+        /* The scope's OK (RUN/STOP) is its screen's. */
         break;
 
     /* -- Power ---------------------------------------------------- */

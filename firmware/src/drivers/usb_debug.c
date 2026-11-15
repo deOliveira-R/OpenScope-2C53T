@@ -3309,6 +3309,21 @@ static void cmd_fpga_scope_autoset(void)
                  ? "autoset queued (poll: fpga scope selfcal)\r\n" : "busy\r\n");
 }
 
+/* FFT AUTO as the AUTO key asks for it in a spectrum view (fft.h): the
+ * display task fits the span to the record of its next spectrum frame. */
+static void cmd_fft_auto(void)
+{
+#if FEATURE_FFT
+    extern void fft_auto_request(void);
+    extern bool fft_is_initialized(void);
+    if (!fft_is_initialized()) { usb_send_str("refused: no spectrum view (set view.mode fft|split|waterfall)\r\n"); return; }
+    fft_auto_request();
+    usb_send_str("fft auto requested (next spectrum frame)\r\n");
+#else
+    usb_send_str("refused: not in this build\r\n");
+#endif
+}
+
 static void cmd_fpga_scope_basecal(const char *args)
 {
     while (*args == ' ') args++;
@@ -4275,6 +4290,8 @@ static const shell_cmd_t shell_cmds[] = {
           "cal user [show|save|clear]      Save/clear OpenScope's own corrections (baseline + interleave) in W25Q\r\n"),
     CMD_V("fpga scope autoset", cmd_fpga_scope_autoset, SC_EXACT,
           "fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n"),
+    CMD_V("fft auto", cmd_fft_auto, SC_EXACT,
+          "fft auto                        Fit the spectrum's span, as AUTO in a spectrum view\r\n"),
     CMD_A("fpga scope basecal", cmd_fpga_scope_basecal, 0,
           "fpga scope basecal [banks]      Baseline correction, as long AUTO; input open (default banks 3)\r\n"),
     CMD_V("fpga scope center50", cmd_fpga_scope_center50, SC_EXACT,

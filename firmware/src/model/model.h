@@ -443,6 +443,7 @@ MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
 MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curpos)
 int32_t trig_code_get(const prop_desc_t *p);
+int32_t trig_held_get(const prop_desc_t *p);
 int32_t mask_state_get(const prop_desc_t *p);
 int32_t mask_hold_get(const prop_desc_t *p);
 int32_t mask_pending_get(const prop_desc_t *p);

@@ -6,6 +6,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include <string.h>
+#include <stdio.h>
 
 /* The whole mask -- bookkeeping AND envelope, sizeof(mask_pf_t) +
  * MASK_PF_BUF_BYTES, ~1.6 KB -- is one FreeRTOS heap block taken on the first
@@ -289,4 +290,42 @@ bool scope_mask_bound_at(uint8_t ch, int x, int trig_x, uint8_t *lo, uint8_t *hi
     int m = x - trig_x + (int)mk->pre;
     if (m < 0 || m >= (int)MASK_PF_SPAN) return false;
     return mask_pf_bounds(mk, ch, (uint16_t)m, lo, hi);
+}
+
+/* ── The keys' procedures (scope_mask.h) ─────────────────────────────── */
+
+bool scope_mask_request(scope_mask_req_t kind, uint8_t a, uint8_t b, uint16_t n)
+{
+    const uint32_t seq = scope_mask_post(kind, a, b, n);
+    for (int i = 0; i < 20; i++) {
+        if (scope_mask_acked(seq)) return true;
+        vTaskDelay(pdMS_TO_TICKS(5));
+    }
+    return false;
+}
+
+bool scope_mask_key_auto(char *text, unsigned n)
+{
+    const mask_pf_state_t st = scope_mask_state();
+    if (st == MASK_PF_EMPTY) {
+        if (!scope_mask_request(SCOPE_MASK_REQ_TEACH, 0, 0, 0)) {
+            snprintf(text, n, "MASK: NOT SET");
+        } else if (scope_mask_teach_refusal() != NULL) {
+            /* The refusals a user can cause, in words that fit 24 chars. */
+            const char *why = scope_mask_teach_refusal();
+            snprintf(text, n, "%s", strstr(why, "CH2") ? "MASK: needs CH1 trig" :
+                                    strstr(why, "heap") ? "MASK: no memory" :
+                                    strstr(why, "channel") ? "MASK: no channel on" :
+                                    "MASK: refused");
+        } else {
+            scope_mask_summary_t m;
+            scope_mask_summary(&m);
+            snprintf(text, n, "MASK: teach %u", (unsigned)m.teach_target);
+        }
+        return false;
+    }
+    const bool ok = scope_mask_request(SCOPE_MASK_REQ_CLEAR, 0, 0, 0);
+    snprintf(text, n, "%s", !ok ? "MASK: NOT SET" :
+                            st == MASK_PF_TEACHING ? "MASK: cancelled" : "MASK: off");
+    return true;
 }

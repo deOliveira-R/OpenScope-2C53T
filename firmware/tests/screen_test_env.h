@@ -43,7 +43,9 @@ volatile uint8_t        fuse_type     = 0;
 volatile uint8_t        fuse_rating_idx = 6;
 volatile uint8_t        fuse_view     = 0;
 volatile float          fuse_scan_threshold_mv = 0.1f;
+#ifndef SCREEN_TEST_ENV_REAL_FOCUS      /* test_scope_screen.c links the screen that owns it */
 uint8_t key_focus_get(void) { return 0; }
+#endif
 
 /* ── signal_gen.c's output driver: every call that would reach TMR7 /
  *    DMA2 / DAC2 is logged, in order ─────────────────────────────── */

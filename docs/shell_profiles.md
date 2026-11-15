@@ -72,7 +72,7 @@ A change whose owner is another task is posted (`meter.func`, `mask.*`, `sys.mod
 
 `help`, `?`, `version`, `features`, `status`, `fwload`, `fwstat`, `fwapply`, `fwswap`, `siggen`, `flash jedec`,
 `flash read`, `flash dump`, `can decode`, `can stats`, `can screen`, `cal status`, `cal backup`, `cal restore`,
-`cal page`, `cal base`, `cal user`, `fpga scope autoset`, `fpga scope basecal`, `fpga scope center50`,
+`cal page`, `cal base`, `cal user`, `fpga scope autoset`, `fpga scope basecal`, `fpga scope center50`, `fft auto`,
 `fpga scope selfcal`, `screen dump`, `screen dumpbin`, `screenshot`, `logo`, `usb`, `screen shadow`,
 `fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `get`, `set`, `list`, `describe`,
 `stream`, `ui press`, `ui long`, `ui seq`, `ui screen`, `mask`, `fpga edgefilter`, `fpga cfgsettle`,
