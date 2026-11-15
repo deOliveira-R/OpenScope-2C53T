@@ -87,6 +87,11 @@ static void autooff_touch(void)
 static void power_off_now(void)
 {
     (void)settings_store_flush_power_off(settings_now_ms(), startup_screen_of_mode(current_mode));
+    /* The session snapshot (Startup on Boot = Restore brings every instrument
+     * back as it was): after the flush, so it is stamped with the settings
+     * record just written and the last screen is already noted. Bounded: a
+     * failed or refused save ends the call, the power-off goes on. */
+    (void)session_snapshot_save();
     sys_pwm_backlight_off();
     GPIOC->clr = (1U << 9);
     while (1) { }
