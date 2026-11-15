@@ -50,6 +50,7 @@ Instrument state is the property model (`firmware/src/model/`), and the shell re
 | `list [prefix\|glob]` | every property: name, type, range, value, flags |
 | `list changed [prefix\|glob]`, `get changed` | only the properties whose value is not the built-in default (with the default; as `get` lines) |
 | `describe <prop>` | range or labels, built-in default, unit, where it is saved, what a reset does to it, the owner call |
+| `session [status]`, `session list`, `session save`, `session clear` | the session snapshot behind Startup on Boot = Restore: what the boot found and applied (with the properties it could not put in force), which properties are in it and which are left out and why; `save` writes what an orderly power-off writes, `clear` invalidates it |
 | `reset settings CONFIRM` | "Reset to defaults": the built-in defaults over the user settings, applied through the setters and saved; never calibration, gallery or logo ([arch/settings_defaults.md](arch/settings_defaults.md)) |
 
 and the keys with `ui press <KEY> [n]`, `ui long <KEY>`, `ui seq <tok> ...`; `ui screen` is one `key=value`
@@ -76,7 +77,7 @@ A change whose owner is another task is posted (`meter.func`, `mask.*`, `sys.mod
 `flash read`, `flash dump`, `can decode`, `can stats`, `can screen`, `cal status`, `cal backup`, `cal restore`,
 `cal page`, `cal base`, `cal user`, `fpga scope autoset`, `fpga scope basecal`, `fpga scope center50`, `fft auto`,
 `fpga scope selfcal`, `screen dump`, `screen dumpbin`, `screenshot`, `logo`, `usb`, `screen shadow`,
-`fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `reset settings`, `get`, `set`,
+`fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `reset settings`, `session`, `get`, `set`,
 `list`, `describe`,
 `stream`, `ui press`, `ui long`, `ui seq`, `ui screen`, `mask`, `fpga edgefilter`, `fpga cfgsettle`,
 `fpga interleave`, `fpga unrotate`, `fpga scope trigger`, `fpga roll`, `fpga scope center`, `meter state`,

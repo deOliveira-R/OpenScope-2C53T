@@ -232,7 +232,7 @@ Stock reads `2:/LOGO/LOGO2C53T.jpg` from its own FAT. OpenScope stores its own
 image instead (no FAT, no JPEG decoder, no RAM): `firmware/src/util/logo_store.h`.
 
 - **Region**: `FLASH_REGION_LOGO`, 0xF70000..0xF9FFFF (192 KB), carved from the
-  unused tail of `modules` (now 0xF20000, 320 KB). One record: 24-byte header at
+  unused tail of `modules` (now 0xF21000, 316 KB: its first sector is the session snapshot's). One record: 24-byte header at
   +0 (magic `OSL1`, version, format, 320x240, length, payload CRC32, header
   CRC32; written LAST as the commit record) and 153,600 bytes of RGB565
   little-endian at +256.

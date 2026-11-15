@@ -33,6 +33,14 @@ void model_shell_describe(const char *args, model_emit_fn emit);
 void model_shell_reset_report(uint8_t status, unsigned changed, unsigned left, const char *saved,
                               model_emit_fn emit);
 
+/* `session status` and `session list` (session_shell.c): the snapshot the
+ * boot found, the boot apply's result and refused list, the log; and the
+ * members with the exclusion list and its reasons. */
+void model_shell_session_status(model_emit_fn emit);
+void model_shell_session_members(model_emit_fn emit);
+/* usb_debug.c's row: session [status] | list | save | clear. */
+void cmd_session(const char *args);
+
 /* One get line for p at value v (what `get` prints). */
 void model_shell_get_line(const prop_desc_t *p, int32_t v, char *out, size_t n);
 

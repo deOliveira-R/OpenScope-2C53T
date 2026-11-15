@@ -25,6 +25,7 @@
  */
 #include "model_shell.h"
 #include "model_exec.h"
+#include "model_session.h"       /* describe: is a session property in the snapshot */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -480,7 +481,9 @@ static const char *saved_text(const prop_desc_t *p)
     if (p->flags & PF_STORED_ONLY) return "user profile (settings record); nothing applies it yet";
     if (p->flags & PF_PERSIST)     return "user profile (settings record)";
     if (p->flags & PF_USERCAL)     return "usercal record (cal user save)";
-    if (p->flags & PF_SESSION)     return "session only (not in the user profile)";
+    if (p->flags & PF_SESSION)     return model_session_excluded(p)
+                                          ? "session only (not in the user profile, not in the session snapshot)"
+                                          : "session snapshot (back with sys.startup = restore; not in the user profile)";
     return "?";
 }
 

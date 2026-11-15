@@ -137,6 +137,7 @@ screen dump	cmd_screen_dump	0x00	screen dump [shadow] [x y w h]  Dump text index
 screen dumpbin	cmd_screen_dumpbin	0x00	screen dumpbin [x y w h]        Binary indexed4 LCD shadow dump\r\n
 screen shadow	cmd_screen_shadow	0x00	screen shadow page [y]          Clear full-screen shadow capture\r\n
 screenshot	cmd_screenshot	0x00	screenshot [list]               On-device gallery: <n>.bmp in W25Q scratch\r\nscreenshot save|get|delete|check <n>  Save the screen / raw BMP (SHOTBIN) / delete\r\n
+session	cmd_session	0x00	session [status]|list|save|clear  Session snapshot (Startup = Restore): what the boot found\r\n  and applied; save = what a power-off writes; clear = none; list = members and exclusions\r\n
 set	cmd_model_set	0x02	set <prop> <value> | set p=v .. Set through the input task (label, number, step +=N/-=N)\r\n
 settings	cmd_settings	0x01	settings                        Persistence status: bound, load result, writes, failures\r\n
 siggen	cmd_siggen	0x00	siggen [dump]                   Signal generator state: gen.*, TMR7/DAC/DMA2 ch4; dump = the cycle\r\n

@@ -30,7 +30,8 @@
  *
  * SAVE FORMS. PF_PERSIST = in the user profile (the settings record, M3).
  * PF_SESSION = not in the user profile, restored only by "resume last
- * session". PF_USERCAL = in the usercal record (explicit `cal user save`).
+ * session": Startup on Boot = Restore and the session snapshot
+ * (model_session.h, util/session_store.h). PF_USERCAL = in the usercal record (explicit `cal user save`).
  * The readable profile is one `name = value [unit]` line per property
  * (prop_line_format / prop_line_parse), validated by the same setters.
  *
@@ -93,7 +94,8 @@ enum {                                   /* prop_desc_t.flags */
     PF_USERCAL     = 1u << 4,            /* in the usercal record (explicit `cal user save`)     */
     PF_STORED_ONLY = 1u << 5,            /* persisted but nothing applies it yet (fft.*, lang)   */
     PF_HIDDEN      = 1u << 6,            /* a build profile hid it from the menus                */
-    PF_SESSION     = 1u << 7,            /* session only: restored by "resume last session" only */
+    PF_SESSION     = 1u << 7,            /* session only: restored by "resume last session" only
+                                          * (the session snapshot, model_session.h)             */
     PF_ALIAS       = 1u << 8,            /* another name for state a primary property also shows
                                           * (sys.mode / sys.instrument): never saved or exported */
     PF_POSTED      = 1u << 9,            /* setter posts to another context and returns when
@@ -278,7 +280,7 @@ bool          model_prop_batches(const prop_desc_t *p);
  * model_hw(), and does nothing while the ops are unbound. view.persist's is
  * a no-op: a load never claims the shared pool (settings_store.c's rule).
  * view.mode's store is not called by a load either (the record's view is
- * kept and set through the setter later: model_view_boot_apply below).
+ * kept and set through the setter later: model_boot_keep below).
  * So a store is a boot / start-up tool, not a runtime apply: at run time
  * "Reset to defaults" goes through the setters (model_reset_to_defaults).
  *
@@ -345,27 +347,93 @@ void    model_last_screen_load(uint8_t raw);
 void    model_last_screen_note_power_off(uint8_t screen);
 uint8_t model_last_screen_record(void);
 
-/* view.mode across a power cycle. The settings record holds the display view
- * (offset 23, model_persist_v5.c V5_VIEW), but a load cannot put it in force:
- * a view other than yt goes through its owners (scope_view_select claims the
- * shared pool, Roll is an FPGA write in an acquisition park), which need the
- * scheduler. So a load only KEEPS the value (model_view_boot_load: the codec's,
- * before the scheduler, no live state moved; above MODEL_VIEW_MODE_MAX -> yt),
- * and model_view_boot_apply() sets it through the normal setter, ORIGIN_BOOT
- * (no settings note, not refused by a self-cal run), on the executor once the
- * ops are bound (model_fw_start). It returns true when the kept view is the
- * one in force.
+/* VALUES A LOAD KEEPS FOR THE SETTERS (the boot apply). A load runs before
+ * the scheduler and may only write backing state (STORE above). A value
+ * whose owners need the scheduler, the bound ops, the shared pool or an
+ * acquisition park is therefore KEPT by the load (model_boot_keep: no live
+ * state moved) and put in force later through the property's normal setter,
+ * ORIGIN_BOOT (no settings note, not refused by a self-cal run), on the
+ * executor once the ops are bound (model_fw_start -> model_boot_apply). Two
+ * loads keep values: the settings record's view.mode (model_persist_v5.c
+ * V5_VIEW) and, with Startup on Boot = Restore, every value of the session
+ * snapshot (model_session.h). The later keep of a property replaces the
+ * earlier one.
  *
- * model_view_record() is the value every capture writes into the record: the
- * kept one until it is in force, then the live view.mode. A boot whose apply
- * was refused (no pool, the Roll write failed, a build without the FFT views
- * holding a record that names one) therefore comes up in yt and still saves
- * the view it could not show, whatever else is saved in that session. The
- * kept value is dropped by the first change of the view that is not the boot
- * apply: a set of view.mode that succeeds (the value in force included),
- * tb.roll changing, view.persist evicting a spectrum view, and Reset to
- * defaults (model_view_boot_forget; the reset loop skips a property already
- * at its default, and yt is where a refused boot left it). */
+ * model_boot_apply, the rule:
+ *   - TABLE ORDER (= id order), the order "Reset to defaults" and
+ *     model_load_defaults use and the one the setters' rules need: the
+ *     channel enables before trig.source (a source on a channel that is off
+ *     is refused), tb.rollstep before view.mode (stored while Roll is off,
+ *     so the one Roll write carries it), view.mode before view.persist
+ *     (persistence evicts a spectrum view), view.cursor before view.cursel;
+ *   - only a value that is not already in force is set (the settings record
+ *     put the persisted ones there: no relay, no park for those);
+ *   - one request (model_batch_begin / end): the two mask tolerances post
+ *     once;
+ *   - a refused set does not stop the others; what was refused is tried
+ *     once more after all the others (a rule may have wanted a later
+ *     property first), as the reset does;
+ *   - the verdict is read at the end, from the getters: APPLIED when the
+ *     kept value is the one in force, else REFUSED. A refused property is
+ *     left where the settings record or the built-in default put it.
+ *   between (may be NULL) runs before each set after the first: the health
+ *   check-in, so one acquisition park is the longest gap.
+ *
+ * A keep is STICKY (the settings record's view.mode) or not (the snapshot's
+ * values). A refused sticky keep stays kept: model_boot_kept() still names
+ * it, every capture writes it instead of the live value (the record keeps a
+ * view the boot could not show), and a later model_boot_apply_one() may put
+ * it in force. A refused keep that is not sticky is only reported
+ * (model_boot_state, model_boot_report): the live value is what the next
+ * capture saves. A keep is dropped by the first change of the property
+ * that is not the boot apply: a set that succeeds (the value in force
+ * included), another setter moving it (model_changed_also; not during the
+ * boot apply, whose verdict is read at the end), and Reset to defaults
+ * (model_boot_forget_all). */
+typedef enum { BOOT_KEEP_NONE = 0,   /* nothing kept for it                              */
+               BOOT_KEEP_PENDING,    /* kept, model_boot_apply has not run               */
+               BOOT_KEEP_APPLIED,    /* in force                                         */
+               BOOT_KEEP_REFUSED,    /* the setter said no, twice: left as it was        */
+             } boot_keep_state_t;
+typedef struct {
+    uint8_t  kept;           /* values the loads kept                                    */
+    uint8_t  set;            /* of those, values a setter was called for                 */
+    uint8_t  applied;        /* in force at the end (already in force included)          */
+    uint8_t  refused;        /* not in force at the end                                  */
+    uint16_t first_refused;  /* the id of the first of them (0: none)                    */
+} model_boot_report_t;
+void    model_boot_keep(const prop_desc_t *p, int32_t v, bool sticky);   /* a load's; any context
+                                                                         * before the apply */
+unsigned model_boot_apply(void (*between)(void));    /* EXECUTOR ONLY; returns the refused count */
+bool    model_boot_apply_one(const prop_desc_t *p);  /* EXECUTOR ONLY; true: kept and now in force */
+/* p has a value kept that is not in force (pending, or sticky and refused);
+ * *v (may be NULL) gets it. */
+bool    model_boot_kept(const prop_desc_t *p, int32_t *v);
+void    model_boot_forget(const prop_desc_t *p);
+void    model_boot_forget_all(void);
+/* Nothing kept, nothing reported: the table as a power cycle leaves it (RAM
+ * is zero at boot; the host tests' "power cycle" calls this). */
+void    model_boot_reset(void);
+uint8_t model_boot_state(const prop_desc_t *p);      /* boot_keep_state_t */
+const model_boot_report_t *model_boot_report(void);  /* of the last model_boot_apply */
+/* v is a value p can hold: bool 0/1, enum min..max, mask bits, int min..max
+ * (not clamped: a load drops a value out of range). */
+bool    prop_value_in_range(const prop_desc_t *p, int32_t v);
+
+/* view.mode across a power cycle: the single-property case of the above,
+ * and a sticky one. The settings record holds the display view (offset 23,
+ * model_persist_v5.c V5_VIEW); model_view_boot_load is the codec's (above
+ * MODEL_VIEW_MODE_MAX -> yt) and keeps it; model_view_boot_apply() is
+ * model_boot_apply_one(view.mode): true when the kept view is the one in
+ * force. model_view_record() is the value every capture writes into the
+ * record: the kept one until it is in force, then the live view.mode. A
+ * boot whose apply was refused (no pool, the Roll write failed, a build
+ * without the FFT views holding a record that names one) therefore comes up
+ * in yt and still saves the view it could not show, whatever else is saved
+ * in that session, until the view changes: a set of view.mode that succeeds
+ * (the value in force included), tb.roll changing, view.persist evicting a
+ * spectrum view, and Reset to defaults (the reset loop skips a property
+ * already at its default, and yt is where a refused boot left it). */
 #define MODEL_VIEW_MODE_MAX  5u     /* view.mode: yt, roll, xy, fft, split, waterfall */
 void    model_view_boot_load(uint8_t raw);
 bool    model_view_boot_apply(void);            /* EXECUTOR ONLY */

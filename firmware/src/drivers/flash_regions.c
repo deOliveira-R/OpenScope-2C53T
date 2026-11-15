@@ -80,10 +80,18 @@ const flash_region_t flash_region_table[FLASH_REGION_COUNT] = {
     [FLASH_REGION_FWCACHE]  = { "fwcache",  0xD00000u, 0x200000u, FLASH_REGION_KIND_RW       },
     [FLASH_REGION_USER_CAL] = { "usercal",  0xF00000u, 0x010000u, FLASH_REGION_KIND_APPEND   },
     [FLASH_REGION_SETTINGS] = { "settings", 0xF10000u, 0x010000u, FLASH_REGION_KIND_APPEND   },
+    /* The session snapshot (util/session_store.h): ONE sector, the first of
+     * what was "modules" (0xF20000, 320 KB, never written by any build), so
+     * the only erase its log can need is a single 4 KB sector erase at
+     * power-off. An append log of its own and not a second record type in
+     * "settings": config.c takes the newest record of that log and rejects
+     * it by length. */
+    [FLASH_REGION_SESSION]  = { "session",  0xF20000u, 0x001000u, FLASH_REGION_KIND_APPEND   },
     /* modules gives its top 192 KB to the boot logo (logo_store.h): one
      * 320x240 RGB565 image is 153,600 B = 38 sectors; the region is 48 sectors
-     * so the header sector and a spare fit. Nothing used modules yet. */
-    [FLASH_REGION_MODULES]  = { "modules",  0xF20000u, 0x050000u, FLASH_REGION_KIND_RW       },
+     * so the header sector and a spare fit. Its first sector went to the
+     * session snapshot above. Nothing used modules yet. */
+    [FLASH_REGION_MODULES]  = { "modules",  0xF21000u, 0x04F000u, FLASH_REGION_KIND_RW       },
     [FLASH_REGION_LOGO]     = { "logo",     0xF70000u, 0x030000u, FLASH_REGION_KIND_RW       },
     /* scratch loses its top 8 KB to the cal-backup region below (0x05F000 ->
      * 0x05D000). 8 KB out of ~380 KB of general scratch is negligible; the

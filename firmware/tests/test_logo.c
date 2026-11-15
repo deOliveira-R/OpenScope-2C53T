@@ -134,7 +134,7 @@ static void test_layout(void)
     CHECK(LOGO_SECTORS * FLASH_REGION_SECTOR_SIZE <= r->length, "erase span outside region");
     CHECK(LOGO_PIXEL_BYTES == 153600u && LOGO_PIXEL_BYTES % LOGO_STREAM_PX == 0, "geometry");
     const flash_region_id_t keep[] = { FLASH_REGION_USER_CAL, FLASH_REGION_SETTINGS,
-        FLASH_REGION_MODULES, FLASH_REGION_SCRATCH, FLASH_REGION_FACTORY_CAL_BACKUP,
+        FLASH_REGION_SESSION, FLASH_REGION_MODULES, FLASH_REGION_SCRATCH, FLASH_REGION_FACTORY_CAL_BACKUP,
         FLASH_REGION_TAIL, FLASH_REGION_SYSVOL, FLASH_REGION_USERVOL, FLASH_REGION_FWCACHE };
     for (unsigned i = 0; i < sizeof keep / sizeof keep[0]; i++) {
         const flash_region_t *o = flash_region_get(keep[i]);

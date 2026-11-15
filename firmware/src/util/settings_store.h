@@ -41,6 +41,8 @@
 #include <stdbool.h>
 
 #include "config.h"
+#include "session_store.h"   /* session_snapshot_save(): the other save of an orderly power-off,
+                              * declared with this one so that path needs one header */
 
 /* How long a change must be quiet before it is written. */
 #define SETTINGS_STORE_SETTLE_MS  2000u
@@ -145,6 +147,12 @@ void settings_store_apply(const device_config_t *cfg);
 /* Capture live UI state into *cfg (fields not owned by this layer are left
  * as-is), then stamp magic/version/checksum. */
 void settings_store_capture(device_config_t *cfg);
+
+/* The record image a flush would write NOW: the live state captured over
+ * the image this store holds, stamped. Changes nothing here (not the held
+ * image, not the settle window). The session snapshot stamps itself with
+ * its CRC (session_store.h, STALE). Input task. */
+void settings_store_peek_image(device_config_t *out);
 
 const settings_store_status_t *settings_store_get_status(void);
 

@@ -579,6 +579,7 @@ static bool may_note(const prop_desc_t *p, uint8_t origin)
 
 void model_changed_also(const prop_desc_t *p, uint8_t origin)
 {
+    if (origin != ORIGIN_BOOT) model_boot_forget(p);    /* no longer what a load kept */
     model_touch(p->group);
     if (may_note(p, origin) && g_ops->note_change) g_ops->note_change();
 }
@@ -602,6 +603,9 @@ prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, pr
      * over the setter's own note ("posture posted" was not posted). */
     if (!ok) g_deferred = NULL;
     else if (g_deferred) model_note(note, g_deferred);
+    /* The user's own choice (the value in force included) replaces a value
+     * a load kept and the boot could not put in force (model.h). */
+    if (ok && origin != ORIGIN_BOOT) model_boot_forget(p);
 
     /* A failing setter keeps the old value; if one did not (a two-step
      * apply whose undo failed too), the change is still announced. */
@@ -717,6 +721,140 @@ unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool no
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Values a load keeps for the setters (model.h)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+#define KEEP_STATE   0x0Fu     /* boot_keep_state_t                         */
+#define KEEP_STICKY  0x10u     /* a refusal leaves it kept                  */
+static int32_t g_keep_v[PROP_IX_COUNT];
+static uint8_t g_keep_st[PROP_IX_COUNT];
+static model_boot_report_t g_boot_rep;
+
+bool prop_value_in_range(const prop_desc_t *p, int32_t v)
+{
+    return p && check_range(p, &v) == PS_OK;
+}
+
+static bool keep_ix(const prop_desc_t *p, uint16_t *i)
+{
+    if (!p || p < prop_table || p >= prop_table + PROP_IX_COUNT) return false;
+    *i = (uint16_t)(p - prop_table);
+    return true;
+}
+
+static bool keeping(uint16_t i)
+{
+    const uint8_t st = g_keep_st[i];
+    return (st & KEEP_STATE) == BOOT_KEEP_PENDING ||
+           ((st & KEEP_STATE) == BOOT_KEEP_REFUSED && (st & KEEP_STICKY));
+}
+
+void model_boot_keep(const prop_desc_t *p, int32_t v, bool sticky)
+{
+    uint16_t i;
+    if (!keep_ix(p, &i) || !prop_is_settable(p)) return;
+    g_keep_v[i] = v;
+    g_keep_st[i] = (uint8_t)(BOOT_KEEP_PENDING | (((g_keep_st[i] & KEEP_STICKY) || sticky) ? KEEP_STICKY : 0u));
+}
+
+bool model_boot_kept(const prop_desc_t *p, int32_t *v)
+{
+    uint16_t i;
+    if (!keep_ix(p, &i) || !keeping(i)) return false;
+    if (v) *v = g_keep_v[i];
+    return true;
+}
+
+/* The state stays for the report (a refused value is still listed); only
+ * "kept" ends. A pending one was never tried: nothing to report. */
+void model_boot_forget(const prop_desc_t *p)
+{
+    uint16_t i;
+    if (!keep_ix(p, &i)) return;
+    if ((g_keep_st[i] & KEEP_STATE) == BOOT_KEEP_PENDING) g_keep_st[i] = BOOT_KEEP_NONE;
+    else g_keep_st[i] &= (uint8_t)~KEEP_STICKY;
+}
+
+void model_boot_forget_all(void)
+{
+    for (uint16_t i = 0; i < PROP_IX_COUNT; i++) model_boot_forget(&prop_table[i]);
+}
+
+void model_boot_reset(void)
+{
+    memset(g_keep_st, 0, sizeof g_keep_st);
+    memset(&g_boot_rep, 0, sizeof g_boot_rep);
+}
+
+uint8_t model_boot_state(const prop_desc_t *p)
+{
+    uint16_t i;
+    return keep_ix(p, &i) ? (uint8_t)(g_keep_st[i] & KEEP_STATE) : (uint8_t)BOOT_KEEP_NONE;
+}
+
+const model_boot_report_t *model_boot_report(void) { return &g_boot_rep; }
+
+static void keep_verdict(uint16_t i)
+{
+    const bool in_force = prop_get(&prop_table[i]) == g_keep_v[i];
+    g_keep_st[i] = (uint8_t)((g_keep_st[i] & KEEP_STICKY) |
+                             (in_force ? BOOT_KEEP_APPLIED : BOOT_KEEP_REFUSED));
+}
+
+bool model_boot_apply_one(const prop_desc_t *p)
+{
+    uint16_t i;
+    if (!keep_ix(p, &i) || !keeping(i)) return false;
+    if (prop_get(p) != g_keep_v[i]) (void)prop_set_local(p, g_keep_v[i], ORIGIN_BOOT, NULL);
+    keep_verdict(i);
+    return (g_keep_st[i] & KEEP_STATE) == BOOT_KEEP_APPLIED;
+}
+
+unsigned model_boot_apply(void (*between)(void))
+{
+    static uint8_t todo[(PROP_IX_COUNT + 7u) / 8u];     /* executor only: not on its stack */
+    model_boot_report_t rep;
+    memset(&rep, 0, sizeof rep);
+    memset(todo, 0, sizeof todo);
+    for (uint16_t i = 0; i < PROP_IX_COUNT; i++) {
+        if (!keeping(i)) continue;
+        todo[i >> 3] |= (uint8_t)(1u << (i & 7u));
+        if (rep.kept < 0xFFu) rep.kept++;
+    }
+    bool first = true;
+    model_batch_begin();
+    /* Pass 0: table order. Pass 1: once more for what a rule or an owner
+     * refused while a later property still had its old value. */
+    for (int pass = 0; pass < 2; pass++) {
+        bool refused = false;
+        for (uint16_t i = 0; i < PROP_IX_COUNT; i++) {
+            const prop_desc_t *p = &prop_table[i];
+            if (!(todo[i >> 3] & (1u << (i & 7u)))) continue;
+            /* Read now: an earlier setter may have moved this one too. */
+            if (prop_get(p) == g_keep_v[i]) continue;
+            if (!first && between) between();
+            first = false;
+            (void)prop_set_local(p, g_keep_v[i], ORIGIN_BOOT, NULL);
+            if (pass == 0 && rep.set < 0xFFu) rep.set++;
+            if (prop_get(p) != g_keep_v[i]) refused = true;
+        }
+        if (!refused) break;
+    }
+    (void)model_batch_end(NULL);       /* a post that was refused shows in the verdicts */
+    /* The verdicts, at the end: a setter may have moved a property the loop
+     * had already passed, and a staged post may not have gone out. */
+    for (uint16_t i = 0; i < PROP_IX_COUNT; i++) {
+        if (!(todo[i >> 3] & (1u << (i & 7u)))) continue;
+        keep_verdict(i);
+        if ((g_keep_st[i] & KEEP_STATE) == BOOT_KEEP_APPLIED) { rep.applied++; continue; }
+        if (!rep.refused) rep.first_refused = prop_table[i].id;
+        rep.refused++;
+    }
+    g_boot_rep = rep;
+    return rep.refused;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * Reset to defaults
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -748,9 +886,10 @@ prop_status_t model_reset_to_defaults(void (*between)(void), model_reset_report_
     memset(rep, 0, sizeof *rep);
     if (g_ops->selfcal_busy && g_ops->selfcal_busy()) return (prop_status_t)(rep->status = PS_BUSY);
 
-    /* A view the boot kept but could not show is a saved setting too: gone,
-     * or the save that follows would write it back (model.h). */
-    model_view_boot_forget();
+    /* A value the boot kept but could not put in force (a view it could not
+     * show) is a saved setting too: gone, or the save that follows would
+     * write it back (model.h). */
+    model_boot_forget_all();
 
     /* view.math = off keeps the operator the Math pane remembers (math_op,
      * a record byte of its own). A reset forgets it too: "A+B" first, and

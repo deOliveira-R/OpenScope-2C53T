@@ -568,15 +568,18 @@ void model_fw_start(void *display_queue)
     g_executor = xTaskGetCurrentTaskHandle();
     model_bind_hw(&k_fw_ops);
     model_exec_init(&k_fw_port);
-    /* The display view the settings record holds (model.h, "view.mode across
-     * a power cycle"): through its setter, here, because this is the first
-     * point where the owners can be called: the input task, the scheduler
-     * running, the ops bound. Refused (no pool, the Roll park timed out):
-     * the scope stays in Y-T and the record keeps the view. The groups it
-     * moved go to the screen as after any request. A check-in first: the
-     * boot logo's hold (~1 s, no check-in) is behind us and a Roll park can
-     * take 1 s more, against a 2 s health deadline. */
+    /* What the loads kept for the setters (model.h, "VALUES A LOAD KEEPS"):
+     * the display view the settings record holds and, with Startup on Boot
+     * = Restore, the session snapshot's values. Through their setters,
+     * ORIGIN_BOOT, here, because this is the first point where the owners
+     * can be called: the input task, the scheduler running, the ops bound.
+     * Refused (no pool, a park timed out, a rule): that property stays
+     * where the settings record put it and `session status` lists it. The
+     * groups that moved go to the screen as after any request. A check-in
+     * first and between the sets: the boot logo's hold (~1 s, no check-in)
+     * is behind us and each park can take 1 s more, against a 2 s health
+     * deadline. */
     port_checkin();
-    (void)model_view_boot_apply();
+    (void)model_boot_apply(port_checkin);
     port_changed(model_touched_take());
 }

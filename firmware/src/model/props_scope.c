@@ -403,36 +403,26 @@ static const uint8_t k_view_of[VM_COUNT] = {
 #define VIEW_OF(v) ((void)(v), 0u)     /* the time view: yt and roll only */
 #endif
 
-/* The view the settings record held at the last load, while it is not in
- * force yet (model.h, "view.mode across a power cycle"). 2 bytes. */
-static uint8_t g_view_kept = VM_YT;
-static bool    g_view_keeping;
-
+/* view.mode across a power cycle (model.h): the settings record's view is a
+ * sticky keep of the general boot apply (model_boot_keep). */
 void    model_view_boot_load(uint8_t raw)
 {
-    g_view_kept = (raw < (uint8_t)VM_COUNT) ? raw : (uint8_t)VM_YT;
-    g_view_keeping = true;
+    model_boot_keep(P(VIEW_MODE), (raw < (uint8_t)VM_COUNT) ? raw : (uint8_t)VM_YT, true);
 }
-void    model_view_boot_forget(void) { g_view_keeping = false; }
+void    model_view_boot_forget(void) { model_boot_forget(P(VIEW_MODE)); }
 uint8_t model_view_record(void)
 {
-    return g_view_keeping ? g_view_kept : (uint8_t)view_mode_get(P(VIEW_MODE));
+    int32_t v;
+    return (uint8_t)(model_boot_kept(P(VIEW_MODE), &v) ? v : view_mode_get(P(VIEW_MODE)));
 }
-bool model_view_boot_apply(void)
-{
-    if (!g_view_keeping) return false;
-    (void)prop_set_local(P(VIEW_MODE), g_view_kept, ORIGIN_BOOT, NULL);
-    if (view_mode_get(P(VIEW_MODE)) != (int32_t)g_view_kept) return false;   /* refused: yt, still kept */
-    g_view_keeping = false;
-    return true;
-}
+bool model_view_boot_apply(void) { return model_boot_apply_one(P(VIEW_MODE)); }
 
 /* view.mode moved through another property's setter (tb.roll, view.persist
  * evicting a spectrum view): its epoch, the settings note its own set would
- * have made, and the boot's kept view is no longer what the user has. */
+ * have made, and the boot's kept view is no longer what the user has
+ * (model_changed_also drops the keep, except during the boot apply). */
 static void view_moved(uint8_t origin)
 {
-    g_view_keeping = false;
     model_changed_also(P(VIEW_MODE), origin);
 }
 
@@ -489,11 +479,10 @@ static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, prop_note_
 }
 prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    const prop_status_t s = view_mode_apply(p, v, note);
     /* The user's own choice (the view in force included) replaces a view the
-     * boot kept but could not show; the boot apply drops it itself. */
-    if (s == PS_OK && origin != ORIGIN_BOOT) g_view_keeping = false;
-    return s;
+     * boot kept but could not show: prop_set_local drops the keep. */
+    (void)origin;
+    return view_mode_apply(p, v, note);
 }
 
 const char *const lbl_view_persist[5] = { "off", "500ms", "1s", "2s", "inf" };

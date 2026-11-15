@@ -4391,6 +4391,9 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("reset settings", cmd_reset_settings, 0,
           "reset settings CONFIRM          Built-in defaults over the user settings, applied and saved\r\n"
           "  (never calibration, gallery, logo); list changed shows what differs now\r\n"),
+    CMD_A("session", cmd_session, 0,
+          "session [status]|list|save|clear  Session snapshot (Startup = Restore): what the boot found\r\n"
+          "  and applied; save = what a power-off writes; clear = none; list = members and exclusions\r\n"),
     /* The property model's raw route (src/model/model_shell.c): the same
      * setters as the keys, applied by the input task. */
     CMD_A("get", cmd_model_get, SC_NEEDARGS,

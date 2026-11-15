@@ -122,7 +122,7 @@ C_SOURCES += src/util/cal_backup_core.c
 C_SOURCES += src/util/calpage.c
 C_SOURCES += src/util/cal_backup.c
 C_SOURCES += src/util/cal_reference.c
-C_SOURCES += src/util/settings_store.c
+C_SOURCES += src/util/settings_store.c src/util/session_store.c
 C_SOURCES += src/util/shell_persist.c
 C_SOURCES += src/util/lcd_health.c
 C_SOURCES += src/util/usercal_rec.c
@@ -183,7 +183,8 @@ R1A_CONFIG_PERSIST_EXTRA = src/ui/meas_select.c
 # task drains), the real hardware ops (model_hw_fw.c) and the shell's
 # get/set/list/describe (model_shell.c). Host test: make test-model-exec.
 C_SOURCES += src/model/model.c src/model/props_scope.c src/model/props_gen.c
-C_SOURCES += src/model/props_meter.c src/model/props_sys.c
+C_SOURCES += src/model/props_meter.c src/model/props_sys.c src/model/model_session.c
+C_SOURCES += src/model/session_shell.c
 C_SOURCES += src/model/model_exec.c src/model/model_hw_fw.c src/model/model_shell.c
 # The meter link policy (pure; host test: make test-meter-link-policy).
 C_SOURCES += src/model/meter_link_policy.c
@@ -198,7 +199,7 @@ C_INCLUDES_M1 = -Isrc/model
 # defaults, random live states and random records) and test-config-persist.
 C_SOURCES += src/model/model_persist_v5.c
 M3_PERSIST_SRCS  = src/model/model_persist_v5.c src/model/model.c src/model/props_scope.c \
-                   src/model/props_gen.c src/model/props_meter.c src/model/props_sys.c
+                   src/model/props_gen.c src/model/props_meter.c src/model/props_sys.c src/model/model_session.c
 M3_PERSIST_LINK  = src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/key_model.c \
                    src/ui/osc_menu_model.c
 M3_CONFIG_PERSIST_EXTRA = $(M3_PERSIST_SRCS) $(M3_PERSIST_LINK)
@@ -939,7 +940,7 @@ test-lcd-health: $(BUILD_DIR)/test_lcd_health
 #                                      FAIL to persist (spec settings-persistence S3)
 # (A third, known-defects build held the #57/#58 power-cut tests until those
 # were fixed; they run in test_config_persist now.)
-CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+CONFIG_PERSIST_SRCS = src/util/config.c src/util/settings_store.c src/util/session_store.c src/drivers/flash_regions.c \
                       src/ui/theme.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
                       src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c \
                       $(R1A_CONFIG_PERSIST_EXTRA) $(M3_CONFIG_PERSIST_EXTRA)
@@ -1011,7 +1012,7 @@ test-units-negative: tests/test_units_negative.c src/util/units.h | $(BUILD_DIR)
 # refusal, NOT_SET keeps the old value (every PF_HW property), profile lines,
 # defaults and instruments, on the real pure modules with fake hardware ops.
 MODEL_SRCS      = src/model/model.c src/model/props_scope.c src/model/props_gen.c \
-                  src/model/props_meter.c src/model/props_sys.c
+                  src/model/props_meter.c src/model/props_sys.c src/model/model_session.c
 MODEL_TEST_LINK = src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
                   src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/meas_select.c src/ui/theme.c \
                   src/ui/key_model.c src/ui/osc_menu_model.c \
@@ -1089,22 +1090,22 @@ test-model-exec: $(BUILD_DIR)/test_model_exec
 # coverage; settings notes by origin.
 $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/model/model_persist_v5.c \
                                  src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
-                                 src/util/config.c src/util/config.h src/util/settings_store.c \
+                                 src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
                                  src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
-		src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+		src/util/config.c src/util/settings_store.c src/util/session_store.c src/drivers/flash_regions.c \
 		$(MODEL_TEST_LINK) -lm -o $@
 
 # The same test as a build without the spectrum views (FEATURE_FFT=0): what
 # such an image does with a record whose view.mode byte names one of them.
 $(BUILD_DIR)/test_model_persist_nofft: tests/test_model_persist.c $(MODEL_SRCS) src/model/model_persist_v5.c \
                                  src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
-                                 src/util/config.c src/util/config.h src/util/settings_store.c \
+                                 src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
                                  src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=0 -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
-		src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+		src/util/config.c src/util/settings_store.c src/util/session_store.c src/drivers/flash_regions.c \
 		$(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-model-persist
@@ -1119,16 +1120,39 @@ test-model-persist: $(BUILD_DIR)/test_model_persist $(BUILD_DIR)/test_model_pers
 # W25Q (calibration, gallery, logo, firmware cache), a compaction included.
 $(BUILD_DIR)/test_settings_reset: tests/test_settings_reset.c $(MODEL_SRCS) src/model/model_persist_v5.c \
                                   src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
-                                  src/util/config.c src/util/config.h src/util/settings_store.c \
+                                  src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
                                   src/util/settings_store.h src/ui/settings_reset.h \
                                   src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DSETTINGS_PERSIST_WRITES=1 \
 		-Isrc/model -Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) \
-		src/model/model_persist_v5.c src/util/config.c src/util/settings_store.c \
+		src/model/model_persist_v5.c src/util/config.c src/util/settings_store.c src/util/session_store.c \
 		src/drivers/flash_regions.c $(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-settings-reset
 test-settings-reset: $(BUILD_DIR)/test_settings_reset
+	$<
+
+# Session snapshot (Startup on Boot = Restore; src/model/model_session.c,
+# src/util/session_store.c, the boot apply in model.c): membership against
+# the exclusion list, the format against an encoder written from its
+# description, save -> power cycle -> apply over random states, every
+# fallback against the same boot with a blank session log, other tables'
+# snapshots, refused applies, the apply order, Startup != Restore, Reset to
+# defaults, and the flash writes (one record a save, none otherwise, nothing
+# outside the two logs) on a NOR model of the whole W25Q.
+$(BUILD_DIR)/test_session: tests/test_session.c $(MODEL_SRCS) src/model/model_persist_v5.c \
+                           src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
+                           src/model/model_session.h src/model/session_shell.c src/model/model_shell.h \
+                           src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
+                           src/util/settings_store.h src/util/session_store.h \
+                           src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DSETTINGS_PERSIST_WRITES=1 \
+		-DSESSION_SHELL_HOST -Isrc/model -Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) \
+		src/model/model_persist_v5.c src/model/session_shell.c src/util/config.c src/util/settings_store.c src/util/session_store.c \
+		src/drivers/flash_regions.c $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-session
+test-session: $(BUILD_DIR)/test_session
 	$<
 
 # UI route (ARCH-1 M2, src/model/ui_shell.c): the `ui seq` token parser (key
@@ -2287,7 +2311,7 @@ test-screen-router: $(BUILD_DIR)/test_screen_router
 # settings store and record codec on a NOR flash model. Every key on every
 # screen: a changed record is written, an unchanged one is not; the write
 # policy against capture-per-key; the boundary flushes.
-NOTIFY_TEST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+NOTIFY_TEST_SRCS = src/util/config.c src/util/settings_store.c src/util/session_store.c src/drivers/flash_regions.c \
                    src/model/model_persist_v5.c
 $(BUILD_DIR)/test_settings_notify: tests/test_settings_notify.c tests/fw_screens_env.h $(ROUTER_TEST_SCREENS) \
                                    $(NOTIFY_TEST_SRCS) src/util/settings_store.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)

@@ -53,6 +53,13 @@ static void stamp(device_config_t *cfg)
  * but a load only keeps it: its owners need the scheduler, so the input task
  * sets it through the property's setter when it starts (model.h, "view.mode
  * across a power cycle"), and a view it could not show stays in the record.
+ *
+ * What this list leaves out is in the SESSION SNAPSHOT instead
+ * (session_store.h), which only Startup on Boot = Restore reads: the channel
+ * enables, positions, cursors, persistence and the other PF_SESSION values
+ * come back through their setters, on the input task, as the view does.
+ * Not ss->running (a scope always boots running, Restore or not). This
+ * record, its 60 bytes and its meaning are unchanged by that.
  * ═══════════════════════════════════════════════════════════════════ */
 
 void settings_store_capture(device_config_t *cfg)
@@ -60,6 +67,13 @@ void settings_store_capture(device_config_t *cfg)
     if (!cfg) return;
     model_persist_v5_capture(cfg);
     stamp(cfg);
+}
+
+void settings_store_peek_image(device_config_t *out)
+{
+    if (!out) return;
+    *out = g_live;                  /* the fields this layer does not own, as capture() keeps them */
+    settings_store_capture(out);
 }
 
 void settings_store_apply(const device_config_t *cfg)
@@ -218,6 +232,12 @@ settings_reset_result_t settings_store_reset_to_defaults(uint32_t now_ms, void (
     r.first_left = m.first_left;
     if (m.status == PS_BUSY) return r;
 
+    /* The session snapshot goes too, or the next Restore boot would put the
+     * old session back over the defaults. Before the record: a power cut
+     * between the two leaves the old settings and no snapshot, never the
+     * reverse. No write when there is no snapshot. */
+    (void)session_snapshot_clear();
+
     model_last_screen_note_power_off(0u);       /* STARTUP_SCREEN_NONE: no last screen */
     config_init_defaults(&g_live);              /* the carried bytes are the defaults' too */
     g_write_blocked = false;                    /* a reset is new input: one more attempt */
@@ -246,6 +266,11 @@ config_load_result_t settings_store_load_and_apply(void)
      * an untouched device never writes at all. Both config_load_or_defaults()
      * outcomes leave a stamped, checksum-consistent struct. */
     g_saved = g_live;
+
+    /* Startup on Boot = Restore: the session snapshot saved with this image
+     * (session_store.h). It only keeps values here, as the record's view
+     * does; the input task sets them (model_boot_apply). */
+    session_snapshot_boot_load(&g_live);
 
     return r;
 }

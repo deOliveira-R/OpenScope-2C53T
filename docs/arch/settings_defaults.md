@@ -11,6 +11,17 @@ At boot the user settings win; where there is no record, or a field of it is out
 default is used. A property is one of: saved in the user settings (`P` in `list`), session only (`S`: back to
 its start value at every boot), user calibration (`U`: its own record, `cal user save`), or read only.
 
+**Startup on Boot = Restore** adds one thing on top: the **session snapshot**. An orderly power-off writes the
+value of every settable property (the `P` ones again and the `S` ones) to a log of its own in the W25Q
+(`session`, one sector at 0xF20000; `firmware/src/util/session_store.h`), and the next boot, if Startup is
+Restore, sets those values through the normal setters once the input task runs. Left out, each with a reason
+(`session list` prints them): calibration, the generator's output enable (it keeps `gen.bootout`), hold and
+relative, `view.run` (the scope always comes back running), `tb.roll` (it is `view.mode = roll`) and the
+screen binding (the record's last screen). With any other Startup choice, or with no usable snapshot (none
+yet, cleared, damaged, another format, or older than the settings record), the boot is the settings record
+alone, as before. "Reset to defaults" invalidates the snapshot. `session status` says what the boot found and
+which properties it could not put in force; the settings record itself (60 bytes, v5) is unchanged.
+
 Calibration is neither of the two. Nothing on this page touches the factory calibration page (MCU flash
 0x08006000), its W25Q backup, the user calibration record, the gallery, the boot logo or the firmware cache.
 
