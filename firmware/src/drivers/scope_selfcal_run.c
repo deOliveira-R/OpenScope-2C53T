@@ -37,6 +37,7 @@
 #include "scope_state.h"
 #include "scope_timebase.h"
 #include "settings_store.h"
+#include "model.h"
 #include "ui.h"
 
 #define SETTLE_MS           450u    /* >= 400 ms: S15, and the bench's ~350 ms */
@@ -147,19 +148,55 @@ static void snap_take(void)
     R.snap.interleave = fpga_interleave_get();
 }
 
+/* ── Scope state: through the model (ARCH-1 B7) ──────────────────────
+ * A run changes the scope's settings the way a key or the shell does: one
+ * prop_set_local() per value, ORIGIN_AUTO (not refused while the run itself
+ * is "busy"). The setter makes the owner call the run used to make itself
+ * (fpga_apply_vdiv / _timebase / _coupling / _channel_enables /
+ * _trigger_level, scope_vpos_set, fpga_interleave_set), stores the value
+ * once the owner said yes, bumps the group's epoch (the screen follows) and
+ * notes a saved value for the settings record. What has no property stays
+ * with its owner: the calibration page's override codes and corrections
+ * (scope_vpos_override / _corr_set / _apply). This service runs on the
+ * input task, the model's executor. */
+static const prop_desc_t *chp(unsigned i, const prop_desc_t *c1, const prop_desc_t *c2)
+{
+    return i ? c2 : c1;
+}
+#define CHP(i, sym) chp((i), P(CH1_##sym), P(CH2_##sym))
+
+static bool aset(const prop_desc_t *p, int32_t v)
+{
+    const prop_status_t st = prop_set_local(p, v, ORIGIN_AUTO, NULL);
+    return st == PS_OK || st == PS_CLAMPED;
+}
+
 static void set_tb(uint8_t tb)
 {
-    scope_state_t *ss = scope_state_get();
-    if (ss->timebase_idx == tb && fpga_acq_rate_idx_get() == tb) return;
-    ss->timebase_idx = tb;
-    (void)fpga_apply_timebase(tb);
+    if (prop_get(P(TB_CODE)) == tb && fpga_acq_rate_idx_get() == tb) return;
+    (void)aset(P(TB_CODE), tb);
 }
 
 static void set_range(unsigned i, uint8_t r)
 {
-    channel_state_t *c = chan(i);
-    c->vdiv_idx = r;
-    (void)fpga_apply_vdiv((uint8_t)(i + 1u), r);
+    (void)aset(CHP(i, VDIV), r);
+}
+
+/* The converter routing. A channel coming on goes first, so "both off"
+ * (refused: "Keep one CH on") is never passed through; with nothing to
+ * change the routing is still applied once, as the run always re-applied
+ * it (an ORIGIN_AUTO set of the value in force runs the owner call). */
+static void set_enables(bool e1, bool e2)
+{
+    const bool want[2] = { e1, e2 };
+    bool changed = false;
+    for (int pass = 0; pass < 2; pass++)             /* on first, then off */
+        for (unsigned i = 0; i < 2u; i++)
+            if (want[i] == (pass == 0) && chan(i)->enabled != want[i]) {
+                (void)aset(CHP(i, ENABLED), want[i]);
+                changed = true;
+            }
+    if (!changed) (void)aset(P(CH1_ENABLED), e1);
 }
 
 /* Put back what the user had: routing, timebase, ranges, positions,
@@ -167,27 +204,26 @@ static void set_range(unsigned i, uint8_t r)
  * re-apply below lands on the (now corrected) page codes. */
 static void snap_restore(void)
 {
-    scope_state_t *ss = scope_state_get();
     scope_vpos_override(1u, false, 0u);
     scope_vpos_override(2u, false, 0u);
-    fpga_interleave_set(R.snap.interleave);
-    ss->ch1.enabled = R.snap.en[0];
-    ss->ch2.enabled = R.snap.en[1];
-    (void)fpga_apply_channel_enables();
+    (void)aset(P(IL_ENABLED), R.snap.interleave);
+    set_enables(R.snap.en[0], R.snap.en[1]);
     set_tb(R.snap.tb);
     for (unsigned i = 0; i < 2u; i++) {
-        channel_state_t *c = chan(i);
-        c->position = R.snap.pos[i];
+        /* The position first: the range's re-apply below lands the offset
+         * on it (a position that did not move makes no call of its own). */
+        if (chan(i)->position != R.snap.pos[i]) (void)aset(CHP(i, POS), R.snap.pos[i]);
         set_range(i, R.snap.range[i]);
-        c->coupling = R.snap.coupling[i];
-        (void)fpga_apply_coupling((uint8_t)i, c->coupling);
+        (void)aset(CHP(i, COUPLING), R.snap.coupling[i]);
     }
-    ss->trigger.mode = R.snap.trig_mode;
-    ss->trigger.source = R.snap.trig_src;   /* a CH2-only phase moves it */
-    ss->trigger.level = R.snap.trig_level;
-    ss->running = R.snap.running;
-    ss->trig_x = R.snap.trig_x;
-    (void)fpga_apply_trigger_level(ss->trigger.level);
+    (void)aset(P(TRIG_MODE), R.snap.trig_mode);     /* ORIGIN_AUTO: SINGLE is not re-armed */
+    /* A CH2-only phase moves the source (fpga_apply_channel_enables). Put
+     * back through its setter, reg 0x06 follows the state (until B7 only
+     * the state was put back). */
+    if (scope_state_get()->trigger.source != R.snap.trig_src) (void)aset(P(TRIG_SOURCE), R.snap.trig_src);
+    (void)aset(P(VIEW_RUN), R.snap.running);
+    (void)aset(P(TRIG_X), R.snap.trig_x);
+    (void)aset(P(TRIG_LEVEL), R.snap.trig_level);
     scope_vpos_apply();
 }
 
@@ -276,11 +312,10 @@ static void do_center50(QueueHandle_t dq)
     /* Without the page the position does not move the trace (scope_vpos is
      * inactive), so 0 V is not at raw 128 + pos: keep the level at mid. */
     if (!scope_vpos_active()) lvl = 0;
-    (void)scope_vpos_set(1u, pos[0]);
-    (void)scope_vpos_set(2u, pos[1]);
-    ss->trig_x = SCOPE_GEOM_CENTER_COL;          /* stock zeroes the horizontal offsets */
-    ss->trigger.level = (int16_t)lvl;
-    const bool ok = fpga_apply_trigger_level(lvl);
+    (void)aset(P(CH1_POS), pos[0]);
+    (void)aset(P(CH2_POS), pos[1]);
+    (void)aset(P(TRIG_X), SCOPE_GEOM_CENTER_COL);   /* stock zeroes the horizontal offsets */
+    const bool ok = aset(P(TRIG_LEVEL), lvl);
     popup(dq, ok ? "50% centred" : "50% centred, trig NOT SET");
     settings_changed();
 }
@@ -292,10 +327,14 @@ static void as_apply(void)
     set_tb(a->tb);
     for (unsigned i = 0; i < 2u; i++) {
         if (!a->cfg.ch_on[i]) continue;
-        channel_state_t *c = chan(i);
-        if (a->cfg.pos_volts && c->position != a->pos[i]) c->position = a->pos[i];
+        const channel_state_t *c = chan(i);
+        /* The position's setter applies the offset on the range in force;
+         * a new range then re-applies it. Neither moved: the offset is
+         * still re-applied, as always. */
+        const bool pos_moved = a->cfg.pos_volts && c->position != a->pos[i];
+        if (pos_moved) (void)aset(CHP(i, POS), a->pos[i]);
         if (c->vdiv_idx != a->range[i]) set_range(i, a->range[i]);   /* re-applies vpos */
-        else scope_vpos_apply_ch((uint8_t)(i + 1u), c->vdiv_idx);
+        else if (!pos_moved) scope_vpos_apply_ch((uint8_t)(i + 1u), c->vdiv_idx);
     }
 }
 
@@ -327,8 +366,8 @@ static bool as_start(QueueHandle_t dq)
     sc_autoset_begin(&R.e.as, &cfg, r, p, ss->timebase_idx);
     /* Stock forces ms[0] = ms[2] = 0 at 0x0800CC38 before its walk. Ours:
      * AUTO commits free-run records, and RUN so the screen follows. */
-    ss->trigger.mode = TRIG_AUTO;
-    ss->running = true;
+    (void)aset(P(TRIG_MODE), TRIG_AUTO);
+    (void)aset(P(VIEW_RUN), 1);
     R.kind = SCR_AUTOSET;
     wait_fresh(true);
     popup(dq, "Autoset...");
@@ -338,7 +377,6 @@ static bool as_start(QueueHandle_t dq)
 
 static void as_end(QueueHandle_t dq, sc_as_status_t st)
 {
-    scope_state_t *ss = scope_state_get();
     sc_autoset_t *a = &R.e.as;
     if (st == SC_AS_NO_SIGNAL) {
         snap_restore();
@@ -347,10 +385,12 @@ static void as_end(QueueHandle_t dq, sc_as_status_t st)
     } else {
         as_apply();
         if (st == SC_AS_DONE) {
-            ss->trigger.source = a->trig_ch ? TRIG_SRC_CH2 : TRIG_SRC_CH1;
-            ss->trigger.level = a->trig_level;
-            (void)fpga_apply_trigger_level(a->trig_level);
-            ss->trig_x = SCOPE_GEOM_CENTER_COL;
+            /* The source through its setter when it moves: reg 0x06 follows
+             * (until B7 only the state did). */
+            const trigger_source_t src = a->trig_ch ? TRIG_SRC_CH2 : TRIG_SRC_CH1;
+            if (scope_state_get()->trigger.source != src) (void)aset(P(TRIG_SOURCE), src);
+            (void)aset(P(TRIG_LEVEL), a->trig_level);
+            (void)aset(P(TRIG_X), SCOPE_GEOM_CENTER_COL);
         }
         const bool over = a->res[0] == SC_ASC_OVER || a->res[1] == SC_ASC_OVER;
         R.result = (st == SC_AS_DC) ? "DC only" : over ? "done, over range" : "done";
@@ -393,12 +433,9 @@ static void bc_commit(void *ctx, uint8_t ch, uint8_t bank, uint8_t range,
 static void bc_apply(void)
 {
     const sc_basecal_t *b = &R.e.bc;
-    scope_state_t *ss = scope_state_get();
     if (R.applied_phase != b->phase) {
         const sc_bc_phase_t *p = &sc_bc_phases[b->phase];
-        ss->ch1.enabled = (p->mask & 1u) != 0u;
-        ss->ch2.enabled = (p->mask & 2u) != 0u;
-        (void)fpga_apply_channel_enables();
+        set_enables((p->mask & 1u) != 0u, (p->mask & 2u) != 0u);
         set_tb(p->tb);
         R.applied_phase = b->phase;
         R.applied_range = 0xFFu;
@@ -418,7 +455,6 @@ static void bc_apply(void)
 
 static bool bc_start(QueueHandle_t dq, uint8_t banks)
 {
-    scope_state_t *ss = scope_state_get();
     if (current_mode != MODE_OSCILLOSCOPE) return false;
     if (!scope_vpos_active()) {
         R.result = "refused: no calibration page in use";
@@ -429,13 +465,11 @@ static bool bc_start(QueueHandle_t dq, uint8_t banks)
     snap_take();
     /* DC relays (stock's cal setup), AUTO, and no interleave merge: bank 2
      * is servoed on the channel's own converter. */
-    for (unsigned i = 0; i < 2u; i++) {
-        chan(i)->coupling = COUPLING_DC;
-        (void)fpga_apply_coupling((uint8_t)i, COUPLING_DC);
-    }
-    ss->trigger.mode = TRIG_AUTO;
-    ss->running = true;
-    fpga_interleave_set(false);
+    for (unsigned i = 0; i < 2u; i++)
+        (void)aset(CHP(i, COUPLING), COUPLING_DC);
+    (void)aset(P(TRIG_MODE), TRIG_AUTO);
+    (void)aset(P(VIEW_RUN), 1);
+    (void)aset(P(IL_ENABLED), 0);
     sc_bc_cfg_t cfg = { banks, bc_pair, bc_commit, NULL };
     sc_basecal_begin(&R.e.bc, &cfg);
     R.applied_phase = 0xFFu;

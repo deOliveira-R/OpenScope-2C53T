@@ -52,21 +52,25 @@ static channel_state_t *chan(const prop_desc_t *p)
 int32_t ch_enabled_get(const prop_desc_t *p) { return chan(p)->enabled ? 1 : 0; }
 void    ch_enabled_store(const prop_desc_t *p, int32_t v) { chan(p)->enabled = (v != 0); }
 
-/* KA_CH_ENABLE_TOGGLE / osc menu OSC_CH_ENABLE: flip, route, put it back if
- * the routing refuses (both off); the arrows follow the live channel. */
+/* Long CH1/CH2 / the menu's Enabled row: flip, route, put it back if the
+ * routing refuses (both off); the arrows follow the live channel. */
 prop_status_t ch_enabled_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin;
     channel_state_t *c = chan(p);
     const bool was = c->enabled, want = (v != 0);
-    if (want == was) return PS_OK;
+    /* A self-cal run (ORIGIN_AUTO) re-applies the routing in force too, as
+     * those runs always did, and leaves the active channel alone. */
+    if (want == was && origin != ORIGIN_AUTO) return PS_OK;
+    const trigger_source_t src_was = scope_state_get()->trigger.source;
     c->enabled = want;
     if (HW->channel_enables && !HW->channel_enables()) {
         c->enabled = was;
         model_note(note, "Keep one CH on");
         return PS_REFUSED;
     }
-    if (!want && active_channel == p->arg) {
+    /* The routing moves the trigger off a channel that went off (fpga.c). */
+    if (scope_state_get()->trigger.source != src_was) model_touch(PG_TRIG);
+    if (!want && active_channel == p->arg && origin != ORIGIN_AUTO) {
         active_channel = (uint8_t)(1u - p->arg);
         model_touch(PG_UI);                          /* ui.ach */
     }
@@ -254,10 +258,11 @@ void    trig_mode_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_
 /* scope_apply_trigger_change, mode: selecting Single arms the one-shot. */
 prop_status_t trig_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin;
     scope_state_t *ss = scope_state_get();
     trig_mode_store(p, v);
-    if (v == TRIG_SINGLE) {
+    /* Not for a self-cal run putting the user's mode back (ORIGIN_AUTO):
+     * those runs wrote the mode alone. */
+    if (v == TRIG_SINGLE && origin != ORIGIN_AUTO) {
         if (!ss->running) model_touch(PG_VIEW);      /* view.run */
         ss->running = true;
         if (HW->single_rearm) HW->single_rearm();

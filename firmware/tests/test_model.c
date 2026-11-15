@@ -83,7 +83,13 @@ static void log_clear(void) { g_log[0] = '\0'; }
 
 static bool f_vdiv(uint8_t ch, uint8_t i)        { logf_("vdiv(%u,%u);", ch, i); return !nok(); }
 static bool f_coupling(uint8_t ch, uint8_t c)    { logf_("coupling(%u,%u);", ch, c); return !nok(); }
-static bool f_enables(void)                      { logf_("enables;"); return !nok(); }
+/* like fpga_apply_channel_enables: both off is refused */
+static bool f_enables(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    logf_("enables;");
+    return !nok() && (ss->ch1.enabled || ss->ch2.enabled);
+}
 static bool f_il_active(void)                    { return false; }
 static bool f_vpos(uint8_t ch, int16_t p)        { logf_("vpos(%u,%d);", ch, p); return !nok(); }
 static bool f_timebase(uint8_t c)                { logf_("tb(%u);", c); return !nok(); }
@@ -1029,6 +1035,59 @@ static void test_view_run(void)
     CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_AUTO, &n) == PS_OK && !ss->running);
 }
 
+/* A self-cal run (ORIGIN_AUTO) sets the scope's state through the same
+ * setters; what differs for it, by name. */
+static void test_selfcal_origin(void)
+{
+    scope_state_t *ss = scope_state_get();
+    prop_note_t n;
+    fresh();
+    /* not refused while the run itself is busy; a key and the shell are */
+    g_busy = true;
+    CHECK(prop_set_local(P(CH1_VDIV), 6, ORIGIN_KEY, &n) == PS_BUSY && ss->ch1.vdiv_idx == 3);
+    CHECK(prop_set_local(P(CH1_VDIV), 6, ORIGIN_AUTO, &n) == PS_OK && ss->ch1.vdiv_idx == 6);
+    CHECKF(strcmp(g_log, "vdiv(0,6);") == 0, "[%s]", g_log);
+    /* the owner calls of a run's start and of putting the state back, one per value */
+    log_clear();
+    CHECK(prop_set_local(P(TB_CODE), 4, ORIGIN_AUTO, &n) == PS_OK && ss->timebase_idx == 4);
+    CHECK(prop_set_local(P(CH2_COUPLING), COUPLING_AC, ORIGIN_AUTO, &n) == PS_OK && ss->ch2.coupling == COUPLING_AC);
+    CHECK(prop_set_local(P(CH1_POS), 35, ORIGIN_AUTO, &n) == PS_OK && ss->ch1.position == 35);
+    CHECK(prop_set_local(P(TRIG_LEVEL), -20, ORIGIN_AUTO, &n) == PS_OK && ss->trigger.level == -20);
+    CHECK(prop_set_local(P(TRIG_X), 150, ORIGIN_AUTO, &n) == PS_OK);
+    CHECK(prop_set_local(P(IL_ENABLED), 0, ORIGIN_AUTO, &n) == PS_OK && !g_il_en);
+    CHECKF(strcmp(g_log, "tb(4);coupling(1,1);vpos(0,35);triglvl(-20);il_en(0);") == 0, "[%s]", g_log);
+    /* the routing in force is re-applied (a key's set of it makes no call) */
+    log_clear();
+    CHECK(prop_set_local(P(CH1_ENABLED), 1, ORIGIN_KEY, &n) == PS_BUSY);
+    g_busy = false;
+    CHECK(prop_set_local(P(CH1_ENABLED), 1, ORIGIN_KEY, &n) == PS_OK && g_log[0] == '\0');
+    CHECK(prop_set_local(P(CH1_ENABLED), 1, ORIGIN_AUTO, &n) == PS_OK && strcmp(g_log, "enables;") == 0);
+    /* a channel switched off by a run does not move the active channel */
+    active_channel = 1; log_clear();
+    const uint32_t ui = prop_group_epoch(PG_UI);
+    CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_AUTO, &n) == PS_OK && !ss->ch2.enabled &&
+          active_channel == 1 && prop_group_epoch(PG_UI) == ui);
+    CHECK(prop_set_local(P(CH2_ENABLED), 1, ORIGIN_AUTO, &n) == PS_OK && ss->ch2.enabled);
+    CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_KEY, &n) == PS_OK && active_channel == 0 &&
+          prop_group_epoch(PG_UI) != ui);                        /* a key's does */
+    /* both off stays refused, whoever asks */
+    CHECK(prop_set_local(P(CH1_ENABLED), 0, ORIGIN_AUTO, &n) == PS_REFUSED && ss->ch1.enabled);
+    /* SINGLE put back by a run: the mode alone, no arm, RUN untouched */
+    fresh();
+    ss->running = false;
+    CHECK(prop_set_local(P(TRIG_MODE), TRIG_SINGLE, ORIGIN_AUTO, &n) == PS_OK &&
+          ss->trigger.mode == TRIG_SINGLE && !ss->running && g_log[0] == '\0' && n.text[0] == '\0');
+    CHECK(prop_set_local(P(TRIG_MODE), TRIG_AUTO, ORIGIN_AUTO, &n) == PS_OK);
+    CHECK(prop_set_local(P(TRIG_MODE), TRIG_SINGLE, ORIGIN_KEY, &n) == PS_OK && ss->running &&
+          strcmp(g_log, "rearm;") == 0);                         /* a key's arms it */
+    /* a saved value changed by a run is noted for the settings record */
+    fresh();
+    CHECK(prop_set_local(P(CH1_VDIV), 7, ORIGIN_AUTO, &n) == PS_OK && g_notes == 1);
+    /* a failed write keeps the old value for a run too */
+    g_fail = true;
+    CHECK(prop_set_local(P(CH1_VDIV), 2, ORIGIN_AUTO, &n) == PS_NOT_SET && ss->ch1.vdiv_idx == 7);
+}
+
 static void test_cursor_props(void)
 {
     cursor_state_t *c = &scope_state_get()->cursor;
@@ -1198,6 +1257,7 @@ int main(void)
     test_meter_link();
     test_display_pane();
     test_view_run();
+    test_selfcal_origin();
     test_cursor_props();
     test_mask_one_request();
     test_sizes();
