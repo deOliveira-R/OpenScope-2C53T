@@ -47,6 +47,12 @@
  * rate missed its own fold predictions by up to 227 bins. It is entered here
  * as 0.0f, and the reason is INCOHERENT rather than UNMEASURED.
  */
+/* 0x0B..0x0D, unit #2, 2026-11-14: a 100 kHz square on CH1 (G431 timer), its
+ * frequency taken from the 0x0A record (0.080117 cycles/sample x 1,249,600
+ * S/s = 100,114.1 Hz), then read as cycles/sample at each code over 11..27
+ * records: 0x0B 0.200289, 0x0C 0.400589, 0x0D 0.198849 (first alias: fs =
+ * f / (1 - r)). All three sit 0.9997 of the 1-2-5 ladder (500 k, 250 k,
+ * 125 k), the same factor as 0x06..0x0A. */
 static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
     /* 0x00 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
     /* 0x01 */  124830000.0f,   /* 2026-11-10 fold test = 0x04 (mask 3)    */
@@ -59,9 +65,9 @@ static const float sample_rate[SCOPE_TIMEBASE_CODE_COUNT] = {
     /* 0x08 */    4997500.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
     /* 0x09 */    2498800.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
     /* 0x0A */    1249600.0f,   /* 2026-11-10 CAN bit fit, NORMAL trigger  */
-    /* 0x0B */      0.0f,        /* source too slow to measure (R2 -0.05)   */
-    /* 0x0C */      0.0f,        /* source too slow to measure (R2  0.60)   */
-    /* 0x0D */     123662.7f,   /* EXP-18 R2 0.9997 — provisional, bins 4-25 */
+    /* 0x0B */     499847.0f,   /* 2026-11-14 100 kHz tone, calibrated on 0x0A */
+    /* 0x0C */     249917.0f,   /* 2026-11-14 100 kHz tone, calibrated on 0x0A */
+    /* 0x0D */     124963.0f,   /* 2026-11-14 same tone, first alias (was 123662.7 provisional) */
     /* 0x0E */       49930.1f,   /* EXP-17 slope fit, n=37, SE 31 S/s       */
     /* 0x0F */       24979.1f,   /* EXP-17 slope fit, n=29, SE 10 S/s       */
     /* 0x10 */       12490.0f,   /* EXP-17 slope fit, n=49, SE  2 S/s       */
@@ -266,9 +272,9 @@ static const scope_tb_tier_t tier_by_code[SCOPE_TIMEBASE_CODE_COUNT] = {
     SCOPE_TB_MEASURED,      /* 0x08 CAN          */
     SCOPE_TB_MEASURED,      /* 0x09 CAN          */
     SCOPE_TB_MEASURED,      /* 0x0A CAN          */
-    SCOPE_TB_NONE,          /* 0x0B unmeasurable */
-    SCOPE_TB_NONE,          /* 0x0C unmeasurable */
-    SCOPE_TB_PROVISIONAL,   /* 0x0D              */
+    SCOPE_TB_MEASURED,      /* 0x0B tone 2026-11-14 */
+    SCOPE_TB_MEASURED,      /* 0x0C tone 2026-11-14 */
+    SCOPE_TB_MEASURED,      /* 0x0D tone 2026-11-14 */
     SCOPE_TB_MEASURED,      /* 0x0E              */
     SCOPE_TB_MEASURED,      /* 0x0F              */
     SCOPE_TB_MEASURED,      /* 0x10              */

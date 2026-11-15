@@ -158,7 +158,7 @@ static void test_one_over_dt(void)
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "dx=0 must refuse");
 
     /* No rate => no Hz either; 1/samples has no unit to fall back to. */
-    r = scope_cursor_one_over_dt(0x0Bu, 100);
+    r = scope_cursor_one_over_dt(0x15u, 100);     /* past the table: no rate */
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE,
           "a code with no rate must not produce a frequency");
 }
@@ -167,10 +167,9 @@ static void test_one_over_dt(void)
 
 static void test_unmeasured_timebase_falls_back_to_samples(void)
 {
-    /* Codes still without a rate (2026-11-11): 0x0B/0x0C (below one sample
-     * per CAN bit). 0x08, the power-on default,
-     * now has a measured rate and is covered by the seconds tests. */
-    static const uint8_t none_codes[] = { 0x0Bu, 0x0Cu };
+    /* Every table code has a measured rate since 2026-11-14 (0x0B/0x0C were
+     * the last two). A code past the table is what has none. */
+    static const uint8_t none_codes[] = { 0x15u, 0xFFu };
 
     for (unsigned i = 0; i < sizeof(none_codes); i++) {
         const uint8_t code = none_codes[i];
@@ -272,17 +271,19 @@ static void test_provisional_ranges_are_marked(void)
 
 static void test_provisional_timebase_is_marked(void)
 {
-    /* 0x0D: R^2 0.9997 but only bins 4-25 of resolution, and never
-     * fold-tested at the corrected rate. */
-    CHECK(scope_timebase_get_tier(0x0Du) == SCOPE_TB_PROVISIONAL,
-          "0x0D tier changed — update this test with the evidence");
-
-    const scope_cursor_reading_t r = scope_cursor_delta_t(0x0Du, 100);
-    CHECK(r.confidence == SCOPE_CURSOR_PROVISIONAL, "0x0D must be provisional");
-
-    char s[16];
-    scope_cursor_format(&r, s, sizeof(s));
-    CHECK(s[0] == '~', "0x0D must carry the tilde, got %s", s);
+    /* 0x0D was the last provisional timebase (R^2 0.9997 on bins 4-25). On
+     * 2026-11-14 it was re-measured with a 100 kHz tone (first alias,
+     * 124,963 S/s, 0.9997 of 125 k like its neighbours), so no timebase
+     * code is provisional any more and none may carry the tilde. The marker
+     * itself stays tested on the vertical ranges above. */
+    for (uint8_t code = 0; code < SCOPE_TIMEBASE_CODE_COUNT; code++) {
+        CHECK(scope_timebase_get_tier(code) == SCOPE_TB_MEASURED,
+              "code 0x%02X tier changed -- update this test with the evidence", code);
+        const scope_cursor_reading_t r = scope_cursor_delta_t(code, 100);
+        char s[16];
+        scope_cursor_format(&r, s, sizeof(s));
+        CHECK(s[0] != '~', "code 0x%02X must not carry the tilde, got %s", code, s);
+    }
 }
 
 /* ── 4. formatting ──────────────────────────────────────────────────── */

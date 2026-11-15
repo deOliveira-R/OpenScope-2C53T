@@ -214,14 +214,21 @@ static void test_precorrection_rates_stay_out(void)
 
 static void test_unmeasured_codes_return_zero(void)
 {
-    const uint8_t none[] = { 0x0B, 0x0C };
-
-    for (unsigned i = 0; i < sizeof(none) / sizeof(none[0]); i++) {
-        CHECK(scope_timebase_sample_rate(none[i]) == 0.0f,
-              "code 0x%02X has no measured rate and must return 0.0f", none[i]);
-        CHECK(scope_timebase_get_tier(none[i]) == SCOPE_TB_NONE,
-              "code 0x%02X must be tier NONE", none[i]);
+    /* 0x0B/0x0C were the last codes without a rate; measured 2026-11-14 with
+     * a 100 kHz tone calibrated on 0x0A (scope_timebase.c). Every table code
+     * now resolves, 0.9997 of its 1-2-5 step. */
+    static const struct { uint8_t code; float nominal; } was_none[] = {
+        { 0x0B, 500e3f }, { 0x0C, 250e3f }, { 0x0D, 125e3f },
+    };
+    for (unsigned i = 0; i < sizeof(was_none) / sizeof(was_none[0]); i++) {
+        const float fs = scope_timebase_sample_rate(was_none[i].code);
+        CHECK(fabsf(fs / was_none[i].nominal - 0.9997f) < 0.0003f,
+              "code 0x%02X: %.1f S/s is not 0.9997 of its ladder step", was_none[i].code, (double)fs);
+        CHECK(scope_timebase_get_tier(was_none[i].code) == SCOPE_TB_MEASURED,
+              "code 0x%02X must be tier MEASURED", was_none[i].code);
     }
+    for (uint8_t c = 0; c < SCOPE_TIMEBASE_CODE_COUNT; c++)
+        CHECK(scope_timebase_sample_rate(c) > 0.0f, "code 0x%02X has no rate", c);
 }
 
 static void test_out_of_range(void)
@@ -241,8 +248,7 @@ static void test_derived_quantities(void)
 
         CHECK(fabsf(scope_timebase_seconds_per_sample(c) - 1.0f / fs) < 1e-12f,
               "code 0x%02X: s/sample must be 1/fs", c);
-        CHECK(fabsf(scope_timebase_seconds_per_div(c) -
-                    (SCOPE_TIMEBASE_SAMPLES_PER_DIV / fs)) < 1e-12f,
+        CHECK(fabsf(scope_timebase_seconds_per_div(c) * fs / SCOPE_TIMEBASE_SAMPLES_PER_DIV - 1.0f) < 1e-6f,
               "code 0x%02X: s/div must be samples-per-div / fs", c);
         CHECK(fabsf(scope_timebase_hz_from_period(c, 100.0f) - fs / 100.0f) < 1e-6f,
               "code 0x%02X: Hz must be fs / period_samples", c);
@@ -278,16 +284,20 @@ static void test_labels(void)
     CHECK(strcmp(buf, "501us") == 0,
           "0x0E label should be 501us, got \"%s\"", buf);
 
-    /* Provisional carries the marker. 0x0D was re-measured in EXP-18 (R2
-     * 0.9997, up from 0.947) but stays provisional: at ~124 kS/s the bench
-     * source only reaches bin 25, so it is the least-resolved row and misses
-     * the round ladder by 1.07% where every other code is inside 0.2%. */
+    /* 0x0D is measured since 2026-11-14 (it was the last provisional row):
+     * no marker. 125 k x 0.9997 -> 200 us/div. */
     scope_timebase_label(0x0D, buf, sizeof(buf));
-    CHECK(buf[0] == '~', "0x0D is PROVISIONAL and must be marked, got \"%s\"", buf);
+    CHECK(strcmp(buf, "200us") == 0, "0x0D label should be 200us, got \"%s\"", buf);
 
-    /* No rate -> explicit nothing, never a nominal number. */
+    /* 0x0B / 0x0C have rates now: 50 us and 100 us per division. */
     scope_timebase_label(0x0B, buf, sizeof(buf));
-    CHECK(strcmp(buf, "--") == 0, "0x0B label should be \"--\", got \"%s\"", buf);
+    CHECK(strcmp(buf, "50us") == 0, "0x0B label should be 50us, got \"%s\"", buf);
+    scope_timebase_label(0x0C, buf, sizeof(buf));
+    CHECK(strcmp(buf, "100us") == 0, "0x0C label should be 100us, got \"%s\"", buf);
+
+    /* No rate (a code past the table) -> explicit nothing, never a nominal number. */
+    scope_timebase_label(0x15, buf, sizeof(buf));
+    CHECK(strcmp(buf, "--") == 0, "a code past the table should be \"--\", got \"%s\"", buf);
 
     /* Fast codes: 4.9975 MS/s -> 5.0025 us/div needs a decimal; 124.83 MS/s ->
      * 200 ns/div needs nanoseconds (it printed "0us" before the ns branch). */
@@ -304,7 +314,7 @@ static void test_labels(void)
     CHECK(strcmp(buf, "100ns") == 0, "0x00 interleaved label should be 100ns, got \"%s\"", buf);
     scope_timebase_label_scaled(0x00, 0u, buf, sizeof(buf));
     CHECK(strcmp(buf, "200ns") == 0, "factor 0 must act as 1, got \"%s\"", buf);
-    scope_timebase_label_scaled(0x0B, 2u, buf, sizeof(buf));
+    scope_timebase_label_scaled(0x15, 2u, buf, sizeof(buf));
     CHECK(strcmp(buf, "--") == 0, "no rate stays \"--\" when scaled, got \"%s\"", buf);
 
     /* Truncation must be safe. */
@@ -350,7 +360,7 @@ static void test_view_zoom(void)
     CHECK(strcmp(a, "200ns") == 0, "0x04 view label should be 200ns, got \"%s\"", a);
     scope_timebase_view_label(0x10, false, a, sizeof(a));
     CHECK(strcmp(a, "2.00ms") == 0, "0x10 view label should be 2.00ms, got \"%s\"", a);
-    scope_timebase_view_label(0x0B, true, a, sizeof(a));
+    scope_timebase_view_label(0x15, true, a, sizeof(a));
     CHECK(strcmp(a, "--") == 0, "no rate stays \"--\" in the view label, got \"%s\"", a);
 }
 
