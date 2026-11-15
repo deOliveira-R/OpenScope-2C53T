@@ -216,6 +216,7 @@ settings_reset_result_t settings_store_reset_to_defaults(uint32_t now_ms, void (
     model_last_screen_note_power_off(0u);       /* STARTUP_SCREEN_NONE: no last screen */
     config_init_defaults(&g_live);              /* the carried bytes are the defaults' too */
     g_write_blocked = false;                    /* a reset is new input: one more attempt */
+    if (between) between();                     /* the write gets a whole check-in window */
     r.saved = settings_store_flush_ex(now_ms);  /* captures over g_live, writes if it differs */
     return r;
 }

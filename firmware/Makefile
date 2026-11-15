@@ -380,7 +380,7 @@ endif
 endif
 
 # ── Build-time defaults profile (ARCH-1 M5) ─────────────────────────────
-# make DEFAULTS=profiles/<name>.json   (any target: `make app-full DEFAULTS=...`)
+# make DEFAULTS=../profiles/<name>.json   (from firmware/; any image target takes it)
 # The BUILT-IN DEFAULTS of the settings are the property table's `def` column
 # (src/model/model_table.h). A profile (a readable file of settings, written
 # by hand or by `scripts/model_config.py from-device`) may replace them for
@@ -1024,7 +1024,8 @@ test-model: $(BUILD_DIR)/test_model
 
 # Host-side configuration tool (scripts/model_config.py, ARCH-1 M5): its
 # reading of model_table.h (the parser, labels, units, the text of every
-# value) against the firmware model's own default lines, profiles/default.json
+# value) against the firmware model's own default lines and against the get
+# lines and set answers the firmware's shell code prints, profiles/default.json
 # against the table, and list / defaults / from-device / to-device / diff /
 # build against a fake shell (in-process and over a socket on an ephemeral
 # port). No device, no serial port.
@@ -1040,10 +1041,12 @@ $(BUILD_DIR)/test_model_profile: tests/test_model.c $(MODEL_SRCS) src/model/mode
 		$(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-model-config
-test-model-config: $(BUILD_DIR)/test_model $(BUILD_DIR)/test_model_profile
+test-model-config: $(BUILD_DIR)/test_model $(BUILD_DIR)/test_model_profile $(BUILD_DIR)/test_model_exec
 	$(BUILD_DIR)/test_model --dump-defaults $(BUILD_DIR)/model_defaults.txt
 	$(BUILD_DIR)/test_model_profile --dump-defaults $(BUILD_DIR)/model_defaults_lab.txt
+	$(BUILD_DIR)/test_model_exec --dump-shell $(BUILD_DIR)/model_shell_lines.txt
 	python3 -I ../scripts/model_config.py --self-test --c-defaults $(BUILD_DIR)/model_defaults.txt \
+		--c-shell $(BUILD_DIR)/model_shell_lines.txt \
 		--c-profile tests/fixtures/profile_lab.json $(BUILD_DIR)/model_defaults_lab.txt
 
 # Meter link policy (src/model/meter_link_policy.c): the truth table of

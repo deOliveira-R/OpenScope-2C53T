@@ -22,10 +22,13 @@
  *     volumes), no program and no erase lands outside the settings region,
  *     also when the reset's write makes the log compact (erase and
  *     rewrite). The MCU's own flash (the factory calibration page at
- *     0x08006000) is not in this model: nothing this test links can write
- *     it. The files that can (calpage.c, cal_backup.c, usercal.c,
- *     gallery_store.c, logo_store.c, fw_loader.c) are not linked here, so
- *     a call into any of them from the reset path would not link;
+ *     0x08006000) is not in this model. What covers it: the code under
+ *     test here (the model, its setters, the v5 codec, settings_store.c,
+ *     config.c, the region layer) links without calpage.c, cal_backup.c,
+ *     usercal.c, gallery_store.c, logo_store.c and fw_loader.c, so none of
+ *     it can call them. The hardware ops are fakes here; the real ones
+ *     (model_hw_fw.c) and the owner functions they call are outside this
+ *     test, and were read for such calls by hand (none);
  *   - the confirm step: one OK on the row only asks; the reset needs a
  *     second OK on the question; MENU or any other key never resets;
  *   - self-cal running: BUSY, nothing changed, nothing written;
@@ -465,7 +468,8 @@ static void test_reset_everything(void)
     CHECK(r.status == PS_OK && r.left == 0 && r.first_left == 0);
     CHECKF(r.changed >= 50, "changed %u", (unsigned)r.changed);
     CHECK(r.saved == SETTINGS_FLUSH_SAVED);
-    CHECK(g_between + 1u >= r.changed);            /* the health check-in between the setters */
+    CHECK(g_between >= r.changed);                 /* the health check-in: between the setters, and
+                                                    * once more before the write */
     CHECK(g_notes == notes);                       /* no settings note per property: one write */
 
     /* every property: its built-in default, or kept as it was */

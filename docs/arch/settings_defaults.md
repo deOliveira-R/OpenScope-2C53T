@@ -72,9 +72,11 @@ Proof on the host: `make test-settings-reset` (`tests/test_settings_reset.c`). I
 covered property at its default, every kept one unchanged), reads the owner calls from a fake-ops log,
 compares the record with the defaults record byte by byte, and runs all of it against a NOR model of the
 whole W25Q in which every program and erase outside the settings region is counted and every other region is
-compared with a snapshot, a log compaction included. The MCU's own flash is not in that model; the files
-that can write it (and the gallery, logo, cal backup, user calibration and firmware cache writers) are not
-linked into the test, so a call into them from the reset path would not link.
+compared with a snapshot, a log compaction included. The MCU's own flash is not in that model. The code under
+test (the model, its setters, the record codec, the store, the region layer) links without the files that can
+write it or the gallery, logo, cal backup, user calibration and firmware cache, so it cannot call them. The
+hardware ops are fakes in the test; the real ones and the owner functions they call were read by hand for
+such calls (none).
 
 ### Not built: defaults for one session
 
@@ -122,7 +124,7 @@ in-process and over a socket on an ephemeral port.
 ## Build-time defaults: `make DEFAULTS=profiles/<name>.json`
 
 ```sh
-make DEFAULTS=../profiles/lab.json                       # from firmware/; any target takes it
+make DEFAULTS=../profiles/lab.json                       # from firmware/ (the path is relative to it)
 make app-coldtrace-meter DEFAULTS=../profiles/lab.json
 ```
 

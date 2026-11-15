@@ -1094,6 +1094,10 @@ static void test_shell_defaults(void)
     for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strlen(out[i]) < 128);
     sh_reset(); model_shell_list("changed", collect);
     CHECK(n_out == 2 && starts(0, "sys.instrument "));
+    /* the longest answer fits usb_debug_printf's 256-byte buffer with room to spare */
+    sh_reset(); model_shell_reset_report(PS_NOT_SET, 255, 255,
+                                         "NOT saved (settings storage blocked after a failed write)", collect);
+    for (unsigned i = 0; i < n_out && i < 64; i++) CHECKF(strlen(out[i]) < 180, "%u: %s", (unsigned)strlen(out[i]), out[i]);
     sh_reset(); model_shell_reset_report(PS_BUSY, 0, 0, "saved", collect);
     CHECK(n_out == 1 && starts(0, "BUSY reset settings (self-cal running); nothing changed"));
     /* a property an owner refused is named */
@@ -1110,8 +1114,46 @@ static void test_shell_defaults(void)
     CHECK(strcmp(out[1], "  not at default: ch1.coupling") == 0);
 }
 
-int main(void)
+/* --dump-shell FILE: the lines the real shell code prints, for the host tool
+ * that parses them (scripts/model_config.py --self-test --c-shell FILE, make
+ * test-model-config):
+ *   GET <tab> value <tab> the `get <prop>` line      every property, after some sets
+ *   SET <tab> STATUS <tab> the first line `set` answered   one per status */
+static int dump_shell(const char *path)
 {
+    static const struct { const char *cmd, *status; int knob; } k_sets[] = {
+        { "ch1.vdiv 4", "OK", 0 },          { "gen.amp 1.5 V", "OK", 0 },
+        { "ch1.coupling AC", "OK", 0 },     { "sys.theme green", "OK", 0 },
+        { "ch1.meas Freq,Vp-p", "OK", 0 },  { "trig.level -20", "OK", 0 },
+        { "gen.freq 99999", "CLAMPED", 0 }, { "ch1.coupling 2", "INVALID", 0 },
+        { "ui.focus 1", "INVALID", 0 },     { "no.such 1", "INVALID", 0 },
+        { "sys.instrument none", "REFUSED", 0 },   { "ch2.vdiv 7", "NOT_SET", 1 },
+        { "ch1.probe 10X", "BUSY", 2 },     { "ch1.bwlimit on", "TIMEOUT", 3 },
+    };
+    FILE *f = fopen(path, "w");
+    if (!f) { printf("cannot write %s\n", path); return 2; }
+    fresh(1);
+    for (unsigned i = 0; i < sizeof k_sets / sizeof k_sets[0]; i++) {
+        g_fail = (k_sets[i].knob == 1);
+        g_busy = (k_sets[i].knob == 2);
+        responsive = (k_sets[i].knob != 3);
+        sh_reset(); model_shell_set(k_sets[i].cmd, collect);
+        fprintf(f, "SET\t%s\t%s\n", k_sets[i].status, n_out ? out[0] : "");
+    }
+    g_fail = g_busy = false;
+    responsive = true;
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        sh_reset(); model_shell_get(p->name, collect);
+        fprintf(f, "GET\t%ld\t%s\n", (long)prop_get(p), n_out ? out[0] : "");
+    }
+    fclose(f);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--dump-shell") == 0) return dump_shell(argv[2]);
     test_not_up();
     test_basic();
     test_order();

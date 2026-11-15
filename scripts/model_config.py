@@ -28,7 +28,7 @@ Commands (run from anywhere; the table is read from this checkout's firmware sou
                                       the device refused, clamped or stored for later, then reads all back
   diff FILE [OTHER]                   the profile against the built-in defaults (or against OTHER)
   build FILE -o HEADER                the profile as build-time defaults (make DEFAULTS=FILE; see the Makefile)
-  --self-test [--c-defaults FILE] [--c-profile PROFILE FILE]
+  --self-test [--c-defaults FILE] [--c-shell FILE] [--c-profile PROFILE FILE]
                                       no device: the table parser, the value text, a fake shell in-process and
                                       over a socket on an ephemeral port, every command above
 
@@ -459,6 +459,12 @@ class Shell:
         self.port.close()
 
 
+def reply_status(first_line):
+    """The status word a `set` answered with (its first line), INVALID for anything else."""
+    status = first_line.split(' ', 1)[0].rstrip(':')
+    return status if status in STATUSES else 'INVALID'
+
+
 def parse_get_line(line, by_name):
     """'name=value[ unit][  # label]' -> (prop, int, label or None); None for another line."""
     if '=' not in line or line.startswith(('ERR', 'usage', '#')):
@@ -532,9 +538,7 @@ def cmd_to_device(props, a):
                 continue
             reply = sh.cmd('set %s %s' % (p.name, p.text(want)))
             first = reply[0] if reply else ''
-            status = first.split(' ', 1)[0].rstrip(':')
-            if status not in STATUSES:
-                status = 'INVALID'
+            status = reply_status(first)
             counts[status] += 1
             if status == 'OK' and 'stored:' in first:
                 counts['STORED'] += 1
@@ -770,7 +774,7 @@ def serve_fake(dev):
     return srv.getsockname()[1], stop
 
 
-def self_test(c_defaults, c_profile=None):
+def self_test(c_defaults, c_profile=None, c_shell=None):
     import contextlib
     import io
     import tempfile
@@ -854,6 +858,25 @@ def self_test(c_defaults, c_profile=None):
               % [(a_, b_) for a_, b_ in zip(c_lines, want) if a_ != b_][:4])
         check(sum(1 for p in props if pvals.get(p.name, default_of(p)) != default_of(p)) >= 5,
               'the fixture profile changes too little to prove anything')
+    # the lines the firmware's own shell code prints (tests/test_model_exec.c --dump-shell): every `get`
+    # line reads back as the value the model held, every `set` answer as its status
+    if c_shell:
+        n_get = n_set = 0
+        for raw in open(c_shell):
+            kind, _, rest = raw.rstrip('\n').partition('\t')
+            want, _, line = rest.partition('\t')
+            if kind == 'GET':
+                n_get += 1
+                try:
+                    got = parse_get_line(line, by)
+                except ValueError as exc:
+                    got = exc
+                check(isinstance(got, tuple) and got[1] == int(want), 'get line %r: read %r, the model had %s'
+                      % (line, got[1] if isinstance(got, tuple) else got, want))
+            elif kind == 'SET':
+                n_set += 1
+                check(reply_status(line) == want, 'set answer %r: read %s, expected %s' % (line, reply_status(line), want))
+        check(n_get == len(props) and n_set >= 10, 'shell dump: %d get lines, %d set answers' % (n_get, n_set))
     # a broken table is refused, loudly
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, 'model'))
@@ -1006,6 +1029,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], epilog='See the header of this file.')
     ap.add_argument('--self-test', action='store_true')
     ap.add_argument('--c-defaults', metavar='FILE', help='self-test: the firmware model\'s own default lines')
+    ap.add_argument('--c-shell', metavar='FILE', help='self-test: get lines and set answers of the firmware shell code')
     ap.add_argument('--c-profile', nargs=2, metavar=('PROFILE', 'FILE'),
                     help='self-test: a profile and the default lines of a model built with it')
     sub = ap.add_subparsers(dest='command')
@@ -1033,7 +1057,7 @@ def main(argv=None):
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
     if a.self_test:
-        return self_test(a.c_defaults, a.c_profile)
+        return self_test(a.c_defaults, a.c_profile, a.c_shell)
     if not a.command:
         ap.print_usage()
         return 2
