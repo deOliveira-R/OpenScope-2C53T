@@ -2161,6 +2161,15 @@ guest-faulttest: clean all
 # Register-owner gate (ARCH round, task A0). Host-only: scans src/**/*.c for writes to
 # peripheral registers outside their owner (scripts/reg_owners.txt) and fails on any write
 # the baseline does not cover. See docs/arch/owners.md. Not part of `all`.
+# The state-owner ratchet (ARCH round, sibling of check-owners): a setting's
+# backing variable is stored by its property's setter only. Counts the direct
+# stores elsewhere (scripts/check_state_owners.py) against a baseline that
+# only shrinks; a new one fails. Part of the gate, next to check-owners.
+.PHONY: check-state-owners
+check-state-owners:
+	cd .. && python3 -I scripts/check_state_owners.py --self-test
+	cd .. && python3 -I scripts/check_state_owners.py --src firmware/src
+
 .PHONY: check-owners
 check-owners:
 	cd .. && python3 -I scripts/check_reg_owners.py --self-test \
