@@ -104,6 +104,37 @@ settings_flush_outcome_t settings_store_flush_ex(uint32_t now_ms);
 /* One short word for the shell: "saved", "already saved", "NOT saved (...)". */
 const char *settings_flush_outcome_text(settings_flush_outcome_t o);
 
+/* "Reset to defaults": the BUILT-IN DEFAULTS (the property table's, const)
+ * copied over the USER SETTINGS (the saved record), in three steps, on the
+ * input task (it runs setters and writes the record):
+ *   1. model_reset_to_defaults(between): every property a reset covers back
+ *      to its default through its setter, so the hardware follows. BUSY
+ *      while self-cal runs: nothing is touched, nothing is written.
+ *   2. the record image starts again from config_init_defaults() (so the
+ *      bytes no property owns are the defaults' too) with the last-screen
+ *      byte cleared: Startup on Boot is "restore" again and there is no
+ *      last screen, so the next boot shows Home until an orderly power-off
+ *      names a screen.
+ *   3. the live state is captured over it and written at once.
+ * When every property reached its default (left == 0) the record
+ * written is byte for byte the one config_init_defaults() builds; a property
+ * an owner refused keeps its live value in the record, as in RAM.
+ *
+ * This path can reach the settings region only (config_save -> the region
+ * layer's append log): never the factory calibration page or its W25Q
+ * backup, the user calibration record, the gallery, the logo or the
+ * firmware cache. tests/test_settings_reset.c holds that against the flash
+ * model. */
+typedef struct {
+    uint8_t  status;        /* prop_status_t (model.h): PS_OK; PS_BUSY: nothing happened;
+                             * PS_NOT_SET: `left` properties are not at their default   */
+    uint8_t  changed;       /* properties whose value moved                            */
+    uint8_t  left;          /* covered by a reset and still not at their default       */
+    uint16_t first_left;    /* the id of the first of them (0: none)                   */
+    settings_flush_outcome_t saved;   /* what the write did (not with PS_BUSY)         */
+} settings_reset_result_t;
+settings_reset_result_t settings_store_reset_to_defaults(uint32_t now_ms, void (*between)(void));
+
 /* Apply a config to live UI state, clamping every index to its live range. A
  * record can pass its CRC and its checksum and still hold, say, vdiv index 200
  * — from an older layout, a truncated struct, or a bit flip that the byte-sum

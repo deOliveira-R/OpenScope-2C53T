@@ -14,10 +14,24 @@
  * The table
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* BUILT-IN DEFAULTS. `def` is the table's column. A build may replace it:
+ * `make DEFAULTS=profiles/<name>.json` has scripts/model_config.py write
+ * build/model_profile.h (PROFILE_DEF_<SYM> for every property: the profile's
+ * value where it names one, the table's otherwise, checked against the
+ * ranges on the host) and compiles this file with it. Without DEFAULTS the
+ * header is not included and the column is used as written. Either way the
+ * defaults are const in the image; a saved record still wins over them. */
+#ifdef MODEL_PROFILE_H
+#define PROP_DEF_(sym, df_) PROFILE_DEF_##sym
+#else
+#define PROP_DEF_(sym, df_) df_
+#endif
+
 #define PROP(sym, id_, nm_, ty_, un_, de_, gr_, in_, ar_, mn_, mx_, st_, df_, fl_, lb_, lf_,   \
              ge_, se_, so_, ow_)                                                              \
     { .name = nm_, .owner = ow_, .labels = lb_, .label = lf_, .get = ge_, .set = se_,         \
-      .store = so_, .min = mn_, .max = mx_, .def = df_, .id = id_, .flags = fl_, .step = st_, \
+      .store = so_, .min = mn_, .max = mx_, .def = PROP_DEF_(sym, df_), .id = id_,            \
+      .flags = fl_, .step = st_,                                                              \
       .type = ty_, .unit = un_, .decimals = de_, .group = gr_, .arg = ar_, .inst = in_ },
 const prop_desc_t prop_table[] = {
 #include "model_table.h"
@@ -558,7 +572,7 @@ static bool busy_for(const prop_desc_t *p, uint8_t origin)
 
 static bool may_note(const prop_desc_t *p, uint8_t origin)
 {
-    if (!(p->flags & PF_PERSIST) || origin == ORIGIN_BOOT) return false;
+    if (!(p->flags & PF_PERSIST) || origin == ORIGIN_BOOT || origin == ORIGIN_RESET) return false;
     if (origin == ORIGIN_SHELL && g_ops->shell_persist && !g_ops->shell_persist()) return false;
     return true;
 }
@@ -694,6 +708,82 @@ unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool no
     }
     if (note && persisted && g_ops->note_change) g_ops->note_change();
     return changed;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Reset to defaults
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* ui.h: the operator view.math = off keeps. Read here, never written. */
+extern volatile uint8_t math_op;
+
+const char *prop_reset_keeps(const prop_desc_t *p)
+{
+    if (!p) return "no such property";
+    if (!prop_is_settable(p))                 return "read only";
+    if (p->flags & PF_ALIAS)                  return "alias";
+    if (p->flags & PF_USERCAL)                return "user calibration";
+    switch (p->id) {
+    case PROP_ID_IL_KNOTS:       return "user calibration";       /* 0 would drop the map  */
+    case PROP_ID_SYS_INSTRUMENT: return "screen binding";         /* the screen stays      */
+    case PROP_ID_VIEW_RUN:       return "the OK key's (RUN/STOP)"; /* setter not wired      */
+    default:                     return NULL;
+    }
+}
+
+bool prop_is_changed(const prop_desc_t *p)
+{
+    return prop_is_settable(p) && !(p->flags & PF_ALIAS) && prop_get(p) != prop_default(p);
+}
+
+prop_status_t model_reset_to_defaults(void (*between)(void), model_reset_report_t *rep)
+{
+    model_reset_report_t scratch;
+    if (!rep) rep = &scratch;
+    memset(rep, 0, sizeof *rep);
+    if (g_ops->selfcal_busy && g_ops->selfcal_busy()) return (prop_status_t)(rep->status = PS_BUSY);
+
+    /* view.math = off keeps the operator the Math pane remembers (math_op,
+     * a record byte of its own). A reset forgets it too: "A+B" first, and
+     * the loop below then switches math off. No hardware either way. */
+    if (math_op != 0u && prop_default(P(VIEW_MATH)) == 0) {
+        const int32_t old = prop_get(P(VIEW_MATH));
+        (void)prop_set_local(P(VIEW_MATH), 1, ORIGIN_RESET, NULL);
+        if (old == 0 && rep->changed < 0xFFu) rep->changed++;    /* the operator moved; the loop
+                                                                  * counts a math that was on */
+    }
+
+    bool first = true;
+    /* Pass 0: table order. Pass 1: once more for what a rule or an owner
+     * refused while a later property still had its old value. */
+    for (int pass = 0; pass < 2; pass++) {
+        bool refused = false;
+        for (uint16_t i = 0; i < PROP_IX_COUNT; i++) {
+            const prop_desc_t *p = &prop_table[i];
+            if (prop_reset_keeps(p)) continue;
+            /* Read now, not from a snapshot: a setter moves other properties. */
+            const int32_t old = prop_get(p);
+            if (old == prop_default(p)) continue;
+            if (!first && between) between();
+            first = false;
+            (void)prop_set_local(p, prop_default(p), ORIGIN_RESET, NULL);
+            const int32_t now = prop_get(p);
+            if (now != old && rep->changed < 0xFFu) rep->changed++;
+            if (now != prop_default(p)) refused = true;
+        }
+        if (!refused) break;
+    }
+    /* Count at the end: a setter may also have moved a property that was
+     * already at its default when the loop passed it. */
+    unsigned left = 0;
+    for (uint16_t i = 0; i < PROP_IX_COUNT; i++) {
+        const prop_desc_t *p = &prop_table[i];
+        if (prop_reset_keeps(p) || prop_get(p) == prop_default(p)) continue;
+        if (!left) rep->first_left = p->id;
+        left++;
+    }
+    rep->left = (uint8_t)(left > 0xFFu ? 0xFFu : left);
+    return (prop_status_t)(rep->status = left ? PS_NOT_SET : PS_OK);
 }
 
 /* ═══════════════════════════════════════════════════════════════════

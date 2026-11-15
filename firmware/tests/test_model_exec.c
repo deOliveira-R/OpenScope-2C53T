@@ -171,9 +171,15 @@ static bool f_mask_tol(uint8_t v, uint8_t h)
 }
 static bool f_mask_tol_pending(void) { return g_mbox_full; }
 
+/* fpga.c keeps the interleave switch: on, as its initialiser has it */
+static bool g_il_on = true;
+static bool f_il_enable(bool on)              { g_il_on = on; return true; }
+static bool f_il_enabled(void)                { return g_il_on; }
+
 static const model_hw_ops_t k_fake = {
     .mask_get = f_mask_get, .mask_tol = f_mask_tol, .mask_tol_pending = f_mask_tol_pending,
     .mask_pending = f_mask_tol_pending,
+    .il_enable = f_il_enable, .il_enabled = f_il_enabled,
     .vdiv = f_vdiv, .coupling = f_coupling, .timebase = f_timebase,
     .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out, .meter_func = f_meter_func,
     .roll = f_roll, .trigger_source = f_trig_src, .trigger_level = f_trig_level,
@@ -1067,8 +1073,154 @@ static void test_retired_replacements(void)
     CHECK(prop_get(P(CH1_VDIV)) == 3 && current_mode == MODE_OSCILLOSCOPE);
 }
 
-int main(void)
+/* Built-in defaults against the live values: `describe` answers for every
+ * property, `list changed` / `get changed` show what differs, and the reset
+ * report says what was kept. */
+static bool any_line(const char *needle)
 {
+    for (unsigned i = 0; i < n_out && i < 64; i++)
+        if (strstr(out[i], needle)) return true;
+    return false;
+}
+
+static void test_shell_defaults(void)
+{
+    fresh(1);
+    /* every property: a default line, and for a settable one what a reset does */
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        char want[160], val[PROP_TEXT_MAX];
+        sh_reset(); model_shell_describe(p->name, collect);
+        unsigned defaults = 0, resets = 0;
+        for (unsigned k = 0; k < n_out && k < 64; k++) {
+            if (strncmp(out[k], "  default: ", 11) == 0 && ends(k, " (built in)")) defaults++;
+            if (strncmp(out[k], "  reset:   ", 11) == 0) resets++;
+        }
+        CHECKF(defaults == 1, "%s: %u default lines", p->name, defaults);
+        CHECKF(resets == (prop_is_settable(p) ? 1u : 0u), "%s: %u reset lines", p->name, resets);
+        /* the default line carries the canonical text of the table's default */
+        prop_format_value(p, prop_default(p), val, sizeof val);
+        snprintf(want, sizeof want, "  default: %s", val);
+        CHECKF(any_line(want), "%s: no '%s'", p->name, want);
+        if (prop_is_settable(p))
+            CHECKF(any_line(prop_reset_keeps(p) ? "  reset:   kept (" : "  reset:   back to the default"),
+                   "%s", p->name);
+    }
+    sh_reset(); model_shell_describe("il.gain", collect);
+    CHECK(any_line("  reset:   kept (user calibration)"));
+    sh_reset(); model_shell_describe("sys.instrument", collect);
+    CHECK(any_line("  reset:   kept (screen binding)"));
+
+    /* fresh state: only the screen binding is off its default (the test sits on the scope) */
+    sh_reset(); model_shell_list("changed", collect);
+    CHECKF(n_out == 2 && starts(0, "sys.instrument ") && strstr(out[0], "(reset keeps it: screen binding)") &&
+           starts(1, "1 differ from the built-in defaults; reset settings CONFIRM would put back 0"),
+           "%u: %s | %s", n_out, out[0], out[1]);
+    sh_reset(); model_shell_list("changed ch1.", collect);
+    CHECK(n_out == 1 && starts(0, "nothing matching differs"));
+    sh_reset(); model_shell_get("changed", collect);
+    CHECK(n_out == 1 && strcmp(out[0], "sys.instrument=scope") == 0);
+
+    /* change three */
+    sh_reset(); model_shell_set("ch1.vdiv 4", collect);
+    sh_reset(); model_shell_set("gen.amp 1.5", collect);
+    sh_reset(); model_shell_set("sys.theme green", collect);
+    sh_reset(); model_shell_list("changed", collect);
+    CHECKF(n_out == 5 && starts(0, "ch1.vdiv ") && strstr(out[0], "default 3") &&
+           starts(1, "gen.amp ") && strstr(out[1], "1.5 V") && strstr(out[1], "default 3.0 V") &&
+           starts(2, "sys.instrument ") && starts(3, "sys.theme ") && strstr(out[3], "green") &&
+           strstr(out[3], "default blue") &&
+           starts(4, "4 differ from the built-in defaults; reset settings CONFIRM would put back 3"),
+           "%u: %s | %s | %s", n_out, out[0], out[1], out[4]);
+    sh_reset(); model_shell_list("changed gen.*", collect);
+    CHECK(n_out == 2 && starts(0, "gen.amp "));
+    /* `get changed` is a profile of the differences: every line parses back */
+    sh_reset(); model_shell_get("changed", collect);
+    CHECK(n_out == 4);
+    for (unsigned i = 0; i < n_out && i < 64; i++) {
+        const prop_desc_t *p = NULL;
+        int32_t v = 0;
+        CHECKF(prop_line_parse(out[i], &p, &v) == PS_OK && p && v == prop_get(p) && prop_is_changed(p),
+               "line '%s'", out[i]);
+    }
+    /* the plain list and get are as they were (no marker in the lines scripts read) */
+    sh_reset(); model_shell_get("ch1.vdiv", collect);
+    CHECK(n_out == 1 && starts(0, "ch1.vdiv=4"));
+
+    /* the reset on the executor, then its report */
+    in_exec = true;
+    model_reset_report_t rep;
+    CHECK(model_reset_to_defaults(NULL, &rep) == PS_OK && rep.changed == 3 && rep.left == 0);
+    in_exec = false;
+    sh_reset(); model_shell_reset_report(rep.status, rep.changed, rep.left, "saved", collect);
+    CHECKF(n_out >= 3 && strcmp(out[0], "OK reset settings: 3 changed, all at the built-in defaults; "
+                                        "user settings saved") == 0, "%s", out[0]);
+    CHECK(any_line("  kept:") && any_line("il.gain (user calibration)") && any_line("il.knots") &&
+          any_line("sys.instrument (screen binding)") && any_line("view.run (the OK key's (RUN/STOP))"));
+    CHECK(any_line("  not touched: calibration"));
+    for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strlen(out[i]) < 128);
+    sh_reset(); model_shell_list("changed", collect);
+    CHECK(n_out == 2 && starts(0, "sys.instrument "));
+    /* the longest answer fits usb_debug_printf's 256-byte buffer with room to spare */
+    sh_reset(); model_shell_reset_report(PS_NOT_SET, 255, 255,
+                                         "NOT saved (settings storage blocked after a failed write)", collect);
+    for (unsigned i = 0; i < n_out && i < 64; i++) CHECKF(strlen(out[i]) < 180, "%u: %s", (unsigned)strlen(out[i]), out[i]);
+    sh_reset(); model_shell_reset_report(PS_BUSY, 0, 0, "saved", collect);
+    CHECK(n_out == 1 && starts(0, "BUSY reset settings (self-cal running); nothing changed"));
+    /* a property an owner refused is named */
+    g_fail = true;
+    scope_state_get()->ch1.coupling = COUPLING_AC;
+    in_exec = true;
+    CHECKF(model_reset_to_defaults(NULL, &rep) == PS_NOT_SET && rep.left == 1 &&
+           rep.first_left == PROP_ID_CH1_COUPLING, "left %u first 0x%04X", (unsigned)rep.left,
+           (unsigned)rep.first_left);
+    in_exec = false;
+    g_fail = false;
+    sh_reset(); model_shell_reset_report(rep.status, rep.changed, rep.left, "saved", collect);
+    CHECK(starts(0, "NOT_SET reset settings: 0 changed, NOT all at the built-in defaults; user settings saved"));
+    CHECK(strcmp(out[1], "  not at default: ch1.coupling") == 0);
+}
+
+/* --dump-shell FILE: the lines the real shell code prints, for the host tool
+ * that parses them (scripts/model_config.py --self-test --c-shell FILE, make
+ * test-model-config):
+ *   GET <tab> value <tab> the `get <prop>` line      every property, after some sets
+ *   SET <tab> STATUS <tab> the first line `set` answered   one per status */
+static int dump_shell(const char *path)
+{
+    static const struct { const char *cmd, *status; int knob; } k_sets[] = {
+        { "ch1.vdiv 4", "OK", 0 },          { "gen.amp 1.5 V", "OK", 0 },
+        { "ch1.coupling AC", "OK", 0 },     { "sys.theme green", "OK", 0 },
+        { "ch1.meas Freq,Vp-p", "OK", 0 },  { "trig.level -20", "OK", 0 },
+        { "gen.freq 99999", "CLAMPED", 0 }, { "ch1.coupling 2", "INVALID", 0 },
+        { "ui.focus 1", "INVALID", 0 },     { "no.such 1", "INVALID", 0 },
+        { "sys.instrument none", "REFUSED", 0 },   { "ch2.vdiv 7", "NOT_SET", 1 },
+        { "ch1.probe 10X", "BUSY", 2 },     { "ch1.bwlimit on", "TIMEOUT", 3 },
+    };
+    FILE *f = fopen(path, "w");
+    if (!f) { printf("cannot write %s\n", path); return 2; }
+    fresh(1);
+    for (unsigned i = 0; i < sizeof k_sets / sizeof k_sets[0]; i++) {
+        g_fail = (k_sets[i].knob == 1);
+        g_busy = (k_sets[i].knob == 2);
+        responsive = (k_sets[i].knob != 3);
+        sh_reset(); model_shell_set(k_sets[i].cmd, collect);
+        fprintf(f, "SET\t%s\t%s\n", k_sets[i].status, n_out ? out[0] : "");
+    }
+    g_fail = g_busy = false;
+    responsive = true;
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        sh_reset(); model_shell_get(p->name, collect);
+        fprintf(f, "GET\t%ld\t%s\n", (long)prop_get(p), n_out ? out[0] : "");
+    }
+    fclose(f);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--dump-shell") == 0) return dump_shell(argv[2]);
     test_not_up();
     test_basic();
     test_order();
@@ -1092,6 +1244,7 @@ int main(void)
     test_changed_groups();
     test_retired_replacements();
     test_mask_one_request();
+    test_shell_defaults();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

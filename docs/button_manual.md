@@ -366,7 +366,7 @@ Sine -> Square -> Triangle -> Sawtooth -> Full-Rect Sine -> Half-Rect Sine -> Pu
   About                    [info screen]
   FPGA SPI Scanner
   Firmware Update          [USB HID bootloader]
-  Factory Reset
+  Reset to Defaults        [asks first: OK = yes, MENU = no]
 ```
 
 ### Navigation

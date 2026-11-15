@@ -380,6 +380,42 @@ endif
 endif
 endif
 
+# ── Build-time defaults profile (ARCH-1 M5) ─────────────────────────────
+# make DEFAULTS=../profiles/<name>.json   (from firmware/; any image target takes it)
+# The BUILT-IN DEFAULTS of the settings are the property table's `def` column
+# (src/model/model_table.h). A profile (a readable file of settings, written
+# by hand or by `scripts/model_config.py from-device`) may replace them for
+# one image: scripts/model_config.py checks it against the table and writes
+# build/model_profile.h, which model.c (the defaults) and usb_debug.c (the
+# `version` line "Defaults profile: <name>") are compiled with. Nothing else
+# sees it, and without DEFAULTS neither file does: the image is the same as
+# before this hook existed. A saved settings record still wins over the
+# defaults; "Reset to defaults" goes back to the profile's.
+# This is NOT the feature profile (PROFILE=bench, features.mk): that one
+# chooses what code is in the image, this one the default VALUES.
+# The stamp makes the two objects rebuild when DEFAULTS changes or goes away.
+DEFAULTS ?=
+MODEL_PROFILE_OBJS := $(BUILD_DIR)/model.o $(BUILD_DIR)/usb_debug.o
+_defaults_now := $(strip $(DEFAULTS))
+_defaults_changed := $(shell [ -d $(BUILD_DIR) ] && [ "$$(cat $(BUILD_DIR)/defaults.stamp 2>/dev/null)" != "$(_defaults_now)" ] && echo "$(_defaults_now)" > $(BUILD_DIR)/defaults.stamp && echo changed)
+$(BUILD_DIR)/defaults.stamp: | $(BUILD_DIR)
+	@echo "$(_defaults_now)" > $@
+$(MODEL_PROFILE_OBJS): $(BUILD_DIR)/defaults.stamp
+ifneq ($(_defaults_changed),)
+# DEFAULTS is not what the objects in build/ were made with: both are made
+# again in this run, whatever their timestamps say (two builds within one
+# second have equal ones).
+.PHONY: defaults-changed
+$(MODEL_PROFILE_OBJS): defaults-changed
+endif
+ifneq ($(_defaults_now),)
+MODEL_PROFILE_H := $(BUILD_DIR)/model_profile.h
+$(MODEL_PROFILE_H): $(DEFAULTS) ../scripts/model_config.py src/model/model_table.h $(BUILD_DIR)/defaults.stamp | $(BUILD_DIR)
+	python3 -I ../scripts/model_config.py build $(DEFAULTS) -o $@
+$(MODEL_PROFILE_OBJS): $(MODEL_PROFILE_H)
+$(MODEL_PROFILE_OBJS): CFLAGS += -include $(MODEL_PROFILE_H)
+endif
+
 $(BUILD_DIR)/%.o: %.c Makefile features.mk | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -987,6 +1023,33 @@ $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/
 test-model: $(BUILD_DIR)/test_model
 	$<
 
+# Host-side configuration tool (scripts/model_config.py, ARCH-1 M5): its
+# reading of model_table.h (the parser, labels, units, the text of every
+# value) against the firmware model's own default lines and against the get
+# lines and set answers the firmware's shell code prints, profiles/default.json
+# against the table, and list / defaults / from-device / to-device / diff /
+# build against a fake shell (in-process and over a socket on an ephemeral
+# port). No device, no serial port.
+# ... and the build-time defaults profile end to end (make DEFAULTS=...): the
+# model compiled on the host with the header `model_config.py build` writes
+# from tests/fixtures/profile_lab.json must report the profile's defaults.
+$(BUILD_DIR)/test_model_profile: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/model/model_table.h \
+                                 tests/fixtures/profile_lab.json ../scripts/model_config.py \
+                                 $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	python3 -I ../scripts/model_config.py build tests/fixtures/profile_lab.json -o $(BUILD_DIR)/test_model_profile.h
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
+		-Isrc/ui -Isrc/dsp -Isrc/drivers -include $(BUILD_DIR)/test_model_profile.h $< $(MODEL_SRCS) \
+		$(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-model-config
+test-model-config: $(BUILD_DIR)/test_model $(BUILD_DIR)/test_model_profile $(BUILD_DIR)/test_model_exec
+	$(BUILD_DIR)/test_model --dump-defaults $(BUILD_DIR)/model_defaults.txt
+	$(BUILD_DIR)/test_model_profile --dump-defaults $(BUILD_DIR)/model_defaults_lab.txt
+	$(BUILD_DIR)/test_model_exec --dump-shell $(BUILD_DIR)/model_shell_lines.txt
+	python3 -I ../scripts/model_config.py --self-test --c-defaults $(BUILD_DIR)/model_defaults.txt \
+		--c-shell $(BUILD_DIR)/model_shell_lines.txt \
+		--c-profile tests/fixtures/profile_lab.json $(BUILD_DIR)/model_defaults_lab.txt
+
 # Meter link policy (src/model/meter_link_policy.c): the truth table of
 # "should the meter link be on" (screen, USB host, meter.link) and the
 # debounce of the USB host state. Pure.
@@ -1032,6 +1095,25 @@ $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/mo
 
 .PHONY: test-model-persist
 test-model-persist: $(BUILD_DIR)/test_model_persist
+	$<
+
+# Reset to defaults (ARCH-1 M5): the built-in defaults over the user settings
+# through the setters; every property back to its default, the hardware ops
+# called, the record byte for byte the defaults', the confirm step, and no
+# program or erase outside the settings region of a NOR model of the whole
+# W25Q (calibration, gallery, logo, firmware cache), a compaction included.
+$(BUILD_DIR)/test_settings_reset: tests/test_settings_reset.c $(MODEL_SRCS) src/model/model_persist_v5.c \
+                                  src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
+                                  src/util/config.c src/util/config.h src/util/settings_store.c \
+                                  src/util/settings_store.h src/ui/settings_reset.h \
+                                  src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DSETTINGS_PERSIST_WRITES=1 \
+		-Isrc/model -Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) \
+		src/model/model_persist_v5.c src/util/config.c src/util/settings_store.c \
+		src/drivers/flash_regions.c $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-settings-reset
+test-settings-reset: $(BUILD_DIR)/test_settings_reset
 	$<
 
 # UI route (ARCH-1 M2, src/model/ui_shell.c): the `ui seq` token parser (key
@@ -2143,6 +2225,15 @@ guest-faulttest: clean all
 # Register-owner gate (ARCH round, task A0). Host-only: scans src/**/*.c for writes to
 # peripheral registers outside their owner (scripts/reg_owners.txt) and fails on any write
 # the baseline does not cover. See docs/arch/owners.md. Not part of `all`.
+# The state-owner ratchet (ARCH round, sibling of check-owners): a setting's
+# backing variable is stored by its property's setter only. Counts the direct
+# stores elsewhere (scripts/check_state_owners.py) against a baseline that
+# only shrinks; a new one fails. Part of the gate, next to check-owners.
+.PHONY: check-state-owners
+check-state-owners:
+	cd .. && python3 -I scripts/check_state_owners.py --self-test
+	cd .. && python3 -I scripts/check_state_owners.py --src firmware/src
+
 .PHONY: check-owners
 check-owners:
 	cd .. && python3 -I scripts/check_reg_owners.py --self-test \

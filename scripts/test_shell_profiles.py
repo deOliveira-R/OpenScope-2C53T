@@ -49,7 +49,7 @@ SC_EXACT = 0x01
 CORE = [n.strip() for n in """
 help | ? | version | features | status | tasks
 fwload | fwstat | fwapply | fwswap | reboot bootloader
-get | set | list | describe | settings | persist
+get | set | list | describe | settings | persist | reset settings
 ui press | ui long | ui seq | ui screen | ui dump
 stream
 cal status | cal backup | cal restore | cal page

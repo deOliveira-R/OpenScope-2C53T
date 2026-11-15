@@ -197,6 +197,31 @@ const char *settings_flush_outcome_text(settings_flush_outcome_t o)
 const settings_store_status_t *settings_store_get_status(void) { return &g_status; }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * Reset to defaults (settings_store.h)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+settings_reset_result_t settings_store_reset_to_defaults(uint32_t now_ms, void (*between)(void))
+{
+    settings_reset_result_t r;
+    memset(&r, 0, sizeof r);
+    r.saved = SETTINGS_FLUSH_CLEAN;
+    model_reset_report_t m;
+    (void)model_reset_to_defaults(between, &m);
+    r.status = m.status;
+    r.changed = m.changed;
+    r.left = m.left;
+    r.first_left = m.first_left;
+    if (m.status == PS_BUSY) return r;
+
+    model_last_screen_note_power_off(0u);       /* STARTUP_SCREEN_NONE: no last screen */
+    config_init_defaults(&g_live);              /* the carried bytes are the defaults' too */
+    g_write_blocked = false;                    /* a reset is new input: one more attempt */
+    if (between) between();                     /* the write gets a whole check-in window */
+    r.saved = settings_store_flush_ex(now_ms);  /* captures over g_live, writes if it differs */
+    return r;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * Boot
  * ═══════════════════════════════════════════════════════════════════ */
 

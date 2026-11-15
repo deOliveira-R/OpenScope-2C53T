@@ -37,6 +37,13 @@ void input_request_settings_flush(void);
  * write really did. Returns false if the input task did not answer in time. */
 bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *out);
 
+/* "Reset to defaults" from the shell (`reset settings CONFIRM`): ask the
+ * input task to run settings_store_reset_to_defaults() and wait
+ * (<= timeout_ms) for its result. true: it ran, *out is what it did. false:
+ * no answer in time; the request is withdrawn and will not run, unless
+ * *in_progress says the reset had already started (it then finishes). */
+bool input_settings_reset_sync(uint32_t timeout_ms, settings_reset_result_t *out, bool *in_progress);
+
 /* Restart the auto-off timer with a new period (0 = off). Input task only:
  * the sys.autooff setter's hardware op (model_hw_fw.c). */
 void input_autooff_apply(uint8_t mins);

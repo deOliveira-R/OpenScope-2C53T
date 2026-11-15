@@ -27,11 +27,13 @@
 #include "at32f403a_407.h"
 #include "button_scan.h"
 #include "settings_store.h"
+#include "watchdog.h"       /* health_checkin_self: between the setters of a reset */
 #include "sys_prefs.h"
 #include "sys_pwm.h"
 #include "../ui/gallery_ui.h"
 #include "../ui/screen.h"
 #include "../ui/legacy_screens.h"
+#include "../ui/settings_reset.h"   /* Reset to Defaults: the confirm step */
 #include "model.h"           /* the long mode keys set sys.mode */
 #if FEATURE_USBDRIVE
 #include "usb_debug.h"      /* Settings "USB Sharing" */
@@ -121,6 +123,8 @@ bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *ou
     return false;
 }
 
+static void settings_reset_service(void);
+
 /* Called every pass of the input task (<= 100 ms). */
 void input_autooff_poll(void)
 {
@@ -141,6 +145,7 @@ void input_autooff_poll(void)
         g_flush_outcome = settings_store_flush_ex(now);
         g_flush_done_seq = seq;
     }
+    settings_reset_service();          /* the shell's `reset settings CONFIRM` */
     if (!g_autooff_ready) {
         sys_autooff_init(&g_autooff, sys_prefs_autooff_mins(), now);
         g_autooff_ready = true;
@@ -226,8 +231,48 @@ static bool settings_value_adjust(settings_item_t item, int dir, bool wrap)
  * Settings OK handler
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* ── Reset to Defaults ───────────────────────────────────────────────
+ * The built-in defaults over the user settings, on this task (it is the
+ * model's executor and the one writer of the settings record):
+ * settings_store_reset_to_defaults() runs every setter, so the hardware
+ * follows, and writes the record. Two doors, one function: the Settings row
+ * (after its question, settings_reset.h) and the shell's
+ * `reset settings CONFIRM` (input_settings_reset_sync below). The health
+ * check-in runs between the setters: each scope register write may wait for
+ * an acquisition park. Calibration, gallery, logo and the firmware cache are
+ * out of its reach (settings_store.h). */
+static settings_reset_result_t settings_reset_now(void)
+{
+    meter_autoselect_cancel();          /* its posted meter.func would land after the reset */
+    return settings_store_reset_to_defaults(settings_now_ms(), health_checkin_self);
+}
+
+/* The popup of a reset made from the Settings row (<= 23 characters). */
+static const char *settings_reset_popup(const settings_reset_result_t *r)
+{
+    if (r->status == PS_BUSY)                 return "Busy: self-cal running";
+    if (r->left)                              return "Reset: some NOT set";
+    if (r->saved == SETTINGS_FLUSH_BLOCKED ||
+        r->saved == SETTINGS_FLUSH_FAILED)    return "Reset, NOT saved";
+    return "Settings reset";
+}
+
 void input_handle_settings_ok(void)
 {
+    switch (settings_reset_on_ok(settings_depth, settings_selected)) {
+    case SET_RESET_ASK:             /* the first OK only asks */
+        settings_depth = SET_PAGE_RESET;
+        return;
+    case SET_RESET_DO: {            /* OK on the question: yes */
+        const settings_reset_result_t r = settings_reset_now();
+        settings_depth = SET_PAGE_LIST;         /* the screen stays in Settings */
+        scope_show_popup(settings_reset_popup(&r));
+        return;
+    }
+    default:
+        break;
+    }
+
     switch ((settings_page_t)settings_depth) {
     case SET_PAGE_SOUND:
         sound_light_adjust(+1, true);
@@ -268,7 +313,7 @@ void input_handle_settings_ok(void)
         dfu_request_reboot();
         break;
     }
-    case SET_ITEM_FACTORY_RESET:    /* listed, not implemented (it never was): nothing */
+    case SET_ITEM_RESET_DEFAULTS:   /* taken above: OK asks, OK again resets */
     default:
         break;
     }
@@ -579,6 +624,52 @@ bool input_mode_switch(device_mode_t m)
 {
     if ((unsigned)m >= (unsigned)MODE_COUNT || g_dq == NULL) return false;
     if (current_mode != m) enter_mode(m, g_dq);
+    return true;
+}
+
+/* ── `reset settings CONFIRM`: the shell's door to settings_reset_now() ──
+ * The shell task only asks; this task runs the reset on its next pass
+ * (<= 100 ms) and hands the result back by sequence number, as the flush
+ * does (input_settings_flush_sync). A caller that gave up withdraws the
+ * request; if the reset had already started it says so (the reset then
+ * finishes: there is no half-way to stop at). */
+static volatile uint32_t g_reset_req_seq;       /* shell: the request wanted            */
+static volatile uint32_t g_reset_started_seq;   /* input task: the one it took up       */
+static volatile uint32_t g_reset_ran_seq;       /* input task: the one it really ran    */
+static volatile uint32_t g_reset_done_seq;      /* input task: finished (ran or skipped) */
+static volatile uint32_t g_reset_withdrawn_seq; /* shell: gave up on this one           */
+static settings_reset_result_t g_reset_result;  /* written before g_reset_done_seq      */
+
+static void settings_reset_service(void)
+{
+    const uint32_t want = g_reset_req_seq;
+    if (want == g_reset_done_seq) return;
+    g_reset_started_seq = want;                 /* take it up, THEN look at the withdrawal */
+    if (g_reset_withdrawn_seq == want) { g_reset_done_seq = want; return; }
+    g_reset_result = settings_reset_now();
+    g_reset_ran_seq = want;
+    g_reset_done_seq = want;
+    if (g_dq != NULL) send_cmd(g_dq, DCMD_REDRAW_ALL);   /* theme, values, the status bar */
+}
+
+bool input_settings_reset_sync(uint32_t timeout_ms, settings_reset_result_t *out, bool *in_progress)
+{
+    const uint32_t want = ++g_reset_req_seq;
+    if (in_progress != NULL) *in_progress = false;
+    for (uint32_t waited = 0; g_reset_done_seq != want; waited += 10u) {
+        if (waited >= timeout_ms) {
+            g_reset_withdrawn_seq = want;       /* withdraw, THEN look at the start */
+            if (g_reset_started_seq != want) return false;      /* never taken up: it will not run */
+            /* Taken up: skipped (done at once) or running. One pass decides. */
+            for (unsigned i = 0; i < 20u && g_reset_done_seq != want; i++) vTaskDelay(pdMS_TO_TICKS(10));
+            if (g_reset_done_seq == want) break;
+            if (in_progress != NULL) *in_progress = true;
+            return false;
+        }
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+    if (g_reset_ran_seq != want) return false;  /* skipped: withdrawn in time */
+    if (out != NULL) *out = g_reset_result;
     return true;
 }
 
