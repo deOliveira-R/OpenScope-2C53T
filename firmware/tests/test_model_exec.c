@@ -1156,7 +1156,7 @@ static void test_shell_defaults(void)
     CHECKF(n_out >= 3 && strcmp(out[0], "OK reset settings: 3 changed, all at the built-in defaults; "
                                         "user settings saved") == 0, "%s", out[0]);
     CHECK(any_line("  kept:") && any_line("il.gain (user calibration)") && any_line("il.knots") &&
-          any_line("sys.instrument (screen binding)") && any_line("view.run (the OK key's (RUN/STOP))"));
+          any_line("sys.instrument (screen binding)") && !any_line("view.run"));
     CHECK(any_line("  not touched: calibration"));
     for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strlen(out[i]) < 128);
     sh_reset(); model_shell_list("changed", collect);

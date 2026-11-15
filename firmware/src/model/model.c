@@ -726,7 +726,6 @@ const char *prop_reset_keeps(const prop_desc_t *p)
     switch (p->id) {
     case PROP_ID_IL_KNOTS:       return "user calibration";       /* 0 would drop the map  */
     case PROP_ID_SYS_INSTRUMENT: return "screen binding";         /* the screen stays      */
-    case PROP_ID_VIEW_RUN:       return "the OK key's (RUN/STOP)"; /* setter not wired      */
     default:                     return NULL;
     }
 }

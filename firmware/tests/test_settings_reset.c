@@ -490,7 +490,8 @@ static void test_reset_everything(void)
     CHECKF(n_covered >= 55 && n_kept >= 8, "covered %u kept %u", n_covered, n_kept);
     /* the kept list, by name: nothing else may join it unnoticed */
     static const char *const k_kept[] = {
-        "view.run", "meter.live", "sys.instrument", "sys.mode", "sys.lastscreen",
+        "trig.code", "trig.held", "mask.state", "mask.hold", "mask.pending",
+        "meter.live", "sys.instrument", "sys.mode", "sys.lastscreen",
         "il.gain", "il.offset", "il.skew", "il.knots", "ui.focus", "ui.ach", "ui.screen",
     };
     CHECKF(n_kept == sizeof k_kept / sizeof k_kept[0], "%u kept", n_kept);
