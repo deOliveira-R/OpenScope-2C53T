@@ -213,9 +213,10 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long);
  * change when this was split out of it (ARCH-1 B1). */
 key_cmd_t key_map_global(const key_ctx_t *c, button_id_t btn, bool is_long);
 
-/* Read-only views of the input task's state, for the status bar (R1-B).
- * Defined in input_handler.c (the state lives there and in main.c), not in
- * key_model.c, so the host test links without them. */
+/* Read-only views of the scope screen's UI state, for the status bar (R1-B)
+ * and ui.focus / ui.ach. Defined in ui/scope_screen.c (the arrow stage lives
+ * there, the active channel in main.c), not in key_model.c, so the host
+ * test links without them. */
 uint8_t key_focus_get(void);             /* key_focus_t: what the arrows adjust */
 uint8_t key_active_channel_get(void);    /* 0 = CH1, 1 = CH2 */
 

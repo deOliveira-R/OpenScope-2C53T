@@ -3639,17 +3639,6 @@ static const volatile uint8_t *fft_source_buf(const fft_source_t *sel)
     return sel->buf ? fpga_get_ch2_buf() : fpga_get_ch1_buf();
 }
 
-/* The record the spectrum views analyse now, NULL when there is none (no
- * capture yet, the active channel off or without a record of its own): for
- * the AUTO key (input_handler.c), so it configures on what is shown. */
-const volatile uint8_t *scope_ui_fft_record(void)
-{
-    fft_source_t sel;
-    if (!fpga_data_ready()) return NULL;
-    fft_source_now(&sel);
-    return (sel.state == FFT_SEL_OK) ? fft_source_buf(&sel) : NULL;
-}
-
 /* *sel says which channel (and why not, in sel->note, when the answer is
  * FFT_SRC_NONE because of the channel). */
 static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,

@@ -41,7 +41,9 @@ bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *ou
  * the sys.autooff setter's hardware op (model_hw_fw.c). */
 void input_autooff_apply(uint8_t mins);
 
-/* What the scope time view's arrow keys adjust (short SELECT cycles it). */
+/* What the scope time view's arrow keys adjust (short SELECT cycles it):
+ * the scope screen's state (ui/scope_screen.h), declared here for the shell
+ * handlers that include this header. */
 extern volatile key_focus_t scope_key_focus;
 
 /* scope_view_select() (the view with the FFT pool lifecycle) moved to

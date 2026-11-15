@@ -1,0 +1,426 @@
+# scope_full.txt -- every key of the scope screen, in every view, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The scope's base screen (firmware/src/ui/scope_screen.c, ARCH-1 B7): each key
+# is one property set, a procedure request, or UI state (the arrow stage, the
+# active channel, the Oscilloscope Settings page). The walk presses every key
+# (short and long) in the Y-T view in each arrow stage, with the cursors, with
+# a mask, and in the roll, X-Y, FFT, split and waterfall views, and reads back
+# what each must have changed.
+#
+# It runs unchanged on the image before B7 (fd20895) and on the B7 image: it
+# uses only what both have (`ui seq`, `get`, `set`, `wait`, and `mask teach` /
+# `mask clear` to make and drop a mask: no key can make the first one). So it
+# never sets view.run and never reads a property B7 added (view.cursel,
+# view.curv1.., trig.code, trig.held, mask.state / hold / pending); cursor
+# moves and the spectrum views' keys are judged from the screenshots. Run it
+# on both images with --shots and compare, step by step: the `ui screen`
+# line, the `get` answers, the pictures, the redraw rates.
+#
+# ui_walk.py records the `ui screen` line after every step and the answer of
+# every `get`; what each must show is on the "# expect" line above the step.
+# Unless a line says otherwise, both images answer the same.
+#
+#   `ui screen` on the scope:  screen=scope instrument=scope overlay=none stack=scope
+#     focus=zoom|chmove|trigmove|cursor|mask   ach=CH1|CH2   run=run|stop
+#     view=yt|roll|xy|fft|split|waterfall      lcdforeign=0 throughout
+#
+# Redraw counters (`ui dump`: scope_full, scope_live, redraw_all):
+#   - a step that only waits: 0 scope_full and 0 redraw_all per second in every
+#     view (the views are composed per column, never blanked);
+#   - a key that changes a value or shows a popup: one redraw_all, on both images;
+#   - a cursor move: no redraw_all (one live frame);
+#   - a direct `set` (the steps named *_set*): before B7 one redraw_all each;
+#     with B7 none for a value the live frame and the bars repaint (ranges,
+#     positions, timebase, trigger), one scope_full and no redraw_all for a
+#     layout change (cursor mode, a channel on / off, math, persistence), one
+#     redraw_all for another view (view.mode, tb.roll).
+#
+# Bench signal: 100 kHz, 0..3.3 V square on CH1; CH2 open. The walk changes
+# saved settings and puts them back at the end. Coupling changes click a relay.
+# Autoset, 50 % centre and the baseline request land where the signal puts
+# them: the same on both images, not a fixed value. The last step (long AUTO,
+# baseline calibration) is expected to be REFUSED with the signal connected;
+# it only touches RAM corrections: reboot the unit after the walk.
+# POWER cannot be sent from the shell: hold it by hand on the plot, the
+# countdown must appear over it and a release must repaint the scope.
+
+# ── 0. a known state ─────────────────────────────────────────────────────────
+# expect: screen=scope instrument=scope overlay=none stack=scope view=yt run=run focus=zoom ach=CH1 lcdforeign=0
+f0_base        | set sys.mode scope ; wait 1 ; set ch1.enabled on ; set ch2.enabled on ; set view.mode yt ; set view.cursor off
+f0_base2       | set view.persist off ; set view.math off ; set view.meashide off ; set trig.mode auto ; set trig.edge rising
+f0_base3       | set trig.source ch1 ; set ch1.probe 1x ; set ch2.probe 1x ; set ch1.coupling dc ; set ch2.coupling dc
+f0_base4       | set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set ch1.pos 0 ; set ch2.pos 0 ; set trig.level 0 ; set trig.x 150
+# expect: 0 scope_full/s, 0 redraw_all/s (a settled Y-T view)
+f0_idle        | wait 5
+
+# ── 1. Y-T, zoom stage: UP/DOWN = V/div of the active channel, LEFT/RIGHT = timebase ──
+# expect: ch1.vdiv = 7
+f1_up          | ui seq UP ; get ch1.vdiv
+# expect: ch1.vdiv = 6
+f1_down        | ui seq DOWN ; get ch1.vdiv
+# expect: tb.code = 9
+f1_right       | ui seq RIGHT ; get tb.code
+# expect: tb.code = 8
+f1_left        | ui seq LEFT ; get tb.code
+
+# ── 2. Y-T, channel-move stage: UP/DOWN = position, LEFT/RIGHT = trigger column ──
+# expect: focus=chmove ; popup "UP/DN: CH pos  LT/RT: Trig x"
+f2_select      | ui seq SELECT
+# expect: ch1.pos = 5 ; popup "CH1 pos +5"
+f2_up          | ui seq UP ; get ch1.pos
+# expect: ch1.pos = 0
+f2_down        | ui seq DOWN ; get ch1.pos
+# expect: trig.x = 166 ; popup "Trig at x=166"
+f2_right       | ui seq RIGHT ; get trig.x
+# expect: trig.x = 150
+f2_left        | ui seq LEFT ; get trig.x
+
+# ── 3. Y-T, trigger-move stage: UP/DOWN = trigger level, LEFT/RIGHT = trigger column ──
+# expect: focus=trigmove ; the level line is drawn denser
+f3_select      | ui seq SELECT
+# expect: trig.level = 5 ; popup "Trig +5  code <n>"
+f3_up          | ui seq UP ; get trig.level
+# expect: trig.level = 0
+f3_down        | ui seq DOWN ; get trig.level
+# expect: trig.x = 134
+f3_left        | ui seq LEFT ; get trig.x
+# expect: trig.x = 150
+f3_right       | ui seq RIGHT ; get trig.x
+# expect: focus=zoom (no cursors, no mask: the cycle closes)
+f3_select_back | ui seq SELECT
+
+# ── 4. MOVE: the active channel; CH1 / CH2: coupling of that channel ─────────
+# expect: ach=CH2 ; popup "Adjust CH2"
+f4_move        | ui seq MOVE
+# expect: ch2.vdiv = 7 (the arrows act on CH2 now)
+f4_move_up     | ui seq UP ; get ch2.vdiv
+# expect: ch2.vdiv = 6 ; ach=CH1
+f4_move_back   | ui seq DOWN MOVE ; get ch2.vdiv
+# expect: ch2.coupling = AC ; ach=CH2 ; popup "CH2 AC"
+f4_ch2         | ui seq CH2 ; get ch2.coupling
+# expect: ch2.coupling = DC ; ach=CH2
+f4_ch2_again   | ui seq CH2 ; get ch2.coupling
+# expect: ch1.coupling = AC ; ach=CH1 ; the square is centred on 0 V
+f4_ch1         | ui seq CH1 ; wait 2 ; get ch1.coupling
+# expect: ch1.coupling = DC ; ach=CH1
+f4_ch1_again   | ui seq CH1 ; wait 2 ; get ch1.coupling
+
+# ── 5. long keys: channel enable, measurements ───────────────────────────────
+# expect: ch2.enabled = off ; ach=CH1 ; popup "CH2 OFF" (" 250MS/s" at a fast timebase)
+f5_ch2_off     | ui seq long:CH2 ; wait 2 ; get ch2.enabled
+# expect: popup "CH2 is off" ; ach=CH1
+f5_move_refuse | ui seq MOVE
+# expect: ch1.enabled = on ; popup "Keep one CH on"
+f5_ch1_refuse  | ui seq long:CH1 ; get ch1.enabled
+# expect: ch2.enabled = on
+f5_ch2_on      | ui seq long:CH2 ; wait 2 ; get ch2.enabled
+# expect: ch1.enabled = off ; ach=CH2 (the arrows follow the live channel) ; trig.source = CH2
+f5_ch1_off     | ui seq long:CH1 ; wait 2 ; get ch1.enabled ; get trig.source
+# expect: ch1.enabled = on ; ach=CH2 (coming back does not move it)
+f5_ch1_on      | ui seq long:CH1 ; wait 2 ; get ch1.enabled
+# expect: ach=CH1 ; trig.source = CH1 (put back by hand: a channel coming on does not take the trigger)
+f5_restore     | ui seq MOVE ; set trig.source ch1 ; wait 1 ; get trig.source
+# expect: view.meashide = on ; the measurement rows are gone ; popup "Measurements hidden"
+f5_prm_long    | ui seq long:PRM ; get view.meashide
+# expect: view.meashide = off
+f5_prm_long2   | ui seq long:PRM ; get view.meashide
+
+# ── 6. OK: RUN/STOP, and the arrows on a held record ─────────────────────────
+# expect: run=stop ; view.run = off ; the RUN tab says STOP
+f6_stop        | ui seq OK ; get view.run
+# expect: 0 scope_full/s, 0 redraw_all/s, 0 scope_live/s (stopped, nothing changes)
+f6_stop_idle   | wait 4
+# expect: ch1.vdiv = 7 ; the held record is redrawn at the new range
+f6_stop_up     | ui seq UP ; wait 2 ; get ch1.vdiv
+# expect: ch1.vdiv = 6
+f6_stop_down   | ui seq DOWN ; wait 2 ; get ch1.vdiv
+# expect: tb.code = 9 ; the held record is re-sampled (zoom while stopped)
+f6_stop_right  | ui seq RIGHT ; wait 2 ; get tb.code
+# expect: tb.code = 8
+f6_stop_left   | ui seq LEFT ; wait 2 ; get tb.code
+# expect: ch1.pos = 5 with the record held ; focus=chmove
+f6_stop_pos    | ui seq SELECT UP ; wait 2 ; get ch1.pos
+# expect: ch1.pos = 0 ; focus=zoom
+f6_stop_pos0   | ui seq DOWN SELECT SELECT ; wait 2 ; get ch1.pos
+# expect: run=run ; view.run = on
+f6_run         | ui seq OK ; wait 2 ; get view.run
+
+# ── 7. the keys that open the Oscilloscope Settings page ─────────────────────
+# expect: overlay=osc_menu row=display pane=rail stack=scope>osc_menu
+f7_menu        | ui seq MENU
+# expect: overlay=none stack=scope (one redraw_all: the scope comes back)
+f7_menu_close  | ui seq MENU
+# expect: overlay=osc_menu row=param pane=locked
+f7_prm         | ui seq PRM
+# expect: overlay=none
+f7_prm_close   | ui seq PRM
+# expect: overlay=osc_menu row=trigger pane=locked
+f7_trigger     | ui seq TRIGGER
+# expect: overlay=none
+f7_trig_close  | ui seq TRIGGER
+
+# ── 8. direct sets on the plot, one per step (the redraw counters: see the head) ──
+# expect: ch1.vdiv = 7 ; B7: redraw_all +0, scope_full +0 ; before: redraw_all +1
+f8_set_vdiv    | set ch1.vdiv 7 ; wait 2 ; get ch1.vdiv
+# expect: ch1.vdiv = 6
+f8_set_vdiv0   | set ch1.vdiv 6 ; wait 2 ; get ch1.vdiv
+# expect: tb.code = 9 ; the top bar's H= follows at once ; B7: redraw_all +0
+f8_set_tb      | set tb.code 9 ; wait 2 ; get tb.code
+# expect: tb.code = 8
+f8_set_tb0     | set tb.code 8 ; wait 2 ; get tb.code
+# expect: ch1.pos = 20 ; the trace and its ground tag move ; B7: redraw_all +0
+f8_set_pos     | set ch1.pos 20 ; wait 2 ; get ch1.pos
+# expect: ch1.pos = 0
+f8_set_pos0    | set ch1.pos 0 ; wait 2 ; get ch1.pos
+# expect: trig.level = 25 ; the level line and the bottom bar follow ; B7: redraw_all +0
+f8_set_level   | set trig.level 25 ; wait 2 ; get trig.level
+# expect: trig.level = 0
+f8_set_level0  | set trig.level 0 ; wait 2 ; get trig.level
+# expect: trig.x = 100 ; the trigger pointer moves ; B7: redraw_all +0
+f8_set_trigx   | set trig.x 100 ; wait 2 ; get trig.x
+# expect: trig.x = 150
+f8_set_trigx0  | set trig.x 150 ; wait 2 ; get trig.x
+# expect: ch1.coupling = AC ; B7: redraw_all +0
+f8_set_coup    | set ch1.coupling ac ; wait 2 ; get ch1.coupling
+# expect: ch1.coupling = DC
+f8_set_coup0   | set ch1.coupling dc ; wait 2 ; get ch1.coupling
+# expect: ch1.probe = 10X ; the bottom bar and the measurement values follow ; B7: redraw_all +0
+f8_set_probe   | set ch1.probe 10x ; wait 2 ; get ch1.probe
+# expect: ch1.probe = 1X
+f8_set_probe0  | set ch1.probe 1x ; wait 2 ; get ch1.probe
+# expect: ch2.enabled = off ; B7: scope_full +1, redraw_all +0 (a layout change)
+f8_set_ch2off  | set ch2.enabled off ; wait 2 ; get ch2.enabled
+# expect: ch2.enabled = on
+f8_set_ch2on   | set ch2.enabled on ; wait 2 ; get ch2.enabled
+# expect: view.meashide = on ; B7: scope_full +1, redraw_all +0
+f8_set_hide    | set view.meashide on ; wait 2 ; get view.meashide
+# expect: view.meashide = off
+f8_set_hide0   | set view.meashide off ; wait 2 ; get view.meashide
+# expect: view.math = A+B ; the math trace appears
+f8_set_math    | set view.math A+B ; wait 2 ; get view.math
+# expect: view.math = off
+f8_set_math0   | set view.math off ; wait 2 ; get view.math
+# expect: view.persist = 1s ; the trace leaves a fading trail
+f8_set_pers    | set view.persist 1s ; wait 3 ; get view.persist
+# expect: view.persist = off
+f8_set_pers0   | set view.persist off ; wait 2 ; get view.persist
+
+# ── 9. cursors: the cursor stage, UP/DOWN move the selected line, LEFT/RIGHT pick one ──
+# expect: view.cursor = time ; two vertical lines ; focus stays zoom (a `set` does not move the stage)
+f9_set_time    | set view.cursor time ; wait 2 ; get view.cursor
+# expect: focus=cursor (zoom -> chmove -> trigmove -> cursor)
+f9_stage       | ui seq SELECT*3
+# expect: line 1 moves 8 px left (UP twice) ; no redraw_all ; the readout row follows
+f9_time_up     | ui seq UP UP ; wait 1
+# expect: line 2 selected, then moved 12 px right (DOWN three times)
+f9_time_next   | ui seq RIGHT DOWN*3 ; wait 1
+# expect: line 1 selected again and put back 8 px right
+f9_time_back   | ui seq LEFT DOWN DOWN ; wait 1
+# expect: view.cursor = volt ; two horizontal lines ; focus=cursor
+f9_set_volt    | set view.cursor volt ; wait 2 ; get view.cursor
+# expect: line 1 moves 8 px up, line 2 8 px down
+f9_volt_move   | ui seq UP UP RIGHT DOWN DOWN ; wait 1
+# expect: view.cursor = both ; four lines ; the selection starts on time line 1
+f9_set_both    | set view.cursor both ; wait 2 ; get view.cursor
+# expect: the selection walks V1 -> V2 -> H1 -> H2 -> V1 ; each moved 4 px (UP)
+f9_both_walk   | ui seq UP RIGHT UP RIGHT UP RIGHT UP RIGHT ; wait 1
+# expect: run=stop ; the lines stay ; then run=run
+f9_both_stop   | ui seq OK ; wait 2
+f9_both_run    | ui seq OK ; wait 2
+# expect: the cursor stage's other keys: MOVE = active channel (ach=CH2 then CH1), CH1 twice = coupling AC then DC
+f9_both_keys   | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
+# expect: view.cursor = off ; the lines and the readout row go
+f9_set_off     | set view.cursor off ; wait 2 ; get view.cursor
+# expect: focus=chmove (the dead cursor stage is dropped to zoom before the key, then SELECT steps on)
+f9_after_off   | ui seq SELECT
+# expect: focus=zoom
+f9_to_zoom     | ui seq SELECT SELECT
+
+# ── 10. roll: by the timebase ladder (keys) and by a set ─────────────────────
+# expect: tb.code = 20 (the slowest Y-T code)
+f10_slowest    | set tb.code 20 ; wait 3 ; get tb.code
+# expect: view=roll ; tb.roll = on ; tb.rollstep = 0 (RIGHT past the last code enters roll)
+f10_into_roll  | ui seq RIGHT ; wait 3 ; get tb.roll
+# expect: tb.rollstep = 1
+f10_roll_right | ui seq RIGHT ; wait 3 ; get tb.rollstep
+# expect: ch1.vdiv = 7 (UP in roll: V/div)
+f10_roll_up    | ui seq UP ; wait 2 ; get ch1.vdiv
+# expect: ch1.vdiv = 6
+f10_roll_down  | ui seq DOWN ; wait 2 ; get ch1.vdiv
+# expect: focus=chmove ; ch1.pos = 5
+f10_roll_pos   | ui seq SELECT UP ; wait 2 ; get ch1.pos
+# expect: focus=zoom ; ch1.pos = 0
+f10_roll_pos0  | ui seq DOWN SELECT SELECT ; wait 2 ; get ch1.pos
+# expect: run=stop (the strip holds), then run=run
+f10_roll_stop  | ui seq OK ; wait 2
+f10_roll_run   | ui seq OK ; wait 3
+# expect: ach=CH2 then CH1 ; ch1.coupling = DC after two presses
+f10_roll_keys  | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
+# expect: overlay=osc_menu, then overlay=none view=roll
+f10_roll_menu  | ui seq MENU ; wait 1
+f10_roll_menu2 | ui seq MENU ; wait 2
+# expect: 0 scope_full/s, 0 redraw_all/s in roll
+f10_roll_idle  | wait 5
+# expect: tb.rollstep = 0
+f10_roll_left  | ui seq LEFT ; wait 3 ; get tb.rollstep
+# expect: view=yt ; tb.roll = off ; tb.code = 20 (LEFT at step 0 leaves roll onto the last code)
+f10_out        | ui seq LEFT ; wait 3 ; get tb.roll
+# expect: tb.code = 8
+f10_tb_back    | set tb.code 8 ; wait 3 ; get tb.code
+# expect: view=roll ; view.mode = roll (one redraw_all: another view)
+f10_set_roll   | set view.mode roll ; wait 3 ; get view.mode
+# expect: view=yt ; view.mode = yt
+f10_set_yt     | set view.mode yt ; wait 3 ; get view.mode
+
+# ── 11. X-Y ──────────────────────────────────────────────────────────────────
+# expect: view=xy ; view.mode = xy ; the square with the trail (CH2 open: a vertical line)
+f11_set_xy     | set view.mode xy ; wait 3 ; get view.mode
+# expect: 0 redraw_all/s ; the trail fades and redraws without a blank
+f11_idle       | wait 4
+# expect: nothing of the scope's settings changes (the arrows and SELECT are the spectrum's keys)
+f11_arrows     | ui seq UP DOWN LEFT RIGHT SELECT ; wait 2 ; get ch1.vdiv
+# expect: view=xy still ; no autoset runs here (AUTO fits a spectrum, X-Y has none)
+f11_auto       | ui seq AUTO ; wait 3 ; get tb.code
+# expect: run=stop, then run=run
+f11_stop       | ui seq OK ; wait 2
+f11_run        | ui seq OK ; wait 2
+# expect: ach=CH2 then CH1 ; ch1.coupling = DC after two presses
+f11_keys       | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
+# expect: nothing (the plot's long keys PRM / OK / AUTO mean nothing outside the time view)
+f11_long       | ui seq long:PRM long:OK long:AUTO ; wait 2 ; get view.meashide
+# expect: overlay=osc_menu row=param pane=locked, then overlay=none view=xy
+f11_prm        | ui seq PRM ; wait 1
+f11_prm_close  | ui seq PRM ; wait 2
+# expect: view=yt
+f11_set_yt     | set view.mode yt ; wait 3 ; get view.mode
+
+# ── 12. FFT ──────────────────────────────────────────────────────────────────
+# expect: view=fft ; view.mode = fft ; the spectrum of the 100 kHz square (odd harmonics)
+f12_set_fft    | set view.mode fft ; wait 3 ; get view.mode
+# expect: 0 redraw_all/s
+f12_idle       | wait 4
+# expect: the reference level moves 5 dB up, then back
+f12_up         | ui seq UP ; wait 2
+f12_down       | ui seq DOWN ; wait 2
+# expect: the span zooms in (LEFT), then out to the full span (RIGHT)
+f12_left       | ui seq LEFT ; wait 2
+f12_right      | ui seq RIGHT ; wait 2
+# expect: the window name in the bottom bar steps to the next one
+f12_select     | ui seq SELECT ; wait 2
+# expect: back on the first window after the whole cycle
+f12_select_all | ui seq SELECT*4 ; wait 2
+# expect: the span fits the fundamental's first harmonics ; no autoset (tb.code = 8)
+f12_auto       | ui seq AUTO ; wait 3 ; get tb.code
+# expect: run=stop (the spectrum holds), then run=run
+f12_stop       | ui seq OK ; wait 2
+f12_run        | ui seq OK ; wait 2
+# expect: ach=CH2 (the spectrum is CH2's: open input), then ach=CH1
+f12_move       | ui seq MOVE ; wait 3
+f12_move_back  | ui seq MOVE ; wait 3
+# expect: ch1.coupling = AC then DC
+f12_ch1        | ui seq CH1 ; wait 2 ; get ch1.coupling
+f12_ch1_again  | ui seq CH1 ; wait 2 ; get ch1.coupling
+# expect: nothing (long PRM / OK / AUTO)
+f12_long       | ui seq long:PRM long:OK long:AUTO ; wait 2 ; get view.meashide
+# expect: ch2.enabled = off then on (long CH2 works in every view)
+f12_ch2_long   | ui seq long:CH2 ; wait 2 ; get ch2.enabled
+f12_ch2_long2  | ui seq long:CH2 ; wait 2 ; get ch2.enabled
+# expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=fft
+f12_trigger    | ui seq TRIGGER ; wait 1
+f12_trig_close | ui seq TRIGGER ; wait 2
+# expect: ch1.vdiv = 7 with the spectrum up ; B7 and before: the view is redrawn in full, never blanked
+f12_set_vdiv   | set ch1.vdiv 7 ; wait 2 ; get ch1.vdiv
+f12_set_vdiv0  | set ch1.vdiv 6 ; wait 2 ; get ch1.vdiv
+
+# ── 13. split ────────────────────────────────────────────────────────────────
+# expect: view=split ; the trace above, the spectrum below
+f13_set_split  | set view.mode split ; wait 3 ; get view.mode
+# expect: 0 redraw_all/s
+f13_idle       | wait 4
+# expect: the spectrum's reference level, span and window move as in the FFT view
+f13_arrows     | ui seq UP DOWN LEFT RIGHT ; wait 2
+f13_select     | ui seq SELECT*5 ; wait 2
+f13_auto       | ui seq AUTO ; wait 3 ; get tb.code
+# expect: run=stop, then run=run
+f13_stop       | ui seq OK ; wait 2
+f13_run        | ui seq OK ; wait 2
+# expect: ach=CH2 then CH1 ; ch1.coupling = DC after two presses
+f13_keys       | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
+# expect: overlay=osc_menu row=display, then overlay=none view=split
+f13_menu       | ui seq MENU ; wait 1
+f13_menu_close | ui seq MENU ; wait 2
+
+# ── 14. waterfall ────────────────────────────────────────────────────────────
+# expect: view=waterfall ; rows scroll
+f14_set_wf     | set view.mode waterfall ; wait 6 ; get view.mode
+# expect: 0 redraw_all/s
+f14_idle       | wait 4
+f14_arrows     | ui seq UP DOWN LEFT RIGHT ; wait 3
+f14_select     | ui seq SELECT*5 ; wait 3
+f14_auto       | ui seq AUTO ; wait 3 ; get tb.code
+# expect: run=stop (the rows stop), then run=run
+f14_stop       | ui seq OK ; wait 3
+f14_run        | ui seq OK ; wait 3
+# expect: ach=CH2 then CH1 ; ch1.coupling = DC after two presses
+f14_keys       | ui seq MOVE MOVE CH1 CH1 ; wait 3 ; get ch1.coupling
+# expect: view=yt ; view.mode = yt
+f14_set_yt     | set view.mode yt ; wait 3 ; get view.mode
+
+# ── 15. the mask stage (a mask is taught from the shell: no key makes the first one) ──
+# expect: the mask readout row appears ; teaching 8 records, then testing
+f15_teach      | mask teach 8 ; wait 6
+# expect: focus=mask (zoom -> chmove -> trigmove -> mask)
+f15_stage      | ui seq SELECT*3
+# expect: mask.tolv = 10 ; popup "Mask V10 H2"
+f15_up         | ui seq UP ; wait 1 ; get mask.tolv
+# expect: mask.tolv = 8
+f15_down       | ui seq DOWN ; wait 1 ; get mask.tolv
+# expect: mask.tolh = 3
+f15_right      | ui seq RIGHT ; wait 1 ; get mask.tolh
+# expect: mask.tolh = 2
+f15_left       | ui seq LEFT ; wait 1 ; get mask.tolh
+# expect: mask.stopfail flips ; popup "Mask stop-on-fail OFF" (or ON)
+f15_move       | ui seq MOVE ; wait 1 ; get mask.stopfail
+# expect: mask.stopfail back to what it was
+f15_move_back  | ui seq MOVE ; wait 1 ; get mask.stopfail
+# expect: mask.tolv = 12 and mask.tolh = 4 from ONE line. B7: one request to the acquisition task, always both.
+#         Before B7 two requests: the second could carry the old first value (tolv = 8): the listed fix.
+f15_set_both   | set mask.tolv=12 mask.tolh=4 ; wait 1 ; get mask.tolv
+f15_set_both_h | get mask.tolh
+# expect: mask.tolv = 8 ; mask.tolh = 2
+f15_set_back   | set mask.tolv=8 mask.tolh=2 ; wait 1 ; get mask.tolv
+# expect: AUTO with a mask clears it (popup "MASK: off"), no autoset ; focus=zoom ; tb.code = 8
+f15_auto_clear | ui seq AUTO ; wait 2 ; get tb.code
+# expect: no mask left (a second clear changes nothing)
+f15_clear      | mask clear ; wait 1
+
+# ── 16. procedures: autoset, 50 % centre (they land where the signal puts them) ──
+# expect: off-screen on purpose: a slow timebase and a coarse range
+f16_detune     | set tb.code 14 ; set ch1.vdiv 9 ; wait 3
+# expect: autoset runs ("Autoset..." then "Autoset done") and lands on a few periods of the square; run=run
+#         the same tb.code on both images
+f16_auto       | ui seq AUTO ; wait 10 ; get tb.code
+# expect: the same ch1.vdiv on both images
+f16_auto_vdiv  | get ch1.vdiv
+# expect: the same trig.level on both images ; trig.source = CH1
+f16_auto_trig  | get trig.level
+f16_auto_src   | get trig.source
+# expect: popup "50% centred" ; trig.x = 150 ; the same ch1.pos and trig.level on both images
+f16_ok_long    | ui seq long:OK ; wait 4 ; get trig.x
+f16_ok_pos     | get ch1.pos
+f16_ok_level   | get trig.level
+
+# ── 17. the known state again ────────────────────────────────────────────────
+f17_base       | set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set ch1.pos 0 ; set ch2.pos 0 ; set trig.level 0 ; set trig.x 150
+f17_base2      | set trig.mode auto ; set trig.source ch1 ; set view.mode yt ; set view.cursor off ; wait 3
+# expect: screen=scope overlay=none stack=scope view=yt run=run focus=zoom ach=CH1 lcdforeign=0
+f17_idle       | wait 5
+
+# ── 18. long AUTO: the baseline request (LAST: expected to be refused with a signal on CH1) ──
+# expect: "Baseline: remove probe" / "Baseline: checking", then a refusal popup ("Remove probe! Refused"
+#         or "DC on input! Refused") and every setting as before: tb.code = 8
+f18_auto_long  | ui seq long:AUTO ; wait 12 ; get tb.code
+# expect: ch1.vdiv = 6 ; run=run ; view=yt
+f18_after      | wait 4 ; get ch1.vdiv

@@ -221,8 +221,8 @@ extern volatile scope_view_t scope_view;
 
 /* Scope time view: what the arrow keys adjust, cycled by MOVE (key_model.h:
  * zoom -> channel move -> trigger move -> [cursor] -> [mask]). The three bools
- * below are DERIVED from it by input_handler.c and kept because the renderer
- * and the shell read them: */
+ * below are DERIVED from it by the scope's screen (ui/scope_screen.c, their
+ * one writer) and kept because the renderer and the shell read them: */
 /* true in the trigger-move stage (UP/DOWN = trigger level); the renderer
  * highlights the level marker. */
 extern volatile bool scope_trig_level_focus;
@@ -258,11 +258,6 @@ uint32_t scope_ui_view_ratio(void);
  * the range now selected; -100 when nothing limits it. */
 int16_t  scope_ui_lowest_visible_pos(uint8_t ch);
 bool     scope_ui_view_merged(void);
-#if FEATURE_FFT
-/* The record the spectrum views analyse (the active channel's), NULL when
- * there is none: no capture yet, or that channel is off (dsp/fft_source.h). */
-const volatile uint8_t *scope_ui_fft_record(void);
-#endif
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
  * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the column
  * rate used (record rate x zoom). For `fpga scope cursor`. */

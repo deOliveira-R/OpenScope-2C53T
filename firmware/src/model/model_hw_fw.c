@@ -2,9 +2,9 @@
  * OpenScope 2C53T - the real hardware ops and the FreeRTOS port of the
  * executor (ARCH-1 M1)
  *
- * Each op CALLS the owner API the key path calls today (input_handler.c
- * exec_key_cmd, scope_apply.c, osc_menu_ui.c, meter_ui.c, signal_gen.c,
- * sys_pwm.c, fpga.c, scope_mask.c). Nothing here is a second copy of an
+ * Each op CALLS the owner API (fpga.c, scope_vpos.c, scope_apply.c,
+ * scope_ui.c's latch, meter_ui.c, signal_gen.c, sys_pwm.c, scope_mask.c);
+ * since B7 the ops are the only callers of the scope's. Nothing here is a second copy of an
  * owner's logic, and nothing writes a register (src/model/ owns no
  * peripheral: scripts/reg_owners.txt).
  *
@@ -454,9 +454,11 @@ static const model_hw_ops_t k_fw_ops = {
 
 /* The reason fits a prop_note_t (23 characters). */
 static const struct { uint16_t id; const char *why; } k_unwired[] = {
-    /* Stored only: their record fields are carried by settings_store.c's own
+    /* (view.run left this table with B7: its setter latches and re-arms.)
+     * Stored only: their record fields are carried by settings_store.c's own
      * image until M3 moves them onto the model, so a set here would neither
-     * be saved nor read back from the record. */
+     * be saved nor read back from the record. fft.* stay so by design until
+     * an FFT pane binds them to the live FFT configuration. */
     { PROP_ID_SYS_LANG,       "stored only until M3" },
     { PROP_ID_FFT_WINDOW,     "stored only until M3" },
     { PROP_ID_FFT_AVG,        "stored only until M3" },
