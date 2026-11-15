@@ -40,9 +40,11 @@
 # Bench signal: 100 kHz, 0..3.3 V square on CH1; CH2 open. The walk changes
 # saved settings and puts them back at the end. Coupling changes click a relay.
 # Autoset, 50 % centre and the baseline request land where the signal puts
-# them: the same on both images, not a fixed value. The last step (long AUTO,
-# baseline calibration) is expected to be REFUSED with the signal connected;
-# it only touches RAM corrections: reboot the unit after the walk.
+# them: the same on both images, not a fixed value. The last steps (long AUTO,
+# baseline calibration, from Y-T and from roll) are expected to be REFUSED with
+# the signal connected; they only touch RAM corrections: reboot the unit after
+# the walk. AUTO and long AUTO in roll (f16_roll_*, f19_*) are the two places
+# where the images may differ by design of the change: see there.
 # POWER cannot be sent from the shell: hold it by hand on the plot, the
 # countdown must appear over it and a release must repaint the scope.
 
@@ -261,6 +263,26 @@ f10_roll_keys  | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
 # expect: overlay=osc_menu, then overlay=none view=roll
 f10_roll_menu  | ui seq MENU ; wait 1
 f10_roll_menu2 | ui seq MENU ; wait 2
+# expect: overlay=osc_menu row=param pane=locked, then overlay=none view=roll
+f10_roll_prm   | ui seq PRM ; wait 1
+f10_roll_prm2  | ui seq PRM ; wait 2
+# expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=roll
+f10_roll_trig  | ui seq TRIGGER ; wait 1
+f10_roll_trig2 | ui seq TRIGGER ; wait 2
+# expect: view.meashide = on then off (roll is a time view: long PRM works)
+f10_roll_lprm  | ui seq long:PRM ; wait 2 ; get view.meashide
+f10_roll_lprm2 | ui seq long:PRM ; wait 2 ; get view.meashide
+# expect: ch2.enabled = off then on
+f10_roll_lch2  | ui seq long:CH2 ; wait 3 ; get ch2.enabled
+f10_roll_lch22 | ui seq long:CH2 ; wait 3 ; get ch2.enabled
+# expect: ch1.enabled = off (ach=CH2, trig.source = CH2) then on ; then ach=CH1 and trig.source = CH1 again
+f10_roll_lch1  | ui seq long:CH1 ; wait 3 ; get ch1.enabled
+f10_roll_lch12 | ui seq long:CH1 ; wait 3 ; get ch1.enabled
+f10_roll_lch13 | ui seq MOVE ; set trig.source ch1 ; wait 2 ; get trig.source
+# expect: popup "50% centred" ; trig.x = 150 ; the same ch1.pos on both images ; then put back
+f10_roll_lok   | ui seq long:OK ; wait 4 ; get trig.x
+f10_roll_lok2  | get ch1.pos
+f10_roll_lok3  | set ch1.pos 0 ; set ch2.pos 0 ; set trig.level 0 ; wait 2 ; get ch1.pos
 # expect: 0 scope_full/s, 0 redraw_all/s in roll
 f10_roll_idle  | wait 5
 # expect: tb.rollstep = 0
@@ -330,7 +352,8 @@ f12_ch2_long2  | ui seq long:CH2 ; wait 2 ; get ch2.enabled
 # expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=fft
 f12_trigger    | ui seq TRIGGER ; wait 1
 f12_trig_close | ui seq TRIGGER ; wait 2
-# expect: ch1.vdiv = 7 with the spectrum up ; B7 and before: the view is redrawn in full, never blanked
+# expect: ch1.vdiv = 7 with the spectrum up. B7: the view is redrawn in full, composed (scope_full +1,
+#         redraw_all +0). Before: redraw_all +1 (the whole LCD cleared and repainted).
 f12_set_vdiv   | set ch1.vdiv 7 ; wait 2 ; get ch1.vdiv
 f12_set_vdiv0  | set ch1.vdiv 6 ; wait 2 ; get ch1.vdiv
 
@@ -351,6 +374,21 @@ f13_keys       | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
 # expect: overlay=osc_menu row=display, then overlay=none view=split
 f13_menu       | ui seq MENU ; wait 1
 f13_menu_close | ui seq MENU ; wait 2
+# expect: overlay=osc_menu row=param pane=locked, then overlay=none
+f13_prm        | ui seq PRM ; wait 1
+f13_prm_close  | ui seq PRM ; wait 2
+# expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=split
+f13_trigger    | ui seq TRIGGER ; wait 1
+f13_trig_close | ui seq TRIGGER ; wait 2
+# expect: nothing (long PRM / OK / AUTO mean nothing outside the time view) ; view.meashide = off
+f13_long       | ui seq long:PRM long:OK long:AUTO ; wait 2 ; get view.meashide
+# expect: ch2.enabled = off then on
+f13_ch2_long   | ui seq long:CH2 ; wait 2 ; get ch2.enabled
+f13_ch2_long2  | ui seq long:CH2 ; wait 2 ; get ch2.enabled
+# expect: ch1.enabled = off (ach=CH2 ; the spectrum is CH2's) then on ; then ach=CH1, trig.source = CH1
+f13_ch1_long   | ui seq long:CH1 ; wait 2 ; get ch1.enabled
+f13_ch1_long2  | ui seq long:CH1 ; wait 2 ; get ch1.enabled
+f13_ch1_long3  | ui seq MOVE ; set trig.source ch1 ; wait 2 ; get trig.source
 
 # ── 14. waterfall ────────────────────────────────────────────────────────────
 # expect: view=waterfall ; rows scroll
@@ -365,6 +403,20 @@ f14_stop       | ui seq OK ; wait 3
 f14_run        | ui seq OK ; wait 3
 # expect: ach=CH2 then CH1 ; ch1.coupling = DC after two presses
 f14_keys       | ui seq MOVE MOVE CH1 CH1 ; wait 3 ; get ch1.coupling
+# expect: overlay=osc_menu row=display, then overlay=none view=waterfall
+f14_menu       | ui seq MENU ; wait 1
+f14_menu_close | ui seq MENU ; wait 3
+# expect: overlay=osc_menu row=param pane=locked, then overlay=none
+f14_prm        | ui seq PRM ; wait 1
+f14_prm_close  | ui seq PRM ; wait 3
+# expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=waterfall
+f14_trigger    | ui seq TRIGGER ; wait 1
+f14_trig_close | ui seq TRIGGER ; wait 3
+# expect: nothing (long PRM / OK / AUTO) ; view.meashide = off
+f14_long       | ui seq long:PRM long:OK long:AUTO ; wait 3 ; get view.meashide
+# expect: ch2.enabled = off then on
+f14_ch2_long   | ui seq long:CH2 ; wait 3 ; get ch2.enabled
+f14_ch2_long2  | ui seq long:CH2 ; wait 3 ; get ch2.enabled
 # expect: view=yt ; view.mode = yt
 f14_set_yt     | set view.mode yt ; wait 3 ; get view.mode
 
@@ -412,6 +464,15 @@ f16_ok_long    | ui seq long:OK ; wait 4 ; get trig.x
 f16_ok_pos     | get ch1.pos
 f16_ok_level   | get trig.level
 
+# AUTO in roll. Roll is a time view, so AUTO is autoset there too. THE IMAGES MAY DIFFER HERE: an autoset
+# steps tb.code, and in roll the B7 image stores the code without writing reg 0x01 (tb.code's rule for every
+# route), where the image before wrote the Y-T code under the roll flag. Compare what each does; neither
+# is a designed behaviour. Expect on both: view=roll and run=run afterwards, tb.roll = on.
+f16_roll       | set view.mode roll ; wait 3 ; get view.mode
+f16_roll_auto  | ui seq AUTO ; wait 12 ; get tb.roll
+f16_roll_tb    | get tb.code
+f16_roll_out   | set view.mode yt ; wait 3 ; get view.mode
+
 # ── 17. the known state again ────────────────────────────────────────────────
 f17_base       | set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set ch1.pos 0 ; set ch2.pos 0 ; set trig.level 0 ; set trig.x 150
 f17_base2      | set trig.mode auto ; set trig.source ch1 ; set view.mode yt ; set view.cursor off ; wait 3
@@ -424,3 +485,12 @@ f17_idle       | wait 5
 f18_auto_long  | ui seq long:AUTO ; wait 12 ; get tb.code
 # expect: ch1.vdiv = 6 ; run=run ; view=yt
 f18_after      | wait 4 ; get ch1.vdiv
+# The same from roll (THE IMAGES MAY DIFFER, as for AUTO in roll above: the run's timebase steps are
+# stored, not written, in roll on the B7 image). Expect a refusal or "No records: stopped" and the
+# settings as before: view=roll, tb.roll = on, ch1.vdiv = 6.
+f19_roll       | set view.mode roll ; wait 3 ; get view.mode
+f19_roll_lauto | ui seq long:AUTO ; wait 14 ; get tb.roll
+f19_roll_after | get ch1.vdiv
+# expect: view=yt ; the known state ; screen=scope overlay=none run=run focus=zoom ach=CH1
+f20_base       | set view.mode yt ; wait 3 ; set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set trig.level 0 ; set trig.x 150
+f20_base2      | set ch1.pos 0 ; set ch2.pos 0 ; set trig.mode auto ; set trig.source ch1 ; wait 3 ; get view.mode

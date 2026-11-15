@@ -635,8 +635,10 @@ redraw_action_t scope_view_tick(uint32_t frame)
         }
     }
     /* Another kind of view (a `set view.mode`, `set tb.roll`): the whole
-     * screen once, as a key's change of view. */
-    if (!page_up && chg.whole) {
+     * screen once, as a key's change of view. Not while a key is being
+     * handled: its own DCMD_REDRAW_ALL follows, and until then the gate
+     * below repaints the new view in full, as it always did. */
+    if (!page_up && chg.whole && !input_key_in_flight) {
         redraw_all(frame);
         return REDRAW_SKIP;
     }

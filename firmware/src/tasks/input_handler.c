@@ -586,6 +586,9 @@ bool input_mode_switch(device_mode_t m)
  * Main button dispatcher: the screen router
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* input_handler.h: a key is being handled (its own repaint follows). */
+volatile bool input_key_in_flight;
+
 uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
 {
     /* MENU + POWER → clean handoff to the factory IAP bootloader.
@@ -611,7 +614,9 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     g_dq = dq;
     g_cmd = DCMD_REDRAW_ALL;
     legacy_screens_sync();             /* the shell may have changed the mode or closed the gallery */
+    input_key_in_flight = true;
     (void)screen_route_key(button);
+    input_key_in_flight = false;
     legacy_screens_sync();             /* what the key opened or closed */
     return g_cmd;
 }

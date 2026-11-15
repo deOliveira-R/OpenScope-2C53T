@@ -224,37 +224,11 @@ void scope_state_init(scope_state_t *s);
 /* Get the global scope state (singleton, defined in scope_state.c) */
 scope_state_t *scope_state_get(void);
 
-/* Convenience: cycle through enum values with wrap */
-void scope_cycle_trigger_mode(scope_state_t *s);
-void scope_cycle_trigger_edge(scope_state_t *s);
-void scope_cycle_trigger_source(scope_state_t *s);
-void scope_cycle_coupling(channel_state_t *ch);
-void scope_cycle_probe(channel_state_t *ch);
-void scope_toggle_bw_limit(channel_state_t *ch);
-void scope_toggle_channel(channel_state_t *ch);
-void scope_adjust_vdiv(channel_state_t *ch, int direction);
-/* One timebase key press (dir > 0 = slower), Y-T and roll alike: see
- * scope_roll_tb_step(). Returns true when the roll flag or step changed, so
- * the caller re-applies roll (fpga_apply_roll) instead of the Y-T code. */
-bool scope_adjust_timebase(scope_state_t *s, int direction);
-void scope_adjust_trigger_level(scope_state_t *s, int direction);
-/* Channel vertical position, the channel-move stage of the arrow keys (stock:
- * "up and down buttons controlling the vertical movement of the channel
- * waveforms"). Pixels, +1 = trace up, clamped to +-SCOPE_POSITION_MAX (stock's
- * +-100 range, parity plan C4). Today this only moves the ground-reference
- * marker (the live trace is autoscaled and ignores it; fpga.c pins the
- * 0x1B/0x1D offset bytes); driving the channel offset from it is the
- * calibration item's job and belongs in this function (the caller does not
- * need to change). */
+/* Channel vertical position (chN.pos): pixels, +1 = trace up, +-
+ * SCOPE_POSITION_MAX (stock's +-100 range, parity plan C4) in steps of
+ * SCOPE_POSITION_STEP. The property's range and step (model_table.h). */
 #define SCOPE_POSITION_MAX   100
 #define SCOPE_POSITION_STEP  5
-void scope_adjust_position(channel_state_t *ch, int direction);
-void scope_toggle_running(scope_state_t *s);
-
-/* Cursor operations */
-void scope_cursor_cycle_mode(void);
-void scope_cursor_next_sel(void);
-void scope_cursor_move(int16_t delta);
 
 /* Acquisition-ready latch.
  *

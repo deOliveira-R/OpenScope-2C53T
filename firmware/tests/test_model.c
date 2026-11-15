@@ -14,6 +14,7 @@
 #define MODEL_INTERNAL
 #include "model.h"
 #include "scope_state.h"
+#include "scope_state_pre_b7.h"
 #include "meas_select.h"
 #include "signal_gen.h"
 #include "sys_prefs.h"
@@ -1136,8 +1137,10 @@ static void test_cursor_props(void)
             c->active = (sel[m].m == CURSOR_HORIZONTAL) ? CURSOR_SEL_H1 : CURSOR_SEL_V1;
             const cursor_sel_t was = c->active;
             const prop_status_t s = prop_set_local(P(VIEW_CURSEL), v, ORIGIN_SHELL, &n);
-            CHECKF(s == (sel[m].ok[v] ? PS_OK : PS_REFUSED) &&
-                   c->active == (sel[m].ok[v] ? (cursor_sel_t)v : was), "cursel mode %u value %d", m, v);
+            /* the value in force is always accepted (get then set is the identity) */
+            const bool ok = sel[m].ok[v] || (cursor_sel_t)v == was;
+            CHECKF(s == (ok ? PS_OK : PS_REFUSED) && c->active == (ok ? (cursor_sel_t)v : was),
+                   "cursel mode %u value %d", m, v);
         }
     /* view.cursor puts the selection on the pair's first line, as before */
     CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_HORIZONTAL, ORIGIN_SHELL, &n) == PS_OK && c->active == CURSOR_SEL_H1);

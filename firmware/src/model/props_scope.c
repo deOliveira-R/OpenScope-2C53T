@@ -557,6 +557,7 @@ prop_status_t view_cursel_set(const prop_desc_t *p, int32_t v, uint8_t origin, p
 {
     (void)origin;
     const cursor_mode_t m = scope_state_get()->cursor.mode;
+    if (v == view_cursel_get(p)) return PS_OK;      /* get then set is the identity (a profile replays) */
     const bool is_v = (v == CURSOR_SEL_V1 || v == CURSOR_SEL_V2);
     const bool ok = (m == CURSOR_BOTH) || (m == CURSOR_VERTICAL && is_v) || (m == CURSOR_HORIZONTAL && !is_v);
     if (!ok) {

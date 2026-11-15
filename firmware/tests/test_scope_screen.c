@@ -29,6 +29,7 @@
  */
 #define SCREEN_TEST_ENV_REAL_FOCUS
 #include "screen_test_env.h"
+#include "scope_state_pre_b7.h"
 #include "scope_screen.h"
 #include "osc_menu_screen.h"
 #include "osc_menu_model.h"

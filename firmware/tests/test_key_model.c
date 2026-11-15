@@ -10,6 +10,7 @@
 #include <string.h>
 #include "key_model.h"
 #include "scope_state.h"
+#include "scope_state_pre_b7.h"
 #include "trig_menu.h"
 
 static int run, passed;

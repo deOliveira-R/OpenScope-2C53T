@@ -478,6 +478,9 @@ static uint32_t s_epoch(void)
     return redraw_epoch_mix(redraw_epoch_mix(layout, soft), scope_screen_cursor_epoch());
 }
 
+#if FEATURE_FFT
+_Static_assert(SCOPE_VIEW_TIME == 0, "scope_shown_t.kind 0 is the Y-T view (scope_screen_changed)");
+#endif
 void scope_screen_shown(scope_shown_t *now)
 {
     const scope_state_t *s = scope_state_get();

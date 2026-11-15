@@ -41,6 +41,13 @@ bool input_settings_flush_sync(uint32_t timeout_ms, settings_flush_outcome_t *ou
  * the sys.autooff setter's hardware op (model_hw_fw.c). */
 void input_autooff_apply(uint8_t mins);
 
+/* True while the input task is inside a key's handler. The handler posts
+ * its own repaint when it returns; a setter it called may block meanwhile
+ * (an acquisition park), and the display task, which then sees the change
+ * first, must not paint the whole screen for it a second time (main.c
+ * scope_view_tick: another kind of view). Read by the display task. */
+extern volatile bool input_key_in_flight;
+
 /* What the scope time view's arrow keys adjust (short SELECT cycles it):
  * the scope screen's state (ui/scope_screen.h), declared here for the shell
  * handlers that include this header. */
