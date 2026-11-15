@@ -2263,13 +2263,29 @@ ROUTER_TEST_SCREENS = src/ui/ui_router.c src/ui/home_screen.c src/ui/home_model.
                       src/ui/siggen_screen.c src/ui/siggen_edit.c src/ui/meter_screen.c src/ui/softkey.c \
                       src/ui/fuse_model.c src/ui/scope_screen.c src/ui/osc_menu_screen.c src/ui/gallery_screen.c \
                       src/ui/gallery_nav.c src/ui/overlay_screens.c
-$(BUILD_DIR)/test_screen_router: tests/test_screen_router.c $(ROUTER_TEST_SCREENS) src/ui/ui_router.h \
+$(BUILD_DIR)/test_screen_router: tests/test_screen_router.c tests/fw_screens_env.h $(ROUTER_TEST_SCREENS) src/ui/ui_router.h \
                                  src/ui/redraw_gate.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
 	$(SCREEN_TEST_CC) $< $(ROUTER_TEST_SCREENS) src/ui/screen.c \
 		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-screen-router
 test-screen-router: $(BUILD_DIR)/test_screen_router
+	$<
+
+# A settings save is triggered by a changed persisted property, not by a key
+# (ARCH-1 B8): every real screen on the real router and model, the real
+# settings store and record codec on a NOR flash model. Every key on every
+# screen: a changed record is written, an unchanged one is not; the write
+# policy against capture-per-key; the boundary flushes.
+NOTIFY_TEST_SRCS = src/util/config.c src/util/settings_store.c src/drivers/flash_regions.c \
+                   src/model/model_persist_v5.c
+$(BUILD_DIR)/test_settings_notify: tests/test_settings_notify.c tests/fw_screens_env.h $(ROUTER_TEST_SCREENS) \
+                                   $(NOTIFY_TEST_SRCS) src/util/settings_store.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< $(ROUTER_TEST_SCREENS) src/ui/screen.c $(NOTIFY_TEST_SRCS) \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-settings-notify
+test-settings-notify: $(BUILD_DIR)/test_settings_notify
 	$<
 
 # Migrated screens (ARCH-1 B2 on): the real screen file on the real router

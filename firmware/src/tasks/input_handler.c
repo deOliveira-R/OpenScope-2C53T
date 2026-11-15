@@ -91,9 +91,9 @@ static void power_off_now(void)
     while (1) { }
 }
 
-/* A setting changed from the shell (e.g. `mode startup`) has no key press
- * behind it, so settings_after_button() never captures it and a reflash right
- * after loses it. The shell only raises this flag; the input task stays the
+/* A setting changed from the shell (e.g. `set sys.startup`) has no key press
+ * behind it, so nothing gives the store its turn and a reflash right after
+ * loses it. The shell only raises this flag; the input task stays the
  * one writer of the settings record (settings_store.h), and flushes on its
  * next pass (<= 100 ms). */
 static volatile bool g_settings_flush_req;
@@ -372,16 +372,20 @@ void ui_env_screenshot(void)
     }
 }
 
-/* Settings persistence, once per key, after the screen has had its effect.
- * note_change() is a struct compare — no flash access at all when nothing
- * changed, which is the overwhelming majority of presses. service() writes
- * only once a change has been quiet for the settle window, so holding an
- * arrow key through ten values costs one record. */
-static void settings_after_button(void)
+/* Settings persistence, once per key, after the screen has had its effect:
+ * the store's turn to write. A change is not looked for here any more (until
+ * ARCH-1 B8 the whole settings image was captured and compared after every
+ * key): the model notes it when a persisted property changes (model.c ->
+ * model_hw_fw.c op_note_change -> settings_store_note_change), whoever set
+ * it. service() writes only once a change has been quiet for the settle
+ * window, so holding an arrow key through ten values costs one record, and a
+ * key that changed nothing costs nothing. The boundaries (a mode change,
+ * backing out of a Settings page, the shell after a command, power-off)
+ * still capture and flush everything themselves. Host test: make
+ * test-settings-notify. */
+static void settings_after_key(void)
 {
-    uint32_t now = settings_now_ms();
-    settings_store_note_change(now);
-    (void)settings_store_service(now);
+    (void)settings_store_service(settings_now_ms());
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -396,7 +400,7 @@ void ui_env_click(void)  { sys_pwm_click(); }
 void ui_env_lock(void)   { taskENTER_CRITICAL(); }
 void ui_env_unlock(void) { taskEXIT_CRITICAL(); }
 void ui_env_post(uint8_t dcmd) { send_cmd(g_dq, dcmd); }
-void ui_env_settings_service(void) { settings_after_button(); }
+void ui_env_settings_service(void) { settings_after_key(); }
 
 void input_router_init(void *display_queue)
 {

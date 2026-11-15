@@ -32,8 +32,9 @@
  * EXPLICIT ACTIONS (not one property set):
  *   - Measure: the channel tab (a page flip, UI state), All, None and the 12
  *     chips. The pure model edits the selection itself (meas_select.c, the
- *     backing store of chN.meas); this screen then tells the model layer the
- *     group changed (model_touch), so the strip and a `get chN.meas` follow.
+ *     backing store of chN.meas); this screen then tells the model layer
+ *     chN.meas changed (model_changed_also: the group's epoch and the settings
+ *     note), so the strip, a `get chN.meas` and the saved record follow.
  *   - picking a cursor mode closes the page (the model's rule), and a cursor
  *     mode change moves the arrows' focus (osc_menu_env_cursors).
  *   - the rail, BACK, the deep-link keys and the opener key: UI state.

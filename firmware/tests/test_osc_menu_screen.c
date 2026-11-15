@@ -290,11 +290,14 @@ static void test_values_rows(void)
         const osc_row_t row = ch ? OSC_ROW_CH2 : OSC_ROW_CH1;
         char nm[64];
         open_in(row);
-        int ok = values_step(row, OSC_CH_ENABLE, BTN_RIGHT, 0, ch ? "enables(1,0);" : "enables(0,1);");
+        /* The trigger is on CH1: CH1 going off moves it to CH2 first (the
+         * setter's rule: reg 0x06, then the routing); it does not come back
+         * with the channel, so the second time nothing moves. */
+        int ok = values_step(row, OSC_CH_ENABLE, BTN_RIGHT, 0, ch ? "enables(1,0);" : "trigsrc(1);enables(0,1);");
         ok &= values_step(row, OSC_CH_ENABLE, BTN_LEFT, 1, "enables(1,1);");
         ok &= values_step(row, OSC_CH_ENABLE, BTN_OK, 0, ch ? "enables(1,0);" : "enables(0,1);");
         ok &= values_step(row, OSC_CH_ENABLE, BTN_OK, 1, "enables(1,1);");
-        snprintf(nm, sizeof nm, "CH%d Channel: chN.enabled off and on, each way, one owner call", ch + 1);
+        snprintf(nm, sizeof nm, "CH%d Channel: chN.enabled off and on, each way; the trigger leaves a channel that goes off", ch + 1);
         CHECK(nm, ok);
         ok  = values_step(row, OSC_CH_PROBE, BTN_RIGHT, PROBE_10X, "");
         ok &= values_step(row, OSC_CH_PROBE, BTN_RIGHT, PROBE_1X, "");      /* wraps */
@@ -425,7 +428,7 @@ static void test_rules_and_notes(void)
     const scr_res_t r = env_key(BTN_RIGHT);                      /* CH1 off too: refused */
     CHECK("the last channel cannot go off: refused by the setter, the value kept, \"Keep one CH on\"",
           r == SCR_DRAW && G(P(CH1_ENABLED)) == 1 && strcmp(note(), "Keep one CH on") == 0 &&
-          env_log_is("enables(0,0);"));
+          env_log_is(""));                                       /* before any owner call */
     CHECK("a key that redraws nothing keeps the note", env_key(BTN_MOVE) == SCR_HANDLED &&
           strcmp(note(), "Keep one CH on") == 0);
     (void)env_key(BTN_DOWN);

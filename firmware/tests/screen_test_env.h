@@ -60,7 +60,7 @@ static void env_logf(const char *fmt, ...)
     strncat(env_log, t, sizeof env_log - strlen(env_log) - 1);
 }
 static void env_log_clear(void) { env_log[0] = '\0'; }
-static bool env_log_is(const char *want) { return strcmp(env_log, want) == 0; }
+__attribute__((unused)) static bool env_log_is(const char *want) { return strcmp(env_log, want) == 0; }
 
 static bool env_log_dac;               /* log the driver calls too (the register side) */
 static bool env_log_ops = true;        /* log the owner calls the ops make */
@@ -162,14 +162,14 @@ static void env_fresh(device_mode_t mode)
 
 /* Every group's change epoch, to see what a key touched. */
 typedef struct { uint32_t e[PG_COUNT]; } env_epochs_t;
-static env_epochs_t env_epochs(void)
+__attribute__((unused)) static env_epochs_t env_epochs(void)
 {
     env_epochs_t x;
     for (unsigned g = 0; g < PG_COUNT; g++) x.e[g] = prop_group_epoch((uint8_t)g);
     return x;
 }
 /* Bit g set: group g's epoch moved between a and b. */
-static uint16_t env_epochs_moved(const env_epochs_t *a, const env_epochs_t *b)
+__attribute__((unused)) static uint16_t env_epochs_moved(const env_epochs_t *a, const env_epochs_t *b)
 {
     uint16_t m = 0;
     for (unsigned g = 0; g < PG_COUNT; g++) if (a->e[g] != b->e[g]) m |= (uint16_t)(1u << g);
@@ -180,6 +180,6 @@ static uint16_t env_epochs_moved(const env_epochs_t *a, const env_epochs_t *b)
 #define ENV_BASE(nm, sid, md, ins) \
     { .name = nm, .id = sid, .mode = md, .instrument = ins }
 
-static scr_res_t env_key(uint8_t raw) { return (scr_res_t)screen_route_key((button_id_t)raw); }
+__attribute__((unused)) static scr_res_t env_key(uint8_t raw) { return (scr_res_t)screen_route_key((button_id_t)raw); }
 
 #endif /* SCREEN_TEST_ENV_H */

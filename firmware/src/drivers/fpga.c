@@ -4180,21 +4180,17 @@ float fpga_record_sample_rate(void)
 }
 
 /* Apply the channel enables to the converter routing (mask 1/2/3 on PC1/PC2).
- * A trigger source on a channel that is now off moves to the one that is on
- * (stock flips ms[0x16] for the same reason), and the record in flight is
- * dropped: it was captured with the old routing. Refuses both-off. */
+ * The record in flight is dropped: it was captured with the old routing.
+ * Refuses both-off. The trigger source is not this function's: the
+ * chN.enabled setter moves it off a channel that goes off, through
+ * trig.source's own apply, before it calls this (model/props_scope.c
+ * ch_enabled_set; stock flips ms[0x16] + op06 for the same reason,
+ * 0x080235E8). */
 bool fpga_apply_channel_enables(void)
 {
-    scope_state_t *ss = scope_state_get();
+    const scope_state_t *ss = scope_state_get();
     if (!ss->ch1.enabled && !ss->ch2.enabled)
         return false;
-    const trigger_source_t src_was = ss->trigger.source;
-    if (ss->trigger.source == TRIG_SRC_CH2 && !ss->ch2.enabled)
-        ss->trigger.source = TRIG_SRC_CH1;
-    if (ss->trigger.source == TRIG_SRC_CH1 && !ss->ch1.enabled)
-        ss->trigger.source = TRIG_SRC_CH2;
-    if (ss->trigger.source != src_was)
-        (void)fpga_apply_trigger_source();   /* stock 0x080235E8: flip ms[0x16] + op06 */
     fpga_set_channel_mask((ss->ch1.enabled && ss->ch2.enabled) ? 3u : (ss->ch2.enabled ? 2u : 1u));
     /* The mask is an input of stock's bank rule (both on -> bank 1 at
      * tb <= 3, one channel -> bank 2), so the offset references move with it

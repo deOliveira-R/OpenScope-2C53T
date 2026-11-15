@@ -194,17 +194,19 @@ static bool op_vdiv(uint8_t ch, uint8_t idx)
     return true;
 }
 static bool op_coupling(uint8_t ch, uint8_t c)        { CTX(); return fpga_apply_coupling(ch, c); }
-/* The converter routing (PC1/PC2) is live in every posture. When it moves
- * the trigger source off a channel that went off, fpga_apply_channel_enables
- * writes reg 0x06 itself; with the scope front end not live that write is as
- * unproven as a stored trigger set, so the registers are re-sent on the
- * scope's return too (the answer stays live: the routing is). */
+/* The converter routing (PC1/PC2) is live in every posture. The setter has
+ * moved the trigger source off a channel that went off just before, through
+ * op_trigger_source: with the scope front end not live that was stored, so
+ * the registers are re-sent on the scope's return (marked here too, as
+ * always); the answer of the chN.enabled set stays live, because the
+ * routing is. */
 static bool op_channel_enables(void)
 {
     CTX();
     const bool live = scope_fe_live();
     if (!fpga_apply_channel_enables()) return false;
     if (!live) scope_regs_mark();
+    model_hw_deferred(NULL);
     return true;
 }
 static bool op_interleave_active(void)                { return fpga_interleave_active(); }

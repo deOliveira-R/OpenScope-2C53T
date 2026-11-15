@@ -129,11 +129,29 @@ void  fft_auto_request(void)               { env_logf("fft_auto;"); }
  * scope_ui.c), logged as the ops below log theirs. Channels: 0 = CH1. */
 static bool d_vdiv(uint8_t ch, uint8_t idx)   { env_logf("vdiv(%u,%u);", ch, idx); return !t_fail; }
 static bool d_coupling(uint8_t ch, uint8_t c) { env_logf("coupling(%u,%u);", ch, c); return !t_fail; }
+/* fpga_apply_channel_enables as the pre-B7 handler called it: both off is
+ * refused before anything is written (the setter now refuses before it
+ * calls the driver at all, so no call is logged for it either way). */
 static bool d_enables(void)
 {
     const scope_state_t *ss = scope_state_get();
+    if (!ss->ch1.enabled && !ss->ch2.enabled) return false;
     env_logf("enables(%d,%d);", ss->ch1.enabled, ss->ch2.enabled);
-    return ss->ch1.enabled || ss->ch2.enabled;
+    return true;
+}
+/* ... and the whole of it as it was until B8, for the transcribed handler:
+ * the driver moved the trigger source off a channel that went off and
+ * wrote reg 0x06 itself, before the routing. (The chN.enabled setter does
+ * that now, through trig.source's op: the same writes in the same order.) */
+static bool o_enables(void)
+{
+    scope_state_t *ss = scope_state_get();
+    if (!ss->ch1.enabled && !ss->ch2.enabled) return false;
+    const trigger_source_t src_was = ss->trigger.source;
+    if (ss->trigger.source == TRIG_SRC_CH2 && !ss->ch2.enabled) ss->trigger.source = TRIG_SRC_CH1;
+    if (ss->trigger.source == TRIG_SRC_CH1 && !ss->ch1.enabled) ss->trigger.source = TRIG_SRC_CH2;
+    if (ss->trigger.source != src_was) env_logf("trigsrc;");
+    return d_enables();
 }
 static bool d_vpos(uint8_t ch, int16_t pos)   { env_logf("vpos(%u,%d);", ch, pos); return true; }
 static bool d_timebase(uint8_t c)             { env_logf("tb(%u);", c); return !t_fail; }
@@ -283,7 +301,7 @@ static void o_exec(key_cmd_t k, button_id_t btn)
         channel_state_t *c = (dir == 0) ? &ss->ch1 : &ss->ch2;
         const bool was = c->enabled;
         c->enabled = !was;
-        if (!d_enables()) { c->enabled = was; o_popup_and_redraw("Keep one CH on"); break; }
+        if (!o_enables()) { c->enabled = was; o_popup_and_redraw("Keep one CH on"); break; }
         if (!c->enabled && (active_channel == (uint8_t)dir)) active_channel = (uint8_t)(1u - (uint8_t)dir);
         snprintf(pb, sizeof(pb), "CH%d %s%s", dir + 1, c->enabled ? "ON" : "OFF", t_il ? " 250MS/s" : "");
         o_popup_and_redraw(pb);
@@ -895,6 +913,18 @@ static void test_key_equals_set(void)
                 const int32_t v0 = prop_get(p);
                 *scope_state_get() = by_key;
                 if (v != v0) { pairs[n].id = p->id; pairs[n].value = v; n++; }
+            }
+            /* A channel going off moves trig.source by the chN.enabled
+             * setter's rule: that is part of the one set, not a second
+             * one to replay. */
+            bool enabled_moved = false;
+            for (unsigned i = 0; i < n; i++)
+                if (pairs[i].id == PROP_ID_CH1_ENABLED || pairs[i].id == PROP_ID_CH2_ENABLED) enabled_moved = true;
+            if (enabled_moved) {
+                unsigned m = 0;
+                for (unsigned i = 0; i < n; i++)
+                    if (pairs[i].id != PROP_ID_TRIG_SOURCE) pairs[m++] = pairs[i];
+                n = m;
             }
             /* the same values on the direct route, in table order except
              * that the roll switch goes last (the ladder's order) */

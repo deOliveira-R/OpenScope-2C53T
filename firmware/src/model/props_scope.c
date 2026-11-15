@@ -52,24 +52,53 @@ static channel_state_t *chan(const prop_desc_t *p)
 int32_t ch_enabled_get(const prop_desc_t *p) { return chan(p)->enabled ? 1 : 0; }
 void    ch_enabled_store(const prop_desc_t *p, int32_t v) { chan(p)->enabled = (v != 0); }
 
-/* Long CH1/CH2 / the menu's Enabled row: flip, route, put it back if the
- * routing refuses (both off); the arrows follow the live channel. */
+/* Long CH1/CH2 / the menu's Enabled row: flip, move the trigger, route; the
+ * arrows follow the live channel.
+ *
+ * THE TRIGGER SOURCE FOLLOWS THE CHANNEL THAT IS ON. A source on a channel
+ * that goes off moves to the other one (stock flips ms[0x16] and sends op06
+ * for the same reason, 0x080235E8). The rule is this setter's: trig.source
+ * is stored and applied here, through trig.source's own op (reg 0x06, live
+ * on the scope, stored and re-sent on its return elsewhere), BEFORE the
+ * routing moves, which is the order the driver used when it did this
+ * itself. A write that fails keeps everything as it was. */
 prop_status_t ch_enabled_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     channel_state_t *c = chan(p);
+    scope_state_t *ss = scope_state_get();
     const bool was = c->enabled, want = (v != 0);
     /* A self-cal run (ORIGIN_AUTO) re-applies the routing in force too, as
      * those runs always did, and leaves the active channel alone. */
     if (want == was && origin != ORIGIN_AUTO) return PS_OK;
-    const trigger_source_t src_was = scope_state_get()->trigger.source;
     c->enabled = want;
-    if (HW->channel_enables && !HW->channel_enables()) {
+    if (!ss->ch1.enabled && !ss->ch2.enabled) {
         c->enabled = was;
         model_note(note, "Keep one CH on");
         return PS_REFUSED;
     }
-    /* The routing moves the trigger off a channel that went off (fpga.c). */
-    if (scope_state_get()->trigger.source != src_was) model_touch(PG_TRIG);
+    const trigger_source_t src_was = ss->trigger.source;
+    trigger_source_t src = src_was;
+    if (src == TRIG_SRC_CH2 && !ss->ch2.enabled) src = TRIG_SRC_CH1;
+    if (src == TRIG_SRC_CH1 && !ss->ch1.enabled) src = TRIG_SRC_CH2;
+    if (src != src_was) {
+        ss->trigger.source = src;
+        if (HW->trigger_source && !HW->trigger_source()) {
+            ss->trigger.source = src_was;
+            c->enabled = was;
+            model_note(note, "reg 0x06 NOT SET");
+            return PS_NOT_SET;
+        }
+    }
+    if (HW->channel_enables && !HW->channel_enables()) {
+        c->enabled = was;
+        if (src != src_was) {
+            ss->trigger.source = src_was;
+            if (HW->trigger_source) (void)HW->trigger_source();
+        }
+        model_note(note, "Keep one CH on");
+        return PS_REFUSED;
+    }
+    if (src != src_was) model_changed_also(P(TRIG_SOURCE), origin);
     if (!want && active_channel == p->arg && origin != ORIGIN_AUTO) {
         active_channel = (uint8_t)(1u - p->arg);
         model_touch(PG_UI);                          /* ui.ach */

@@ -217,7 +217,7 @@ static void snap_restore(void)
         (void)aset(CHP(i, COUPLING), R.snap.coupling[i]);
     }
     (void)aset(P(TRIG_MODE), R.snap.trig_mode);     /* ORIGIN_AUTO: SINGLE is not re-armed */
-    /* A CH2-only phase moves the source (fpga_apply_channel_enables). Put
+    /* A CH2-only phase moves the source (the chN.enabled setter). Put
      * back through its setter, reg 0x06 follows the state (until B7 only
      * the state was put back). */
     if (scope_state_get()->trigger.source != R.snap.trig_src) (void)aset(P(TRIG_SOURCE), R.snap.trig_src);
@@ -271,8 +271,8 @@ static bool timed_out(void)
 }
 
 /* A run changes saved settings (ranges, timebase, positions, trigger) from
- * this service, after the key's own settings hook has already run: tell the
- * store, exactly as settings_after_button() does for a key. */
+ * this service, after the key's own settings service has already run: when
+ * it ends, capture what it left and give the store its turn. */
 static void settings_changed(void)
 {
     const uint32_t now = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);

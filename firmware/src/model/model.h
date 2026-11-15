@@ -358,6 +358,12 @@ uint32_t prop_group_epoch(uint8_t g);
  * and an owner that lands a POSTED change later (the mode switch, a mask
  * request) calls it when the change is in force. */
 void     model_touch(uint8_t g);
+/* A setter changed ANOTHER property's value as part of its own rule (a
+ * channel going off moves trig.source): that property's group epoch, and
+ * the settings note its own set would have made (PF_PERSIST, by origin).
+ * So a persisted change is noted whoever made it, also when the property
+ * being set is not persisted itself. */
+void     model_changed_also(const prop_desc_t *p, uint8_t origin);
 /* The groups whose epoch moved since the last call (bit g = PG_x), and
  * forget them. The executor takes them around each request to know what a
  * request changed (model_exec.c: the repaint goes only to a screen that

@@ -577,6 +577,12 @@ static bool may_note(const prop_desc_t *p, uint8_t origin)
     return true;
 }
 
+void model_changed_also(const prop_desc_t *p, uint8_t origin)
+{
+    model_touch(p->group);
+    if (may_note(p, origin) && g_ops->note_change) g_ops->note_change();
+}
+
 prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     prop_note_t scratch;

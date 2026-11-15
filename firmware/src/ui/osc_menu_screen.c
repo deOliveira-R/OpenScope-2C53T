@@ -222,10 +222,12 @@ static osc_result_t page_key(osc_key_t k)
     s_note_opens = osc_menu_state()->opens;
     apply(&a);
 
-    /* The Measure pane's selection is edited by the model (explicit action,
-     * osc_menu_screen.h): say which group moved. */
-    if (meas_select_get(0) != m1) model_touch(PG_CH1);
-    if (meas_select_get(1) != m2) model_touch(PG_CH2);
+    /* The Measure pane's selection is edited by the page's model (explicit
+     * action, osc_menu_screen.h): tell the property model what moved. chN.meas
+     * is a saved setting, so this is also what notes the settings (nothing
+     * captures them per key any more). */
+    if (meas_select_get(0) != m1) model_changed_also(P(CH1_MEAS), ORIGIN_KEY);
+    if (meas_select_get(1) != m2) model_changed_also(P(CH2_MEAS), ORIGIN_KEY);
     const int32_t cur = prop_get(P(VIEW_CURSOR));
     if (cur != cur_was) osc_menu_env_cursors(cur != CURSOR_OFF);
     return r;
