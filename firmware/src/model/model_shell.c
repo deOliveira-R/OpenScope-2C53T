@@ -621,4 +621,16 @@ void cmd_model_get(const char *args)      { model_shell_get(args, usb_emit); }
 void cmd_model_set(const char *args)      { model_shell_set(args, usb_emit); }
 void cmd_model_list(const char *args)     { model_shell_list(args, usb_emit); }
 void cmd_model_describe(const char *args) { model_shell_describe(args, usb_emit); }
+
+bool model_shell_request(uint16_t id, int32_t value)
+{
+    const prop_pair_t p = { id, value };
+    const prop_desc_t *d = prop_by_id(id);
+    model_result_t res;
+    const prop_status_t st = prop_request(&p, 1, ORIGIN_SHELL, prop_request_timeout(&p, 1), &res);
+    if (st == PS_OK || st == PS_CLAMPED) return true;
+    (void)usb_debug_printf("%s %s (%s)\r\n", prop_status_name(st), d ? d->name : "?",
+                           res.note.text[0] ? res.note.text : "no reason given");
+    return false;
+}
 #endif

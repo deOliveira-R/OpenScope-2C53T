@@ -4064,14 +4064,30 @@ static void cmd_fwapply(void)
 
 /* ── `mask` — waveform pass/fail (docs/specs/scope/mask-pass-fail.md) ──────────
  *
- * Every mutation is a request applied by the acquisition task (scope_mask.h),
- * so each command waits for the acknowledgement and SAYS when it did not
- * arrive, instead of reporting the intent as the result. */
+ * Every mutation is a request applied by the acquisition task (scope_mask.h).
+ * It is posted on the input task, where the keys and the mask's properties
+ * post theirs (model_fw_mask_request, through input_call_sync), so a shell
+ * request and a key never interleave; each command then waits for the
+ * acknowledgement and SAYS when it did not arrive, instead of reporting the
+ * intent as the result. */
+typedef struct { uint8_t kind, a, b; uint16_t n; uint32_t seq; } mask_call_t;
+
+static void mask_call_run(void *vc)
+{
+    mask_call_t *c = (mask_call_t *)vc;
+    c->seq = model_fw_mask_request(c->kind, c->a, c->b, c->n);
+}
+
 static bool mask_post_wait(scope_mask_req_t k, uint8_t a, uint8_t b, uint16_t n)
 {
-    uint32_t seq = scope_mask_post(k, a, b, n);
-    for (int i = 0; i < 40; i++) {
-        if (scope_mask_acked(seq)) return true;
+    mask_call_t c = { (uint8_t)k, a, b, n, 0u };
+    if (!input_call_sync(mask_call_run, &c, 1000u)) {
+        usb_send_str("NOT POSTED: the input task did not take the request in 1 s "
+                     "(gallery / countdown / self-cal?).\r\n");
+        return false;
+    }
+    for (int i = 0; i < 30; i++) {                  /* 400 ms in all with the input task's 100 */
+        if (scope_mask_acked(c.seq)) return true;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
     usb_send_str("NOT APPLIED: the acquisition loop did not pick the request up in 400 ms\r\n"
@@ -4149,7 +4165,7 @@ static void mask_print_status(void)
                          (int)s.last_fail.worst);
     usb_debug_printf("stop-on-fail %s%s\r\n", s.stop_on_fail ? "ON" : "OFF",
                      s.hold ? "  -- HOLDING a failed record (mask run / OK to resume)" : "");
-    usb_debug_printf("move-focus %s\r\n", key_focus_name(scope_key_focus));
+    usb_debug_printf("move-focus %s\r\n", key_focus_name((key_focus_t)key_focus_get()));
     usb_debug_printf("heap free %lu (min ever %lu)\r\n", (unsigned long)xPortGetFreeHeapSize(),
                      (unsigned long)xPortGetMinimumEverFreeHeapSize());
 }

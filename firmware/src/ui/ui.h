@@ -62,7 +62,7 @@ typedef enum {
     DCMD_DRAW_ACTIVE     = 0x40,
     DCMD_DRAW_ACTIVE_END = 0x60,    /* exclusive: room for 32 screen ids */
     /* Not a real command: what the display task rewrites a received command
-     * to while a layer owns the screen (or ui_modal_active), so it falls
+     * to while a layer owns the screen, so it falls
      * through to `default:` untouched.
      * Never send this. */
     DCMD_NONE_MODAL_DROP = 0xFE,
@@ -152,16 +152,12 @@ extern volatile uint8_t       fuse_rating_idx;     /* Index into fuse table for 
 extern volatile uint8_t       fuse_view;           /* FUSE_VIEW_DETAIL/MULTI/SCAN */
 extern volatile float         fuse_scan_threshold_mv; /* Pass/fail threshold in mV */
 
-/* Foreign screen claim (defined in main.c) — while true the display task
- * renders nothing, so another task can use the LCD; the owner must clear it
- * and send DCMD_REDRAW_ALL to hand the screen back. Nothing in the UI uses
- * it since ARCH-1 B5 (layers are screens the display task paints); the bench
- * shell's `lcd readback` still does. */
-extern volatile bool          ui_modal_active;
-/* Counted by the display task each time round its loop while it is idling
- * for ui_modal_active, so a claimant can wait until no frame is in flight
- * (shell_bench.c `lcd readback`). */
-extern volatile uint32_t      ui_modal_idle_count;
+/* Run fn(arg) on the display task, between two frames, and wait for it
+ * (main.c; util/task_call.h): the display task is the only one that touches
+ * the LCD, so a shell command that needs the panel (`lcd readback`) hands it
+ * the work. One caller at a time (the shell task). true: it ran. false: the
+ * display task did not take it up in timeout_ms and it will not run. */
+bool display_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms);
 
 /* Scope feature toggles (defined in main.c) */
 extern volatile bool          math_enabled;

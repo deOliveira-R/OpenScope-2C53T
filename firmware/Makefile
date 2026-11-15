@@ -213,6 +213,9 @@ M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT=1 -Isrc/model
 C_SOURCES += src/model/ui_shell.c
 # ── end M2 block ──
 
+# ARCH-1 B8: a call made on the task that owns the state (util/task_call.h).
+C_SOURCES += src/util/task_call.c
+
 # ── Features (features.mk: the manifest) ──
 # Which features this image has is decided here, once, while the Makefile is
 # read: every FEATURE_<NAME> becomes -DFEATURE_<NAME>=0 or =1 (FEATURE_DEFS),
@@ -1126,6 +1129,15 @@ $(BUILD_DIR)/test_ui_shell: tests/test_ui_shell.c src/model/ui_shell.c src/model
 
 .PHONY: test-ui-shell
 test-ui-shell: $(BUILD_DIR)/test_ui_shell
+	$<
+
+# A call made on another task (src/util/task_call.c): the post, the owner's
+# serve, the withdrawal on a timeout and the wait for a call that had started.
+$(BUILD_DIR)/test_task_call: tests/test_task_call.c src/util/task_call.c src/util/task_call.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/task_call.c -o $@
+
+.PHONY: test-task-call
+test-task-call: $(BUILD_DIR)/test_task_call
 	$<
 
 # Redraw gate (B2): counts full-area repaints for the scope/siggen screens

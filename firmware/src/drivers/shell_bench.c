@@ -2146,7 +2146,9 @@ void cmd_fpga_meter_reinit(const char *args)
         }
     }
 
-    meter_submode = (uint8_t)submode;
+    /* The function is a property (meter.func): set through the input task,
+     * then the transport re-initialised on it. */
+    if (submode != meter_submode && !model_shell_request(PROP_ID_METER_FUNC, (int32_t)submode)) return;
     fpga_meter_reinit((uint8_t)submode);
     usb_debug_printf("Meter reinit complete: submode %lu (%s)\r\n",
                      submode, meter_submode_name((uint8_t)submode));
@@ -2480,17 +2482,20 @@ void cmd_lcd(const char *args)
  * and counts the pixels that differ. Nothing is stored. To decide whether
  * the 38,400 B shadow could go and screenshots read the glass instead.
  *
- * Exclusion: the screen is claimed as the screenshot claims it (ui_modal_
- * active, then up to 500 ms for the display task to report idle), for the
- * whole read; and each row is read with the scheduler suspended (one row,
- * ~0.3-0.5 ms), so no task can move the panel's address window mid-row.
- * Interrupts stay on. */
+ * Exclusion: the read runs on the display task, the only task that touches
+ * the LCD, between two of its frames (display_call_sync, as a screenshot is
+ * taken); this handler only waits and prints. Each row is still read with
+ * the scheduler suspended (one row, ~0.3-0.5 ms), and the display task checks
+ * in with the health monitor every 32 rows. Interrupts stay on. */
 typedef struct {
     uint32_t crc_g, crc_s, diff, n;
     uint16_t g[4], s[4], raw[4];
     const uint8_t  *bits;
     const uint16_t *pal;
     uint16_t page;
+    uint16_t x, y, w, h;        /* the window */
+    uint8_t  fmt;
+    uint32_t ms;                /* how long the read took */
 } lcd_rb_ctx_t;
 
 static void lcd_rb_px(uint16_t x, uint16_t y, uint16_t g, uint16_t raw, void *vc)
@@ -2508,6 +2513,20 @@ static void lcd_rb_px(uint16_t x, uint16_t y, uint16_t g, uint16_t raw, void *vc
     if (g != s) c->diff++;
     if (c->n < 4u) { c->g[c->n] = g; c->s[c->n] = s; c->raw[c->n] = raw; }
     c->n++;
+}
+
+/* The read itself: display task (display_call_sync). */
+static void lcd_rb_run(void *vc)
+{
+    lcd_rb_ctx_t *c = (lcd_rb_ctx_t *)vc;
+    const TickType_t t0 = xTaskGetTickCount();
+    for (uint32_t r = 0; r < c->h; r++) {
+        vTaskSuspendAll();
+        lcd_readback_row(c->x, (uint16_t)(c->y + r), c->w, c->fmt, lcd_rb_px, c);
+        (void)xTaskResumeAll();
+        if ((r & 31u) == 31u) health_checkin_self();
+    }
+    c->ms = (uint32_t)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS);
 }
 
 void cmd_lcd_readback(const char *args)
@@ -2534,24 +2553,14 @@ void cmd_lcd_readback(const char *args)
     c.bits = lcd_shadow_bits();
     c.pal = lcd_shadow_palette_get();
     c.page = lcd_shadow_page_y();
+    c.x = (uint16_t)v[0]; c.y = (uint16_t)v[1]; c.w = (uint16_t)v[2]; c.h = (uint16_t)v[3];
+    c.fmt = fmt;
 
-    const bool was = ui_modal_active;
-    ui_modal_active = true;
-    const uint32_t c0 = ui_modal_idle_count;
-    for (int i = 0; i < 50 && ui_modal_idle_count == c0; i++) vTaskDelay(pdMS_TO_TICKS(10));
-    if (ui_modal_idle_count == c0) {
-        if (!was) ui_modal_active = false;
-        usb_send_str("lcd readback: the display task did not go idle in 500 ms; nothing read\r\n");
+    if (!display_call_sync(lcd_rb_run, &c, 500u)) {
+        usb_send_str("lcd readback: the display task did not take the read in 500 ms; nothing read\r\n");
         return;
     }
-    const TickType_t t0 = xTaskGetTickCount();
-    for (uint32_t r = 0; r < v[3]; r++) {
-        vTaskSuspendAll();
-        lcd_readback_row((uint16_t)v[0], (uint16_t)(v[1] + r), (uint16_t)v[2], fmt, lcd_rb_px, &c);
-        (void)xTaskResumeAll();
-    }
-    const uint32_t ms = (uint32_t)((xTaskGetTickCount() - t0) * portTICK_PERIOD_MS);
-    if (!was) ui_modal_active = false;
+    const uint32_t ms = c.ms;
 
     usb_debug_printf("lcd readback x=%lu y=%lu w=%lu h=%lu fmt=%s: %lu px in %lu ms\r\n",
                      (unsigned long)v[0], (unsigned long)v[1], (unsigned long)v[2], (unsigned long)v[3],

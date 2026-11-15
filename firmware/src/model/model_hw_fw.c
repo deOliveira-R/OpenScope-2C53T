@@ -280,6 +280,22 @@ static bool mask_post_wait(scope_mask_req_t k, uint8_t a, uint8_t b)
     return true;                                     /* posted: the newest request wins */
 }
 
+/* The mask's procedures asked for by another task (the shell's `mask teach /
+ * clear / reset / run`, through input_call_sync): posted here, on the input
+ * task, with the keys' wait; one still unacknowledged is remembered like a
+ * property's, so the mask's epoch moves when it lands. Returns the request's
+ * number (scope_mask_acked). */
+uint32_t model_fw_mask_request(uint8_t kind, uint8_t a, uint8_t b, uint16_t n)
+{
+    CTX();
+    const uint32_t seq = scope_mask_post((scope_mask_req_t)kind, a, b, n);
+    for (int i = 0; i < 20 && !scope_mask_acked(seq); i++)
+        vTaskDelay(pdMS_TO_TICKS(5));
+    if (!scope_mask_acked(seq)) g_mask_pending = seq;
+    else                        model_touch(PG_MASK);
+    return seq;
+}
+
 static bool op_mask_present(void) { return scope_mask_state() != MASK_PF_EMPTY; }
 static void op_mask_get(uint8_t *tol_v, uint8_t *tol_h, bool *stop_on_fail)
 {

@@ -41,5 +41,9 @@ void cmd_model_get(const char *args);
 void cmd_model_set(const char *args);
 void cmd_model_list(const char *args);
 void cmd_model_describe(const char *args);
+/* One set for another shell handler (a bench command that used to store the
+ * variable itself): through the input task, as `set`. false: not set, and
+ * the line "<STATUS> <name> (<why>)" has been printed. */
+bool model_shell_request(uint16_t id, int32_t value);
 
 #endif /* MODEL_SHELL_H */

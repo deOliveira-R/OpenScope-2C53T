@@ -55,10 +55,16 @@ void input_autooff_apply(uint8_t mins);
  * scope_view_tick: another kind of view). Read by the display task. */
 extern volatile bool input_key_in_flight;
 
-/* What the scope time view's arrow keys adjust (short SELECT cycles it):
- * the scope screen's state (ui/scope_screen.h), declared here for the shell
- * handlers that include this header. */
-extern volatile key_focus_t scope_key_focus;
+/* Run fn(arg) on the input task (the owner of the screen stack and of every
+ * setter) and wait: for a shell handler that needs a step made there
+ * (util/task_call.h). One caller at a time (the shell task). true: it ran.
+ * false: the input task did not take it up in timeout_ms (a gallery grab,
+ * the POWER countdown, a long setter) and it will not run. */
+bool input_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms);
+/* Input task, every pass: the call that is waiting, if any. */
+void input_call_serve(void);
+/* Post a key into the input queue (main.c; BTN_NONE = a wake, no key). */
+bool input_inject_button(button_id_t b);
 
 /* scope_view_select() (the view with the FFT pool lifecycle) moved to
  * scope_apply.h at the UI round 1 merge, with the other shared glue. */

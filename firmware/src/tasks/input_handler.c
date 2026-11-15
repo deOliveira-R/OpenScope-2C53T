@@ -35,6 +35,7 @@
 #include "../ui/legacy_screens.h"
 #include "../ui/settings_reset.h"   /* Reset to Defaults: the confirm step */
 #include "model.h"           /* the long mode keys set sys.mode */
+#include "task_call.h"       /* input_call_sync */
 #if FEATURE_USBDRIVE
 #include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
@@ -672,6 +673,20 @@ bool input_settings_reset_sync(uint32_t timeout_ms, settings_reset_result_t *out
     if (out != NULL) *out = g_reset_result;
     return true;
 }
+
+/* ── a call made on this task (input_handler.h) ─────────────────────── */
+static task_call_t g_input_call;
+
+static void input_call_wake(void)          { (void)input_inject_button(BTN_NONE); }
+static void input_call_sleep(uint32_t ms)  { vTaskDelay(pdMS_TO_TICKS(ms)); }
+
+bool input_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms)
+{
+    static const task_call_port_t port = { input_call_wake, input_call_sleep };
+    return task_call_sync(&g_input_call, &port, fn, arg, timeout_ms);
+}
+
+void input_call_serve(void) { (void)task_call_serve(&g_input_call); }
 
 /* ═══════════════════════════════════════════════════════════════════
  * Main button dispatcher: the screen router

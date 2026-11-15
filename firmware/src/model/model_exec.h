@@ -141,6 +141,12 @@ void model_exec_test_reset(uint32_t first_seq);
  * a key). display_queue gets the redraw after a shell set. */
 void model_fw_start(void *display_queue);
 
+/* Input task: post one mask procedure (scope_mask_req_t kind: teach, clear,
+ * reset, release) the way the keys do and wait up to ~100 ms for the
+ * acquisition task. Returns its number for scope_mask_acked(). Other tasks
+ * reach it through input_call_sync (tasks/input_handler.h). */
+uint32_t model_fw_mask_request(uint8_t kind, uint8_t a, uint8_t b, uint16_t n);
+
 /* Bumped by vInputTask after each handled key (main.c), for the UI route's
  * deterministic replay (M2). The BTN_NONE wake does not count. */
 extern volatile uint32_t input_events_done;

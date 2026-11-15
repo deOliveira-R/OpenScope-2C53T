@@ -463,8 +463,13 @@ void cmd_meter_autoscan(const char *args)
     }
     wait_budget_ms = (settle_ms < 2500U) ? 2500U : settle_ms;
 
-    current_mode = MODE_MULTIMETER;
-    meter_layout = METER_LAYOUT_FULL;
+    /* The meter screen, its big view: two sets through the input task, as
+     * `set sys.mode meter` and `set meter.layout big`. */
+    if (!model_shell_request(PROP_ID_SYS_MODE, MODE_MULTIMETER) ||
+        !model_shell_request(PROP_ID_METER_LAYOUT, METER_LAYOUT_FULL)) {
+        usb_send_str("autoscan: not started\r\n");
+        return;
+    }
     usb_debug_printf("autoscan settle_ms=%lu wait_budget_ms=%lu candidates=%u\r\n",
                      settle_ms,
                      wait_budget_ms,
@@ -474,15 +479,17 @@ void cmd_meter_autoscan(const char *args)
         uint8_t submode = candidates[i];
         uint8_t score;
 
-        meter_submode = submode;
-        meter_reset_minmaxavg();
-        meter_voltage_wave_reset();
         /*
-         * Autoscan is a user-visible mode walk, not a transport wake diagnostic.
-         * Use the same no-wake transition as button left/right so the scan does
-         * not do a DCV preamble before every candidate or double-click relays.
+         * Autoscan is a user-visible mode walk, not a transport wake diagnostic:
+         * each candidate is the function change LEFT/RIGHT make, one set of
+         * meter.func through the input task (no DCV preamble, no second relay
+         * click; the setter resets the statistics).
          */
-        fpga_set_meter_mode(submode);
+        if (!model_shell_request(PROP_ID_METER_FUNC, submode)) {
+            usb_send_str("autoscan: stopped\r\n");
+            return;
+        }
+        meter_voltage_wave_reset();
 
         score = 0;
         for (uint32_t waited = 0; waited < wait_budget_ms; waited += 100U) {
@@ -517,10 +524,8 @@ void cmd_meter_autoscan(const char *args)
         }
     }
 
-    meter_submode = best_mode;
-    meter_reset_minmaxavg();
+    if (!model_shell_request(PROP_ID_METER_FUNC, best_mode)) return;
     meter_voltage_wave_reset();
-    fpga_set_meter_mode(best_mode);
     usb_debug_printf("autoscan selected submode=%u (%s) score=%u\r\n",
                      (unsigned)best_mode,
                      meter_submode_name(best_mode),

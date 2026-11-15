@@ -53,6 +53,7 @@ extern void system_clock_config(void);
 #include "fault.h"
 #include "redraw_gate.h"
 #include "screen.h"
+#include "task_call.h"
 #include "legacy_screens.h"
 #include "scope_screen.h"
 #include "scope_mask.h"
@@ -106,8 +107,6 @@ volatile float         fuse_scan_threshold_mv = 0.1f; /* Scan: DRAW at or above 
  * commands of the display task (modal_layer below). Its one user left is the
  * bench shell's `lcd readback` (shell_bench.c), which reads the panel's
  * frame memory and hands the screen back itself. */
-volatile bool          ui_modal_active = false;
-volatile uint32_t      ui_modal_idle_count = 0;
 
 /* Scope feature toggles */
 volatile bool          math_enabled = false;
@@ -522,6 +521,22 @@ static const screen_t *modal_layer(void)
     return NULL;
 }
 
+/* ── A call made on this task (ui.h display_call_sync) ───────────────
+ * The display task is the only one that touches the LCD. A shell handler
+ * that needs the panel (`lcd readback`) hands it one function to run between
+ * two frames and waits for it (util/task_call.h), where it used to claim the
+ * screen with a flag and use the LCD itself. Served once per frame, under a
+ * layer too (it draws nothing). */
+static task_call_t g_display_call;
+
+static void display_call_sleep(uint32_t ms) { vTaskDelay(pdMS_TO_TICKS(ms)); }
+
+bool display_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms)
+{
+    static const task_call_port_t port = { NULL, display_call_sleep };
+    return task_call_sync(&g_display_call, &port, fn, arg, timeout_ms);
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action);
 
 /* DCMD_REDRAW_ALL: the hard invalidate. NEVER GATED, deliberately: an epoch
@@ -861,7 +876,7 @@ static void vDisplayTask(void *pvParameters)
         {
             static TickType_t last_lcd_check;
             const TickType_t now = xTaskGetTickCount();
-            if (!ui_modal_active && modal == NULL && (now - last_lcd_check) >= pdMS_TO_TICKS(500)) {
+            if (modal == NULL && (now - last_lcd_check) >= pdMS_TO_TICKS(500)) {
                 last_lcd_check = now;
                 taskENTER_CRITICAL();
                 uint8_t pm = lcd_read_power_mode();
@@ -895,8 +910,7 @@ static void vDisplayTask(void *pvParameters)
 
         /* Check for commands (non-blocking with short timeout for animation).
          * While a layer owns the screen (modal_layer: the POWER prompt, the
-         * logo, the gallery) or a shell command claimed it (ui_modal_active),
-         * commands are still drained — senders must never block — but
+         * logo, the gallery), commands are still drained — senders must never block — but
          * dropped instead of rendered: one frame painted here would overdraw
          * the layer, which is exactly the countdown flicker this rule exists
          * to stop. When the layer goes, this task repaints everything a
@@ -915,7 +929,7 @@ static void vDisplayTask(void *pvParameters)
                 wait = tick_due - now;
         }
         if (xQueueReceive(xDisplayQueue, &cmd, wait) == pdTRUE) {
-            if ((ui_modal_active || modal != NULL) && cmd != DCMD_CAPTURE)
+            if (modal != NULL && cmd != DCMD_CAPTURE)
                 cmd = DCMD_NONE_MODAL_DROP;
             /* DCMD_DRAW_ACTIVE + the sender's screen: that screen's own
              * command below, whose checks drop it if the screen has gone
@@ -988,6 +1002,11 @@ static void vDisplayTask(void *pvParameters)
         /* Check in with health monitor */
         health_checkin(health_slot_display);
 
+        /* Between two frames: what another task asked this one to do with
+         * the LCD (display_call_sync). */
+        if (task_call_serve(&g_display_call))
+            health_checkin(health_slot_display);
+
 #ifndef EMULATOR_BUILD
         if (fpga_service_requests()) {
             g_scope_entered_frame = frame;
@@ -1008,17 +1027,11 @@ static void vDisplayTask(void *pvParameters)
          * 2026-08-13 (B2) via redraw_gate.h — see the epoch functions
          * above. All three data modes are now gated the same way.
          *
-         * A layer that owns the screen (and the shell's ui_modal_active)
-         * suppresses this whole section: while the shutdown countdown is
+         * A layer that owns the screen suppresses this whole section: while the shutdown countdown is
          * up, a live scope would otherwise overdraw it within one 50 ms
          * tick — the "flashing countdown" bug (2026-08-20). Acquisition
          * heartbeats pause with it; three seconds of paused re-arm is
          * harmless and resumes with the repaint that follows the layer. */
-        if (ui_modal_active) {
-            ui_modal_idle_count++;
-            frame++;
-            continue;
-        }
         if (modal != NULL) {
             /* Its own paint, when what it shows changed (a key, a delete,
              * coming up); nothing else this frame. */
@@ -1192,6 +1205,7 @@ static void vInputTask(void *pvParameters)
         /* Property sets queued by other tasks (the shell's `set`), after the
          * key: the two never interleave. No-op when the queue is empty. */
         (void)model_exec_drain();
+        input_call_serve();     /* a step another task asked this one to make (input_handler.h) */
         /* The router mirrors the legacy state (ui/legacy_screens.h): catch
          * what the shell changed without a key (`mode`, a gallery close). */
         legacy_screens_sync();
