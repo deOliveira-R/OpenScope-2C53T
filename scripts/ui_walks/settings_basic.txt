@@ -1,0 +1,163 @@
+# settings_basic.txt -- every row and page of Home > Settings, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# Settings is three screens of the router (firmware/src/ui/settings_screen.c):
+# the list (and the question of "Reset to Defaults" drawn over it) and its two
+# pages, Sound and Light and About. A page is a layer the list pushes over
+# itself, so `ui screen` shows it in the stack; every value is a property, so a
+# `get` answers a key at once and a `set` while the screen is shown repaints it.
+#
+#   `ui screen`:  settings=<page>/<row>/<sub>
+#     page  0 the list   2 About   7 Sound and Light   8 the question "Reset all settings?"
+#     row   the row of the list: 0 Sound and Light, 1 Auto Shutdown, 2 Startup on Boot,
+#           3 Meter on Battery, 4 Theme, 5 USB Sharing, 6 Firmware Update, 7 Reset to Defaults, 8 About
+#     sub   the row of Sound and Light: 0 Sound, 1 Brightness
+#     stack=settings (the list, the question), settings>set_sound, settings>set_about
+#
+# NOT pressed here, on purpose:
+#   OK on "Reset all settings?"   (it resets every setting: MENU = no is walked instead)
+#   OK on Firmware Update         (it reboots into the bootloader)
+#   OK on USB Sharing             (it re-enumerates the USB link this shell runs on; by hand:
+#                                  the row's value changes and the gallery drive appears / goes)
+# POWER cannot be sent from the shell: hold it by hand on the list, on the question
+# and on both pages; the countdown must appear and a release must repaint the
+# screen that was there (no whole-screen flash, the list or page as it was).
+#
+# Redraw rates must be 0 in every step that only waits. An arrow repaints the
+# screen in place (no redraw_all); OK, MENU out of a page, CH1 / CH2 / TRIGGER /
+# MOVE are one redraw_all each. lcdforeign must stay 0.
+#
+# The walk changes saved settings and puts them back at the end (auto shutdown
+# off, startup restore, meter link screen, theme blue, volume 1, brightness 100 %).
+
+# ── 0. a known state ─────────────────────────────────────────────────────────
+# expect: screen=settings instrument=none settings=0/0/0 stack=settings overlay=none lcdforeign=0
+#         sys.autooff = off ; sys.startup = restore ; meter.link = screen ; sys.theme = blue ;
+#         sys.volume = 1 ; sys.brightness = 100 %
+s0_base        | set sys.autooff off ; set sys.startup restore ; set meter.link screen ; set sys.theme blue ; set sys.volume 1 ; set sys.brightness 100 ; set sys.mode settings ; wait 1 ; get sys.autooff ; get sys.startup ; get meter.link ; get sys.theme ; get sys.volume ; get sys.brightness
+
+# ── 1. the list: moving the row ──────────────────────────────────────────────
+# expect: settings=0/0/0   (UP on the first row stays; nothing is repainted)
+s1_up_top      | ui seq UP
+# expect: settings=0/1/0
+s1_down        | ui seq DOWN
+# expect: settings=0/8/0   (DOWN stops on About, the last row)
+s1_down_end    | ui seq DOWN*12
+# expect: settings=0/0/0
+s1_up_all      | ui seq UP*8
+# expect: settings=0/0/0   (keys with no meaning here: AUTO, PRM, SELECT and every long key but
+#         the mode keys do nothing; CH1, CH2, TRIGGER, MOVE repaint the screen and do nothing else)
+s1_no_meaning  | ui seq AUTO PRM SELECT long:OK long:AUTO long:PRM long:CH1 long:CH2 CH1 CH2 TRIGGER MOVE
+
+# ── 2. Sound and Light (row 0): the page, sys.volume, sys.brightness ─────────
+# expect: settings=0/0/0   (LEFT / RIGHT on a row that is a page: nothing)
+s2_lr_nothing  | ui seq LEFT RIGHT
+# expect: settings=7/0/0 stack=settings>set_sound   (OK opens the page, on Sound)
+s2_open        | ui seq OK ; wait 1
+# expect: sys.volume = 2   (RIGHT: one step, a click at the new level)
+s2_vol_up      | ui seq RIGHT ; get sys.volume
+# expect: sys.volume = 10   (RIGHT stops at 10)
+s2_vol_top     | ui seq RIGHT*12 ; get sys.volume
+# expect: sys.volume = 0   (OK goes round the end: 10 -> off; the row says "Off", no click is heard)
+s2_vol_wrap    | ui seq OK ; get sys.volume
+# expect: sys.volume = 0   (LEFT stops at 0)
+s2_vol_bottom  | ui seq LEFT ; get sys.volume
+# expect: sys.volume = 1
+s2_vol_one     | ui seq OK ; get sys.volume
+# expect: settings=7/0/1   (DOWN: Brightness; a second DOWN stays)
+s2_down        | ui seq DOWN*2
+# expect: sys.brightness = 95 %   (LEFT: one step of 5 %, the backlight follows)
+s2_bri_down    | ui seq LEFT ; get sys.brightness
+# expect: sys.brightness = 25 %   (LEFT stops at 25 %)
+s2_bri_bottom  | ui seq LEFT*20 ; get sys.brightness
+# expect: sys.brightness = 100 %   (RIGHT stops at 100 %)
+s2_bri_top     | ui seq RIGHT*20 ; get sys.brightness
+# expect: sys.brightness = 25 %, then 30 %   (OK goes round the end, then steps)
+s2_bri_wrap    | ui seq OK ; get sys.brightness ; ui seq OK ; get sys.brightness
+# expect: settings=7/0/1 ; sys.brightness = 100 %   (a `set` while the page is shown repaints the row)
+s2_set         | set sys.brightness 100 ; wait 1 ; get sys.brightness
+# expect: settings=7/0/0 ; sys.volume = 5   (the same for the volume; UP goes back to Sound)
+s2_set_vol     | ui seq UP ; set sys.volume 5 ; wait 1 ; get sys.volume
+# expect: settings=7/0/0, stack=settings>set_sound still   (short SAVE: a screenshot of the page, the
+#         popup over it for ~2 s; delete the picture afterwards: `screenshot list`)
+s2_save        | ui seq SAVE ; wait 4
+# expect: settings=0/0/0 stack=settings   (MENU: back to the list; the settings are written now)
+s2_back        | set sys.volume 1 ; ui seq MENU ; wait 1
+
+# ── 3. Auto Shutdown (row 1): sys.autooff ────────────────────────────────────
+# expect: settings=0/1/0 ; sys.autooff = 15min
+s3_right       | ui seq DOWN RIGHT ; get sys.autooff
+# expect: sys.autooff = 60min   (RIGHT stops at 60 min)
+s3_right_end   | ui seq RIGHT*5 ; get sys.autooff
+# expect: sys.autooff = off   (OK goes round the end)
+s3_ok_wrap     | ui seq OK ; get sys.autooff
+# expect: sys.autooff = off   (LEFT stops at off)
+s3_left_end    | ui seq LEFT ; get sys.autooff
+# expect: sys.autooff = 30min, then off   (a `set` shows in the row at once)
+s3_set         | set sys.autooff 30min ; wait 1 ; get sys.autooff ; set sys.autooff off ; get sys.autooff
+
+# ── 4. Startup on Boot (row 2): sys.startup, stock's order then "Last Used" ──
+# expect: settings=0/2/0 ; sys.startup = home, meter, scope, siggen, restore   (RIGHT x5, round)
+s4_right       | ui seq DOWN RIGHT ; get sys.startup ; ui seq RIGHT ; get sys.startup ; ui seq RIGHT ; get sys.startup ; ui seq RIGHT ; get sys.startup ; ui seq RIGHT ; get sys.startup
+# expect: sys.startup = siggen   (LEFT goes round the other way)
+s4_left        | ui seq LEFT ; get sys.startup
+# expect: sys.startup = restore   (OK: one step forward)
+s4_ok          | ui seq OK ; get sys.startup
+
+# ── 5. Meter on Battery (row 3): meter.link ──────────────────────────────────
+# expect: settings=0/3/0 ; meter.link = always
+s5_right       | ui seq DOWN RIGHT ; get meter.link
+# expect: meter.link = screen, then always, then screen
+s5_toggle      | ui seq LEFT ; get meter.link ; ui seq OK ; get meter.link ; ui seq OK ; get meter.link
+
+# ── 6. Theme (row 4): sys.theme, round ───────────────────────────────────────
+# expect: settings=0/4/0 ; sys.theme = green   (the whole screen in the new colours)
+s6_right       | ui seq DOWN RIGHT ; wait 1 ; get sys.theme
+# expect: sys.theme = blue, then red   (LEFT, and LEFT round the start)
+s6_left        | ui seq LEFT ; get sys.theme ; ui seq LEFT ; wait 1 ; get sys.theme
+# expect: sys.theme = blue   (OK: one step, round the end)
+s6_ok          | ui seq OK ; wait 1 ; get sys.theme
+
+# ── 7. USB Sharing (row 5), Firmware Update (row 6): not entered ─────────────
+# expect: settings=0/5/0   (LEFT / RIGHT on USB Sharing: nothing; OK is by hand, see the header)
+s7_usb         | ui seq DOWN LEFT RIGHT
+# expect: settings=0/6/0   (LEFT / RIGHT on Firmware Update: nothing; OK is not pressed)
+s7_fw          | ui seq DOWN LEFT RIGHT
+
+# ── 8. Reset to Defaults (row 7): the question, answered no ──────────────────
+# expect: settings=0/7/0   (LEFT / RIGHT: nothing)
+s8_row         | ui seq DOWN LEFT RIGHT
+# expect: settings=8/7/0 stack=settings   ("Reset all settings?  OK = yes   MENU = no" over the list;
+#         nothing is reset yet)
+s8_ask         | set sys.autooff 30min ; ui seq OK ; wait 1 ; get sys.autooff
+# expect: settings=8/7/0   (the arrows and the other keys leave the question up; the row does not move)
+s8_keys        | ui seq UP DOWN LEFT RIGHT AUTO PRM SELECT long:OK
+# expect: settings=8/7/0 stack=settings>gallery, then stack=settings settings=8/7/0   (the gallery over
+#         the question and back: the question is still there)
+s8_gallery     | ui seq long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+# expect: settings=0/7/0 ; sys.autooff = 30min   (MENU = no: the list, nothing changed)
+s8_no          | ui seq MENU ; wait 1 ; get sys.autooff
+# expect: settings=8/7/0, then screen=home (long MENU from the question), then settings=0/0/0
+#         (Settings entered again: the list, first row, no question)
+s8_leave       | ui seq OK ; ui screen ; ui seq long:MENU ; wait 1 ; ui screen ; set sys.mode settings ; wait 1
+
+# ── 9. About (row 8) ─────────────────────────────────────────────────────────
+# expect: settings=2/8/0 stack=settings>set_about
+s9_open        | ui seq DOWN*8 OK ; wait 1
+# expect: settings=2/8/0   (UP / DOWN repaint the page: the heap and pool lines are live; LEFT / RIGHT nothing)
+s9_keys        | ui seq UP DOWN LEFT RIGHT
+# expect: settings=0/8/0 stack=settings   (OK goes back)
+s9_ok_back     | ui seq OK ; wait 1
+# expect: settings=2/8/0, then settings=0/8/0   (MENU goes back too)
+s9_menu_back   | ui seq OK ; wait 1 ; ui screen ; ui seq MENU ; wait 1
+# expect: screen=meter stack=meter   (a long mode key from a page: the page closes with the screen)
+s9_mode_key    | ui seq OK long:MOVE ; wait 2
+# expect: screen=settings settings=0/0/0 stack=settings   (and Settings opens on its list again)
+s9_again       | set sys.mode settings ; wait 1
+
+# ── 10. out, and the settings as they were ───────────────────────────────────
+# expect: screen=home home=settings   (short MENU on the list opens Home)
+s10_home       | ui seq MENU ; wait 1
+# expect: screen=scope stack=scope lcdforeign=0 ; the six values as in s0_base
+s10_end        | set sys.autooff off ; set sys.startup restore ; set meter.link screen ; set sys.theme blue ; set sys.volume 1 ; set sys.brightness 100 ; set sys.mode scope ; wait 1 ; get sys.autooff ; get sys.startup ; get meter.link ; get sys.theme ; get sys.volume ; get sys.brightness

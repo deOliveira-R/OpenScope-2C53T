@@ -1,0 +1,145 @@
+# global_keys.txt -- the keys that belong to no screen, from every screen, for scripts/ui_walk.py
+#
+#   name | command ; command ; wait <seconds>
+#
+# The router handles these before any screen is asked (firmware/src/ui/ui_router.c):
+#
+#   long MENU / MOVE / SELECT / TRIGGER   Home / meter / scope / generator: one set of sys.mode,
+#                                         the setter `set sys.mode` ends in; every layer over the
+#                                         screen closes with it; nothing if it is the mode already
+#   long SAVE                             the screenshot gallery, over whatever is shown
+#   short SAVE                            a screenshot of whatever is shown
+#   POWER                                 the hold-to-power-off countdown (by hand: see the end)
+#
+# What is shown is the router's stack: `ui screen` gives screen= (the base), overlay= (the layer on
+# top) and stack= (every screen bottom-up). After a mode key the answer is already the new screen.
+#
+# Each short SAVE leaves one picture in the gallery (six in all): the walk needs six free slots
+# (`screenshot list`; `screenshot delete <n>`), and they are worth deleting afterwards.
+# Redraw rates must be 0 in every step that only waits on Home, the generator, the meter (but for
+# a new reading) and Settings; lcdforeign must stay 0.
+
+# ── 0. a known state ─────────────────────────────────────────────────────────
+# expect: screen=scope instrument=scope overlay=none stack=scope lcdforeign=0
+k0_base        | set sys.mode scope ; wait 2 ; set view.mode yt ; set view.cursor off ; wait 1
+
+# ── 1. the long mode keys, from the scope ────────────────────────────────────
+# expect: screen=scope stack=scope   (long SELECT is the scope's own key: nothing happens)
+k1_scope_self  | ui seq long:SELECT
+# expect: screen=meter instrument=meter stack=meter ; sys.mode = meter
+k1_scope_meter | ui seq long:MOVE ; wait 2 ; get sys.mode
+# expect: screen=scope ; then screen=siggen instrument=gen ; sys.mode = siggen
+k1_scope_gen   | ui seq long:SELECT ; wait 1 ; ui screen ; ui seq long:TRIGGER ; wait 1 ; get sys.mode
+# expect: screen=scope ; then screen=home home=scope instrument=none ; sys.mode = home
+k1_scope_home  | ui seq long:SELECT ; wait 1 ; ui screen ; ui seq long:MENU ; wait 1 ; get sys.mode
+
+# ── 2. from Home ─────────────────────────────────────────────────────────────
+# expect: screen=home   (long MENU on Home itself: nothing)
+k2_home_self   | ui seq long:MENU
+# expect: screen=meter, then screen=home home=meter
+k2_home_meter  | ui seq long:MOVE ; wait 2 ; ui screen ; ui seq long:MENU ; wait 1
+# expect: screen=siggen, then screen=home home=siggen
+k2_home_gen    | ui seq long:TRIGGER ; wait 1 ; ui screen ; ui seq long:MENU ; wait 1
+# expect: screen=scope
+k2_home_scope  | ui seq long:SELECT ; wait 1
+
+# ── 3. from the meter ────────────────────────────────────────────────────────
+# expect: screen=meter   (long MOVE on the meter itself: nothing; the softkeys are as they were)
+k3_meter_self  | ui seq long:MOVE ; wait 2 ; ui seq long:MOVE
+# expect: screen=siggen, then screen=meter
+k3_meter_gen   | ui seq long:TRIGGER ; wait 1 ; ui screen ; ui seq long:MOVE ; wait 2
+# expect: screen=home home=meter, then screen=meter (short MENU on Home: back)
+k3_meter_home  | ui seq long:MENU ; wait 1 ; ui screen ; ui seq MENU ; wait 2
+# expect: screen=scope
+k3_meter_scope | ui seq long:SELECT ; wait 1
+
+# ── 4. from the generator, also with its frequency editor open ───────────────
+# expect: screen=siggen edit=off   (long TRIGGER on the generator itself: nothing)
+k4_gen_self    | ui seq long:TRIGGER ; wait 1 ; ui seq long:TRIGGER
+# expect: edit=3, then screen=meter edit=-   (a mode key leaves the editor; the frequency stays)
+k4_gen_editor  | ui seq PRM ; ui screen ; ui seq long:MOVE ; wait 2
+# expect: screen=siggen edit=off   (and it is closed on the way back)
+k4_gen_back    | ui seq long:TRIGGER ; wait 1
+# expect: screen=scope
+k4_gen_scope   | ui seq long:SELECT ; wait 1
+
+# ── 5. from Settings: the list, a page, the question ─────────────────────────
+# expect: screen=settings settings=0/0/0, then screen=meter stack=meter
+k5_set_list    | set sys.mode settings ; wait 1 ; ui screen ; ui seq long:MOVE ; wait 2
+# expect: stack=settings>set_sound settings=7/0/0, then screen=scope stack=scope   (the page closes with it)
+k5_set_page    | set sys.mode settings ; wait 1 ; ui seq OK ; ui screen ; ui seq long:SELECT ; wait 1
+# expect: settings=8/7/0, then screen=siggen stack=siggen   (and the question)
+k5_set_ask     | set sys.mode settings ; wait 1 ; ui seq DOWN*7 OK ; ui screen ; ui seq long:TRIGGER ; wait 1
+# expect: screen=settings settings=0/0/0 stack=settings   (Settings opens on its list again)
+k5_set_again   | set sys.mode settings ; wait 1
+# expect: screen=home home=settings
+k5_set_home    | ui seq long:MENU ; wait 1
+
+# ── 6. under the Oscilloscope Settings page ──────────────────────────────────
+# expect: overlay=osc_menu stack=scope>osc_menu, the same after long SELECT (the scope's own key:
+#         nothing closes)
+k6_page_self   | ui seq long:SELECT ; wait 1 ; ui seq MENU ; ui screen ; ui seq long:SELECT
+# expect: screen=meter stack=meter overlay=none   (long MOVE: the page closes with the scope)
+k6_page_meter  | ui seq long:MOVE ; wait 2
+# expect: screen=scope stack=scope overlay=none   (and it does not come back with it)
+k6_page_back   | ui seq long:SELECT ; wait 1
+# expect: overlay=osc_menu pane=locked (inside the Trigger pane), then screen=home stack=home
+k6_pane_home   | ui seq TRIGGER ; ui screen ; ui seq long:MENU ; wait 1
+# expect: screen=scope stack=scope
+k6_pane_back   | ui seq MENU ; wait 1
+
+# ── 7. short SAVE: a screenshot, from every base and page ────────────────────
+# expect: each answer "OK 1 events"; the screen and stack as before the key; a "Saved <n>.bmp"
+#         popup for ~2 s, not in the picture; the screen whole again after it
+k7_save_scope  | ui seq SAVE ; wait 4
+k7_save_page   | ui seq MENU SAVE ; wait 4 ; ui seq MENU
+k7_save_meter  | ui seq long:MOVE ; wait 2 ; ui seq SAVE ; wait 4
+k7_save_gen    | ui seq long:TRIGGER ; wait 1 ; ui seq SAVE ; wait 4
+k7_save_home   | ui seq long:MENU ; wait 1 ; ui seq SAVE ; wait 4
+k7_save_set    | set sys.mode settings ; wait 1 ; ui seq SAVE ; wait 4
+# expect: six pictures more than before the walk
+k7_list        | screenshot list
+
+# ── 8. long SAVE: the gallery, from every base and page ──────────────────────
+# expect: stack=settings>gallery overlay=gallery gal=grid/0, then stack=settings overlay=none
+k8_gal_set     | ui seq long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+# expect: stack=settings>set_about>gallery, then stack=settings>set_about settings=2/8/0 (the page is back)
+k8_gal_about   | ui seq DOWN*8 OK ; ui seq long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+# expect: stack=home>gallery, then stack=home
+k8_gal_home    | ui seq long:MENU ; wait 1 ; ui seq long:SAVE ; wait 2 ; ui screen ; ui seq long:SAVE ; wait 2
+# expect: stack=meter>gallery, then stack=meter
+k8_gal_meter   | ui seq long:MOVE ; wait 2 ; ui seq long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+# expect: stack=siggen>gallery, then stack=siggen
+k8_gal_gen     | ui seq long:TRIGGER ; wait 1 ; ui seq long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+# expect: stack=scope>gallery, then stack=scope (the scope runs again)
+k8_gal_scope   | ui seq long:SELECT ; wait 1 ; ui seq long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+# expect: stack=scope>osc_menu>gallery, then stack=scope>osc_menu (the page repainted whole)
+k8_gal_page    | ui seq MENU long:SAVE ; wait 2 ; ui screen ; ui seq MENU ; wait 2
+
+# ── 9. with the gallery up the keys are the gallery's ────────────────────────
+# expect: stack=scope>osc_menu>gallery gal=grid/0 still   (the long mode keys do nothing there, and
+#         nothing under the gallery sees them)
+k9_gal_modes   | ui seq long:SAVE ; wait 2 ; ui seq long:MOVE long:SELECT long:TRIGGER
+# expect: gal=grid/0/del, then gal=grid/0   (short SAVE arms a delete there, an arrow disarms it:
+#         no screenshot is taken)
+k9_gal_save    | ui seq SAVE ; ui screen ; ui seq LEFT
+# expect: stack=scope>osc_menu, then screen=meter stack=meter   (a mode set from the shell closes the
+#         gallery and everything else)
+k9_gal_set     | ui seq MENU ; wait 2 ; ui seq long:SAVE ; wait 2 ; set sys.mode meter ; wait 2
+# expect: stack=meter>gallery, then stack=meter   (a set of the mode it is already in closes only the gallery)
+k9_gal_same    | ui seq long:SAVE ; wait 2 ; ui screen ; set sys.mode meter ; wait 2
+
+# ── 10. the end ──────────────────────────────────────────────────────────────
+# expect: screen=scope instrument=scope overlay=none stack=scope lcdforeign=0
+k10_end        | set sys.mode scope ; wait 2
+
+# ── by hand (POWER cannot be sent from the shell) ────────────────────────────
+# On each of: the scope (Y-T, roll, FFT, split, waterfall, X-Y), the Oscilloscope Settings page,
+# the meter, the generator, Home, the Settings list, the question, Sound and Light, About, and
+# with the gallery up over one of them:
+#   - tap POWER and release: the box "Hold to power off 3" appears over the screen as it stands
+#     and goes; the screen under it is whole again, no remnant of the box. With the gallery up
+#     the screen that was under the gallery comes back, not the gallery.
+#   - hold POWER to the end once: 3, 2, 1, "Goodbye!", off; at the next power-on with Startup on
+#     Boot = Last Used the screen shown at power-off comes up (Home for Home and Settings).
+#   - MENU + POWER resets into the bootloader (upgrade mode).

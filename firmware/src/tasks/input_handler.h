@@ -52,8 +52,9 @@ extern volatile bool input_key_in_flight;
 /* Run fn(arg) on the input task (the owner of the screen stack and of every
  * setter) and wait: for a shell handler that needs a step made there
  * (util/task_call.h). One caller at a time (the shell task). true: it ran.
- * false: the input task did not take it up in timeout_ms (a gallery grab,
- * the POWER countdown, a long setter) and it will not run. */
+ * false: the input task did not take it up in timeout_ms (the POWER
+ * countdown, a long setter, or it has not started its loop yet) and it will
+ * not run. */
 bool input_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms);
 /* Input task, every pass: the call that is waiting, if any. */
 void input_call_serve(void);

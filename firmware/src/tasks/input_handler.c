@@ -37,6 +37,7 @@
 #include "../ui/settings_screen.h"  /* the Settings screens' environment */
 #include "model.h"           /* the long mode keys set sys.mode */
 #include "task_call.h"       /* input_call_sync */
+#include "model_exec.h"      /* model_exec_ready: the input loop is running */
 #if FEATURE_USBDRIVE
 #include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
@@ -466,6 +467,10 @@ static void input_call_sleep(uint32_t ms)  { vTaskDelay(pdMS_TO_TICKS(ms)); }
 bool input_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms)
 {
     static const task_call_port_t port = { input_call_wake, input_call_sleep };
+    /* Not before the input loop runs: the wake is a BTN_NONE in the key
+     * queue, and the boot logo's "any key skips" would take it for a key
+     * (the model's executor answers BUSY until then for the same reason). */
+    if (!model_exec_ready()) return false;
     return task_call_sync(&g_input_call, &port, fn, arg, timeout_ms);
 }
 
