@@ -194,7 +194,7 @@ static bool f_trigsrc(void)         { env_logf("trigsrc;"); return true; }
 
 static model_hw_ops_t t_ops;
 
-/* ── the router's hooks, as legacy_screens.c wires them ─────────────── */
+/* ── the router's hooks, as ui_router.c wires them ──────────────────── */
 static int g_after; static scr_res_t g_after_res;
 static void h_after(scr_res_t r) { g_after++; g_after_res = r; }
 static bool h_globals(button_id_t b, bool l) { return key_map_global(NULL, b, l).act != KA_LEGACY; }

@@ -85,7 +85,6 @@ C_SOURCES += src/drivers/scope_selfcal_run.c
 C_SOURCES += src/dsp/trig_edge.c
 C_SOURCES += src/dsp/trig_policy.c
 C_SOURCES += src/dsp/acq_cfg.c
-C_SOURCES += src/ui/trig_menu.c
 C_SOURCES += src/dsp/interleave.c
 C_SOURCES += src/dsp/interleave_cal.c
 C_SOURCES += src/drivers/meter_data.c
@@ -201,7 +200,7 @@ C_SOURCES += src/model/model_persist_v5.c
 M3_PERSIST_SRCS  = src/model/model_persist_v5.c src/model/model.c src/model/props_scope.c \
                    src/model/props_gen.c src/model/props_meter.c src/model/props_sys.c
 M3_PERSIST_LINK  = src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/key_model.c \
-                   src/ui/trig_menu.c src/ui/osc_menu_model.c
+                   src/ui/osc_menu_model.c
 M3_CONFIG_PERSIST_EXTRA = $(M3_PERSIST_SRCS) $(M3_PERSIST_LINK)
 M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT=1 -Isrc/model
 # ── end M3 block ──
@@ -1015,7 +1014,7 @@ MODEL_SRCS      = src/model/model.c src/model/props_scope.c src/model/props_gen.
                   src/model/props_meter.c src/model/props_sys.c
 MODEL_TEST_LINK = src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c src/ui/scope_timebase.c \
                   src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/meas_select.c src/ui/theme.c \
-                  src/ui/key_model.c src/ui/trig_menu.c src/ui/osc_menu_model.c \
+                  src/ui/key_model.c src/ui/osc_menu_model.c \
                   src/dsp/signal_gen.c src/dsp/siggen_wave.c src/util/sys_prefs.c
 
 $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/model/model_table.h \
@@ -1390,10 +1389,9 @@ test-calpage: $(BUILD_DIR)/test_calpage
 # Key model: the long-press state machine the TMR3 ISR runs, and the
 # key -> action map the input task asks (src/ui/key_model.h). Both are pure.
 $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/key_model.h \
-                             src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c \
-                             src/ui/trig_menu.c src/ui/trig_menu.h | $(BUILD_DIR)
+                             src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
-		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c src/ui/trig_menu.c -o $@
+		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@
 
 .PHONY: test-key-model
 test-key-model: $(BUILD_DIR)/test_key_model

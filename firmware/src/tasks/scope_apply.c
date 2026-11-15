@@ -15,7 +15,6 @@
  */
 #include "scope_apply.h"
 #include "scope_state.h"
-#include "trig_menu.h"
 #include "persistence.h"
 #include "fpga.h"
 #if FEATURE_FFT

@@ -11,7 +11,6 @@
 #include "key_model.h"
 #include "scope_state.h"
 #include "scope_state_pre_b7.h"
-#include "trig_menu.h"
 
 static int run, passed;
 #define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-62s[PASS]\n", name); } \
@@ -445,42 +444,14 @@ static void test_osc_menu(void)
           is(key_map(&sg, BTN_AUTO, true), KA_SIGGEN_BOOT_TOGGLE, 0));
 }
 
-static void test_trig_menu(void)
+static void test_trigger_key(void)
 {
-    printf("trigger settings model (C3; the Trigger pane's)\n");
+    printf("TRIGGER\n");
     key_ctx_t z = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
     CHECK("TRIGGER long is still the signal generator", is(key_map(&z, BTN_TRIGGER, true), KA_ENTER_SIGGEN, 0));
-
-    scope_state_t s; scope_state_init(&s);
-    trig_menu_t m = { TM_ROW_MODE };
-    CHECK("row labels", strcmp(trig_menu_row_label(TM_ROW_MODE), "Mode:") == 0 &&
-          strcmp(trig_menu_row_label(TM_ROW_EDGE), "Edge:") == 0 && trig_menu_row_label(TM_ROW_COUNT)[0] == '\0');
-
-    uint8_t r = trig_menu_change(&m, &s, +1);
-    int c1 = (r == TM_CHANGED_MODE) && s.trigger.mode == TRIG_NORMAL &&
-             strcmp(trig_menu_row_value(&s, TM_ROW_MODE), "Normal") == 0;
-    trig_menu_change(&m, &s, +1);
-    int c2 = s.trigger.mode == TRIG_SINGLE;
-    trig_menu_change(&m, &s, +1);
-    int c3 = s.trigger.mode == TRIG_AUTO;
-    trig_menu_change(&m, &s, -1);
-    CHECK("Mode: Auto -> Normal -> Single -> Auto, and back", c1 && c2 && c3 && s.trigger.mode == TRIG_SINGLE);
-
-    m.row = TM_ROW_EDGE;
-    r = trig_menu_change(&m, &s, +1);
-    CHECK("Edge: Rising <-> Falling", r == TM_CHANGED_EDGE && s.trigger.edge == TRIG_FALLING &&
-          strcmp(trig_menu_row_value(&s, TM_ROW_EDGE), "Falling") == 0);
-
-    m.row = TM_ROW_SOURCE;
-    r = trig_menu_change(&m, &s, +1);
-    int d1 = (r == TM_CHANGED_SOURCE) && s.trigger.source == TRIG_SRC_CH2 &&
-             strcmp(trig_menu_row_value(&s, TM_ROW_SOURCE), "CH2") == 0 &&
-             strcmp(trig_menu_row_label(TM_ROW_SOURCE), "Channel:") == 0;
-    trig_menu_change(&m, &s, +1);
-    s.ch2.enabled = false;
-    r = trig_menu_change(&m, &s, +1);
-    CHECK("Channel: CH1 <-> CH2; refused onto a channel that is off",
-          d1 && r == TM_REFUSED_OFF && s.trigger.source == TRIG_SRC_CH1);
+    /* (The trigger settings are the Trigger pane's rows on trig.mode / edge /
+     * source: make test-osc-menu-screen. trig_menu.c, the model of the inline
+     * panel, had no caller left and is gone.) */
 }
 
 static void test_focus(void)
@@ -689,7 +660,7 @@ int main(void)
     test_scan();
     test_long_map();
     test_short_map();
-    test_trig_menu();
+    test_trigger_key();
     test_save();
     test_osc_menu();
     test_focus();

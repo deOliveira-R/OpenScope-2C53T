@@ -9,7 +9,7 @@
  * relay, a trigger change and Roll are in their setters (props_scope.c).
  *
  * Input task only: these write scope state the display task reads. Not host-tested (fpga_* calls); the decisions
- * they apply are (trig_menu.c, scope_state.c, osc_menu_model.c).
+ * they apply are (scope_state.c, osc_menu_model.c).
  */
 #ifndef SCOPE_APPLY_H
 #define SCOPE_APPLY_H

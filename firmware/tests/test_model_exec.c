@@ -148,7 +148,7 @@ static void f_gen_freq(uint32_t f)            { logf_("gen_freq(%u);", (unsigned
 static void f_gen_amp(uint8_t a)              { logf_("gen_amp(%u);", a); siggen_set_amplitude_dv(a); }
 static void f_gen_out(bool on)                { logf_("gen_out(%d);", on); siggen_enable(on); }
 static bool f_busy(void)                      { return g_busy; }
-/* The mode switch (op_mode -> input_mode_switch -> enter_mode). */
+/* The mode switch (op_mode -> input_mode_switch). */
 static bool f_mode(uint8_t m)                 { logf_("mode(%u);", m); current_mode = (device_mode_t)m; return !nok(); }
 static bool     g_shell_persist = true;      /* `persist off` for bench sweeps when false */
 static unsigned g_notes;                     /* settings_store_note_change calls */
@@ -854,7 +854,7 @@ static void test_mode_switch(void)
     sh_reset(); model_shell_set("sys.instrument none", collect);
     CHECKF(n_out == 1 && starts(0, "REFUSED sys.instrument (not an instrument)"), "%s", out[0]);
     CHECK(g_log[0] == '\0' && current_mode == MODE_HOME);
-    /* the long keys' origin goes the same way (lgc_mode_set) */
+    /* the long keys' origin goes the same way (ui_router.c's globals) */
     prop_note_t n;
     CHECK(prop_set_local(P(SYS_MODE), MODE_OSCILLOSCOPE, ORIGIN_KEY, &n) == PS_OK &&
           strcmp(g_log, "mode(0);") == 0 && current_mode == MODE_OSCILLOSCOPE);
@@ -963,7 +963,7 @@ static void test_shell_steps(void)
 }
 
 /* The redraw request carries the groups a request changed, so the port can
- * leave a screen alone that shows none of them (legacy_screens.c groups;
+ * leave a screen alone that shows none of them (the screens' groups;
  * test_screen_router checks the screens' side). A stored set of another
  * instrument changes only that instrument's group. */
 #define GB(g) ((uint16_t)(1u << (g)))

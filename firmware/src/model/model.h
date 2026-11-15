@@ -430,7 +430,7 @@ typedef struct {
      * reading when it has none for this function (meter_ui.c). */
     void    (*meter_layout)(uint8_t layout);
     /* system */
-    bool    (*mode)(uint8_t device_mode);              /* posts the mode switch (enter_mode);
+    bool    (*mode)(uint8_t device_mode);              /* the mode switch (input_mode_switch);
                                                         * model_touch(PG_SYS / PG_UI) on landing */
     void    (*backlight)(uint8_t pct);                 /* sys_pwm                               */
     void    (*autooff)(uint8_t mins);                  /* re-arm the input task's idle timer    */

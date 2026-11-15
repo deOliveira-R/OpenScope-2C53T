@@ -312,7 +312,8 @@ prop_status_t trig_edge_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
 int32_t trig_source_get(const prop_desc_t *p) { (void)p; return (int32_t)scope_state_get()->trigger.source; }
 void    trig_source_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->trigger.source = (trigger_source_t)v; }
 
-/* trig_menu_change: a channel that is off is refused; then reg 0x06. */
+/* A channel that is off is refused (stock keeps the source on a live
+ * channel too); then reg 0x06. */
 prop_status_t trig_source_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)origin;

@@ -77,9 +77,9 @@ DAMAGED and drops out of the gallery.
 | gallery grid | MENU, long SAVE | close |
 | anywhere | POWER | closes the gallery, then the usual power-off countdown |
 
-The capture freezes rendering (`ui_modal_active`, waiting for the display task to
-acknowledge, `ui_modal_idle_count`) for the ~0.5 s write, so the popup is not in
-the picture and no frame is half drawn.
+The capture is a display command (`DCMD_CAPTURE`): the display task saves the
+screen between two of its own frames, so rendering rests for the ~0.5 s write,
+the popup is not in the picture and no frame is half drawn.
 
 ## Shell
 

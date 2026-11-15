@@ -7,8 +7,9 @@
  * While Home or Settings is up no instrument view is, and it reads "none"
  * (there is no "last instrument" variable to report instead). sys.mode is
  * the old mode enum, Settings and Home included, kept as an alias over the
- * same current_mode. Both run the keys' mode switch (model_hw_fw.c op_mode ->
- * input_mode_switch -> enter_mode, the input task's owner of the mode
+ * same current_mode (the mirror of the screen router's base, which
+ * the switch moves: ui/screen.c). Both run the mode switch (model_hw_fw.c
+ * op_mode -> input_mode_switch: the router's screen switch and the mode
  * posture) and return when the switch is made and its posture posted; the
  * long mode keys come through sys.mode too (ORIGIN_KEY), so keys and shell
  * share the path.

@@ -102,7 +102,7 @@ void settings_ui_draw_sound(uint8_t sub)
 
 void settings_ui_draw_list(uint8_t row)
 {
-    const int settings_selected = row;
+    const int selected = row;
     const theme_t *th = theme_get();
 
     lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
@@ -112,8 +112,8 @@ void settings_ui_draw_list(uint8_t row)
 
     /* Compute scroll offset so selected item is always visible */
     int scroll = 0;
-    if (settings_selected >= MENU_VISIBLE)
-        scroll = settings_selected - MENU_VISIBLE + 1;
+    if (selected >= MENU_VISIBLE)
+        scroll = selected - MENU_VISIBLE + 1;
 
     for (int i = 0; i < SETTINGS_ITEM_COUNT; i++) {
         const char *value = NULL;
@@ -136,7 +136,7 @@ void settings_ui_draw_list(uint8_t row)
         default: break;
         }
 
-        draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
+        draw_menu_item(i, scroll, selected, settings_items[i], value, th);
     }
 }
 

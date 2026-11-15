@@ -121,7 +121,7 @@ bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's 
  * it (and without a poll task it would switch the meter SoC on under the
  * scope), so the op does the state half only, and the stored function is
  * applied when the link next comes on: fpga_meter_link_set(true) requests
- * it, as does meter entry (enter_mode -> fpga_meter_screen_entered,
+ * it, as does meter entry (input_mode_switch -> fpga_meter_screen_entered,
  * input_handler.c; main.c at boot). */
 
 static bool scope_fe_live(void)

@@ -130,12 +130,6 @@ const char *startup_mode_name(startup_mode_t mode)
     }
 }
 
-void startup_mode_set(startup_mode_t mode)
-{
-    if (mode >= STARTUP_COUNT) return;
-    startup_mode = mode;       /* captured on the next key, or at once via input_request_settings_flush() (shell) */
-}
-
 #ifndef FPGA_WARM_HANDOFF_TEST
 #define FPGA_WARM_HANDOFF_TEST 0
 #endif

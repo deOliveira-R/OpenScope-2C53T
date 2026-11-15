@@ -42,7 +42,7 @@ static void boot(device_mode_t mode)
     g_after = 0;
 }
 
-/* What the long MENU global does: a sys.mode set (legacy_screens.c). */
+/* What the long MENU global does: a sys.mode set (ui_router.c). */
 static void go_home(void)
 {
     (void)prop_set_local(P(SYS_MODE), MODE_HOME, ORIGIN_KEY, NULL);

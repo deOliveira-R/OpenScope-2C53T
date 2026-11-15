@@ -82,7 +82,6 @@
 #include "../ui/scope_roll.h"
 #include "../ui/scope_geom.h"
 #include "../ui/scope_mask.h"
-#include "../ui/trig_menu.h"
 #include "../dsp/trig_policy.h"
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"

@@ -1,7 +1,3 @@
 drivers/fpga.c	fpga_reconcile_frontend_after_arm	chN.coupling	1
 drivers/fpga.c	fpga_reconcile_timebase_after_arm	tb.code	1
 drivers/fpga.c	fpga_roll_service	view.run	1
-main.c	startup_mode_set	sys.startup	1
-ui/trig_menu.c	trig_menu_change	trig.edge	1
-ui/trig_menu.c	trig_menu_change	trig.mode	1
-ui/trig_menu.c	trig_menu_change	trig.source	1

@@ -103,7 +103,9 @@ typedef struct {
     bool (*globals)(button_id_t btn, bool is_long);
     /* After any handled key (step 7): settings capture and store service. */
     void (*after_key)(scr_res_t res);
-    /* After the stack changed (push, pop, close, switch): post DCMD_STACK. */
+    /* After the stack changed (push, pop, close, switch). The firmware
+     * leaves it NULL: a key's own answer, the mode switch and the display
+     * task's look at the stack every frame repaint what a change needs. */
     void (*stack_changed)(void);
 } screen_hooks_t;
 

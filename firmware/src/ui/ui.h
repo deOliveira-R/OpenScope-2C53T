@@ -342,7 +342,6 @@ void meter_toggle_debug_overlay(void);
 void draw_fuse_screen(float drop_mv, int8_t drop_decimals, bool steady, bool repaint);
 const char *meter_submode_name(uint8_t submode);
 const char *startup_mode_name(startup_mode_t mode);
-void startup_mode_set(startup_mode_t mode);
 
 /* The home page: home_screen.h (the screen) and home_ui.c (its painting). */
 

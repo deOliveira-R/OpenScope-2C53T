@@ -102,7 +102,7 @@ force.
   keep their state behind setter functions).
 - `scripts/state_owners.txt`: who may store. `*  model/` (the setters and store hooks), `ui/scope_state.c`
   (the pure step helpers and the initialiser), and per state the owner function a setter reaches through the
-  hardware ops (`sys.mode` in `enter_mode`, `view.mode` in `scope_view_select`, `chN.pos` in `scope_vpos_set`).
+  hardware ops (`sys.mode`: `current_mode` is stored by the screen router with its base, `ui/screen.c set_base_locked`; `view.mode` in `scope_view_select`, `chN.pos` in `scope_vpos_set`).
 - `scripts/state_owners_baseline.txt`: the stores that exist today, `file<TAB>function<TAB>state<TAB>count`.
 
 ```sh

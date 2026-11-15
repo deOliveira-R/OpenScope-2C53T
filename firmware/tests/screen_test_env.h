@@ -73,8 +73,8 @@ uint32_t dac_output_timer_clock_hz(void) { return 240000000u; }
 /* ── fake hardware ops ─────────────────────────────────────────────── */
 static bool     env_busy;              /* self-cal running */
 static unsigned env_notes;             /* settings note_change calls */
-/* The mode op: the firmware's posts the switch and enter_mode makes it
- * (current_mode, then the router's base). env_mode_applies = false keeps it
+/* The mode op: the firmware's is input_mode_switch, which has the router
+ * switch its base (current_mode follows there). env_mode_applies = false keeps it
  * a pure log, to see that nothing else moved the mode. */
 static bool     env_mode_applies = true;
 

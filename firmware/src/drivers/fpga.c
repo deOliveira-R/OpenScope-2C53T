@@ -2749,7 +2749,7 @@ void fpga_request_meter_mode(uint8_t submode)
 }
 
 /* The poll task serves the meter while its link is on. The meter screen
- * counts by itself: a key's request (enter_mode, input task) arrives one
+ * counts by itself: a key's request (input_mode_switch, input task) arrives one
  * frame before the display task has turned the link on, and the screen
  * being shown always means the link is wanted (meter_link_policy.h). In an
  * image that cannot run the meter under another screen the screen is the
@@ -3595,7 +3595,7 @@ void fpga_meter_link_set(bool on)
         fpga_set_meter_mux(true);
         /* Without a poll task the request would run the whole transition
          * here, on the display task; those images get the function from
-         * enter_mode's own call, as before. */
+         * input_mode_switch's own call, as before. */
         if (!covered && meter_poll_handle != NULL) fpga_request_meter_mode(submode);
     } else {
         if (meter_link_state == METER_LINK_ST_OFF) return;
@@ -3610,7 +3610,7 @@ void fpga_meter_link_set(bool on)
     }
 }
 
-/* The meter screen was entered (input task, enter_mode). With the link off
+/* The meter screen was entered (input task, input_mode_switch). With the link off
  * this is the request it always posted. With the link already on and the
  * SoC running the stored function there is nothing to do: no PC11 edge, no
  * selector word. A link that is on but not live (a transition that timed
