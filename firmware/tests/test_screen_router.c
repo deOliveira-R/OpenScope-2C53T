@@ -595,7 +595,49 @@ void lgc_touch(void)          { lg("touch", 0, 0, 0); }
 void lgc_click(void)          { lg("click", 0, 0, 0); }
 void lgc_lock(void)           { lg_lock++; }
 void lgc_unlock(void)         { lg_lock--; }
-void ui_describe_settings(char *out, size_t n) { snprintf(out, n, "settings=%d/0/0", (int)W.depth); }
+
+/* The Settings screens' stand-ins (B8): the list and its two pages (layers
+ * the mirror pushes from W.depth here; the real ones push themselves). The
+ * arrows paint in place, OK and the keys with no meaning in full, a long
+ * key nothing. (The real ones, every row as a property set, are in make
+ * test-settings-screen.) */
+static scr_res_t fake_set_answer(uint8_t raw)
+{
+    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
+    if (raw == BTN_UP || raw == BTN_DOWN || raw == BTN_LEFT || raw == BTN_RIGHT) return SCR_DRAW;
+    if (raw == BTN_OK || raw == BTN_CH1 || raw == BTN_CH2 || raw == BTN_TRIGGER || raw == BTN_MOVE) return SCR_DRAW_FULL;
+    return SCR_HANDLED;
+}
+static scr_res_t fake_set_key(scr_key_t k)
+{
+    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
+    lg("set:%d", raw, 0, 0);
+    return fake_set_answer(raw);
+}
+static void fake_set_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; }
+static void fake_set_describe(char *out, size_t n) { snprintf(out, n, "settings=%d/0/0", (int)W.depth); }
+#define G_SET ((uint16_t)((1u << PG_COUNT) - 1u))
+const screen_t settings_screen = {
+    .name = "settings", .id = SCR_SETTINGS, .mode = MODE_SETTINGS, .instrument = SCR_INSTRUMENT_NONE,
+    .key = fake_set_key, .draw = fake_set_draw, .describe = fake_set_describe, .groups = G_SET,
+};
+const screen_t settings_sound_screen = {
+    .name = "set_sound", .id = SCR_SET_SOUND, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
+    .flags = SCR_F_CHILD | SCR_F_OPAQUE,
+    .key = fake_set_key, .draw = fake_set_draw, .describe = fake_set_describe, .groups = G_SET,
+};
+const screen_t settings_about_screen = {
+    .name = "set_about", .id = SCR_SET_ABOUT, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
+    .flags = SCR_F_CHILD | SCR_F_OPAQUE,
+    .key = fake_set_key, .draw = fake_set_draw, .describe = fake_set_describe, .groups = G_SET,
+};
+/* What a key a Settings screen is asked must log: the key, then the wiring's
+ * one post of its answer, for the screen that was asked (the page on top). */
+static void want_set(uint8_t raw)
+{
+    lg("set:%d", raw, 0, 0);
+    lg("after:%d:%d", legacy_settings_page(W.depth), fake_set_answer(raw), 0);
+}
 
 /* The home page's stand-in: every key it is asked, with what the real one
  * answers for it (LEFT/RIGHT repaint the selection, the rest nothing). */
@@ -770,6 +812,8 @@ static void old_route(uint8_t raw)
              * answered KA_NONE and exec_key_cmd ran the settings hook). The
              * screen is asked now, and answers "nothing" itself. */
             if (W.mode == MODE_HOME && k.act == KA_NONE) { want_home(raw); return; }
+            /* Settings (B8): the same; no long key ever had a meaning there. */
+            if (W.mode == MODE_SETTINGS && k.act == KA_NONE) { want_set(raw); return; }
             /* The meter (B6): the same; its long keys never had a meaning. */
             if (W.mode == MODE_MULTIMETER && k.act == KA_NONE) { want_meter(raw); return; }
             /* The generator (B3): its long OK (KA_SIGGEN_RUNSTOP) and long
@@ -812,7 +856,10 @@ static void old_route(uint8_t raw)
     /* was siggen_edit_input() (PRM, and the editor's keys while it is open),
      * then the switch: the generator screen has both. */
     if (W.mode == MODE_SIGNAL_GEN && b != BTN_POWER) { want_gen(raw); return; }
-    lgc_mode_key(b);                                             /* switch (button) */
+    /* was the switch's Settings arms (settings_depth): the Settings screens
+     * have them. */
+    if (W.mode == MODE_SETTINGS && b != BTN_POWER) { want_set(raw); return; }
+    lgc_mode_key(b);                                             /* switch (button): POWER */
 }
 
 static void new_route(uint8_t raw)
@@ -970,8 +1017,8 @@ static void test_legacy_table(void)
         { "RIGHT on home: home, and its selection paint", MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_RIGHT,                   "touch click ctx home:13 after:0:2" },
         { "long OK on home: home (nothing), no exec",     MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx home:142 after:0:1" },
         { "MENU on home with the gallery up: gallery's",  MODE_HOME,         0, 0, 0, 1, 0, 0, BTN_MENU,                    "touch click gallery:9 after:8:1" },
-        { "MENU on Settings > Oscilloscope: switch",      MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx switch:9" },
-        { "short MOVE in settings: switch",               MODE_SETTINGS,     0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx switch:3" },
+        { "MENU on the Settings list: its screen",        MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx set:9 after:4:1" },
+        { "short MOVE in settings: its screen, a repaint", MODE_SETTINGS,    0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx set:3 after:4:3" },
     };
     _Static_assert(KA_ENTER_HOME == 2 && KA_ENTER_METER == 3 && KA_ENTER_SCOPE == 4 && KA_ENTER_SIGGEN == 5 &&
                    KA_CH_ENABLE_TOGGLE == 7 && KA_GALLERY_OPEN == 10 &&

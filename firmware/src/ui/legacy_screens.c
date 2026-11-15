@@ -51,6 +51,7 @@
  */
 #include "legacy_screens.h"
 #include "home_screen.h"
+#include "settings_screen.h"
 #include "siggen_screen.h"
 #include "meter_screen.h"
 #include "scope_screen.h"
@@ -75,56 +76,7 @@ static bool ls_is_native(screen_id_t id)
     return s != NULL && s->draw != NULL;
 }
 
-/* ── key callbacks ─────────────────────────────────────────────────── */
-
-/* The key_map() part every base shares: long keys always (the globals were
- * taken in router step 4), short keys it claims. false: the screen's own
- * handlers decide. */
-static bool ls_mapped(scr_key_t k)
-{
-    const key_ctx_t c = lgc_ctx();
-    const key_cmd_t m = key_map(&c, k.btn, k.is_long);
-    if (!k.is_long && m.act == KA_LEGACY) return false;
-    lgc_exec(m, k.btn);
-    return true;
-}
-
-/* The settings base and every settings page: settings_depth decides inside. */
-static scr_res_t ls_key_settings(scr_key_t k)
-{
-    ls_legacy_done = true;
-    if (!ls_mapped(k)) lgc_mode_key(k.btn);
-    return SCR_HANDLED;
-}
-
 /* ── the screens ───────────────────────────────────────────────────── */
-
-/* The property groups each screen shows (screen_t.groups, bit = PG_x): a
- * shell set repaints the screen only when it changed one of them
- * (model_hw_fw.c port_changed). Every screen with the bars shows the
- * generator (the status bar's generator slot) and sys/ui (theme, mode,
- * focus). The settings base and its pages keep every group (device settings
- * are sys.* and meter.link today; a repaint there is cheap): all of them. The
- * gallery shows none of them. */
-#define G(g)        ((uint16_t)(1u << (g)))
-#define G_ALL       ((uint16_t)((1u << PG_COUNT) - 1u))
-
-#define LBASE(id, nm, md, ins, keyfn, desc, grp) \
-    { nm, id, md, ins, 0, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
-#define LPAGE(id, nm, fl, keyfn, desc, grp) \
-    { nm, id, MODE_COUNT, SCR_INSTRUMENT_NONE, fl, NULL, NULL, keyfn, NULL, NULL, NULL, desc, grp }
-
-/* The legacy rows: the Settings base and its pages. Every other screen is a
- * real one: home_screen (home_screen.c), siggen_screen (siggen_screen.c),
- * meter_screen (meter_screen.c), scope_screen (scope_screen.c, B7),
- * osc_menu_screen (osc_menu_screen.c), gallery_screen (gallery_screen.c)
- * and the two small layers (overlay_screens.c). */
-static const screen_t ls_table[] = {
-    LBASE(SCR_SETTINGS, "settings", MODE_SETTINGS,     SCR_INSTRUMENT_NONE, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_SET_ABOUT,     "set_about",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-    LPAGE(SCR_SET_SOUND,     "set_sound",     SCR_F_CHILD, ls_key_settings, ui_describe_settings, G_ALL),
-};
-_Static_assert(PG_COUNT <= 16, "screen_t.groups holds one bit per property group");
 
 screen_id_t legacy_settings_page(int8_t depth)
 {
@@ -288,8 +240,9 @@ void legacy_screens_sync(void)
 void legacy_screens_init(void)
 {
     screen_reset();
-    for (unsigned i = 0; i < sizeof ls_table / sizeof ls_table[0]; i++)
-        (void)screen_register(&ls_table[i]);
+    (void)screen_register(&settings_screen);
+    (void)screen_register(&settings_sound_screen);
+    (void)screen_register(&settings_about_screen);
     (void)screen_register(&home_screen);
     (void)screen_register(&siggen_screen);
     (void)screen_register(&meter_screen);

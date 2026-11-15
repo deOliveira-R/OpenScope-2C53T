@@ -70,10 +70,4 @@ bool input_inject_button(button_id_t b);
  * scope_apply.h at the UI round 1 merge, with the other shared glue. */
 #include "scope_apply.h"
 
-/*
- * Handle OK press in settings menu (top-level and sub-menus).
- * Called internally by input_handle_button, but exposed for testing.
- */
-void input_handle_settings_ok(void);
-
 #endif /* INPUT_HANDLER_H */

@@ -121,9 +121,6 @@ bool input_mode_switch(device_mode_t m);
 void input_router_init(void *display_queue);
 extern volatile startup_mode_t startup_mode;
 extern volatile uint32_t      uptime_seconds;
-extern volatile int8_t        settings_selected;  /* settings_item_t: the row of the Settings list */
-extern volatile int8_t        settings_depth;      /* settings_page_t: the list, or one of its pages */
-extern volatile int8_t        settings_sub_selected; /* row inside a page (Sound and Light) */
 extern volatile uint8_t       active_channel;      /* 0=CH1, 1=CH2 (for scope adjustments) */
 extern volatile uint8_t       meter_submode;       /* 0-11: current meter sub-mode (11 = Auto) */
 extern volatile uint8_t       meter_layout;        /* 0=full, 1=chart, 2=stats, 3=fuse */
@@ -181,10 +178,11 @@ typedef enum {
     SETTINGS_ITEM_COUNT
 } settings_item_t;
 
-/* settings_depth: the list, one of its two pages, or the question of
- * "Reset to Defaults" (settings_reset.h). The numbers are what `ui screen`
- * prints (settings=<page>/<row>/<sub>) and are kept as they were; 1 and
- * 3..6 were the scope, math, component and Bode pages. */
+/* What Settings shows (ui/settings_screen.h): the list, one of its two
+ * pages, or the question of "Reset to Defaults" (settings_reset.h). The
+ * numbers are what `ui screen` prints (settings=<page>/<row>/<sub>) and are
+ * kept as they were; 1 and 3..6 were the scope, math, component and Bode
+ * pages. */
 typedef enum {
     SET_PAGE_LIST  = 0,
     SET_PAGE_ABOUT = 2,
@@ -358,8 +356,7 @@ void startup_mode_set(startup_mode_t mode);
 
 /* The generator page: siggen_screen.h (the screen) and siggen_ui.c (its painting). */
 
-/* settings_ui.c */
-void draw_settings_screen(void);
+/* settings_ui.c: the Settings paint is declared in settings_screen.h. */
 void draw_health_panel(uint16_t y_start);
 
 #endif /* UI_H */

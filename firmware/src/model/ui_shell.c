@@ -237,14 +237,6 @@ static void fmt_prop(char *out, size_t n, const prop_desc_t *p)
     prop_format_value(p, prop_get(p), out, n);
 }
 
-/* ── describe hook of the legacy settings screens (ui/legacy_screens.c) ── */
-
-void ui_describe_settings(char *out, size_t n)
-{
-    snprintf(out, n, "settings=%d/%d/%d", (int)settings_depth, (int)settings_selected,
-             (int)settings_sub_selected);
-}
-
 /* One line, fixed keys in a fixed order, "-" where a key does not apply:
  *   screen=scope instrument=scope overlay=osc_menu row=ch1 pane=pane item=2
  *   settings=- home=- focus=zoom ach=CH1 run=run view=yt meter=- popup=0

@@ -82,6 +82,7 @@
 #include "../dsp/trig_policy.h"
 #include "../ui/key_model.h"
 #include "../tasks/input_handler.h"
+#include "../ui/settings_screen.h"   /* `ui dump`: the Settings page and rows */
 #include "../util/shell_persist.h"
 #include "../util/lcd_health.h"
 #include "../ui/meter_voltage_wave.h"
@@ -3688,9 +3689,9 @@ static void cmd_ui_dump(void)
                      meter_submode_name(meter_submode),
                      (unsigned)meter_layout,
                      meter_layout_name(meter_layout),
-                     (int)settings_depth,
-                     (int)settings_selected,
-                     (int)settings_sub_selected);
+                     (int)settings_screen_view().page,
+                     (int)settings_screen_view().row,
+                     (int)settings_screen_view().sub);
     {
         extern volatile uint32_t ui_scope_full_draws, ui_scope_live_draws, ui_redraw_all_count;
         usb_debug_printf("draws scope_full=%lu scope_live=%lu redraw_all=%lu\r\n",

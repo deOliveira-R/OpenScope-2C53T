@@ -101,8 +101,4 @@ void      lgc_native_after(screen_id_t scr, scr_res_t res);
 void      lgc_lock(void);                         /* guards the stack arrays        */
 void      lgc_unlock(void);
 
-/* `ui screen` describe hook (src/model/ui_shell.c; a fake in the host test):
- * one key=value fragment. */
-void ui_describe_settings(char *out, size_t n);   /* "settings=1/0/3"           */
-
 #endif /* LEGACY_SCREENS_H */

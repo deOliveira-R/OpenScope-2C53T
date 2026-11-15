@@ -89,6 +89,14 @@ screen_id_t screen_base(void)
     return n ? st[0] : SCR_COUNT;
 }
 
+bool screen_is_open(screen_id_t id)
+{
+    screen_id_t st[SCR_STACK_MAX];
+    const uint8_t n = copy_stack(st);
+    for (uint8_t i = 0; i < n; i++) if (st[i] == id) return true;
+    return false;
+}
+
 screen_stack_t screen_snapshot(void)
 {
     screen_stack_t s;

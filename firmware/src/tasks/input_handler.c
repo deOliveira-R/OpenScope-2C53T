@@ -20,7 +20,7 @@
 #include "input_handler.h"
 #include "ui.h"
 #include "scope_state.h"
-#include "../ui/startup_policy.h"   /* startup_mode_step: the Startup row's order */
+#include "../ui/startup_policy.h"   /* startup_screen_of_mode: the power-off flush */
 #include "fpga.h"
 #include "scope_selfcal_run.h"
 #include "meter_autoselect.h"
@@ -33,7 +33,7 @@
 #include "../ui/gallery_ui.h"
 #include "../ui/screen.h"
 #include "../ui/legacy_screens.h"
-#include "../ui/settings_reset.h"   /* Reset to Defaults: the confirm step */
+#include "../ui/settings_screen.h"  /* the Settings screens' environment */
 #include "model.h"           /* the long mode keys set sys.mode */
 #include "task_call.h"       /* input_call_sync */
 #if FEATURE_USBDRIVE
@@ -178,60 +178,6 @@ void input_autooff_apply(uint8_t mins)
     g_autooff_ready = true;
 }
 
-/* One step of a property from a Settings row. OK wraps round the ends,
- * LEFT/RIGHT stop at them (as the rows always did), whatever the property's
- * own PF_WRAP says. */
-static void settings_prop_step(const prop_desc_t *p, int dir, bool wrap)
-{
-    const int32_t v = prop_get(p);
-    const bool at_end = (dir > 0) ? (v >= p->max) : (v <= p->min);
-    if (!at_end)
-        (void)prop_step_local(p, dir, ORIGIN_KEY, NULL);
-    else if (wrap)
-        (void)prop_set_local(p, (dir > 0) ? p->min : p->max, ORIGIN_KEY, NULL);
-}
-
-/* Sound and Light page: sys.volume / sys.brightness. */
-static void sound_light_adjust(int dir, bool wrap)
-{
-    if (settings_sub_selected == SET_SOUND_ROW_VOLUME) {
-        settings_prop_step(P(SYS_VOLUME), dir, wrap);
-        sys_pwm_click();             /* hear the new level */
-    } else {
-        settings_prop_step(P(SYS_BRIGHTNESS), dir, wrap);   /* the setter applies the backlight */
-    }
-}
-
-/* LEFT/RIGHT (wrap = false) or OK (dir = +1, wrap = true) on a row of the
- * list that holds a value. false: the row has none (a page or an action). */
-static bool settings_value_adjust(settings_item_t item, int dir, bool wrap)
-{
-    switch (item) {
-    case SET_ITEM_AUTOOFF:      /* Off / 15 / 30 / 60 min */
-        settings_prop_step(P(SYS_AUTOOFF), dir, wrap);
-        return true;
-    case SET_ITEM_STARTUP:      /* stock's row order (home, meter, scope, generator), then
-                                 * Restore ("Last Used"); always round */
-        (void)prop_set_local(P(SYS_STARTUP),
-                             (int32_t)startup_mode_step((startup_mode_t)prop_get(P(SYS_STARTUP)), dir),
-                             ORIGIN_KEY, NULL);
-        return true;
-    case SET_ITEM_METER_LINK:   /* With Screen <-> Always. The display task turns the link on or
-                                 * off within a frame (main.c meter_link_service). */
-        (void)prop_step_local(P(METER_LINK), dir, ORIGIN_KEY, NULL);
-        return true;
-    case SET_ITEM_THEME:        /* always round, as before */
-        (void)prop_step_local(P(SYS_THEME), dir, ORIGIN_KEY, NULL);
-        return true;
-    default:
-        return false;
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Settings OK handler
- * ═══════════════════════════════════════════════════════════════════ */
-
 /* ── Reset to Defaults ───────────────────────────────────────────────
  * The built-in defaults over the user settings, on this task (it is the
  * model's executor and the one writer of the settings record):
@@ -258,66 +204,47 @@ static const char *settings_reset_popup(const settings_reset_result_t *r)
     return "Settings reset";
 }
 
-void input_handle_settings_ok(void)
+/* ── The Settings screens' environment (ui/settings_screen.h) ────────
+ * What a Settings key does that is not a property set: the screens name it,
+ * this task's file does it. */
+
+/* The key click at the volume just set. */
+void settings_env_click(void) { sys_pwm_click(); }
+
+/* MENU out of a page (or "no" to the question): backing out is a deliberate
+ * boundary, so commit now rather than waiting out the settle window. */
+void settings_env_page_left(void)
 {
-    switch (settings_reset_on_ok(settings_depth, settings_selected)) {
-    case SET_RESET_ASK:             /* the first OK only asks */
-        settings_depth = SET_PAGE_RESET;
-        return;
-    case SET_RESET_DO: {            /* OK on the question: yes */
-        const settings_reset_result_t r = settings_reset_now();
-        settings_depth = SET_PAGE_LIST;         /* the screen stays in Settings */
-        scope_show_popup(settings_reset_popup(&r));
-        return;
-    }
-    default:
-        break;
-    }
+    meter_autoselect_cancel();
+    (void)settings_store_flush(settings_now_ms());
+}
 
-    switch ((settings_page_t)settings_depth) {
-    case SET_PAGE_SOUND:
-        sound_light_adjust(+1, true);
-        return;
-    case SET_PAGE_ABOUT:            /* OK goes back */
-        settings_depth = SET_PAGE_LIST;
-        return;
-    default:
-        break;
-    }
+/* OK on the question: the reset and its popup. */
+void settings_env_reset(void)
+{
+    const settings_reset_result_t r = settings_reset_now();
+    scope_show_popup(settings_reset_popup(&r));
+}
 
-    const settings_item_t item = (settings_item_t)settings_selected;
-    if (settings_value_adjust(item, +1, true))
-        return;
-    switch (item) {
-    case SET_ITEM_SOUND_LIGHT:      /* stock's sub-page: volume, brightness */
-        settings_depth = SET_PAGE_SOUND;
-        settings_sub_selected = 0;
-        break;
-    case SET_ITEM_ABOUT:
-        settings_depth = SET_PAGE_ABOUT;
-        break;
-    case SET_ITEM_USB_SHARE:
-        /* Re-enumerate as CDC + read-only gallery drive, or back to CDC
-         * only. Stock (0x0800BF08) goes MSC-only and stops the scope; ours
-         * keeps the shell and the scope, and falls back to CDC-only by
-         * itself if the host does not configure the composite device
-         * (usb_mode_sm.h). No property yet: usb_debug.c owns the state. */
+/* USB Sharing: re-enumerate as CDC + read-only gallery drive, or back to
+ * CDC only. Stock (0x0800BF08) goes MSC-only and stops the scope; ours
+ * keeps the shell and the scope, and falls back to CDC-only by itself if
+ * the host does not configure the composite device (usb_mode_sm.h). An
+ * action, not a property: usb_debug.c owns the state (settings_screen.h). */
+void settings_env_usb_share_toggle(void)
+{
 #if FEATURE_USBDRIVE
-        usb_share_toggle();
+    usb_share_toggle();
 #endif
-        break;
-    case SET_ITEM_FW_UPDATE: {      /* reboot into the DFU bootloader */
-        extern void dfu_request_reboot(void);
-        /* Deliberate boundary: we are about to reboot, so anything
-         * still inside the settle window would be lost. */
-        (void)settings_store_flush(settings_now_ms());
-        dfu_request_reboot();
-        break;
-    }
-    case SET_ITEM_RESET_DEFAULTS:   /* taken above: OK asks, OK again resets */
-    default:
-        break;
-    }
+}
+
+/* Firmware Update: reboot into the DFU bootloader. A deliberate boundary:
+ * anything still inside the settle window would be lost. */
+void settings_env_fw_update(void)
+{
+    extern void dfu_request_reboot(void);
+    (void)settings_store_flush(settings_now_ms());
+    dfu_request_reboot();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -355,10 +282,6 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
      * (home_screen.c open(): Home preselects it, stock 0x0800D834). */
     legacy_screens_sync();
     current_mode = m;
-    if (current_mode == MODE_SETTINGS) {
-        settings_selected = 0;
-        settings_depth = 0;
-    }
     legacy_screens_sync();               /* the router's base follows the mode (sys.instrument) */
     /* Tell the FPGA which mode we're entering.
      * Each mode needs different FPGA commands and analog MUX config. */
@@ -466,7 +389,7 @@ static key_ctx_t key_ctx_now(void)
     key_ctx_t c = scope_screen_ctx();
     const bool scope = (current_mode == MODE_OSCILLOSCOPE);
     c.mode            = current_mode;
-    c.settings_depth  = settings_depth;
+    c.settings_depth  = (int8_t)settings_screen_view().page;
     c.scope_time_view = scope && c.scope_time_view;
     c.osc_menu_open   = scope && c.osc_menu_open;
     c.osc_menu_locked = c.osc_menu_open && c.osc_menu_locked;
@@ -546,7 +469,7 @@ static uint8_t g_cmd;
 void lgc_state(lgc_state_t *s)
 {
     s->mode           = current_mode;
-    s->settings_depth = settings_depth;
+    s->settings_depth = (int8_t)settings_screen_view().page;   /* the stack's, read back */
     s->osc_open       = osc_menu_is_open();
     s->gallery_open   = gallery_ui_is_open();
     s->logo_up        = logo_screen_up();
@@ -727,137 +650,13 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     return g_cmd;
 }
 
-/* The per-key cases: what a key does in a mode when nothing before it (the
- * key model, home, softkeys, the frequency editor) took it. POWER comes here
- * from the router's globals. */
+/* POWER, from the router's globals: the hold-to-power-off countdown. (Every
+ * other key is a screen's.) */
 static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
 {
     uint8_t cmd = DCMD_REDRAW_ALL;
 
     switch (button) {
-
-    /* -- Mode / Navigation ---------------------------------------- */
-
-    case BTN_MENU:
-        /* Short MENU (stock's BACK). Inside a level it goes up one, as in
-         * stock (0x08009FE8: settings / generator sub-levels; the trigger
-         * panel is closed earlier, by key_map(); the generator is a
-         * screen of its own, ui/siggen_screen.c, and never reaches here). At
-         * a mode's top level it opens the home page. That is ours where stock differs: stock's short BACK does
-         * nothing at the top of the meter, generator and settings (owner
-         * decision D2 keeps ours). The scope never reaches here: its short
-         * MENU opens the Oscilloscope Settings page (key_model.c, stock
-         * ms[0xF68] = 9). Until 2026-11 this cycled scope -> meter ->
-         * generator -> settings. */
-        if (current_mode == MODE_SETTINGS && settings_depth > 0) {
-            meter_autoselect_cancel();
-            settings_depth = 0;
-            settings_sub_selected = 0;
-            (void)settings_store_flush(settings_now_ms());
-            send_cmd(dq, cmd);
-        } else {
-            enter_mode(MODE_HOME, dq);
-        }
-        break;
-
-    /* -- Channel buttons ------------------------------------------ */
-
-    /* The scope's CH1/CH2 (coupling) are its screen's (ui/scope_screen.c). */
-    case BTN_CH1:
-    case BTN_CH2:
-        send_cmd(dq, cmd);
-        break;
-
-    /* -- Trigger -------------------------------------------------- */
-
-    case BTN_TRIGGER:
-        /* Scope: key_model.c claims it in every view (KA_OSCMENU_PANE,
-         * the Trigger pane). What is left is the other modes. */
-        send_cmd(dq, cmd);
-        break;
-
-    case BTN_MOVE:
-        /* Scope: key_model.c answers it (KA_ADJ_CH_SWITCH, executed above). What
-         * is left is the other modes, where it only repaints; the meter's
-         * softkey meaning was caught at the top. */
-        send_cmd(dq, cmd);
-        break;
-
-    /* -- Save (screenshot) ---------------------------------------- */
-
-    /* BTN_SAVE never reaches here: key_map() claims it in every mode
-     * (KA_SCREENSHOT -> save_key_short(), the bench-image hooks included). */
-
-    /* -- Auto ----------------------------------------------------- */
-
-    /* BTN_AUTO, BTN_PRM, BTN_SELECT: the scope's (autoset, the mask, the
-     * spectrum views), the meter's and the generator's are their screens';
-     * on a Settings page they do nothing. */
-
-    /* -- UP / DOWN ------------------------------------------------ */
-
-    case BTN_UP:
-        if (current_mode == MODE_SETTINGS) {
-            if (settings_depth == SET_PAGE_LIST) {
-                if (settings_selected > 0) settings_selected--;
-            } else if (settings_depth == SET_PAGE_SOUND) {
-                if (settings_sub_selected > 0) settings_sub_selected--;
-            }
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        break;
-
-    case BTN_DOWN:
-        if (current_mode == MODE_SETTINGS) {
-            if (settings_depth == SET_PAGE_LIST) {
-                if (settings_selected < SETTINGS_ITEM_COUNT - 1)
-                    settings_selected++;
-            } else if (settings_depth == SET_PAGE_SOUND) {
-                if (settings_sub_selected < SET_SOUND_ROWS - 1) settings_sub_selected++;
-            }
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        break;
-
-    /* -- LEFT / RIGHT --------------------------------------------- */
-
-    case BTN_LEFT:
-        if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_SOUND) {
-            sound_light_adjust(-1, false);
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_LIST &&
-                 settings_value_adjust((settings_item_t)settings_selected, -1, false)) {
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        break;
-
-    case BTN_RIGHT:
-        if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_SOUND) {
-            sound_light_adjust(+1, false);
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        else if (current_mode == MODE_SETTINGS && settings_depth == SET_PAGE_LIST &&
-                 settings_value_adjust((settings_item_t)settings_selected, +1, false)) {
-            cmd = DCMD_DRAW_SETTINGS;
-            send_cmd(dq, legacy_screens_active_cmd());
-        }
-        break;
-
-    /* -- OK ------------------------------------------------------- */
-
-    case BTN_OK:
-        if (current_mode == MODE_SETTINGS) {
-            input_handle_settings_ok();
-            send_cmd(dq, cmd);
-        }
-        /* The scope's OK (RUN/STOP) is its screen's. */
-        break;
 
     /* -- Power ---------------------------------------------------- */
 

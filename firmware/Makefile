@@ -43,6 +43,7 @@ C_SOURCES += src/ui/siggen_ui.c
 C_SOURCES += src/ui/siggen_screen.c
 C_SOURCES += src/ui/siggen_edit.c
 C_SOURCES += src/ui/settings_ui.c
+C_SOURCES += src/ui/settings_screen.c
 C_SOURCES += src/ui/home_model.c
 C_SOURCES += src/ui/home_ui.c
 C_SOURCES += src/ui/home_screen.c
@@ -2258,7 +2259,7 @@ check-owners:
 # firmware yet.
 $(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
                                  src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
-                                 src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h \
+                                 src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h src/ui/settings_screen.h \
                                  src/ui/osc_menu_screen.h src/ui/gallery_screen.h src/ui/overlay_screens.h src/ui/scope_screen.h \
                                  src/model/model.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
@@ -2296,6 +2297,19 @@ $(BUILD_DIR)/test_siggen_screen: tests/test_siggen_screen.c src/ui/siggen_screen
 
 .PHONY: test-siggen-screen
 test-siggen-screen: $(BUILD_DIR)/test_siggen_screen
+	$<
+
+# The Settings screens (ARCH-1 B4 / B8): the list, the question of Reset to
+# Defaults, Sound and Light and About; every value through its property, the
+# pages on the router's stack, and 6000 random keys against a transcription
+# of the handlers they replace.
+$(BUILD_DIR)/test_settings_screen: tests/test_settings_screen.c src/ui/settings_screen.c src/ui/settings_screen.h \
+                                   src/ui/settings_reset.h src/ui/startup_policy.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< src/ui/settings_screen.c src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-settings-screen
+test-settings-screen: $(BUILD_DIR)/test_settings_screen
 	$<
 
 # The meter screen on meter.* (ARCH-1 B6): the key table on every softkey

@@ -60,6 +60,7 @@ extern void system_clock_config(void);
 #include "can_scope.h"
 #include "osc_menu_model.h"
 #include "osc_menu_screen.h"
+#include "settings_screen.h"
 #include "gallery_ui.h"
 #include "overlay_screens.h"
 #include "meas_select.h"
@@ -82,9 +83,6 @@ volatile device_mode_t current_mode = MODE_MULTIMETER;
 #endif
 volatile startup_mode_t startup_mode = STARTUP_RESTORE;   /* the built-in default (sys.startup) */
 volatile uint32_t      uptime_seconds = 0;
-volatile int8_t        settings_selected = 0;
-volatile int8_t        settings_depth = 0;
-volatile int8_t        settings_sub_selected = 0;
 volatile uint8_t       active_channel = 0;  /* 0=CH1, 1=CH2 */
 volatile uint8_t       meter_submode = 0;   /* 0-10: current meter sub-mode */
 volatile uint8_t       meter_layout = 0;   /* 0=full, 1=chart, 2=stats, 3=fuse */
@@ -537,6 +535,20 @@ bool display_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms)
     return task_call_sync(&g_display_call, &port, fn, arg, timeout_ms);
 }
 
+/* The page over the base, if one is up: a layer between the two bars that
+ * covers the base's area and is painted in its place (the Oscilloscope
+ * Settings page over the scope, a Settings page over the list). The bars
+ * stay; the base under it is not painted. NULL: none. */
+static const screen_t *page_layer(void)
+{
+    if (osc_page_up()) return &osc_menu_screen;
+    if (current_mode == MODE_SETTINGS) {
+        if (screen_is_open(SCR_SET_SOUND)) return &settings_sound_screen;
+        if (screen_is_open(SCR_SET_ABOUT)) return &settings_about_screen;
+    }
+    return NULL;
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action);
 
 /* DCMD_REDRAW_ALL: the hard invalidate. NEVER GATED, deliberately: an epoch
@@ -551,12 +563,13 @@ static void redraw_all(uint32_t frame)
     draw_status_bar();
     draw_info_bar();
     g_info_bar_epoch = info_bar_epoch();
-    if (osc_page_up()) {
+    const screen_t *const page = page_layer();
+    if (page != NULL) {
         /* The page covers y 16..223; both bars stay visible. Also what
          * repaints the page after the gallery or an LCD-health reinit: the
          * LCD was cleared under it, so the page repaints its background
          * too. */
-        layer_paint(&osc_menu_screen, SCR_PAINT_FULL, frame);
+        layer_paint(page, SCR_PAINT_FULL, frame);
         g_screen_painted = true;
         return;
     }
@@ -565,8 +578,6 @@ static void redraw_all(uint32_t frame)
     if (nb != NULL) {
         if (nb->id == SCR_SIGGEN) ui_siggen_full_draws++;
         native_paint_full(nb, frame);       /* the scope: scope_view_draw (the full render of its view) */
-    } else if (current_mode == MODE_SETTINGS) {
-        draw_settings_screen();
     }
     g_screen_painted = true;
 }
@@ -931,10 +942,30 @@ static void vDisplayTask(void *pvParameters)
         if (xQueueReceive(xDisplayQueue, &cmd, wait) == pdTRUE) {
             if (modal != NULL && cmd != DCMD_CAPTURE)
                 cmd = DCMD_NONE_MODAL_DROP;
-            /* DCMD_DRAW_ACTIVE + the sender's screen: that screen's own
-             * command below, whose checks drop it if the screen has gone
-             * since (ui/legacy_screens.c). */
-            cmd = legacy_screens_resolve_cmd(cmd);
+            if (cmd >= (uint8_t)DCMD_DRAW_ACTIVE && cmd < (uint8_t)DCMD_DRAW_ACTIVE_END) {
+                /* DCMD_DRAW_ACTIVE + a screen id: that screen in place, after
+                 * a key on it or a set of something it shows (the home page's
+                 * selection parts, the generator page, the meter page, a
+                 * Settings screen, the Oscilloscope Settings page; for the
+                 * scope only a wake-up, its tick paints). Dropped if that
+                 * screen is not the one shown any more. A screen with an
+                 * epoch is gated on it: a key that hit a clamp and changed
+                 * nothing costs no LCD write. */
+                const screen_id_t id = (screen_id_t)(cmd - (uint8_t)DCMD_DRAW_ACTIVE);
+                const screen_t *const pg = page_layer();
+                const screen_t *const nb = native_base();
+                if (pg != NULL) {
+                    if (pg->id == id && layer_paint_update(pg, frame)) g_screen_painted = true;
+                } else if (nb != NULL && nb->id == id) {
+                    const bool painted = native_paint_update(nb, frame);
+                    if (painted) g_screen_painted = true;
+                    if (nb->id == SCR_SIGGEN) {
+                        if (painted) ui_siggen_full_draws++;
+                        else         ui_siggen_skipped++;
+                    }
+                }
+                cmd = DCMD_NONE_MODAL_DROP;
+            }
             switch (cmd) {
             case DCMD_DRAW_SPLASH:
                 draw_splash();
@@ -949,41 +980,8 @@ static void vDisplayTask(void *pvParameters)
                  * drawer), so nothing is half drawn in it. */
                 gallery_ui_capture_run();
                 break;
-            case DCMD_DRAW_SETTINGS:
-                if (current_mode == MODE_SETTINGS) {
-                    draw_settings_screen();
-                    g_screen_painted = true;
-                }
-                break;
             case DCMD_DRAW_STATUS_BAR:
                 draw_status_bar();
-                break;
-            case DCMD_DRAW_SCOPE:       /* the scope: a wake-up, its tick paints (scope_view_draw) */
-            case DCMD_DRAW_HOME:
-            case DCMD_DRAW_METER:
-            case DCMD_DRAW_SIGGEN: {
-                /* A migrated screen's in-place paint (DCMD_DRAW_ACTIVE + its
-                 * id, resolved above): the home page's selection parts, the
-                 * generator page, the meter page after a key or a set of
-                 * meter.* from the shell. Dropped if that screen has gone since. A
-                 * screen with an epoch is gated on it: a key that hit a
-                 * clamp and changed nothing costs no LCD write. */
-                const screen_t *nb = native_base();
-                if (nb != NULL && legacy_screens_update_cmd(nb->id) == cmd) {
-                    const bool painted = native_paint_update(nb, frame);
-                    if (painted) g_screen_painted = true;
-                    if (nb->id == SCR_SIGGEN) {
-                        if (painted) ui_siggen_full_draws++;
-                        else         ui_siggen_skipped++;
-                    }
-                }
-                break;
-            }
-            case DCMD_DRAW_OSC_MENU:
-                /* The page in place, after a key on it or a set of one of
-                 * its properties from the shell; gated on its epoch. */
-                if (osc_page_up() && layer_paint_update(&osc_menu_screen, frame))
-                    g_screen_painted = true;
                 break;
 #if FEATURE_FFT
             case DCMD_DRAW_FFT:
@@ -1047,7 +1045,7 @@ static void vDisplayTask(void *pvParameters)
             /* (The scope under a layer is repainted with everything, as
              * before it was a screen: its plot has no restore paint.) */
             switch (layer_track_take(&layers, nb_under != NULL && nb_under->id != SCR_SCOPE &&
-                                              !osc_page_up())) {
+                                              page_layer() == NULL)) {
             case LAYER_REPAINT_RESTORE:
                 native_paint(nb_under, SCR_PAINT_RESTORE, frame);
                 g_screen_painted = true;            /* a popup still up goes back on top */
@@ -1061,10 +1059,11 @@ static void vDisplayTask(void *pvParameters)
         }
         /* The info bar shows under the Oscilloscope Settings page too, so a
          * channel or trigger change made on the page shows in it at once. */
-        const bool page_up = osc_page_up();
+        const screen_t *const page = page_layer();
+        const bool page_up = (page != NULL);
         if (!page_up) {
             layer_painted = NULL;                 /* the next page is painted, whatever its epoch */
-        } else if (layer_paint_update(&osc_menu_screen, frame)) {
+        } else if (layer_paint_update(page, frame)) {
             /* What the page shows changed with no command behind it (a set
              * from the shell, a dropped command): in place. */
             g_screen_painted = true;
@@ -1110,22 +1109,21 @@ static void vDisplayTask(void *pvParameters)
          * dropped, the scope's REDRAW_ALL has painted over it. */
         {
             static bool page_was_up;
-            if (page_was_up && !page_up)
+            const bool osc_up = (page == &osc_menu_screen);
+            if (page_was_up && !osc_up)
                 ui_popup_overlay_cancel();
-            page_was_up = page_up;
+            page_was_up = osc_up;
         }
         if (current_mode != MODE_OSCILLOSCOPE || page_up) {
             if (ui_popup_overlay_service(g_screen_painted) == 2) {
                 const screen_t *const nb_popup = native_base();   /* one look, as above */
                 if (page_up) {
                     /* the box covered part of the pane */
-                    layer_paint(&osc_menu_screen, SCR_PAINT_RESTORE, frame);
+                    layer_paint(page, SCR_PAINT_RESTORE, frame);
                 } else if (nb_popup != NULL) {
                     /* The meter's Big and Limits views repaint in place
                      * here, without a clear (ui/meter_ui.c). */
                     native_paint(nb_popup, SCR_PAINT_RESTORE, frame);
-                } else if (current_mode == MODE_SETTINGS) {
-                    draw_settings_screen();
                 }
             }
         }

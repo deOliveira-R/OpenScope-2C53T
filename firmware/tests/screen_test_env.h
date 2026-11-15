@@ -118,6 +118,11 @@ static bool f_meter_flag_set(uint8_t which, bool on, bool user)
     return true;
 }
 static void f_meter_layout(uint8_t l) { if (env_log_ops) env_logf("meter_layout(%u);", l); }
+/* sys.brightness / sys.autooff: their owner calls, logged on request (the
+ * Settings screens' test). */
+static bool env_log_sys;
+static void f_backlight(uint8_t pct) { if (env_log_sys) env_logf("backlight(%u);", pct); }
+static void f_autooff(uint8_t mins)  { if (env_log_sys) env_logf("autooff(%u);", mins); }
 static bool f_busy(void)             { return env_busy; }
 static bool f_shell_persist(void)    { return true; }
 static void f_note(void)             { env_notes++; }
@@ -126,7 +131,7 @@ static const model_hw_ops_t env_ops = {
     .gen_wave = f_gen_wave, .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_duty = f_gen_duty,
     .gen_out = f_gen_out, .gen_bootout = f_gen_boot, .mode = f_mode,
     .meter_func = f_meter_func, .meter_flag_get = f_meter_flag_get, .meter_flag_set = f_meter_flag_set,
-    .meter_layout = f_meter_layout,
+    .meter_layout = f_meter_layout, .backlight = f_backlight, .autooff = f_autooff,
     .selfcal_busy = f_busy, .shell_persist = f_shell_persist, .note_change = f_note,
 };
 
@@ -146,7 +151,7 @@ static void env_fresh(device_mode_t mode)
     fuse_type = 0; fuse_rating_idx = 6; fuse_view = 0; fuse_scan_threshold_mv = 0.1f;
     env_meter_flag[0] = env_meter_flag[1] = env_meter_flag[2] = false;
     env_meter_reading = true; env_meter_func_ok = true;
-    env_busy = false; env_mode_applies = true; env_log_dac = false; env_log_ops = true;
+    env_busy = false; env_mode_applies = true; env_log_dac = false; env_log_ops = true; env_log_sys = false;
     model_bind_hw(&env_ops);
     (void)model_load_defaults(PF_PERSIST, NULL, false);
     (void)prop_set_local(P(METER_BEEP), 1, ORIGIN_BOOT, NULL);

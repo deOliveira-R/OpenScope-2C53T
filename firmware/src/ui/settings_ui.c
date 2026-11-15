@@ -1,22 +1,17 @@
 /*
  * OpenScope 2C53T - Settings UI
  *
- * Home > Settings: DEVICE settings only (settings_item_t, ui.h), a list and
- * two pages (settings_page_t): Sound and Light, About. Everything about the
- * scope (channels, trigger, cursors, display mode, math, persistence) is in
- * the scope's own menu, MENU on the scope screen (osc_menu_model.h): one
- * place per setting.
- *
- * "Reset to Defaults" puts the built-in defaults over the user settings
- * (settings_store_reset_to_defaults; never calibration, gallery or logo). It
- * asks first: the question below is drawn over the list (settings_reset.h).
- *
- * Values are read through the property model (prop_get) where a property
- * exists: sys.volume, sys.brightness, sys.autooff, sys.startup, sys.theme,
- * meter.link. USB Sharing has no property yet (usb_share_label()).
+ * The paint of Home > Settings (ui/settings_screen.h): the list, the
+ * question of "Reset to Defaults" over it, and the two pages, Sound and
+ * Light and About. Paint only, display task: the screens say what is
+ * selected, and the values are read through the property model (prop_get):
+ * sys.volume, sys.brightness, sys.autooff, sys.startup, sys.theme,
+ * meter.link. USB Sharing is not a property (settings_screen.h): its row
+ * shows usb_share_label().
  */
 
 #include "ui.h"
+#include "settings_screen.h"
 #include "lcd.h"
 #include "font.h"
 #include "theme.h"
@@ -87,7 +82,7 @@ static void draw_menu_item(int i, int scroll_offset, int selected_idx,
 
 /* Sound and Light page: stock's two rows, volume 0..10 and brightness
  * 25..100 % in steps of 5 (sys.volume, sys.brightness). */
-static void draw_settings_sound_light(void)
+void settings_ui_draw_sound(uint8_t sub)
 {
     const theme_t *th = theme_get();
     char vol[8], bri[8];
@@ -101,12 +96,13 @@ static void draw_settings_sound_light(void)
     else         snprintf(vol, sizeof(vol), "%u", v);
     snprintf(bri, sizeof(bri), "%u%%", (unsigned)prop_get(P(SYS_BRIGHTNESS)));
 
-    draw_menu_item(SET_SOUND_ROW_VOLUME, 0, settings_sub_selected, "Sound", vol, th);
-    draw_menu_item(SET_SOUND_ROW_BRIGHTNESS, 0, settings_sub_selected, "Brightness", bri, th);
+    draw_menu_item(SET_SOUND_ROW_VOLUME, 0, sub, "Sound", vol, th);
+    draw_menu_item(SET_SOUND_ROW_BRIGHTNESS, 0, sub, "Brightness", bri, th);
 }
 
-static void draw_settings_top(void)
+void settings_ui_draw_list(uint8_t row)
 {
+    const int settings_selected = row;
     const theme_t *th = theme_get();
 
     lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
@@ -145,16 +141,16 @@ static void draw_settings_top(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Reset to Defaults: the question (SET_PAGE_RESET), a box over the list
+ * Reset to Defaults: the question, a box over the list
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_settings_reset_confirm(void)
+void settings_ui_draw_reset_question(uint8_t row)
 {
     const theme_t *th = theme_get();
     const uint16_t x = 30, y = 76, w = 260, h = 92;
     const uint16_t bg = th->background;
 
-    draw_settings_top();                      /* the list stays readable behind it */
+    settings_ui_draw_list(row);               /* the list stays readable behind it */
     lcd_fill_rect(x, y, w, h, bg);
     lcd_fill_rect(x, y, w, 1, th->highlight);
     lcd_fill_rect(x, y + h - 1, w, 1, th->highlight);
@@ -172,7 +168,7 @@ static void draw_settings_reset_confirm(void)
  * About page
  * ═══════════════════════════════════════════════════════════════════ */
 
-static void draw_settings_about(void)
+void settings_ui_draw_about(void)
 {
     const theme_t *th = theme_get();
 
@@ -217,20 +213,6 @@ static void draw_settings_about(void)
     y += 24;
     font_draw_string_center(LCD_WIDTH / 2, y, "MENU to go back",
                             th->text_secondary, bg, &font_small);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Public entry point — dispatches by depth
- * ═══════════════════════════════════════════════════════════════════ */
-
-void draw_settings_screen(void)
-{
-    switch ((settings_page_t)settings_depth) {
-    case SET_PAGE_ABOUT: draw_settings_about();       break;
-    case SET_PAGE_SOUND: draw_settings_sound_light(); break;
-    case SET_PAGE_RESET: draw_settings_reset_confirm(); break;
-    default:             draw_settings_top();         break;
-    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════

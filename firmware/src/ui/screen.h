@@ -119,6 +119,7 @@ bool          screen_close(screen_id_t layer);     /* that layer and any above i
 /* Any task. */
 screen_id_t   screen_top(void);
 screen_id_t   screen_base(void);
+bool          screen_is_open(screen_id_t id);      /* the base, or a layer over it */
 screen_stack_t screen_snapshot(void);              /* under the injected lock */
 const screen_t *screen_get(screen_id_t id);        /* NULL if not registered */
 screen_id_t   screen_base_for_mode(device_mode_t m);          /* SCR_COUNT if none */
