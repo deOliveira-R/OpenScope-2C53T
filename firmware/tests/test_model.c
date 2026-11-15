@@ -960,8 +960,27 @@ static void test_sizes(void)
     CHECK(sizeof(prop_desc_t) <= 80);
 }
 
-int main(void)
+/* --dump-defaults FILE: one profile line per property at its built-in
+ * default, in table order (prop_line_format). scripts/model_config.py
+ * --self-test --c-defaults FILE holds its own reading of the table against
+ * these lines (make test-model-config). */
+static int dump_defaults(const char *path)
 {
+    FILE *f = fopen(path, "w");
+    if (!f) { printf("cannot write %s\n", path); return 2; }
+    fresh();
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        char line[PROP_LINE_MAX];
+        prop_line_format(prop_at(i), prop_default(prop_at(i)), line, sizeof line);
+        fprintf(f, "%s\n", line);
+    }
+    fclose(f);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (argc == 3 && strcmp(argv[1], "--dump-defaults") == 0) return dump_defaults(argv[2]);
     test_table();
     test_glob();
     test_parse_format();

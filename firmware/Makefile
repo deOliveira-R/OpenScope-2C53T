@@ -986,6 +986,17 @@ $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/
 test-model: $(BUILD_DIR)/test_model
 	$<
 
+# Host-side configuration tool (scripts/model_config.py, ARCH-1 M5): its
+# reading of model_table.h (the parser, labels, units, the text of every
+# value) against the firmware model's own default lines, profiles/default.json
+# against the table, and list / defaults / from-device / to-device / diff /
+# build against a fake shell (in-process and over a socket on an ephemeral
+# port). No device, no serial port.
+.PHONY: test-model-config
+test-model-config: $(BUILD_DIR)/test_model
+	$(BUILD_DIR)/test_model --dump-defaults $(BUILD_DIR)/model_defaults.txt
+	python3 -I ../scripts/model_config.py --self-test --c-defaults $(BUILD_DIR)/model_defaults.txt
+
 # Meter link policy (src/model/meter_link_policy.c): the truth table of
 # "should the meter link be on" (screen, USB host, meter.link) and the
 # debounce of the USB host state. Pure.
