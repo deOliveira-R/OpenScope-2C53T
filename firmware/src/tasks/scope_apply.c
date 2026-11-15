@@ -7,8 +7,11 @@
  * Since ARCH-1 B5 the Oscilloscope Settings page changes settings only
  * through the properties (model/props_scope.c: the trigger rules are in
  * trig.* setters, and scope_apply_trigger_change went with the page's
- * trigger_change); what is left here is what the plot's keys and the
- * property ops still call.
+ * trigger_change). Since B7 the plot's keys do too (ui/scope_screen.c), and
+ * the coupling toggle and the Roll switch went with their callers
+ * (chN.coupling, tb.roll): what is left here is what the property ops call
+ * (model_hw_fw.c), the view with its pool and X-Y's bring-up, and
+ * persistence.
  */
 #include "scope_apply.h"
 #include "scope_state.h"
@@ -17,33 +20,35 @@
 #include "fpga.h"
 #if FEATURE_FFT
 #include "fft.h"
+#include "scope_vpos.h"
+#include "scope_trigger.h"
 #endif
 #include <stdio.h>
 
-bool scope_apply_coupling_toggle(uint8_t ch, char *pb, size_t n)
-{
-    scope_state_t *ss = scope_state_get();
-    channel_state_t *c = ch ? &ss->ch2 : &ss->ch1;
-    const coupling_t next = (c->coupling == COUPLING_DC) ? COUPLING_AC : COUPLING_DC;
-    const bool ok = fpga_apply_coupling(ch, (uint8_t)next);
-    if (ok) c->coupling = next;
-    snprintf(pb, n, ok ? "CH%u %s" : "CH%u %s NOT SET", (unsigned)ch + 1u, coupling_labels[next]);
-    return ok;
-}
-
-bool scope_apply_roll(bool want)
-{
-    scope_state_t *ss = scope_state_get();
-    if (want == ss->roll) return true;
-    ss->roll = want;
-    if (!fpga_apply_roll()) {
-        ss->roll = !want;   /* nothing was written: keep the old mode */
-        return false;
-    }
-    return true;
-}
-
 #if FEATURE_FFT
+/* X-Y: what its view needs before it is drawn. The phosphor trail lives in
+ * the shared persistence buffer (X-Y and the time-domain persistence overlay
+ * never run at once): claimed here with a short tail and cleared. Without
+ * the calibration page the old bring-up of the offset outputs still runs;
+ * with it, the page's offset codes (scope_vpos) are left alone. On the first
+ * entry, and whenever the buffer is not there (another owner had the pool).
+ * Until ARCH-1 B7 the X-Y renderer did this itself on its first frame, from
+ * the display task; draw_xy_screen() now only draws ("no signal" without a
+ * buffer). Input task, as every view change. */
+static void xy_prepare(void)
+{
+    static bool done;
+    if (done && persist_is_initialized()) return;
+    if (!scope_vpos_active()) {
+        scope_trigger_dac_init();
+        scope_trigger_ch2_init();
+    }
+    if (!persist_is_initialized()) persist_init();
+    persist_set_mode(PERSIST_LOW);             /* short phosphor tail */
+    persist_clear();
+    done = true;
+}
+
 bool scope_view_uses_fft(scope_view_t v)
 {
     return v == SCOPE_VIEW_FFT || v == SCOPE_VIEW_SPLIT || v == SCOPE_VIEW_WATERFALL;
@@ -56,6 +61,7 @@ void scope_view_select(scope_view_t v)
     if (!scope_view_uses_fft(v)) {
         scope_view = v;                 /* stop drawing a spectrum before the pool goes */
         fft_deinit();                   /* no-op if the FFT does not hold it */
+        if (v == SCOPE_VIEW_XY) xy_prepare();
         return;
     }
     if (!fft_is_initialized()) {
@@ -83,6 +89,11 @@ void scope_apply_persist_off(void)
     if (!persist_enabled) return;
     persist_enabled = false;
     persist_deinit();
+#if FEATURE_FFT
+    /* Persistence switched on and off again inside X-Y took the buffer its
+     * trail is drawn in: X-Y gets it back. */
+    if (scope_view == SCOPE_VIEW_XY) xy_prepare();
+#endif
 }
 
 bool scope_apply_persist_on(persist_mode_t m)

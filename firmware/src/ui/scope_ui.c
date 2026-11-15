@@ -2826,21 +2826,10 @@ void draw_xy_screen(bool full)
     const uint16_t y0   = SCOPE_TOP;               /* 18 */
     const int cxr = side / 2, cyr = SCOPE_GRID_MID_Y - SCOPE_TOP;   /* centre in the square */
 
-    /* The phosphor trail lives in the shared persistence buffer (X-Y and the
-     * time-domain persistence overlay never run at once). Without the
-     * calibration page the old bring-up of the offset outputs still runs;
-     * with it, the page's offset codes (scope_vpos) are left alone. */
-    static bool xy_init = false;
-    if (!xy_init || !persist_is_initialized()) {
-        if (!scope_vpos_active()) {
-            scope_trigger_dac_init();
-            scope_trigger_ch2_init();
-        }
-        if (!persist_is_initialized()) persist_init();
-        persist_set_mode(PERSIST_LOW);             /* short phosphor tail */
-        persist_clear();
-        xy_init = true;
-    }
+    /* The phosphor trail lives in the shared persistence buffer, claimed and
+     * cleared when the view is entered (scope_apply.c scope_view_select, on
+     * the input task): nothing is initialised here. Without the buffer the
+     * square says "no signal". */
 
     if (full) {                                    /* margins and title, once */
         lcd_fill_rect(0, SCOPE_TOP, x0, SCOPE_H, th->background);

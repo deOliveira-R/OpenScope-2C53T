@@ -47,6 +47,7 @@
 #include "screen.h"
 #include "legacy_screens.h"
 #include "osc_menu_screen.h"
+#include "scope_screen.h"
 
 bool input_inject_button(button_id_t b);   /* main.c (the `btn` shell command's mailbox) */
 
@@ -509,6 +510,13 @@ static void port_changed(uint16_t groups)
          * always was, and its tick paints the result when it ends. */
         if (meter_autoselect_is_running()) return;
         cmd = (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)SCR_METER);
+    } else if (screen_top() == SCR_SCOPE && scope_screen_paints(shown)) {
+        /* The scope paints what changed from its own epochs (ui/
+         * scope_screen.h, main.c scope_view_tick): a range, a position or a
+         * trigger setting is one live frame and the bars' own slots, no
+         * clear; a layout change one repaint of the plot area. The command
+         * is only a wake-up. */
+        cmd = (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)SCR_SCOPE);
     } else if (screen_top() == SCR_OSC_MENU && osc_menu_screen_paints(shown)) {
         /* The Oscilloscope Settings page shows the value: painted in place
          * (its epoch moved), no clear. */

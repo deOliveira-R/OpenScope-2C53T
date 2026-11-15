@@ -94,6 +94,34 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft);
 /* The cursor lines' own hash: a change wants one live frame. */
 uint32_t scope_screen_cursor_epoch(void);
 
+/* What the scope shows now (the hashes above and the kind of view: Y-T,
+ * roll, X-Y, FFT, split, waterfall), and what the display task does about
+ * the difference to what it last painted:
+ *   bar     the top bar's slots (the timebase, RUN): repaint the changed ones;
+ *   whole   another kind of view: the whole screen once (as a key's change);
+ *   layout  the layout part moved: the redraw gate repaints the view in full
+ *           (its epoch is `layout`);
+ *   live    a soft change or a cursor line, where the per-column compositor
+ *           serves the view: one live frame (and the strip's cells at once
+ *           when `strip`);
+ *   force   a soft change where it does not (the other views, no record
+ *           yet, the emulator): the view in full, as before B7.
+ * `primed`: the scope was painted since it was entered (else nothing is
+ * known to differ: the entry paints it). `compositor`: the per-column live
+ * frame can serve this frame in the Y-T view. Pure; display task. */
+typedef struct { uint32_t layout, soft, cursor; uint8_t kind; } scope_shown_t;
+typedef struct { bool bar, whole, layout, live, strip, force; } scope_change_t;
+void           scope_screen_shown(scope_shown_t *now);
+scope_change_t scope_screen_changed(const scope_shown_t *seen, const scope_shown_t *now,
+                                    bool primed, bool compositor);
+
+/* A `set` from the direct route changed `groups` (bit = PG_x) while the
+ * scope is the top screen: true when every one of them is the scope's own
+ * (ch1, ch2, tb, trig, view, fft, il, mask), i.e. the screen repaints the
+ * change from its epochs without a clear. A change of the bars' other
+ * groups (the generator slot, sys: the theme) still repaints everything. */
+bool scope_screen_paints(uint16_t groups);
+
 /* ── environment: the paint module (main.c; a fake in the host test) ── */
 void            scope_view_draw(scr_paint_t how, uint32_t frame);
 redraw_action_t scope_view_tick(uint32_t frame);

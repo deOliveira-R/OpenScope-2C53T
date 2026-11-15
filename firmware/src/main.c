@@ -341,73 +341,6 @@ void meter_link_status(bool *usb_host, bool *background, bool *want_on)
     if (want_on)    *want_on    = g_meter_link.want_on;
 }
 
-static uint32_t scope_ui_epoch(const scope_state_t *s)
-{
-    uint32_t h = REDRAW_EPOCH_SEED;
-
-    h = redraw_epoch_mix(h, (uint32_t)theme_get_id());
-    h = redraw_epoch_mix(h, (uint32_t)active_channel);
-    h = redraw_epoch_mix(h, (uint32_t)s->timebase_idx
-                            | ((uint32_t)s->running << 8)
-                            | ((uint32_t)s->roll << 9)
-                            | ((uint32_t)s->roll_step << 12));
-
-    h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled
-                            | ((uint32_t)s->ch1.vdiv_idx << 1)
-                            | ((uint32_t)s->ch1.coupling << 8)
-                            | ((uint32_t)s->ch1.probe    << 12)
-                            | ((uint32_t)s->ch1.bw_limit << 16));
-    h = redraw_epoch_mix(h, (uint32_t)(uint16_t)s->ch1.position);
-    h = redraw_epoch_mix(h, (uint32_t)s->ch2.enabled
-                            | ((uint32_t)s->ch2.vdiv_idx << 1)
-                            | ((uint32_t)s->ch2.coupling << 8)
-                            | ((uint32_t)s->ch2.probe    << 12)
-                            | ((uint32_t)s->ch2.bw_limit << 16));
-    h = redraw_epoch_mix(h, (uint32_t)(uint16_t)s->ch2.position);
-
-    h = redraw_epoch_mix(h, (uint32_t)s->trigger.mode
-                            | ((uint32_t)s->trigger.edge   << 4)
-                            | ((uint32_t)s->trigger.source << 8));
-    h = redraw_epoch_mix(h, (uint32_t)(uint16_t)s->trigger.level);
-
-    /* The measurement selection, both channels (meas_select.h: CH1's is
-     * prm_mask, CH2's lives in meas_select.c); prm_hidden is mixed below. */
-    h = redraw_epoch_mix(h, (uint32_t)meas_select_get(0)
-                            | ((uint32_t)meas_select_get(1) << 16));
-
-    /* Cursor mode only: it moves the strip (the AUX row). Positions and the
-     * selection are drawn by the live frame (scope_ui_request_live). */
-    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode);
-
-    h = redraw_epoch_mix(h, (uint32_t)math_enabled
-                            | ((uint32_t)math_op         << 1)
-                            | ((uint32_t)persist_enabled << 8)
-                            | ((uint32_t)persist_get_mode() << 9));
-    h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);   /* long PRM */
-    /* The trigger status (Trig'd / Wait / Auto* ...) left the plot at the UI
-     * round 1 merge: the status bar's dot and RUN tab show it and repaint
-     * their own slots, so it does not force a full plot repaint. */
-
-#if FEATURE_FFT
-    h = redraw_epoch_mix(h, (uint32_t)scope_view);
-    {
-        const fft_config_t *fc = fft_get_config();
-        if (fc != NULL) {
-            h = redraw_epoch_mix_f(h, fc->ref_level_db);
-            h = redraw_epoch_mix_f(h, fc->db_range);
-            h = redraw_epoch_mix_f(h, fc->sample_rate_hz);
-            h = redraw_epoch_mix(h, (uint32_t)fc->window
-                                    | ((uint32_t)fc->peak_count << 8)
-                                    | ((uint32_t)fc->avg_count  << 16)
-                                    | ((uint32_t)fc->max_hold   << 24));
-            h = redraw_epoch_mix(h, ((uint32_t)fc->zoom_start_bin << 16)
-                                    | fc->zoom_end_bin);
-        }
-    }
-#endif
-    return h;
-}
-
 /* The live FFT configuration as the spectrum views draw it (ui/
  * scope_screen.h: part of the scope's layout epoch). */
 uint32_t scope_view_fft_epoch(void)
@@ -466,6 +399,30 @@ static bool scope_incremental_available(const scope_state_t *s)
      * columns included. */
     return scope_acquisition_ready();
 #endif
+}
+
+/* ── What changed on the scope, for its redraw gate (ARCH-1 B7) ──────
+ * ui/scope_screen.c hashes what the scope shows in two parts. A LAYOUT
+ * change (a channel on or off, the cursor mode, the measurement rows, math,
+ * persistence, RUN/STOP, the view, the FFT configuration) repaints the plot
+ * area once, as every change did. A SOFT change (a range, a position,
+ * coupling, probe, the timebase code, the trigger settings, the active
+ * channel) is what the per-column live frame, the measurement strip's
+ * in-place refresh and the bars' own epochs repaint by themselves: one live
+ * frame, no clear. Soft only where the compositor serves the frame (the Y-T
+ * view with a record); in every other view, and in the emulator, a soft
+ * change repaints the view in full, as every change did. The gate's epoch is
+ * the layout part alone, so it does not move when the compositor comes or
+ * goes. The keys still ask for a full repaint with their popup
+ * (DCMD_REDRAW_ALL); this is what a `set` from the direct route costs.
+ * The decision is scope_screen_changed() (pure, host-tested). */
+/* What the last scope paint showed (display task only). */
+static scope_shown_t g_scope_seen;
+
+static void scope_gate_painted(uint32_t frame)
+{
+    scope_screen_shown(&g_scope_seen);
+    redraw_gate_mark(&scope_gate, g_scope_seen.layout, frame, REDRAW_FULL);
 }
 
 /* Single scope render entry point, shared by the queue commands and the
@@ -653,7 +610,7 @@ void scope_view_draw(scr_paint_t how, uint32_t frame)
 {
     if (how == SCR_PAINT_UPDATE) return;
     scope_render(frame, REDRAW_FULL);
-    redraw_gate_mark(&scope_gate, scope_ui_epoch(scope_state_get()), frame, REDRAW_FULL);
+    scope_gate_painted(frame);
 }
 
 /* tick(): once per frame while the scope is the base screen. It paints by
@@ -662,132 +619,159 @@ redraw_action_t scope_view_tick(uint32_t frame)
 {
     const bool page_up = osc_page_up();
     const scope_state_t *ss_anim = scope_state_get();
-        /* Mask pass/fail readout (badge row 2, below the live band): its
-         * own epoch, like the info bar, so a counter never sits stale
-         * waiting for a full repaint. Time view only -- the slot belongs
-         * to the time-view badge layout. */
-        {
-            static uint32_t g_mask_slot_epoch;
-            uint32_t me = scope_mask_epoch();
-#if FEATURE_FFT
-            const bool time_view = (scope_view == SCOPE_VIEW_TIME);
-#else
-            const bool time_view = true;
-#endif
-            if (me != g_mask_slot_epoch && time_view && !page_up) {
-                scope_ui_mask_slot_refresh();
-                g_mask_slot_epoch = me;
-            }
-            /* CAN readout (`can screen on`): 5 Hz, its own row. */
-            if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
-                scope_ui_can_row_refresh();
+    scope_shown_t now;
+    scope_screen_shown(&now);
+    const scope_change_t chg = scope_screen_changed(&g_scope_seen, &now, scope_gate.primed,
+                                                    scope_incremental_available(ss_anim));
+    /* The top bar's slots (the timebase, the RUN tab) follow a change made
+     * by any route at once, not at its next 1 s tick: only the slots whose
+     * content changed are painted. Under the page too. */
+    {
+        static uint32_t bar_seen;
+        const uint32_t bar = redraw_epoch_mix(now.layout, now.soft);
+        if (bar != bar_seen) {
+            draw_status_bar();
+            bar_seen = bar;
         }
-        if (ss_anim->running) {
-            /* ── Scope heartbeat / acquisition re-arm ───────────
-             * Keep the existing warmup and cadence for now, but use the
-             * stock-like cmd-3 path instead of a bare SPI trigger. That
-             * re-applies timebase state before each queued read, matching
-             * the live shell experiments more closely. */
+    }
+    /* Another kind of view (a `set view.mode`, `set tb.roll`): the whole
+     * screen once, as a key's change of view. */
+    if (!page_up && chg.whole) {
+        redraw_all(frame);
+        return REDRAW_SKIP;
+    }
+
+    /* Mask pass/fail readout (badge row 2, below the live band): its
+     * own epoch, like the info bar, so a counter never sits stale
+     * waiting for a full repaint. Time view only -- the slot belongs
+     * to the time-view badge layout. */
+    {
+        static uint32_t g_mask_slot_epoch;
+        uint32_t me = scope_mask_epoch();
+#if FEATURE_FFT
+        const bool time_view = (scope_view == SCOPE_VIEW_TIME);
+#else
+        const bool time_view = true;
+#endif
+        if (me != g_mask_slot_epoch && time_view && !page_up) {
+            scope_ui_mask_slot_refresh();
+            g_mask_slot_epoch = me;
+        }
+        /* CAN readout (`can screen on`): 5 Hz, its own row. */
+        if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
+            scope_ui_can_row_refresh();
+    }
+    if (ss_anim->running) {
+        /* ── Scope heartbeat / acquisition re-arm ───────────
+         * Keep the existing warmup and cadence for now, but use the
+         * stock-like cmd-3 path instead of a bare SPI trigger. That
+         * re-applies timebase state before each queued read, matching
+         * the live shell experiments more closely. */
 #ifndef EMULATOR_BUILD
-            if ((frame - g_scope_entered_frame) >= 10 /* 500ms warmup */
-                && (frame % 7) == 0
-                && fpga.initialized) {
-                fpga_scope_heartbeat();
-            }
-#endif
+        if ((frame - g_scope_entered_frame) >= 10 /* 500ms warmup */
+            && (frame % 7) == 0
+            && fpga.initialized) {
+            fpga_scope_heartbeat();
         }
-        {
-            /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
-             * nothing new arrives then, so the gate skips, but a popup
-             * still has to be shown and erased on wall-clock time
-             * (until 2026-11-13 this block was inside the running test
-             * and a popup raised while stopped stayed up for good).
-             *
-             * Previously: popup OR new SPI3 data OR an unconditional
-             * 1 s tick. The 1 s arm repainted a settled screen once a
-             * second forever, and the data arm ran the full
-             * clear-and-repaint at the capture rate in every view the
-             * live compositor cannot serve — the flash observed on
-             * the bench 2026-08-12.
-             *
-             * Now: redraw_gate_step() picks between skipping, the
-             * flicker-free compositor (unthrottled, so the live trace
-             * still updates at the capture rate) and a rate-capped
-             * full repaint, using an epoch over everything the screen
-             * renders. Rendering pass note (2026-08-12) still holds:
-             * the full clear-then-redraw path stays for popups (they
-             * overwrite the band and need erasing afterward), cursors
-             * (drawn only by the full path), the demo/pre-data state,
-             * and all button-driven DCMD redraws. */
-            static uint16_t last_spi3_ok = 0;
-            uint16_t spi3_now = fpga.spi3_ok_count;
-            bool new_data = (spi3_now != last_spi3_ok);
-            last_spi3_ok = spi3_now;
+#endif
+    }
+    {
+        /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
+         * nothing new arrives then, so the gate skips, but a popup
+         * still has to be shown and erased on wall-clock time
+         * (until 2026-11-13 this block was inside the running test
+         * and a popup raised while stopped stayed up for good).
+         *
+         * Previously: popup OR new SPI3 data OR an unconditional
+         * 1 s tick. The 1 s arm repainted a settled screen once a
+         * second forever, and the data arm ran the full
+         * clear-and-repaint at the capture rate in every view the
+         * live compositor cannot serve — the flash observed on
+         * the bench 2026-08-12.
+         *
+         * Now: redraw_gate_step() picks between skipping, the
+         * flicker-free compositor (unthrottled, so the live trace
+         * still updates at the capture rate) and a rate-capped
+         * full repaint, using an epoch over everything the screen
+         * renders. Rendering pass note (2026-08-12) still holds:
+         * the full clear-then-redraw path stays for popups (they
+         * overwrite the band and need erasing afterward), cursors
+         * (drawn only by the full path), the demo/pre-data state,
+         * and all button-driven DCMD redraws. */
+        static uint16_t last_spi3_ok = 0;
+        uint16_t spi3_now = fpga.spi3_ok_count;
+        bool new_data = (spi3_now != last_spi3_ok);
+        last_spi3_ok = spi3_now;
 
-            redraw_query_t q;
-            q.frame            = frame;
-            q.epoch            = scope_ui_epoch(ss_anim);
-            /* A live popup counts as new data so the compositor runs on
-             * every 50 ms tick while it is up, and once more to erase it
-             * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
-            q.new_data         = new_data || scope_popup_active()
-                                 || scope_ui_take_live_request();
-            q.incremental_ok   = scope_incremental_available(ss_anim);
-            /* Only the full path can show a popup when the compositor is
-             * unavailable (demo trace, cursors on, FFT views). When it IS
-             * available the popup rides along as an overlay, so forcing
-             * here would reinstate exactly the flashing this replaced. */
-            q.force            = scope_popup_active() && !q.incremental_ok;
-            /* Both of these genuinely produce new pixels every tick
-             * from `frame` alone: the synthetic demo waveform (only
-             * drawn before the first real sample) and the
-             * persistence overlay (which decays once per draw). */
-            /* X-Y draws its own phosphor decay every frame, so it must
-             * tick at the fast floor (200 ms) rather than the 1 s anim
-             * cadence — otherwise the trail fades in visible 1 s steps. */
-            q.animating        = !scope_acquisition_ready() || persist_enabled
-                                 || scope_view == SCOPE_VIEW_XY;
-            q.full_min_frames  = SCOPE_FULL_MIN_FRAMES;
-            /* Persistence fades on wall time: with the live frame serving
-             * it, a tick every 200 ms keeps a stopped trace fading
-             * smoothly at no blanking cost. */
-            q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY ||
-                                  (persist_enabled && q.incremental_ok))
-                                 ? SCOPE_FULL_MIN_FRAMES
-                                 : SCOPE_ANIM_TICK_FRAMES;
-            /* Stopped, nothing a hash cannot see changes: no heartbeat
-             * (it drew one live frame a second while stopped). */
-            q.idle_tick_frames = !ss_anim->running ? 0u
-                               : q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
-                                                  : SCOPE_IDLE_FULL_FRAMES;
+        redraw_query_t q;
+        q.frame            = frame;
+        q.epoch            = now.layout;
+        /* A live popup counts as new data so the compositor runs on
+         * every 50 ms tick while it is up, and once more to erase it
+         * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
+        q.new_data         = new_data || scope_popup_active()
+                             || scope_ui_take_live_request() || chg.live;
+        q.incremental_ok   = scope_incremental_available(ss_anim);
+        /* Only the full path can show a popup when the compositor is
+         * unavailable (demo trace, cursors on, FFT views). When it IS
+         * available the popup rides along as an overlay, so forcing
+         * here would reinstate exactly the flashing this replaced. */
+        q.force            = (scope_popup_active() && !q.incremental_ok)
+                             || chg.force;
+        /* Both of these genuinely produce new pixels every tick
+         * from `frame` alone: the synthetic demo waveform (only
+         * drawn before the first real sample) and the
+         * persistence overlay (which decays once per draw). */
+        /* X-Y draws its own phosphor decay every frame, so it must
+         * tick at the fast floor (200 ms) rather than the 1 s anim
+         * cadence — otherwise the trail fades in visible 1 s steps. */
+        q.animating        = !scope_acquisition_ready() || persist_enabled
+                             || scope_view == SCOPE_VIEW_XY;
+        q.full_min_frames  = SCOPE_FULL_MIN_FRAMES;
+        /* Persistence fades on wall time: with the live frame serving
+         * it, a tick every 200 ms keeps a stopped trace fading
+         * smoothly at no blanking cost. */
+        q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY ||
+                              (persist_enabled && q.incremental_ok))
+                             ? SCOPE_FULL_MIN_FRAMES
+                             : SCOPE_ANIM_TICK_FRAMES;
+        /* Stopped, nothing a hash cannot see changes: no heartbeat
+         * (it drew one live frame a second while stopped). */
+        q.idle_tick_frames = !ss_anim->running ? 0u
+                           : q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
+                                              : SCOPE_IDLE_FULL_FRAMES;
 
-            redraw_action_t act = page_up ? REDRAW_SKIP
-                                          : redraw_gate_step(&scope_gate, &q);
-            if (act == REDRAW_SKIP)
-                ui_scope_skipped++;
-            else
-                scope_render(frame, act);
+        redraw_action_t act = page_up ? REDRAW_SKIP
+                                      : redraw_gate_step(&scope_gate, &q);
+        if (act == REDRAW_SKIP)
+            ui_scope_skipped++;
+        else
+            scope_render(frame, act);
+        if (!page_up) g_scope_seen = now;
 #if FEATURE_FFT
-            const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
+        const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
 #else
-            const bool yt_view = !page_up;
+        const bool yt_view = !page_up;
 #endif
-            if (act != REDRAW_SKIP && yt_view)
-                scope_ui_cursor_row_refresh();   /* only when its text changed */
-            /* The badges between full frames (the live frame does not
-             * touch the strip): in place, twice a second, running only
-             * (a held record's values do not change). */
-            {
-                static uint32_t last_strip;
-                if (act == REDRAW_FULL)
-                    last_strip = frame;
-                else if (yt_view && ss_anim->running &&
-                         (frame - last_strip) >= SCOPE_STRIP_REFRESH_FRAMES) {
-                    scope_ui_strip_refresh();
-                    last_strip = frame;
-                }
+        if (act != REDRAW_SKIP && yt_view)
+            scope_ui_cursor_row_refresh();   /* only when its text changed */
+        /* The badges between full frames (the live frame does not
+         * touch the strip): in place, twice a second, running only
+         * (a held record's values do not change). */
+        {
+            static uint32_t last_strip;
+            if (act == REDRAW_FULL)
+                last_strip = frame;
+            else if (yt_view && ((ss_anim->running &&
+                                  (frame - last_strip) >= SCOPE_STRIP_REFRESH_FRAMES) ||
+                                 (chg.strip && act == REDRAW_INCREMENTAL))) {
+                /* ... and at once after a soft change (a new range or
+                 * probe rescales the values). */
+                scope_ui_strip_refresh();
+                last_strip = frame;
             }
         }
+    }
     return REDRAW_SKIP;
 }
 
@@ -990,9 +974,7 @@ static void vDisplayTask(void *pvParameters)
                 if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
                     ui_scope_full_draws++;
                     draw_fft_screen(true);
-                    redraw_gate_mark(&scope_gate,
-                                     scope_ui_epoch(scope_state_get()),
-                                     frame, REDRAW_FULL);
+                    scope_gate_painted(frame);
                 }
                 break;
 #endif

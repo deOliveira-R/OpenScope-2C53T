@@ -478,6 +478,44 @@ static uint32_t s_epoch(void)
     return redraw_epoch_mix(redraw_epoch_mix(layout, soft), scope_screen_cursor_epoch());
 }
 
+void scope_screen_shown(scope_shown_t *now)
+{
+    const scope_state_t *s = scope_state_get();
+    scope_screen_epochs(&now->layout, &now->soft);
+    now->cursor = scope_screen_cursor_epoch();
+#if FEATURE_FFT
+    now->kind = (uint8_t)(((uint8_t)scope_view << 1) | (s->roll ? 1u : 0u));
+#else
+    now->kind = s->roll ? 1u : 0u;
+#endif
+}
+
+scope_change_t scope_screen_changed(const scope_shown_t *seen, const scope_shown_t *now,
+                                    bool primed, bool compositor)
+{
+    scope_change_t c = { false, false, false, false, false, false };
+    const bool soft_moved = now->soft != seen->soft;
+    /* The bar follows whoever changed a value, painted or not yet. */
+    c.bar = soft_moved || now->layout != seen->layout;
+    if (!primed) return c;
+    if (now->kind != seen->kind) { c.whole = true; return c; }
+    c.layout = now->layout != seen->layout;
+    /* Soft where the live frame is the view's renderer: the Y-T view (kind
+     * 0) with a record. */
+    const bool soft_ok = compositor && now->kind == 0u;
+    if (soft_moved && soft_ok) c.live = c.strip = true;
+    if (soft_moved && !soft_ok) c.force = true;
+    if (now->cursor != seen->cursor) c.live = true;
+    return c;
+}
+
+bool scope_screen_paints(uint16_t groups)
+{
+    const uint16_t own = (uint16_t)((1u << PG_CH1) | (1u << PG_CH2) | (1u << PG_TB) | (1u << PG_TRIG) |
+                                    (1u << PG_VIEW) | (1u << PG_FFT) | (1u << PG_IL) | (1u << PG_MASK));
+    return groups != 0u && (groups & (uint16_t)~own) == 0u;
+}
+
 static void            s_draw(scr_paint_t how, uint32_t frame) { scope_view_draw(how, frame); }
 static redraw_action_t s_tick(uint32_t frame)                  { return scope_view_tick(frame); }
 
