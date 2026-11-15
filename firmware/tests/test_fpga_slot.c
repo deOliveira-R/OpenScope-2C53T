@@ -142,11 +142,13 @@ static void test_layout(void)
 static void test_header_format(void)
 {
     uint8_t h[FSLOT_HDR_LEN]; fslot_info_t info;
-    fslot_write_header(h, 1234u, 0xDEADBEEFu, "design-x");
+    fslot_write_header(h, 1234u, 0xDEADBEEFu, "design-x", 0u);
     CHECK(h[0] == 'O' && h[1] == 'S' && h[2] == 'F' && h[3] == '1', "magic bytes");
     fslot_classify_header(h, &info);
     CHECK(info.state == FSLOT_VALID && info.len == 1234u && info.crc == 0xDEADBEEFu, "round trip");
-    CHECK(strcmp(info.name, "design-x") == 0, "name '%s'", info.name);
+    CHECK(strcmp(info.name, "design-x") == 0 && !info.boot, "name '%s'", info.name);
+    { uint8_t b[FSLOT_HDR_LEN]; fslot_info_t bi; fslot_write_header(b, 1234u, 1u, "x", FSLOT_FLAG_BOOT);
+      fslot_classify_header(b, &bi); CHECK(bi.state == FSLOT_VALID && bi.boot, "boot flag lost"); }
     for (uint32_t i = 0; i < FSLOT_HDR_LEN * 8u; i++) {
         uint8_t g[FSLOT_HDR_LEN]; memcpy(g, h, sizeof g); g[i / 8u] ^= (uint8_t)(1u << (i % 8u));
         fslot_classify_header(g, &info);
@@ -154,12 +156,12 @@ static void test_header_format(void)
     }
     memset(h, 0xFF, sizeof h); fslot_classify_header(h, &info);
     CHECK(info.state == FSLOT_EMPTY, "blank header not EMPTY");
-    fslot_write_header(h, 0u, 1u, "x"); fslot_classify_header(h, &info);
+    fslot_write_header(h, 0u, 1u, "x", 0u); fslot_classify_header(h, &info);
     CHECK(info.state == FSLOT_DAMAGED, "zero length accepted");
-    fslot_write_header(h, FSLOT_MAX_LEN + 1u, 1u, "x"); fslot_classify_header(h, &info);
+    fslot_write_header(h, FSLOT_MAX_LEN + 1u, 1u, "x", 0u); fslot_classify_header(h, &info);
     CHECK(info.state == FSLOT_DAMAGED, "oversize accepted");
     char longname[80]; memset(longname, 'n', sizeof longname); longname[79] = '\0';
-    fslot_write_header(h, 10u, 1u, longname); fslot_classify_header(h, &info);
+    fslot_write_header(h, 10u, 1u, longname, 0u); fslot_classify_header(h, &info);
     CHECK(info.state == FSLOT_VALID && strlen(info.name) == FSLOT_NAME_LEN, "long name not cut to %u", FSLOT_NAME_LEN);
 }
 
@@ -259,8 +261,12 @@ static void test_reupload_replaces_and_clear(void)
     }
     CHECK(fslot_put_end(&up, tick) == FSLOT_OK, "end 2");
     CHECK(fslot_verify(&info, tick) == FSLOT_OK && info.len == LEN_B && strcmp(info.name, "two") == 0, "second design");
+    CHECK(fslot_set_boot(true) == FSLOT_OK && fslot_verify(&info, tick) == FSLOT_OK && info.boot, "boot flag on");
+    CHECK(info.len == LEN_B && strcmp(info.name, "two") == 0, "boot flag changed the record");
+    CHECK(fslot_set_boot(false) == FSLOT_OK && fslot_verify(&info, tick) == FSLOT_OK && !info.boot, "boot flag off");
     CHECK(fslot_clear() == FSLOT_OK, "clear");
     CHECK(fslot_info(&info) == FSLOT_OK && info.state == FSLOT_EMPTY, "not EMPTY after clear");
+    CHECK(fslot_set_boot(true) == FSLOT_ERR_NONE, "boot flag on an empty slot");
     CHECK(outside_span_unchanged(s), "bytes outside the span changed");
     free(s);
 }

@@ -23,6 +23,9 @@
 
 #include "fpga.h"
 #include "fpga_bitstream_stock.h"
+#include "flash_fs.h"
+#include "../util/fpga_slot.h"
+#include "../util/cal_backup_core.h"
 #include "fpga_meter_plan.h"
 #include "meter_data.h"
 #include "meter_stock.h"
@@ -5637,6 +5640,64 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
     return (status & (1u << 13)) ? FPGA_RELOAD_OK : FPGA_RELOAD_NOT_DONE;
 #endif
 }
+
+/*
+ * Boot upload. Normally the compiled-in design. When the flash slot holds a
+ * VALID design with its boot flag set (`fpga slot boot on`) and its payload
+ * CRC holds, that design is uploaded instead: a development design then
+ * survives a power cycle of the unit. The region layer is not bound this early
+ * in boot, so the slot is READ through the raw flash primitive at the region's
+ * address (reads only). Anything wrong with the slot: the compiled-in design.
+ */
+static uint8_t  fpga_boot_from_slot;
+static char     fpga_boot_slot_name[FSLOT_NAME_LEN + 1];
+
+static bool boot_slot_payload(void *ctx, uint32_t off, uint8_t *buf, uint32_t n)
+{
+    (void)ctx;
+    return flash_fs_raw_read_bytes(flash_region_table[FSLOT_REGION].start + FSLOT_DATA_OFFSET + off,
+                                   buf, n) == FLASH_FS_OK;
+}
+
+static void fpga_boot_upload(void)
+{
+    uint8_t      hdr[FSLOT_HDR_LEN];
+    fslot_info_t info;
+
+    fpga_boot_from_slot = 0;
+    if (flash_fs_raw_read_bytes(flash_region_table[FSLOT_REGION].start, hdr, sizeof hdr) == FLASH_FS_OK) {
+        fslot_classify_header(hdr, &info);
+        if (info.state == FSLOT_VALID && info.boot) {
+            uint8_t  buf[256];
+            uint32_t c = CAL_BACKUP_CRC32_INIT;
+            bool     ok = true;
+            for (uint32_t off = 0; ok && off < info.len; off += sizeof buf) {
+                uint32_t n = info.len - off;
+                if (n > sizeof buf) n = sizeof buf;
+                ok = boot_slot_payload(NULL, off, buf, n);
+                if (ok) c = cal_backup_crc32_update(c, buf, n);
+            }
+            if (ok && cal_backup_crc32_final(c) == info.crc) {
+                bb_src_fn = boot_slot_payload; bb_src_ctx = NULL; bb_src_len = info.len;
+                (void)fpga_bitbang_config_sequence();
+                const uint8_t outcome = bb_outcome;
+                bb_src_fn = NULL; bb_src_len = 0; bb_outcome = 0;
+                if (outcome == 0) {
+                    fpga_boot_from_slot = 1;
+                    memcpy(fpga_boot_slot_name, info.name, sizeof fpga_boot_slot_name);
+                    return;
+                }
+                /* the flash read failed mid-upload: the FPGA is still empty */
+            }
+        }
+    }
+    (void)fpga_bitbang_config_sequence();
+}
+
+const char *fpga_boot_design(void)
+{
+    return fpga_boot_from_slot ? fpga_boot_slot_name : NULL;
+}
 #endif /* FPGA_CONFIG_B */
 
 /*
@@ -6698,7 +6759,7 @@ void fpga_init(void)
      * on real data. Runs AFTER PB11 (IOR1B) and with PC6 (IOB7B) already HIGH from
      * Step 4, so the engine-arm co-enables are asserted when the FPGA_CONFIG_B_ARM
      * writes fire inside the sequence. `make guest-coldtrace`. */
-    fpga_bitbang_config_sequence();
+    fpga_boot_upload();
 #elif FPGA_CONFIG_A_HWSPI
     /* H7 confirmation: HARDWARE-SPI config at /2 (stock's write rate), then the
      * same five-write arm coldtrace uses. If the demo trace latches off, HW-SPI
@@ -6878,7 +6939,7 @@ void fpga_init(void)
     /* Build B: the bit-bang transplant runs INSTEAD of the hardware-SPI
      * sequence (it owns PB3/4/5/6 as GPIO for the handshake, then restores
      * SPI3 AF). Everything else in fpga_init is identical. */
-    fpga_bitbang_config_sequence();
+    fpga_boot_upload();
 #else
     fpga_spi3_config_sequence(&(fpga_cfg_seq_opts_t){
 #if FPGA_CONFIG_A

@@ -1828,7 +1828,7 @@ void cmd_fpga_bus_reacquire(void)
  * and a failure says "err".
  */
 static fslot_upload_t s_fslot_up;
-static char s_fpga_loaded[FSLOT_NAME_LEN + 8] = "builtin (boot)";
+static char s_fpga_loaded[FSLOT_NAME_LEN + 16];   /* "" until a reload: then what the boot upload sent */
 
 static void fslot_tick(void)
 {
@@ -1853,7 +1853,7 @@ static int fslot_hexbyte(const char *p)
 void cmd_fpga_slot(const char *args)
 {
     static const char usage[] =
-        "Usage: fpga slot [info] | put <len> <crc32hex> <name> [force] | data <off> <hex> | pos | end | clear\r\n";
+        "Usage: fpga slot [info] | put <len> <crc32hex> <name> [force] | data <off> <hex> | pos | end | boot on|off | clear\r\n";
     while (*args == ' ') args++;
     if (*args == '\0' || strcmp(args, "info") == 0) {
         fslot_info_t info;
@@ -1862,9 +1862,10 @@ void cmd_fpga_slot(const char *args)
         const flash_region_t *r = flash_region_get(FSLOT_REGION);
         if (info.state == FSLOT_VALID) {
             st = fslot_verify(&info, fslot_tick);
-            usb_debug_printf("fpga slot: valid '%s' %lu B crc %08lX payload %s @0x%06lX\r\n", info.name,
+            usb_debug_printf("fpga slot: valid '%s' %lu B crc %08lX payload %s @0x%06lX boot %s\r\n", info.name,
                              (unsigned long)info.len, (unsigned long)info.crc,
-                             st == FSLOT_OK ? "OK" : "MISMATCH", (unsigned long)(r ? r->start : 0));
+                             st == FSLOT_OK ? "OK" : "MISMATCH", (unsigned long)(r ? r->start : 0),
+                             info.boot ? "on" : "off");
         } else {
             bool blank = false;
             st = fslot_span_blank(&blank, fslot_tick);
@@ -1872,7 +1873,20 @@ void cmd_fpga_slot(const char *args)
                              info.state == FSLOT_EMPTY ? "none stored" : "damaged slot",
                              st != FSLOT_OK ? "unreadable" : blank ? "blank" : "NOT blank (foreign data or a torn upload)");
         }
-        usb_debug_printf("fpga slot: FPGA runs: %s\r\n", s_fpga_loaded);
+#if FPGA_CONFIG_B
+        if (s_fpga_loaded[0] == '\0') {
+            const char *b = fpga_boot_design();
+            if (b) snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "slot '%s' (boot)", b);
+            else   snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "builtin (boot)");
+        }
+#endif
+        usb_debug_printf("fpga slot: FPGA was sent: %s\r\n", s_fpga_loaded);
+        return;
+    }
+    if (strcmp(args, "boot on") == 0 || strcmp(args, "boot off") == 0) {
+        fslot_status_t st = fslot_set_boot(args[6] == 'n');
+        if (st == FSLOT_OK) usb_debug_printf("fpga slot: ok boot %s\r\n", args[6] == 'n' ? "on (the slot loads at power-on)" : "off (the compiled-in design loads at power-on)");
+        else usb_debug_printf("fpga slot: err %s\r\n", fslot_status_str(st));
         return;
     }
     if (strncmp(args, "put ", 4) == 0) {

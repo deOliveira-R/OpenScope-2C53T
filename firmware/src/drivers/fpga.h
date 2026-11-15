@@ -690,6 +690,10 @@ typedef struct {
 fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
                                  fpga_reload_report_t *rep);
 
+/* Name of the slot design the boot upload sent, or NULL when it sent the
+ * compiled-in design (FPGA_CONFIG_B only). */
+const char *fpga_boot_design(void);
+
 /* ═══════════════════════════════════════════════════════════════════
  * API
  * ═══════════════════════════════════════════════════════════════════ */

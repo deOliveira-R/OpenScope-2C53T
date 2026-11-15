@@ -163,7 +163,7 @@ void cmd_fpga_dbgarm(const char *args);
     CMD_V("fpga busreacquire", cmd_fpga_bus_reacquire, SC_EXACT, \
           "fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n"), \
     CMD_A("fpga slot", cmd_fpga_slot, 0, \
-          "fpga slot [info|put <len> <crc32hex> <name> [force]|data <off> <hex>|pos|end|clear]\r\n" "                                FPGA design stored on the flash (scripts/fpga_put.py)\r\n"), \
+          "fpga slot [info|put <len> <crc32hex> <name> [force]|data <off> <hex>|pos|end|boot on|off|clear]\r\n" "                                FPGA design stored on the flash (scripts/fpga_put.py)\r\n"), \
     CMD_A("fpga reload", cmd_fpga_reload, 0, \
           "fpga reload [builtin|slot]      Power-cycle the FPGA (PC6) and load a design, no unit power cycle\r\n"), \
     CMD_V("fpga configbb", cmd_fpga_configbb, SC_EXACT, \

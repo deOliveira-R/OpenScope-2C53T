@@ -24,11 +24,13 @@ const char *fslot_status_str(fslot_status_t st)
     return "unknown";
 }
 
-void fslot_write_header(uint8_t out[FSLOT_HDR_LEN], uint32_t len, uint32_t payload_crc, const char *name)
+void fslot_write_header(uint8_t out[FSLOT_HDR_LEN], uint32_t len, uint32_t payload_crc, const char *name,
+                        uint32_t flags)
 {
     memset(out, 0, FSLOT_HDR_LEN);
     put32(out + 0, FSLOT_MAGIC);
     put16(out + 4, FSLOT_VERSION);
+    put16(out + 6, flags);
     put32(out + 8, len);
     put32(out + 12, payload_crc);
     if (name != NULL) {
@@ -39,7 +41,7 @@ void fslot_write_header(uint8_t out[FSLOT_HDR_LEN], uint32_t len, uint32_t paylo
 
 void fslot_classify_header(const uint8_t hdr[FSLOT_HDR_LEN], fslot_info_t *info)
 {
-    info->len = 0; info->crc = 0; info->name[0] = '\0';
+    info->len = 0; info->crc = 0; info->name[0] = '\0'; info->boot = false;
     bool blank = true;
     for (uint32_t i = 0; i < FSLOT_HDR_LEN; i++) if (hdr[i] != 0xFFu) { blank = false; break; }
     if (blank) { info->state = FSLOT_EMPTY; return; }
@@ -52,6 +54,7 @@ void fslot_classify_header(const uint8_t hdr[FSLOT_HDR_LEN], fslot_info_t *info)
     info->state = FSLOT_VALID;
     info->len = len;
     info->crc = get32(hdr + 12);
+    info->boot = (get16(hdr + 6) & FSLOT_FLAG_BOOT) != 0u;
     memcpy(info->name, hdr + 16, FSLOT_NAME_LEN);
     info->name[FSLOT_NAME_LEN] = '\0';
 }
@@ -142,9 +145,23 @@ fslot_status_t fslot_put_end(fslot_upload_t *up, void (*tick)(void))
     if (st != FSLOT_OK) return st;
     if (crc != up->declared_crc) return FSLOT_ERR_CRC;
     uint8_t hdr[FSLOT_HDR_LEN];
-    fslot_write_header(hdr, up->declared_len, crc, up->name);
+    fslot_write_header(hdr, up->declared_len, crc, up->name, 0u);
     if (flash_region_write(FSLOT_REGION, 0, hdr, sizeof hdr) != FLASH_REGION_OK)
         return FSLOT_ERR_IO;
+    return FSLOT_OK;
+}
+
+fslot_status_t fslot_set_boot(bool boot)
+{
+    fslot_info_t info;
+    fslot_status_t st = fslot_info(&info);
+    if (st != FSLOT_OK) return st;
+    if (info.state != FSLOT_VALID) return FSLOT_ERR_NONE;
+    if (info.boot == boot) return FSLOT_OK;
+    uint8_t hdr[FSLOT_HDR_LEN];
+    fslot_write_header(hdr, info.len, info.crc, info.name, boot ? FSLOT_FLAG_BOOT : 0u);
+    if (flash_region_erase(FSLOT_REGION, 0, FLASH_REGION_SECTOR_SIZE) != FLASH_REGION_OK) return FSLOT_ERR_IO;
+    if (flash_region_write(FSLOT_REGION, 0, hdr, sizeof hdr) != FLASH_REGION_OK) return FSLOT_ERR_IO;
     return FSLOT_OK;
 }
 

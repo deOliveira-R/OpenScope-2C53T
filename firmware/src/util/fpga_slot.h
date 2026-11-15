@@ -16,7 +16,7 @@
  * Header (little-endian):
  *    0  u32  magic  "OSF1" = 0x3146534F
  *    4  u16  version (1)
- *    6  u16  reserved (0)
+ *    6  u16  flags: bit 0 = load this design at boot instead of the compiled-in one
  *    8  u32  payload length
  *   12  u32  payload CRC32 (the project's CRC, cal_backup_crc32)
  *   16  char name[40], NUL padded (what `version`/`fpga slot info` show)
@@ -45,6 +45,7 @@
 #define FSLOT_MAX_LEN       (FSLOT_SPAN - FSLOT_DATA_OFFSET)   /* 126,976 B; a GW1N-2 stream is 115,638 */
 #define FSLOT_MAGIC         0x3146534Fu      /* "OSF1" */
 #define FSLOT_VERSION       1u
+#define FSLOT_FLAG_BOOT      0x0001u
 #define FSLOT_CHUNK_MAX     64u              /* bytes per fslot_put_data() call (shell: 48) */
 
 typedef enum {
@@ -69,6 +70,7 @@ typedef struct {
     uint32_t      len;                      /* VALID: payload length */
     uint32_t      crc;                      /* VALID: payload CRC32  */
     char          name[FSLOT_NAME_LEN + 1]; /* VALID: NUL terminated */
+    bool          boot;                     /* VALID: FSLOT_FLAG_BOOT */
 } fslot_info_t;
 
 /* Upload session; lives with the caller. */
@@ -83,7 +85,8 @@ typedef struct {
 const char *fslot_status_str(fslot_status_t st);
 
 /* Header serialisation / classification (pure). */
-void fslot_write_header(uint8_t out[FSLOT_HDR_LEN], uint32_t len, uint32_t payload_crc, const char *name);
+void fslot_write_header(uint8_t out[FSLOT_HDR_LEN], uint32_t len, uint32_t payload_crc, const char *name,
+                        uint32_t flags);
 void fslot_classify_header(const uint8_t hdr[FSLOT_HDR_LEN], fslot_info_t *info);
 
 fslot_status_t fslot_info(fslot_info_t *info);
@@ -102,6 +105,11 @@ fslot_status_t fslot_put_data(fslot_upload_t *up, uint32_t off, const void *data
 
 /* Verify the stored payload against the declared CRC and commit the header. */
 fslot_status_t fslot_put_end(fslot_upload_t *up, void (*tick)(void));
+
+/* Set or clear the boot flag of a VALID design (header sector erased and
+ * rewritten; the payload sectors are not touched). A new upload always starts
+ * with the flag clear. */
+fslot_status_t fslot_set_boot(bool boot);
 
 /* Remove the design (header sector erased: slot reads EMPTY). */
 fslot_status_t fslot_clear(void);
