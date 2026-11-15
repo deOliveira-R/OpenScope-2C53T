@@ -28,7 +28,8 @@ Commands (run from anywhere; the table is read from this checkout's firmware sou
                                       the device refused, clamped or stored for later, then reads all back
   diff FILE [OTHER]                   the profile against the built-in defaults (or against OTHER)
   build FILE -o HEADER                the profile as build-time defaults (make DEFAULTS=FILE; see the Makefile)
-  --self-test [--c-defaults FILE]     no device: the table parser, the value text, a fake shell in-process and
+  --self-test [--c-defaults FILE] [--c-profile PROFILE FILE]
+                                      no device: the table parser, the value text, a fake shell in-process and
                                       over a socket on an ephemeral port, every command above
 
 --port is a serial device (/dev/cu.usbmodem..., needs pyserial) or a pyserial URL; socket://HOST:PORT
@@ -769,7 +770,7 @@ def serve_fake(dev):
     return srv.getsockname()[1], stop
 
 
-def self_test(c_defaults):
+def self_test(c_defaults, c_profile=None):
     import contextlib
     import io
     import tempfile
@@ -841,6 +842,18 @@ def self_test(c_defaults):
         check(len(c_lines) == len(mine), 'C defaults: %d lines, table %d' % (len(c_lines), len(mine)))
         for a_, b_ in zip(c_lines, mine):
             check(a_.split('  #')[0] == b_, 'C default line %r, this tool %r' % (a_, b_))
+    # ... and of an image built with a defaults profile (make DEFAULTS=...): the profile's value where it
+    # names one, the table's otherwise
+    if c_profile:
+        prof_path, dump = c_profile
+        _prof, pvals, pproblems = read_profile(prof_path, props)
+        check(not pproblems and len(pvals) > 0, 'fixture profile: %s' % pproblems)
+        c_lines = [x.rstrip('\n').split('  #')[0] for x in open(dump) if x.strip()]
+        want = ['%s = %s' % (p.name, p.text(pvals.get(p.name, default_of(p)))) for p in props]
+        check(c_lines == want, 'defaults of a profile build: %s'
+              % [(a_, b_) for a_, b_ in zip(c_lines, want) if a_ != b_][:4])
+        check(sum(1 for p in props if pvals.get(p.name, default_of(p)) != default_of(p)) >= 5,
+              'the fixture profile changes too little to prove anything')
     # a broken table is refused, loudly
     with tempfile.TemporaryDirectory() as d:
         os.makedirs(os.path.join(d, 'model'))
@@ -993,6 +1006,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0], epilog='See the header of this file.')
     ap.add_argument('--self-test', action='store_true')
     ap.add_argument('--c-defaults', metavar='FILE', help='self-test: the firmware model\'s own default lines')
+    ap.add_argument('--c-profile', nargs=2, metavar=('PROFILE', 'FILE'),
+                    help='self-test: a profile and the default lines of a model built with it')
     sub = ap.add_subparsers(dest='command')
     s = sub.add_parser('list')
     s.add_argument('glob', nargs='?', default='')
@@ -1018,7 +1033,7 @@ def main(argv=None):
     except SystemExit as exc:
         return exc.code if isinstance(exc.code, int) else 2
     if a.self_test:
-        return self_test(a.c_defaults)
+        return self_test(a.c_defaults, a.c_profile)
     if not a.command:
         ap.print_usage()
         return 2

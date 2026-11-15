@@ -379,6 +379,42 @@ endif
 endif
 endif
 
+# ── Build-time defaults profile (ARCH-1 M5) ─────────────────────────────
+# make DEFAULTS=profiles/<name>.json   (any target: `make app-full DEFAULTS=...`)
+# The BUILT-IN DEFAULTS of the settings are the property table's `def` column
+# (src/model/model_table.h). A profile (a readable file of settings, written
+# by hand or by `scripts/model_config.py from-device`) may replace them for
+# one image: scripts/model_config.py checks it against the table and writes
+# build/model_profile.h, which model.c (the defaults) and usb_debug.c (the
+# `version` line "Defaults profile: <name>") are compiled with. Nothing else
+# sees it, and without DEFAULTS neither file does: the image is the same as
+# before this hook existed. A saved settings record still wins over the
+# defaults; "Reset to defaults" goes back to the profile's.
+# This is NOT the feature profile (PROFILE=bench, features.mk): that one
+# chooses what code is in the image, this one the default VALUES.
+# The stamp makes the two objects rebuild when DEFAULTS changes or goes away.
+DEFAULTS ?=
+MODEL_PROFILE_OBJS := $(BUILD_DIR)/model.o $(BUILD_DIR)/usb_debug.o
+_defaults_now := $(strip $(DEFAULTS))
+_defaults_changed := $(shell [ -d $(BUILD_DIR) ] && [ "$$(cat $(BUILD_DIR)/defaults.stamp 2>/dev/null)" != "$(_defaults_now)" ] && echo "$(_defaults_now)" > $(BUILD_DIR)/defaults.stamp && echo changed)
+$(BUILD_DIR)/defaults.stamp: | $(BUILD_DIR)
+	@echo "$(_defaults_now)" > $@
+$(MODEL_PROFILE_OBJS): $(BUILD_DIR)/defaults.stamp
+ifneq ($(_defaults_changed),)
+# DEFAULTS is not what the objects in build/ were made with: both are made
+# again in this run, whatever their timestamps say (two builds within one
+# second have equal ones).
+.PHONY: defaults-changed
+$(MODEL_PROFILE_OBJS): defaults-changed
+endif
+ifneq ($(_defaults_now),)
+MODEL_PROFILE_H := $(BUILD_DIR)/model_profile.h
+$(MODEL_PROFILE_H): $(DEFAULTS) ../scripts/model_config.py src/model/model_table.h $(BUILD_DIR)/defaults.stamp | $(BUILD_DIR)
+	python3 -I ../scripts/model_config.py build $(DEFAULTS) -o $@
+$(MODEL_PROFILE_OBJS): $(MODEL_PROFILE_H)
+$(MODEL_PROFILE_OBJS): CFLAGS += -include $(MODEL_PROFILE_H)
+endif
+
 $(BUILD_DIR)/%.o: %.c Makefile features.mk | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
 
@@ -992,10 +1028,23 @@ test-model: $(BUILD_DIR)/test_model
 # against the table, and list / defaults / from-device / to-device / diff /
 # build against a fake shell (in-process and over a socket on an ephemeral
 # port). No device, no serial port.
+# ... and the build-time defaults profile end to end (make DEFAULTS=...): the
+# model compiled on the host with the header `model_config.py build` writes
+# from tests/fixtures/profile_lab.json must report the profile's defaults.
+$(BUILD_DIR)/test_model_profile: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/model/model_table.h \
+                                 tests/fixtures/profile_lab.json ../scripts/model_config.py \
+                                 $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	python3 -I ../scripts/model_config.py build tests/fixtures/profile_lab.json -o $(BUILD_DIR)/test_model_profile.h
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
+		-Isrc/ui -Isrc/dsp -Isrc/drivers -include $(BUILD_DIR)/test_model_profile.h $< $(MODEL_SRCS) \
+		$(MODEL_TEST_LINK) -lm -o $@
+
 .PHONY: test-model-config
-test-model-config: $(BUILD_DIR)/test_model
+test-model-config: $(BUILD_DIR)/test_model $(BUILD_DIR)/test_model_profile
 	$(BUILD_DIR)/test_model --dump-defaults $(BUILD_DIR)/model_defaults.txt
-	python3 -I ../scripts/model_config.py --self-test --c-defaults $(BUILD_DIR)/model_defaults.txt
+	$(BUILD_DIR)/test_model_profile --dump-defaults $(BUILD_DIR)/model_defaults_lab.txt
+	python3 -I ../scripts/model_config.py --self-test --c-defaults $(BUILD_DIR)/model_defaults.txt \
+		--c-profile tests/fixtures/profile_lab.json $(BUILD_DIR)/model_defaults_lab.txt
 
 # Meter link policy (src/model/meter_link_policy.c): the truth table of
 # "should the meter link be on" (screen, USB host, meter.link) and the

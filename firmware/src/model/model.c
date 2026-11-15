@@ -14,10 +14,24 @@
  * The table
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* BUILT-IN DEFAULTS. `def` is the table's column. A build may replace it:
+ * `make DEFAULTS=profiles/<name>.json` has scripts/model_config.py write
+ * build/model_profile.h (PROFILE_DEF_<SYM> for every property: the profile's
+ * value where it names one, the table's otherwise, checked against the
+ * ranges on the host) and compiles this file with it. Without DEFAULTS the
+ * header is not included and the column is used as written. Either way the
+ * defaults are const in the image; a saved record still wins over them. */
+#ifdef MODEL_PROFILE_H
+#define PROP_DEF_(sym, df_) PROFILE_DEF_##sym
+#else
+#define PROP_DEF_(sym, df_) df_
+#endif
+
 #define PROP(sym, id_, nm_, ty_, un_, de_, gr_, in_, ar_, mn_, mx_, st_, df_, fl_, lb_, lf_,   \
              ge_, se_, so_, ow_)                                                              \
     { .name = nm_, .owner = ow_, .labels = lb_, .label = lf_, .get = ge_, .set = se_,         \
-      .store = so_, .min = mn_, .max = mx_, .def = df_, .id = id_, .flags = fl_, .step = st_, \
+      .store = so_, .min = mn_, .max = mx_, .def = PROP_DEF_(sym, df_), .id = id_,            \
+      .flags = fl_, .step = st_,                                                              \
       .type = ty_, .unit = un_, .decimals = de_, .group = gr_, .arg = ar_, .inst = in_ },
 const prop_desc_t prop_table[] = {
 #include "model_table.h"

@@ -729,6 +729,12 @@ static void cmd_version(void)
         "SRAM: 224KB (EOPB0=0xFE)\r\n",
         system_core_clock / 1000000
     );
+#ifdef MODEL_PROFILE_NAME
+    /* Built with a defaults profile (make DEFAULTS=..., model.c): the
+     * built-in defaults of this image are not all the table's. */
+    usb_debug_printf("Defaults profile: " MODEL_PROFILE_NAME " (%d built-in defaults changed)\r\n",
+                     MODEL_PROFILE_OVERRIDES);
+#endif
     /* What this build contains (firmware/features.mk); `features` lists the
      * ones that are off too. */
     usb_send_str("Features:");
