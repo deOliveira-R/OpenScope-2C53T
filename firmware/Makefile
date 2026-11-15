@@ -1033,6 +1033,25 @@ $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/mo
 test-model-persist: $(BUILD_DIR)/test_model_persist
 	$<
 
+# Reset to defaults (ARCH-1 M5): the built-in defaults over the user settings
+# through the setters; every property back to its default, the hardware ops
+# called, the record byte for byte the defaults', the confirm step, and no
+# program or erase outside the settings region of a NOR model of the whole
+# W25Q (calibration, gallery, logo, firmware cache), a compaction included.
+$(BUILD_DIR)/test_settings_reset: tests/test_settings_reset.c $(MODEL_SRCS) src/model/model_persist_v5.c \
+                                  src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
+                                  src/util/config.c src/util/config.h src/util/settings_store.c \
+                                  src/util/settings_store.h src/ui/settings_reset.h \
+                                  src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DSETTINGS_PERSIST_WRITES=1 \
+		-Isrc/model -Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) \
+		src/model/model_persist_v5.c src/util/config.c src/util/settings_store.c \
+		src/drivers/flash_regions.c $(MODEL_TEST_LINK) -lm -o $@
+
+.PHONY: test-settings-reset
+test-settings-reset: $(BUILD_DIR)/test_settings_reset
+	$<
+
 # UI route (ARCH-1 M2, src/model/ui_shell.c): the `ui seq` token parser (key
 # names, KEY*n, long:KEY, wait:ms, bad tokens, POWER refused, the whole line
 # checked before any press). The firmware half (presses, waits) is not built.

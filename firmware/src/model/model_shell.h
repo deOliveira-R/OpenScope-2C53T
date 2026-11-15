@@ -5,6 +5,8 @@
  *   set <prop> <value>        through the input task (model_exec.h)
  *   set <p>=<v> <p>=<v> ...   <= 8 pairs (<= 4 PF_HW), validated together
  *   list [prefix|glob]        name, type, range, value, flags
+ *   list changed [glob]       only what differs from the built-in defaults
+ *   get changed               the same set, as get lines (a profile of the differences)
  *   describe <prop>           type, range or labels, default, unit, saved
  *                             where, owner, whether the shell can set it
  *
@@ -23,6 +25,13 @@ void model_shell_get(const char *args, model_emit_fn emit);
 void model_shell_set(const char *args, model_emit_fn emit);
 void model_shell_list(const char *args, model_emit_fn emit);
 void model_shell_describe(const char *args, model_emit_fn emit);
+
+/* The answer of `reset settings CONFIRM`: the status line, what is still
+ * not at its default, what a reset keeps and why, what it never touches.
+ * status / changed / left: model_reset_report_t; saved =
+ * settings_flush_outcome_text() of the write. */
+void model_shell_reset_report(uint8_t status, unsigned changed, unsigned left, const char *saved,
+                              model_emit_fn emit);
 
 /* One get line for p at value v (what `get` prints). */
 void model_shell_get_line(const prop_desc_t *p, int32_t v, char *out, size_t n);

@@ -2708,6 +2708,47 @@ static void scope_center_one(uint8_t ch, uint16_t *out_dac, uint32_t *out_mean)
  * volts/div labels: a conclusion drawn from one bit, while the instrument that
  * would have settled it already existed and was simply never wired up.
  */
+/* reset settings CONFIRM: "Reset to defaults" on the direct route. The
+ * built-in defaults (the property table's) go over the user settings (the
+ * saved record) through the same function as the Settings row: the input
+ * task runs every setter, so the hardware follows, and writes the record
+ * (input_handler.c settings_reset_now -> settings_store_reset_to_defaults).
+ * The word CONFIRM is the confirm step. Never touched: calibration of any
+ * kind, the gallery, the logo, the firmware cache. */
+static void reset_emit(const char *line) { (void)usb_debug_printf("%s\r\n", line); }
+
+static void cmd_reset_settings(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strcmp(args, "SESSION") == 0) {
+        /* Defaults for this session without saving: not offered. The store
+         * saves the live state on the next key press or screen change
+         * (settings_store.h), so "not saved" could not be kept. */
+        usb_send_str("ERR reset settings SESSION is not available: the settings store saves the live "
+                     "state on the next key press, so the defaults would be saved anyway\r\n");
+        return;
+    }
+    if (strcmp(args, "CONFIRM") != 0) {
+        usb_send_str("usage: reset settings CONFIRM\r\n"
+                     "  every setting back to its built-in default (list changed shows which), applied "
+                     "and saved\r\n"
+                     "  kept: calibration (factory, backup, cal user, il.*), gallery, logo, firmware "
+                     "cache, the screen shown\r\n");
+        return;
+    }
+    settings_reset_result_t r;
+    bool in_progress = false;
+    /* Each scope register a reset moves may wait for an acquisition park
+     * (<= ~1 s); a dozen of them is the worst case. */
+    if (!input_settings_reset_sync(20000u, &r, &in_progress)) {
+        usb_send_str(in_progress
+                     ? "TIMEOUT: the reset is still running on the input task; check with: list changed\r\n"
+                     : "TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing changed, nothing saved\r\n");
+        return;
+    }
+    model_shell_reset_report(r.status, r.changed, r.left, settings_flush_outcome_text(r.saved), reset_emit);
+}
+
 static void cmd_settings(void)
 {
     const settings_store_status_t *st = settings_store_get_status();
@@ -4308,16 +4349,21 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n"),
     CMD_V("settings", cmd_settings, SC_EXACT,
           "settings                        Persistence status: bound, load result, writes, failures\r\n"),
+    CMD_A("reset settings", cmd_reset_settings, 0,
+          "reset settings CONFIRM          Built-in defaults over the user settings, applied and saved\r\n"
+          "  (never calibration, gallery, logo); list changed shows what differs now\r\n"),
     /* The property model's raw route (src/model/model_shell.c): the same
      * setters as the keys, applied by the input task. */
     CMD_A("get", cmd_model_get, SC_NEEDARGS,
-          "get <prop|glob> [...]           Property values: get ch1.vdiv, get ch1.*, get *\r\n"),
+          "get <prop|glob> [...] | changed Property values: get ch1.vdiv, get ch1.*, get *; changed =\r\n"
+          "  only what is not at its built-in default\r\n"),
     CMD_A("set", cmd_model_set, SC_NEEDARGS,
           "set <prop> <value> | set p=v .. Set through the input task (label, number, step +=N/-=N)\r\n"),
     CMD_A("list", cmd_model_list, 0,
-          "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"),
+          "list [prefix|glob]              Properties: name, type, range, value, flags\r\n"
+          "list changed [prefix|glob]      Values that differ from the built-in defaults, with the default\r\n"),
     CMD_A("describe", cmd_model_describe, SC_NEEDARGS,
-          "describe <prop>                 Range/labels, default, unit, saved where, owner\r\n"),
+          "describe <prop>                 Range/labels, built-in default, unit, saved where, reset, owner\r\n"),
     STREAM_SHELL_ROWS       /* `stream`: from src/stream/stream.h, empty when the feature is off */
     /* The UI route (src/model/ui_shell.c): exact key replay into the key
      * queue, each press waited for until the input task has handled it. */

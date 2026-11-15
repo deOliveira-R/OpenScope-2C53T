@@ -990,7 +990,7 @@ static void test_legacy_mirror(void)
         CHECK("the list: nine device settings, named, in the owner's order",
               SETTINGS_ITEM_COUNT == 9 && SET_ITEM_SOUND_LIGHT == 0 && SET_ITEM_AUTOOFF == 1 &&
               SET_ITEM_STARTUP == 2 && SET_ITEM_METER_LINK == 3 && SET_ITEM_THEME == 4 &&
-              SET_ITEM_USB_SHARE == 5 && SET_ITEM_FW_UPDATE == 6 && SET_ITEM_FACTORY_RESET == 7 &&
+              SET_ITEM_USB_SHARE == 5 && SET_ITEM_FW_UPDATE == 6 && SET_ITEM_RESET_DEFAULTS == 7 &&
               SET_ITEM_ABOUT == 8);
     }
 

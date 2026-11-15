@@ -17,6 +17,11 @@
  *   (relay fails)        NOT_SET ch1.vdiv (relay apply failed); old value kept: 3  # 1.00V
  *   set ch1.coupling 2   INVALID ch1.coupling=2 (out of range 0..1); nothing applied
  *   (input task busy)    TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing applied
+ *
+ * Built-in defaults against the live values (model.h):
+ *   get changed          the get line of every property that is not at its default
+ *   list changed [glob]  ch1.vdiv  4  # 2.00V   default 3  # 1.00V
+ *   describe <prop>      "default: ... (built in)" and "reset: back to the default / kept (why)"
  */
 #include "model_shell.h"
 #include "model_exec.h"
@@ -153,13 +158,34 @@ static void get_one(const char *pat, model_emit_fn emit)
     }
 }
 
+/* `get changed`: the get line of every property whose value is not its
+ * built-in default (prop_is_changed), i.e. the live state as a profile that
+ * says only what differs. '#' lines are comments to a profile reader. */
+static void get_changed(model_emit_fn emit)
+{
+    char line[LINE_MAX_];
+    unsigned hits = 0;
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        if (!prop_is_changed(p)) continue;
+        model_shell_get_line(p, prop_get(p), line, sizeof line);
+        emit(line);
+        hits++;
+    }
+    if (!hits) emit("# every property is at its built-in default");
+}
+
 void model_shell_get(const char *args, model_emit_fn emit)
 {
     char tok[48];
     const char *s = args ? args : "";
     bool any = false;
-    while (next_token(&s, tok, sizeof tok)) { get_one(tok, emit); any = true; }
-    if (!any) emit("usage: get <prop|glob> [...]   e.g. get ch1.vdiv, get ch1.*, get *");
+    while (next_token(&s, tok, sizeof tok)) {
+        if (strcmp(tok, "changed") == 0) get_changed(emit);   /* no property is named so: all have a '.' */
+        else                             get_one(tok, emit);
+        any = true;
+    }
+    if (!any) emit("usage: get <prop|glob> [...] | get changed   e.g. get ch1.vdiv, get ch1.*, get *");
 }
 
 /* ═══ set ════════════════════════════════════════════════════════════ */
@@ -378,17 +404,57 @@ static void flags_text(const prop_desc_t *p, char *out, size_t n)
     if (prop_unwired_reason(p)) { if (out[0]) cat(out, n, ","); cat(out, n, "NOWIRE"); }
 }
 
+static bool list_match(const prop_desc_t *p, const char *pat, size_t pl)
+{
+    return !pl || (has_star(pat) ? prop_glob_match(pat, p->name) : strncmp(p->name, pat, pl) == 0);
+}
+
+/* `list changed [prefix|glob]`: where the live value is not the built-in
+ * default: name, the value now, the default, and whether "Reset to
+ * defaults" would put it back. */
+static void list_changed(const char *pat, model_emit_fn emit)
+{
+    char line[256], now[LINE_MAX_], def[LINE_MAX_];
+    const size_t pl = strlen(pat);
+    unsigned hits = 0, kept = 0;
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        if (!list_match(p, pat, pl) || !prop_is_changed(p)) continue;
+        const char *keep = prop_reset_keeps(p);
+        value_text(p, prop_get(p), now, sizeof now);
+        value_text(p, prop_default(p), def, sizeof def);
+        snprintf(line, sizeof line, "%-17s %-22s default %s%s%s%s", p->name, now, def,
+                 keep ? "  (reset keeps it: " : "", keep ? keep : "", keep ? ")" : "");
+        emit(line);
+        hits++;
+        if (keep) kept++;
+    }
+    if (!hits) {
+        emit(pl ? "nothing matching differs from the built-in defaults"
+                : "every property is at its built-in default");
+        return;
+    }
+    snprintf(line, sizeof line, "%u differ from the built-in defaults; reset settings CONFIRM "
+             "would put back %u", hits, hits - kept);
+    emit(line);
+}
+
 void model_shell_list(const char *args, model_emit_fn emit)
 {
     char pat[48] = "", line[256], rt[64], fl[48], val[PROP_TEXT_MAX];
     const char *s = args ? args : "";
     (void)next_token(&s, pat, sizeof pat);
+    if (strcmp(pat, "changed") == 0) {
+        pat[0] = '\0';
+        (void)next_token(&s, pat, sizeof pat);
+        list_changed(pat, emit);
+        return;
+    }
     const size_t pl = strlen(pat);
     unsigned hits = 0;
     for (uint16_t i = 0; i < prop_count(); i++) {
         const prop_desc_t *p = prop_at(i);
-        if (pl && (has_star(pat) ? !prop_glob_match(pat, p->name) : strncmp(p->name, pat, pl) != 0))
-            continue;
+        if (!list_match(p, pat, pl)) continue;
         range_text(p, rt, sizeof rt);
         flags_text(p, fl, sizeof fl);
         prop_format_value(p, prop_get(p), val, sizeof val);
@@ -474,6 +540,12 @@ void model_shell_describe(const char *args, model_emit_fn emit)
     }
     snprintf(line, sizeof line, "  saved:   %s", saved_text(p));
     emit(line);
+    if (prop_is_settable(p)) {
+        const char *keep = prop_reset_keeps(p);
+        if (keep) snprintf(line, sizeof line, "  reset:   kept (%s)", keep);
+        else      snprintf(line, sizeof line, "  reset:   back to the default");
+        emit(line);
+    }
     snprintf(line, sizeof line, "  owner:   %s", p->owner ? p->owner : "-");
     emit(line);
     const char *why = prop_unwired_reason(p);
@@ -484,6 +556,58 @@ void model_shell_describe(const char *args, model_emit_fn emit)
     else
         snprintf(line, sizeof line, "  shell:   set %s <value> (the input task applies it)", p->name);
     emit(line);
+}
+
+/* ═══ reset settings ═════════════════════════════════════════════════ */
+
+void model_shell_reset_report(uint8_t status, unsigned changed, unsigned left, const char *saved,
+                              model_emit_fn emit)
+{
+    char line[256];
+    if (status == PS_BUSY) {
+        emit("BUSY reset settings (self-cal running); nothing changed, nothing saved");
+        return;
+    }
+    snprintf(line, sizeof line, "%s reset settings: %u changed, %s; user settings %s",
+             prop_status_name(status), changed,
+             left ? "NOT all at the built-in defaults" : "all at the built-in defaults",
+             saved ? saved : "?");
+    emit(line);
+    if (left) {
+        /* What an owner or a rule refused twice: as live, and as saved. */
+        snprintf(line, sizeof line, "  not at default:");
+        for (uint16_t i = 0; i < prop_count(); i++) {
+            const prop_desc_t *p = prop_at(i);
+            if (prop_reset_keeps(p) || !prop_is_changed(p)) continue;
+            if (strlen(line) + strlen(p->name) + 2u > 120u) { emit(line); snprintf(line, sizeof line, "   "); }
+            cat(line, sizeof line, " ");
+            cat(line, sizeof line, p->name);
+        }
+        emit(line);
+    }
+    /* The settable properties a reset leaves alone, with the reason once. */
+    snprintf(line, sizeof line, "  kept:");
+    const char *last = NULL;
+    for (uint16_t i = 0; i < prop_count(); i++) {
+        const prop_desc_t *p = prop_at(i);
+        const char *keep = prop_reset_keeps(p);
+        if (!keep || !prop_is_settable(p) || (p->flags & PF_ALIAS)) continue;
+        if (strlen(line) + strlen(p->name) + strlen(keep) + 6u > 120u) {
+            emit(line);
+            snprintf(line, sizeof line, "   ");
+            last = NULL;
+        }
+        cat(line, sizeof line, " ");
+        cat(line, sizeof line, p->name);
+        if (!last || strcmp(last, keep) != 0) {
+            cat(line, sizeof line, " (");
+            cat(line, sizeof line, keep);
+            cat(line, sizeof line, ")");
+        }
+        last = keep;
+    }
+    emit(line);
+    emit("  not touched: calibration (factory page, its backup, cal user), gallery, logo, firmware cache");
 }
 
 /* ═══ usb_debug.c rows ═══════════════════════════════════════════════ */

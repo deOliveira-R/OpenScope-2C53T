@@ -180,18 +180,20 @@ typedef enum {
     SET_ITEM_THEME,             /* sys.theme                                             */
     SET_ITEM_USB_SHARE,         /* CDC + read-only gallery drive (no property yet)       */
     SET_ITEM_FW_UPDATE,         /* reboot into the DFU bootloader                        */
-    SET_ITEM_FACTORY_RESET,     /* listed, not implemented: OK does nothing              */
+    SET_ITEM_RESET_DEFAULTS,    /* built-in defaults over the user settings; asks first  */
     SET_ITEM_ABOUT,             /* page                                                  */
     SETTINGS_ITEM_COUNT
 } settings_item_t;
 
-/* settings_depth: the list or one of its two pages. The numbers are what
- * `ui screen` prints (settings=<page>/<row>/<sub>) and are kept as they
- * were; 1 and 3..6 were the scope, math, component and Bode pages. */
+/* settings_depth: the list, one of its two pages, or the question of
+ * "Reset to Defaults" (settings_reset.h). The numbers are what `ui screen`
+ * prints (settings=<page>/<row>/<sub>) and are kept as they were; 1 and
+ * 3..6 were the scope, math, component and Bode pages. */
 typedef enum {
     SET_PAGE_LIST  = 0,
     SET_PAGE_ABOUT = 2,
     SET_PAGE_SOUND = 7,
+    SET_PAGE_RESET = 8,     /* "Reset all settings? OK = yes / MENU = no" over the list */
 } settings_page_t;
 enum { SET_SOUND_ROW_VOLUME = 0, SET_SOUND_ROW_BRIGHTNESS, SET_SOUND_ROWS };
 #define METER_SUBMODE_COUNT     12   /* 0-10 stock functions, 11 = Auto (word 0x14) */

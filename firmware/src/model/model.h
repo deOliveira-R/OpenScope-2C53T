@@ -33,9 +33,16 @@
  * session". PF_USERCAL = in the usercal record (explicit `cal user save`).
  * The readable profile is one `name = value [unit]` line per property
  * (prop_line_format / prop_line_parse), validated by the same setters.
- * Built-in defaults (prop_default) are separate from the current value, so
- * "Start with defaults" and "Reset to defaults" are model_load_defaults()
- * with or without a settings note.
+ *
+ * BUILT-IN DEFAULTS and USER SETTINGS are two things. The built-in defaults
+ * are const, in this table (prop_default: each property's `def`; a build may
+ * change them, never a running device). The user settings are the saved
+ * record (PF_PERSIST values, settings_store.c), which always wins over the
+ * defaults at boot. prop_is_changed says where the live value differs from
+ * the default. "Reset to defaults" (model_reset_to_defaults, through the
+ * setters, so the hardware follows) copies the built-in defaults over the
+ * live state; settings_store_reset_to_defaults then saves them as the user
+ * settings. Calibration is neither: no reset touches it (prop_reset_keeps).
  *
  * THREADING. Lookup, get, format and parse are pure and run on any task.
  * prop_set_local / prop_step_local / model_load_defaults run on the
@@ -104,6 +111,7 @@ typedef enum { PS_OK = 0,      /* applied (value may equal the old one)         
              } prop_status_t;
 
 typedef enum { ORIGIN_KEY, ORIGIN_SHELL, ORIGIN_AUTO, ORIGIN_BOOT, ORIGIN_PROFILE,
+               ORIGIN_RESET,   /* model_reset_to_defaults: no settings note per property */
                ORIGIN_COUNT } prop_origin_t;
 
 typedef struct { char text[24]; } prop_note_t;   /* popup / shell note, same 24 as `pb` */
@@ -229,8 +237,8 @@ const instrument_desc_t *model_instrument_active(void);
  * scope properties unless ORIGIN_AUTO; (3) bool/enum/mask out of range ->
  * INVALID, int out of range -> clamped (CLAMPED); (4) p->set applies and
  * stores on success; (5) prop_epoch[group] bumps if the value changed;
- * (6) PF_PERSIST + a changed value -> hw note_change, except ORIGIN_BOOT and
- * ORIGIN_SHELL with shell_persist off. note may be NULL. */
+ * (6) PF_PERSIST + a changed value -> hw note_change, except ORIGIN_BOOT,
+ * ORIGIN_RESET and ORIGIN_SHELL with shell_persist off. note may be NULL. */
 prop_status_t prop_set_local(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note);
 /* dir steps (one step each): wraps with PF_WRAP, else saturates; a bool
  * toggles on any dir with PF_WRAP, else +1 = on, -1 = off. At the limit it
@@ -258,7 +266,7 @@ prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t 
  * model_hw(), and does nothing while the ops are unbound. view.persist's is
  * a no-op: a load never claims the shared pool (settings_store.c's rule).
  * So a store is a boot / start-up tool, not a runtime apply: at run time
- * "Reset to defaults" goes through prop_set_pairs_local (the setters).
+ * "Reset to defaults" goes through the setters (model_reset_to_defaults).
  *
  * Built-in defaults through each store hook for the properties whose flags
  * include one of `want` (PF_PERSIST for "Start with defaults", PF_PERSIST |
@@ -268,6 +276,46 @@ prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t 
  * changed ("Reset to defaults" copies the defaults into the user profile).
  * Returns the number of values that changed. */
 unsigned model_load_defaults(uint16_t want, const instrument_desc_t *in, bool note);
+
+/* ── Reset to defaults (EXECUTOR ONLY) ───────────────────────────────── */
+
+/* Why "Reset to defaults" leaves p alone (a short reason for the shell), or
+ * NULL: it goes back to its built-in default. Kept: read-only state and
+ * aliases; user calibration (PF_USERCAL: il.gain / il.offset / il.skew, and
+ * il.knots, whose only set drops the piecewise map); sys.instrument, which
+ * is the screen binding and not a setting (the screen stays where it is);
+ * view.run, which only the OK key can apply (its setter is not wired). */
+const char *prop_reset_keeps(const prop_desc_t *p);
+
+/* p is settable, not an alias, and its value is not its built-in default. */
+bool        prop_is_changed(const prop_desc_t *p);
+
+typedef struct {
+    uint8_t  status;        /* prop_status_t: OK, BUSY (nothing touched), NOT_SET (some left) */
+    uint8_t  changed;       /* properties whose value moved                                    */
+    uint8_t  left;          /* properties a reset covers that are still not at their default   */
+    uint16_t first_left;    /* the id of the first of them (0: none)                           */
+} model_reset_report_t;
+
+/* Every property a reset covers (not prop_reset_keeps) back to its built-in
+ * default THROUGH ITS SETTER, in table order, so the rules run and the
+ * hardware follows (ranges, timebase, trigger, generator off, backlight...;
+ * a hardware path that is not live now takes the stored value when it is
+ * next entered: DEFERRED below). Only a value that is not already the
+ * default is set. Table order is the order model_load_defaults uses and
+ * satisfies the setters' rules (channel enables before trig.source,
+ * view.mode before view.persist); a property a rule or an owner refused is
+ * tried once more after all the others, then reported in `left`.
+ *
+ * NOT the boot's path, on purpose: a boot load writes the backing state
+ * through the store hooks with no hardware and lets each owner's init push
+ * it; those inits cannot be run again on a running device.
+ *
+ * PS_BUSY while self-cal runs: nothing is touched. No settings note is made
+ * here (ORIGIN_RESET): saving is settings_store_reset_to_defaults's, once.
+ * between (may be NULL) runs before each set after the first: the health
+ * check-in. Returns rep->status. */
+prop_status_t model_reset_to_defaults(void (*between)(void), model_reset_report_t *rep);
 
 /* The instrument screen the settings record held when it was last loaded
  * (STARTUP_SCREEN_*, ui/startup_policy.h; 0 = none: before a load, an older

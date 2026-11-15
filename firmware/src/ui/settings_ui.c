@@ -7,6 +7,10 @@
  * the scope's own menu, MENU on the scope screen (osc_menu_model.h): one
  * place per setting.
  *
+ * "Reset to Defaults" puts the built-in defaults over the user settings
+ * (settings_store_reset_to_defaults; never calibration, gallery or logo). It
+ * asks first: the question below is drawn over the list (settings_reset.h).
+ *
  * Values are read through the property model (prop_get) where a property
  * exists: sys.volume, sys.brightness, sys.autooff, sys.startup, sys.theme,
  * meter.link. USB Sharing has no property yet (usb_share_label()).
@@ -35,7 +39,7 @@ static const char *const settings_items[SETTINGS_ITEM_COUNT] = {
     [SET_ITEM_THEME]         = "Theme",
     [SET_ITEM_USB_SHARE]     = "USB Sharing",        /* stock's settings item (OK handler 0x0800BF08) */
     [SET_ITEM_FW_UPDATE]     = "Firmware Update",
-    [SET_ITEM_FACTORY_RESET] = "Factory Reset",
+    [SET_ITEM_RESET_DEFAULTS] = "Reset to Defaults",  /* asks first (settings_reset.h) */
     [SET_ITEM_ABOUT]         = "About",
 };
 _Static_assert(SET_ITEM_ABOUT == SETTINGS_ITEM_COUNT - 1 && SETTINGS_ITEM_COUNT == 9,
@@ -132,12 +136,36 @@ static void draw_settings_top(void)
         case SET_ITEM_USB_SHARE:    value = "n/a"; break;               /* built CDC-only (USB_MSC=0) */
 #endif
         case SET_ITEM_FW_UPDATE:    value = "DFU"; break;               /* reboot to the bootloader */
-        case SET_ITEM_FACTORY_RESET:                                    /* not implemented: no value */
+        case SET_ITEM_RESET_DEFAULTS:                                   /* an action: no value */
         default: break;
         }
 
         draw_menu_item(i, scroll, settings_selected, settings_items[i], value, th);
     }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Reset to Defaults: the question (SET_PAGE_RESET), a box over the list
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void draw_settings_reset_confirm(void)
+{
+    const theme_t *th = theme_get();
+    const uint16_t x = 30, y = 76, w = 260, h = 92;
+    const uint16_t bg = th->background;
+
+    draw_settings_top();                      /* the list stays readable behind it */
+    lcd_fill_rect(x, y, w, h, bg);
+    lcd_fill_rect(x, y, w, 1, th->highlight);
+    lcd_fill_rect(x, y + h - 1, w, 1, th->highlight);
+    lcd_fill_rect(x, y + 1, 1, h - 2, th->highlight);
+    lcd_fill_rect(x + w - 1, y + 1, 1, h - 2, th->highlight);
+    font_draw_string_center(LCD_WIDTH / 2, y + 10, "Reset all settings?",
+                            th->text_primary, bg, &font_large);
+    font_draw_string_center(LCD_WIDTH / 2, y + 42, "OK = yes   MENU = no",
+                            th->highlight, bg, &font_medium);
+    font_draw_string_center(LCD_WIDTH / 2, y + 68, "Calibration, gallery, logo are kept",
+                            th->text_secondary, bg, &font_small);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -200,6 +228,7 @@ void draw_settings_screen(void)
     switch ((settings_page_t)settings_depth) {
     case SET_PAGE_ABOUT: draw_settings_about();       break;
     case SET_PAGE_SOUND: draw_settings_sound_light(); break;
+    case SET_PAGE_RESET: draw_settings_reset_confirm(); break;
     default:             draw_settings_top();         break;
     }
 }
