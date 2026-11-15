@@ -40,6 +40,7 @@
 #include "trig_edge.h"
 #include "trig_policy.h"
 #include "osc_menu_model.h"
+#include "screen.h"            /* screen_is_open: is the Oscilloscope Settings page up */
 #include "meas_select.h"
 #include "scope_mask.h"
 #if FEATURE_FFT
@@ -161,7 +162,7 @@ void scope_show_popup(const char *text)
     /* The scope's own popup rides on the plot; over the Oscilloscope Settings
      * page there is no plot being drawn, so it takes the overlay path the
      * other screens use (main.c services it while the page is up). */
-    if (current_mode == MODE_OSCILLOSCOPE && !osc_menu_is_open()) {
+    if (current_mode == MODE_OSCILLOSCOPE && !screen_is_open(SCR_OSC_MENU)) {
         popup_on = true;
         popup_until = xTaskGetTickCount() + pdMS_TO_TICKS(POPUP_MS);
         popup_painted = false;

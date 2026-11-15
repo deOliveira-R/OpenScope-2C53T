@@ -57,7 +57,7 @@ C_SOURCES += src/ui/scope_freq.c
 C_SOURCES += src/ui/scope_freq_lock.c
 C_SOURCES += src/ui/key_model.c
 C_SOURCES += src/ui/screen.c
-C_SOURCES += src/ui/legacy_screens.c
+C_SOURCES += src/ui/ui_router.c
 C_SOURCES += src/ui/scope_selfcal.c
 C_SOURCES += src/tasks/input_handler.c
 C_SOURCES += src/tasks/scope_apply.c
@@ -2255,14 +2255,18 @@ check-owners:
 		--lib-inc firmware/at32f403a_lib/libraries/drivers/inc
 
 # Screen core (src/ui/screen.h): the router order, overlays over a base, modal
-# capture, close/switch and the `ui screen` snapshot. Pure; not linked into the
-# firmware yet.
-$(BUILD_DIR)/test_screen_router: tests/test_screen_router.c src/ui/screen.c src/ui/screen.h \
-                                 src/ui/ui.h src/ui/redraw_gate.h src/ui/legacy_screens.c \
-                                 src/ui/legacy_screens.h src/ui/home_screen.h src/ui/siggen_screen.h src/ui/meter_screen.h src/ui/settings_screen.h \
-                                 src/ui/osc_menu_screen.h src/ui/gallery_screen.h src/ui/overlay_screens.h src/ui/scope_screen.h \
-                                 src/model/model.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/model -Isrc/util -Isrc/drivers $< src/ui/screen.c -o $@
+# capture, close/switch and the `ui screen` snapshot; then the firmware's
+# table (src/ui/ui_router.c) with every real screen on the real model: the
+# stack as the authority, the mode switch, the global keys from every screen
+# and layer, the self-cal lock, the repaint and the settings service.
+ROUTER_TEST_SCREENS = src/ui/ui_router.c src/ui/home_screen.c src/ui/home_model.c src/ui/settings_screen.c \
+                      src/ui/siggen_screen.c src/ui/siggen_edit.c src/ui/meter_screen.c src/ui/softkey.c \
+                      src/ui/fuse_model.c src/ui/scope_screen.c src/ui/osc_menu_screen.c src/ui/gallery_screen.c \
+                      src/ui/gallery_nav.c src/ui/overlay_screens.c
+$(BUILD_DIR)/test_screen_router: tests/test_screen_router.c $(ROUTER_TEST_SCREENS) src/ui/ui_router.h \
+                                 src/ui/redraw_gate.h $(SCREEN_TEST_DEPS) | $(BUILD_DIR)
+	$(SCREEN_TEST_CC) $< $(ROUTER_TEST_SCREENS) src/ui/screen.c \
+		$(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-screen-router
 test-screen-router: $(BUILD_DIR)/test_screen_router

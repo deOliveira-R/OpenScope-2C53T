@@ -1,18 +1,16 @@
 /*
  * Host test for the screen core (src/ui/screen.c): the router order, overlays
- * over a base, modal capture, close, switch and the snapshot. The screens are
- * fakes that log what they were asked; the router code is the firmware's.
+ * over a base, modal capture, close, switch and the snapshot. In the first
+ * part the screens are fakes that log what they were asked (the core's
+ * mechanics need answers a real screen does not give on demand); the router
+ * code is the firmware's. The second part is the firmware's own table
+ * (src/ui/ui_router.c) with every real screen on it: see there.
  *
  * Build: see `make test-screen-router`.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include "screen.h"
-
-static int run, passed;
-#define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-62s[PASS]\n", name); } \
-                               else { printf("  %-62s[FAIL]\n", name); } } while (0)
+#define SCREEN_TEST_ENV_REAL_FOCUS   /* the scope screen is linked: it owns the arrow stage */
+#include "screen_test_env.h"     /* part 2: the real model under the real screens; CHECK, current_mode */
 
 /* ---- event log ---------------------------------------------------------- */
 
@@ -319,8 +317,9 @@ static void test_close_and_pop(void)
           screen_close(SCR_LOGO) && !screen_close(SCR_LOGO) && F[SCR_LOGO].closes == 1);
     CHECK("close posts once", g_stack_posts == 2);
 
-    screen_push(SCR_SET_SOUND); screen_push(SCR_SET_ABOUT); screen_push(SCR_LOGO);
-    CHECK("depth cap: the stack is full at SCR_STACK_MAX", screen_snapshot().n == SCR_STACK_MAX && !screen_push(SCR_POWER_PROMPT));
+    screen_push(SCR_SET_SOUND); screen_push(SCR_SET_ABOUT); screen_push(SCR_LOGO); screen_push(SCR_GALLERY);
+    CHECK("depth cap: the stack is full at SCR_STACK_MAX (5: one of every kind of layer)",
+          SCR_STACK_MAX == 5 && screen_snapshot().n == SCR_STACK_MAX && !screen_push(SCR_POWER_PROMPT));
     clear_log();
     CHECK("close of a lower layer closes the ones above it, top first",
           screen_close(SCR_SET_SOUND) && screen_snapshot().n == 1);
@@ -471,738 +470,587 @@ static void test_locking_and_reentry(void)
           screen_route_key(BTN_UP) == SCR_UNHANDLED && (screen_pop(), screen_top() == SCR_SCOPE));
 }
 
-/* ═══ the legacy screens (ARCH-1 B1): the firmware's table and hooks ═══════
+/* ═══ the firmware's screens on the router (ARCH-1 B8) ═══════════════════════
  *
- * src/ui/legacy_screens.c and the key model are compiled into this test as
- * they are; their environment (the lgc_* handlers input_handler.c provides)
- * is faked below and logs which pre-router handler a key reached. The
- * expectation is old_route(): the dispatch order of input_handle_button() as
- * it was before the router (base 6a8c2ba), transcribed step by step. Every key,
- * short and long, in every mode, settings page and overlay must reach the same
- * handler with the same action in both.
+ * From here on nothing is a stand-in: src/ui/ui_router.c registers the REAL
+ * screens (home, scope, meter, generator, the Settings list and its pages,
+ * the Oscilloscope Settings page, the gallery, the logo, the POWER prompt),
+ * on the real property model. Faked are only what a screen may not do
+ * itself: the paints (display task), the hardware ops, and the router's
+ * environment (ui_env_*: the click, the display queue, the settings
+ * service, the screenshot, the POWER countdown), all of which log.
  *
- * Migrated screens (B2 on: home, the generator) are not legacy rows any more.
- * Their real files are tested with the real model (make test-home-screen,
- * make test-siggen-screen); here each is
- * a fake screen_t that logs the key it is asked, so the table and the
- * equivalence below still say WHO is asked, in which order, and that the
- * wiring posts the screen's answer once (lgc_native_after: "after:<screen>:
- * <answer>"). What old_route() expects for them is noted at each place. */
+ * What is checked: the stack is the authority for what is shown (every
+ * layer comes up by a push and goes by a pop, the mode is the base's and
+ * current_mode mirrors it); the mode switch; who is asked for a key, in
+ * which order, on every screen and under every layer (the global keys: POWER
+ * never grabbed, SAVE and the long mode keys from everywhere; the self-cal
+ * lock; the gallery's grab); the repaint posted and the settings service
+ * after a key; which layer the display task paints. */
 
-#include "../src/ui/key_model.c"
-#include "../src/ui/legacy_screens.c"
+#include "ui_router.h"
+#include "home_screen.h"
+#include "home_model.h"
+#include "settings_screen.h"
+#include "siggen_screen.h"
+#include "siggen_edit.h"
+#include "meter_screen.h"
+#include "scope_screen.h"
+#include "osc_menu_screen.h"
+#include "gallery_screen.h"
+#include "gallery_store.h"
+#include "overlay_screens.h"
+#include "scope_mask.h"
+#include "persistence.h"
+#include "fft.h"
 
-typedef struct {
-    device_mode_t mode;
-    int8_t        depth;
-    bool          osc_open, osc_locked;
-    uint8_t       opener;
-    bool          gallery, busy, editor, tv, cursors, mask;
-    bool          logo, prompt;      /* the small layers (B5): the logo, the POWER prompt */
-    key_focus_t   focus;
-    uint8_t       ach;
-} lw_t;
-
-static lw_t W;
-static char LG[256];
-static int  lg_lock;
-static uint8_t gallery_close_key = 0xFF;   /* raw key the fake gallery closes on */
-
-static void lg(const char *fmt, int a, int b, int c)
+/* ── the log ───────────────────────────────────────────────────────── */
+static char R[256];
+static void r(const char *fmt, int a, int b)
 {
     char t[40];
-    snprintf(t, sizeof t, fmt, a, b, c);
-    if (strlen(LG) + strlen(t) + 2 < sizeof LG) { strcat(LG, t); strcat(LG, " "); }
+    snprintf(t, sizeof t, fmt, a, b);
+    if (strlen(R) + strlen(t) + 2 < sizeof R) { strcat(R, t); strcat(R, " "); }
+}
+static bool r_is(const char *want)
+{
+    char w[sizeof R];
+    snprintf(w, sizeof w, "%s%s", want, want[0] ? " " : "");
+    return strcmp(R, w) == 0;
+}
+static bool r_has(const char *tok) { return strstr(R, tok) != NULL; }
+static int  r_count(const char *tok)
+{
+    int n = 0;
+    for (const char *p = R; (p = strstr(p, tok)) != NULL; p += strlen(tok)) n++;
+    return n;
 }
 
-/* (Two handler-side facts the order depended on are inside their screens
- * now: the generator's editor claim since B3, W.editor only varies the state
- * around it; the meter's softkey claim, softkey_slot_for_button(), since
- * B6.) */
+/* ── the paints (display task): counted, nothing more ──────────────── */
+static int g_fw_paints;
+void home_ui_draw(uint8_t sel)                    { (void)sel; g_fw_paints++; }
+void home_ui_draw_selection(uint8_t sel)          { (void)sel; g_fw_paints++; }
+void siggen_ui_draw(void)                         { g_fw_paints++; }
+void settings_ui_draw_list(uint8_t row)           { (void)row; g_fw_paints++; }
+void settings_ui_draw_reset_question(uint8_t row) { (void)row; g_fw_paints++; }
+void settings_ui_draw_sound(uint8_t sub)          { (void)sub; g_fw_paints++; }
+void settings_ui_draw_about(void)                 { g_fw_paints++; }
+void osc_menu_draw(void)                          { g_fw_paints++; }
+void osc_menu_invalidate(void)                    { }
+void gallery_ui_paint(scr_paint_t how)            { (void)how; g_fw_paints++; }
+void logo_ui_paint(void)                          { g_fw_paints++; logo_screen_mark_painted(); }
+void power_prompt_ui_paint(power_prompt_view_t v) { (void)v; g_fw_paints++; }
+void scope_view_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; g_fw_paints++; }
+redraw_action_t scope_view_tick(uint32_t frame)   { (void)frame; return REDRAW_SKIP; }
+uint32_t scope_view_fft_epoch(void)               { return 0; }
+void meter_ui_draw(scr_paint_t how)               { (void)how; g_fw_paints++; }
 
-static key_ctx_t w_ctx(void)
+/* ── what the screens ask of their owners ──────────────────────────── */
+static char g_fw_popup[32];
+void scope_show_popup(const char *text)           { snprintf(g_fw_popup, sizeof g_fw_popup, "%s", text);
+                                                    if (strncmp(text, "Busy", 4) == 0) r("busy", 0, 0); }
+void scope_ui_request_live(void)                  { }
+bool scope_selfcal_request_autoset(void)          { r("autoset", 0, 0); return true; }
+bool scope_selfcal_request_basecal(uint8_t banks) { (void)banks; r("basecal", 0, 0); return true; }
+bool scope_selfcal_request_center50(void)         { r("center50", 0, 0); return true; }
+uint32_t scope_mask_post(scope_mask_req_t k, uint8_t a, uint8_t b, uint16_t n) { (void)k; (void)a; (void)b; (void)n; return 1; }
+bool scope_mask_key_auto(char *text, unsigned n)  { snprintf(text, n, "MASK"); return false; }
+persist_mode_t persist_get_mode(void)             { return PERSIST_OFF; }
+float fft_adjust_ref_level(float d)               { (void)d; return 0.0f; }
+void fft_auto_request(void)                       { }
+fft_window_t fft_cycle_window(void)               { return (fft_window_t)0; }
+void fft_zoom_in(void)                            { }
+void fft_zoom_out(void)                           { }
+void meter_ui_autoselect_cancel(void)             { }
+bool meter_ui_autoselect_running(void)            { return false; }
+bool meter_ui_cal_set(void)                       { return false; }
+void meter_ui_cal_text(char *b, uint8_t n)        { if (n) b[0] = '\0'; }
+void meter_ui_fuse_cal(void)                      { }
+uint32_t meter_ui_gen(void)                       { return 0; }
+bool meter_ui_limit_active(uint8_t which)         { (void)which; return false; }
+void meter_ui_limit_press(uint8_t which)          { (void)which; }
+void meter_ui_limit_text(uint8_t which, char *b, uint8_t n) { (void)which; if (n) b[0] = '\0'; }
+void meter_ui_limits_nudge(int8_t dir)            { (void)dir; }
+bool meter_ui_periodic(void)                      { return false; }
+uint32_t meter_ui_reading_seq(void)               { return 0; }
+uint32_t meter_ui_rendered_seq(void)              { return 0; }
+void meter_ui_stats_reset(void)                   { }
+/* Three stored shots to browse. */
+gallery_status_t gallery_scan(gallery_index_t *idx)
 {
-    key_ctx_t c;
-    memset(&c, 0, sizeof c);
-    c.mode = W.mode; c.settings_depth = W.depth;
-    c.scope_time_view = (W.mode == MODE_OSCILLOSCOPE) && W.tv;
-    c.cursors_on = W.cursors; c.mask_present = W.mask;
-    c.focus = key_focus_sanitize(W.focus, W.cursors, W.mask);
-    c.active_channel = W.ach;
-    c.osc_menu_open = (W.mode == MODE_OSCILLOSCOPE) && W.osc_open;
-    c.osc_menu_locked = c.osc_menu_open && W.osc_locked;
-    c.osc_menu_opener = W.opener;
-    return c;
+    memset(idx, 0, sizeof *idx);
+    idx->count = 3; idx->seq[0] = 3; idx->seq[1] = 2; idx->seq[2] = 1; idx->next_seq = 4;
+    return GALLERY_OK;
 }
+gallery_status_t gallery_delete(uint32_t seq)     { (void)seq; return GALLERY_OK; }
+uint32_t gallery_generation(void)                 { return 0; }
+/* The Settings screens' environment. */
+void settings_env_click(void)                     { }
+void settings_env_page_left(void)                 { r("pageleft", 0, 0); }
+void settings_env_reset(void)                     { r("reset", 0, 0); }
+void settings_env_usb_share_toggle(void)          { r("usb", 0, 0); }
+void settings_env_fw_update(void)                 { r("fwupdate", 0, 0); }
 
-void lgc_state(lgc_state_t *s)
+/* ── the router's environment (tasks/input_handler.c in the firmware) ── */
+static bool fw_busy;                 /* autoset / baseline running */
+static int  fw_lock_depth;
+static bool fw_power_saw_gallery, fw_power_saw_prompt;
+void ui_env_lock(void)             { fw_lock_depth++; }
+void ui_env_unlock(void)           { fw_lock_depth--; }
+void ui_env_touch(void)            { r("touch", 0, 0); }
+void ui_env_click(void)            { r("click", 0, 0); }
+void ui_env_post(uint8_t dcmd)
 {
-    s->mode = W.mode; s->settings_depth = W.depth; s->osc_open = W.osc_open; s->gallery_open = W.gallery;
-    s->logo_up = W.logo; s->prompt_up = W.prompt;
+    if (dcmd == DCMD_REDRAW_ALL) r("post:all", 0, 0);
+    else if (dcmd >= DCMD_DRAW_ACTIVE && dcmd < DCMD_DRAW_ACTIVE_END) r("post:%d", dcmd - DCMD_DRAW_ACTIVE, 0);
+    else r("post:?%d", dcmd, 0);
 }
-key_ctx_t lgc_ctx(void)                      { lg("ctx", 0, 0, 0); return w_ctx(); }   /* key_ctx_now */
-void lgc_exec(key_cmd_t k, button_id_t btn)  { lg("exec:%d:%d:%d", k.act, k.arg, btn); }
-void lgc_native_after(screen_id_t scr, scr_res_t res) { lg("after:%d:%d", scr, res, 0); }
-void lgc_mode_key(button_id_t b)             { lg("switch:%d", b, 0, 0); }
-void lgc_mode_set(device_mode_t m)           { lg("mode:%d", m, 0, 0); }   /* sys.mode, ORIGIN_KEY */
-/* The gallery before the router (gallery_ui_key): false = not consumed.
- * POWER: closes, not consumed (handed back). gallery_gone: it was closed by
- * another task after the pre-key sync, so it is shut when the key arrives
- * and consumes nothing. */
-static bool gallery_gone;
-static bool old_gallery_key(uint8_t raw)
+void ui_env_settings_service(void) { r("svc", 0, 0); }
+void ui_env_screenshot(void)       { r("shot", 0, 0); }
+/* The countdown as input_handler.c runs it, released at once: the box up,
+ * then down. What the stack looked like while it was up is kept. */
+void ui_env_power_key(void)
 {
-    lg("gallery:%d", raw, 0, 0);
-    if (gallery_gone) { W.gallery = false; return false; }
-    if ((raw & (uint8_t)~BTN_LONG_FLAG) == BTN_POWER) { W.gallery = false; return false; }
-    if (raw == gallery_close_key) W.gallery = false;
+    r("power", 0, 0);
+    fw_power_saw_gallery = screen_is_open(SCR_GALLERY);
+    power_prompt_show(POWER_PROMPT_HOLD, 3);
+    fw_power_saw_prompt = (screen_top() == SCR_POWER_PROMPT) && power_prompt_up();
+    power_prompt_hide();
+}
+bool scope_selfcal_busy(void)           { return fw_busy; }
+void scope_selfcal_request_cancel(void) { r("cancel", 0, 0); }
+
+/* The mode op as tasks/input_handler.c input_mode_switch makes it: the real
+ * ui_router_switch_mode, then (if the base changed) the posture, the flush
+ * and the repaint, logged as one token. */
+static bool fw_mode(uint8_t m)
+{
+    const bool switched = ui_router_switch_mode((device_mode_t)m);
+    r(switched ? "mode:%d" : "mode:%d=", m, 0);
     return true;
 }
-/* The gallery's stand-in (B5): a GRAB layer that takes every key it is
- * asked (never POWER: the router does not ask), closes itself on its close
- * key, and pops its own layer when it finds itself shut under the key. (The
- * real one, its navigation and its deletes are in make test-gallery-screen.) */
-static scr_res_t fake_gallery_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("gallery:%d", raw, 0, 0);
-    if (gallery_gone) { W.gallery = false; (void)screen_close(SCR_GALLERY); return SCR_UNHANDLED; }
-    if (raw == gallery_close_key) { W.gallery = false; return SCR_CLOSE; }
-    return SCR_HANDLED;
-}
-static void fake_layer_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; }
-const screen_t gallery_screen = {
-    .name = "gallery", .id = SCR_GALLERY, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
-    .flags = SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS, .key = fake_gallery_key, .draw = fake_layer_draw,
-};
-/* The small layers' stand-ins (B5): the logo and the POWER prompt have no
- * keys (make test-overlay-screens has the real ones). */
-const screen_t logo_screen = {
-    .name = "logo", .id = SCR_LOGO, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
-    .flags = SCR_F_OPAQUE | SCR_F_NO_BARS, .draw = fake_layer_draw,
-};
-const screen_t power_prompt_screen = {
-    .name = "power_prompt", .id = SCR_POWER_PROMPT, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
-    .flags = SCR_F_OPAQUE | SCR_F_NO_BARS, .draw = fake_layer_draw,
-};
-/* The POWER global closes it first (it used to be handed POWER and closed
- * itself): the same log line. */
-void gallery_ui_close(void) { lg("gallery:%d", BTN_POWER, 0, 0); W.gallery = false; }
-bool lgc_selfcal_busy(void)   { return W.busy; }
-void lgc_selfcal_cancel(void) { lg("cancel", 0, 0, 0); }
-void lgc_selfcal_refuse(void) { lg("busy", 0, 0, 0); }
-void lgc_touch(void)          { lg("touch", 0, 0, 0); }
-void lgc_click(void)          { lg("click", 0, 0, 0); }
-void lgc_lock(void)           { lg_lock++; }
-void lgc_unlock(void)         { lg_lock--; }
+static model_hw_ops_t fw_ops;
 
-/* The Settings screens' stand-ins (B8): the list and its two pages (layers
- * the mirror pushes from W.depth here; the real ones push themselves). The
- * arrows paint in place, OK and the keys with no meaning in full, a long
- * key nothing. (The real ones, every row as a property set, are in make
- * test-settings-screen.) */
-static scr_res_t fake_set_answer(uint8_t raw)
-{
-    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
-    if (raw == BTN_UP || raw == BTN_DOWN || raw == BTN_LEFT || raw == BTN_RIGHT) return SCR_DRAW;
-    if (raw == BTN_OK || raw == BTN_CH1 || raw == BTN_CH2 || raw == BTN_TRIGGER || raw == BTN_MOVE) return SCR_DRAW_FULL;
-    return SCR_HANDLED;
-}
-static scr_res_t fake_set_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("set:%d", raw, 0, 0);
-    return fake_set_answer(raw);
-}
-static void fake_set_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; }
-static void fake_set_describe(char *out, size_t n) { snprintf(out, n, "settings=%d/0/0", (int)W.depth); }
-#define G_SET ((uint16_t)((1u << PG_COUNT) - 1u))
-const screen_t settings_screen = {
-    .name = "settings", .id = SCR_SETTINGS, .mode = MODE_SETTINGS, .instrument = SCR_INSTRUMENT_NONE,
-    .key = fake_set_key, .draw = fake_set_draw, .describe = fake_set_describe, .groups = G_SET,
-};
-const screen_t settings_sound_screen = {
-    .name = "set_sound", .id = SCR_SET_SOUND, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
-    .flags = SCR_F_CHILD | SCR_F_OPAQUE,
-    .key = fake_set_key, .draw = fake_set_draw, .describe = fake_set_describe, .groups = G_SET,
-};
-const screen_t settings_about_screen = {
-    .name = "set_about", .id = SCR_SET_ABOUT, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
-    .flags = SCR_F_CHILD | SCR_F_OPAQUE,
-    .key = fake_set_key, .draw = fake_set_draw, .describe = fake_set_describe, .groups = G_SET,
-};
-/* What a key a Settings screen is asked must log: the key, then the wiring's
- * one post of its answer, for the screen that was asked (the page on top). */
-static void want_set(uint8_t raw)
-{
-    lg("set:%d", raw, 0, 0);
-    lg("after:%d:%d", legacy_settings_page(W.depth), fake_set_answer(raw), 0);
-}
+/* ── states ────────────────────────────────────────────────────────── */
+#define LONG(b) ((uint8_t)((b) | BTN_LONG_FLAG))
 
-/* The home page's stand-in: every key it is asked, with what the real one
- * answers for it (LEFT/RIGHT repaint the selection, the rest nothing). */
-static scr_res_t fake_home_answer(uint8_t raw)
-{
-    return (raw == BTN_LEFT || raw == BTN_RIGHT) ? SCR_DRAW : SCR_HANDLED;
-}
-static scr_res_t fake_home_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("home:%d", raw, 0, 0);
-    return fake_home_answer(raw);
-}
-static void fake_draw(scr_paint_t how, uint32_t frame) { (void)how; (void)frame; }
-static void fake_home_describe(char *out, size_t n) { snprintf(out, n, "home=scope"); }
-const screen_t home_screen = {
-    .name = "home", .id = SCR_HOME, .mode = MODE_HOME, .instrument = SCR_INSTRUMENT_NONE,
-    .key = fake_home_key, .draw = fake_draw, .describe = fake_home_describe,
-    .groups = (uint16_t)((1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI)),
-};
-/* What a key the home page is asked must log: the key, then the wiring's
- * one post of its answer (the paint and the settings hook). */
-static void want_home(uint8_t raw)
-{
-    lg("home:%d", raw, 0, 0);
-    lg("after:%d:%d", SCR_HOME, fake_home_answer(raw), 0);
-}
+typedef enum { ST_HOME, ST_METER, ST_GEN, ST_GEN_EDIT, ST_SCOPE, ST_SCOPE_PAGE, ST_SCOPE_PANE,
+               ST_SET, ST_SET_QUESTION, ST_SET_SOUND, ST_SET_ABOUT, ST_COUNT } fw_state_t;
+typedef enum { OV_NONE, OV_GALLERY, OV_LOGO, OV_COUNT } fw_over_t;
+static const char *const st_name[ST_COUNT] = { "home", "meter", "generator", "generator (editing)", "scope",
+    "scope > page", "scope > locked pane", "settings", "settings (question)", "settings > sound", "settings > about" };
+static const device_mode_t st_mode[ST_COUNT] = { MODE_HOME, MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SIGNAL_GEN,
+    MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE, MODE_OSCILLOSCOPE, MODE_SETTINGS, MODE_SETTINGS, MODE_SETTINGS, MODE_SETTINGS };
 
-/* The generator's stand-in, the same way: the three answers a screen can
- * give (its page, a full repaint, nothing). */
-static scr_res_t fake_gen_answer(uint8_t raw)
-{
-    if (raw == BTN_CH1 || raw == BTN_CH2 || raw == BTN_TRIGGER || raw == BTN_MOVE) return SCR_DRAW_FULL;
-    if (raw == BTN_AUTO || (raw & BTN_LONG_FLAG)) return SCR_HANDLED;
-    return SCR_DRAW;
-}
-static scr_res_t fake_gen_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("gen:%d", raw, 0, 0);
-    return fake_gen_answer(raw);
-}
-const screen_t siggen_screen = {
-    .name = "siggen", .id = SCR_SIGGEN, .mode = MODE_SIGNAL_GEN, .instrument = MODE_SIGNAL_GEN,
-    .key = fake_gen_key, .draw = fake_draw,
-    .groups = (uint16_t)((1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI)),
-};
-static void want_gen(uint8_t raw)
-{
-    lg("gen:%d", raw, 0, 0);
-    lg("after:%d:%d", SCR_SIGGEN, fake_gen_answer(raw), 0);
-}
+static void fw_key(uint8_t raw) { ui_router_key((button_id_t)raw); }
+static void fw_keys(uint8_t raw, int n) { while (n-- > 0) fw_key(raw); }
 
-/* The meter's stand-in (B6): the softkeys, OK, AUTO and the arrows paint in
- * place or in full, the long keys do nothing. */
-static scr_res_t fake_meter_answer(uint8_t raw)
+/* A device booted into `st`, reached by the keys a user presses, with the
+ * overlay `ov` over it; then a clean log. */
+static void fw_boot(fw_state_t st, fw_over_t ov, bool busy)
 {
-    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
-    if (raw == BTN_LEFT || raw == BTN_RIGHT || raw == BTN_CH1 || raw == BTN_CH2) return SCR_DRAW_FULL;
-    if (raw == BTN_MENU || raw == BTN_UP || raw == BTN_DOWN) return SCR_HANDLED;
-    return SCR_DRAW;
-}
-static scr_res_t fake_meter_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("meter:%d", raw, 0, 0);
-    return fake_meter_answer(raw);
-}
-const screen_t meter_screen = {
-    .name = "meter", .id = SCR_METER, .mode = MODE_MULTIMETER, .instrument = MODE_MULTIMETER,
-    .key = fake_meter_key, .draw = fake_draw,
-    .groups = (uint16_t)((1u << PG_METER) | (1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI)),
-};
-static void want_meter(uint8_t raw)
-{
-    lg("meter:%d", raw, 0, 0);
-    lg("after:%d:%d", SCR_METER, fake_meter_answer(raw), 0);
-}
-
-/* The scope's stand-in (B7): the arrows, CH1/CH2, OK and the stage keys
- * repaint in full, the keys that open the page paint it, a long key the
- * view does not use nothing. (The real one, every key as a property set, is
- * in make test-scope-screen.) */
-#define G_SCOPE ((uint16_t)((1u << PG_GEN) | (1u << PG_SYS) | (1u << PG_UI) | (1u << PG_CH1) | (1u << PG_CH2) | \
-                            (1u << PG_TB) | (1u << PG_TRIG) | (1u << PG_VIEW) | (1u << PG_FFT) | (1u << PG_IL) | \
-                            (1u << PG_MASK)))
-static scr_res_t fake_scope_answer(uint8_t raw)
-{
-    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
-    if (raw == BTN_MENU || raw == BTN_PRM || raw == BTN_TRIGGER) return SCR_DRAW;
-    return SCR_DRAW_FULL;
-}
-static scr_res_t fake_scope_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("scope:%d", raw, 0, 0);
-    return fake_scope_answer(raw);
-}
-const screen_t scope_screen = {
-    .name = "scope", .id = SCR_SCOPE, .mode = MODE_OSCILLOSCOPE, .instrument = MODE_OSCILLOSCOPE,
-    .key = fake_scope_key, .draw = fake_draw, .groups = G_SCOPE,
-};
-static void want_scope(uint8_t raw)
-{
-    lg("scope:%d", raw, 0, 0);
-    lg("after:%d:%d", SCR_SCOPE, fake_scope_answer(raw), 0);
-}
-
-/* The Oscilloscope Settings page's stand-in (B5), a layer over the scope:
- * the arrows and OK repaint it in place, the rest change nothing. (The real
- * one, its property sets and its close are in make test-osc-menu-screen.) */
-static scr_res_t fake_osc_answer(uint8_t raw)
-{
-    if (raw & BTN_LONG_FLAG) return SCR_HANDLED;
-    return (raw == BTN_UP || raw == BTN_DOWN || raw == BTN_LEFT || raw == BTN_RIGHT || raw == BTN_OK)
-               ? SCR_DRAW : SCR_HANDLED;
-}
-static scr_res_t fake_osc_key(scr_key_t k)
-{
-    const uint8_t raw = (uint8_t)((uint8_t)k.btn | (k.is_long ? BTN_LONG_FLAG : 0u));
-    lg("osc:%d", raw, 0, 0);
-    return fake_osc_answer(raw);
-}
-static void fake_osc_describe(char *out, size_t n) { snprintf(out, n, "row=ch1 pane=rail item=0"); }
-const screen_t osc_menu_screen = {
-    .name = "osc_menu", .id = SCR_OSC_MENU, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
-    .flags = SCR_F_OPAQUE, .key = fake_osc_key, .draw = fake_draw, .describe = fake_osc_describe,
-    .groups = G_SCOPE,
-};
-static void want_osc(uint8_t raw)
-{
-    lg("osc:%d", raw, 0, 0);
-    lg("after:%d:%d", SCR_OSC_MENU, fake_osc_answer(raw), 0);
-}
-static bool is_osc_action(uint8_t act)
-{
-    return act == KA_NONE || act == KA_OSCMENU_OPEN || act == KA_OSCMENU_PANE ||
-           act == KA_OSCMENU_KEY || act == KA_OSCMENU_CLOSE;
-}
-
-/* input_handle_button() before the router (base 6a8c2ba), step by step. */
-static void old_route(uint8_t raw)
-{
-    const button_id_t b = (button_id_t)(raw & (uint8_t)~BTN_LONG_FLAG);
-    const bool lng = (raw & BTN_LONG_FLAG) != 0;
-    lg("touch", 0, 0, 0); lg("click", 0, 0, 0);                 /* autooff_touch, sys_pwm_click */
-    /* gallery_ui_is_open() && gallery_ui_key(): all it consumes (not POWER,
-     * nothing once it is shut) */
-    if (W.gallery && old_gallery_key(raw)) {
-        /* It had no settings hook and painted itself. As a screen (B5) the
-         * wiring posts its answer once: nothing to paint, or, when it closed
-         * itself, the full repaint of what was under it. */
-        lg("after:%d:%d", SCR_GALLERY, W.gallery ? SCR_HANDLED : SCR_DRAW_FULL, 0);
-        return;
+    env_fresh(st_mode[st]);
+    fw_ops = env_ops;
+    fw_ops.mode = fw_mode;
+    model_bind_hw(&fw_ops);
+    fw_busy = false;
+    if (st == ST_HOME) {
+        /* Home entered from the scope (it preselects the screen it was opened
+         * from), so its selection is known: Oscilloscope. */
+        current_mode = MODE_OSCILLOSCOPE;
+        ui_router_init(MODE_OSCILLOSCOPE);
+        (void)prop_set_local(P(SYS_MODE), MODE_HOME, ORIGIN_SHELL, NULL);
+    } else {
+        ui_router_init(st_mode[st]);
     }
-    if (W.busy) {                                                /* scope_selfcal_busy() */
-        if (b == BTN_AUTO || b == BTN_MENU) { lg("cancel", 0, 0, 0); return; }
-        if (b != BTN_POWER) { lg("busy", 0, 0, 0); return; }
+    siggen_ui_editor()->active = false;
+    switch (st) {
+    case ST_GEN_EDIT:     fw_key(BTN_PRM); break;
+    case ST_SCOPE_PAGE:   fw_key(BTN_MENU); break;
+    case ST_SCOPE_PANE:   fw_key(BTN_TRIGGER); break;
+    case ST_SET_QUESTION: fw_keys(BTN_DOWN, SET_ITEM_RESET_DEFAULTS); fw_key(BTN_OK); break;
+    case ST_SET_SOUND:    fw_key(BTN_OK); break;
+    case ST_SET_ABOUT:    fw_keys(BTN_DOWN, SET_ITEM_ABOUT); fw_key(BTN_OK); break;
+    default: break;
     }
-    const key_ctx_t c = lgc_ctx();                               /* key_ctx_now(), once */
-    if (lng) {                                                   /* every long key */
-        const key_cmd_t k = key_map(&c, b, true);
-        /* exec_key_cmd's KA_ENTER_* cases: enter_mode then, a sys.mode set
-         * now (the same input_mode_switch -> enter_mode underneath). */
-        switch (k.act) {
-        case KA_ENTER_HOME:   lg("mode:%d", MODE_HOME, 0, 0);         return;
-        case KA_ENTER_METER:  lg("mode:%d", MODE_MULTIMETER, 0, 0);   return;
-        case KA_ENTER_SCOPE:  lg("mode:%d", MODE_OSCILLOSCOPE, 0, 0); return;
-        case KA_ENTER_SIGGEN: lg("mode:%d", MODE_SIGNAL_GEN, 0, 0);   return;
-        default:
-            /* Home (B2): a long key that is no global did nothing (key_map
-             * answered KA_NONE and exec_key_cmd ran the settings hook). The
-             * screen is asked now, and answers "nothing" itself. */
-            if (W.mode == MODE_HOME && k.act == KA_NONE) { want_home(raw); return; }
-            /* Settings (B8): the same; no long key ever had a meaning there. */
-            if (W.mode == MODE_SETTINGS && k.act == KA_NONE) { want_set(raw); return; }
-            /* The meter (B6): the same; its long keys never had a meaning. */
-            if (W.mode == MODE_MULTIMETER && k.act == KA_NONE) { want_meter(raw); return; }
-            /* The generator (B3): its long OK (KA_SIGGEN_RUNSTOP) and long
-             * AUTO (KA_SIGGEN_BOOT_TOGGLE) were exec_key_cmd cases and its
-             * other long keys did nothing; the screen is asked for all of
-             * them now. The globals (long SAVE: the gallery) stay globals. */
-            if (W.mode == MODE_SIGNAL_GEN &&
-                (k.act == KA_NONE || k.act == KA_SIGGEN_RUNSTOP || k.act == KA_SIGGEN_BOOT_TOGGLE)) {
-                want_gen(raw);
-                return;
-            }
-            /* The Oscilloscope Settings page (B5): the plot's long keys did
-             * nothing while it was up (key_map: KA_NONE); the page is asked
-             * now and answers "nothing" itself. */
-            if (c.osc_menu_open && k.act == KA_NONE) { want_osc(raw); return; }
-            /* The scope (B7): its long keys (measurements, channel enable,
-             * baseline, 50 %) were exec_key_cmd cases and the rest did
-             * nothing; the screen is asked for all of them now. Long SAVE
-             * (the gallery) stays a global. */
-            if (W.mode == MODE_OSCILLOSCOPE && k.act != KA_GALLERY_OPEN) { want_scope(raw); return; }
-            lgc_exec(k, b);
-            return;
+    if (ov == OV_GALLERY) fw_key(LONG(BTN_SAVE));
+    if (ov == OV_LOGO)    (void)logo_screen_show(false);
+    fw_busy = busy;
+    fw_power_saw_gallery = fw_power_saw_prompt = false;
+    g_fw_popup[0] = '\0';
+    R[0] = '\0';
+    env_log_clear();
+}
+
+static const char *fw_stack(void)
+{
+    static char s[80];
+    const screen_stack_t st = screen_snapshot();
+    s[0] = '\0';
+    for (uint8_t i = 0; i < st.n; i++) {
+        const screen_t *sc = screen_get(st.id[i]);
+        snprintf(s + strlen(s), sizeof s - strlen(s), "%s%s", i ? ">" : "", sc ? sc->name : "?");
+    }
+    return s;
+}
+static bool stack_is(const char *want) { return strcmp(fw_stack(), want) == 0; }
+static bool mirror_ok(void)
+{
+    const screen_t *b = screen_get(screen_base());
+    return b != NULL && current_mode == b->mode;
+}
+
+/* ── tests ─────────────────────────────────────────────────────────── */
+
+static void test_fw_table(void)
+{
+    printf("the firmware's screens: the table\n");
+    fw_boot(ST_SCOPE, OV_NONE, false);
+    int ok = 1;
+    for (int i = 0; i < SCR_COUNT; i++) {
+        const screen_t *s = screen_get((screen_id_t)i);
+        ok &= s != NULL && s->id == (screen_id_t)i && s->name != NULL && s->draw != NULL;
+    }
+    CHECK("every screen id is registered, with a name and a draw of its own (no forwarding rows)", ok);
+    CHECK("the five bases by mode: home, scope, meter, generator, settings",
+          screen_base_for_mode(MODE_HOME) == SCR_HOME && screen_base_for_mode(MODE_OSCILLOSCOPE) == SCR_SCOPE &&
+          screen_base_for_mode(MODE_MULTIMETER) == SCR_METER && screen_base_for_mode(MODE_SIGNAL_GEN) == SCR_SIGGEN &&
+          screen_base_for_mode(MODE_SETTINGS) == SCR_SETTINGS);
+    CHECK("the layers: pages keep the bars, the gallery / logo / prompt own the LCD; only the gallery grabs",
+          settings_sound_screen.flags == (SCR_F_CHILD | SCR_F_OPAQUE) && settings_about_screen.flags == (SCR_F_CHILD | SCR_F_OPAQUE) &&
+          osc_menu_screen.flags == SCR_F_OPAQUE && gallery_screen.flags == (SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS) &&
+          logo_screen.flags == (SCR_F_OPAQUE | SCR_F_NO_BARS) && power_prompt_screen.flags == (SCR_F_OPAQUE | SCR_F_NO_BARS));
+    ok = 1;
+    static const device_mode_t modes[] = { MODE_OSCILLOSCOPE, MODE_MULTIMETER, MODE_SIGNAL_GEN, MODE_SETTINGS, MODE_HOME };
+    for (unsigned i = 0; i < 5; i++) {
+        current_mode = modes[i];                     /* main()'s boot target */
+        ui_router_init(current_mode);
+        ok &= screen_base() == screen_base_for_mode(modes[i]) && screen_snapshot().n == 1 && current_mode == modes[i];
+    }
+    CHECK("boot: the stack starts on the screen of the boot mode (every Startup choice), nothing over it", ok);
+    ui_router_init(MODE_COUNT);
+    CHECK("not a mode: the scope, and current_mode says so", screen_base() == SCR_SCOPE && current_mode == MODE_OSCILLOSCOPE);
+}
+
+static void test_fw_stack_authority(void)
+{
+    printf("the stack is what is shown\n");
+    fw_boot(ST_SCOPE, OV_NONE, false);
+    fw_key(BTN_MENU);
+    CHECK("MENU on the scope: the page's layer is pushed by the key (scope>osc_menu)",
+          stack_is("scope>osc_menu") && osc_menu_is_open());
+    fw_key(LONG(BTN_SAVE));
+    CHECK("long SAVE: the gallery over it (scope>osc_menu>gallery)", stack_is("scope>osc_menu>gallery") && gallery_ui_is_open());
+    CHECK("logo show: over that (4 deep)", logo_screen_show(false) && stack_is("scope>osc_menu>gallery>logo") && logo_screen_up());
+    power_prompt_show(POWER_PROMPT_AUTOOFF, 0);
+    CHECK("the POWER prompt still fits on top (every kind of layer at once: 5)",
+          stack_is("scope>osc_menu>gallery>logo>power_prompt") && power_prompt_up() && screen_modal() == &power_prompt_screen);
+    power_prompt_hide();
+    logo_screen_hide();
+    CHECK("each goes by closing its layer: prompt, logo", stack_is("scope>osc_menu>gallery") && !power_prompt_up() && !logo_screen_up());
+    fw_key(BTN_MENU);
+    CHECK("MENU closes the gallery: the page is still under it", stack_is("scope>osc_menu") && !gallery_ui_is_open());
+    fw_key(BTN_MENU);
+    CHECK("MENU closes the page", stack_is("scope") && !osc_menu_is_open());
+
+    fw_boot(ST_SET, OV_NONE, false);
+    fw_key(BTN_OK);
+    CHECK("OK on Sound and Light: settings>set_sound", stack_is("settings>set_sound") && settings_screen_view().page == SET_PAGE_SOUND);
+    fw_key(LONG(BTN_SAVE));
+    CHECK("the gallery over a Settings page keeps the page under it (settings=7/..)",
+          stack_is("settings>set_sound>gallery") && settings_screen_view().page == SET_PAGE_SOUND);
+    fw_key(BTN_MENU); fw_key(BTN_MENU);
+    CHECK("gallery closed, page closed: the list", stack_is("settings") && settings_screen_view().page == SET_PAGE_LIST);
+
+    int ok = 1;
+    for (int st = 0; st < ST_COUNT; st++)
+        for (int ov = 0; ov < OV_COUNT; ov++) {
+            fw_boot((fw_state_t)st, (fw_over_t)ov, false);
+            ok &= mirror_ok() && current_mode == st_mode[st];
+            ok &= (ov == OV_GALLERY) == gallery_ui_is_open() && (ov == OV_LOGO) == logo_screen_up();
+            ok &= (st == ST_SCOPE_PAGE || st == ST_SCOPE_PANE) == screen_is_open(SCR_OSC_MENU);
         }
-    }
-    const key_cmd_t k = key_map(&c, b, false);
-    /* The Oscilloscope Settings page (B5): its short keys (KA_OSCMENU_* and
-     * the ones that do nothing) were exec_key_cmd cases; the page is asked
-     * now. SAVE stays a global, POWER the switch. */
-    if (c.osc_menu_open && is_osc_action(k.act)) { want_osc(raw); return; }
-    /* The scope (B7): the plot's short keys were exec_key_cmd cases
-     * (key_map's claims) or the switch's scope arms (CH1/CH2, OK, AUTO, the
-     * spectrum views' SELECT and arrows); the screen is asked for all of
-     * them now. SAVE stays a global, POWER the switch. */
-    if (W.mode == MODE_OSCILLOSCOPE && k.act != KA_SCREENSHOT && b != BTN_POWER) { want_scope(raw); return; }
-    if (k.act != KA_LEGACY) { lgc_exec(k, b); return; }          /* key_map's short claims */
-    if (W.mode == MODE_HOME && b != BTN_POWER) { want_home(raw); return; }   /* was lgc_home(b) */
-    /* was the softkey claim (MOVE/SELECT/TRIGGER/PRM), then the switch: the
-     * meter screen has both. */
-    if (W.mode == MODE_MULTIMETER && b != BTN_POWER) { want_meter(raw); return; }
-    /* was siggen_edit_input() (PRM, and the editor's keys while it is open),
-     * then the switch: the generator screen has both. */
-    if (W.mode == MODE_SIGNAL_GEN && b != BTN_POWER) { want_gen(raw); return; }
-    /* was the switch's Settings arms (settings_depth): the Settings screens
-     * have them. */
-    if (W.mode == MODE_SETTINGS && b != BTN_POWER) { want_set(raw); return; }
-    lgc_mode_key(b);                                             /* switch (button): POWER */
+    CHECK("in every state: current_mode is the base's mode; a layer is up exactly while it is on the stack", ok);
 }
 
-static void new_route(uint8_t raw)
+static void test_fw_mode_switch(void)
 {
-    legacy_screens_sync();
-    (void)screen_route_key((button_id_t)raw);
-    legacy_screens_sync();
+    printf("the mode switch\n");
+    fw_boot(ST_SCOPE_PAGE, OV_NONE, false);
+    fw_key(LONG(BTN_SELECT));
+    CHECK("long SELECT (-> scope) on the scope with its page up: the same mode, nothing closes",
+          stack_is("scope>osc_menu") && r_has("mode:0=") && osc_menu_is_open());
+    fw_boot(ST_SCOPE_PAGE, OV_GALLERY, false);
+    (void)prop_set_local(P(SYS_MODE), MODE_OSCILLOSCOPE, ORIGIN_SHELL, NULL);
+    CHECK("`set sys.mode scope` there with the gallery up: the gallery closes, the page stays",
+          stack_is("scope>osc_menu") && r_has("mode:0="));
+    fw_boot(ST_SCOPE_PAGE, OV_GALLERY, false);
+    (void)prop_set_local(P(SYS_MODE), MODE_MULTIMETER, ORIGIN_SHELL, NULL);
+    CHECK("`set sys.mode meter`: every layer closes, the page's model with its layer, the meter is the base",
+          stack_is("meter") && !osc_menu_is_open() && osc_menu_screen_opener() == BTN_NONE && !gallery_ui_is_open() &&
+          current_mode == MODE_MULTIMETER && r_has("mode:1"));
+    (void)prop_set_local(P(SYS_MODE), MODE_OSCILLOSCOPE, ORIGIN_SHELL, NULL);
+    CHECK("back on the scope the page does not reappear", stack_is("scope"));
+    fw_boot(ST_GEN_EDIT, OV_NONE, false);
+    fw_key(LONG(BTN_MENU));
+    CHECK("long MENU from the generator's editor: Home, the editor dropped, Home preselects the generator",
+          stack_is("home") && !siggen_ui_editor()->active && home_screen_selected() == home_item_for_mode(MODE_SIGNAL_GEN));
+    fw_boot(ST_SET_QUESTION, OV_NONE, false);
+    fw_key(LONG(BTN_MOVE));
+    (void)prop_set_local(P(SYS_MODE), MODE_SETTINGS, ORIGIN_SHELL, NULL);
+    CHECK("leaving Settings with the question up and coming back: the list, row 0",
+          stack_is("settings") && settings_screen_view().page == SET_PAGE_LIST && settings_screen_view().row == 0);
+    int ok = 1;
+    static const struct { uint8_t key; device_mode_t to; } K[] = {
+        { LONG(BTN_MENU), MODE_HOME }, { LONG(BTN_MOVE), MODE_MULTIMETER },
+        { LONG(BTN_SELECT), MODE_OSCILLOSCOPE }, { LONG(BTN_TRIGGER), MODE_SIGNAL_GEN } };
+    for (int st = 0; st < ST_COUNT; st++)
+        for (int ov = 0; ov < OV_COUNT; ov++) {
+            if (ov == OV_GALLERY) continue;                      /* the gallery grabs them: below */
+            for (unsigned k = 0; k < 4; k++) {
+                fw_boot((fw_state_t)st, (fw_over_t)ov, false);
+                const screen_stack_t before = screen_snapshot();
+                fw_key(K[k].key);
+                const bool same = (K[k].to == st_mode[st]);
+                char tok[16];
+                snprintf(tok, sizeof tok, same ? "mode:%d=" : "mode:%d", (int)K[k].to);
+                bool good = r_count("mode:") == 1 && r_has(tok) && mirror_ok() && current_mode == K[k].to &&
+                            screen_last_handler() == SCR_COUNT && r_count("svc") == 1 && !r_has("shot") && !r_has("power");
+                if (same) good = good && screen_snapshot().n == before.n;      /* nothing closes */
+                else      good = good && screen_snapshot().n == 1;             /* every layer closed */
+                if (!good) printf("    %s, overlay %d, key %u: [%s] stack %s\n", st_name[st], ov, K[k].key, R, fw_stack());
+                ok &= good;
+            }
+        }
+    CHECK("the long mode keys from every screen, page and under the logo: one sys.mode set, no screen asked", ok);
 }
 
-/* Does the stack mirror W? */
-static bool stack_mirrors(void)
+/* The expectation table of the router as it was wired over the handlers
+ * (the pre-B8 test's rows), on the real screens. Log: the environment's
+ * calls in order, then who took the key and its answer (1 handled, 2 paint
+ * in place, 3 repaint all), then the stack. */
+static void test_fw_key_table(void)
 {
-    screen_stack_t st = screen_snapshot();
-    screen_id_t want[SCR_STACK_MAX];
-    uint8_t n = 0;
-    want[n++] = screen_base_for_mode(W.mode);
-    if (W.mode == MODE_SETTINGS && legacy_settings_page(W.depth) != SCR_SETTINGS)
-        want[n++] = legacy_settings_page(W.depth);    /* a value that is no page shows the list */
-    if (W.mode == MODE_OSCILLOSCOPE && W.osc_open) want[n++] = SCR_OSC_MENU;
-    if (W.gallery) want[n++] = SCR_GALLERY;
-    if (W.logo && n < SCR_STACK_MAX) want[n++] = SCR_LOGO;
-    if (W.prompt && n < SCR_STACK_MAX) want[n++] = SCR_POWER_PROMPT;
-    if (st.n != n) return false;
-    for (uint8_t i = 0; i < n; i++) if (st.id[i] != want[i]) return false;
-    return true;
-}
-
-static int compare_one(uint8_t raw, char *why, size_t nwhy)
-{
-    const lw_t saved = W;
-    LG[0] = '\0';
-    old_route(raw);
-    char want[sizeof LG];
-    strcpy(want, LG);
-    const lw_t after_old = W;
-    W = saved;
-    legacy_screens_sync();
-    LG[0] = '\0';
-    new_route(raw);
-    const bool ok = strcmp(want, LG) == 0 && W.gallery == after_old.gallery && stack_mirrors();
-    if (!ok && why[0] == '\0')
-        snprintf(why, nwhy, "mode %d depth %d osc %d/%d op %d gal %d busy %d ed %d tv %d key %u: want [%s] got [%s]",
-                 saved.mode, saved.depth, saved.osc_open, saved.osc_locked, saved.opener, saved.gallery,
-                 saved.busy, saved.editor, saved.tv, raw, want, LG);
-    W = saved;
-    return ok ? 0 : 1;
-}
-
-/* Every key: 15 short, and long for the keys the scan gives a long to. */
-static int all_keys(int *cases, char *why, size_t nwhy)
-{
-    int bad = 0;
-    for (int b = BTN_CH1; b <= BTN_POWER; b++) {
-        bad += compare_one((uint8_t)b, why, nwhy); (*cases)++;
-        static const uint8_t long_keys[] = { BTN_AUTO, BTN_CH1, BTN_MOVE, BTN_SELECT, BTN_TRIGGER,
-                                             BTN_PRM, BTN_CH2, BTN_SAVE, BTN_MENU, BTN_OK };
-        for (unsigned i = 0; i < sizeof long_keys; i++)
-            if (long_keys[i] == b) { bad += compare_one((uint8_t)(b | BTN_LONG_FLAG), why, nwhy); (*cases)++; }
-    }
-    return bad;
-}
-
-static void test_legacy_equivalence(void)
-{
-    printf("legacy screens: every key routed as before the router\n");
-    screen_reset();
-    memset(&W, 0, sizeof W);
-    W.mode = MODE_OSCILLOSCOPE; W.tv = true; W.opener = BTN_NONE;
-    legacy_screens_init();
-    CHECK("init: the base of the current mode", screen_base() == SCR_SCOPE && screen_top() == SCR_SCOPE);
-
-    /* The page as the keys can leave it (opener and lock come in pairs). */
-    static const struct { bool open, locked; uint8_t opener; } osc[] = {
-        { false, false, BTN_NONE }, { true, false, BTN_MENU }, { true, false, BTN_CH1 },
-        { true, true, BTN_PRM }, { true, true, BTN_TRIGGER },
-    };
-    static const struct { key_focus_t f; bool cursors, mask; } foc[] = {
-        { KF_ZOOM, false, false }, { KF_TRIGMOVE, false, false }, { KF_CURSOR, true, false },
-        { KF_MASK, false, true },
-    };
-    int bad = 0, cases = 0;
-    char why[400] = "";
-    for (int mode = 0; mode < MODE_COUNT; mode++)
-    for (int depth = 0; depth < (mode == MODE_SETTINGS ? 8 : 1); depth++)
-    for (unsigned o = 0; o < sizeof osc / sizeof osc[0]; o++)
-    for (int gal = 0; gal < 3; gal++)              /* 2: open at the sync, shut at the key */
-    for (int busy = 0; busy < 2; busy++)
-    for (int ed = 0; ed < (mode == MODE_SIGNAL_GEN ? 2 : 1); ed++)
-    for (int tv = 0; tv < (mode == MODE_OSCILLOSCOPE ? 2 : 1); tv++)
-    for (unsigned f = 0; f < (mode == MODE_OSCILLOSCOPE ? sizeof foc / sizeof foc[0] : 1u); f++) {
-        /* Outside the scope only "closed" and a page left open by a shell
-         * mode switch (it is not the scope's, so not on the stack). */
-        if (mode != MODE_OSCILLOSCOPE && o > 1) continue;
-        memset(&W, 0, sizeof W);
-        W.mode = (device_mode_t)mode; W.depth = (int8_t)depth;
-        W.osc_open = osc[o].open; W.osc_locked = osc[o].locked; W.opener = osc[o].opener;
-        W.gallery = gal != 0; W.busy = busy; W.editor = ed; W.tv = tv;
-        W.focus = foc[f].f; W.cursors = foc[f].cursors; W.mask = foc[f].mask;
-        gallery_gone = (gal == 2);
-        bad += all_keys(&cases, why, sizeof why);
-    }
-    gallery_gone = false;
-    printf("    %d cases\n", cases);
-    if (bad) printf("    first difference: %s\n", why);
-    CHECK("every key, short and long, every mode/page/overlay: same handler, same action",
-          bad == 0 && cases > 5000);
-    CHECK("the injected lock is balanced", lg_lock == 0);
-}
-
-/* A table to read: one row per meaning that moved in the router (globals,
- * grab, lock), with the handler log it must produce. */
-static void test_legacy_table(void)
-{
-    printf("legacy screens: the expectation table\n");
+    printf("who takes a key: the expectation table\n");
     static const struct {
-        const char *what; device_mode_t mode; int8_t depth; bool osc, locked, gal, busy, ed;
-        uint8_t raw; const char *want;
+        const char *what; fw_state_t st; fw_over_t ov; bool busy; uint8_t raw; const char *want; const char *stack;
     } T[] = {
-        { "long MOVE in the scope -> meter (global)",     MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx mode:1" },
-        { "long SELECT in the meter -> scope (global)",   MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_SELECT | BTN_LONG_FLAG,  "touch click ctx mode:0" },
-        { "long TRIGGER on home -> generator (global)",   MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click ctx mode:2" },
-        { "long MENU on a settings page -> home",         MODE_SETTINGS,     3, 0, 0, 0, 0, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click ctx mode:4" },
-        { "long MOVE under the osc page -> meter",        MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click ctx mode:1" },
-        { "long SAVE in the generator -> gallery",        MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_SAVE | BTN_LONG_FLAG,    "touch click ctx exec:10:0:8" },
-        { "short SAVE on home -> screenshot",             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click ctx exec:11:0:8" },
-        { "long OK in the scope: its screen (50 % centre)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,    "touch click ctx scope:142 after:1:1" },
-        { "long AUTO in the scope: its screen (baseline)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,   "touch click ctx scope:135 after:1:1" },
-        { "long CH2 in the scope: its screen (CH2 on/off)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_CH2 | BTN_LONG_FLAG,   "touch click ctx scope:130 after:1:1" },
-        { "long CH1 under the osc page: the page (nothing)", MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_CH1 | BTN_LONG_FLAG,  "touch click ctx osc:129 after:7:1" },
-        { "long OK in the generator: its screen",         MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx gen:142 after:3:1" },
-        { "long AUTO in the generator: its screen",       MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_AUTO | BTN_LONG_FLAG,    "touch click ctx gen:135 after:3:1" },
-        { "CH1 in the generator: screen, full repaint",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_CH1,                     "touch click ctx gen:1 after:3:3" },
-        { "MENU in the generator: its screen",            MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx gen:9 after:3:2" },
-        { "POWER in the generator -> the countdown",      MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
-        { "long TRIGGER in the generator: global, itself", MODE_SIGNAL_GEN,  0, 0, 0, 0, 0, 0, BTN_TRIGGER | BTN_LONG_FLAG, "touch click ctx mode:2" },
-        { "UP in the generator during autoset: Busy",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 1, 0, BTN_UP,                      "touch click busy" },
-        { "POWER in the meter -> the countdown",          MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
-        { "POWER on home -> the countdown",               MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_POWER,                   "touch click ctx switch:15" },
-        { "POWER with the gallery up: closes it, then",   MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_POWER,                   "touch click gallery:15 ctx switch:15" },
-        { "long MOVE with the gallery up: the gallery's", MODE_OSCILLOSCOPE, 0, 0, 0, 1, 0, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click gallery:131 after:8:1" },
-        { "long MOVE during autoset: Busy",               MODE_OSCILLOSCOPE, 0, 1, 0, 0, 1, 0, BTN_MOVE | BTN_LONG_FLAG,    "touch click busy" },
-        { "long MENU during autoset: cancel",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_MENU | BTN_LONG_FLAG,    "touch click cancel" },
-        { "POWER during autoset passes",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 1, 0, BTN_POWER,                   "touch click ctx switch:15" },
-        { "UP under the osc page: the page",              MODE_OSCILLOSCOPE, 0, 1, 0, 0, 0, 0, BTN_UP,                      "touch click ctx osc:10 after:7:2" },
-        { "MENU in the scope: its screen (opens the page)", MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_MENU,                  "touch click ctx scope:9 after:1:2" },
-        { "UP in the scope: its screen",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx scope:10 after:1:3" },
-        { "OK in the scope: its screen",                  MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx scope:14 after:1:3" },
-        { "SAVE in the scope stays a global",             MODE_OSCILLOSCOPE, 0, 0, 0, 0, 0, 0, BTN_SAVE,                    "touch click ctx exec:11:0:8" },
-        { "MOVE in the meter: softkey 0",                 MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx meter:3 after:2:2" },
-        { "LEFT in the meter: its screen",                MODE_MULTIMETER,   0, 0, 0, 0, 0, 0, BTN_LEFT,                    "touch click ctx meter:12 after:2:3" },
-        { "PRM in the generator: the editor",             MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_PRM,                     "touch click ctx gen:6 after:3:2" },
-        { "UP in the generator, editor closed: screen",   MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 0, BTN_UP,                      "touch click ctx gen:10 after:3:2" },
-        { "UP in the generator, editor open: screen",     MODE_SIGNAL_GEN,   0, 0, 0, 0, 0, 1, BTN_UP,                      "touch click ctx gen:10 after:3:2" },
-        { "OK on home: home",                             MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK,                      "touch click ctx home:14 after:0:1" },
-        { "RIGHT on home: home, and its selection paint", MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_RIGHT,                   "touch click ctx home:13 after:0:2" },
-        { "long OK on home: home (nothing), no exec",     MODE_HOME,         0, 0, 0, 0, 0, 0, BTN_OK | BTN_LONG_FLAG,      "touch click ctx home:142 after:0:1" },
-        { "MENU on home with the gallery up: gallery's",  MODE_HOME,         0, 0, 0, 1, 0, 0, BTN_MENU,                    "touch click gallery:9 after:8:1" },
-        { "MENU on the Settings list: its screen",        MODE_SETTINGS,     1, 0, 0, 0, 0, 0, BTN_MENU,                    "touch click ctx set:9 after:4:1" },
-        { "short MOVE in settings: its screen, a repaint", MODE_SETTINGS,    0, 0, 0, 0, 0, 0, BTN_MOVE,                    "touch click ctx set:3 after:4:3" },
+        { "long MOVE in the scope -> meter (global)",       ST_SCOPE,      OV_NONE, 0, LONG(BTN_MOVE),    "touch click mode:1 svc", "meter" },
+        { "long SELECT in the meter -> scope (global)",     ST_METER,      OV_NONE, 0, LONG(BTN_SELECT),  "touch click mode:0 svc", "scope" },
+        { "long TRIGGER on home -> generator (global)",     ST_HOME,       OV_NONE, 0, LONG(BTN_TRIGGER), "touch click mode:2 svc", "siggen" },
+        { "long MENU on a settings page -> home",           ST_SET_SOUND,  OV_NONE, 0, LONG(BTN_MENU),    "touch click mode:4 svc", "home" },
+        { "long MOVE under the osc page -> meter",          ST_SCOPE_PAGE, OV_NONE, 0, LONG(BTN_MOVE),    "touch click mode:1 svc", "meter" },
+        { "long SAVE in the generator -> gallery",          ST_GEN,        OV_NONE, 0, LONG(BTN_SAVE),    "touch click svc", "siggen>gallery" },
+        { "short SAVE on home -> screenshot",               ST_HOME,       OV_NONE, 0, BTN_SAVE,          "touch click shot svc", "home" },
+        { "long OK in the scope: its screen (50 % centre)", ST_SCOPE,      OV_NONE, 0, LONG(BTN_OK),      "touch click center50 svc who:1:1", "scope" },
+        { "long AUTO in the scope: its screen (baseline)",  ST_SCOPE,      OV_NONE, 0, LONG(BTN_AUTO),    "touch click basecal svc who:1:1", "scope" },
+        { "long CH2 in the scope: its screen (CH2 on/off)", ST_SCOPE,      OV_NONE, 0, LONG(BTN_CH2),     "touch click post:all svc who:1:3", "scope" },
+        { "long CH1 under the osc page: the page (nothing)", ST_SCOPE_PAGE, OV_NONE, 0, LONG(BTN_CH1),    "touch click svc who:7:1", "scope>osc_menu" },
+        { "long OK in the generator: its screen",           ST_GEN,        OV_NONE, 0, LONG(BTN_OK),      "touch click post:3 svc who:3:2", "siggen" },
+        { "long AUTO in the generator: its screen",         ST_GEN,        OV_NONE, 0, LONG(BTN_AUTO),    "touch click post:3 svc who:3:2", "siggen" },
+        { "CH1 in the generator: screen, full repaint",     ST_GEN,        OV_NONE, 0, BTN_CH1,           "touch click post:all svc who:3:3", "siggen" },
+        { "MENU in the generator: its screen (Home)",       ST_GEN,        OV_NONE, 0, BTN_MENU,          "touch click mode:4 svc who:3:1", "home" },
+        { "POWER in the generator -> the countdown",        ST_GEN,        OV_NONE, 0, BTN_POWER,         "touch click power svc", "siggen" },
+        { "long TRIGGER in the generator: global, itself",  ST_GEN,        OV_NONE, 0, LONG(BTN_TRIGGER), "touch click mode:2= svc", "siggen" },
+        { "UP in the generator during autoset: Busy",       ST_GEN,        OV_NONE, 1, BTN_UP,            "touch click busy post:all", "siggen" },
+        { "POWER in the meter -> the countdown",            ST_METER,      OV_NONE, 0, BTN_POWER,         "touch click power svc", "meter" },
+        { "POWER on home -> the countdown",                 ST_HOME,       OV_NONE, 0, BTN_POWER,         "touch click power svc", "home" },
+        { "POWER with the gallery up: closes it, then",     ST_SCOPE,      OV_GALLERY, 0, BTN_POWER,      "touch click power svc", "scope" },
+        { "long MOVE with the gallery up: the gallery's",   ST_SCOPE,      OV_GALLERY, 0, LONG(BTN_MOVE), "touch click svc who:8:1", "scope>gallery" },
+        { "long MOVE during autoset: Busy",                 ST_SCOPE_PAGE, OV_NONE, 1, LONG(BTN_MOVE),    "touch click busy post:all", "scope>osc_menu" },
+        { "long MENU during autoset: cancel",               ST_SCOPE,      OV_NONE, 1, LONG(BTN_MENU),    "touch click cancel", "scope" },
+        { "POWER during autoset passes",                    ST_SCOPE,      OV_NONE, 1, BTN_POWER,         "touch click power svc", "scope" },
+        { "UP under the osc page: the page",                ST_SCOPE_PAGE, OV_NONE, 0, BTN_UP,            "touch click post:7 svc who:7:2", "scope>osc_menu" },
+        { "MENU in the scope: its screen (opens the page)", ST_SCOPE,      OV_NONE, 0, BTN_MENU,          "touch click post:1 svc who:1:2", "scope>osc_menu" },
+        { "UP in the scope: its screen",                    ST_SCOPE,      OV_NONE, 0, BTN_UP,            "touch click post:all svc who:1:3", "scope" },
+        { "OK in the scope: its screen",                    ST_SCOPE,      OV_NONE, 0, BTN_OK,            "touch click post:all svc who:1:3", "scope" },
+        { "SAVE in the scope stays a global",               ST_SCOPE,      OV_NONE, 0, BTN_SAVE,          "touch click shot svc", "scope" },
+        { "MOVE in the meter: softkey 0",                   ST_METER,      OV_NONE, 0, BTN_MOVE,          "touch click post:2 svc who:2:2", "meter" },
+        { "LEFT in the meter: its screen",                  ST_METER,      OV_NONE, 0, BTN_LEFT,          "touch click post:all svc who:2:3", "meter" },
+        { "PRM in the generator: the editor",               ST_GEN,        OV_NONE, 0, BTN_PRM,           "touch click post:3 svc who:3:2", "siggen" },
+        { "UP in the generator, editor closed: screen",     ST_GEN,        OV_NONE, 0, BTN_UP,            "touch click post:3 svc who:3:2", "siggen" },
+        { "UP in the generator, editor open: screen",       ST_GEN_EDIT,   OV_NONE, 0, BTN_UP,            "touch click post:3 svc who:3:2", "siggen" },
+        { "OK on home: home (enters the scope)",            ST_HOME,       OV_NONE, 0, BTN_OK,            "touch click mode:0 svc who:0:1", "scope" },
+        { "RIGHT on home: home, and its selection paint",   ST_HOME,       OV_NONE, 0, BTN_RIGHT,         "touch click post:0 svc who:0:2", "home" },
+        { "long OK on home: home (nothing)",                ST_HOME,       OV_NONE, 0, LONG(BTN_OK),      "touch click svc who:0:1", "home" },
+        { "MENU on home with the gallery up: gallery's",    ST_HOME,       OV_GALLERY, 0, BTN_MENU,       "touch click post:all svc who:8:3", "home" },
+        { "MENU on the Settings list: its screen (Home)",   ST_SET,        OV_NONE, 0, BTN_MENU,          "touch click mode:4 svc who:4:1", "home" },
+        { "MENU on a Settings page: the page (back)",       ST_SET_ABOUT,  OV_NONE, 0, BTN_MENU,          "touch click pageleft post:all svc who:5:3", "settings" },
+        { "short MOVE in settings: its screen, a repaint",  ST_SET,        OV_NONE, 0, BTN_MOVE,          "touch click post:all svc who:4:3", "settings" },
+        { "UP on Sound and Light: the page, in place",      ST_SET_SOUND,  OV_NONE, 0, BTN_UP,            "touch click post:6 svc who:6:2", "settings>set_sound" },
+        { "OK on the question: the reset, the list",        ST_SET_QUESTION, OV_NONE, 0, BTN_OK,          "touch click reset post:all svc who:4:3", "settings" },
+        { "SAVE on a Settings page: the screenshot global", ST_SET_ABOUT,  OV_NONE, 0, BTN_SAVE,          "touch click shot svc", "settings>set_about" },
+        { "SAVE under the logo: still the global",          ST_METER,      OV_LOGO, 0, BTN_SAVE,          "touch click shot svc", "meter>logo" },
+        { "UP under the logo: nobody's",                    ST_METER,      OV_LOGO, 0, BTN_UP,            "touch click", "meter>logo" },
+        { "SAVE with the gallery up: the gallery's (arm delete)", ST_SCOPE, OV_GALLERY, 0, BTN_SAVE,     "touch click post:8 svc who:8:2", "scope>gallery" },
+        { "an arrow in the gallery during autoset: the gallery first", ST_SCOPE, OV_GALLERY, 1, BTN_RIGHT, "touch click post:8 svc who:8:2", "scope>gallery" },
     };
-    _Static_assert(KA_ENTER_HOME == 2 && KA_ENTER_METER == 3 && KA_ENTER_SCOPE == 4 && KA_ENTER_SIGGEN == 5 &&
-                   KA_CH_ENABLE_TOGGLE == 7 && KA_GALLERY_OPEN == 10 &&
-                   KA_SCREENSHOT == 11 && KA_BASECAL == 12 && KA_CENTER50 == 13 && KA_OSCMENU_OPEN == 26 &&
-                   KA_OSCMENU_KEY == 28 && KA_NONE == 1, "the action numbers the table spells");
+    _Static_assert(SCR_HOME == 0 && SCR_SCOPE == 1 && SCR_METER == 2 && SCR_SIGGEN == 3 && SCR_SETTINGS == 4 &&
+                   SCR_SET_ABOUT == 5 && SCR_SET_SOUND == 6 && SCR_OSC_MENU == 7 && SCR_GALLERY == 8,
+                   "the screen numbers the table spells");
     int bad = 0;
     for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
-        memset(&W, 0, sizeof W);
-        W.mode = T[i].mode; W.depth = T[i].depth; W.osc_open = T[i].osc; W.osc_locked = T[i].locked;
-        W.opener = T[i].osc ? BTN_MENU : BTN_NONE; W.gallery = T[i].gal; W.busy = T[i].busy;
-        W.editor = T[i].ed; W.tv = true;
-        const lw_t saved = W;
-        LG[0] = '\0'; old_route(T[i].raw);
-        char o[sizeof LG]; strcpy(o, LG);
-        W = saved; legacy_screens_sync();
-        LG[0] = '\0'; new_route(T[i].raw);
-        char want[80]; snprintf(want, sizeof want, "%s ", T[i].want);
-        if (strcmp(o, want) != 0 || strcmp(LG, want) != 0) {
+        fw_boot(T[i].st, T[i].ov, T[i].busy);
+        fw_key(T[i].raw);
+        if (screen_last_handler() != SCR_COUNT) r("who:%d:%d", (int)screen_last_handler(), 0);
+        /* the answer is what the router returned: read it back from the posts */
+        char got[sizeof R];
+        strcpy(got, R);
+        char *w = strstr(got, "who:");
+        if (w) {
+            const int res = r_has("post:all") ? 3 : (r_count("post:") ? 2 : 1);
+            snprintf(w, sizeof got - (size_t)(w - got), "who:%d:%d ", (int)screen_last_handler(), res);
+        }
+        char want[160];
+        snprintf(want, sizeof want, "%s ", T[i].want);
+        if (strcmp(got, want) != 0 || !stack_is(T[i].stack) || !mirror_ok()) {
             bad++;
-            printf("    %s: want [%s] old [%s] new [%s]\n", T[i].what, T[i].want, o, LG);
+            printf("    %s: want [%s] %s, got [%s] %s\n", T[i].what, T[i].want, T[i].stack, got, fw_stack());
         }
     }
-    CHECK("each row: the old order and the router give the logged handler", bad == 0);
+    CHECK("each row: the logged calls, the screen asked, its repaint, the stack after", bad == 0);
 }
 
-static void test_legacy_mirror(void)
+/* Every key, short and long, in every state: the order of the router. */
+static void test_fw_global_order(void)
 {
-    printf("legacy screens: the stack mirrors the legacy state\n");
-    memset(&W, 0, sizeof W);
-    W.mode = MODE_OSCILLOSCOPE; W.tv = true;
-    legacy_screens_init();
-    const uint32_t g0 = screen_snapshot().gen;
-    legacy_screens_sync();
-    CHECK("sync with nothing changed leaves the stack (gen) alone", screen_snapshot().gen == g0);
+    printf("the global keys and the order, every key in every state\n");
+    int cases = 0, bad = 0;
+    char why[160] = "";
+    for (int st = 0; st < ST_COUNT; st++)
+    for (int ov = 0; ov < OV_COUNT; ov++)
+    for (int busy = 0; busy < 2; busy++)
+    for (int b = BTN_CH1; b <= BTN_POWER; b++)
+    for (int lng = 0; lng < 2; lng++) {
+        if (lng && b == BTN_POWER) continue;                     /* POWER has no long press */
+        const uint8_t raw = (uint8_t)(b | (lng ? BTN_LONG_FLAG : 0));
+        fw_boot((fw_state_t)st, (fw_over_t)ov, busy != 0);
+        const screen_stack_t before = screen_snapshot();
+        const screen_id_t top0 = before.id[before.n - 1];
+        const env_epochs_t e0 = env_epochs();
+        fw_key(raw);
+        const env_epochs_t e1 = env_epochs();
+        const bool untouched = env_epochs_moved(&e0, &e1) == 0 && env_log_is("");   /* no property, no owner call */
+        const screen_id_t who = screen_last_handler();
+        const char *err = NULL;
+        cases++;
 
-    W.osc_open = true; W.opener = BTN_MENU; legacy_screens_sync();
-    CHECK("page open -> scope > osc_menu", stack_mirrors() && screen_top() == SCR_OSC_MENU);
-    W.gallery = true; legacy_screens_sync();
-    CHECK("gallery over the page -> scope > osc_menu > gallery", stack_mirrors() && screen_top() == SCR_GALLERY);
-    W.mode = MODE_MULTIMETER; W.gallery = false; legacy_screens_sync();   /* shell `mode meter` */
-    CHECK("shell mode switch + gallery close -> meter alone (stale page not shown)",
-          stack_mirrors() && screen_base() == SCR_METER && screen_top() == SCR_METER);
-    W.mode = MODE_SETTINGS; W.depth = SET_PAGE_ABOUT; W.osc_open = false; legacy_screens_sync();
-    CHECK("settings page About -> settings > set_about", stack_mirrors() && screen_top() == SCR_SET_ABOUT);
-    W.depth = SET_PAGE_SOUND; legacy_screens_sync();
-    CHECK("About -> Sound and Light swaps the page", stack_mirrors() && screen_top() == SCR_SET_SOUND);
-    W.depth = 0; legacy_screens_sync();
-    CHECK("depth 0 -> the settings base", stack_mirrors() && screen_top() == SCR_SETTINGS);
-    {
-        /* The scope, math, component and Bode pages (1, 3..6) are gone: the
-         * list has two pages, and any other value shows the list. */
-        int only = legacy_settings_page(SET_PAGE_ABOUT) == SCR_SET_ABOUT &&
-                   legacy_settings_page(SET_PAGE_SOUND) == SCR_SET_SOUND;
-        for (int d = -1; d < 12; d++)
-            if (d != SET_PAGE_ABOUT && d != SET_PAGE_SOUND)
-                only &= legacy_settings_page((int8_t)d) == SCR_SETTINGS;
-        CHECK("two settings pages (About, Sound and Light); nothing else is a page", only);
-        CHECK("the list: nine device settings, named, in the owner's order",
-              SETTINGS_ITEM_COUNT == 9 && SET_ITEM_SOUND_LIGHT == 0 && SET_ITEM_AUTOOFF == 1 &&
-              SET_ITEM_STARTUP == 2 && SET_ITEM_METER_LINK == 3 && SET_ITEM_THEME == 4 &&
-              SET_ITEM_USB_SHARE == 5 && SET_ITEM_FW_UPDATE == 6 && SET_ITEM_RESET_DEFAULTS == 7 &&
-              SET_ITEM_ABOUT == 8);
+        if (r_count("touch") != 1 || r_count("click") != 1) err = "touch / click not once";
+        else if (!mirror_ok()) err = "current_mode is not the base's mode";
+        else if (fw_lock_depth != 0) err = "lock not released";
+        else if (b == BTN_POWER) {
+            /* POWER is never grabbed, never locked, never a screen's. */
+            if (r_count("power") != 1 || who != SCR_COUNT) err = "POWER did not reach the countdown alone";
+            else if (fw_power_saw_gallery || gallery_ui_is_open()) err = "the gallery was not closed before the countdown";
+            else if (!fw_power_saw_prompt) err = "the prompt was not on top during the countdown";
+            else if (power_prompt_up()) err = "the prompt stayed up";
+            else if (r_has("busy") || r_has("cancel") || r_has("shot") || r_has("mode:")) err = "POWER did something else";
+            else if (!untouched) err = "POWER set a property";
+        } else if (ov == OV_GALLERY) {
+            /* The gallery grabs every other key, before the lock and the globals. */
+            if (who != SCR_GALLERY) err = "the gallery did not take the key";
+            else if (r_has("busy") || r_has("cancel") || r_has("shot") || r_has("mode:") || r_has("power")) err = "something else acted under the gallery";
+            else if (screen_base() != before.id[0]) err = "the base changed under the gallery";
+        } else if (busy) {
+            /* The self-cal lock: AUTO / MENU cancel, the rest Busy; no service. */
+            const bool cancels = (b == BTN_AUTO || b == BTN_MENU);
+            if (who != SCR_COUNT) err = "a screen was asked during self-cal";
+            else if (cancels ? !r_is("touch click cancel") : !r_is("touch click busy post:all")) err = "the lock's answer";
+            else if (screen_snapshot().n != before.n || screen_base() != before.id[0]) err = "the stack moved during self-cal";
+            else if (!untouched) err = "a property was set during self-cal";
+        } else if (lng && (b == BTN_MENU || b == BTN_MOVE || b == BTN_SELECT || b == BTN_TRIGGER)) {
+            if (r_count("mode:") != 1 || who != SCR_COUNT || r_count("svc") != 1) err = "a long mode key was not one sys.mode set";
+        } else if (b == BTN_SAVE && !lng) {
+            if (!r_is("touch click shot svc") || who != SCR_COUNT) err = "short SAVE was not the screenshot";
+            else if (screen_snapshot().n != before.n) err = "short SAVE moved the stack";
+            else if (!untouched) err = "short SAVE set a property";
+        } else if (b == BTN_SAVE && lng) {
+            if (screen_top() != SCR_GALLERY || who != SCR_COUNT || !r_is("touch click svc")) err = "long SAVE did not open the gallery";
+            else if (screen_snapshot().n != before.n + 1) err = "long SAVE did not push one layer";
+        } else if (ov == OV_LOGO) {
+            /* The logo has no keys and hides what is under it. */
+            if (who != SCR_COUNT || !r_is("touch click")) err = "a key got past the logo";
+            else if (!untouched) err = "a property was set under the logo";
+        } else {
+            /* A screen's key: the top layer if it is a page, else the base. */
+            if (who != top0) err = "not the top screen's key";
+            else if (r_count("svc") != 1) err = "settings service not once";
+            else if (r_has("shot") || r_has("power") || r_has("busy") || r_has("cancel")) err = "a global acted on a screen's key";
+        }
+        if (err) {
+            if (!bad) snprintf(why, sizeof why, "%s, overlay %d, busy %d, key %u: %s [%s]", st_name[st], ov, busy, raw, err, R);
+            bad++;
+        }
     }
+    printf("    %d cases\n", cases);
+    if (bad) printf("    first: %s\n", why);
+    CHECK("POWER never grabbed or locked; the gallery first; the lock; the globals; then the top screen", bad == 0);
+    CHECK("... over 11 screens and pages x (nothing, gallery, logo) x self-cal x 29 keys", cases == 11 * 3 * 2 * 29);
+}
 
-    /* The small layers (B5) follow their flags, on top of whatever is up. */
-    W.mode = MODE_MULTIMETER; W.depth = 0; W.osc_open = false; W.gallery = false;
-    W.prompt = true; legacy_screens_sync();
-    CHECK("the POWER prompt up -> meter > power_prompt", stack_mirrors() && screen_top() == SCR_POWER_PROMPT);
-    LG[0] = '\0';
-    (void)screen_route_key(BTN_UP);
-    CHECK("... it has no keys and nothing under it is asked (the input task is counting anyway)",
-          strcmp(LG, "touch click ctx ") == 0 && screen_last_handler() == SCR_COUNT);
-    W.prompt = false; legacy_screens_sync();
-    CHECK("the prompt gone -> meter alone", stack_mirrors() && screen_top() == SCR_METER);
-    W.mode = MODE_OSCILLOSCOPE; W.osc_open = true; W.gallery = true; W.logo = true; W.prompt = true;
-    legacy_screens_sync();
-    CHECK("page, gallery, logo and prompt at once: the stack is full, the prompt is left out, no fault",
-          screen_snapshot().n == SCR_STACK_MAX && screen_top() == SCR_LOGO && stack_mirrors());
-    W.logo = false; legacy_screens_sync();
-    CHECK("the logo gone -> scope > osc_menu > gallery > power_prompt",
-          stack_mirrors() && screen_top() == SCR_POWER_PROMPT);
-    W.osc_open = false; W.gallery = false; W.prompt = false; legacy_screens_sync();
-    W.logo = true; legacy_screens_sync();
-    CHECK("the logo up (boot hold, `logo show`) -> scope > logo", stack_mirrors() && screen_top() == SCR_LOGO);
-    W.logo = false; legacy_screens_sync();
+static void test_fw_lock_and_service(void)
+{
+    printf("the self-cal lock, the repaint, the settings service\n");
+    fw_boot(ST_SCOPE, OV_NONE, true);
+    fw_key(BTN_UP);
+    CHECK("a key during self-cal: the popup \"Busy: AUTO cancels\", one repaint, no settings service",
+          strcmp(g_fw_popup, "Busy: AUTO cancels") == 0 && r_is("touch click busy post:all"));
+    fw_boot(ST_SCOPE, OV_NONE, true);
+    fw_key(BTN_AUTO);
+    CHECK("AUTO during self-cal cancels, nothing posted", r_is("touch click cancel"));
+    fw_boot(ST_HOME, OV_NONE, false);
+    CHECK("a key a screen answers SCR_DRAW: that screen in place (DCMD_DRAW_ACTIVE + its id), then the service",
+          env_key(BTN_LEFT) == SCR_DRAW && r_is("touch click post:0 svc"));
+    fw_boot(ST_HOME, OV_NONE, false);
+    fw_key(BTN_UP);
+    CHECK("a key that changes nothing on screen: no post, the service once", r_is("touch click svc"));
+    fw_boot(ST_SCOPE_PAGE, OV_NONE, false);
+    fw_key(BTN_MENU);                                            /* the page closes itself */
+    CHECK("a layer that closes under its key: everything repainted, posted for the layer that took the key",
+          r_is("touch click post:all svc") && screen_last_handler() == SCR_OSC_MENU && stack_is("scope"));
+    fw_boot(ST_SCOPE, OV_NONE, false);
+    (void)prop_set_local(P(VIEW_CURSOR), 1, ORIGIN_SHELL, NULL);
+    scope_key_focus = KF_CURSOR;
+    (void)prop_set_local(P(VIEW_CURSOR), 0, ORIGIN_SHELL, NULL);
+    fw_key(BTN_SAVE);
+    CHECK("an arrow stage that no longer exists (cursors switched off from the shell) is dropped by any key, a global too",
+          scope_key_focus != KF_CURSOR);
+}
 
-    /* The gallery closing itself pops its layer within the same key. */
-    W.mode = MODE_OSCILLOSCOPE; W.depth = 0; W.gallery = true; legacy_screens_sync();
-    gallery_close_key = BTN_MENU;
-    (void)screen_route_key(BTN_MENU);
-    CHECK("gallery closes on its key -> its layer is popped by the router",
-          !W.gallery && screen_top() == SCR_SCOPE);
-    gallery_close_key = 0xFF;
-
-    /* The gallery shut by another task after the pre-key sync: the key it
-     * did not consume reaches the base's handler, once, with one click, and
-     * its layer is gone (before the router: gallery_ui_key() false -> fall
-     * through). */
-    W.mode = MODE_MULTIMETER; W.gallery = true; legacy_screens_sync();
-    gallery_gone = true;
-    LG[0] = '\0';
-    (void)screen_route_key(BTN_LEFT);
-    CHECK("gallery shut under the key: the key falls through to the meter's screen",
-          strcmp(LG, "touch click gallery:12 ctx meter:12 after:2:3 ") == 0 && !W.gallery && screen_top() == SCR_METER);
-    W.gallery = true; legacy_screens_sync();
-    LG[0] = '\0';
-    (void)screen_route_key(BTN_MOVE | BTN_LONG_FLAG);
-    CHECK("... and a long mode key reaches the mode switch",
-          strcmp(LG, "touch click gallery:131 ctx mode:1 ") == 0 && screen_top() == SCR_METER);
-    gallery_gone = false;
-    W.mode = MODE_OSCILLOSCOPE;
-
-    /* The groups each screen shows (a shell set repaints only a screen that
-     * shows what it changed: model_hw_fw.c port_changed). */
-    {
-#define GB(g) ((uint16_t)(1u << (g)))
-        W.gallery = false; W.osc_open = false; W.depth = 0;
-        W.mode = MODE_OSCILLOSCOPE; legacy_screens_sync();
-        const uint16_t scope = screen_groups();
-        W.mode = MODE_MULTIMETER; legacy_screens_sync();
-        const uint16_t meter = screen_groups();
-        W.mode = MODE_SIGNAL_GEN; legacy_screens_sync();
-        const uint16_t gen = screen_groups();
-        W.mode = MODE_HOME; legacy_screens_sync();
-        const uint16_t home = screen_groups();
-        W.mode = MODE_SETTINGS; W.depth = SET_PAGE_SOUND; legacy_screens_sync();
-        const uint16_t set_page = screen_groups();
-        W.depth = 0;
-        W.mode = MODE_OSCILLOSCOPE; W.osc_open = true; legacy_screens_sync();
-        const uint16_t osc = screen_groups();
-        W.gallery = true; legacy_screens_sync();
-        const uint16_t gal = screen_groups();
-        W.gallery = false; W.osc_open = false; legacy_screens_sync();
-        CHECK("scope shows its groups, not the meter's",
-              (scope & GB(PG_CH1)) && (scope & GB(PG_TB)) && (scope & GB(PG_TRIG)) && !(scope & GB(PG_METER)));
-        CHECK("meter shows the meter, not the scope's channels",
-              (meter & GB(PG_METER)) && !(meter & GB(PG_CH1)) && !(meter & GB(PG_TB)));
-        CHECK("generator, home: the bars only (generator slot, sys, ui)",
-              gen == (GB(PG_GEN) | GB(PG_SYS) | GB(PG_UI)) && home == gen && (scope & gen) == gen &&
-              (meter & gen) == gen);
-        CHECK("a Settings page keeps every group", set_page == (uint16_t)((1u << PG_COUNT) - 1u));
-        CHECK("the osc page over the scope shows the scope's groups", osc == scope);
-        CHECK("the gallery (opaque) shows none", gal == 0);
-        CHECK("a stored meter.func on the scope repaints nothing; with ch1.vdiv it does",
-              (GB(PG_METER) & scope) == 0 && ((GB(PG_METER) | GB(PG_CH1)) & scope) != 0 &&
-              (GB(PG_CH1) & meter) == 0);
-#undef GB
+static void test_fw_display_layers(void)
+{
+    printf("which layer the display task paints\n");
+    static const struct { fw_state_t st; fw_over_t ov; const screen_t *page, *modal; } T[] = {
+        { ST_HOME,         OV_NONE,    NULL,                   NULL },
+        { ST_SCOPE,        OV_NONE,    NULL,                   NULL },
+        { ST_SCOPE_PAGE,   OV_NONE,    &osc_menu_screen,       NULL },
+        { ST_SCOPE_PANE,   OV_NONE,    &osc_menu_screen,       NULL },
+        { ST_SET,          OV_NONE,    NULL,                   NULL },
+        { ST_SET_QUESTION, OV_NONE,    NULL,                   NULL },
+        { ST_SET_SOUND,    OV_NONE,    &settings_sound_screen, NULL },
+        { ST_SET_ABOUT,    OV_NONE,    &settings_about_screen, NULL },
+        { ST_METER,        OV_GALLERY, NULL,                   &gallery_screen },
+        { ST_SCOPE_PAGE,   OV_GALLERY, &osc_menu_screen,       &gallery_screen },
+        { ST_SET_SOUND,    OV_LOGO,    &settings_sound_screen, &logo_screen },
+        { ST_GEN,          OV_LOGO,    NULL,                   &logo_screen },
+    };
+    int ok = 1;
+    for (unsigned i = 0; i < sizeof T / sizeof T[0]; i++) {
+        fw_boot(T[i].st, T[i].ov, false);
+        ok &= screen_page() == T[i].page && screen_modal() == T[i].modal;
+        ok &= screen_bars_wanted() == (T[i].modal == NULL);
     }
-
-    /* Instruments: a base's instrument id is the sys.instrument value. */
-    CHECK("bases by instrument: 0 scope, 1 meter, 2 generator; home/settings none",
-          screen_base_for_instrument(0) == SCR_SCOPE && screen_base_for_instrument(1) == SCR_METER &&
-          screen_base_for_instrument(2) == SCR_SIGGEN && screen_base_for_instrument(3) == SCR_COUNT &&
-          screen_get(SCR_HOME)->instrument == SCR_INSTRUMENT_NONE &&
-          screen_get(SCR_SETTINGS)->instrument == SCR_INSTRUMENT_NONE);
-    CHECK("names are the sys.mode labels", strcmp(screen_get(SCR_SCOPE)->name, "scope") == 0 &&
-          strcmp(screen_get(SCR_SIGGEN)->name, "siggen") == 0 && strcmp(screen_get(SCR_HOME)->name, "home") == 0);
-
-    /* DCMD_DRAW_ACTIVE: each screen's in-place paint. */
-    W.mode = MODE_MULTIMETER; W.depth = 0; W.gallery = false; W.osc_open = false; legacy_screens_sync();
-    const uint8_t act = legacy_screens_active_cmd();
-    CHECK("DRAW_ACTIVE carries the sender's screen and resolves to its command",
-          act == DCMD_DRAW_ACTIVE + SCR_METER && legacy_screens_resolve_cmd(act) == DCMD_DRAW_METER &&
-          legacy_screens_resolve_cmd(DCMD_DRAW_ACTIVE + SCR_HOME) == DCMD_DRAW_HOME &&
-          legacy_screens_resolve_cmd(DCMD_REDRAW_ALL) == DCMD_REDRAW_ALL &&
-          legacy_screens_resolve_cmd(DCMD_NONE_MODAL_DROP) == DCMD_NONE_MODAL_DROP &&
-          legacy_screens_resolve_cmd(DCMD_DRAW_ACTIVE + SCR_COUNT) == DCMD_NONE_MODAL_DROP);
-    W.mode = MODE_OSCILLOSCOPE; legacy_screens_sync();
-    CHECK("DRAW_ACTIVE -> the screen's own draw command",
-          legacy_screens_update_cmd(SCR_SCOPE) == DCMD_DRAW_SCOPE &&
-          legacy_screens_update_cmd(SCR_METER) == DCMD_DRAW_METER &&
-          legacy_screens_update_cmd(SCR_SIGGEN) == DCMD_DRAW_SIGGEN &&
-          legacy_screens_update_cmd(SCR_HOME) == DCMD_DRAW_HOME &&
-          legacy_screens_update_cmd(SCR_OSC_MENU) == DCMD_DRAW_OSC_MENU &&
-          legacy_screens_update_cmd(SCR_SET_SOUND) == DCMD_DRAW_SETTINGS &&
-          legacy_screens_update_cmd(SCR_SETTINGS) == DCMD_DRAW_SETTINGS &&
-          legacy_screens_update_cmd(SCR_GALLERY) == DCMD_NONE_MODAL_DROP);
-
-    char t[160];
-    W.osc_open = true; W.gallery = false; legacy_screens_sync();
-    screen_snapshot_text(t, sizeof t);
-    CHECK("snapshot text: base > page, and the page's describe", strstr(t, "scope > osc_menu gen=") == t &&
-          strstr(t, "| row=ch1 pane=rail item=0") != NULL);
-    screen_reset();
+    CHECK("the page between the bars and the layer that owns the LCD, from the stack, in every state", ok);
+    fw_boot(ST_SCOPE_PAGE, OV_GALLERY, false);
+    power_prompt_show(POWER_PROMPT_AUTOOFF, 0);
+    CHECK("the POWER prompt over the gallery over the page: the prompt owns the LCD, the page is still the page",
+          screen_modal() == &power_prompt_screen && screen_page() == &osc_menu_screen);
+    fw_boot(ST_SCOPE, OV_LOGO, false);
+    fw_key(LONG(BTN_SAVE));
+    CHECK("the gallery opened under `logo show` goes over the logo, and is what is shown",
+          stack_is("scope>logo>gallery") && screen_modal() == &gallery_screen);
+    logo_screen_hide();
+    CHECK("... and the logo closing takes it along (a layer cannot outlive the one under it)", stack_is("scope"));
 }
 
 int main(void)
@@ -1219,9 +1067,13 @@ int main(void)
     test_opaque_ticks_draw();
     test_snapshot();
     test_locking_and_reentry();
-    test_legacy_equivalence();
-    test_legacy_table();
-    test_legacy_mirror();
+    test_fw_table();
+    test_fw_stack_authority();
+    test_fw_mode_switch();
+    test_fw_key_table();
+    test_fw_global_order();
+    test_fw_lock_and_service();
+    test_fw_display_layers();
     printf("\n%d/%d passed\n", passed, run);
     return passed == run ? 0 : 1;
 }

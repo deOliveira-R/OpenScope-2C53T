@@ -9,8 +9,9 @@
 # session properties).
              ui/scope_state.c
 # The owner functions a setter reaches through model_hw_ops_t (model_hw_fw.c): they apply and store.
-sys.mode     tasks/input_handler.c:enter_mode      # op_mode -> input_mode_switch -> enter_mode (the mode posture)
-             main.c:main                           # the boot target, before the scheduler
+sys.mode     ui/screen.c:set_base_locked           # current_mode is the mirror of the router's base: op_mode ->
+                                                   # input_mode_switch -> ui_router_switch_mode -> screen_switch
+             main.c:main                           # the boot target, before the scheduler (the router adopts it)
 view.mode    tasks/scope_apply.c:scope_view_select # op_view_select
 view.persist tasks/scope_apply.c:scope_apply_persist_on tasks/scope_apply.c:scope_apply_persist_off
 chN.pos      drivers/scope_vpos.c:scope_vpos_set   # op_vpos: clamps to the calibration page, then stores

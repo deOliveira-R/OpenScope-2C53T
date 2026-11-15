@@ -54,7 +54,7 @@ extern void system_clock_config(void);
 #include "redraw_gate.h"
 #include "screen.h"
 #include "task_call.h"
-#include "legacy_screens.h"
+#include "ui_router.h"
 #include "scope_screen.h"
 #include "scope_mask.h"
 #include "can_scope.h"
@@ -431,25 +431,26 @@ static void scope_gate_painted(uint32_t frame)
  * the acquisition keeps running behind it (UI_STUDY 2.3). */
 static bool osc_page_up(void)
 {
-    return current_mode == MODE_OSCILLOSCOPE && osc_menu_is_open();
+    return screen_is_open(SCR_OSC_MENU);
 }
 
-/* ── Migrated screens (ui/screen.h; ARCH-1 B2 on) ────────────────────
- * A base that is a real screen paints itself: its draw() is called where
- * this task used to call that mode's draw function. The base is looked up by
- * current_mode, not from the router's stack: the stack follows a shell
- * `mode` one input pass later. FULL is never gated (REDRAW_ALL, the boot
- * paint); nor is RESTORE, the repaint under an expired popup. UPDATE is the
- * screen's in-place paint (DCMD_DRAW_ACTIVE), skipped when the screen has
- * an epoch() and it equals the one last painted; the gate is invalidated on
- * every mode change, as the per-screen gates are. A screen with a tick()
- * is asked once per frame whether what it shows has changed by itself (the
- * meter: a new reading): then it paints in place, ungated. */
+/* ── The base screen (ui/screen.h) ───────────────────────────────────
+ * What is shown is the router's stack (ui/screen.c): the base, read here,
+ * and the layers over it (page_layer, modal_layer below). The base paints
+ * itself: its draw() is called where this task used to call that mode's
+ * draw function. FULL is never gated (REDRAW_ALL, the boot paint); nor is
+ * RESTORE, the repaint under an expired popup or the POWER prompt's box.
+ * UPDATE is the screen's in-place paint (DCMD_DRAW_ACTIVE), skipped when
+ * the screen has an epoch() and it equals the one last painted; the gate is
+ * invalidated on every mode change. A screen with a tick() is asked once
+ * per frame whether what it shows has changed by itself (the meter: a new
+ * reading): then it paints in place, ungated. NULL: the router is not up
+ * yet. */
 static redraw_gate_t native_gate = { 0, 0, 0, false, false };
 
 static const screen_t *native_base(void)
 {
-    const screen_t *s = screen_get(screen_base_for_mode(current_mode));
+    const screen_t *s = screen_get(screen_base());
     return (s != NULL && s->draw != NULL) ? s : NULL;
 }
 
@@ -473,16 +474,14 @@ static bool native_paint_update(const screen_t *s, uint32_t frame)
     return true;
 }
 
-/* ── Layers (ARCH-1 B5) ──────────────────────────────────────────────
- * A layer over the base that is a real screen (the Oscilloscope Settings
- * page) paints itself the same way: its draw() where this task called the
- * page's draw function. Which layer is up is read from the state that
- * decides it (osc_page_up), as the base is from current_mode. An UPDATE is
- * gated on the layer's epoch, and the epoch is looked at every frame while
- * the layer is up: a display command is only a wake-up, so a `set` from the
- * shell, or a command the queue dropped, is still painted within a frame,
- * and an idle layer costs no LCD write. The epoch is taken before the paint:
- * a change made while it runs is seen on the next frame. */
+/* ── Layers ──────────────────────────────────────────────────────────
+ * A layer over the base paints itself the same way. Which layer is up is
+ * the router's stack. An UPDATE is gated on the layer's epoch, and the
+ * epoch is looked at every frame while the layer is up: a display command
+ * is only a wake-up, so a `set` from the shell, or a command the queue
+ * dropped, is still painted within a frame, and an idle layer costs no LCD
+ * write. The epoch is taken before the paint: a change made while it runs
+ * is seen on the next frame. */
 static redraw_gate_t   layer_gate = { 0, 0, 0, false, false };
 static const screen_t *layer_painted;        /* the layer the gate is about */
 
@@ -504,20 +503,13 @@ static bool layer_paint_update(const screen_t *s, uint32_t frame)
 }
 
 /* A layer that owns the LCD while it is up (the POWER prompt, the logo, the
- * screenshot gallery): nothing else is drawn, the bars included, no display
- * command but a capture is honoured, the panel health check and the scope's
- * heartbeat rest, as under the old modal claim. It is painted from its
- * epoch every frame, so its commands are only wake-ups; when it goes, what
- * was under it is repainted here. NULL: none. Read from the state that
- * decides it, as the base is from current_mode. The prompt is over the
- * others: power-off always shows. */
-static const screen_t *modal_layer(void)
-{
-    if (power_prompt_up())    return &power_prompt_screen;
-    if (logo_screen_up())     return &logo_screen;
-    if (gallery_ui_is_open()) return &gallery_screen;
-    return NULL;
-}
+ * screenshot gallery: the layers without the bars, SCR_F_NO_BARS): nothing
+ * else is drawn, the bars included, no display command but a capture is
+ * honoured, the panel health check and the scope's heartbeat rest. It is
+ * painted from its epoch every frame, so its commands are only wake-ups;
+ * when it goes, what was under it is repainted here. The one on top of the
+ * stack: the prompt is pushed last, so power-off always shows. NULL: none. */
+static const screen_t *modal_layer(void) { return screen_modal(); }
 
 /* ── A call made on this task (ui.h display_call_sync) ───────────────
  * The display task is the only one that touches the LCD. A shell handler
@@ -539,15 +531,7 @@ bool display_call_sync(void (*fn)(void *), void *arg, uint32_t timeout_ms)
  * covers the base's area and is painted in its place (the Oscilloscope
  * Settings page over the scope, a Settings page over the list). The bars
  * stay; the base under it is not painted. NULL: none. */
-static const screen_t *page_layer(void)
-{
-    if (osc_page_up()) return &osc_menu_screen;
-    if (current_mode == MODE_SETTINGS) {
-        if (screen_is_open(SCR_SET_SOUND)) return &settings_sound_screen;
-        if (screen_is_open(SCR_SET_ABOUT)) return &settings_about_screen;
-    }
-    return NULL;
-}
+static const screen_t *page_layer(void) { return screen_page(); }
 
 static void scope_render(uint32_t frame, redraw_action_t action);
 
@@ -831,10 +815,11 @@ static void vDisplayTask(void *pvParameters)
      * builds where init is fast (emulator, warm boots), then move on. */
     vTaskDelay(pdMS_TO_TICKS(750));
 
-    /* Initial draw, unless the boot logo still owns the screen:
-     * logo_ui_boot_show() raised the logo layer in main() and when the key
-     * task's ~1 s hold drops it the loop below paints all of this. Drawing
-     * here regardless cut the logo short at 750 ms. */
+    /* Initial draw, unless the boot logo still owns the screen: main() painted
+     * it (logo_ui_boot_show), the key task pushed its layer when it started
+     * (logo_ui_boot_hold, long before this delay ends) and when its ~1 s hold
+     * closes it the loop below paints all of this. Drawing here regardless
+     * cut the logo short at 750 ms. */
     if (!logo_screen_up()) {
         lcd_clear(COLOR_BLACK);
         draw_status_bar();
@@ -1171,8 +1156,9 @@ static void vInputTask(void *pvParameters)
 {
     (void)pvParameters;
     button_scan_start();
-    /* The screen router over the legacy screens: up before the first key and
-     * before the shell's `ui screen` can ask for its stack. */
+    /* The screen router (ui/ui_router.h): up before the first key and before
+     * the shell's `ui screen` can ask for its stack. From here on its stack
+     * says what is shown. */
     input_router_init(xDisplayQueue);
     logo_ui_boot_hold(xInputQueue, 1000u);   /* boot logo, any key skips */
     /* After the logo: its "any key skips" would take a wake for a key. Until
@@ -1204,9 +1190,6 @@ static void vInputTask(void *pvParameters)
          * key: the two never interleave. No-op when the queue is empty. */
         (void)model_exec_drain();
         input_call_serve();     /* a step another task asked this one to make (input_handler.h) */
-        /* The router mirrors the legacy state (ui/legacy_screens.h): catch
-         * what the shell changed without a key (`mode`, a gallery close). */
-        legacy_screens_sync();
         input_autooff_poll();   /* idle power-off (C15); no-op while "Off" */
         /* Backstop: the buzzer task ends a key click, but if it failed to
          * start a click would sound forever; this bounds it to <= ~210 ms. */

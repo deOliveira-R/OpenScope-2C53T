@@ -27,6 +27,9 @@
 #include "flash_regions.h"
 #include "theme.h"
 
+/* The router's mirror of its base's mode (ui.h; main.c in the firmware). */
+volatile device_mode_t current_mode = MODE_OSCILLOSCOPE;
+
 static int run, passed;
 #define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-72s[PASS]\n", name); } \
                                else { printf("  %-72s[FAIL]\n", name); } } while (0)
@@ -92,8 +95,8 @@ static bool h_globals(button_id_t b, bool l)
     (void)l;
     g_globals_asked++;
     if (b != BTN_POWER) return false;
-    /* the firmware's POWER global: the gallery is closed first (legacy_screens.c) */
-    if (gallery_ui_is_open()) { gallery_ui_close(); (void)screen_close(SCR_GALLERY); }
+    /* the firmware's POWER global: the gallery is closed first (ui_router.c) */
+    (void)screen_close(SCR_GALLERY);
     return true;
 }
 static void h_after(scr_res_t r) { g_after++; g_after_res = r; }
@@ -122,7 +125,6 @@ static void boot(unsigned shots)
         if (gallery_save(pixels, pal, NULL, NULL) != GALLERY_OK) { printf("FATAL save\n"); exit(2); }
     }
     theme_init(THEME_DARK_BLUE);
-    gallery_ui_close();
     screen_reset();
     screen_register(&S_SCOPE); screen_register(&gallery_screen);
     screen_set_hooks(&HOOKS);
@@ -133,8 +135,7 @@ static void boot(unsigned shots)
 /* Long SAVE and the stack mirror: open the gallery, push its layer, paint it. */
 static void open_gallery(void)
 {
-    gallery_screen_open();
-    (void)screen_push(SCR_GALLERY);
+    gallery_screen_open();              /* pushes its layer */
     (void)frames(1);
     g_plans[0] = '\0';
 }
@@ -164,8 +165,8 @@ static void test_screen_entry(void)
           gallery_screen.mode == MODE_COUNT && gallery_screen.instrument == SCR_INSTRUMENT_NONE);
     CHECK("OPAQUE | GRAB | NO_BARS: the whole LCD and every key but POWER",
           gallery_screen.flags == (SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS));
-    CHECK("it has key, close, draw, epoch and describe; it shows no property group",
-          gallery_screen.key && gallery_screen.close && gallery_screen.draw && gallery_screen.epoch &&
+    CHECK("it has key, draw, epoch and describe (no flag to drop on close); it shows no property group",
+          gallery_screen.key && !gallery_screen.close && gallery_screen.draw && gallery_screen.epoch &&
           gallery_screen.describe && gallery_screen.groups == 0);
     boot(3);
     open_gallery();
@@ -322,18 +323,23 @@ static void test_close(void)
     open_gallery();
     (void)key(BTN_RIGHT);
     CHECK("reopened: the newest shot again, a whole paint",
-          (key(BTN_MENU), gallery_screen_open(), (void)screen_push(SCR_GALLERY), V().sel == 0) &&
+          (key(BTN_MENU), gallery_screen_open(), V().sel == 0) &&
           frame_plan() == GALLERY_PAINT_ALL);
 
     boot(3);
     open_gallery();
     g_base_keys = 0;
-    gallery_ui_close();                                          /* the shell's `mode`, from its task */
-    CHECK("closed by another task: a flag; the layer is still on the stack until the input task looks",
-          !gallery_ui_is_open() && screen_top() == SCR_GALLERY);
-    CHECK("the next key pops the layer and goes to the screen under it",
-          key(BTN_UP) == SCR_HANDLED && screen_top() == SCR_SCOPE && g_base_keys == 1 &&
-          screen_last_handler() == SCR_SCOPE);
+    CHECK("it is up exactly while its layer is on the router's stack",
+          gallery_ui_is_open() && V().open && screen_is_open(SCR_GALLERY) && screen_top() == SCR_GALLERY);
+    (void)screen_close(SCR_GALLERY);                             /* a mode set, POWER: the input task closes the layer */
+    CHECK("the layer closed from outside: the gallery is shut, and the next key goes to the screen under it",
+          !gallery_ui_is_open() && !V().open && key(BTN_UP) == SCR_HANDLED && screen_top() == SCR_SCOPE &&
+          g_base_keys == 1 && screen_last_handler() == SCR_SCOPE);
+    gallery_screen_open();
+    gallery_screen_open();
+    CHECK("opening it pushes its layer once (a second open is a no-op)",
+          gallery_ui_is_open() && screen_snapshot().n == 2);
+    (void)screen_close(SCR_GALLERY);
     open_gallery();
     screen_switch(SCR_SCOPE);                                    /* a mode switch pops every layer */
     CHECK("a mode switch under it closes it", !gallery_ui_is_open() && screen_top() == SCR_SCOPE);

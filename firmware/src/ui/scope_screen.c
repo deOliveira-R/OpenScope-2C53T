@@ -87,7 +87,7 @@ key_ctx_t scope_screen_ctx(void)
     if (f != scope_key_focus) set_focus(f);
     c.focus           = f;
     c.active_channel  = active_channel;
-    c.osc_menu_open   = osc_menu_is_open();
+    c.osc_menu_open   = screen_is_open(SCR_OSC_MENU);
     c.osc_menu_locked = c.osc_menu_open && osc_menu_is_locked();
     c.osc_menu_opener = osc_menu_screen_opener();
     return c;
@@ -256,7 +256,7 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
         return popup_full(pb);
     }
 
-    case KA_OSCMENU_OPEN:        /* MENU or a deep-link key: the full page (the router pushes its layer) */
+    case KA_OSCMENU_OPEN:        /* MENU or a deep-link key: the full page (osc_menu_screen_open pushes its layer) */
         osc_menu_screen_open((osc_row_t)dir, false, (uint8_t)btn);
         return SCR_DRAW;
     case KA_OSCMENU_PANE:        /* PRM / TRIGGER: the page locked inside their pane (stock V1.2.0) */

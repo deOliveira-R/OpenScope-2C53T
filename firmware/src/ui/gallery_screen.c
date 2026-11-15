@@ -8,22 +8,19 @@
 
 #include <stdio.h>
 
-/* UI state. Written by the input task (open, key, close) and, for the open
- * flag only, by gallery_ui_close() from any task; the display task and the
- * shell read it. */
+/* UI state. Written by the input task (open, key); the display task and the
+ * shell read it. Whether the gallery is up is the router's stack. */
 static gallery_nav_t nav;
-static volatile bool is_open;
 static uint8_t       opens;
 static uint8_t       msg;
 static uint32_t      deletes;      /* deletes made here (the store counts them too) */
 
-bool gallery_ui_is_open(void) { return is_open; }
-void gallery_ui_close(void)   { is_open = false; }
+bool gallery_ui_is_open(void) { return screen_is_open(SCR_GALLERY); }
 
 gallery_view_t gallery_screen_view(void)
 {
     gallery_view_t v;
-    v.open    = is_open;
+    v.open    = gallery_ui_is_open();
     v.opens   = opens;
     v.sel     = nav.sel;
     v.full    = nav.full;
@@ -35,11 +32,11 @@ gallery_view_t gallery_screen_view(void)
 
 void gallery_screen_open(void)
 {
-    if (is_open) return;
+    if (gallery_ui_is_open()) return;
     gallery_nav_open(&nav);
     msg = GALLERY_MSG_NONE;
     opens++;
-    is_open = true;
+    (void)screen_push(SCR_GALLERY);
 }
 
 /* ── input task ────────────────────────────────────────────────────── */
@@ -61,18 +58,9 @@ static gallery_nav_key_t map_key(scr_key_t k)
 /* Every key but POWER while the gallery is up. */
 static scr_res_t gs_key(scr_key_t k)
 {
-    if (!is_open) {
-        /* Closed by another task since the stack was last matched (the
-         * shell's `mode`): the layer goes and the key is routed as if the
-         * gallery had not been there (screen.c step 2). */
-        (void)screen_close(SCR_GALLERY);
-        return SCR_UNHANDLED;
-    }
     gallery_index_t idx;
-    if (gallery_scan(&idx) != GALLERY_OK) {
-        is_open = false;                       /* nothing to browse; any key leaves */
-        return SCR_CLOSE;
-    }
+    if (gallery_scan(&idx) != GALLERY_OK)
+        return SCR_CLOSE;                      /* nothing to browse; any key leaves */
     switch (gallery_nav_key(&nav, map_key(k), idx.count)) {
     case GNA_NONE:
         return SCR_HANDLED;
@@ -87,10 +75,8 @@ static scr_res_t gs_key(scr_key_t k)
     case GNA_DELETE: {
         const gallery_status_t st = gallery_delete(idx.seq[nav.sel]);
         gallery_index_t after;
-        if (gallery_scan(&after) != GALLERY_OK) {
-            is_open = false;
+        if (gallery_scan(&after) != GALLERY_OK)
             return SCR_CLOSE;
-        }
         (void)gallery_nav_deleted(&nav, after.count);
         deletes++;
         msg = (st != GALLERY_OK && !nav.full) ? GALLERY_MSG_DELETE_FAILED : GALLERY_MSG_NONE;
@@ -98,16 +84,8 @@ static scr_res_t gs_key(scr_key_t k)
     }
     case GNA_CLOSE:
     default:
-        is_open = false;
         return SCR_CLOSE;
     }
-}
-
-/* The layer went (it closed itself, POWER, a mode change). */
-static void gs_close(screen_id_t to)
-{
-    (void)to;
-    is_open = false;
 }
 
 /* ── display task ──────────────────────────────────────────────────── */
@@ -165,7 +143,7 @@ static void gs_describe(char *out, size_t n)
 const screen_t gallery_screen = {
     .name = "gallery", .id = SCR_GALLERY, .mode = MODE_COUNT, .instrument = SCR_INSTRUMENT_NONE,
     .flags = SCR_F_OPAQUE | SCR_F_GRAB | SCR_F_NO_BARS,
-    .open = NULL, .close = gs_close, .key = gs_key,
+    .open = NULL, .close = NULL, .key = gs_key,
     .draw = gs_draw, .tick = NULL, .epoch = gs_epoch,
     .describe = gs_describe, .groups = 0,
 };

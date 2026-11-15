@@ -10,15 +10,23 @@
 /* Written by the input task; read by the display task and the shell. */
 static volatile uint8_t pp_kind, pp_count, pp_shows;
 
+/* What the box shows, then its layer (if it is not up yet): the display
+ * task paints what it finds when it sees the layer. */
 void power_prompt_show(power_prompt_kind_t kind, uint8_t count)
 {
     pp_count = count;
     pp_shows++;
     pp_kind = (uint8_t)kind;
+    (void)screen_push(SCR_POWER_PROMPT);    /* refused while it is up: one layer for all its shows */
 }
 
-void power_prompt_hide(void) { pp_kind = POWER_PROMPT_NONE; }
-bool power_prompt_up(void)   { return pp_kind != POWER_PROMPT_NONE; }
+void power_prompt_hide(void)
+{
+    (void)screen_close(SCR_POWER_PROMPT);
+    pp_kind = POWER_PROMPT_NONE;
+}
+
+bool power_prompt_up(void)   { return screen_is_open(SCR_POWER_PROMPT); }
 
 power_prompt_view_t power_prompt_view(void)
 {
@@ -56,18 +64,18 @@ const screen_t power_prompt_screen = {
 
 /* ── the logo ──────────────────────────────────────────────────────── */
 
-static volatile bool    lg_up;
 static volatile uint8_t lg_shows, lg_painted;    /* painted: the show that is on the LCD */
 
-void logo_screen_show(bool painted)
+bool logo_screen_show(bool painted)
 {
+    if (screen_is_open(SCR_LOGO)) return false;
     lg_shows++;
     if (painted) lg_painted = lg_shows;
-    lg_up = true;
+    return screen_push(SCR_LOGO);
 }
 
-void    logo_screen_hide(void)         { lg_up = false; }
-bool    logo_screen_up(void)           { return lg_up; }
+void    logo_screen_hide(void)         { (void)screen_close(SCR_LOGO); }
+bool    logo_screen_up(void)           { return screen_is_open(SCR_LOGO); }
 uint8_t logo_screen_shows(void)        { return lg_shows; }
 bool    logo_screen_painted(void)      { return lg_painted == lg_shows; }
 void    logo_screen_mark_painted(void) { lg_painted = lg_shows; }
@@ -77,12 +85,12 @@ void    logo_screen_mark_painted(void) { lg_painted = lg_shows; }
 static void lg_draw(scr_paint_t how, uint32_t frame)
 {
     (void)frame;
-    if (lg_up && (how != SCR_PAINT_UPDATE || !logo_screen_painted())) logo_ui_paint();
+    if (logo_screen_up() && (how != SCR_PAINT_UPDATE || !logo_screen_painted())) logo_ui_paint();
 }
 
 static uint32_t lg_epoch(void)
 {
-    return redraw_epoch_mix(REDRAW_EPOCH_SEED, (uint32_t)lg_up | ((uint32_t)lg_shows << 8));
+    return redraw_epoch_mix(REDRAW_EPOCH_SEED, (uint32_t)lg_shows << 8);
 }
 
 const screen_t logo_screen = {

@@ -16,16 +16,10 @@
 #include <stdbool.h>
 #include "settings_store.h"
 
-/*
- * Handle a debounced button press.
- *
- * Reads the current device mode, scope state, and settings state
- * to determine the appropriate action. Sends display commands
- * via the provided queue.
- *
- * Returns the display command sent (or 0 if none).
- */
-uint8_t input_handle_button(button_id_t button, QueueHandle_t display_queue);
+/* Handle a debounced key (it may carry BTN_LONG_FLAG): MENU + POWER resets
+ * into the bootloader; everything else goes to the screen router
+ * (ui/ui_router.h). Input task. */
+void input_handle_button(button_id_t button, QueueHandle_t display_queue);
 
 /* Auto power-off timer (parity C15): call every pass of the input task. */
 void input_autooff_poll(void);

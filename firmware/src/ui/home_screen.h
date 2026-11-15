@@ -20,8 +20,8 @@
  *                          the selection. Read only.
  *
  * The answer of key() says what to repaint (SCR_DRAW: an UPDATE paint of
- * this screen); the wiring (legacy_screens.c) posts it and runs the settings
- * hook, as for every key.
+ * this screen); the wiring (ui_router.c) posts it and runs the settings
+ * service, as for every key.
  *
  * Pure: no FreeRTOS, no driver header. Host test: make test-home-screen.
  */

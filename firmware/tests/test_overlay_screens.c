@@ -19,6 +19,9 @@
 #include "overlay_screens.h"
 #include "theme.h"
 
+/* The router's mirror of its base's mode (ui.h; main.c in the firmware). */
+volatile device_mode_t current_mode = MODE_OSCILLOSCOPE;
+
 static int run, passed;
 #define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-72s[PASS]\n", name); } \
                                else { printf("  %-72s[FAIL]\n", name); } } while (0)
@@ -91,7 +94,9 @@ static void test_power_hold(void)
     boot();
     CHECK("nothing shown: not up", !power_prompt_up() && power_prompt_view().kind == POWER_PROMPT_NONE);
     power_prompt_show(POWER_PROMPT_HOLD, 3);
-    CHECK("the claim: up at once", power_prompt_up() && power_prompt_view().count == 3);
+    CHECK("the claim: up at once, its layer pushed (meter > power_prompt)",
+          power_prompt_up() && power_prompt_view().count == 3 && screen_top() == SCR_POWER_PROMPT &&
+          screen_snapshot().n == 2);
     frames(&power_prompt_screen, 2);                 /* the 120 ms before the count */
     for (int c = 3; c > 0; c--) {
         power_prompt_show(POWER_PROMPT_HOLD, (uint8_t)c);
@@ -101,7 +106,7 @@ static void test_power_hold(void)
     frames(&power_prompt_screen, 10);                /* the 500 ms before the power-off */
     CHECK("painted: the box at the claim, again at each second (3 2 1), then Goodbye; nothing in between",
           strcmp(g_log, "hold3;hold3;hold2;hold1;bye0;") == 0);
-    CHECK("still up at the power-off", power_prompt_up());
+    CHECK("still up at the power-off, one layer for all its shows", power_prompt_up() && screen_snapshot().n == 2);
 }
 
 static void test_power_release(void)
@@ -113,7 +118,9 @@ static void test_power_release(void)
     power_prompt_show(POWER_PROMPT_HOLD, 3);
     frames(&power_prompt_screen, 7);
     power_prompt_hide();
-    CHECK("released: down at once, two paints were made", !power_prompt_up() && strcmp(g_log, "hold3;hold3;") == 0);
+    CHECK("released: down at once (its layer closed), two paints were made",
+          !power_prompt_up() && screen_top() == SCR_METER && screen_snapshot().n == 1 &&
+          strcmp(g_log, "hold3;hold3;") == 0);
     g_log[0] = '\0'; g_gated = NULL;                 /* main.c: a layer coming up starts the gate over */
     power_prompt_show(POWER_PROMPT_HOLD, 3);
     frames(&power_prompt_screen, 2);
@@ -137,7 +144,6 @@ static void test_router(void)
     printf("the router: no keys for them, none for what is under them, POWER to the globals\n");
     boot();
     power_prompt_show(POWER_PROMPT_HOLD, 3);
-    (void)screen_push(SCR_POWER_PROMPT);
     CHECK("the prompt on top: meter > power_prompt, no bars, no popups",
           screen_top() == SCR_POWER_PROMPT && !screen_bars_wanted() && !screen_popups_allowed());
     CHECK("an arrow: nobody's (the box has no keys and hides the meter's)",
@@ -145,13 +151,20 @@ static void test_router(void)
     CHECK("POWER: the globals', as on every screen",
           screen_route_key(BTN_POWER) == SCR_HANDLED && g_global_btn == BTN_POWER && g_base_keys == 0);
     power_prompt_hide();
-    screen_pop();
     CHECK("the prompt gone: the meter has its keys back", screen_route_key(BTN_UP) == SCR_HANDLED && g_base_keys == 1);
-    logo_screen_show(false);
-    (void)screen_push(SCR_LOGO);
+    const bool pushed = logo_screen_show(false);
     g_base_keys = 0;
-    CHECK("the logo on top: the same", screen_route_key(BTN_OK) == SCR_UNHANDLED && g_base_keys == 0 &&
+    CHECK("the logo on top (its show pushed it): the same", pushed && screen_top() == SCR_LOGO && logo_screen_up() &&
+          screen_route_key(BTN_OK) == SCR_UNHANDLED && g_base_keys == 0 &&
           screen_route_key(BTN_POWER) == SCR_HANDLED && !screen_bars_wanted());
+    const uint8_t shows = logo_screen_shows();
+    CHECK("a second show while it is up is refused and starts no new show",
+          !logo_screen_show(false) && screen_snapshot().n == 2 && logo_screen_shows() == shows);
+    power_prompt_show(POWER_PROMPT_AUTOOFF, 0);
+    CHECK("the prompt goes over the logo (meter > logo > power_prompt)",
+          screen_top() == SCR_POWER_PROMPT && screen_snapshot().n == 3 && logo_screen_up());
+    screen_switch(SCR_METER);
+    CHECK("a switch pops both: neither is up any more", !logo_screen_up() && !power_prompt_up());
 }
 
 static void test_logo(void)

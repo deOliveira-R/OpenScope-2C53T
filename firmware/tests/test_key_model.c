@@ -576,7 +576,7 @@ static uint32_t km_grid(key_cmd_t (*fn)(const key_ctx_t *, button_id_t, bool), u
     for (int lng = 0; lng < 2; lng++) {
         key_ctx_t c;
         memset(&c, 0, sizeof c);
-        c.mode = (device_mode_t)mode; c.settings_depth = (int8_t)depth; c.scope_time_view = tv;
+        c.mode = (device_mode_t)mode; c.scope_time_view = tv;
         c.focus = (key_focus_t)f; c.cursors_on = cur; c.mask_present = mk; c.active_channel = (uint8_t)ach;
         c.osc_menu_open = op; c.osc_menu_locked = lk; c.osc_menu_opener = openers[o];
         const key_cmd_t k = fn(&c, (button_id_t)b, lng != 0);

@@ -13,6 +13,7 @@
  */
 #include "logo_ui.h"
 #include "overlay_screens.h"
+#include "input_handler.h"     /* input_call_sync: the layer is the input task's */
 
 #include "ui.h"
 #include "lcd.h"
@@ -46,8 +47,7 @@ bool logo_ui_boot_show(void)
     const logo_status_t st = logo_ui_draw();
     sys_pwm_apply_brightness();
     if (st != LOGO_OK) return false;   /* partial draw: the display task repaints */
-    logo_screen_show(true);            /* it is on the LCD: the display task leaves it there */
-    boot_pending = true;
+    boot_pending = true;               /* its layer is pushed by the key task (logo_ui_boot_hold) */
     return true;
 }
 
@@ -55,6 +55,7 @@ void logo_ui_boot_hold(QueueHandle_t keys, uint32_t hold_ms)
 {
     if (!boot_pending) return;
     boot_pending = false;
+    (void)logo_screen_show(true);      /* it is on the LCD: the display task leaves it there */
     for (uint32_t t = 0; t < hold_ms; t += 20u) {
         button_id_t key;
         if (xQueueReceive(keys, &key, pdMS_TO_TICKS(20)) == pdTRUE) break;   /* key = skip */
@@ -71,6 +72,17 @@ void logo_ui_paint(void)
     logo_screen_mark_painted();
 }
 
+/* `logo show` runs on the shell task; the layer is the input task's to push
+ * and close (input_call_sync). */
+static void preview_show(void *ok) { *(bool *)ok = logo_screen_show(false); }
+static void preview_hide(void *unused) { (void)unused; logo_screen_hide(); }
+
+static void preview_drop(void)
+{
+    /* The input task may be inside a POWER countdown (3.6 s): keep asking. */
+    for (int i = 0; i < 5 && !input_call_sync(preview_hide, NULL, 2000u); i++) { }
+}
+
 logo_status_t logo_ui_preview(uint32_t hold_ms)
 {
     logo_info_t info;
@@ -78,17 +90,19 @@ logo_status_t logo_ui_preview(uint32_t hold_ms)
     if (st != LOGO_OK) return st;
     if (info.state != LOGO_SLOT_VALID) return LOGO_ERR_NONE;
     if (logo_screen_up()) return LOGO_ERR_IO;             /* one at a time */
-    logo_screen_show(false);
+    bool shown = false;
+    if (!input_call_sync(preview_show, &shown, 1000u) || !shown)
+        return LOGO_ERR_IO;                               /* the key task is busy, or the stack is full */
     /* Until the display task has painted it (it finishes the frame it is in
      * first); 2 s is far more than a frame and the stream. */
     for (int i = 0; i < 200 && !logo_screen_painted(); i++)
         vTaskDelay(pdMS_TO_TICKS(10));
     if (!logo_screen_painted()) {
-        logo_screen_hide();
+        preview_drop();
         return LOGO_ERR_IO;
     }
     st = paint_status;
     vTaskDelay(pdMS_TO_TICKS(hold_ms));
-    logo_screen_hide();
+    preview_drop();
     return st;
 }

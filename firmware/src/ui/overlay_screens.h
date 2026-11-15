@@ -21,8 +21,9 @@
  * the same layer from the shell.
  *
  * Both are OPAQUE | NO_BARS: nothing under them is drawn or ticked, the
- * bars included. Their flags are the authority and the stack mirrors them
- * (legacy_screens.c), as for the other layers.
+ * bars included. Each is up while its layer is on the router's stack: show
+ * pushes it and hide closes it, on the input task (the shell's `logo show`
+ * asks the input task: logo_ui_preview).
  *
  * Pure: no FreeRTOS, no driver header. Host test: make test-overlay-screens.
  */
@@ -50,11 +51,13 @@ typedef struct {
 
 extern const screen_t power_prompt_screen;
 
-/* Input task. Each show is painted once by the display task (the box is
- * repainted every second of the count, so a stray frame heals). */
+/* Input task. show says what the box shows and pushes its layer if it is
+ * not up; hide closes the layer. Each show is painted once by the display
+ * task (the box is repainted every second of the count, so a stray frame
+ * heals). Neither waits or posts anything. */
 void power_prompt_show(power_prompt_kind_t kind, uint8_t count);
 void power_prompt_hide(void);
-bool power_prompt_up(void);                          /* any task */
+bool power_prompt_up(void);                          /* any task: its layer is on the stack */
 power_prompt_view_t power_prompt_view(void);         /* any task */
 
 /* The paint (overlay_ui.c; a fake in the host test). Display task only. */
@@ -64,11 +67,12 @@ void power_prompt_ui_paint(power_prompt_view_t v);
 
 extern const screen_t logo_screen;
 
-/* Raise / drop the layer. painted = it is on the LCD already (main() drew
- * it before the scheduler): the display task does not paint it again. */
-void    logo_screen_show(bool painted);
+/* Input task: push / close the layer. painted = it is on the LCD already
+ * (main() drew it before the scheduler): the display task does not paint it
+ * again. false: it is up already, or the stack is full. */
+bool    logo_screen_show(bool painted);
 void    logo_screen_hide(void);
-bool    logo_screen_up(void);                        /* any task */
+bool    logo_screen_up(void);                        /* any task: its layer is on the stack */
 uint8_t logo_screen_shows(void);                     /* bumped by every show */
 bool    logo_screen_painted(void);                   /* this show is on the LCD */
 /* Display task: this show has been painted (logo_ui.c reports its result). */

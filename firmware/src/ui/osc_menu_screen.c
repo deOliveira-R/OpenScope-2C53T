@@ -127,6 +127,7 @@ void osc_menu_screen_open(osc_row_t row, bool locked, uint8_t opener)
     if (locked) osc_menu_open_locked(row);
     else        osc_menu_open(row);
     s_opener = opener;
+    (void)screen_push(SCR_OSC_MENU);    /* refused while it is up: one layer */
 }
 
 /* ── apply: one property set per change ────────────────────────────── */
@@ -238,7 +239,7 @@ static osc_result_t page_key(osc_key_t k)
  * router's globals and never get here. */
 static scr_res_t oms_key(scr_key_t k)
 {
-    if (!osc_menu_is_open()) return SCR_UNHANDLED;      /* closed under the key: the layer goes at the next sync */
+    if (!osc_menu_is_open()) return SCR_CLOSE;          /* the page's model is shut: so is its layer */
     key_ctx_t c;
     memset(&c, 0, sizeof c);
     c.mode            = MODE_OSCILLOSCOPE;

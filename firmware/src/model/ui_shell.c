@@ -203,7 +203,6 @@ ui_press_t ui_press_one(const ui_press_port_t *p, uint32_t *target, uint8_t id)
 #include "fpga.h"             /* fpga_interleave_active (keys) */
 #include "screen.h"           /* the router's snapshot (`ui screen`) */
 #include "lcd.h"              /* lcd_foreign_calls (`ui screen`) */
-#include "legacy_screens.h"   /* the describe hooks below */
 #include "overlay_screens.h"  /* the POWER prompt and the logo (`ui screen` overlay=modal) */
 
 #include <stdio.h>
@@ -249,9 +248,8 @@ static void fmt_prop(char *out, size_t n, const prop_desc_t *p)
  * cursor (0..4) while its frequency editor is open; mview (after it, added with
  * the meter screen) is the meter base's: its layout (big, graph, stats, fuse,
  * limits), in the fuse tester with the page (fuse/detail, fuse/table,
- * fuse/scan, fuse/types). The rest are properties. The stack
- * mirrors the legacy state on the input task (legacy_screens_sync), so right
- * after a `set sys.mode` it can lag by one input pass (<= 100 ms). */
+ * fuse/scan, fuse/types). The rest are properties. The stack is
+ * the authority for what is shown: `set sys.mode` answers after the switch. */
 static void screen_line(void)
 {
     char inst[12], focus[12], view[16], meter[16];

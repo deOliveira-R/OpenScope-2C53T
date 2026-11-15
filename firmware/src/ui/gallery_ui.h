@@ -17,7 +17,7 @@
 #include "queue.h"
 #include "gallery_store.h"
 
-#include "gallery_screen.h"   /* gallery_ui_is_open, gallery_ui_close, gallery_ui_paint */
+#include "gallery_screen.h"   /* gallery_ui_is_open, gallery_ui_paint */
 
 /* Before the first capture: the display queue DCMD_CAPTURE is posted to. */
 void gallery_ui_bind(QueueHandle_t display_queue);

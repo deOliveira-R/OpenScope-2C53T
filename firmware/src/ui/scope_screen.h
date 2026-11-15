@@ -1,8 +1,7 @@
 /*
  * OpenScope 2C53T - the oscilloscope as a screen (ARCH-1 B7)
  *
- * The scope's base screen of the router (screen.h), in place of the legacy
- * row that forwarded its keys to input_handler.c's exec_key_cmd / mode_key.
+ * The scope's base screen of the router (screen.h).
  * The Oscilloscope Settings page stays a layer of its own over it
  * (osc_menu_screen.h).
  *

@@ -45,7 +45,7 @@
 #include "meter_voltage_wave.h"
 #include "gallery_ui.h"
 #include "screen.h"
-#include "legacy_screens.h"
+#include "screen.h"
 #include "osc_menu_screen.h"
 #include "scope_screen.h"
 
@@ -396,18 +396,16 @@ static void op_meter_layout(uint8_t layout) { CTX(); meter_ui_layout_changed(lay
 
 /* ═══ system ═════════════════════════════════════════════════════════ */
 
-/* sys.mode / sys.instrument: the keys' mode switch (input_mode_switch ->
- * enter_mode: the mode's posture, the settings flush, the repaint). The long
- * mode keys reach it through the same setter (legacy_screens.c globals ->
- * lgc_mode_set -> prop_set_local(sys.mode, ORIGIN_KEY)), so a shell set and a
- * long MOVE are one path. The gallery is closed first, also when the mode
- * is already the one asked for:
- * a mode change hands the screen to the mode. The Oscilloscope Settings page
- * is closed by enter_mode itself. */
+/* sys.mode / sys.instrument: the mode switch (input_mode_switch: the router
+ * switches the screen, then the mode's posture, the settings flush, the
+ * repaint). The long mode keys reach it through the same setter
+ * (ui/ui_router.c globals -> prop_set_local(sys.mode, ORIGIN_KEY)), so a
+ * shell set and a long MOVE are one path. The gallery is closed first, also
+ * when the mode is already the one asked for (ui_router_switch_mode): a
+ * mode change hands the screen to the mode. */
 static bool op_mode(uint8_t m)
 {
     CTX();
-    gallery_ui_close();
     return input_mode_switch((device_mode_t)m);
 }
 static void op_backlight(uint8_t pct)    { CTX(); (void)pct; sys_pwm_apply_brightness(); }  /* reads sys_prefs */
@@ -509,8 +507,8 @@ static void port_checkin(void)               { health_checkin_self(); }
 static bool port_on_executor(void)           { return xTaskGetCurrentTaskHandle() == g_executor; }
 
 /* One repaint per shell request that changed something the screen shows
- * (the visible screens' property groups, legacy_screens.c), as a key's
- * popup_and_redraw does. A set the screen does not show, e.g. a stored
+ * (the visible screens' property groups, screen_groups()), as a key's
+ * repaint does. A set the screen does not show, e.g. a stored
  * meter.func on the scope, repaints nothing. A full repaint, except on the
  * meter screen for a change of the meter's own group only: that screen
  * paints such a change in place (its epoch; ui/meter_screen.c), so a
@@ -518,7 +516,6 @@ static bool port_on_executor(void)           { return xTaskGetCurrentTaskHandle(
  * display queue drops it, and the periodic redraw gates catch up). */
 static void port_changed(uint16_t groups)
 {
-    legacy_screens_sync();             /* a shell `mode` just before: judge the new screen */
     const uint16_t shown = (uint16_t)(groups & screen_groups());
     if (!shown) return;
     uint8_t cmd = DCMD_REDRAW_ALL;

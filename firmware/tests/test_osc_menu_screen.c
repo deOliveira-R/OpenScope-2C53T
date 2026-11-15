@@ -108,8 +108,7 @@ static void boot(void)
 /* What the scope's key and the stack mirror do: open the page, push its layer. */
 static void open_page(osc_row_t row, bool locked, uint8_t opener)
 {
-    osc_menu_screen_open(row, locked, opener);
-    (void)screen_push(SCR_OSC_MENU);
+    osc_menu_screen_open(row, locked, opener);      /* pushes its layer */
 }
 /* The full page, focus inside `row`'s pane (as OK on the rail leaves it). */
 static void open_in(osc_row_t row)
@@ -708,9 +707,13 @@ static void test_open_close(void)
 
     boot();
     open_page(OSC_ROW_MATH, false, BTN_MENU);
-    osc_menu_close();                                            /* closed by someone else */
-    CHECK("closed under the key: the page takes nothing and changes nothing",
-          env_key(BTN_OK) == SCR_UNHANDLED && !osc_menu_is_open() && G(P(VIEW_MATH)) == 0);
+    CHECK("the page is up exactly while its layer is on the stack; a second open pushes nothing",
+          screen_is_open(SCR_OSC_MENU) && screen_snapshot().n == 2 &&
+          (osc_menu_screen_open(OSC_ROW_MATH, false, BTN_MENU), screen_snapshot().n == 2));
+    (void)screen_close(SCR_OSC_MENU);                            /* the layer closed from outside */
+    CHECK("its layer closed: the page's model is shut with it, the next key is the scope's",
+          !osc_menu_is_open() && osc_menu_screen_opener() == BTN_NONE && screen_top() == SCR_SCOPE &&
+          G(P(VIEW_MATH)) == 0);
 }
 
 /* ── the paints and `ui screen` ────────────────────────────────────── */

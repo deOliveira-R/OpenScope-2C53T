@@ -5,11 +5,12 @@
  * The input task (in main.c) handles GPIO polling and debounce,
  * then calls input_handle_button() for the actual logic.
  *
- * Every instrument's keys are its screen's (ui/home_screen.c, meter_screen.c,
- * siggen_screen.c, scope_screen.c, osc_menu_screen.c, gallery_screen.c).
- * What is left here: the globals (the mode switch, SAVE, the POWER
- * countdown), the Settings pages, the auto power-off and the settings
- * flush.
+ * Every screen's keys are its screen's (ui/home_screen.c, meter_screen.c,
+ * siggen_screen.c, scope_screen.c, settings_screen.c, osc_menu_screen.c,
+ * gallery_screen.c), and the keys that belong to no screen are the router's
+ * globals (ui/ui_router.c). What is left here is what those name and this
+ * task does: the mode's hardware posture, the screenshot, the POWER
+ * countdown and the power-off, the auto power-off and the settings writes.
  */
 
 #include "key_model.h"
@@ -32,7 +33,7 @@
 #include "sys_pwm.h"
 #include "../ui/gallery_ui.h"
 #include "../ui/screen.h"
-#include "../ui/legacy_screens.h"
+#include "../ui/ui_router.h"
 #include "../ui/settings_screen.h"  /* the Settings screens' environment */
 #include "model.h"           /* the long mode keys set sys.mode */
 #include "task_call.h"       /* input_call_sync */
@@ -157,7 +158,6 @@ void input_autooff_poll(void)
      * display task (ui/overlay_screens.h) while this task waits out the
      * same 120 + 800 ms as when it drew the box itself. */
     power_prompt_show(POWER_PROMPT_AUTOOFF, 0);
-    legacy_screens_sync();
     vTaskDelay(pdMS_TO_TICKS(120));
     vTaskDelay(pdMS_TO_TICKS(800));
     power_off_now();
@@ -248,41 +248,38 @@ void settings_env_fw_update(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Helper: send a display command
+ * The display queue
  * ═══════════════════════════════════════════════════════════════════ */
+
+/* Set before the first key (input_router_init). */
+static QueueHandle_t g_dq;
 
 static void send_cmd(QueueHandle_t q, uint8_t cmd)
 {
     xQueueSend(q, &cmd, 0);
 }
 
-static uint8_t mode_key(button_id_t button, QueueHandle_t dq);
-
-/* Helper: show popup and send redraw */
-static void popup_and_redraw(QueueHandle_t q, const char *text)
-{
-    scope_show_popup(text);
-    uint8_t cmd = DCMD_REDRAW_ALL;
-    send_cmd(q, cmd);
-}
-
 /* ═══════════════════════════════════════════════════════════════════
- * Mode entry, long-press shortcuts and the scope key model
+ * Mode entry
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Enter a device mode: the one path for MENU, the home page's OK and the
- * long-press shortcuts, so a mode is never entered half-way (the FPGA
- * posture, the settings list, the persistence flush). */
-static void enter_mode(device_mode_t m, QueueHandle_t dq)
+/* Enter a device mode: the one path for MENU, the home page's OK, the long
+ * mode keys and the shell's `set sys.mode` (all a sys.mode / sys.instrument
+ * set: model_hw_fw.c op_mode), so a mode is never entered half-way. The
+ * router switches the screen (ui_router_switch_mode: the gallery closed,
+ * every layer closed, the old base closed and the new one opened;
+ * current_mode follows there); this adds what a screen may not do itself:
+ * the mode's hardware posture, the settings flush and the repaint. Nothing
+ * but the gallery closing if it is the mode already. */
+bool input_mode_switch(device_mode_t m)
 {
+    if ((unsigned)m >= (unsigned)MODE_COUNT || g_dq == NULL) return false;
+    if (screen_base_for_mode(m) == screen_base()) {
+        (void)ui_router_switch_mode(m);      /* the gallery, if it is up */
+        return true;
+    }
     meter_autoselect_cancel();
-    osc_menu_close();                    /* never reappears over another mode's return */
-    /* The router's base is the mode being left (a shell `mode` may have
-     * moved it since the last pass): the screen entered is told where from
-     * (home_screen.c open(): Home preselects it, stock 0x0800D834). */
-    legacy_screens_sync();
-    current_mode = m;
-    legacy_screens_sync();               /* the router's base follows the mode (sys.instrument) */
+    if (!ui_router_switch_mode(m)) return false;
     /* Tell the FPGA which mode we're entering.
      * Each mode needs different FPGA commands and analog MUX config. */
     if (current_mode == MODE_MULTIMETER) {
@@ -300,15 +297,18 @@ static void enter_mode(device_mode_t m, QueueHandle_t dq)
      * within a frame when the link policy says so (stock's exit to home,
      * 0x0800D874, always did) and leaves it running when a USB host or
      * meter.link = always wants it. */
-    /* Leaving a mode, or backing out of the settings menu, is a deliberate
-     * boundary: commit now rather than waiting out the settle window. */
+    /* Leaving a mode is a deliberate boundary: commit now rather than
+     * waiting out the settle window. */
     (void)settings_store_flush(settings_now_ms());
-    send_cmd(dq, DCMD_REDRAW_ALL);
+    send_cmd(g_dq, DCMD_REDRAW_ALL);
+    return true;
 }
 
-/* Short SAVE, every mode (owner decision D1). */
-static void save_key_short(QueueHandle_t dq)
+/* Short SAVE, every screen (owner decision D1): the router's global
+ * (ui/ui_router.h). */
+void ui_env_screenshot(void)
 {
+    const QueueHandle_t dq = g_dq;
 #if defined(FPGA_BENCH_SAVE_PC12) && FPGA_BENCH_SAVE_PC12
     /* BENCH IMAGES ONLY (guest-warmtest*). Until 2026-10-03 this was gated
      * on FPGA_WARM_HANDOFF_TEST, which the release image (guest-coldtrace)
@@ -366,84 +366,17 @@ static void save_key_short(QueueHandle_t dq)
         /* Home repaints only its selection on key presses; the popup
          * overlay (main.c) draws itself and asks for the repaint when it
          * expires. */
-        send_cmd(dq, legacy_screens_active_cmd());   /* the home page: DCMD_DRAW_HOME */
+        send_cmd(dq, (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)screen_top()));   /* the home page, in place */
     } else {
         send_cmd(dq, DCMD_REDRAW_ALL);
     }
 }
 
-/* A long mode key: sys.mode through the model, the path `set sys.mode` and
- * `set sys.instrument` take (props_sys.c -> model_hw_fw.c op_mode ->
- * input_mode_switch -> enter_mode). */
-static void key_mode_set(device_mode_t m)
-{
-    (void)prop_set_local(prop_by_id(PROP_ID_SYS_MODE), (int32_t)m, ORIGIN_KEY, NULL);
-}
-
-/* The key context of the globals and the Settings screens (ui/
- * legacy_screens.c): the mode and the Settings page, with the scope's part
- * from its screen (ui/scope_screen.c), which also drops an arrow stage that
- * no longer exists before any key acts. */
-static key_ctx_t key_ctx_now(void)
-{
-    key_ctx_t c = scope_screen_ctx();
-    const bool scope = (current_mode == MODE_OSCILLOSCOPE);
-    c.mode            = current_mode;
-    c.settings_depth  = (int8_t)settings_screen_view().page;
-    c.scope_time_view = scope && c.scope_time_view;
-    c.osc_menu_open   = scope && c.osc_menu_open;
-    c.osc_menu_locked = c.osc_menu_open && c.osc_menu_locked;
-    return c;
-}
-
-/* Execute one answer of key_map() that is not a screen's own: the globals
- * the router did not take itself. Every scope action is executed by the
- * scope's screen (ui/scope_screen.c), the generator's and the page's by
- * theirs. Returns the display command sent. */
-static uint8_t exec_key_cmd(key_cmd_t k, button_id_t btn, QueueHandle_t dq)
-{
-    uint8_t cmd = DCMD_REDRAW_ALL;
-    (void)btn;
-
-    switch (k.act) {
-    /* -- long presses: mode shortcuts, from any mode -------------------- */
-    /* The router's globals take these first (legacy_screens.c ->
-     * lgc_mode_set); kept here so key_map's answer means the same wherever
-     * it is executed. Long BACK: stock's mode-selection page from any mode,
-     * with the mode left preselected (0x0800D834); on home itself it does
-     * nothing, as in stock (input_mode_switch: nothing if it is the mode). */
-    case KA_ENTER_HOME:   key_mode_set(MODE_HOME);         break;
-    case KA_ENTER_METER:  key_mode_set(MODE_MULTIMETER);   break;
-    case KA_ENTER_SCOPE:  key_mode_set(MODE_OSCILLOSCOPE); break;
-    case KA_ENTER_SIGGEN: key_mode_set(MODE_SIGNAL_GEN);   break;
-
-    /* Long SAVE (parity C16): stock's 3x3 screenshot gallery, from every
-     * mode (D1). A layer of the router (ui/gallery_screen.c): it owns the
-     * screen and every key but POWER until it closes itself; the display
-     * task then repaints whatever was under it, the Oscilloscope Settings
-     * page included. */
-    case KA_GALLERY_OPEN:
-        gallery_screen_open();              /* the display task paints it; the mirror pushes its layer */
-        cmd = DCMD_NONE_MODAL_DROP;
-        break;
-
-    case KA_SCREENSHOT:
-        save_key_short(dq);
-        break;
-
-    /* KA_NONE (a long key with no meaning on a Settings page), and what a
-     * screen of its own executes. */
-    default:
-        break;
-    }
-    return cmd;
-}
-
-/* Settings persistence, once per button, after the handler has had its
- * effect. note_change() is a struct compare — no flash access at all when
- * nothing changed, which is the overwhelming majority of presses.
- * service() writes only once a change has been quiet for the settle
- * window, so holding an arrow key through ten values costs one record. */
+/* Settings persistence, once per key, after the screen has had its effect.
+ * note_change() is a struct compare — no flash access at all when nothing
+ * changed, which is the overwhelming majority of presses. service() writes
+ * only once a change has been quiet for the settle window, so holding an
+ * arrow key through ten values costs one record. */
 static void settings_after_button(void)
 {
     uint32_t now = settings_now_ms();
@@ -452,103 +385,26 @@ static void settings_after_button(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * The handlers the legacy screens forward to (ui/legacy_screens.h)
- *
- * Until the screen router (ARCH-1 B1) these were the steps of one function,
- * input_handle_button(), asked in a fixed order. They are the same code; the
- * router (ui/screen.c) now decides which one a key reaches, in that same
- * order, and legacy_screens.c says which screen forwards to which.
+ * The router's environment (ui/ui_router.h)
  * ═══════════════════════════════════════════════════════════════════ */
-
-/* The display queue of the key being handled: the router's callbacks take no
- * argument for it. Set before the first key (input_router_init). */
-static QueueHandle_t g_dq;
-/* The display command the last handler sent (input_handle_button's answer). */
-static uint8_t g_cmd;
-
-void lgc_state(lgc_state_t *s)
-{
-    s->mode           = current_mode;
-    s->settings_depth = (int8_t)settings_screen_view().page;   /* the stack's, read back */
-    s->osc_open       = osc_menu_is_open();
-    s->gallery_open   = gallery_ui_is_open();
-    s->logo_up        = logo_screen_up();
-    s->prompt_up      = power_prompt_up();
-}
-
-key_ctx_t lgc_ctx(void) { return key_ctx_now(); }
-
-void lgc_exec(key_cmd_t k, button_id_t btn)
-{
-    g_cmd = exec_key_cmd(k, btn, g_dq);
-    settings_after_button();
-}
-
-/* A key a migrated screen handled (ui/legacy_screens.h): post the paint its
- * key() answered, then the settings hook every key runs. The home page
- * (home_screen.c): LEFT/RIGHT answer SCR_DRAW (its selection), OK and MENU
- * switch the mode through the model, which repaints. The generator
- * (siggen_screen.c): every key that sets a gen.* property or moves the
- * frequency editor answers SCR_DRAW (the page, gated on its epoch by the
- * display task), CH1/CH2/TRIGGER/MOVE answer SCR_DRAW_FULL. The meter
- * (meter_screen.c): the softkeys, OK, AUTO and the Limits arrows answer
- * SCR_DRAW (in place, gated on its epoch), LEFT/RIGHT, the fuse tester's
- * arrows and CH1/CH2 SCR_DRAW_FULL, as their handlers sent before B6. The
- * Oscilloscope Settings page (osc_menu_screen.c, a layer over the scope): a
- * key that moved its cursor or set a property answers SCR_DRAW (the page,
- * gated on its epoch), closing it SCR_DRAW_FULL (the scope under it). */
-void lgc_native_after(screen_id_t scr, scr_res_t res)
-{
-    if (res == SCR_DRAW_FULL) {
-        g_cmd = DCMD_REDRAW_ALL;
-        send_cmd(g_dq, DCMD_REDRAW_ALL);
-    } else if (res == SCR_DRAW && (unsigned)scr < (unsigned)SCR_COUNT) {
-        g_cmd = legacy_screens_update_cmd(scr);
-        send_cmd(g_dq, (uint8_t)(DCMD_DRAW_ACTIVE + (uint8_t)scr));
-    } else {
-        g_cmd = DCMD_NONE_MODAL_DROP;   /* nothing to draw */
-    }
-    settings_after_button();
-}
-
-void lgc_mode_key(button_id_t button) { g_cmd = mode_key(button, g_dq); }
-
-void lgc_mode_set(device_mode_t m)
-{
-    g_cmd = DCMD_REDRAW_ALL;
-    key_mode_set(m);
-    settings_after_button();
-}
-
-/* While autoset or the baseline correction runs the keys are locked, as
- * stock locks them while ms[0x2F]/[0x30] are set (0x08040074): a range or
- * timebase press would pull the front end out from under the servo.
- * AUTO and MENU (short or long) cancel and restore; POWER still works (the
- * router never asks about it). No settings hook, as before the router. */
-bool lgc_selfcal_busy(void)    { return scope_selfcal_busy(); }
-void lgc_selfcal_cancel(void)  { scope_selfcal_request_cancel(); g_cmd = DCMD_REDRAW_ALL; }
-void lgc_selfcal_refuse(void)  { popup_and_redraw(g_dq, "Busy: AUTO cancels"); g_cmd = DCMD_REDRAW_ALL; }
 
 /* Every key event: restart the auto power-off count and click at the stored
  * volume (stock does both for each key the key task handles, 0x08040038; a
  * volume of 0 is silent). */
-void lgc_touch(void) { autooff_touch(); }
-void lgc_click(void) { sys_pwm_click(); }
-void lgc_lock(void)   { taskENTER_CRITICAL(); }
-void lgc_unlock(void) { taskEXIT_CRITICAL(); }
+void ui_env_touch(void)  { autooff_touch(); }
+void ui_env_click(void)  { sys_pwm_click(); }
+void ui_env_lock(void)   { taskENTER_CRITICAL(); }
+void ui_env_unlock(void) { taskEXIT_CRITICAL(); }
+void ui_env_post(uint8_t dcmd) { send_cmd(g_dq, dcmd); }
+void ui_env_settings_service(void) { settings_after_button(); }
 
 void input_router_init(void *display_queue)
 {
     g_dq = (QueueHandle_t)display_queue;
     gallery_ui_bind(g_dq);              /* where a capture is posted (DCMD_CAPTURE) */
-    legacy_screens_init();
-}
-
-bool input_mode_switch(device_mode_t m)
-{
-    if ((unsigned)m >= (unsigned)MODE_COUNT || g_dq == NULL) return false;
-    if (current_mode != m) enter_mode(m, g_dq);
-    return true;
+    /* current_mode is the boot target main() chose before the scheduler
+     * (Startup on Boot); from here on the router's base decides it. */
+    ui_router_init(current_mode);
 }
 
 /* ── `reset settings CONFIRM`: the shell's door to settings_reset_now() ──
@@ -618,7 +474,7 @@ void input_call_serve(void) { (void)task_call_serve(&g_input_call); }
 /* input_handler.h: a key is being handled (its own repaint follows). */
 volatile bool input_key_in_flight;
 
-uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
+void input_handle_button(button_id_t button, QueueHandle_t dq)
 {
     /* MENU + POWER → clean handoff to the factory IAP bootloader.
      * The FNIRSI bootloader at 0x08000000 checks the MENU key at
@@ -641,26 +497,17 @@ uint8_t input_handle_button(button_id_t button, QueueHandle_t dq)
     }
 
     g_dq = dq;
-    g_cmd = DCMD_REDRAW_ALL;
-    legacy_screens_sync();             /* the shell may have changed the mode or closed the gallery */
     input_key_in_flight = true;
-    (void)screen_route_key(button);
+    ui_router_key(button);
     input_key_in_flight = false;
-    legacy_screens_sync();             /* what the key opened or closed */
-    return g_cmd;
 }
 
-/* POWER, from the router's globals: the hold-to-power-off countdown. (Every
- * other key is a screen's.) */
-static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
+/* POWER, from the router's globals (ui/ui_router.h): the hold-to-power-off
+ * countdown. The block below is the POWER case of the old per-key switch,
+ * unchanged but for the stack-mirror calls that are gone (power_prompt_show
+ * / _hide push and close the prompt's layer themselves). */
+void ui_env_power_key(void)
 {
-    uint8_t cmd = DCMD_REDRAW_ALL;
-
-    switch (button) {
-
-    /* -- Power ---------------------------------------------------- */
-
-    case BTN_POWER:
         {
             /* MENU + POWER (the IAP reset) never gets here: input_handle_button()
              * takes it before the router. */
@@ -673,7 +520,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
              * 2026-08-20). This task keeps what decides: the count, the PC8
              * poll and the power-off, with the delays they always had. */
             power_prompt_show(POWER_PROMPT_HOLD, 3);
-            legacy_screens_sync();
             vTaskDelay(pdMS_TO_TICKS(120));
 
             /* Countdown 3..2..1 while POWER button held. The box is painted
@@ -690,7 +536,6 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
                         /* Button released — cancel: the layer goes and the
                          * display task repaints what the box covered. */
                         power_prompt_hide();
-                        legacy_screens_sync();
                         goto power_done;
                     }
                 }
@@ -708,13 +553,5 @@ static uint8_t mode_key(button_id_t button, QueueHandle_t dq)
             power_off_now();
         }
         power_done:
-        break;
-
-    default:
-        break;
-    }
-
-    settings_after_button();
-
-    return cmd;
+        return;
 }

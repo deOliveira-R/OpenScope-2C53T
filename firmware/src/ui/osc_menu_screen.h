@@ -64,8 +64,9 @@ extern const screen_t osc_menu_screen;
 
 /* Open the page on `row` (the full page, rail focus), or locked inside its
  * pane; while open it jumps there. `opener` is the key that did it (a
- * button_id_t): pressed again it closes the page (key_model.c). The layer
- * itself is pushed by the stack mirror (legacy_screens_sync). */
+ * button_id_t): pressed again it closes the page (key_model.c). Its layer
+ * is pushed here if it is not up; the page is up while that layer is on the
+ * router's stack (screen_is_open(SCR_OSC_MENU)). */
 void    osc_menu_screen_open(osc_row_t row, bool locked, uint8_t opener);
 uint8_t osc_menu_screen_opener(void);          /* BTN_NONE while closed */
 

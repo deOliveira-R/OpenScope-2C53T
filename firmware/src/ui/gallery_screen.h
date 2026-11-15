@@ -23,9 +23,9 @@
  * closes the gallery first) and nothing under it is drawn or ticked. A
  * delete is an action, not a setting: it goes to gallery_store.c from here.
  *
- * The open flag is the authority (the stack mirrors it, legacy_screens.c):
- * gallery_ui_close() from any task is a flag write, and the input task pops
- * the layer on its next pass.
+ * It is up while its layer is on the router's stack and no longer: long
+ * SAVE pushes it (gallery_screen_open), its own close key, POWER and a mode
+ * change pop it (screen_close(SCR_GALLERY), input task).
  *
  * Pure: no FreeRTOS, no driver header. Host test: make test-gallery-screen.
  */
@@ -55,15 +55,10 @@ typedef struct {
 
 gallery_view_t gallery_screen_view(void);          /* any task */
 
-/* Input task: open it (long SAVE). No-op while open. The layer is pushed by
- * the stack mirror. */
+/* Input task: open it (long SAVE): its layer is pushed. No-op while open. */
 void gallery_screen_open(void);
 
-bool gallery_ui_is_open(void);                     /* any task */
-/* Close it (if open), from any task: a mode change from the shell must not
- * leave the gallery owning the screen. The display task repaints what was
- * under it when it sees it gone. */
-void gallery_ui_close(void);
+bool gallery_ui_is_open(void);                     /* any task: its layer is on the stack */
 
 /* What a paint has to draw to turn the view last drawn into `v`
  * (`drawn` NULL: nothing of the gallery is on the LCD). 0: nothing. */

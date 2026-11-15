@@ -732,12 +732,13 @@ static void test_key_table(void)
 
     /* the page: UI state, opened by the screen, painted as a layer */
     boot();
-    CHECK("MENU opens the page at Display; PRM / TRIGGER locked in their pane",
+    CHECK("MENU opens the page at Display (its layer pushed: scope > osc_menu); PRM / TRIGGER locked in their pane",
           env_key(BTN_MENU) == SCR_DRAW && osc_menu_is_open() && !osc_menu_is_locked() &&
+          screen_top() == SCR_OSC_MENU && screen_snapshot().n == 2 &&
           osc_menu_state()->row == OSC_ROW_DISPLAY && osc_menu_screen_opener() == BTN_MENU &&
-          (osc_menu_close(), env_key(BTN_PRM) == SCR_DRAW) && osc_menu_is_locked() && osc_menu_state()->row == OSC_ROW_PARAM &&
-          (osc_menu_close(), env_key(BTN_TRIGGER) == SCR_DRAW) && osc_menu_is_locked() && osc_menu_state()->row == OSC_ROW_TRIGGER &&
-          env_log_is(""));
+          (screen_close(SCR_OSC_MENU), env_key(BTN_PRM) == SCR_DRAW) && osc_menu_is_locked() && osc_menu_state()->row == OSC_ROW_PARAM &&
+          (screen_close(SCR_OSC_MENU), env_key(BTN_TRIGGER) == SCR_DRAW) && osc_menu_is_locked() && osc_menu_state()->row == OSC_ROW_TRIGGER &&
+          screen_top() == SCR_OSC_MENU && env_log_is(""));
 
     /* spectrum views: the live FFT configuration (no property) */
     boot();
@@ -994,8 +995,7 @@ static void test_under_page(void)
 {
     printf("under the Oscilloscope Settings page\n");
     boot();
-    env_key(BTN_MENU);
-    (void)screen_push(SCR_OSC_MENU);
+    env_key(BTN_MENU);                  /* the page's layer is pushed with it */
     env_log_clear(); g_popup[0] = '\0';
     const int32_t v = G(P(CH1_VDIV));
     env_key(BTN_MOVE); env_key(BTN_SELECT); env_key(BTN_AUTO); env_key(LONG(BTN_OK)); env_key(LONG(BTN_CH1));

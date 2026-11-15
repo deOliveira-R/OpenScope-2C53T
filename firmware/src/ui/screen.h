@@ -6,6 +6,14 @@
  * and settings children are pushed on top of it. The stack is at most
  * SCR_STACK_MAX deep, base included.
  *
+ * THE STACK IS THE AUTHORITY for what is shown (ARCH-1 B8): the base and
+ * every layer over it. A layer is up because it was pushed and gone because
+ * it was popped; no screen keeps an "open" flag of its own for others to
+ * read (screen_is_open answers). The device mode is the base's:
+ * current_mode (ui.h) is a mirror this file stores when the base changes,
+ * and nothing else stores it once the router is up. Push, pop, close and
+ * switch run on the input task only.
+ *
  * Base screens are the views of instruments (a scope, a meter, a generator
  * or a bus analyser is a named set of properties plus one view). A base screen
  * therefore carries an `instrument` id next to its legacy `mode`, and can be
@@ -48,7 +56,10 @@ enum {
     SCR_F_NO_BARS = 1u << 3     /* the status/title bars are not drawn */
 };
 
-#define SCR_STACK_MAX        4
+/* Room for every kind of layer at once: base, a page (the Oscilloscope
+ * Settings page or a Settings page), the gallery, the logo, the POWER
+ * prompt. So the prompt can always be pushed: power-off always shows. */
+#define SCR_STACK_MAX        5
 #define SCR_INSTRUMENT_NONE  0xFFu
 
 typedef struct { button_id_t btn; bool is_long; } scr_key_t;
@@ -131,6 +142,15 @@ size_t        screen_snapshot_text(char *out, size_t n);
  * base) and run up to the top. */
 void          screen_draw(scr_paint_t how, uint32_t frame);   /* UPDATE: the top only */
 redraw_action_t screen_tick(uint32_t frame);                  /* the largest request of the visible layers */
+/* The layer that owns the whole LCD, if one is up: the top of the stack when
+ * it is drawn without the bars (SCR_F_NO_BARS: the POWER prompt, the logo,
+ * the gallery). While it is up nothing else is drawn. NULL: none. */
+const screen_t *screen_modal(void);
+/* The page over the base, if one is up: the highest layer that covers the
+ * base's area and keeps the bars (OPAQUE without NO_BARS: the Oscilloscope
+ * Settings page, a Settings page). It is painted in the base's place, also
+ * when a modal layer is over it (when that goes). NULL: none. */
+const screen_t *screen_page(void);
 bool          screen_popups_allowed(void);         /* false while an overlay is OPAQUE */
 bool          screen_bars_wanted(void);            /* false if a visible layer has SCR_F_NO_BARS */
 uint32_t      screen_epoch(void);                  /* mix of the visible layers' epochs */

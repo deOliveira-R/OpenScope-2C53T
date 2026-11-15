@@ -134,7 +134,6 @@ const char *key_focus_popup(key_focus_t f);    /* popup text */
 /* ── Key -> action ────────────────────────────────────────────────── */
 typedef struct {
     device_mode_t mode;
-    int8_t        settings_depth;
     bool          scope_time_view;   /* scope mode and the time-domain view */
     key_focus_t   focus;
     bool          cursors_on;

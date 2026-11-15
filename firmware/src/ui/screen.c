@@ -28,6 +28,18 @@ const screen_t *screen_get(screen_id_t id)
 
 static bool is_base(const screen_t *s) { return s && s->mode != MODE_COUNT; }
 
+/* The base changes here and nowhere else, with the lock held. current_mode
+ * (ui.h) is its read-only mirror for the code that asks "which mode": this
+ * is its one store once the router is up, in the same locked section as the
+ * stack, so no task ever sees a base and a mode that disagree. */
+static void set_base_locked(const screen_t *s)
+{
+    g_st[0] = s->id;
+    g_n = 1;
+    g_gen++;
+    current_mode = s->mode;
+}
+
 bool screen_register(const screen_t *s)
 {
     if (!s || (unsigned)s->id >= (unsigned)SCR_COUNT || g_reg[s->id]) return false;
@@ -66,9 +78,7 @@ bool screen_init(screen_id_t base)
     const screen_t *s = screen_get(base);
     if (!is_base(s)) return false;
     lock();
-    g_st[0] = base;
-    g_n = 1;
-    g_gen++;
+    set_base_locked(s);
     unlock();
     if (s->open) s->open(SCR_COUNT);
     changed();
@@ -175,9 +185,7 @@ void screen_switch(screen_id_t base)
         const screen_t *ob = screen_get(cur);
         if (ob && ob->close) ob->close(base);
         lock();
-        g_st[0] = base;
-        g_n = 1;
-        g_gen++;
+        set_base_locked(nb);
         unlock();
         if (nb->open) nb->open(cur);
     }
@@ -347,6 +355,26 @@ redraw_action_t screen_tick(uint32_t frame)
         }
     }
     return r;
+}
+
+const screen_t *screen_modal(void)
+{
+    screen_id_t st[SCR_STACK_MAX];
+    const uint8_t n = copy_stack(st);
+    if (n < 2) return NULL;
+    const screen_t *top = screen_get(st[n - 1]);
+    return (top != NULL && (top->flags & SCR_F_NO_BARS)) ? top : NULL;
+}
+
+const screen_t *screen_page(void)
+{
+    screen_id_t st[SCR_STACK_MAX];
+    const uint8_t n = copy_stack(st);
+    for (int i = (int)n - 1; i >= 1; i--) {
+        const screen_t *l = screen_get(st[i]);
+        if (l != NULL && (l->flags & SCR_F_OPAQUE) && !(l->flags & SCR_F_NO_BARS)) return l;
+    }
+    return NULL;
 }
 
 bool screen_popups_allowed(void)
