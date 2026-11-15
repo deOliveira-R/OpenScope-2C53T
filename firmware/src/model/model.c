@@ -633,6 +633,9 @@ prop_status_t prop_validate_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t *
     return PS_OK;
 }
 
+static bool g_batch;
+bool model_in_batch(void) { return g_batch; }
+
 prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t origin,
                                    prop_note_t *note, uint8_t *failed)
 {
@@ -641,11 +644,24 @@ prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t 
     prop_status_t s = prop_validate_pairs(pairs, n, failed);
     if (s != PS_OK) { model_note(note, n > MODEL_MAX_PAIRS ? "too many pairs" : "invalid pair"); return s; }
     prop_status_t worst = PS_OK;
+    uint8_t staged_at = n;                 /* the last pair a staged post belongs to */
+    g_batch = true;
     for (uint8_t i = 0; i < n; i++) {
-        s = prop_set_local(prop_by_id(pairs[i].id), pairs[i].value, origin, note);
-        if (s != PS_OK && s != PS_CLAMPED) { *failed = i; return s; }
+        const prop_desc_t *p = prop_by_id(pairs[i].id);
+        s = prop_set_local(p, pairs[i].value, origin, note);
+        if (s != PS_OK && s != PS_CLAMPED) {
+            g_batch = false;
+            (void)model_mask_commit(NULL);     /* what the pairs before it staged still goes out */
+            *failed = i;
+            return s;
+        }
         if (s == PS_CLAMPED) worst = PS_CLAMPED;
+        if (p->id == PROP_ID_MASK_TOLV || p->id == PROP_ID_MASK_TOLH) staged_at = i;
     }
+    g_batch = false;
+    /* Staged posts: once, with every value of this request in them. */
+    s = model_mask_commit(staged_at == n - 1u ? note : NULL);
+    if (s != PS_OK) { *failed = staged_at; return s; }
     *failed = n;
     return worst;
 }

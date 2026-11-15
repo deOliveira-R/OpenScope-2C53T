@@ -97,7 +97,33 @@ static void f_pers_off(void)                     { logf_("pers_off;"); persist_e
 static uint8_t f_pers_mode(void)                 { return g_pmode; }
 static bool f_mask_present(void)                 { return true; }
 static void f_mask_get(uint8_t *v, uint8_t *h, bool *s) { *v = g_tolv; *h = g_tolh; *s = g_stopfail; }
-static bool f_mask_tol(uint8_t v, uint8_t h)     { logf_("mask_tol(%u,%u);", v, h); if (nok()) return false; g_tolv = v; g_tolh = h; return true; }
+/* The acquisition task's mailbox (scope_mask.c): one slot, the newest
+ * request wins, applied when that task next polls. g_mask_slow: it does not
+ * poll until mask_acq_poll() (a parked or sleeping acquisition task);
+ * otherwise a post is applied within the op's wait, as on a running scope. */
+static bool     g_mask_slow, g_mbox_full, g_single_done;
+static uint8_t  g_mbox_v, g_mbox_h, g_mask_state_v;
+static unsigned g_mask_posts, g_mask_applied;
+static void mask_acq_poll(void)
+{
+    if (!g_mbox_full) return;
+    g_tolv = g_mbox_v; g_tolh = g_mbox_h; g_mbox_full = false; g_mask_applied++;
+}
+static bool f_mask_tol(uint8_t v, uint8_t h)
+{
+    logf_("mask_tol(%u,%u);", v, h);
+    if (nok()) return false;
+    g_mask_posts++;
+    g_mbox_v = v; g_mbox_h = h; g_mbox_full = true;
+    if (!g_mask_slow) mask_acq_poll();
+    return true;
+}
+static bool f_mask_tol_pending(void)             { return g_mbox_full; }
+static uint8_t f_mask_state(void)                { return g_mask_state_v; }
+static bool f_mask_hold(void)                    { return false; }
+static bool f_single_done(void)                  { return g_single_done; }
+static void f_latch(void)                        { logf_("latch;"); }
+static uint8_t f_trig_code(void)                 { return 77; }
 static bool f_mask_sf(bool on)                   { logf_("mask_sf(%d);", on); if (nok()) return false; g_stopfail = on; return true; }
 static void f_gen_wave(uint8_t w)                { logf_("gen_wave(%u);", w); siggen_set_waveform(w); }
 static void f_gen_freq(uint32_t f)               { logf_("gen_freq(%u);", (unsigned)f); siggen_set_frequency(f); }
@@ -127,6 +153,9 @@ static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .channel_enables = f_enables,
     .interleave_active = f_il_active, .vpos = f_vpos, .timebase = f_timebase, .roll = f_roll,
     .trigger_source = f_trig_src, .trigger_level = f_trig_lvl, .single_rearm = f_rearm,
+    .single_done = f_single_done, .paused_latch = f_latch, .trigger_code = f_trig_code,
+    .mask_state = f_mask_state, .mask_hold = f_mask_hold, .mask_pending = f_mask_tol_pending,
+    .mask_tol_pending = f_mask_tol_pending,
     .view_select = f_view, .persist_on = f_pers_on, .persist_off = f_pers_off,
     .persist_mode = f_pers_mode, .mask_present = f_mask_present, .mask_get = f_mask_get,
     .mask_tol = f_mask_tol, .mask_stopfail = f_mask_sf,
@@ -155,10 +184,13 @@ static void fresh(void)
     g_fail = false; g_fail_at = 0; g_calls = 0; g_busy = false; g_shell_persist = true; g_notes = 0;
     g_il_en = true; g_il_gain = 1000000; g_il_off = 0; g_il_skew = 0; g_il_knots = 0;
     g_tolv = 8; g_tolh = 2; g_stopfail = true;
+    g_mask_slow = false; g_mbox_full = false; g_single_done = false; g_mask_state_v = 0;
+    g_mask_posts = 0; g_mask_applied = 0;
     model_bind_hw(&k_fake);
     /* the persisted defaults on top (config_init_defaults differs from
      * scope_state_init: CH1 vdiv 3 vs 8, timebase 10 vs 12) */
     (void)model_load_defaults(PF_PERSIST | PF_SESSION | PF_USERCAL, NULL, false);
+    g_mask_posts = 0; g_mask_applied = 0;
     log_clear();
 }
 
@@ -952,6 +984,193 @@ static void test_display_pane(void)
     CHECK(prop_get(P(UI_ACH)) == 0);
 }
 
+/* ═══ B7: view.run, the cursor properties, the mask tolerances ═════ */
+
+static void test_view_run(void)
+{
+    scope_state_t *ss = scope_state_get();
+    prop_note_t n;
+    fresh();
+    CHECK(prop_get(P(VIEW_RUN)) == 1);
+    /* STOP latches the ranges of the record on screen (the OK key's inline
+     * side effect until B7), once; a second off does nothing */
+    CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_SHELL, &n) == PS_OK && !ss->running);
+    CHECKF(strcmp(g_log, "latch;") == 0, "stop: [%s]", g_log);
+    log_clear();
+    CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_SHELL, &n) == PS_OK && g_log[0] == '\0');
+    /* RUN in AUTO / NORMAL: the flag only */
+    CHECK(prop_set_local(P(VIEW_RUN), 1, ORIGIN_SHELL, &n) == PS_OK && ss->running && g_log[0] == '\0'
+          && n.text[0] == '\0');
+    /* the toggle the key uses */
+    CHECK(prop_step_local(P(VIEW_RUN), +1, ORIGIN_KEY, &n) == PS_OK && !ss->running);
+    CHECK(prop_step_local(P(VIEW_RUN), +1, ORIGIN_KEY, &n) == PS_OK && ss->running);
+    /* SINGLE, armed and waiting: on is the flag only, off stops (and latches) */
+    ss->trigger.mode = TRIG_SINGLE; ss->running = true; g_single_done = false;
+    log_clear();
+    CHECK(prop_set_local(P(VIEW_RUN), 1, ORIGIN_KEY, &n) == PS_OK && g_log[0] == '\0');
+    CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_KEY, &n) == PS_OK && strcmp(g_log, "latch;") == 0);
+    /* SINGLE, stopped: RUN re-arms */
+    log_clear();
+    CHECK(prop_set_local(P(VIEW_RUN), 1, ORIGIN_KEY, &n) == PS_OK && ss->running);
+    CHECKF(strcmp(g_log, "rearm;") == 0 && strcmp(n.text, "Await Trigger...") == 0, "[%s] [%s]", g_log, n.text);
+    /* SINGLE, its record taken (still "running"): a set of on re-arms; the
+     * value does not change, so no epoch and no note of change */
+    g_single_done = true; log_clear();
+    const uint32_t e = prop_group_epoch(PG_VIEW);
+    CHECK(prop_set_local(P(VIEW_RUN), 1, ORIGIN_SHELL, &n) == PS_OK && strcmp(g_log, "rearm;") == 0);
+    CHECK(prop_group_epoch(PG_VIEW) == e);
+    /* a self-cal run (ORIGIN_AUTO): the plain flag, no re-arm, no latch */
+    log_clear();
+    CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_AUTO, &n) == PS_OK && !ss->running && g_log[0] == '\0');
+    CHECK(prop_set_local(P(VIEW_RUN), 1, ORIGIN_AUTO, &n) == PS_OK && ss->running && g_log[0] == '\0');
+    /* busy: refused for a key or the shell, not for the run itself */
+    g_busy = true;
+    CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_SHELL, &n) == PS_BUSY && ss->running);
+    CHECK(prop_set_local(P(VIEW_RUN), 0, ORIGIN_AUTO, &n) == PS_OK && !ss->running);
+}
+
+static void test_cursor_props(void)
+{
+    cursor_state_t *c = &scope_state_get()->cursor;
+    prop_note_t n;
+    fresh();
+    /* the built-in defaults are scope_state_init()'s */
+    scope_state_t ref;
+    scope_state_init(&ref);
+    CHECK(prop_default(P(VIEW_CURV1)) == ref.cursor.v1_x && prop_default(P(VIEW_CURV2)) == ref.cursor.v2_x);
+    CHECK(prop_default(P(VIEW_CURH1)) == ref.cursor.h1_y && prop_default(P(VIEW_CURH2)) == ref.cursor.h2_y);
+    CHECK(prop_get(P(VIEW_CURV1)) == c->v1_x && prop_get(P(VIEW_CURH2)) == c->h2_y);
+    /* each property is its own line; a step is 4 px and saturates like
+     * scope_cursor_move() */
+    static const struct { const prop_desc_t *p; cursor_sel_t sel; int lo, hi; } k[4] = {
+        { P(VIEW_CURV1), CURSOR_SEL_V1, CURSOR_SCOPE_LEFT, CURSOR_SCOPE_RIGHT },
+        { P(VIEW_CURV2), CURSOR_SEL_V2, CURSOR_SCOPE_LEFT, CURSOR_SCOPE_RIGHT },
+        { P(VIEW_CURH1), CURSOR_SEL_H1, CURSOR_SCOPE_TOP,  CURSOR_SCOPE_BOT },
+        { P(VIEW_CURH2), CURSOR_SEL_H2, CURSOR_SCOPE_TOP,  CURSOR_SCOPE_BOT },
+    };
+    for (unsigned i = 0; i < 4; i++) {
+        for (int dir = -1; dir <= 1; dir += 2) {
+            for (int s = 0; s < 120; s++) {
+                scope_state_t was = *scope_state_get();
+                c->mode = CURSOR_BOTH; was.cursor.mode = CURSOR_BOTH;
+                c->active = k[i].sel;  was.cursor.active = k[i].sel;
+                CHECK(prop_step_local(k[i].p, dir, ORIGIN_KEY, &n) == PS_OK);
+                scope_state_t now = *scope_state_get();
+                *scope_state_get() = was;
+                scope_cursor_move((int16_t)(dir * 4));
+                CHECKF(memcmp(scope_state_get(), &now, sizeof now) == 0, "%s dir %d step %d", k[i].p->name, dir, s);
+            }
+            CHECK(prop_get(k[i].p) == (dir < 0 ? k[i].lo : k[i].hi));
+        }
+        CHECK(prop_set_local(k[i].p, 5000, ORIGIN_SHELL, &n) == PS_CLAMPED && prop_get(k[i].p) == k[i].hi);
+    }
+    /* the selection must be a line of the pair shown */
+    static const struct { cursor_mode_t m; bool ok[4]; } sel[4] = {
+        { CURSOR_OFF,        { false, false, false, false } },
+        { CURSOR_VERTICAL,   { true,  true,  false, false } },
+        { CURSOR_HORIZONTAL, { false, false, true,  true  } },
+        { CURSOR_BOTH,       { true,  true,  true,  true  } },
+    };
+    for (unsigned m = 0; m < 4; m++)
+        for (int v = 0; v < 4; v++) {
+            c->mode = sel[m].m;
+            c->active = (sel[m].m == CURSOR_HORIZONTAL) ? CURSOR_SEL_H1 : CURSOR_SEL_V1;
+            const cursor_sel_t was = c->active;
+            const prop_status_t s = prop_set_local(P(VIEW_CURSEL), v, ORIGIN_SHELL, &n);
+            CHECKF(s == (sel[m].ok[v] ? PS_OK : PS_REFUSED) &&
+                   c->active == (sel[m].ok[v] ? (cursor_sel_t)v : was), "cursel mode %u value %d", m, v);
+        }
+    /* view.cursor puts the selection on the pair's first line, as before */
+    CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_HORIZONTAL, ORIGIN_SHELL, &n) == PS_OK && c->active == CURSOR_SEL_H1);
+    CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_BOTH, ORIGIN_SHELL, &n) == PS_OK && c->active == CURSOR_SEL_V1);
+    /* read-only state the keys and scripts read */
+    CHECK(prop_get(P(TRIG_CODE)) == 77 && prop_set_local(P(TRIG_CODE), 1, ORIGIN_SHELL, &n) == PS_INVALID);
+    g_mask_state_v = 2;
+    CHECK(prop_get(P(MASK_STATE)) == 2 && strcmp(fmtv(P(MASK_STATE), 2), "ready") == 0);
+    CHECK(prop_get(P(MASK_HOLD)) == 0 && prop_get(P(MASK_PENDING)) == 0);
+}
+
+/* `set mask.tolv=3 mask.tolh=2` is ONE request to the acquisition task,
+ * whatever that task is doing. */
+static void test_mask_one_request(void)
+{
+    prop_note_t n;
+    uint8_t failed;
+    const prop_pair_t both[2] = { { PROP_ID_MASK_TOLV, 4 }, { PROP_ID_MASK_TOLH, 5 } };
+    const prop_pair_t rev[2]  = { { PROP_ID_MASK_TOLH, 7 }, { PROP_ID_MASK_TOLV, 12 } };
+
+    /* acquisition polling: one post, both values, applied */
+    fresh();
+    CHECK(prop_set_pairs_local(both, 2, ORIGIN_SHELL, &n, &failed) == PS_OK && failed == 2);
+    CHECKF(strcmp(g_log, "mask_tol(4,5);") == 0 && g_mask_posts == 1, "[%s]", g_log);
+    CHECK(g_tolv == 4 && g_tolh == 5 && prop_get(P(MASK_TOLV)) == 4 && prop_get(P(MASK_TOLH)) == 5);
+    CHECK(strcmp(n.text, "posted") == 0);
+
+    /* acquisition asleep across the whole request: still one post with
+     * both; the getters answer the pair asked for; mask.pending says so */
+    fresh();
+    g_mask_slow = true;
+    CHECK(prop_set_pairs_local(both, 2, ORIGIN_SHELL, &n, &failed) == PS_OK);
+    CHECKF(strcmp(g_log, "mask_tol(4,5);") == 0 && g_mask_posts == 1, "[%s]", g_log);
+    CHECK(g_tolv == 8 && g_tolh == 2);                               /* not applied yet */
+    CHECK(prop_get(P(MASK_TOLV)) == 4 && prop_get(P(MASK_TOLH)) == 5 && prop_get(P(MASK_PENDING)) == 1);
+    mask_acq_poll();
+    CHECK(g_tolv == 4 && g_tolh == 5 && g_mask_applied == 1 && prop_get(P(MASK_PENDING)) == 0);
+    CHECK(prop_get(P(MASK_TOLV)) == 4 && prop_get(P(MASK_TOLH)) == 5);
+
+    /* two separate sets while it sleeps (two lines, or two key presses):
+     * the second builds on the first's request, not on the applied pair
+     * (until B7 it posted (8,5): the old first value) */
+    fresh();
+    g_mask_slow = true;
+    CHECK(prop_set_local(P(MASK_TOLV), 4, ORIGIN_SHELL, &n) == PS_OK);
+    CHECK(prop_set_local(P(MASK_TOLH), 5, ORIGIN_SHELL, &n) == PS_OK);
+    CHECKF(strcmp(g_log, "mask_tol(4,2);mask_tol(4,5);") == 0, "[%s]", g_log);
+    mask_acq_poll();
+    CHECK(g_tolv == 4 && g_tolh == 5 && g_mask_applied == 1);        /* the mailbox kept the newest */
+    /* key steps in flight build on each other too (mask_bench H) */
+    CHECK(prop_step_local(P(MASK_TOLV), +1, ORIGIN_KEY, &n) == PS_OK);
+    CHECK(prop_step_local(P(MASK_TOLV), +1, ORIGIN_KEY, &n) == PS_OK);
+    mask_acq_poll();
+    CHECK(g_tolv == 8 && g_tolh == 5);
+
+    /* the order of the pairs does not matter, and other pairs may sit
+     * between them */
+    fresh();
+    g_mask_slow = true;
+    const prop_pair_t mixed[3] = { rev[0], { PROP_ID_TRIG_X, 100 }, rev[1] };
+    CHECK(prop_set_pairs_local(mixed, 3, ORIGIN_SHELL, &n, &failed) == PS_OK);
+    CHECKF(strcmp(g_log, "mask_tol(12,7);") == 0, "[%s]", g_log);
+    mask_acq_poll();
+    CHECK(g_tolv == 12 && g_tolh == 7 && prop_get(P(TRIG_X)) == 100);
+
+    /* over many random pairs and poll timings: what the acquisition task
+     * finally applies is the pair asked for, in one application */
+    unsigned seed = 12345u, bad = 0;
+    fresh();
+    for (int it = 0; it < 2000; it++) {
+        seed = seed * 1103515245u + 12345u;
+        const uint8_t v = (uint8_t)(((seed >> 8) % 33u) * 2u), h = (uint8_t)((seed >> 16) % 17u);
+        g_mask_slow = ((seed >> 24) & 1u) != 0u;
+        const prop_pair_t pr[2] = { { PROP_ID_MASK_TOLV, v }, { PROP_ID_MASK_TOLH, h } };
+        const unsigned posts = g_mask_posts, applied = g_mask_applied;
+        if (prop_set_pairs_local(pr, 2, ORIGIN_SHELL, &n, &failed) != PS_OK) bad++;
+        if (g_mask_posts != posts + 1u) bad++;
+        mask_acq_poll();
+        if (g_tolv != v || g_tolh != h || g_mask_applied != applied + 1u) bad++;
+        if (prop_get(P(MASK_TOLV)) != v || prop_get(P(MASK_TOLH)) != h) bad++;
+    }
+    CHECKF(bad == 0, "%u bad of 2000 random pairs", bad);
+
+    /* the post refused: NOT_SET, nothing staged is left behind */
+    fresh();
+    g_fail = true;
+    CHECK(prop_set_pairs_local(both, 2, ORIGIN_SHELL, &n, &failed) == PS_NOT_SET && failed == 1);
+    g_fail = false; log_clear();
+    CHECK(prop_get(P(MASK_TOLV)) == 8 && prop_get(P(MASK_TOLH)) == 2);
+    CHECK(prop_set_local(P(MASK_TOLH), 3, ORIGIN_SHELL, &n) == PS_OK && strcmp(g_log, "mask_tol(8,3);") == 0);
+}
+
 static void test_sizes(void)
 {
     printf("  host: sizeof(prop_desc_t) = %u, table = %u B (%u properties), epochs = %u B\n",
@@ -978,6 +1197,9 @@ int main(void)
     test_instruments();
     test_meter_link();
     test_display_pane();
+    test_view_run();
+    test_cursor_props();
+    test_mask_one_request();
     test_sizes();
     printf("test_model: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;

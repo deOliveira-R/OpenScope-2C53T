@@ -321,6 +321,9 @@ typedef struct {
     bool    (*trigger_source)(void);                   /* fpga_apply_trigger_source (reads state) */
     bool    (*trigger_level)(int16_t level);           /* fpga_apply_trigger_level              */
     void    (*single_rearm)(void);                     /* fpga_acq_single_rearm                 */
+    bool    (*single_done)(void);                      /* fpga_acq_single_done: SINGLE holds its record */
+    void    (*paused_latch)(void);                     /* scope_ui_paused_latch: the ranges at STOP */
+    uint8_t (*trigger_code)(void);                     /* fpga_acq_trig_code_get (trig.code)    */
     /* views and the shared pool (scope_apply.c) */
     bool    (*view_select)(uint8_t view);              /* scope_view_select; false = not in build */
     bool    (*persist_on)(uint8_t mode);               /* scope_apply_persist_on                */
@@ -331,6 +334,10 @@ typedef struct {
     void    (*mask_get)(uint8_t *tol_v, uint8_t *tol_h, bool *stop_on_fail);  /* pending or applied */
     bool    (*mask_tol)(uint8_t tol_v, uint8_t tol_h); /* scope_mask_post(REQ_TOL)              */
     bool    (*mask_stopfail)(bool on);                 /* scope_mask_post(REQ_STOPFAIL)         */
+    uint8_t (*mask_state)(void);                       /* scope_mask_state (mask.state)         */
+    bool    (*mask_hold)(void);                        /* scope_mask_hold_active (mask.hold)    */
+    bool    (*mask_pending)(void);                     /* a posted request is not acknowledged yet */
+    bool    (*mask_tol_pending)(void);                 /* ... and it is the last tolerance request */
     /* generator (signal_gen.c owns its state and TMR7/DMA2/DAC2) */
     void    (*gen_wave)(uint8_t wave);
     void    (*gen_freq)(uint32_t hz);
@@ -434,6 +441,19 @@ MODEL_PROP_FNS(view_mh)     MODEL_PROP_FNS(view_run)    MODEL_PROP_FNS(il_enable
 MODEL_PROP_FNS(il_gain)     MODEL_PROP_FNS(il_offset)   MODEL_PROP_FNS(il_skew)
 MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
+MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curpos)
+int32_t trig_code_get(const prop_desc_t *p);
+int32_t mask_state_get(const prop_desc_t *p);
+int32_t mask_hold_get(const prop_desc_t *p);
+int32_t mask_pending_get(const prop_desc_t *p);
+extern const char *const lbl_view_cursel[];
+extern const char *const lbl_mask_state[];
+/* One request of several pairs is being applied (prop_set_pairs_local): a
+ * setter that posts to another context may stage its value, and
+ * model_mask_commit() posts what was staged once, after the last pair (the
+ * two mask tolerances travel as ONE request to the acquisition task). */
+bool          model_in_batch(void);
+prop_status_t model_mask_commit(prop_note_t *note);
 bool vdiv_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 bool tb_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 bool meas_label(const prop_desc_t *p, int32_t bit, char *out, size_t n);

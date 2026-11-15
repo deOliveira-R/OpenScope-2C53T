@@ -313,6 +313,8 @@ prop_status_t trig_level_set(const prop_desc_t *p, int32_t v, uint8_t origin, pr
     return PS_OK;
 }
 
+int32_t trig_code_get(const prop_desc_t *p) { (void)p; return HW->trigger_code ? HW->trigger_code() : 0; }
+
 int32_t trig_x_get(const prop_desc_t *p) { (void)p; return scope_state_get()->trig_x; }
 void    trig_x_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->trig_x = (int16_t)v; }
 prop_status_t trig_x_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
@@ -504,10 +506,79 @@ prop_status_t view_mh_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_
 
 int32_t view_run_get(const prop_desc_t *p) { (void)p; return scope_state_get()->running ? 1 : 0; }
 void    view_run_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->running = (v != 0); }
+/* The OK key's RUN/STOP, for every route (`set view.run off` is the key):
+ *   - on, in SINGLE with the scope stopped or its one record taken: stock's
+ *     SINGLE is STOPPED after the capture (0x0802163E) and RUN re-arms it;
+ *     the value may already be on (the key path: a set of the value in
+ *     force still runs the setter);
+ *   - off: the ranges of the record on screen are latched for the zoom of
+ *     the held record (scope_ui_paused_latch, C14).
+ * ORIGIN_AUTO (a self-cal run starting or putting the user's state back)
+ * is the plain flag: no re-arm, no latch, as those runs always wrote it. */
 prop_status_t view_run_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
+    (void)p;
+    scope_state_t *ss = scope_state_get();
+    const bool was = ss->running;
+    if (origin == ORIGIN_AUTO) { ss->running = (v != 0); return PS_OK; }
+    if (v != 0) {
+        const bool rearm = ss->trigger.mode == TRIG_SINGLE &&
+                           (!was || (HW->single_done && HW->single_done()));
+        ss->running = true;
+        if (rearm) {
+            if (HW->single_rearm) HW->single_rearm();
+            model_note(note, "Await Trigger...");
+        }
+    } else {
+        ss->running = false;
+        if (was && HW->paused_latch) HW->paused_latch();
+    }
+    return PS_OK;
+}
+
+/* The cursor the arrows move. It must be a line of the pair view.cursor
+ * shows: v1 / v2 with the time pair, h1 / h2 with the level pair, any of
+ * the four with both. */
+const char *const lbl_view_cursel[4] = { "v1", "v2", "h1", "h2" };
+_Static_assert(CURSOR_SEL_V1 == 0 && CURSOR_SEL_V2 == 1 && CURSOR_SEL_H1 == 2 && CURSOR_SEL_H2 == 3,
+               "view.cursel values = cursor_sel_t; view.curv1..curh2 are arg 0..3");
+_Static_assert(CURSOR_SCOPE_LEFT == 0 && CURSOR_SCOPE_RIGHT == 319 && CURSOR_SCOPE_TOP == 18 &&
+               CURSOR_SCOPE_BOT == 224, "view.curv 0..319, view.curh 18..224 (model_table.h)");
+int32_t view_cursel_get(const prop_desc_t *p) { (void)p; return (int32_t)scope_state_get()->cursor.active; }
+void    view_cursel_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->cursor.active = (cursor_sel_t)v; }
+prop_status_t view_cursel_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin;
+    const cursor_mode_t m = scope_state_get()->cursor.mode;
+    const bool is_v = (v == CURSOR_SEL_V1 || v == CURSOR_SEL_V2);
+    const bool ok = (m == CURSOR_BOTH) || (m == CURSOR_VERTICAL && is_v) || (m == CURSOR_HORIZONTAL && !is_v);
+    if (!ok) {
+        model_note(note, m == CURSOR_OFF ? "cursors are off" : "not in view.cursor");
+        return PS_REFUSED;
+    }
+    view_cursel_store(p, v);
+    return PS_OK;
+}
+
+/* view.curv1 / curv2 (screen columns) and curh1 / curh2 (screen rows):
+ * arg = cursor_sel_t. Kept whatever view.cursor is (the lines keep their
+ * place while the cursors are off). */
+static uint16_t *curpos(const prop_desc_t *p)
+{
+    cursor_state_t *c = &scope_state_get()->cursor;
+    switch (p->arg) {
+    case CURSOR_SEL_V1: return &c->v1_x;
+    case CURSOR_SEL_V2: return &c->v2_x;
+    case CURSOR_SEL_H1: return &c->h1_y;
+    default:            return &c->h2_y;
+    }
+}
+int32_t view_curpos_get(const prop_desc_t *p) { return *curpos(p); }
+void    view_curpos_store(const prop_desc_t *p, int32_t v) { *curpos(p) = (uint16_t)v; }
+prop_status_t view_curpos_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
     (void)origin; (void)note;
-    view_run_store(p, v);
+    view_curpos_store(p, v);
     return PS_OK;
 }
 
@@ -603,7 +674,7 @@ prop_status_t il_skew_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_
     return PS_OK;
 }
 
-/* ═══ mask (the acquisition task applies posted requests) ════════════ */
+/* ═══ mask (the acquisition task applies posted requests) ══════════ */
 
 static void mask_now(uint8_t *v, uint8_t *h, bool *sf)
 {
@@ -611,15 +682,52 @@ static void mask_now(uint8_t *v, uint8_t *h, bool *sf)
     if (HW->mask_get) HW->mask_get(v, h, sf);
 }
 
-int32_t mask_tolv_get(const prop_desc_t *p) { (void)p; uint8_t v, h; bool s; mask_now(&v, &h, &s); return v; }
-int32_t mask_tolh_get(const prop_desc_t *p) { (void)p; uint8_t v, h; bool s; mask_now(&v, &h, &s); return h; }
+/* The two tolerances are ONE request (SCOPE_MASK_REQ_TOL carries both), and
+ * the acquisition task applies it later. So the pair a set builds on is the
+ * newest one asked for, not the applied one:
+ *   - staged: set in this request and not posted yet (a `set mask.tolv=3
+ *     mask.tolh=2` posts once, after its last pair: model_mask_commit);
+ *   - wanted: posted and not acknowledged yet (a second set, or a second
+ *     key press, builds on the request in flight; the mailbox keeps only
+ *     the newest request, so posting on top of it is exactly right);
+ *   - else what the mask reports.
+ * Until 2026-11-14 each set read the applied pair: with a slow acquisition
+ * task the second post carried the old first value. */
+static struct { bool staged, wanted; uint8_t v, h; } g_mask_tol;
+
+static void mask_tol_base(uint8_t *v, uint8_t *h)
+{
+    bool sf;
+    if (g_mask_tol.wanted && !(HW->mask_tol_pending && HW->mask_tol_pending()))
+        g_mask_tol.wanted = false;                   /* acknowledged: the mask has it */
+    if (g_mask_tol.staged || g_mask_tol.wanted) { *v = g_mask_tol.v; *h = g_mask_tol.h; return; }
+    mask_now(v, h, &sf);
+}
+
+int32_t mask_tolv_get(const prop_desc_t *p) { (void)p; uint8_t v, h; mask_tol_base(&v, &h); return v; }
+int32_t mask_tolh_get(const prop_desc_t *p) { (void)p; uint8_t v, h; mask_tol_base(&v, &h); return h; }
 int32_t mask_stopfail_get(const prop_desc_t *p) { (void)p; uint8_t v, h; bool s; mask_now(&v, &h, &s); return s; }
+
+prop_status_t model_mask_commit(prop_note_t *note)
+{
+    if (!g_mask_tol.staged) return PS_OK;
+    g_mask_tol.staged = false;
+    if (!HW->mask_tol || !HW->mask_tol(g_mask_tol.v, g_mask_tol.h)) {
+        model_note(note, "mask request NOT posted");
+        return PS_NOT_SET;
+    }
+    g_mask_tol.wanted = true;
+    model_note(note, "posted");
+    return PS_OK;
+}
 
 static prop_status_t mask_post_tol(int32_t tv, int32_t th, prop_note_t *note)
 {
-    if (!HW->mask_tol || !HW->mask_tol((uint8_t)tv, (uint8_t)th)) { model_note(note, "mask request NOT posted"); return PS_NOT_SET; }
-    model_note(note, "posted");
-    return PS_OK;
+    g_mask_tol.staged = true;
+    g_mask_tol.v = (uint8_t)tv;
+    g_mask_tol.h = (uint8_t)th;
+    if (model_in_batch()) { model_note(note, "posted"); return PS_OK; }
+    return model_mask_commit(note);
 }
 void mask_tolv_store(const prop_desc_t *p, int32_t x) { (void)p; (void)mask_post_tol(x, mask_tolh_get(p), NULL); }
 void mask_tolh_store(const prop_desc_t *p, int32_t x) { (void)p; (void)mask_post_tol(mask_tolv_get(p), x, NULL); }
@@ -640,3 +748,8 @@ prop_status_t mask_stopfail_set(const prop_desc_t *p, int32_t x, uint8_t origin,
     model_note(note, "posted");
     return PS_OK;
 }
+
+const char *const lbl_mask_state[3] = { "empty", "teaching", "ready" };
+int32_t mask_state_get(const prop_desc_t *p)   { (void)p; return HW->mask_state ? HW->mask_state() : 0; }
+int32_t mask_hold_get(const prop_desc_t *p)    { (void)p; return (HW->mask_hold && HW->mask_hold()) ? 1 : 0; }
+int32_t mask_pending_get(const prop_desc_t *p) { (void)p; return (HW->mask_pending && HW->mask_pending()) ? 1 : 0; }

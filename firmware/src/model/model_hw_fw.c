@@ -240,6 +240,9 @@ static bool op_trigger_level(int16_t level)
     return true;
 }
 static void op_single_rearm(void)                     { CTX(); fpga_acq_single_rearm(); }
+static bool op_single_done(void)                      { return fpga_acq_single_done(); }
+static void op_paused_latch(void)                     { CTX(); scope_ui_paused_latch(); }
+static uint8_t op_trigger_code(void)                  { return fpga_acq_trig_code_get(); }
 
 /* ═══ views and the shared pool (scope_apply.c) ══════════════════════ */
 
@@ -265,6 +268,7 @@ static uint8_t op_persist_mode(void)       { return (uint8_t)persist_get_mode();
  * still unacknowledged is remembered; fw_service() bumps the mask epoch when
  * it lands (a posted change, model.h model_touch). */
 static uint32_t g_mask_pending;
+static uint32_t g_mask_tol_seq;        /* the last tolerance request (0: none) */
 
 static bool mask_post_wait(scope_mask_req_t k, uint8_t a, uint8_t b)
 {
@@ -284,7 +288,22 @@ static void op_mask_get(uint8_t *tol_v, uint8_t *tol_h, bool *stop_on_fail)
     *tol_h = m.tol_h;
     *stop_on_fail = m.stop_on_fail;
 }
-static bool op_mask_tol(uint8_t v, uint8_t h) { CTX(); return mask_post_wait(SCOPE_MASK_REQ_TOL, v, h); }
+/* One post carries both tolerances. Its sequence is kept: until it is
+ * acknowledged the model builds the next set on this pair (props_scope.c). */
+static bool op_mask_tol(uint8_t v, uint8_t h)
+{
+    CTX();
+    const uint32_t seq = scope_mask_post(SCOPE_MASK_REQ_TOL, v, h, 0);
+    g_mask_tol_seq = seq;
+    for (int i = 0; i < 20 && !scope_mask_acked(seq); i++)
+        vTaskDelay(pdMS_TO_TICKS(5));
+    if (!scope_mask_acked(seq)) g_mask_pending = seq;
+    return true;                                     /* posted: the newest request wins */
+}
+static uint8_t op_mask_state(void)       { return (uint8_t)scope_mask_state(); }
+static bool    op_mask_hold(void)        { return scope_mask_hold_active(); }
+static bool    op_mask_pending(void)     { return g_mask_pending != 0u && !scope_mask_acked(g_mask_pending); }
+static bool    op_mask_tol_pending(void) { return g_mask_tol_seq != 0u && !scope_mask_acked(g_mask_tol_seq); }
 static bool op_mask_stopfail(bool on)         { CTX(); return mask_post_wait(SCOPE_MASK_REQ_STOPFAIL, on ? 1u : 0u, 0u); }
 
 /* ═══ generator (signal_gen.c owns TMR7/DMA2/DAC2) ═══════════════════ */
@@ -412,11 +431,13 @@ static const model_hw_ops_t k_fw_ops = {
     .vdiv = op_vdiv, .coupling = op_coupling, .channel_enables = op_channel_enables,
     .interleave_active = op_interleave_active, .vpos = op_vpos, .timebase = op_timebase,
     .roll = op_roll, .trigger_source = op_trigger_source, .trigger_level = op_trigger_level,
-    .single_rearm = op_single_rearm,
+    .single_rearm = op_single_rearm, .single_done = op_single_done, .paused_latch = op_paused_latch,
+    .trigger_code = op_trigger_code,
     .view_select = op_view_select, .persist_on = op_persist_on, .persist_off = op_persist_off,
     .persist_mode = op_persist_mode,
     .mask_present = op_mask_present, .mask_get = op_mask_get, .mask_tol = op_mask_tol,
-    .mask_stopfail = op_mask_stopfail,
+    .mask_stopfail = op_mask_stopfail, .mask_state = op_mask_state, .mask_hold = op_mask_hold,
+    .mask_pending = op_mask_pending, .mask_tol_pending = op_mask_tol_pending,
     .gen_wave = op_gen_wave, .gen_freq = op_gen_freq, .gen_amp = op_gen_amp,
     .gen_duty = op_gen_duty, .gen_out = op_gen_out, .gen_bootout = op_gen_bootout,
     .meter_func = op_meter_func, .meter_link_on = fpga_meter_link_on,
@@ -432,7 +453,6 @@ static const model_hw_ops_t k_fw_ops = {
 
 /* The reason fits a prop_note_t (23 characters). */
 static const struct { uint16_t id; const char *why; } k_unwired[] = {
-    { PROP_ID_VIEW_RUN,       "RUN/STOP: OK key (B7)" },     /* STOP latches the paused ranges inline   */
     /* Stored only: their record fields are carried by settings_store.c's own
      * image until M3 moves them onto the model, so a set here would neither
      * be saved nor read back from the record. */
