@@ -5665,7 +5665,16 @@ static void fpga_boot_upload(void)
     fslot_info_t info;
 
     fpga_boot_from_slot = 0;
-    if (flash_fs_raw_read_bytes(flash_region_table[FSLOT_REGION].start, hdr, sizeof hdr) == FLASH_FS_OK) {
+    /* Only in images that carry the bench shell: `fpga slot boot off` lives
+     * there, and the flag is on the W25Q, where a reflash does not clear it. An
+     * image without the shell must never be steered by a flag it cannot reset. */
+#if defined(FEATURE_BENCHSHELL) && FEATURE_BENCHSHELL
+    const bool slot_allowed = true;
+#else
+    const bool slot_allowed = false;
+#endif
+    if (slot_allowed &&
+        flash_fs_raw_read_bytes(flash_region_table[FSLOT_REGION].start, hdr, sizeof hdr) == FLASH_FS_OK) {
         fslot_classify_header(hdr, &info);
         if (info.state == FSLOT_VALID && info.boot) {
             uint8_t  buf[256];

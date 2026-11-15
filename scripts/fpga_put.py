@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Send an FPGA design to the scope's flash slot and, if asked, load it.
 
-    python3 scripts/fpga_put.py DESIGN.fs|DESIGN.bin [--name NAME] [--port PORT] [--load] [--force]
+    python3 scripts/fpga_put.py DESIGN.fs|DESIGN.bin [--name NAME] [--port PORT] [--load] [--boot] [--force]
 
 The firmware side is `fpga slot ...` and `fpga reload ...` (firmware/src/util/fpga_slot.h,
 fpga_reload() in fpga.c). The design is a raw Gowin configuration stream: a `.fs`
@@ -11,6 +11,9 @@ as `.bin`.
   fpga slot put <len> <crc32hex> <name>   erase the slot, start an upload
   fpga slot data <off> <hex>              48 bytes per line at the next offset
   fpga slot end                           the device re-reads the flash, checks the CRC, commits
+
+A new upload always clears the slot's boot flag; --boot sets it again, so the
+design also loads at power-on (`fpga slot boot off` returns to the compiled-in one).
 
 --load then sends `fpga reload slot`: the firmware power-cycles the FPGA (PC6) and
 uploads the stored design. That only works when the design now in the FPGA lets it
@@ -98,12 +101,19 @@ def main(argv=None):
     ap.add_argument("--port")
     ap.add_argument("--load", action="store_true", help="then `fpga reload slot`")
     ap.add_argument("--force", action="store_true", help="erase a slot range that holds unknown data")
+    ap.add_argument("--boot", action="store_true",
+                    help="also set the boot flag (a new upload always clears it): the design loads at power-on")
     a = ap.parse_args(argv)
     payload = load_stream(a.design)
     name = (a.name or a.design.rsplit("/", 1)[-1].rsplit(".", 1)[0]).replace(" ", "_")[:40]
     sh = Shell(a.port or default_port())
     print(sh.cmd("fpga slot info"))
     upload(sh, payload, name, a.force)
+    if a.boot:
+        r = sh.cmd("fpga slot boot on")
+        print(r)
+        if " ok" not in r:
+            return 1
     if a.load:
         r = sh.cmd("fpga reload slot", timeout=60.0)
         print(r)

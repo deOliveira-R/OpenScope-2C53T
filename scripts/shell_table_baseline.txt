@@ -49,6 +49,7 @@ fpga rate	cmd_fpga_rate	0x00	fpga rate [hexidx]              reg-0x01 rate index
 fpga rearm	cmd_fpga_rearm	0x00	fpga rearm [on|off]             Stock post-read re-arm (reg01) A/B toggle\r\n
 fpga rearmwait	cmd_fpga_rearmwait	0x00	fpga rearmwait [ms]             Settle after re-arm before next read (EXP-40)\r\n
 fpga reinit	cmd_fpga_reinit	0x04	fpga reinit [br][gap][close][f0|1|2][u<ms>][a-e<pin>][s2|sd[h|l]][tc<n>] Replay cfg\r\n    f=prelude frame: 0 split(stock) 1 combined 2 merge15+3B; u=pre-upload gap; k<br>=cmd-phase clk div; tc<n>=trailing clocks\r\n    pe=probe SYSTEM_EDIT_MODE after 0x15 (STATUS@/256); rl=send 0x3C RELOAD before prelude; reports 0x41 STATUS\r\n
+fpga reload	cmd_fpga_reload	0x00	fpga reload [builtin|slot]      Power-cycle the FPGA (PC6) and load a design, no unit power cycle\r\n
 fpga roll	cmd_fpga_roll	0x00	fpga roll [code <hex>|code stock]  Roll (tb.roll, tb.rollstep) status: fifo, op03, newest point; code = entry byte\r\n
 fpga scope acqmode	cmd_fpga_scope_acqmode	0x01	fpga scope acqmode              Send stock-like 0x20/0x21 block\r\n
 fpga scope autoset	cmd_fpga_scope_autoset	0x01	fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n
@@ -71,6 +72,7 @@ fpga scope trigger	cmd_fpga_scope_trigger	0x00	fpga scope trigger              T
 fpga scope wake	cmd_fpga_scope_wake	0x01	fpga scope wake                 Meter wake preamble then scope cfg\r\n
 fpga scope zero	cmd_fpga_scope_zero	0x00	fpga scope zero                 Record mean vs each channel's 0 V, and the offset DAC in force\r\n
 fpga selftest	cmd_fpga_selftest	0x01	fpga selftest                   Precondition table: SPI3 clk, IDCODE anchor,\r\n                                USART2 state, every driven pin's mode+level\r\n
+fpga slot	cmd_fpga_slot	0x00	fpga slot [info|put <len> <crc32hex> <name> [force]|data <off> <hex>|pos|end|boot on|off|clear]\r\n                                FPGA design stored on the flash (scripts/fpga_put.py)\r\n
 fpga stock base2	cmd_fpga_stock_base2	0x01	fpga stock base2               Seed visible state 2 scope posture\r\n
 fpga stock bridge dynamic	cmd_fpga_stock_bridge_dynamic	0x00	fpga stock bridge dynamic [ch1|ch2|both]  Probe post-13/14 0x050x path\r\n
 fpga stock bridge fixed	cmd_fpga_stock_bridge_fixed	0x01	fpga stock bridge fixed        Probe post-13/14 fixed 0x0501 path\r\n
