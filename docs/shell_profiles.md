@@ -48,7 +48,9 @@ Instrument state is the property model (`firmware/src/model/`), and the shell re
 | `get <prop\|glob> [...]` | values: `get ch1.vdiv`, `get trig.*`, `get *`. One line per property, `name=value  # label` |
 | `set <prop> <value>`, `set p=v [p=v ...]` | a change, applied by the input task exactly as a key applies it. A value is a label (`normal`, `10x`, `on`), a number in the property's unit (`gen.amp 1.5`), or a step (`+=1`, `-=5`). Up to 8 pairs, of which at most 4 change hardware (`list` marks them `HW`), applied in the order given; more answers `INVALID (more than 4 HW pairs); nothing applied` |
 | `list [prefix\|glob]` | every property: name, type, range, value, flags |
-| `describe <prop>` | range or labels, default, unit, where it is saved, the owner call |
+| `list changed [prefix\|glob]`, `get changed` | only the properties whose value is not the built-in default (with the default; as `get` lines) |
+| `describe <prop>` | range or labels, built-in default, unit, where it is saved, what a reset does to it, the owner call |
+| `reset settings CONFIRM` | "Reset to defaults": the built-in defaults over the user settings, applied through the setters and saved; never calibration, gallery or logo ([arch/settings_defaults.md](arch/settings_defaults.md)) |
 
 and the keys with `ui press <KEY> [n]`, `ui long <KEY>`, `ui seq <tok> ...`; `ui screen` is one `key=value`
 line that says where the UI is. `set` answers one line per pair:
@@ -68,13 +70,14 @@ Anything but `OK` / `CLAMPED` means the pair was not applied (`scripts/bench.py`
 A change whose owner is another task is posted (`meter.func`, `mask.*`, `sys.mode`): the reply says
 `; posted` and the value in force is read with `get` (or `meter state`, `mask`).
 
-## Core (62 rows, in every image; `stream` only with the stream feature)
+## Core (63 rows, in every image; `stream` only with the stream feature)
 
 `help`, `?`, `version`, `features`, `status`, `fwload`, `fwstat`, `fwapply`, `fwswap`, `siggen`, `flash jedec`,
 `flash read`, `flash dump`, `can decode`, `can stats`, `can screen`, `cal status`, `cal backup`, `cal restore`,
 `cal page`, `cal base`, `cal user`, `fpga scope autoset`, `fpga scope basecal`, `fpga scope center50`,
 `fpga scope selfcal`, `screen dump`, `screen dumpbin`, `screenshot`, `logo`, `usb`, `screen shadow`,
-`fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `get`, `set`, `list`, `describe`,
+`fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `reset settings`, `get`, `set`,
+`list`, `describe`,
 `stream`, `ui press`, `ui long`, `ui seq`, `ui screen`, `mask`, `fpga edgefilter`, `fpga cfgsettle`,
 `fpga interleave`, `fpga unrotate`, `fpga scope trigger`, `fpga roll`, `fpga scope center`, `meter state`,
 `meter relays`, `persist`, `batt`, `meter auto`, `ui dump`, `reboot bootloader`, `uptime`, `tasks`

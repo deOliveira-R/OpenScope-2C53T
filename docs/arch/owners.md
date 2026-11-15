@@ -82,3 +82,41 @@ The scanner is text-based. It cannot see addresses computed at run time or point
 example the GPIOD/GPIOE address built inside `main.c`'s `_GPIO_CFG`); those are reviewed by hand. A macro is
 judged where it is defined, not where it is used: a write macro defined in an owner file and used elsewhere is
 not seen at the use.
+
+## The sibling ratchet: state owners
+
+The same idea one level up. Every user setting is a property (`firmware/src/model/model_table.h`) whose value
+lives in a variable the firmware already had: a field of `scope_state_t`, a `main.c` global such as
+`meter_submode`. The property's setter is the one place that may change it at run time, because the setter is
+what applies the value through the owner driver, bumps the change epoch and notes the settings record. A store
+anywhere else (`ss->timebase_idx = x` in a key handler or a shell command) changes the value behind the
+model's back: nothing is applied, nothing repaints, nothing is saved, and `get` reports a value that is not in
+force.
+
+- `scripts/check_state_owners.py`: the checker. It counts stores (every assignment form, as above) to the
+  fields of `scope_state_t`, `channel_state_t`, `trigger_state_t` and `cursor_state_t` that back a property,
+  where the expression is known to be scope state (a pointer the function declared with the type, a helper
+  that returns one, the member chains `->ch1.`, `->trigger.`, `->cursor.`), and to the globals the properties
+  wrap. A definition with an initialiser at file scope is the built-in default, not a store. Its header lists
+  what it does not see (whole-struct copies, a store through a pointer to the field, and owner modules that
+  keep their state behind setter functions).
+- `scripts/state_owners.txt`: who may store. `*  model/` (the setters and store hooks), `ui/scope_state.c`
+  (the pure step helpers and the initialiser), and per state the owner function a setter reaches through the
+  hardware ops (`sys.mode` in `enter_mode`, `view.mode` in `scope_view_select`, `chN.pos` in `scope_vpos_set`).
+- `scripts/state_owners_baseline.txt`: the stores that exist today, `file<TAB>function<TAB>state<TAB>count`.
+
+```sh
+make check-state-owners          # from firmware/: the self-test, then the scan
+python3 -I scripts/check_state_owners.py --top 10      # from the repository root: the files with the most
+python3 -I scripts/check_state_owners.py --census      # every store, owned or not
+```
+
+`NEW` fails (exit 1): set the property instead, `prop_set_local()` on the input task, `prop_request()` or
+`prop_post()` from another task. `FIXED` is good news: run `--update-baseline` in the same commit. A reviewed
+exception is a line comment `STATE-OWNER-EXEMPT(<reason>)`.
+
+## The gate
+
+From `firmware/`, before a branch is merged: the images (`make app-coldtrace-meter`, `make`, `make app-full`,
+`make emu`), `make test-all`, `make check-owners` and `make check-state-owners`; the two ratchets must report
+`0 new`.
