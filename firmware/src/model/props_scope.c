@@ -58,10 +58,12 @@ void    ch_enabled_store(const prop_desc_t *p, int32_t v) { chan(p)->enabled = (
  * THE TRIGGER SOURCE FOLLOWS THE CHANNEL THAT IS ON. A source on a channel
  * that goes off moves to the other one (stock flips ms[0x16] and sends op06
  * for the same reason, 0x080235E8). The rule is this setter's: trig.source
- * is stored and applied here, through trig.source's own op (reg 0x06, live
- * on the scope, stored and re-sent on its return elsewhere), BEFORE the
- * routing moves, which is the order the driver used when it did this
- * itself. A write that fails keeps everything as it was. */
+ * is stored here and reg 0x06 written (model_hw_ops_t.trigger_source_follow)
+ * BEFORE the routing moves. These are the writes, in the order, that
+ * fpga_apply_channel_enables() made when it did this behind the model: reg
+ * 0x06 at once in every posture, like the routing itself, and its result
+ * not the channel's (a write that did not land is put right when the scope's
+ * registers are next sent). */
 prop_status_t ch_enabled_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     channel_state_t *c = chan(p);
@@ -82,18 +84,13 @@ prop_status_t ch_enabled_set(const prop_desc_t *p, int32_t v, uint8_t origin, pr
     if (src == TRIG_SRC_CH1 && !ss->ch1.enabled) src = TRIG_SRC_CH2;
     if (src != src_was) {
         ss->trigger.source = src;
-        if (HW->trigger_source && !HW->trigger_source()) {
-            ss->trigger.source = src_was;
-            c->enabled = was;
-            model_note(note, "reg 0x06 NOT SET");
-            return PS_NOT_SET;
-        }
+        if (HW->trigger_source_follow) (void)HW->trigger_source_follow();
     }
     if (HW->channel_enables && !HW->channel_enables()) {
         c->enabled = was;
         if (src != src_was) {
             ss->trigger.source = src_was;
-            if (HW->trigger_source) (void)HW->trigger_source();
+            if (HW->trigger_source_follow) (void)HW->trigger_source_follow();
         }
         model_note(note, "Keep one CH on");
         return PS_REFUSED;

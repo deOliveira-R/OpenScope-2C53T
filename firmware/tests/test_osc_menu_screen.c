@@ -89,7 +89,7 @@ static void boot(void)
     env_fresh(MODE_OSCILLOSCOPE);
     t_ops = env_ops;
     t_ops.channel_enables = f_channel_enables; t_ops.interleave_active = f_interleave;
-    t_ops.coupling = f_coupling; t_ops.trigger_source = f_trigsrc; t_ops.single_rearm = f_rearm;
+    t_ops.coupling = f_coupling; t_ops.trigger_source = f_trigsrc; t_ops.trigger_source_follow = f_trigsrc; t_ops.single_rearm = f_rearm;
     t_ops.view_select = f_view; t_ops.persist_on = f_persist_on; t_ops.persist_off = f_persist_off;
     t_ops.persist_mode = f_persist_mode; t_ops.roll = f_roll;
     model_bind_hw(&t_ops);

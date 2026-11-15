@@ -380,6 +380,9 @@ typedef struct {
     bool    (*vdiv)(uint8_t ch, uint8_t idx);          /* fpga_apply_vdiv + scope_vpos_apply_ch */
     bool    (*coupling)(uint8_t ch, uint8_t coupling); /* fpga_apply_coupling (relay readback)  */
     bool    (*channel_enables)(void);                  /* fpga_apply_channel_enables (reads state) */
+    bool    (*trigger_source_follow)(void);            /* reg 0x06 for a source the chN.enabled
+                                                        * rule moved: fpga_apply_trigger_source in
+                                                        * every posture, as the routing is        */
     bool    (*interleave_active)(void);                /* fpga_interleave_active                */
     bool    (*vpos)(uint8_t ch, int16_t pos);          /* scope_vpos_set; false = marker only   */
     bool    (*timebase)(uint8_t code);                 /* fpga_apply_timebase                   */

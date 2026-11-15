@@ -207,7 +207,7 @@ static void boot(void)
     t_ops = env_ops;
     t_ops.vdiv = d_vdiv; t_ops.coupling = d_coupling; t_ops.channel_enables = d_enables;
     t_ops.interleave_active = f_il; t_ops.vpos = d_vpos; t_ops.timebase = d_timebase; t_ops.roll = d_roll;
-    t_ops.trigger_source = f_trigsrc; t_ops.trigger_level = d_trig_level; t_ops.single_rearm = d_rearm;
+    t_ops.trigger_source = f_trigsrc; t_ops.trigger_source_follow = f_trigsrc; t_ops.trigger_level = d_trig_level; t_ops.single_rearm = d_rearm;
     t_ops.single_done = f_single_done; t_ops.paused_latch = d_latch; t_ops.trigger_code = f_trig_code;
     t_ops.view_select = f_view; t_ops.persist_on = f_persist_on; t_ops.persist_off = f_persist_off;
     t_ops.persist_mode = f_persist_mode;

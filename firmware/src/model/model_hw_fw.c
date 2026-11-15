@@ -194,19 +194,20 @@ static bool op_vdiv(uint8_t ch, uint8_t idx)
     return true;
 }
 static bool op_coupling(uint8_t ch, uint8_t c)        { CTX(); return fpga_apply_coupling(ch, c); }
-/* The converter routing (PC1/PC2) is live in every posture. The setter has
- * moved the trigger source off a channel that went off just before, through
- * op_trigger_source: with the scope front end not live that was stored, so
- * the registers are re-sent on the scope's return (marked here too, as
- * always); the answer of the chN.enabled set stays live, because the
- * routing is. */
+/* The converter routing (PC1/PC2) is live in every posture. When a channel
+ * going off moves the trigger source, the setter has reg 0x06 written just
+ * before (op_trigger_source_follow), at once in every posture, as
+ * fpga_apply_channel_enables did itself until B8; with the scope front end
+ * not live that write is as unproven as a stored trigger set, so the
+ * registers are re-sent on the scope's return too (the answer stays live:
+ * the routing is). */
+static bool op_trigger_source_follow(void)            { CTX(); return fpga_apply_trigger_source(); }
 static bool op_channel_enables(void)
 {
     CTX();
     const bool live = scope_fe_live();
     if (!fpga_apply_channel_enables()) return false;
     if (!live) scope_regs_mark();
-    model_hw_deferred(NULL);
     return true;
 }
 static bool op_interleave_active(void)                { return fpga_interleave_active(); }
@@ -446,6 +447,7 @@ static void op_note_change(void)
 
 static const model_hw_ops_t k_fw_ops = {
     .vdiv = op_vdiv, .coupling = op_coupling, .channel_enables = op_channel_enables,
+    .trigger_source_follow = op_trigger_source_follow,
     .interleave_active = op_interleave_active, .vpos = op_vpos, .timebase = op_timebase,
     .roll = op_roll, .trigger_source = op_trigger_source, .trigger_level = op_trigger_level,
     .single_rearm = op_single_rearm, .single_done = op_single_done, .paused_latch = op_paused_latch,

@@ -2734,6 +2734,10 @@ static void fpga_send_meter_poll_sequence(uint8_t submode)
 static TaskHandle_t       meter_poll_handle;
 static volatile int16_t   meter_mode_request = -1;
 
+/* A function change asked of the poll task has not been taken up yet. With
+ * fpga_meter_transition_busy(): the meter link is (about to be) switching. */
+bool fpga_meter_mode_request_pending(void) { return meter_mode_request >= 0; }
+
 void fpga_request_meter_mode(uint8_t submode)
 {
 #if FPGA_WARM_HANDOFF_TEST && !FPGA_METER_SUBMODES
@@ -4182,10 +4186,10 @@ float fpga_record_sample_rate(void)
 /* Apply the channel enables to the converter routing (mask 1/2/3 on PC1/PC2).
  * The record in flight is dropped: it was captured with the old routing.
  * Refuses both-off. The trigger source is not this function's: the
- * chN.enabled setter moves it off a channel that goes off, through
- * trig.source's own apply, before it calls this (model/props_scope.c
- * ch_enabled_set; stock flips ms[0x16] + op06 for the same reason,
- * 0x080235E8). */
+ * chN.enabled setter moves it off a channel that goes off and has
+ * fpga_apply_trigger_source() write reg 0x06 before it calls this
+ * (model/props_scope.c ch_enabled_set; stock flips ms[0x16] + op06 for the
+ * same reason, 0x080235E8). */
 bool fpga_apply_channel_enables(void)
 {
     const scope_state_t *ss = scope_state_get();

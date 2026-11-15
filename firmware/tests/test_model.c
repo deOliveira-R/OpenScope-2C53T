@@ -172,7 +172,7 @@ static bool f_shell_persist(void)                { return g_shell_persist; }
 static void f_note(void)                         { g_notes++; }
 
 static const model_hw_ops_t k_fake = {
-    .vdiv = f_vdiv, .coupling = f_coupling, .channel_enables = f_enables,
+    .vdiv = f_vdiv, .coupling = f_coupling, .channel_enables = f_enables, .trigger_source_follow = f_trig_src,
     .interleave_active = f_il_active, .vpos = f_vpos, .timebase = f_timebase, .roll = f_roll,
     .trigger_source = f_trig_src, .trigger_level = f_trig_lvl, .single_rearm = f_rearm,
     .single_done = f_single_done, .paused_latch = f_latch, .trigger_code = f_trig_code,
@@ -1058,8 +1058,9 @@ static void test_view_run(void)
  * trigger.source and wrote reg 0x06 itself, then the mask. old_enables() is
  * that function, transcribed, on the same fake registers. The setter must
  * leave the same state and make the same register writes in the same order
- * for every combination, and now also says so (the trig group's epoch, the
- * settings note: trig.source is saved, chN.enabled is not). */
+ * for every combination, also when the reg 0x06 write does not land (its
+ * result was never the channel's), and now also says so (the trig group's
+ * epoch, the settings note: trig.source is saved, chN.enabled is not). */
 static bool old_enables(void)
 {
     scope_state_t *ss = scope_state_get();
@@ -1093,7 +1094,8 @@ static void test_enable_moves_trigger(void)
     for (int e2 = 0; e2 < 2; e2++)
     for (int src = 0; src < 2; src++)
     for (unsigned ch = 0; ch < 2; ch++)
-    for (int want = 0; want < 2; want++) {
+    for (int want = 0; want < 2; want++)
+    for (int reg_fails = 0; reg_fails < 2; reg_fails++) {
         if (!e1 && !e2) continue;                              /* never a state */
         char old_log[sizeof g_log];
         /* the driver's way */
@@ -1109,7 +1111,12 @@ static void test_enable_moves_trigger(void)
         ss->ch1.enabled = e1; ss->ch2.enabled = e2; ss->trigger.source = (trigger_source_t)src;
         log_clear();
         const uint32_t et = prop_group_epoch(PG_TRIG);
+        /* the reg 0x06 write refused (it is the first owner call when the
+         * source moves): the driver ignored that, and so does the setter */
+        const bool will_move = (src == TRIG_SRC_CH2) ? (ch == 1 && !want && e2) : (ch == 0 && !want && e1);
+        if (reg_fails && will_move) { g_fail_at = 1; g_calls = 0; }
         const prop_status_t sn = prop_set_local(ch ? P(CH2_ENABLED) : P(CH1_ENABLED), want, ORIGIN_KEY, &n);
+        g_fail_at = 0;
         const bool moved = (ss->trigger.source != (trigger_source_t)src);
         cases++;
         if (sn != so || strcmp(old_log, g_log) != 0 || ss->ch1.enabled != o1 || ss->ch2.enabled != o2 ||
@@ -1120,7 +1127,7 @@ static void test_enable_moves_trigger(void)
         /* and the model knows: the epoch and the note follow the moved source */
         if (moved != (prop_group_epoch(PG_TRIG) != et) || (unsigned)moved != g_notes) same = 0;
     }
-    CHECKF(same && cases == 24, "%d cases", cases);
+    CHECKF(same && cases == 48, "%d cases", cases);
 
     /* the write order, spelled: the source first, then the routing */
     fresh(); g_log_regs = true;
@@ -1134,15 +1141,20 @@ static void test_enable_moves_trigger(void)
     log_clear(); g_notes = 0;
     CHECK(prop_set_local(P(CH2_ENABLED), 1, ORIGIN_KEY, &n) == PS_OK && ss->trigger.source == TRIG_SRC_CH1);
     CHECKF(strcmp(g_log, "mask=3;") == 0 && g_notes == 0, "[%s]", g_log);
-    /* reg 0x06 refused: nothing changes, the routing is not touched */
+    /* reg 0x06 refused: as before B8 the channel still goes off and the
+     * source still moves (the registers are sent again with the scope's) */
     (void)prop_set_local(P(TRIG_SOURCE), TRIG_SRC_CH2, ORIGIN_SHELL, NULL);
     log_clear(); g_notes = 0;
     g_fail_at = 1; g_calls = 0;
-    CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_KEY, &n) == PS_NOT_SET && ss->ch2.enabled &&
-          ss->trigger.source == TRIG_SRC_CH2 && strcmp(n.text, "reg 0x06 NOT SET") == 0);
-    CHECKF(strcmp(g_log, "reg06=0;") == 0 && g_notes == 0, "[%s]", g_log);
-    /* the routing refused after the source moved: both go back, reg 0x06 too */
-    log_clear();
+    CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_KEY, &n) == PS_OK && !ss->ch2.enabled &&
+          ss->trigger.source == TRIG_SRC_CH1);
+    CHECKF(strcmp(g_log, "reg06=0;mask=1;") == 0 && g_notes == 1, "[%s]", g_log);
+    g_fail_at = 0;
+    /* the routing refused after the source moved (the driver cannot, but
+     * for both off): both go back, reg 0x06 too */
+    (void)prop_set_local(P(CH2_ENABLED), 1, ORIGIN_KEY, &n);
+    (void)prop_set_local(P(TRIG_SOURCE), TRIG_SRC_CH2, ORIGIN_SHELL, NULL);
+    log_clear(); g_notes = 0;
     g_fail_at = 2; g_calls = 0;
     CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_KEY, &n) == PS_REFUSED && ss->ch2.enabled &&
           ss->trigger.source == TRIG_SRC_CH2);
@@ -1154,11 +1166,15 @@ static void test_enable_moves_trigger(void)
     log_clear();
     CHECK(prop_set_local(P(CH1_ENABLED), 0, ORIGIN_KEY, &n) == PS_REFUSED && ss->ch1.enabled &&
           strcmp(n.text, "Keep one CH on") == 0 && g_log[0] == '\0');
-    /* a self-cal run's set (ORIGIN_AUTO) moves it the same way, without a settings note */
+    /* a self-cal run's set (ORIGIN_AUTO) moves it the same way, and is never
+     * refused over reg 0x06 (a run does not look at the answer) */
     fresh(); g_log_regs = true;
     (void)prop_set_local(P(TRIG_SOURCE), TRIG_SRC_CH2, ORIGIN_SHELL, NULL);
     log_clear(); g_notes = 0;
-    CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_AUTO, &n) == PS_OK && ss->trigger.source == TRIG_SRC_CH1);
+    g_fail_at = 1; g_calls = 0;
+    CHECK(prop_set_local(P(CH2_ENABLED), 0, ORIGIN_AUTO, &n) == PS_OK && !ss->ch2.enabled &&
+          ss->trigger.source == TRIG_SRC_CH1);
+    g_fail_at = 0;
     CHECKF(strcmp(g_log, "reg06=0;mask=1;") == 0, "[%s]", g_log);
 }
 

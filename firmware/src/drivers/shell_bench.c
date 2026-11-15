@@ -2145,9 +2145,20 @@ void cmd_fpga_meter_reinit(const char *args)
         }
     }
 
-    /* The function is a property (meter.func): set through the input task,
-     * then the transport re-initialised on it. */
-    if (submode != meter_submode && !model_shell_request(PROP_ID_METER_FUNC, (int32_t)submode)) return;
+    /* The function is a property (meter.func): set through the input task.
+     * With the meter link up that set has the meter task switch the function
+     * in the background, so wait for it to finish before the transport is
+     * re-initialised from here: one actor on the meter link at a time. */
+    if (submode != meter_submode) {
+        if (!model_shell_request(PROP_ID_METER_FUNC, (int32_t)submode)) return;
+        int left = 300;                             /* 6 s: a transition takes up to ~4.5 s */
+        while (left-- > 0 && (fpga_meter_mode_request_pending() || fpga_meter_transition_busy()))
+            vTaskDelay(pdMS_TO_TICKS(20));
+        if (fpga_meter_mode_request_pending() || fpga_meter_transition_busy()) {
+            usb_send_str("Meter still switching function after 6 s: not re-initialised\r\n");
+            return;
+        }
+    }
     fpga_meter_reinit((uint8_t)submode);
     usb_debug_printf("Meter reinit complete: submode %lu (%s)\r\n",
                      submode, meter_submode_name((uint8_t)submode));

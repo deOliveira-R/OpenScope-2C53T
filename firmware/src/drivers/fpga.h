@@ -835,6 +835,9 @@ extern volatile uint32_t meter_transition_frame_skip_count;
 
 void fpga_meter_adc_diag_reset(void);
 bool fpga_meter_transition_busy(void);
+/* A function change asked of the meter poll task (fpga_request_meter_mode)
+ * is still waiting to be taken up. */
+bool fpga_meter_mode_request_pending(void);
 
 /*
  * Set FPGA active mode (PB11).
