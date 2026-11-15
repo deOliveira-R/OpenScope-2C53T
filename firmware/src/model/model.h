@@ -249,6 +249,18 @@ prop_status_t prop_validate_pairs(const prop_pair_t *pairs, uint8_t n, uint8_t *
 prop_status_t prop_set_pairs_local(const prop_pair_t *pairs, uint8_t n, uint8_t origin,
                                    prop_note_t *note, uint8_t *failed);
 
+/* One request of several pairs (EXECUTOR ONLY): between begin and end a
+ * setter that posts to another context stages its value instead, and end
+ * posts what was staged ONCE, with every value of the request in it: the
+ * two mask tolerances travel as one SCOPE_MASK_REQ_TOL to the acquisition
+ * task whatever that task is doing (model_prop_batches says which
+ * properties stage). end returns PS_OK, or PS_NOT_SET when the post was
+ * refused (the note says so). prop_set_pairs_local brackets its pairs with
+ * them; so does the executor's own loop (model_exec.c). */
+void          model_batch_begin(void);
+prop_status_t model_batch_end(prop_note_t *note);
+bool          model_prop_batches(const prop_desc_t *p);
+
 /* STORE. A store hook writes the backing state with no rules and no
  * settings note. Where the model can reach the variable (scope_state_t,
  * main.c globals, sys_prefs, theme, meas_select, the stored-only block) it
@@ -449,10 +461,6 @@ int32_t mask_hold_get(const prop_desc_t *p);
 int32_t mask_pending_get(const prop_desc_t *p);
 extern const char *const lbl_view_cursel[];
 extern const char *const lbl_mask_state[];
-/* One request of several pairs is being applied (prop_set_pairs_local): a
- * setter that posts to another context may stage its value, and
- * model_mask_commit() posts what was staged once, after the last pair (the
- * two mask tolerances travel as ONE request to the acquisition task). */
 bool          model_in_batch(void);
 prop_status_t model_mask_commit(prop_note_t *note);
 bool vdiv_label(const prop_desc_t *p, int32_t v, char *out, size_t n);

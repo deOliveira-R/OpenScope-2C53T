@@ -155,7 +155,25 @@ static unsigned g_notes;                     /* settings_store_note_change calls
 static bool f_shell_persist(void)             { return g_shell_persist; }
 static void f_note_change(void)               { g_notes++; }
 
+/* The mask's mailbox: the acquisition task applies the newest request when
+ * it next polls (mask_poll); until then it is pending. */
+static uint8_t  g_tolv = 8, g_tolh = 2, g_mbox_v, g_mbox_h;
+static bool     g_mbox_full, g_mask_post_ok = true;
+static unsigned g_mask_posts;
+static void mask_poll(void) { if (g_mbox_full) { g_tolv = g_mbox_v; g_tolh = g_mbox_h; g_mbox_full = false; } }
+static void f_mask_get(uint8_t *v, uint8_t *h, bool *s) { *v = g_tolv; *h = g_tolh; *s = true; }
+static bool f_mask_tol(uint8_t v, uint8_t h)
+{
+    logf_("mask_tol(%u,%u);", v, h);
+    if (!g_mask_post_ok) return false;
+    g_mask_posts++; g_mbox_v = v; g_mbox_h = h; g_mbox_full = true;
+    return true;
+}
+static bool f_mask_tol_pending(void) { return g_mbox_full; }
+
 static const model_hw_ops_t k_fake = {
+    .mask_get = f_mask_get, .mask_tol = f_mask_tol, .mask_tol_pending = f_mask_tol_pending,
+    .mask_pending = f_mask_tol_pending,
     .vdiv = f_vdiv, .coupling = f_coupling, .timebase = f_timebase,
     .gen_freq = f_gen_freq, .gen_amp = f_gen_amp, .gen_out = f_gen_out, .meter_func = f_meter_func,
     .roll = f_roll, .trigger_source = f_trig_src, .trigger_level = f_trig_level,
@@ -601,6 +619,55 @@ static void test_shell_get_roundtrip(void)
     for (unsigned i = 0; i < n_out && i < 64; i++) CHECK(strlen(out[i]) < 128);
 }
 
+/* `set mask.tolv=.. mask.tolh=..` through the shell route and the executor:
+ * ONE request to the acquisition task, whatever it is doing. */
+static void test_mask_one_request(void)
+{
+    fresh(1);
+    g_tolv = 8; g_tolh = 2; g_mbox_full = false; g_mask_posts = 0; g_mask_post_ok = true;
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("mask.tolv=12 mask.tolh=4", collect);
+    CHECKF(n_out == 2 && strncmp(out[0], "OK mask.tolv=12", 15) == 0 && strncmp(out[1], "OK mask.tolh=4", 14) == 0,
+           "%u [%s] [%s]", n_out, out[0], n_out > 1 ? out[1] : "");
+    CHECKF(strcmp(g_log, "mask_tol(12,4);") == 0 && g_mask_posts == 1, "[%s]", g_log);
+    CHECK(g_tolv == 8 && g_tolh == 2);                       /* the acquisition task has not polled yet */
+    CHECK(prop_get(P(MASK_TOLV)) == 12 && prop_get(P(MASK_TOLH)) == 4 && prop_get(P(MASK_PENDING)) == 1);
+    mask_poll();
+    CHECK(g_tolv == 12 && g_tolh == 4 && prop_get(P(MASK_PENDING)) == 0);
+    /* the other order, with a pair between them, still asleep */
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("mask.tolh=6 trig.x=100 mask.tolv=20", collect);
+    CHECKF(n_out == 3 && strcmp(g_log, "mask_tol(20,6);") == 0, "%u [%s]", n_out, g_log);
+    mask_poll();
+    CHECK(g_tolv == 20 && g_tolh == 6);
+    /* two lines while it sleeps: the second builds on the first's request */
+    g_log[0] = '\0';
+    sh_reset(); model_shell_set("mask.tolv 30", collect);
+    sh_reset(); model_shell_set("mask.tolh 9", collect);
+    CHECKF(strcmp(g_log, "mask_tol(30,6);mask_tol(30,9);") == 0, "[%s]", g_log);
+    mask_poll();
+    CHECK(g_tolv == 30 && g_tolh == 9);
+    /* a pair after them fails: what was staged still goes out, once */
+    g_log[0] = '\0'; g_fail = true;
+    sh_reset(); model_shell_set("mask.tolv=10 mask.tolh=3 ch1.vdiv=5", collect);
+    g_fail = false;
+    CHECKF(strstr(g_log, "mask_tol(10,3);") != NULL && n_out >= 1 && strncmp(out[n_out - 1], "NOT_SET ch1.vdiv", 16) == 0,
+           "[%s] [%s]", g_log, out[n_out - 1]);
+    mask_poll();
+    CHECK(g_tolv == 10 && g_tolh == 3);
+    /* the post refused: the request fails on the last tolerance pair, nothing is left staged */
+    g_log[0] = '\0'; g_mask_post_ok = false;
+    sh_reset(); model_shell_set("mask.tolv=14 mask.tolh=5", collect);
+    g_mask_post_ok = true;
+    CHECKF(n_out >= 1 && strncmp(out[n_out - 1], "NOT_SET mask.tolh", 17) == 0, "[%s]", out[n_out - 1]);
+    CHECK(prop_get(P(MASK_TOLV)) == 10 && prop_get(P(MASK_TOLH)) == 3);
+    /* view.run is on the direct route now (it was refused: "RUN/STOP: OK key (B7)") */
+    sh_reset(); model_shell_set("view.run off", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK view.run=off") == 0 && prop_get(P(VIEW_RUN)) == 0, "%s", out[0]);
+    sh_reset(); model_shell_set("view.run on", collect);
+    CHECKF(n_out == 1 && strcmp(out[0], "OK view.run=on") == 0 && prop_get(P(VIEW_RUN)) == 1, "%s", out[0]);
+}
+
 /* The shell set queues ORIGIN_SHELL: that origin is what `persist off`
  * (shell_persist) silences, so a bench sweep never wears the W25Q. */
 static void test_shell_origin(void)
@@ -1024,6 +1091,7 @@ int main(void)
     test_shell_steps();
     test_changed_groups();
     test_retired_replacements();
+    test_mask_one_request();
     printf("test_model_exec: %d checks, %d failures\n", checks, fails);
     return fails ? 1 : 0;
 }

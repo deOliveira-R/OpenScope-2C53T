@@ -236,16 +236,29 @@ static void run(const model_req_t *r, model_result_t *res)
 
     (void)model_touched_take();                           /* what this request changes, only */
     prop_status_t worst = PS_OK;
-    uint8_t i;
+    uint8_t i, staged_at = r->n;
+    /* The pairs of one request are one batch: a posted setter stages its
+     * value and the batch's end posts once (mask.tolv + mask.tolh: one
+     * request to the acquisition task). */
+    model_batch_begin();
     for (i = 0; i < r->n; i++) {
+        const prop_desc_t *p = prop_by_id(r->pairs[i].id);
         if (i && g_port->checkin) g_port->checkin();      /* one apply per check-in gap */
-        s = prop_set_local(prop_by_id(r->pairs[i].id), r->pairs[i].value, r->origin, &g_note);
+        s = prop_set_local(p, r->pairs[i].value, r->origin, &g_note);
         if (s != PS_OK && s != PS_CLAMPED) break;
+        if (model_prop_batches(p)) staged_at = i;
         if (s == PS_CLAMPED) worst = PS_CLAMPED;
         /* Stored, not applied live: its own line says so (the shell), and
          * its reason never becomes the note of a later live pair's line. */
         if (prop_last_deferred()) { res->deferred |= (uint8_t)(1u << i); continue; }
         if (g_note.text[0]) { res->note = g_note; res->note_from = i; }
+    }
+    {
+        /* What was staged goes out now (also when a later pair failed). A
+         * refused post is the failure of the last pair that staged. */
+        prop_note_t cn;
+        const prop_status_t cs = model_batch_end(&cn);
+        if (i == r->n && cs != PS_OK && staged_at < r->n) { s = cs; i = staged_at; g_note = cn; }
     }
     if (i < r->n) {
         res->status = (uint8_t)s;
