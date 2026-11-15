@@ -3088,6 +3088,7 @@ static void fpga_meter_adc_sampler_task(void *pv)
  * 2026-08-20 (audit P0.1): the queue-driven task is periodically active too
  * (display heartbeat every 7 frames), so it needs a real park as well. */
 static volatile bool acq_pause_req = false;
+#define ACQ_WAIT_SLICE_MS 20u     /* the capture task's longest sleep between pause checks */
 static volatile bool acq_pause_ack = false;
 
 /* ── Torn-frame fix (audit 2026-08-20, P0.2) ─────────────────────────────
@@ -4747,15 +4748,32 @@ static void fpga_warmtest_acq_task(void *pv)
         uint32_t now = xTaskGetTickCount();
         if (capture_in_flight) {
             uint32_t earliest = last_handover_tick + fpga_acq_post_edge_get();
+            /* Sleep in slices and leave for the park point as soon as a
+             * pause is asked: at a slow timebase the fill is seconds long
+             * (2 s at 500 S/s), longer than fpga_acq_pause()'s 1 s budget, so
+             * a register write (timebase, trigger source, level) was refused
+             * about every other time (bench 2026-11-14, tb 0x14). Nothing is
+             * read on the way out; the wait is taken up again after the
+             * resume, from the same last_handover_tick. */
+            bool pause_asked = false;
             if ((int32_t)(earliest - now) > 0) {
                 uint32_t d = earliest - now;
                 if (d > 5000u) d = 5000u;
-                vTaskDelay(pdMS_TO_TICKS(d));
+                while (d > 0u && !(pause_asked = acq_pause_req)) {
+                    uint32_t slice = d > ACQ_WAIT_SLICE_MS ? ACQ_WAIT_SLICE_MS : d;
+                    vTaskDelay(pdMS_TO_TICKS(slice));
+                    d -= slice;
+                }
                 now = xTaskGetTickCount();
             }
             uint32_t next_poll = last_read_tick + acq_poll_gap_ms;
-            if ((int32_t)(next_poll - now) > 0)
-                vTaskDelay(pdMS_TO_TICKS(next_poll - now));
+            while (!pause_asked && (int32_t)(next_poll - now) > 0) {
+                uint32_t d = next_poll - now;
+                vTaskDelay(pdMS_TO_TICKS(d > ACQ_WAIT_SLICE_MS ? ACQ_WAIT_SLICE_MS : d));
+                now = xTaskGetTickCount();
+                pause_asked = acq_pause_req;
+            }
+            if (pause_asked) continue;               /* to the park point at the top */
         }
         if (acq_read_br != 0xFF)
             spi3_set_br(acq_read_br);                       /* EXP-46 (b) */
