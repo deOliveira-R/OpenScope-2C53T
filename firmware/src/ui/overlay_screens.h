@@ -89,9 +89,10 @@ void logo_ui_paint(void);
  * go, as a pure step so the rule is host-tested:
  *   - a layer that follows another one is painted whole (the box over the
  *     gallery's last picture; the logo again when the box goes);
- *   - when the POWER prompt goes, what its box covered is repainted: by a
- *     RESTORE paint of the base where the base is a real screen (no clear,
- *     as under an expired popup), else by the full redraw;
+ *   - when the POWER prompt goes, what its box covered is repainted by a
+ *     RESTORE paint (no clear, as under an expired popup) of the screen
+ *     under it: the page if one is up, else the base (main.c); the full
+ *     redraw only if there is no screen to ask;
  *   - when a layer that covered the whole LCD goes, the full redraw; it
  *     also wins over a restore that is pending with it.
  * Nothing is repainted while a layer is up. */
@@ -109,9 +110,9 @@ typedef enum { LAYER_REPAINT_NONE = 0, LAYER_REPAINT_RESTORE, LAYER_REPAINT_ALL 
 bool layer_track_step(layer_track_t *t, const screen_t *now);
 /* With a layer up: is it owed a whole paint (FULL)? Taken once. */
 bool layer_track_take_whole(layer_track_t *t);
-/* With no layer up: what is owed, taken once. base_restores: the base on
- * screen is a real screen with nothing over it (it can repaint under the
- * box without a clear). */
+/* With no layer up: what is owed, taken once. base_restores: there is a
+ * screen to repaint under the box without a clear (every screen can; false
+ * only before the router is up). */
 layer_repaint_t layer_track_take(layer_track_t *t, bool base_restores);
 /* A full redraw was made (DCMD_REDRAW_ALL): nothing is owed any more. */
 void layer_track_redrawn(layer_track_t *t);

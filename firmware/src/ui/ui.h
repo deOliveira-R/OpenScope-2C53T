@@ -40,31 +40,19 @@ typedef enum {
 
 /* Display commands sent via queue */
 typedef enum {
-    DCMD_DRAW_SPLASH = 0,
-    DCMD_DRAW_SCOPE,
-    DCMD_DRAW_METER,
-    DCMD_DRAW_SIGGEN,
-    DCMD_DRAW_SETTINGS,
-    DCMD_DRAW_STATUS_BAR,
-    DCMD_REDRAW_ALL,
-#if FEATURE_FFT
-    DCMD_DRAW_FFT,
-#endif
-    DCMD_DRAW_HOME,     /* home: repaint the selection-dependent parts */
-    DCMD_DRAW_OSC_MENU, /* scope: the Oscilloscope Settings page (osc_menu_draw) */
+    DCMD_DRAW_STATUS_BAR = 1,
+    DCMD_REDRAW_ALL,    /* the hard invalidate: clear, the bars, the visible screens in full */
     DCMD_CAPTURE,       /* save the screen to the gallery (gallery_ui_capture posts it and waits) */
     /* DCMD_DRAW_ACTIVE + screen id (ui/screen.h screen_id_t): repaint that
-     * screen in place, sent by a handler that only repaints the screen it is
-     * on. The id is the SENDER's top screen, taken at send time; the display
-     * task turns it into that screen's own DCMD_DRAW_* above, whose checks
-     * drop it if the screen is no longer up by then
-     * (legacy_screens_active_cmd / legacy_screens_update_cmd). */
+     * screen in place, sent after a key it took or a set of something it
+     * shows. The display task paints it if it is the screen shown (the base,
+     * or the page over it) and its epoch moved, and drops it otherwise. For
+     * the scope it is only a wake-up: its tick paints. */
     DCMD_DRAW_ACTIVE     = 0x40,
     DCMD_DRAW_ACTIVE_END = 0x60,    /* exclusive: room for 32 screen ids */
     /* Not a real command: what the display task rewrites a received command
-     * to while a layer owns the screen, so it falls
-     * through to `default:` untouched.
-     * Never send this. */
+     * to once it is dealt with, or while a layer owns the screen, so it
+     * falls through to `default:` untouched. Never send this. */
     DCMD_NONE_MODAL_DROP = 0xFE,
 } display_cmd_t;
 

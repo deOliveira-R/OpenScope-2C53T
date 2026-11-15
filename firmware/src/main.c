@@ -537,8 +537,8 @@ static void scope_render(uint32_t frame, redraw_action_t action);
 
 /* DCMD_REDRAW_ALL: the hard invalidate. NEVER GATED, deliberately: an epoch
  * comparison cannot see what a layer or a shell command left on the LCD.
- * Screens that want cheap, gate-able repaints send their own DCMD_DRAW_*
- * instead. */
+ * A screen that wants a cheap, gate-able repaint is sent
+ * DCMD_DRAW_ACTIVE + its id instead. */
 static void redraw_all(uint32_t frame)
 {
     ui_redraw_all_count++;
@@ -824,12 +824,10 @@ static void vDisplayTask(void *pvParameters)
         lcd_clear(COLOR_BLACK);
         draw_status_bar();
         draw_info_bar();
+        /* The screen of the boot mode (Startup on Boot), by its own draw: the
+         * scope's is the full render of its view (no record yet: the grid). */
         const screen_t *nb = native_base();
-        if (nb != NULL && nb->id != SCR_SCOPE) {
-            nb->draw(SCR_PAINT_FULL, 0);  /* a migrated screen (Startup on Boot = Home, Meter, Signal Gen) */
-        } else {
-            draw_scope_screen(0);         /* the scope's first paint, as always: no record yet, no gate */
-        }
+        if (nb != NULL) nb->draw(SCR_PAINT_FULL, 0);
     }
 
     for (;;) {
@@ -952,9 +950,6 @@ static void vDisplayTask(void *pvParameters)
                 cmd = DCMD_NONE_MODAL_DROP;
             }
             switch (cmd) {
-            case DCMD_DRAW_SPLASH:
-                draw_splash();
-                break;
             case DCMD_REDRAW_ALL:
                 redraw_all(frame);
                 layer_track_redrawn(&layers);
@@ -968,15 +963,6 @@ static void vDisplayTask(void *pvParameters)
             case DCMD_DRAW_STATUS_BAR:
                 draw_status_bar();
                 break;
-#if FEATURE_FFT
-            case DCMD_DRAW_FFT:
-                if (current_mode == MODE_OSCILLOSCOPE && !osc_page_up()) {
-                    ui_scope_full_draws++;
-                    draw_fft_screen(true);
-                    scope_gate_painted(frame);
-                }
-                break;
-#endif
             default:
                 break;
             }
@@ -999,7 +985,7 @@ static void vDisplayTask(void *pvParameters)
         /* Periodic redraws for active modes.
          *
          * All modes receive explicit redraws via queue commands above
-         * (DCMD_DRAW_SCOPE, DCMD_DRAW_SIGGEN, etc.) when button presses
+         * (DCMD_REDRAW_ALL, DCMD_DRAW_ACTIVE + a screen) when button presses
          * or data events require it. The code below only handles cases
          * that need continuous or periodic updates beyond those events.
          *
@@ -1024,17 +1010,19 @@ static void vDisplayTask(void *pvParameters)
         }
         {
             /* What a layer that went left to repaint (once). The POWER
-             * prompt's box over a base that is a real screen: that screen
-             * again, without the clear. Else everything. */
+             * prompt's box: what it covered, without the clear (RESTORE): the
+             * page if one is up, else the base. Every screen's RESTORE
+             * repaints its whole area (the scope's is the full render of its
+             * view). A layer that covered the LCD: everything. */
             const screen_t *const nb_under = native_base();
-            /* (The scope under a layer is repainted with everything, as
-             * before it was a screen: its plot has no restore paint.) */
-            switch (layer_track_take(&layers, nb_under != NULL && nb_under->id != SCR_SCOPE &&
-                                              page_layer() == NULL)) {
-            case LAYER_REPAINT_RESTORE:
-                native_paint(nb_under, SCR_PAINT_RESTORE, frame);
+            switch (layer_track_take(&layers, nb_under != NULL)) {
+            case LAYER_REPAINT_RESTORE: {
+                const screen_t *const pg_under = page_layer();
+                if (pg_under != NULL) layer_paint(pg_under, SCR_PAINT_RESTORE, frame);
+                else                  native_paint(nb_under, SCR_PAINT_RESTORE, frame);
                 g_screen_painted = true;            /* a popup still up goes back on top */
                 break;
+            }
             case LAYER_REPAINT_ALL:
                 redraw_all(frame);
                 break;
