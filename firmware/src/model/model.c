@@ -810,6 +810,8 @@ bool model_boot_apply_one(const prop_desc_t *p)
     return (g_keep_st[i] & KEEP_STATE) == BOOT_KEEP_APPLIED;
 }
 
+unsigned model_boot_hw_refused_max = MODEL_BOOT_HW_REFUSED_MAX;
+
 unsigned model_boot_apply(void (*between)(void))
 {
     static uint8_t todo[(PROP_IX_COUNT + 7u) / 8u];     /* executor only: not on its stack */
@@ -822,6 +824,12 @@ unsigned model_boot_apply(void (*between)(void))
         if (rep.kept < 0xFFu) rep.kept++;
     }
     bool first = true;
+    /* A bound on a boot with a dead owner: a hardware setter that is refused
+     * can cost a park timeout (about a second) with the keys unserved. Once
+     * more than MODEL_BOOT_HW_REFUSED_MAX of those were refused in the first
+     * pass, the remaining hardware properties are left as they are (reported
+     * as refused), none of them is retried, and the others go on. */
+    unsigned hw_refused = 0;
     model_batch_begin();
     /* Pass 0: table order. Pass 1: once more for what a rule or an owner
      * refused while a later property still had its old value. */
@@ -832,11 +840,15 @@ unsigned model_boot_apply(void (*between)(void))
             if (!(todo[i >> 3] & (1u << (i & 7u)))) continue;
             /* Read now: an earlier setter may have moved this one too. */
             if (prop_get(p) == g_keep_v[i]) continue;
+            if ((p->flags & PF_HW) && hw_refused > model_boot_hw_refused_max) { refused = true; continue; }
             if (!first && between) between();
             first = false;
             (void)prop_set_local(p, g_keep_v[i], ORIGIN_BOOT, NULL);
             if (pass == 0 && rep.set < 0xFFu) rep.set++;
-            if (prop_get(p) != g_keep_v[i]) refused = true;
+            if (prop_get(p) != g_keep_v[i]) {
+                refused = true;
+                if (pass == 0 && (p->flags & PF_HW)) hw_refused++;
+            }
         }
         if (!refused) break;
     }

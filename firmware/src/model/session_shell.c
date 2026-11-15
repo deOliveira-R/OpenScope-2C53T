@@ -30,7 +30,7 @@ void model_shell_session_status(model_emit_fn emit)
     const session_status_t *st = session_snapshot_status();
     const model_boot_report_t *br = model_boot_report();
 
-    snprintf(line, sizeof line, "session: %s", session_load_text(st->load));
+    snprintf(line, sizeof line, "session at this boot: %s", session_load_text(st->load));
     emit(line);
     if (st->load == SESSION_LOAD_OK || st->load == SESSION_LOAD_STALE || st->load == SESSION_LOAD_CLEARED) {
         /* No clock on this device: the age of a snapshot is its sequence number. */

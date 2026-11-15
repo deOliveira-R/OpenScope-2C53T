@@ -727,7 +727,7 @@ static void test_fallbacks(void)
     /* the snapshot itself does something (or the cases below prove nothing) */
     logs_back(); boot(); take(with);
     CHECK(session_snapshot_status()->load == SESSION_LOAD_OK && differ(with, base, false) >= 10);
-    CHECK(strstr(status_text(), "session: valid") && strstr(g_out, "refused") && strstr(g_out, "0 refused"));
+    CHECK(strstr(status_text(), "session at this boot: valid") && strstr(g_out, "refused") && strstr(g_out, "0 refused"));
 
 #define FALLBACK(name, expect) do { \
         boot(); take(v); \
@@ -917,6 +917,32 @@ static void test_other_tables(void)
     append_raw(rec, l);
     boot();
     CHECK(session_snapshot_status()->load == SESSION_LOAD_BAD && session_snapshot_status()->kept == 0);
+}
+
+/* A boot with owners that never answer stays bounded: once more than the
+ * limit of hardware properties were refused (here 1: ch2.enabled, then
+ * view.mode), the remaining hardware ones (view.persist) are not tried and
+ * none is retried; the others still apply. */
+static void test_refused_bound(void)
+{
+    puts("a dead owner does not stretch the boot");
+    fresh_device();
+    a_session();
+    CHECK(set(P(VIEW_MODE), 5));
+    CHECK(power_off());
+    g_fail_enables = -1; g_fail_pers = true; g_fail_view = true;
+    model_boot_hw_refused_max = 1;                  /* the firmware's is MODEL_BOOT_HW_REFUSED_MAX */
+    boot();
+    const model_boot_report_t *br = model_boot_report();
+    CHECK(session_snapshot_status()->load == SESSION_LOAD_OK);
+    CHECKF(br->refused >= 3, "%u refused", br->refused);   /* the skipped hardware ones are reported too */
+    /* nothing was tried twice */
+    CHECKF(logged_times("enables;") == 1 && logged_times("pers_on(2);") == 0, "enables x%d, pers x%d",
+           logged_times("enables;"), logged_times("pers_on(2);"));
+    /* a property with no hardware behind it is back all the same */
+    CHECK(br->applied > 0);
+    model_boot_hw_refused_max = MODEL_BOOT_HW_REFUSED_MAX;
+    g_fail_enables = 0; g_fail_pers = false; g_fail_view = false;
 }
 
 static void test_refused(void)
@@ -1322,6 +1348,7 @@ int main(void)
     test_fallbacks();
     test_other_tables();
     test_refused();
+    test_refused_bound();
     test_order();
     test_not_restore();
     test_never_restored();

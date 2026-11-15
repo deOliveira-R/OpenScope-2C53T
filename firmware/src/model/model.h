@@ -404,6 +404,11 @@ typedef struct {
 } model_boot_report_t;
 void    model_boot_keep(const prop_desc_t *p, int32_t v, bool sticky);   /* a load's; any context
                                                                          * before the apply */
+/* model_boot_apply stops trying hardware (PF_HW) properties once more than
+ * this many of them were refused: a boot with an owner that never answers
+ * stays bounded (about MAX + 1 park timeouts). */
+#define MODEL_BOOT_HW_REFUSED_MAX 3u
+extern unsigned model_boot_hw_refused_max;   /* the limit in force (host tests lower it) */
 unsigned model_boot_apply(void (*between)(void));    /* EXECUTOR ONLY; returns the refused count */
 bool    model_boot_apply_one(const prop_desc_t *p);  /* EXECUTOR ONLY; true: kept and now in force */
 /* p has a value kept that is not in force (pending, or sticky and refused);
