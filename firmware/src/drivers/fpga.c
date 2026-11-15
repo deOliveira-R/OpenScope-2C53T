@@ -5384,6 +5384,17 @@ static void bb_cmd16(uint8_t hi, uint8_t lo)
     GPIOB->scr = BB_CS;
 }
 
+/* fpga_reload() support (2026-11-15). The bit-bang upload below normally sends
+ * the compiled-in design, exactly as before. fpga_reload() can hand it another
+ * payload source (the flash slot) and ask it to send NOTHING unless the FPGA
+ * first answers its IDCODE on the configuration port, i.e. is really empty.
+ * At boot all three are zero/false and the path is the unchanged one. */
+static fpga_payload_fn bb_src_fn;        /* NULL: the compiled-in design */
+static void           *bb_src_ctx;
+static uint32_t        bb_src_len;
+static bool            bb_require_empty;
+static uint8_t         bb_outcome;       /* 0 ok, 1 not empty (nothing sent), 2 source failed mid-upload */
+
 uint8_t fpga_bitbang_config_sequence(void)
 {
     gpio_init_type gpio_cfg;
@@ -5433,6 +5444,15 @@ uint8_t fpga_bitbang_config_sequence(void)
         fpga.probe_idcode[2] == 0x68 && fpga.probe_idcode[3] == 0x1B)
         fpga.probe_id_bit = 0;
 
+    /* fpga_reload(): a part that does not answer its IDCODE here still runs a
+     * design (its SSPI pins are user I/O). Sending the upload would only feed
+     * 115 KB of stray bytes to that design's own SPI port: send nothing. */
+    bb_outcome = 0;
+    if (bb_require_empty && fpga.probe_id_bit != 0) {
+        bb_outcome = 1;
+        goto bb_restore_pins;
+    }
+
     bb_cmd16(0x12, 0x00);   /* INIT_ADDR */
     bb_cmd16(0x15, 0x00);   /* CONFIG_ENABLE */
 #endif
@@ -5441,11 +5461,26 @@ uint8_t fpga_bitbang_config_sequence(void)
     (void)bb_xfer(0);
     GPIOB->clr = BB_CS;
     (void)bb_xfer(0x3B);
-    for (uint32_t i = 0; i < FPGA_BITSTREAM_SIZE; ++i)
-        (void)bb_xfer(fpga_bitstream[i]);
+    if (bb_src_fn == NULL) {
+        for (uint32_t i = 0; i < FPGA_BITSTREAM_SIZE; ++i)
+            (void)bb_xfer(fpga_bitstream[i]);
+        fpga.h2_bytes_sent = FPGA_BITSTREAM_SIZE;
+    } else {
+        /* Payload from a source (the flash slot), 256 bytes at a time. The
+         * clock simply stops between chunks; the frame stays open (CS low). */
+        uint8_t  chunk[256];
+        uint32_t off = 0;
+        while (off < bb_src_len) {
+            uint32_t n = bb_src_len - off;
+            if (n > sizeof chunk) n = sizeof chunk;
+            if (!bb_src_fn(bb_src_ctx, off, chunk, n)) { bb_outcome = 2; break; }
+            for (uint32_t i = 0; i < n; ++i) (void)bb_xfer(chunk[i]);
+            off += n;
+        }
+        fpga.h2_bytes_sent = off;
+    }
     GPIOB->scr = BB_CS;
-    fpga.h2_bytes_sent  = FPGA_BITSTREAM_SIZE;
-    fpga.h2_upload_done = 1;
+    fpga.h2_upload_done = (bb_outcome == 0) ? 1 : 0;
 
 #if FPGA_CONFIG_B_FAITHFUL
     /* Stock closes IMMEDIATELY after the payload — no 0x41/0x13/0x11 reads
@@ -5470,6 +5505,9 @@ uint8_t fpga_bitbang_config_sequence(void)
     fpga_scope_delay_ms(100);
 #endif
 
+#if !FPGA_CONFIG_B_FAITHFUL
+bb_restore_pins:
+#endif
     /* Restore PB3/4/5 to SPI3 AF so the acquisition task can read 0x04/0x05
      * over hardware SPI3 if config took. PB6 stays GPIO (software CS). */
     gpio_cfg.gpio_pins = BB_SCK | BB_MOSI;
@@ -5482,6 +5520,13 @@ uint8_t fpga_bitbang_config_sequence(void)
     gpio_cfg.gpio_pull = GPIO_PULL_NONE;
     gpio_init(GPIOB, &gpio_cfg);
     SPI3_CS_DEASSERT();
+
+    /* fpga_reload() refused or lost its source: no design was loaded, so there
+     * is nothing to arm. (bb_outcome is always 0 on the boot path.) */
+    if (bb_outcome != 0) {
+        if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
+        return 0;
+    }
 
 #if FPGA_CONFIG_B_ARM
     /* Engine-arm attempt (bench plan item 4) — Build B breaks the config wall
@@ -5529,6 +5574,68 @@ uint8_t fpga_bitbang_config_sequence(void)
 
     if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
     return fpga.cfg_status_reg[3];
+}
+
+/*
+ * Reload the FPGA at runtime (bench 2026-11-15, unit #2).
+ *
+ * PC6 switches the FPGA's supply: low for a second, the part comes back empty
+ * and answers its IDCODE on the configuration port; the bit-bang upload then
+ * loads a design as at boot. Proven sequence: SPI lines released (Hi-Z), PC6
+ * low 1 s, PC6 high, lines back, upload.
+ *
+ * A design whose inputs have their clamp diodes on (the stock design; the
+ * vendor tool's default) keeps the FPGA alive through the ADC outputs with PC6
+ * low. Such a part never answers the IDCODE, so nothing is sent and the status
+ * says so: only a power cycle of the unit replaces that design.
+ *
+ * fn == NULL reloads the compiled-in design. The caller validates its source
+ * BEFORE calling (a bad slot must never leave the FPGA empty).
+ */
+fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
+                                 fpga_reload_report_t *rep)
+{
+#if FPGA_CONFIG_B_FAITHFUL
+    (void)fn; (void)ctx; (void)len;
+    if (rep) memset(rep, 0, sizeof *rep);
+    return FPGA_RELOAD_UNSUPPORTED;      /* that upload variant reads nothing back */
+#else
+    if (fn != NULL && len == 0u) return FPGA_RELOAD_BAD_ARG;
+
+    int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
+    if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
+
+    /* fpga_bus_release() also drives PB11 high (an old guess at its role). On
+     * this firmware PB11 is a CH2 front-end line: put its level back after. */
+    const bool pb11_was_high = (GPIOB->odt & PB11_MASK) != 0u;
+    fpga_bus_release();                  /* PB3/PB5/PB6 Hi-Z, SPI3 off, acq gated */
+    if (!pb11_was_high) GPIOB->clr = PB11_MASK;
+    GPIOC->clr = PC6_MASK;               /* FPGA supply off */
+    fpga_scope_delay_ms(FPGA_RELOAD_OFF_MS);
+    GPIOC->scr = PC6_MASK;               /* and on again */
+    fpga_scope_delay_ms(FPGA_RELOAD_ON_MS);
+    fpga_spi3_bus_reacquire();
+
+    bb_src_fn = fn; bb_src_ctx = ctx; bb_src_len = len;
+    bb_require_empty = true;
+    (void)fpga_bitbang_config_sequence();    /* resumes the acquisition task itself */
+    const uint8_t outcome = bb_outcome;
+    bb_src_fn = NULL; bb_src_ctx = NULL; bb_src_len = 0;
+    bb_require_empty = false;
+    bb_outcome = 0;
+
+    const uint32_t status = ((uint32_t)fpga.cfg_status_reg[0] << 24) | ((uint32_t)fpga.cfg_status_reg[1] << 16) |
+                            ((uint32_t)fpga.cfg_status_reg[2] << 8)  |  (uint32_t)fpga.cfg_status_reg[3];
+    if (rep) {
+        rep->idcode_before = ((uint32_t)fpga.probe_idcode[0] << 24) | ((uint32_t)fpga.probe_idcode[1] << 16) |
+                             ((uint32_t)fpga.probe_idcode[2] << 8)  |  (uint32_t)fpga.probe_idcode[3];
+        rep->status = (outcome == 1) ? 0u : status;
+        rep->sent   = (outcome == 1) ? 0u : fpga.h2_bytes_sent;
+    }
+    if (outcome == 1) return FPGA_RELOAD_NOT_EMPTY;
+    if (outcome == 2) return FPGA_RELOAD_SRC_FAIL;
+    return (status & (1u << 13)) ? FPGA_RELOAD_OK : FPGA_RELOAD_NOT_DONE;
+#endif
 }
 #endif /* FPGA_CONFIG_B */
 

@@ -58,6 +58,8 @@ void cmd_fpga_diag_clear(void);
 void cmd_fpga_bus_release(void);
 void cmd_fpga_bus_reacquire(void);
 void cmd_fpga_configbb(void);
+void cmd_fpga_slot(const char *args);
+void cmd_fpga_reload(const char *args);
 void cmd_fpga_stock_diag(void);
 void cmd_fpga_stock_clear(void);
 void cmd_fpga_stock_set(const char *args);
@@ -160,6 +162,10 @@ void cmd_fpga_dbgarm(const char *args);
           "fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n"), \
     CMD_V("fpga busreacquire", cmd_fpga_bus_reacquire, SC_EXACT, \
           "fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n"), \
+    CMD_A("fpga slot", cmd_fpga_slot, 0, \
+          "fpga slot [info|put <len> <crc32hex> <name> [force]|data <off> <hex>|pos|end|clear]\r\n" "                                FPGA design stored on the flash (scripts/fpga_put.py)\r\n"), \
+    CMD_A("fpga reload", cmd_fpga_reload, 0, \
+          "fpga reload [builtin|slot]      Power-cycle the FPGA (PC6) and load a design, no unit power cycle\r\n"), \
     CMD_V("fpga configbb", cmd_fpga_configbb, SC_EXACT, \
           "fpga configbb                   Run GPIO bit-bang SSPI config on demand (H7 step 1)\r\n"), \
     CMD_V("fpga stock diag", cmd_fpga_stock_diag, SC_EXACT, \

@@ -135,6 +135,7 @@ C_SOURCES += src/ui/gallery_nav.c
 C_SOURCES += src/ui/gallery_ui.c
 C_SOURCES += src/ui/gallery_screen.c
 C_SOURCES += src/util/logo_store.c
+C_SOURCES += src/util/fpga_slot.c
 C_SOURCES += src/ui/logo_ui.c
 C_SOURCES += src/ui/overlay_screens.c
 C_SOURCES += src/ui/overlay_ui.c
@@ -1542,6 +1543,20 @@ $(BUILD_DIR)/test_logo: tests/test_logo.c src/util/logo_store.c src/util/logo_st
 
 .PHONY: test-logo
 test-logo: $(BUILD_DIR)/test_logo
+
+# FPGA design slot (fpga_slot.h): record format, header CRC, sequential upload,
+# commit last, CRC refusal, verify, and that an upload touches nothing outside
+# the slot's span. Synthetic payloads only. See tests/test_fpga_slot.c.
+$(BUILD_DIR)/test_fpga_slot: tests/test_fpga_slot.c src/util/fpga_slot.c src/util/fpga_slot.h \
+                        src/drivers/flash_regions.c src/drivers/flash_regions.h \
+                        src/util/cal_backup_core.c | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/util -Isrc/drivers $< \
+		src/util/fpga_slot.c src/drivers/flash_regions.c \
+		src/util/cal_backup_core.c -o $@
+
+.PHONY: test-fpga-slot
+test-fpga-slot: $(BUILD_DIR)/test_fpga_slot
+	$<
 
 # USB Sharing (parity C16): the read-only FAT12 volume synthesised from the
 # gallery (boot sector, FAT12 packing and chains, directory entries, file

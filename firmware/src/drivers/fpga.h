@@ -668,6 +668,28 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt);
  * and fpga.probe_id_bit_close. Only defined under FPGA_CONFIG_B. */
 uint8_t fpga_bitbang_config_sequence(void);
 
+/* Runtime reload (FPGA_CONFIG_B only): power-cycle the FPGA with PC6, then
+ * upload either the compiled-in design (fn == NULL) or `len` bytes from fn.
+ * fn fills buf with n bytes of the payload at offset off; false aborts. */
+typedef bool (*fpga_payload_fn)(void *ctx, uint32_t off, uint8_t *buf, uint32_t n);
+typedef enum {
+    FPGA_RELOAD_OK = 0,        /* design loaded, DONE set                          */
+    FPGA_RELOAD_NOT_EMPTY,     /* the FPGA did not power down; nothing was sent    */
+    FPGA_RELOAD_SRC_FAIL,      /* the source failed mid-upload; the FPGA is empty  */
+    FPGA_RELOAD_NOT_DONE,      /* upload sent, DONE not set; the FPGA is empty     */
+    FPGA_RELOAD_BAD_ARG,
+    FPGA_RELOAD_UNSUPPORTED,   /* this build's upload variant cannot check         */
+} fpga_reload_status_t;
+typedef struct {
+    uint32_t idcode_before;    /* configuration port answer before the upload */
+    uint32_t status;           /* STATUS (0x41) after the upload              */
+    uint32_t sent;             /* payload bytes sent                          */
+} fpga_reload_report_t;
+#define FPGA_RELOAD_OFF_MS  1000u   /* PC6 low; 1 s is the bench-proven value */
+#define FPGA_RELOAD_ON_MS    200u   /* supply back before the first config command */
+fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
+                                 fpga_reload_report_t *rep);
+
 /* ═══════════════════════════════════════════════════════════════════
  * API
  * ═══════════════════════════════════════════════════════════════════ */

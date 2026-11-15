@@ -94,6 +94,7 @@
 #include "../ui/logo_ui.h"
 #include "watchdog.h"
 #include "../util/cal_backup_core.h"
+#include "../util/fpga_slot.h"
 
 #include "fpga_bitstream_stock.h"
 #include "FreeRTOS.h"
@@ -1814,6 +1815,199 @@ void cmd_fpga_bus_reacquire(void)
     usb_send_str("  PB3(SCK)/PB5(MOSI) -> SPI3 AF, PB6(CS) -> GPIO out HIGH.\r\n");
     usb_send_str("  PB4(MISO) input pull-up (stock idle), PC6=HIGH, SPE=1.\r\n");
     usb_send_str("  Config port left untouched. `fpga reinit` now drives it.\r\n");
+}
+
+/*
+ * FPGA design slot (util/fpga_slot.h) and runtime reload (fpga_reload()).
+ *   fpga slot [info]                          what is stored, and whether its CRC holds
+ *   fpga slot put <len> <crc32hex> <name> [force]   erase, start an upload
+ *   fpga slot data <off> <hex>                <= 48 bytes at the next expected offset
+ *   fpga slot pos | end | clear
+ *   fpga reload [builtin|slot]                PC6 power cycle of the FPGA, then upload
+ * scripts/fpga_put.py drives this; every reply starts "fpga slot:" / "fpga reload:"
+ * and a failure says "err".
+ */
+static fslot_upload_t s_fslot_up;
+static char s_fpga_loaded[FSLOT_NAME_LEN + 8] = "builtin (boot)";
+
+static void fslot_tick(void)
+{
+    health_checkin_self();
+    vTaskDelay(1);
+}
+
+static int fslot_hexbyte(const char *p)
+{
+    int v = 0;
+    for (int i = 0; i < 2; i++) {
+        char c = p[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= c - '0';
+        else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+        else return -1;
+    }
+    return v;
+}
+
+void cmd_fpga_slot(const char *args)
+{
+    static const char usage[] =
+        "Usage: fpga slot [info] | put <len> <crc32hex> <name> [force] | data <off> <hex> | pos | end | clear\r\n";
+    while (*args == ' ') args++;
+    if (*args == '\0' || strcmp(args, "info") == 0) {
+        fslot_info_t info;
+        fslot_status_t st = fslot_info(&info);
+        if (st != FSLOT_OK) { usb_debug_printf("fpga slot: err %s\r\n", fslot_status_str(st)); return; }
+        const flash_region_t *r = flash_region_get(FSLOT_REGION);
+        if (info.state == FSLOT_VALID) {
+            st = fslot_verify(&info, fslot_tick);
+            usb_debug_printf("fpga slot: valid '%s' %lu B crc %08lX payload %s @0x%06lX\r\n", info.name,
+                             (unsigned long)info.len, (unsigned long)info.crc,
+                             st == FSLOT_OK ? "OK" : "MISMATCH", (unsigned long)(r ? r->start : 0));
+        } else {
+            bool blank = false;
+            st = fslot_span_blank(&blank, fslot_tick);
+            usb_debug_printf("fpga slot: %s; span %s\r\n",
+                             info.state == FSLOT_EMPTY ? "none stored" : "damaged slot",
+                             st != FSLOT_OK ? "unreadable" : blank ? "blank" : "NOT blank (foreign data or a torn upload)");
+        }
+        usb_debug_printf("fpga slot: FPGA runs: %s\r\n", s_fpga_loaded);
+        return;
+    }
+    if (strncmp(args, "put ", 4) == 0) {
+        uint32_t len, crc;
+        const char *p = args + 4;
+        char *e;
+        len = strtoul(p, &e, 10);
+        if (e == p || *e != ' ') { usb_send_str(usage); return; }
+        char hex[9]; uint32_t k = 0; p = e + 1;
+        while (k < 8u && p[k] != '\0' && p[k] != ' ') { hex[k] = p[k]; k++; }
+        hex[k] = '\0';
+        if (k == 0u || p[k] != ' ' || parse_hex32(hex, &crc) != 0) { usb_send_str(usage); return; }
+        p += k + 1;
+        char name[FSLOT_NAME_LEN + 1]; k = 0;
+        while (k < FSLOT_NAME_LEN && p[k] != '\0' && p[k] != ' ') { name[k] = p[k]; k++; }
+        name[k] = '\0';
+        if (k == 0u) { usb_send_str(usage); return; }
+        while (p[k] != '\0' && p[k] != ' ') k++;
+        const bool force = (strcmp(p + k, " force") == 0);
+        /* First use of this flash range: never erase data nobody identified. */
+        fslot_info_t info; bool blank = false;
+        fslot_status_t st = fslot_info(&info);
+        if (st == FSLOT_OK && info.state != FSLOT_VALID) st = fslot_span_blank(&blank, fslot_tick);
+        if (st != FSLOT_OK) { usb_debug_printf("fpga slot: err %s\r\n", fslot_status_str(st)); return; }
+        if (info.state != FSLOT_VALID && !blank && !force) {
+            usb_send_str("fpga slot: err the slot's flash range is not blank and holds no valid design; "
+                         "look at it first, then repeat with `force`\r\n");
+            return;
+        }
+        st = fslot_put_begin(&s_fslot_up, len, crc, name, fslot_tick);
+        if (st == FSLOT_OK) usb_debug_printf("fpga slot: ok put %lu\r\n", (unsigned long)len);
+        else usb_debug_printf("fpga slot: err %s\r\n", fslot_status_str(st));
+        return;
+    }
+    if (strncmp(args, "data ", 5) == 0) {
+        const char *p = args + 5;
+        char *e;
+        uint32_t off = strtoul(p, &e, 10);
+        if (e == p || *e != ' ') { usb_send_str(usage); return; }
+        p = e + 1;
+        uint8_t buf[FSLOT_CHUNK_MAX];
+        uint32_t n = 0;
+        while (p[0] != '\0' && p[1] != '\0') {
+            int b = fslot_hexbyte(p);
+            if (b < 0 || n >= sizeof buf) { usb_send_str("fpga slot: err bad hex\r\n"); return; }
+            buf[n++] = (uint8_t)b;
+            p += 2;
+        }
+        if (n == 0u || *p != '\0') { usb_send_str("fpga slot: err bad hex\r\n"); return; }
+        fslot_status_t st = fslot_put_data(&s_fslot_up, off, buf, n);
+        if (st == FSLOT_OK) usb_debug_printf("fpga slot: ok %lu\r\n", (unsigned long)s_fslot_up.received);
+        else usb_debug_printf("fpga slot: err %s (expect %lu)\r\n", fslot_status_str(st),
+                              (unsigned long)s_fslot_up.received);
+        return;
+    }
+    if (strcmp(args, "pos") == 0) {
+        usb_debug_printf("fpga slot: pos %lu %s\r\n", (unsigned long)s_fslot_up.received,
+                         s_fslot_up.active ? "active" : "idle");
+        return;
+    }
+    if (strcmp(args, "end") == 0) {
+        fslot_status_t st = fslot_put_end(&s_fslot_up, fslot_tick);
+        if (st == FSLOT_OK) usb_send_str("fpga slot: ok committed\r\n");
+        else usb_debug_printf("fpga slot: err %s (nothing committed)\r\n", fslot_status_str(st));
+        return;
+    }
+    if (strcmp(args, "clear") == 0) {
+        fslot_status_t st = fslot_clear();
+        usb_debug_printf(st == FSLOT_OK ? "fpga slot: ok cleared\r\n" : "fpga slot: err %s\r\n", fslot_status_str(st));
+        return;
+    }
+    usb_send_str(usage);
+}
+
+#if FPGA_CONFIG_B
+static bool fslot_payload(void *ctx, uint32_t off, uint8_t *buf, uint32_t n)
+{
+    (void)ctx;
+    return fslot_read(off, buf, n) == FSLOT_OK;
+}
+#endif
+
+void cmd_fpga_reload(const char *args)
+{
+#if FPGA_CONFIG_B
+    while (*args == ' ') args++;
+    const bool slot = (strcmp(args, "slot") == 0);
+    if (!slot && *args != '\0' && strcmp(args, "builtin") != 0) {
+        usb_send_str("Usage: fpga reload [builtin|slot]\r\n");
+        return;
+    }
+    fslot_info_t info;
+    memset(&info, 0, sizeof info);
+    if (slot) {
+        /* Check the whole stored design BEFORE the FPGA loses its supply. */
+        fslot_status_t st = fslot_verify(&info, fslot_tick);
+        if (st != FSLOT_OK) {
+            usb_debug_printf("fpga reload: err slot: %s (FPGA not touched)\r\n", fslot_status_str(st));
+            return;
+        }
+    }
+    fpga_reload_report_t rep;
+    const fpga_reload_status_t rs = slot ? fpga_reload(fslot_payload, NULL, info.len, &rep)
+                                         : fpga_reload(NULL, NULL, 0, &rep);
+    switch (rs) {
+    case FPGA_RELOAD_OK:
+        if (slot) snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "slot '%s'", info.name);
+        else      snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "builtin");
+        usb_debug_printf("fpga reload: ok %s, %lu B sent, STATUS %08lX (DONE)\r\n", s_fpga_loaded,
+                         (unsigned long)rep.sent, (unsigned long)rep.status);
+        break;
+    case FPGA_RELOAD_NOT_EMPTY:
+        usb_debug_printf("fpga reload: err the FPGA did not power down (port answered %08lX, not 0120681B); "
+                         "nothing sent, the old design still runs. A design with input clamps on (stock) "
+                         "needs a power cycle of the unit.\r\n", (unsigned long)rep.idcode_before);
+        break;
+    case FPGA_RELOAD_SRC_FAIL:
+        snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "nothing (empty)");
+        usb_debug_printf("fpga reload: err the flash read failed after %lu B; the FPGA is EMPTY. "
+                         "`fpga reload builtin` loads the compiled-in design.\r\n", (unsigned long)rep.sent);
+        break;
+    case FPGA_RELOAD_NOT_DONE:
+        snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "nothing (empty)");
+        usb_debug_printf("fpga reload: err upload sent (%lu B) but DONE is not set, STATUS %08lX; the FPGA is "
+                         "EMPTY. `fpga reload builtin` loads the compiled-in design.\r\n",
+                         (unsigned long)rep.sent, (unsigned long)rep.status);
+        break;
+    default:
+        usb_send_str("fpga reload: err not supported by this build's upload variant\r\n");
+        break;
+    }
+#else
+    (void)args;
+    usb_send_str("fpga reload: err not compiled (needs FPGA_CONFIG_B)\r\n");
+#endif
 }
 
 /* fpga configbb — run the GPIO bit-bang SSPI config on demand (H7 step 1).
