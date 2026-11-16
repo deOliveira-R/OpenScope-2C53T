@@ -1193,6 +1193,7 @@ bool    fpga_acq_single_done(void);            /* SINGLE holds its record */
 void    fpga_acq_single_rearm(void);           /* SINGLE: take the next trigger (OK, shell) */
 bool    fpga_apply_trigger_source(void);       /* reg 0x06 from scope_state (CH1 0x00, CH2 0x01) */
 uint8_t fpga_acq_trig_src_code_get(void);      /* reg 0x06 value last written */
+uint8_t fpga_acq_edge_reg_get(void);           /* reg 0x07 value last written (dsp/trig_edge_reg.h) */
 uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while interleaving */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);

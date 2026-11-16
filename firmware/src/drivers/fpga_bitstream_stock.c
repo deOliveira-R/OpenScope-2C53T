@@ -27,6 +27,8 @@
  * The ONE copy in the image (fpga_bitstream_stock.h declares it). */
 #if defined(FPGA_ALT_BITSTREAM)
 #define FPGA_BITSTREAM_ALT_H_DEFINE      /* the alternate's bytes: here, once */
+#elif defined(FPGA_CORE_BITSTREAM)
+#define FPGA_BITSTREAM_CORE_H_DEFINE     /* our capture core's bytes: here, once */
 #endif
 #include "fpga_bitstream_stock.h"
 
@@ -43,9 +45,10 @@
  * NOTE the alternate image is NOT the stock scope design: it configures the
  * fabric with something else entirely, so scope capture, the meter path and
  * every calibration assumption are off the table for that build. */
-#if defined(FPGA_ALT_BITSTREAM)
-/* fpga_bitstream_alt.h, included through the header with
- * FPGA_BITSTREAM_ALT_H_DEFINE set above, compiled the alternate's bytes. */
+#if defined(FPGA_ALT_BITSTREAM) || defined(FPGA_CORE_BITSTREAM)
+/* fpga_bitstream_alt.h or fpga_bitstream_core.h, included through the header
+ * with its _H_DEFINE set above, compiled that design's bytes. The stock bytes
+ * are not in such an image. */
 #else
 
 const uint8_t fpga_bitstream_stock[FPGA_BITSTREAM_STOCK_SIZE] = {
@@ -7279,4 +7282,4 @@ const uint8_t fpga_bitstream_stock[FPGA_BITSTREAM_STOCK_SIZE] = {
     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
 };
 
-#endif /* !FPGA_ALT_BITSTREAM */
+#endif /* !FPGA_ALT_BITSTREAM && !FPGA_CORE_BITSTREAM */

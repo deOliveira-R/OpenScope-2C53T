@@ -724,6 +724,10 @@ static void cmd_version(void)
         "Build: " __DATE__ " " __TIME__ ", gcc " __VERSION__ "\r\n"
 #ifdef FPGA_ALT_BITSTREAM
         "FPGA payload: " FPGA_BITSTREAM_NAME " (ALT — not the stock scope design)\r\n"
+#elif defined(FPGA_CORE_BITSTREAM)
+        "FPGA built-in design: " FPGA_BITSTREAM_NAME " (OpenScope's own capture core)\r\n"
+#else
+        "FPGA built-in design: stock\r\n"
 #endif
         "MCU: AT32F403A @ %uMHz\r\n"
         "SRAM: 224KB (EOPB0=0xFE)\r\n",
@@ -2439,10 +2443,11 @@ static void print_trigger_status(void)
     static const char *const kind[] = { "none", "handed-over", "freerun", "freerun-split" };
     const uint8_t k = fpga_acq_record_kind();
     const trig_status_t st = (trig_status_t)fpga_trigger_status();
-    usb_debug_printf("trigger mode %s edge %s source %s level %d code 0x%02X reg06 0x%02X\r\n",
+    usb_debug_printf("trigger mode %s edge %s source %s level %d code 0x%02X reg06 0x%02X reg07 0x%02X\r\n",
                      trigger_mode_labels[ss->trigger.mode], trigger_edge_labels[ss->trigger.edge],
                      trigger_source_labels[ss->trigger.source], (int)ss->trigger.level,
-                     (unsigned)fpga_acq_trig_code_get(), (unsigned)fpga_acq_trig_src_code_get());
+                     (unsigned)fpga_acq_trig_code_get(), (unsigned)fpga_acq_trig_src_code_get(),
+                     (unsigned)fpga_acq_edge_reg_get());
     usb_debug_printf("trigger status %s badge %s record %s coherent %s single %s\r\n",
                      trig_status_word(st), trig_status_label(st),
                      k < 4u ? kind[k] : "?", fpga_acq_record_coherent() ? "yes" : "no",

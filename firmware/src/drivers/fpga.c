@@ -32,6 +32,7 @@
 #include "scope_trigger.h"
 #include "scope_vpos.h"
 #include "../dsp/trig_edge.h"
+#include "../dsp/trig_edge_reg.h"
 #include "../dsp/interleave.h"
 #include "../dsp/interleave_cal.h"
 #include "../dsp/trig_policy.h"
@@ -3724,6 +3725,19 @@ static volatile uint8_t acq_trig_code = 0xAD;
  * stayed frozen after level +100 -> 0). The apply entry points raise this;
  * the acq task clears capture_in_flight on it and re-primes. */
 static volatile bool acq_reprime_req = false;
+/* Trigger edge register 0x07 (dsp/trig_edge_reg.h). acq_design_ours: the
+ * design running now is our core (set where an upload ends, below);
+ * acq_edge_reg: the value the register holds (every arm burst writes 0x00).
+ * The acquisition task writes the register when the two disagree, so the edge
+ * follows the UI and comes back by itself after any arm burst. */
+#if defined(FPGA_CORE_BITSTREAM) && !defined(FPGA_ALT_BITSTREAM)
+#define FPGA_BUILTIN_IS_CORE 1
+#else
+#define FPGA_BUILTIN_IS_CORE 0
+#endif
+static volatile bool    acq_design_ours = false;
+static volatile uint8_t acq_edge_reg    = 0x00;
+uint8_t fpga_acq_edge_reg_get(void) { return acq_edge_reg; }
 /* Single-channel interleave (2026-11-10, bench B4 on unit #2): with mask 1
  * both converters sample CH1 half a sample apart; at timebase <= 3 (stock's
  * gate, 0x080252B2) the acq task merges them into a 250 MS/s record. Runtime
@@ -4709,6 +4723,15 @@ static void fpga_warmtest_acq_task(void *pv)
             }
         }
         acq_single_done_pub = single_done;
+        {   /* trigger edge register: our core only (dsp/trig_edge_reg.h) */
+            const uint8_t want = trig_edge_reg_code(acq_design_ours,
+                                     ss_acq != NULL && ss_acq->trigger.edge == TRIG_FALLING);
+            if (want != acq_edge_reg) {
+                fpga_scope_write_reg(0x07, want);
+                acq_edge_reg = want;
+                acq_reprime_req = true;        /* the write dropped the capture */
+            }
+        }
         if (acq_reprime_req) {                 /* a register write dropped the capture */
             acq_reprime_req = false;
             capture_in_flight = false;
@@ -5529,6 +5552,10 @@ bb_restore_pins:
      * is nothing to arm. The boot path asks for the arm writes even so when a
      * running design could not be removed (bb_arm_live): that design stays. */
     if (bb_outcome != 0 && !(bb_outcome == 1 && bb_arm_live)) {
+        if (bb_outcome == 2) {               /* the FPGA is empty now */
+            acq_design_ours = false;
+            acq_edge_reg = 0x00;
+        }
         if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
         return 0;
     }
@@ -5572,6 +5599,12 @@ bb_restore_pins:
         for (unsigned i = 0; i < 4; i++)
             fpga.scope_status[i] = spi3_xfer(0xFF);
         SPI3_CS_DEASSERT();
+        /* The burst wrote 07 00. Whether the edge register may be used from
+         * here on: only on our own core, and only when this upload was ours
+         * and ended with DONE (a design that stayed is unknown). */
+        acq_edge_reg = 0x00;
+        acq_design_ours = trig_edge_reg_design_ours(FPGA_BUILTIN_IS_CORE, bb_outcome == 0,
+                                                    (fpga.cfg_status_reg[2] & 0x20u) != 0u);
     }
     fpga_reconcile_timebase_after_arm();
     spi3_set_br(0);                      /* restore /2 for normal acquisition */
@@ -6342,6 +6375,8 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     for (unsigned i = 0; i < 4; i++)
         fpga.scope_status[i] = spi3_xfer(0xFF);
     SPI3_CS_DEASSERT();
+    acq_edge_reg = 0x00;                 /* the burst wrote 07 00 */
+    acq_design_ours = false;             /* this path does not vouch for the design */
 
     fpga_reconcile_timebase_after_arm();
 
