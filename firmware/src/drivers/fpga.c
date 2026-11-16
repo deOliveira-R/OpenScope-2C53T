@@ -5639,7 +5639,16 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
     }
     if (outcome == 1) return FPGA_RELOAD_NOT_EMPTY;
     if (outcome == 2) return FPGA_RELOAD_SRC_FAIL;
-    return (status & (1u << 13)) ? FPGA_RELOAD_OK : FPGA_RELOAD_NOT_DONE;
+    if (!(status & (1u << 13))) return FPGA_RELOAD_NOT_DONE;
+    /* The arm burst left reg 0x08 at 0xAD and reg 0x06 at CH1; the timebase
+     * was put back above. Hand the trigger level and source back to the scope
+     * state too (at boot main() does this after the settings are restored),
+     * or the design fires at a level and on a channel the UI does not show. */
+    if (sched_running) {
+        (void)fpga_apply_trigger_level(scope_state_get()->trigger.level);
+        (void)fpga_apply_trigger_source();
+    }
+    return FPGA_RELOAD_OK;
 #endif
 }
 
