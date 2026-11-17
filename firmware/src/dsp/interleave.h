@@ -61,6 +61,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../util/units.h"   /* ppm_period_t */
+
 #define INTERLEAVE_N        1024u   /* record length in and out */
 #define INTERLEAVE_WIN_LO    256u   /* first converter sample used */
 
@@ -79,8 +81,9 @@ typedef struct {
     int16_t knot_a[IL_KNOTS_MAX];
     int16_t knot_b[IL_KNOTS_MAX];
     /* B's deviation from half a converter period, ppm of a period
-     * (unit #2: 0.451 -> -49000). 0 = no skew correction. */
-    int32_t skew_ppm;
+     * (unit #2: 0.451 -> -49000). 0 = no skew correction. A ppm_period_t,
+     * never a gain x 1e6 (gain_e6_t): the two were both called "ppm". */
+    ppm_period_t skew;
     float   skew_taps[IL_SKEW_TAPS_N];   /* from interleave_skew_set() */
 } interleave_corr_t;
 
@@ -97,9 +100,9 @@ bool interleave_knots_valid(uint8_t n, const int16_t *a, const int16_t *b);
 bool interleave_corr_set_knots(interleave_corr_t *c, uint8_t n,
                                const int16_t *a, const int16_t *b);
 
-/* Set the skew correction (|ppm| <= IL_SKEW_PPM_MAX; 0 = off) and compute its
- * taps. Refuses out of range and leaves the correction as it was. */
-bool interleave_skew_set(interleave_corr_t *c, int32_t ppm);
+/* Set the skew correction (|skew.ppm| <= IL_SKEW_PPM_MAX; 0 = off) and compute
+ * its taps. Refuses out of range and leaves the correction as it was. */
+bool interleave_skew_set(interleave_corr_t *c, ppm_period_t skew);
 
 /* Level map of one B value into A's units, unrounded. */
 float interleave_map_b(float b, const interleave_corr_t *c);

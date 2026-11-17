@@ -236,7 +236,7 @@ static void rec_channel(sf_rec_ch_t *c, const acq_cfg_t *cap, uint8_t ch)
     const float pf_now = scope_cal_probe_factor(chn);
     c->ch              = ch;
     c->vdiv_idx        = idx;
-    c->zero_code       = scope_measure_zero_for(scope_vpos_active(), cap->pos[ch], (int)FPGA_ADC_OFFSET);
+    c->zero_code       = scope_measure_zero_for(scope_vpos_active(), cap->pos[ch]).v;
     c->coupling        = cap->coupling[ch];
     c->position        = cap->pos[ch];
     c->probe_x         = (uint16_t)(pf_cap + 0.5f);

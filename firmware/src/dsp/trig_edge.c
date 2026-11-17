@@ -45,7 +45,7 @@ int trig_edge_find_seam(const volatile uint8_t *rec, uint32_t *k_out)
     return 1;
 }
 
-trig_edge_class_t trig_edge_classify(const volatile uint8_t *rec, int crossing)
+trig_edge_class_t trig_edge_classify(const volatile uint8_t *rec, rec_code_t crossing)
 {
     /* 1. The seam (see trig_edge_find_seam). */
     uint32_t k = 0;
@@ -54,7 +54,7 @@ trig_edge_class_t trig_edge_classify(const volatile uint8_t *rec, int crossing)
 
     /* 2. The crossing nearest the trigger index, on a 4-sample running sum
      *    (r = the un-rotated record, r[0] oldest). */
-    int c4 = 4 * crossing;
+    int c4 = 4 * (int)crossing.v;
     int best = -1;
     for (int j = TRIG_POS - SEARCH; j < TRIG_POS + SEARCH; j++) {
         int a = at(rec, k, j - 1) + at(rec, k, j) + at(rec, k, j + 1) + at(rec, k, j + 2);
@@ -177,8 +177,9 @@ int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k)
     return trig_edge_find_seam(rec, k) || trig_edge_find_seam_lpc(rec, k);
 }
 
-int trig_edge_anchor(const volatile uint8_t *rec, int c, int rising)
+int trig_edge_anchor(const volatile uint8_t *rec, rec_code_t crossing, int rising)
 {
+    const int c = (int)crossing.v;
     if (rec == 0 || c < 4 || c > 251)
         return -1;
     const int hyst = 3;

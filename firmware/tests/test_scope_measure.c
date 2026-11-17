@@ -534,8 +534,8 @@ static int test_params(void)
     for (int i = 0; i < N; i++) buf[i] = ((i + 80) % 100 < 30) ? 200 : 60;
     scope_measure_record(buf, N, &m);
 
-    ctx.sample_rate = 1.0e6f; ctx.volts_per_count = 0.01f;
-    ctx.freq_hz = 10000.0f;   ctx.zero_count = 128u;
+    ctx.sample_rate.hz = 1.0e6f; ctx.volts_per_count.vpc = 0.01f;
+    ctx.freq_hz = 10000.0f;   ctx.zero_count.v = 128u;
     ctx.record_whole = false;
     scope_params_compute(&m, &ctx, &p);
 
@@ -569,7 +569,7 @@ static int test_params(void)
 
     /* THE RECORD'S RATE: an interleaved record is 2x. Same samples, double the
      * rate => widths halve. Passing the table rate for it would be 2x wrong. */
-    ctx.sample_rate = 2.0e6f;
+    ctx.sample_rate.hz = 2.0e6f;
     scope_params_compute(&m, &ctx, &p);
     bad += chk("prm: doubled record rate halves Wid+",
                near(p.v[SCOPE_PRM_WID_POS].value, 15e-6f, 1e-6f));
@@ -577,13 +577,13 @@ static int test_params(void)
                near(p.v[SCOPE_PRM_WID_NEG].value, 35e-6f, 1e-6f));
 
     /* No rate: samples, never seconds. */
-    ctx.sample_rate = 0.0f;
+    ctx.sample_rate.hz = 0.0f;
     scope_params_compute(&m, &ctx, &p);
     bad += chk("prm: no rate -> Wid+ in SAMPLES", p.v[SCOPE_PRM_WID_POS].unit == SCOPE_PRM_UNIT_SAMPLES &&
                near(p.v[SCOPE_PRM_WID_POS].value, 30.0f, 1.0f));
 
     /* Uncalibrated: counts, absolute for levels. */
-    ctx.volts_per_count = 0.0f; ctx.freq_hz = 0.0f;
+    ctx.volts_per_count.vpc = 0.0f; ctx.freq_hz = 0.0f;
     scope_params_compute(&m, &ctx, &p);
     bad += chk("prm: k=0 -> Vmax in counts", p.v[SCOPE_PRM_VMAX].unit == SCOPE_PRM_UNIT_COUNTS &&
                p.v[SCOPE_PRM_VMAX].value == 200.0f);
@@ -600,7 +600,7 @@ static int test_params(void)
      * record, or both are "--" (a torn record's crossings: EXP-13/16). */
     {
         scope_prm_ctx_t c2 = ctx;
-        c2.sample_rate = 49.9e6f; c2.freq_hz = 0.0f; c2.record_whole = true;
+        c2.sample_rate.hz = 49.9e6f; c2.freq_hz = 0.0f; c2.record_whole = true;
         scope_params_compute(&m, &c2, &p);
         bad += chk("prm: whole record, no spectral -> Freq = rate / crossing period",
                    p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_HZ &&
@@ -628,7 +628,7 @@ static int test_params(void)
     {
         uint8_t b2[N]; scope_measure_t m2; scope_params_t p2, p1;
         for (int i = 0; i < N; i++) b2[i] = (uint8_t)(buf[i] / 2 + 40);
-        ctx.sample_rate = 1.0e6f;
+        ctx.sample_rate.hz = 1.0e6f;
         scope_params_compute(&m, &ctx, &p1);
         scope_measure_record(b2, N, &m2);
         scope_params_compute(&m2, &ctx, &p2);
@@ -642,7 +642,7 @@ static int test_params(void)
     for (int i = 0; i < N; i++)
         buf[i] = (uint8_t)lroundf(128.0f + 50.0f * sinf(2.0f * 3.14159265f * (float)i / 64.0f));
     scope_measure_record(buf, N, &m);
-    ctx.volts_per_count = 0.02f; ctx.freq_hz = 0.0f; ctx.sample_rate = 1.0e6f;
+    ctx.volts_per_count.vpc = 0.02f; ctx.freq_hz = 0.0f; ctx.sample_rate.hz = 1.0e6f;
     scope_params_compute(&m, &ctx, &p);
     bad += chk("prm: sine Vrms = A/sqrt2 (50*0.02/1.4142 = 0.7071 V)",
                near(p.v[SCOPE_PRM_VRMS].value, 0.7071f, 0.01f));
@@ -655,7 +655,7 @@ static int test_params(void)
     /* A flat record: levels are still reportable, duty/widths/amp are not. */
     memset(buf, 128, sizeof buf);
     scope_measure_record(buf, N, &m);
-    ctx.volts_per_count = 0.02f;
+    ctx.volts_per_count.vpc = 0.02f;
     scope_params_compute(&m, &ctx, &p);
     bad += chk("prm: flat -> Duty refused", p.v[SCOPE_PRM_DUTY_POS].unit == SCOPE_PRM_UNIT_NONE);
     bad += chk("prm: flat -> Wid refused", p.v[SCOPE_PRM_WID_POS].unit == SCOPE_PRM_UNIT_NONE);
@@ -730,7 +730,7 @@ static int test_zero_for(void)
     int bad = 0;
     struct { int cal, pos, want; } c[] = { {1, 0, 100}, {1, 50, 150}, {1, -100, 0}, {0, 50, 128} };
     for (unsigned i = 0; i < sizeof(c) / sizeof(c[0]); i++) {
-        int got = scope_measure_zero_for(c[i].cal, c[i].pos, -28);
+        int got = scope_measure_zero_for(c[i].cal, c[i].pos).v;
         if (got != c[i].want) {
             printf("   FAIL zero_for(cal=%d, pos=%d) = %d, want %d\n", c[i].cal, c[i].pos, got, c[i].want);
             bad++;

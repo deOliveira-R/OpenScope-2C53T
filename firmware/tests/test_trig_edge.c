@@ -17,6 +17,15 @@
 #include "fixtures/trig_edge_records.h"
 
 static int fails = 0;
+
+/* Fixture and synthetic levels are record codes; the typed API takes
+ * rec_code_t. rc_sat() is for levels deliberately pushed off the signal: a
+ * record code cannot exceed 255, so they saturate there. */
+#define RC(x) ((rec_code_t){ (uint8_t)(x) })
+static rec_code_t rc_sat(int x)
+{
+    return RC(x < 0 ? 0 : x > 255 ? 255 : x);
+}
 #define CHECK(cond, ...) do { if (cond) { printf("  PASS: "); } else { printf("  FAIL: "); fails++; } \
                               printf(__VA_ARGS__); printf("\n"); } while (0)
 
@@ -51,7 +60,7 @@ int main(void)
     printf("[1] real records, unit #1 (EXP-55/56)\n");
     int ok = 0, wrong = 0, unk = 0;
     for (unsigned i = 0; i < EDGE_FIXTURE_N; i++) {
-        int g = label_of(trig_edge_classify(EDGE_FIXTURES[i].rec, EDGE_FIXTURES[i].crossing));
+        int g = label_of(trig_edge_classify(EDGE_FIXTURES[i].rec, RC(EDGE_FIXTURES[i].crossing)));
         if (g == 0) unk++;
         else if (g == EDGE_FIXTURES[i].label) ok++;
         else { wrong++; printf("    wrong: %s\n", EDGE_FIXTURES[i].name); }
@@ -62,7 +71,7 @@ int main(void)
     printf("[2] negative control: level moved off the signal\n");
     int classified = 0;
     for (unsigned i = 0; i < EDGE_FIXTURE_N; i++)
-        if (trig_edge_classify(EDGE_FIXTURES[i].rec, EDGE_FIXTURES[i].crossing + 150) != TRIG_EDGE_CLASS_UNKNOWN)
+        if (trig_edge_classify(EDGE_FIXTURES[i].rec, rc_sat(EDGE_FIXTURES[i].crossing + 150)) != TRIG_EDGE_CLASS_UNKNOWN)
             classified++;
     CHECK(classified == 0, "no record classified at a level it never crosses (%d)", classified);
 
@@ -75,7 +84,7 @@ int main(void)
             for (int i = 0; i < 100; i++) {
                 int want = (i & 1) ? -1 : 1;
                 synth(rec, frac[f], want, sq, 25.0 + urand() * 35.0);
-                int g = label_of(trig_edge_classify(rec, 128));
+                int g = label_of(trig_edge_classify(rec, RC(128)));
                 if (g == 0) s_unk++; else if (g == want) s_ok++; else s_wrong++;
             }
     CHECK(s_wrong == 0, "2400 fractional-period records: %d correct, %d wrong, %d unknown", s_ok, s_wrong, s_unk);
@@ -83,7 +92,7 @@ int main(void)
     int int_classified = 0;
     for (int i = 0; i < 200; i++) {
         synth(rec, (double)(1 + (i % 8)), (i & 1) ? -1 : 1, i & 2, 40.0);
-        if (trig_edge_classify(rec, 128) != TRIG_EDGE_CLASS_UNKNOWN) int_classified++;
+        if (trig_edge_classify(rec, RC(128)) != TRIG_EDGE_CLASS_UNKNOWN) int_classified++;
     }
     CHECK(int_classified == 0, "integer periods (seam invisible) refused, not guessed (%d classified)", int_classified);
 
@@ -261,7 +270,7 @@ int main(void)
             for (int j = 0; j < 1024; j++) tmp[j] = EDGE_FIXTURES[i].rec[(j + k) & 1023u];
             int rising = EDGE_FIXTURES[i].label > 0;
             int c = EDGE_FIXTURES[i].crossing;
-            int a = trig_edge_anchor(tmp, c, rising);
+            int a = trig_edge_anchor(tmp, RC(c), rising);
             if (a < 0) continue;
             anch++;
             /* The anchor arms from 448: search the same span. It takes the
@@ -307,6 +316,28 @@ int main(void)
         trig_edge_rotate_left(small, 5u, 7u);    /* k mod n = 2 */
         CHECK(small[0] == 2 && small[1] == 3 && small[2] == 4 && small[3] == 0 && small[4] == 1,
               "odd length, k >= n taken mod n");
+    }
+
+    printf("[11] a comparator code below the ADC offset: record level 0, no trigger found\n");
+    {
+        /* Before the typed API the callers passed code - 28 unclamped (a
+         * negative int); trig_level_rec() clamps it to record 0. Both must
+         * mean "no crossing": a record resting on the low rail (bytes at 0)
+         * is not a falling edge through a level the record cannot go below. */
+        static uint8_t rail[1024];
+        for (int i = 0; i < 1024; i++)
+            rail[i] = (uint8_t)((i / 16) & 1 ? 0 : 60);       /* square 0..60, low half on the rail */
+        const rec_code_t below = trig_level_rec((adc_raw_t){ 10 });
+        CHECK(below.v == 0, "code 10 (< %d) is record level 0", ADC_REC_OFFSET);
+        CHECK(trig_level_rec((adc_raw_t){ 128 }).v == 100, "code 128 is record level 100");
+        CHECK(trig_edge_anchor(rail, below, 0) == -1 && trig_edge_anchor(rail, below, 1) == -1,
+              "no anchor on either edge at level 0 with the record on the low rail");
+        CHECK(trig_edge_anchor(rail, RC(30), 0) >= 0 && trig_edge_anchor(rail, RC(30), 1) >= 0,
+              "the same record anchors on both edges at level 30 (control)");
+        int cls = 0;
+        for (unsigned i = 0; i < EDGE_FIXTURE_N; i++)
+            if (trig_edge_classify(EDGE_FIXTURES[i].rec, below) != TRIG_EDGE_CLASS_UNKNOWN) cls++;
+        CHECK(cls == 0, "no real record classifies at level 0 (%d did)", cls);
     }
 
     printf("\n%s\n", fails ? "FAILED" : "all passed");

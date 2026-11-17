@@ -2844,14 +2844,14 @@ static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
 {
     const scope_state_t *ss = scope_state_get();
     const channel_state_t *c = (ch == 1u) ? &ss->ch1 : &ss->ch2;
-    const uint8_t zero = scope_measure_zero_for(scope_vpos_active(), c->position,
-                                                (int)FPGA_ADC_OFFSET);
+    const uint8_t zero = scope_measure_zero_for(scope_vpos_active(), c->position).v;
     const float vpc = scope_cal_volts_per_count(ch, c->vdiv_idx);
     if (!(vpc > 0.0f)) {
         snprintf(out, n, "code %u (zero %u, no cal)", (unsigned)code, (unsigned)zero);
         return;
     }
-    const float v = scope_roll_point_volts(code, zero, vpc);
+    const float v = scope_roll_point_volts((rec_code_t){ code }, (rec_code_t){ zero },
+                                           (volts_per_count_t){ vpc }).v;
     long mv = (long)(v * 1000.0f + (v >= 0.0f ? 0.5f : -0.5f));
     const char sign = (mv < 0) ? '-' : '+';
     if (mv < 0) mv = -mv;
@@ -2873,7 +2873,7 @@ static void roll_print_status(void)
     const int ov = fpga_roll_code_override_get();
     usb_debug_printf("roll: %s  step %u = %s/div, %lu ms/point  (ui %s, acq %s)\r\n",
                      ss->roll ? "ON" : "off", (unsigned)ss->roll_step, lbl,
-                     (unsigned long)scope_roll_period_ms(ss->roll_step),
+                     (unsigned long)scope_roll_period_ms(ss->roll_step).ms,
                      ss->roll ? "roll" : "Y-T",
                      fpga_roll_active() ? "op03" : "04/05");
     usb_debug_printf("reg 0x01 = 0x%02X (last apply; entry byte %s%02X)\r\n",
@@ -2902,8 +2902,7 @@ static void roll_print_status(void)
          * for another range) reads off by exactly the difference. */
         for (uint8_t ch = 1u; ch <= 2u; ch++) {
             const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
-            const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position,
-                                                     (int)FPGA_ADC_OFFSET);
+            const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position).v;
             uint8_t bk = 0, rg = 0;
             uint16_t dc = 0;
             const bool w = scope_vpos_last(ch, &bk, &rg, &dc);
@@ -3070,11 +3069,11 @@ static void cmd_fpga_scope_measure(const char *args)
             scope_params_t pp;
             /* Only the code in force describes the record in hand; with a
              * mismatch the widths stay in samples, like Freq stays "-". */
-            ctx.sample_rate     = tb_ok ? fs : 0.0f;
+            ctx.sample_rate.hz  = tb_ok ? fs : 0.0f;
             ctx.record_whole    = fpga_acq_record_time_ordered();
-            ctx.volts_per_count = k1;
+            ctx.volts_per_count.vpc = k1;
             ctx.freq_hz         = freq_hz;
-            ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
+            ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position);
             scope_params_compute(&m1, &ctx, &pp);
             usb_debug_printf("P %2lu", (unsigned long)i);
             for (unsigned id = 0; id < SCOPE_PRM_COUNT; id++) {
@@ -3533,7 +3532,7 @@ static void cmd_cal_user(const char *args)
                          u.table_crc == live ? "matches" : "STALE vs", (unsigned long)live,
                          u.il_present ? "gain " : "none");
         if (u.il_present)
-            usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_ppm, (long)u.il_off_e4);
+            usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_e6, (long)u.il_off_e4);
         usb_debug_printf(", %u knots, skew %ld ppm\r\n", (unsigned)u.il_n_knots, (long)u.il_skew_ppm);
     }
     usb_debug_printf("  boot: %s", usercal_status_str(r->load_st));

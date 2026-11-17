@@ -49,6 +49,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../util/units.h"   /* rec_code_t, sample_rate_t, volts_per_count_t */
+
 /*
  * A record whose peak-to-peak is below this is treated as "no discernible
  * signal": the mid-level threshold would be sitting inside the noise, so duty
@@ -208,8 +210,8 @@ typedef struct {
 } scope_params_t;
 
 typedef struct {
-    float sample_rate;   /* S/s of THIS record (fpga_record_sample_rate()); <=0 = unknown */
-    float volts_per_count;/* probe-tip V per ADC count; <=0 = uncalibrated  */
+    sample_rate_t sample_rate;   /* S/s of THIS record (fpga_record_sample_rate()); <=0 = unknown */
+    volts_per_count_t volts_per_count;/* probe-tip V per ADC count; <=0 = uncalibrated */
     float freq_hz;       /* the SPECTRAL estimate (scope_freq), 0 = declined.
                           * The crossing period was 5-50% out (EXP-13) because
                           * records were torn (EXP-16): it is dressed in Hz
@@ -220,7 +222,7 @@ typedef struct {
     bool  record_whole;  /* the record is one continuous stretch of time:
                           * un-rotated at its seam (fpga_acq_record_time_
                           * ordered()), or MCU-paced points (Roll)            */
-    uint8_t zero_count;  /* ADC code of 0 V. Vmax/Vmin/Avg are volts relative to
+    rec_code_t zero_count;  /* record code of 0 V. Vmax/Vmin/Avg are volts relative to
                           * it; SCOPE_MEASURE_ZERO_COUNT when the channel is
                           * centred (`fpga scope center`).                   */
 } scope_prm_ctx_t;
@@ -231,14 +233,17 @@ typedef struct {
 
 /* Record code of 0 V for a channel. With the stock calibration page in use
  * (scope_vpos), the offset DAC puts 0 V at raw 128 + pos, and records are
- * raw + adc_offset (FPGA_ADC_OFFSET, -28), so 0 V sits at 100 + pos. Without
- * the page the legacy centring targets record 128. Clamped to 0..255. */
-static inline uint8_t scope_measure_zero_for(int calibrated, int pos, int adc_offset)
+ * raw - ADC_REC_OFFSET (units.h; a constant, not a parameter), so 0 V sits
+ * at 100 + pos. Without the page the legacy centring targets record 128.
+ * Clamped to 0..255. */
+static inline rec_code_t scope_measure_zero_for(int calibrated, int pos)
 {
-    int z = calibrated ? 128 + adc_offset + pos : (int)SCOPE_MEASURE_ZERO_COUNT;
+    rec_code_t r;
+    int z = calibrated ? 128 - ADC_REC_OFFSET + pos : (int)SCOPE_MEASURE_ZERO_COUNT;
     if (z < 0) z = 0;
     if (z > 255) z = 255;
-    return (uint8_t)z;
+    r.v = (uint8_t)z;
+    return r;
 }
 
 /* Compute all 12 from an analysed record. m == NULL or !m->valid refuses all. */

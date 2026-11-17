@@ -14,8 +14,8 @@
  *
  * RECORD CONVENTIONS (OpenScope, not stock)
  * ---------------------------------------------------------------------------
- * A record byte is clamp(raw - 28) (fpga.c, FPGA_ADC_OFFSET), so it spans
- * 0..227 and both ends are rails: a byte at 0 may be any raw <= 28. The first
+ * A record byte is a rec_code_t value (units.h): clamp(raw - ADC_REC_OFFSET),
+ * rec_from_raw(), so it spans 0..REC_CODE_MAX (0..227) and both ends are rails: a byte at 0 may be any raw <= 28. The first
  * SCOPE_RECORD_HEAD_SKIP samples are invalid (scope_record.h). With the
  * calibration page in use, 0 V sits at record 100 + pos (commit 113ce11:
  * stock's raw 128 + pos zero reference, ADDENDUM_A S7).
@@ -61,11 +61,13 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../util/units.h"   /* ADC_REC_OFFSET, REC_CODE_MAX */
+
 #define SC_CH               2u
 #define SC_RANGES           10u
 #define SC_TB_CODES         21u
-#define SC_REC_MAX          227u   /* clamp(255 - 28): the upper rail */
-#define SC_ZERO_REC         100    /* record level of 0 V at pos 0 (page in use) */
+#define SC_REC_MAX          ((unsigned)REC_CODE_MAX)   /* 227: the upper rail */
+#define SC_ZERO_REC         (128 - ADC_REC_OFFSET)     /* 100: record level of 0 V at pos 0 (page in use) */
 #define SC_POS_MAX          100
 #define SC_COUNTS_PER_DIV   25     /* codes per division at the nominal gain (SCOPE_CAL_COUNTS_PER_DIV) */
 #define SC_MEAN_N           500u   /* stock's 500-sample mean (0x08022E6C) */
@@ -104,8 +106,13 @@ uint16_t sc_period_from_crossings(uint16_t *xs, uint16_t n, uint16_t head_skip,
                                   uint16_t len, float *period);
 
 /* Inverse of fpga_trigger_code_from_level(): the UI level (-100..100) whose
- * reg-0x08 code is `raw`. raw = record + 28. */
+ * reg-0x08 code is `raw` (ADC raw units, fractional: the engines work on
+ * means and midlines, so these two take a float and not an adc_raw_t /
+ * rec_code_t). */
 int sc_level_for_raw(float raw);
+/* The same for a level given in RECORD units: raw = record + ADC_REC_OFFSET.
+ * The offset is added here and nowhere else in this module. */
+int sc_level_for_rec(float rec);
 
 /* ── 50 % centre (long OK) ─────────────────────────────────────────── */
 /* Stock 0x0800DA3A: with both channels on (ms[0x14] == 3, ms[0x34] == 0)

@@ -60,6 +60,8 @@
 
 #include <stdint.h>
 
+#include "../util/units.h"   /* sample_rate_t, tb_code_t, cursor_order_t */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -147,33 +149,46 @@ scope_cursor_conf_t scope_cursor_cal_conf(uint8_t channel, uint8_t range_idx);
  * an interleaved record is published at twice the per-converter rate, so the
  * caller passes fpga_record_sample_rate() (when the record in hand is the one
  * the timebase code describes) and the table tier of that code as `conf`.
- * fs <= 0 behaves as "no rate" exactly like an unmeasured code. The tb_code
- * forms below are these with the table's own rate.
+ * fs.hz <= 0 behaves as "no rate" exactly like an unmeasured code. The
+ * tb_code forms below are these with the table's own rate.
+ *
+ * THE SIGN IS AN ARGUMENT (units.h cursor_order_t). The two cursors go in as
+ * positions, first then second, and the caller names the order of the
+ * difference: the screen's dt/dV are CUR_SECOND_MINUS_FIRST, the shell
+ * report's stock-labelled X1-X2 / Y1-Y2 are CUR_FIRST_MINUS_SECOND. A caller
+ * can no longer subtract the wrong way round before the call (69b47cc).
  */
-scope_cursor_conf_t scope_cursor_tb_conf(uint8_t tb_code);
-scope_cursor_reading_t scope_cursor_delta_t_fs(float fs, scope_cursor_conf_t conf,
-                                               int32_t dx_px);
-scope_cursor_reading_t scope_cursor_one_over_dt_fs(float fs, scope_cursor_conf_t conf,
-                                                   int32_t dx_px);
+scope_cursor_conf_t scope_cursor_tb_conf(tb_code_t tb_code);
+scope_cursor_reading_t scope_cursor_delta_t_fs(sample_rate_t fs, scope_cursor_conf_t conf,
+                                               int32_t first_col, int32_t second_col,
+                                               cursor_order_t order);
+scope_cursor_reading_t scope_cursor_one_over_dt_fs(sample_rate_t fs, scope_cursor_conf_t conf,
+                                                   int32_t first_col, int32_t second_col,
+                                                   cursor_order_t order);
 
 /* X1 / X2 (C7): time of a screen column relative to the reference column
  * (the trigger point), signed; samples when there is no rate. */
-scope_cursor_reading_t scope_cursor_x_fs(float fs, scope_cursor_conf_t conf,
+scope_cursor_reading_t scope_cursor_x_fs(sample_rate_t fs, scope_cursor_conf_t conf,
                                          int32_t col, int32_t ref_col);
 
 /* Y1 / Y2 (C7): level of a screen row relative to 0 V — volts when the range
  * is calibrated, counts otherwise, NONE (--) unless map->mid_known. */
 scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t row);
 
-/* Time between two vertical cursors, dx screen columns apart (signed). */
-scope_cursor_reading_t scope_cursor_delta_t(uint8_t tb_code, int32_t dx_px);
+/* Time between two vertical cursors, dx screen columns apart (signed), at
+ * the table rate of `tb_code`. */
+scope_cursor_reading_t scope_cursor_delta_t(tb_code_t tb_code, int32_t dx_px);
 
 /* 1/dt — always positive, and NONE when dx is 0 or the code has no rate. */
-scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px);
+scope_cursor_reading_t scope_cursor_one_over_dt(tb_code_t tb_code, int32_t dx_px);
 
-/* Voltage between two horizontal cursors, dy screen rows apart (signed). */
+/* Voltage between two horizontal cursors at screen rows first_row and
+ * second_row, in `order`. Rows grow downwards and volts upwards: the row
+ * difference is taken by cursor_dy_volts_sign() (units.h), so the second
+ * cursor BELOW the first reads negative under CUR_SECOND_MINUS_FIRST. */
 scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,
-                                            int32_t dy_px);
+                                            int32_t first_row, int32_t second_row,
+                                            cursor_order_t order);
 
 /*
  * Render a reading: "1.23ms", "~213us" (provisional), "-45smp", "37cnt",

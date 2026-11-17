@@ -21,6 +21,9 @@
  */
 #include "../src/dsp/interleave.h"
 
+/* The skew is a ppm_period_t (units.h): ppm of one converter period. */
+#define PPM(x) ((ppm_period_t){ (x) })
+
 #include <math.h>
 #include <stdio.h>
 #include <stdbool.h>
@@ -244,10 +247,10 @@ static void test_skew_mechanics(void)
 {
     interleave_corr_t c;
     interleave_corr_identity(&c);
-    CHECK(!interleave_skew_set(&c, IL_SKEW_PPM_MAX + 1), "out-of-range skew accepted");
-    CHECK(!interleave_skew_set(&c, -IL_SKEW_PPM_MAX - 1), "out-of-range skew accepted");
-    CHECK(c.skew_ppm == 0, "refused skew changed the state");
-    CHECK(interleave_skew_set(&c, -49000) && c.skew_ppm == -49000, "skew refused");
+    CHECK(!interleave_skew_set(&c, PPM(IL_SKEW_PPM_MAX + 1)), "out-of-range skew accepted");
+    CHECK(!interleave_skew_set(&c, PPM(-IL_SKEW_PPM_MAX - 1)), "out-of-range skew accepted");
+    CHECK(c.skew.ppm == 0, "refused skew changed the state");
+    CHECK(interleave_skew_set(&c, PPM(-49000)) && c.skew.ppm == -49000, "skew refused");
     double sum = 0;
     for (unsigned j = 0; j < IL_SKEW_TAPS_N; j++) sum += c.skew_taps[j];
     CHECK(fabs(sum - 1.0) < 1e-6, "taps sum %.9f, want 1", sum);
@@ -262,7 +265,7 @@ static void test_skew_mechanics(void)
     {   /* knots keep the skew */
         interleave_corr_t k; bench_knots(&k);
         CHECK(interleave_corr_set_knots(&c, k.n_knots, k.knot_a, k.knot_b), "knots refused");
-        CHECK(c.skew_ppm == -49000, "setting knots dropped the skew");
+        CHECK(c.skew.ppm == -49000, "setting knots dropped the skew");
     }
     interleave_merge(a, b, &c);
     int bad = 0;
@@ -282,14 +285,14 @@ static void test_skew_mechanics(void)
     /* DC: a level stays where the map put it. */
     for (int lvl = 20; lvl <= 220; lvl += 50) {
         memset(a, lvl, N); memset(b, lvl, N);
-        interleave_corr_t s; interleave_corr_identity(&s); interleave_skew_set(&s, -49000);
+        interleave_corr_t s; interleave_corr_identity(&s); interleave_skew_set(&s, PPM(-49000));
         interleave_merge(a, b, &s);
         int moved = 0;
         for (uint32_t i = 0; i < N; i++) moved += (a[i] != lvl);
         CHECK(moved == 0, "DC %d moved at %d samples through the skew FIR", lvl, moved);
     }
     /* skew 0 = identity */
-    CHECK(interleave_skew_set(&c, 0) && c.skew_ppm == 0, "skew off refused");
+    CHECK(interleave_skew_set(&c, PPM(0)) && c.skew.ppm == 0, "skew off refused");
 }
 
 /* ── 8. image spur ────────────────────────────────────────────────────── */
@@ -326,7 +329,7 @@ static void test_image_spur(void)
     static const double fs[] = { 1.0, 10.0, 30.0, 50.0 };
     interleave_corr_t full;
     bench_knots(&full);
-    interleave_skew_set(&full, -49000);
+    interleave_skew_set(&full, PPM(-49000));
     interleave_corr_t lin;
     interleave_corr_identity(&lin);
     lin.gain = 0.9809f; lin.offset = 3.89f;

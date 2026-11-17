@@ -4072,8 +4072,8 @@ uint8_t fpga_interleave_knots_get(int16_t *a, int16_t *b)
     }
     return n;
 }
-bool fpga_interleave_skew_set(int32_t ppm) { return interleave_skew_set(&acq_il_corr, ppm); }
-int32_t fpga_interleave_skew_get(void)     { return acq_il_corr.skew_ppm; }
+bool fpga_interleave_skew_set(int32_t ppm) { return interleave_skew_set(&acq_il_corr, (ppm_period_t){ ppm }); }
+int32_t fpga_interleave_skew_get(void)     { return acq_il_corr.skew.ppm; }
 void fpga_interleave_corr_get(float *gain, float *offset)
 {
     if (gain)   *gain = acq_il_corr.gain;
@@ -4558,7 +4558,7 @@ static bool     roll_tick_armed = false;
 static void fpga_roll_service(void)
 {
     const scope_state_t *ss = scope_state_get();
-    const uint32_t period = pdMS_TO_TICKS(scope_roll_period_ms(acq_roll_step));
+    const uint32_t period = pdMS_TO_TICKS(scope_roll_period_ms(acq_roll_step).ms);
     if (ss == NULL || !ss->running || period == 0u) {
         roll_tick_armed = false;
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -4601,8 +4601,8 @@ static void fpga_roll_service(void)
      * amplitude correction g = (m-28)/150 is applied in volts, exactly where
      * the Y-T trace gets it (scope_roll.h). */
     scope_roll_fifo_push(&acq_roll_fifo,
-                         scope_roll_record_code(rx[2], (int)FPGA_ADC_OFFSET),
-                         scope_roll_record_code(rx[4], (int)FPGA_ADC_OFFSET));
+                         scope_roll_record_code((adc_raw_t){ rx[2] }),
+                         scope_roll_record_code((adc_raw_t){ rx[4] }));
     acq_roll_stats.reads++;
     fpga.spi3_ok_count++;                /* the display's new-data signal */
     fpga.spi3_timeout_count = 0;
@@ -4629,7 +4629,7 @@ static void fpga_roll_service(void)
             const scope_roll_trig_act_t act = scope_roll_trig_step(
                 &acq_roll_fifo, (uint8_t)sw->trigger.mode,
                 (sw->trigger.source == TRIG_SRC_CH2) ? 1u : 0u, 0,
-                (uint8_t)lv,
+                (rec_code_t){ (uint8_t)lv },
                 (sw->trigger.edge == TRIG_FALLING) ? SCOPE_ROLL_EDGE_FALLING
                                                    : SCOPE_ROLL_EDGE_RISING);
             if (act != SCOPE_ROLL_TRIG_NONE) {
@@ -4947,7 +4947,7 @@ static void fpga_warmtest_acq_task(void *pv)
              * UNKNOWN (committed unfiltered), not as a wrong verdict. */
             const volatile uint8_t *wsrc =
                 (ss_acq != NULL && ss_acq->trigger.source == TRIG_SRC_CH2) ? w2 : w1;
-            trig_edge_class_t ec = trig_edge_classify(wsrc, (int)acq_trig_code + (int)FPGA_ADC_OFFSET);
+            trig_edge_class_t ec = trig_edge_classify(wsrc, trig_level_rec((adc_raw_t){ acq_trig_code }));
             bool want_rising = (fpga_stock_trigger_edge_byte() == (uint8_t)TRIG_RISING);
             if (ec == TRIG_EDGE_CLASS_UNKNOWN) {
                 fpga.acq_edge_unknown++;

@@ -8,7 +8,7 @@ bool lcd_health_pm_ok(uint8_t pm)
     return (pm & need) == need;
 }
 
-bool lcd_health_step(lcd_health_t *h, uint8_t pm, uint32_t now_ms, uint8_t mode)
+bool lcd_health_step(lcd_health_t *h, uint8_t pm, ms_t now, uint8_t mode)
 {
     h->checks++;
     h->last_pm = pm;
@@ -21,7 +21,7 @@ bool lcd_health_step(lcd_health_t *h, uint8_t pm, uint32_t now_ms, uint8_t mode)
         return false;
     h->streak = 0;
     h->events++;
-    h->last_event_ms = now_ms;
+    h->last_event_ms = now.ms;
     h->event_pm = pm;
     h->event_mode = mode;
     return true;

@@ -805,15 +805,15 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, 
         const float rec_fs = record_rate_for_display(ss);
         scope_params_t p1, p2;
         scope_prm_ctx_t ctx;
-        ctx.sample_rate     = rec_fs;
+        ctx.sample_rate.hz  = rec_fs;
         ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
-        ctx.volts_per_count = rec_vpc(ss, 0u);
+        ctx.volts_per_count.vpc = rec_vpc(ss, 0u);
         ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
-        ctx.zero_count      = rec_zero(ss, 0u);
+        ctx.zero_count.v    = rec_zero(ss, 0u);
         scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
-        ctx.volts_per_count = rec_vpc(ss, 1u);
+        ctx.volts_per_count.vpc = rec_vpc(ss, 1u);
         ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
-        ctx.zero_count      = rec_zero(ss, 1u);
+        ctx.zero_count.v    = rec_zero(ss, 1u);
         scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
 
         draw_strip_cells(&L, &p1, &p2, th, refresh);
@@ -1038,7 +1038,7 @@ static bool rec_own_scale(uint8_t ch, float *k, int *z)
         return false;
     const float pf = (c->probe[ch] == (uint8_t)PROBE_10X) ? 10.0f : 1.0f;
     *k = scope_cal_mv_per_count((uint8_t)(ch + 1u), c->vdiv[ch]) / 1000.0f * pf;
-    *z = scope_measure_zero_for(scope_vpos_active(), c->pos[ch], (int)FPGA_ADC_OFFSET);
+    *z = scope_measure_zero_for(scope_vpos_active(), c->pos[ch]).v;
     return true;
 }
 
@@ -1180,7 +1180,7 @@ static inline int16_t autofit_y(const autofit_t *a, uint8_t v)
  * centring targets record 128). Position moves the signal in the record. */
 static uint8_t yt_centre_code(void)
 {
-    return scope_measure_zero_for(scope_vpos_active(), 0, (int)FPGA_ADC_OFFSET);
+    return scope_measure_zero_for(scope_vpos_active(), 0).v;
 }
 
 /* Record code of the channel's 0 V (ch 0/1): the ground tag, the badges and
@@ -1188,8 +1188,7 @@ static uint8_t yt_centre_code(void)
 static int chan_zero_code(const scope_state_t *ss, uint8_t ch)
 {
     return scope_measure_zero_for(scope_vpos_active(),
-                                  ch ? ss->ch2.position : ss->ch1.position,
-                                  (int)FPGA_ADC_OFFSET);
+                                  ch ? ss->ch2.position : ss->ch1.position).v;
 }
 
 /*
@@ -1264,7 +1263,7 @@ static void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
  * The FPGA compares the ADC against reg 0x08 but the record carries ADC - 28,
  * so the crossing that fires sits at (code - 28) in record units: measured on
  * ranges 5 and 7 at six levels (EXP-55/56, median 28) and the same constant
- * as stock's FPGA_ADC_OFFSET. That record code is mapped through the SAME
+ * as stock's ADC offset (ADC_REC_OFFSET). That record code is mapped through the SAME
  * map the trigger-source trace is drawn with, so the line sits on the
  * trace where NORMAL would fire. Outside the band it clamps to the band edge
  * (autofit_y's clamp), which on screen reads as "level is above / below the
@@ -1288,10 +1287,7 @@ static int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
 {
     if (a == NULL || !a->on)
         return (int16_t)(SCOPE_MID_Y - ss->trigger.level);
-    int rec = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
-    if (rec < 0)   rec = 0;
-    if (rec > 255) rec = 255;
-    return autofit_y(a, (uint8_t)rec);
+    return autofit_y(a, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
 }
 
 /* Full-path variant: the trigger source's map exactly as
@@ -1413,10 +1409,7 @@ static void markers_build(const scope_state_t *ss, const theme_t *th,
     const autofit_t *src = (ss->trigger.source == TRIG_SRC_CH2) ? a2 : a1;
     int top = SCOPE_TOP, bot = band_bot, row;
     if (src != NULL && src->on) {
-        int rec = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
-        if (rec < 0)   rec = 0;
-        if (rec > 255) rec = 255;
-        row = autofit_y_raw(src, rec);
+        row = autofit_y_raw(src, (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
         top = src->y_top;
         if (src->y_bot < bot) bot = src->y_bot;
     } else {
@@ -1634,8 +1627,8 @@ static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *bu
 {
     /* Moved to trig_edge_anchor() 2026-10-03 so the mask test aligns on the
      * same crossing the glass does; behaviour unchanged. */
-    int c = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
-    return trig_edge_anchor(buf, c, ss->trigger.edge == TRIG_RISING);
+    return trig_edge_anchor(buf, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }),
+                            ss->trigger.edge == TRIG_RISING);
 }
 
 /* Free-run window: from index 0 at one column per sample, as before C5. A
@@ -1690,7 +1683,9 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     if ((ss->trigger.source != TRIG_SRC_CH2 || fpga_acq_design_ours()) && fpga_acq_record_time_ordered()) {
         int a = hw_trigger_anchor(ss, src_buf);
         if (a >= 1) {
-            const int c = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
+            /* a >= 1 means the level is 4..251 (trig_edge_anchor), so the
+             * clamp in trig_level_rec() never acts here. */
+            const int c = (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v;
             const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], c);
             if (back_q8) *back_q8 = (int16_t)back;
             g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx, 0, N);
@@ -2017,27 +2012,29 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 {
     const scope_state_t *ss = scope_state_get();
     const cursor_state_t *c = &ss->cursor;
-    const float fs = column_rate_for_display(ss);   /* columns, not samples */
-    const scope_cursor_conf_t cf = scope_cursor_tb_conf(ss->timebase_idx);
+    const sample_rate_t fs = { column_rate_for_display(ss) };   /* columns, not samples */
+    const scope_cursor_conf_t cf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
     const int16_t ta = scope_ui_trig_x_actual();
     const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
     /* The readouts carry stock's labels (0x0801CA7C: X1-X2, Y1-Y2), so they
      * are FIRST minus SECOND: the on-screen dt/dV are second minus first
      * (v2-v1, and h1-h2 rows = Y2-Y1) and read with the opposite sign. */
-    const int32_t ddx = (int32_t)c->v1_x - (int32_t)c->v2_x;
+    const cursor_order_t ord = CUR_FIRST_MINUS_SECOND;
     scope_cursor_reading_t r;
 
     r = scope_cursor_x_fs(fs, cf, c->v1_x, ref);      scope_cursor_format(&r, x1, 16);
     r = scope_cursor_x_fs(fs, cf, c->v2_x, ref);      scope_cursor_format(&r, x2, 16);
-    r = scope_cursor_delta_t_fs(fs, cf, ddx);         scope_cursor_format(&r, dx, 16);
-    r = scope_cursor_one_over_dt_fs(fs, cf, ddx);     scope_cursor_format(&r, ix, 16);
+    r = scope_cursor_delta_t_fs(fs, cf, c->v1_x, c->v2_x, ord);
+    scope_cursor_format(&r, dx, 16);
+    r = scope_cursor_one_over_dt_fs(fs, cf, c->v1_x, c->v2_x, ord);
+    scope_cursor_format(&r, ix, 16);
 
     scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
     r = scope_cursor_y(&vm, c->h1_y);                 scope_cursor_format(&r, y1, 16);
     r = scope_cursor_y(&vm, c->h2_y);                 scope_cursor_format(&r, y2, 16);
-    r = scope_cursor_delta_v(&vm, (int32_t)c->h2_y - (int32_t)c->h1_y);   /* Y1-Y2 */
+    r = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y, ord);   /* Y1-Y2 */
     scope_cursor_format(&r, dy, 16);
-    if (fs_out) *fs_out = fs;
+    if (fs_out) *fs_out = fs.hz;
 }
 
 /* The cursor layer, as both renderers draw it: dashed lines over the live
@@ -2150,14 +2147,15 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
                           c->mode == CURSOR_VERTICAL ? "CUR:T" :
                           c->mode == CURSOR_HORIZONTAL ? "CUR:V" : "CUR:TV");
     if (k < n && (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH)) {
-        const int32_t dx = (int32_t)c->v2_x - (int32_t)c->v1_x;
-        const float cfs = column_rate_for_display(ss);
-        const scope_cursor_conf_t cconf = scope_cursor_tb_conf(ss->timebase_idx);
-        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, dx);
+        const sample_rate_t cfs = { column_rate_for_display(ss) };
+        const scope_cursor_conf_t cconf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
+        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, c->v1_x, c->v2_x,
+                                                           CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&r, buf, sizeof(buf));
         k += (size_t)snprintf(out + k, n - k, "  dt=%s", buf);
         if (k < n) {
-            r = scope_cursor_one_over_dt_fs(cfs, cconf, dx);
+            r = scope_cursor_one_over_dt_fs(cfs, cconf, c->v1_x, c->v2_x,
+                                            CUR_SECOND_MINUS_FIRST);
             scope_cursor_format(&r, buf, sizeof(buf));
             k += (size_t)snprintf(out + k, n - k, "  1/dt=%s", buf);
         }
@@ -2165,9 +2163,9 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
     if (k < n && (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH)) {
         /* Second minus first, as dt; screen y grows downward. A delta that
          * straddles two differently-scaled bands stays in pixels. */
-        const int32_t dy = (int32_t)c->h1_y - (int32_t)c->h2_y;
         scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
-        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, dy);
+        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y,
+                                                         CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&dv, buf, sizeof(buf));
         if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
             (void)snprintf(out + k, n - k, "  dVm=%s", buf);
@@ -3377,10 +3375,12 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
     const uint8_t z2 = (uint8_t)chan_zero_code(ss, 1u);
     const bool have1 = ss->ch1.enabled &&
         scope_roll_measure(&roll_snap, 0u, nvis, ss->roll_step,
-                           scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, NULL);
+                           (volts_per_count_t){ scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx) },
+                           (rec_code_t){ z1 }, &p1, NULL);
     const bool have2 = ss->ch2.enabled &&
         scope_roll_measure(&roll_snap, 1u, nvis, ss->roll_step,
-                           scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, NULL);
+                           (volts_per_count_t){ scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx) },
+                           (rec_code_t){ z2 }, &p2, NULL);
 
     mstrip_layout_t L;
     strip_layout(ss, &L);
