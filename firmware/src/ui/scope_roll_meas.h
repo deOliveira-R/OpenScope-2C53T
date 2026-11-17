@@ -27,11 +27,11 @@
 
 /* Measure channel `ch` (0/1) of a LINEARISED FIFO (scope_roll_fifo_linearize)
  * over its newest `n` points (clamped to the count). `step` is the roll step
- * (its period gives the sample rate), `volts_per_count` <= 0 keeps counts,
+ * (its period gives the sample rate), `volts_per_count.vpc` <= 0 keeps counts,
  * `zero` is the channel's 0 V record code. Returns false, all refused, when
  * the FIFO holds fewer than 2 points or the step is out of range. */
 bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
-                        uint8_t step, float volts_per_count, uint8_t zero,
+                        uint8_t step, volts_per_count_t volts_per_count, rec_code_t zero,
                         scope_params_t *out, scope_measure_t *raw);
 
 #endif

@@ -1610,8 +1610,7 @@ void cmd_fpga_scope_zero(const char *args)
     const uint8_t bank_now = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
     for (uint8_t ch = 1u; ch <= 2u; ch++) {
         const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
-        const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position,
-                                                 (int)FPGA_ADC_OFFSET);
+        const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position).v;
         const volatile uint8_t *b = bufs[ch - 1u];
         uint32_t sum = 0;
         for (unsigned i = 262u; i < 762u; i++) sum += b ? b[i] : 0u;

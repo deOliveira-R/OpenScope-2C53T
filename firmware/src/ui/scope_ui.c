@@ -805,15 +805,15 @@ static void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, 
         const float rec_fs = record_rate_for_display(ss);
         scope_params_t p1, p2;
         scope_prm_ctx_t ctx;
-        ctx.sample_rate     = rec_fs;
+        ctx.sample_rate.hz  = rec_fs;
         ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
-        ctx.volts_per_count = rec_vpc(ss, 0u);
+        ctx.volts_per_count.vpc = rec_vpc(ss, 0u);
         ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
-        ctx.zero_count      = rec_zero(ss, 0u);
+        ctx.zero_count.v    = rec_zero(ss, 0u);
         scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
-        ctx.volts_per_count = rec_vpc(ss, 1u);
+        ctx.volts_per_count.vpc = rec_vpc(ss, 1u);
         ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
-        ctx.zero_count      = rec_zero(ss, 1u);
+        ctx.zero_count.v    = rec_zero(ss, 1u);
         scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
 
         draw_strip_cells(&L, &p1, &p2, th, refresh);
@@ -1038,7 +1038,7 @@ static bool rec_own_scale(uint8_t ch, float *k, int *z)
         return false;
     const float pf = (c->probe[ch] == (uint8_t)PROBE_10X) ? 10.0f : 1.0f;
     *k = scope_cal_mv_per_count((uint8_t)(ch + 1u), c->vdiv[ch]) / 1000.0f * pf;
-    *z = scope_measure_zero_for(scope_vpos_active(), c->pos[ch], (int)FPGA_ADC_OFFSET);
+    *z = scope_measure_zero_for(scope_vpos_active(), c->pos[ch]).v;
     return true;
 }
 
@@ -1180,7 +1180,7 @@ static inline int16_t autofit_y(const autofit_t *a, uint8_t v)
  * centring targets record 128). Position moves the signal in the record. */
 static uint8_t yt_centre_code(void)
 {
-    return scope_measure_zero_for(scope_vpos_active(), 0, (int)FPGA_ADC_OFFSET);
+    return scope_measure_zero_for(scope_vpos_active(), 0).v;
 }
 
 /* Record code of the channel's 0 V (ch 0/1): the ground tag, the badges and
@@ -1188,8 +1188,7 @@ static uint8_t yt_centre_code(void)
 static int chan_zero_code(const scope_state_t *ss, uint8_t ch)
 {
     return scope_measure_zero_for(scope_vpos_active(),
-                                  ch ? ss->ch2.position : ss->ch1.position,
-                                  (int)FPGA_ADC_OFFSET);
+                                  ch ? ss->ch2.position : ss->ch1.position).v;
 }
 
 /*
@@ -3377,10 +3376,12 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
     const uint8_t z2 = (uint8_t)chan_zero_code(ss, 1u);
     const bool have1 = ss->ch1.enabled &&
         scope_roll_measure(&roll_snap, 0u, nvis, ss->roll_step,
-                           scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx), z1, &p1, NULL);
+                           (volts_per_count_t){ scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx) },
+                           (rec_code_t){ z1 }, &p1, NULL);
     const bool have2 = ss->ch2.enabled &&
         scope_roll_measure(&roll_snap, 1u, nvis, ss->roll_step,
-                           scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx), z2, &p2, NULL);
+                           (volts_per_count_t){ scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx) },
+                           (rec_code_t){ z2 }, &p2, NULL);
 
     mstrip_layout_t L;
     strip_layout(ss, &L);

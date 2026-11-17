@@ -3,7 +3,7 @@
 #include <string.h>
 
 bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
-                        uint8_t step, float volts_per_count, uint8_t zero,
+                        uint8_t step, volts_per_count_t volts_per_count, rec_code_t zero,
                         scope_params_t *out, scope_measure_t *raw)
 {
     scope_measure_t m;
@@ -21,7 +21,7 @@ bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
 
     const float rate = 1000.0f / (float)period_ms;
     scope_prm_ctx_t ctx;
-    ctx.sample_rate = rate;
+    ctx.sample_rate.hz = rate;
     ctx.volts_per_count = volts_per_count;
     ctx.zero_count = zero;
     ctx.record_whole = true;           /* MCU-paced points, oldest first */

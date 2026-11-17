@@ -171,7 +171,7 @@ static void test_geometry(void)
  * the unit's g = (m - 28)/150 enters through scope_cal. */
 static void test_volts(void)
 {
-    const uint8_t zero = scope_measure_zero_for(1, -10, -28);    /* 100 + pos = 90 */
+    const uint8_t zero = scope_measure_zero_for(1, -10).v;    /* 100 + pos = 90 */
     CHECK("zero code with the cal page = 100 + pos", zero == 90);
     int ok150 = 1, not192 = 1;
     const uint8_t ms[] = { 183, 186, 220, 221, 230 };            /* both sides of stock's gate */
@@ -339,7 +339,7 @@ static void test_measure(void)
     scope_measure_t raw;
     fill(&f, 450, g_sq);                    /* wrapped */
     scope_roll_fifo_linearize(&f);
-    CHECK("measure ok on a linearised FIFO", scope_roll_measure(&f, 0, 250, 0, 0.0f, 100, &p, &raw));
+    CHECK("measure ok on a linearised FIFO", scope_roll_measure(&f, 0, 250, 0, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, &raw));
     CHECK("Freq = rate / period = 500/20 = 25 Hz",
           p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_HZ && fabsf(p.v[SCOPE_PRM_FREQ].value - 25.0f) < 0.3f);
     CHECK("Peri = 40 ms (seconds, from the point rate)",
@@ -352,29 +352,29 @@ static void test_measure(void)
           fabsf(p.v[SCOPE_PRM_VPP].value - 60.0f) < 1.0f);
 
     /* the time base follows the step: step 3 = 20 ms/point, same samples -> 1/10 000 th... */
-    scope_roll_measure(&f, 0, 250, 3, 0.0f, 100, &p, NULL);
+    scope_roll_measure(&f, 0, 250, 3, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, NULL);
     CHECK("step 3 (20 ms/point): 20 points = 400 ms, Freq 2.5 Hz",
           fabsf(p.v[SCOPE_PRM_FREQ].value - 2.5f) < 0.03f);
     CHECK("bad step refused, params zeroed",
-          !scope_roll_measure(&f, 0, 250, 9, 0.0f, 100, &p, NULL) && p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE);
+          !scope_roll_measure(&f, 0, 250, 9, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, NULL) && p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE);
 
     /* per-channel zero and scale: the same code reads a different volts on
      * channels whose zero (position) and gain differ, by the Y-T rule. */
-    const uint8_t z1 = scope_measure_zero_for(1, -29, -28);   /* 71 */
-    const uint8_t z2 = scope_measure_zero_for(1,   0, -28);   /* 100 */
+    const uint8_t z1 = scope_measure_zero_for(1, -29).v;   /* 71 */
+    const uint8_t z2 = scope_measure_zero_for(1, 0).v;   /* 100 */
     CHECK("zero follows the position per channel (71 vs 100)", z1 == 71 && z2 == 100);
     scope_roll_fifo_reset(&f);
     for (unsigned i = 0; i < 100; i++) scope_roll_fifo_push(&f, 71, 71);
     scope_roll_fifo_linearize(&f);
     scope_params_t a, b;
-    scope_roll_measure(&f, 0, 100, 0, 0.0197f, z1, &a, NULL);
-    scope_roll_measure(&f, 1, 100, 0, 0.0197f, z2, &b, NULL);
+    scope_roll_measure(&f, 0, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ z1 }, &a, NULL);
+    scope_roll_measure(&f, 1, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ z2 }, &b, NULL);
     CHECK("CH1 at its own zero reads 0 V (Avg)", a.v[SCOPE_PRM_AVG].unit == SCOPE_PRM_UNIT_VOLTS &&
           fabsf(a.v[SCOPE_PRM_AVG].value) < 1e-6f);
     CHECK("CH2 with ITS zero 100 reads -0.571 V at code 71 (the bench symptom)",
           fabsf(b.v[SCOPE_PRM_AVG].value + 29.0f * 0.0197f) < 1e-4f);
     CHECK("... and 0 V once CH2's zero is its real code",
-          (scope_roll_measure(&f, 1, 100, 0, 0.0197f, 71, &b, NULL), fabsf(b.v[SCOPE_PRM_AVG].value) < 1e-6f));
+          (scope_roll_measure(&f, 1, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ 71 }, &b, NULL), fabsf(b.v[SCOPE_PRM_AVG].value) < 1e-6f));
 }
 
 int main(void)

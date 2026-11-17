@@ -512,9 +512,9 @@ void scope_params_compute(const scope_measure_t *m, const scope_prm_ctx_t *ctx,
     if (m == NULL || !m->valid || ctx == NULL)
         return;
 
-    const float fs = ctx->sample_rate;
-    const float k  = ctx->volts_per_count;
-    const uint8_t z = ctx->zero_count;
+    const float fs = ctx->sample_rate.hz;
+    const float k  = ctx->volts_per_count.vpc;
+    const uint8_t z = ctx->zero_count.v;
 
     /* Freq/Peri: the spectral estimate when it answers (four periods or
      * more: SCOPE_FREQ_MIN_BIN). Below that, the crossing period, which

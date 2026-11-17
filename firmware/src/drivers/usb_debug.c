@@ -2844,8 +2844,7 @@ static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
 {
     const scope_state_t *ss = scope_state_get();
     const channel_state_t *c = (ch == 1u) ? &ss->ch1 : &ss->ch2;
-    const uint8_t zero = scope_measure_zero_for(scope_vpos_active(), c->position,
-                                                (int)FPGA_ADC_OFFSET);
+    const uint8_t zero = scope_measure_zero_for(scope_vpos_active(), c->position).v;
     const float vpc = scope_cal_volts_per_count(ch, c->vdiv_idx);
     if (!(vpc > 0.0f)) {
         snprintf(out, n, "code %u (zero %u, no cal)", (unsigned)code, (unsigned)zero);
@@ -2902,8 +2901,7 @@ static void roll_print_status(void)
          * for another range) reads off by exactly the difference. */
         for (uint8_t ch = 1u; ch <= 2u; ch++) {
             const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
-            const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position,
-                                                     (int)FPGA_ADC_OFFSET);
+            const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position).v;
             uint8_t bk = 0, rg = 0;
             uint16_t dc = 0;
             const bool w = scope_vpos_last(ch, &bk, &rg, &dc);
@@ -3070,11 +3068,11 @@ static void cmd_fpga_scope_measure(const char *args)
             scope_params_t pp;
             /* Only the code in force describes the record in hand; with a
              * mismatch the widths stay in samples, like Freq stays "-". */
-            ctx.sample_rate     = tb_ok ? fs : 0.0f;
+            ctx.sample_rate.hz  = tb_ok ? fs : 0.0f;
             ctx.record_whole    = fpga_acq_record_time_ordered();
-            ctx.volts_per_count = k1;
+            ctx.volts_per_count.vpc = k1;
             ctx.freq_hz         = freq_hz;
-            ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position, (int)FPGA_ADC_OFFSET);
+            ctx.zero_count      = scope_measure_zero_for(scope_vpos_active(), ss->ch1.position);
             scope_params_compute(&m1, &ctx, &pp);
             usb_debug_printf("P %2lu", (unsigned long)i);
             for (unsigned id = 0; id < SCOPE_PRM_COUNT; id++) {
