@@ -1623,12 +1623,15 @@ static float draw_channel(const volatile uint8_t *buf, uint16_t color,
  * level (code - 28, EXP-55/56) in the chosen direction nearest index 512,
  * within +/-48 (EXP-53: 501..520). Schmitt-armed like the soft trigger.
  * Returns the index or -1. */
+static bool g_trig_anchor_exact;         /* the last hardware anchor was the core's index, not a search */
 static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *buf)
 {
     /* Moved to trig_edge_anchor() 2026-10-03 so the mask test aligns on the
-     * same crossing the glass does; behaviour unchanged. */
-    return trig_edge_anchor(buf, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }),
-                            ss->trigger.edge == TRIG_RISING);
+     * same crossing the glass does; behaviour unchanged. A record our core
+     * ordered has its trigger at a known index (trig_edge_anchor_of). */
+    return trig_edge_anchor_of(buf, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }),
+                               ss->trigger.edge == TRIG_RISING,
+                               fpga_acq_record_core_ordered(), &g_trig_anchor_exact);
 }
 
 /* Free-run window: from index 0 at one column per sample, as before C5. A
@@ -1807,6 +1810,7 @@ uint8_t scope_ui_view_factor(void)
     return view_plan(scope_state_get(), NULL, NULL);
 }
 uint8_t scope_ui_trig_anchor(void)   { return g_trig_anchor; }
+bool    scope_ui_trig_anchor_exact(void) { return g_trig_anchor == 2u && g_trig_anchor_exact; }
 
 /* Exported for bench validation (`spi3 frame`): the offset the renderer would
  * start the drawn window at for the CURRENT scope state. Exporting the real

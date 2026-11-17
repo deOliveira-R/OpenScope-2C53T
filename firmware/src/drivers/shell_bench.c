@@ -2599,7 +2599,7 @@ void cmd_spi3_frame(void)
      * samples per column x 1000 (1000 / L). L=0: a held record re-sampled at
      * R about column tx (zoom while paused, C14); off is then the
      * one-sample-per-column window the pivot sample (off + tx) comes from. */
-    usb_debug_printf("FRAME gen=%lu coherent=%u src=CH%u off=%u soft=%u tx=%d anchor=%u ord=%u L=%u R=%lu\r\n",
+    usb_debug_printf("FRAME gen=%lu coherent=%u src=CH%u off=%u soft=%u tx=%d anchor=%u ord=%u L=%u R=%lu exact=%u\r\n",
                      (unsigned long)g1,
                      (unsigned)(g1 == g0 && !(g0 & 1u)),
                      (unsigned)src_ch, (unsigned)off,
@@ -2607,7 +2607,8 @@ void cmd_spi3_frame(void)
                      (int)scope_ui_trig_x_actual(), (unsigned)scope_ui_trig_anchor(),
                      (unsigned)fpga_acq_record_time_ordered(),
                      (unsigned)scope_ui_view_factor(),
-                     (unsigned long)scope_ui_view_ratio());
+                     (unsigned long)scope_ui_view_ratio(),
+                     (unsigned)scope_ui_trig_anchor_exact());
     spi3_frame_dump("CH1", s1);
     spi3_frame_dump("CH2", s2);
 }

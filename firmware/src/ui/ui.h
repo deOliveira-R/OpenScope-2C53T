@@ -261,6 +261,7 @@ void scope_popup_view_tick(void);        /* popup over the FFT/split/waterfall/X
 bool scope_ui_take_live_request(void);
 void scope_ui_can_row_refresh(void);   /* CAN readout on badge row 2 (can_scope.h) */
 uint8_t scope_ui_trig_anchor(void);
+bool    scope_ui_trig_anchor_exact(void);   /* hardware anchor taken at the core's index, not searched */
 extern fft_result_t     fft_result;
 #endif
 

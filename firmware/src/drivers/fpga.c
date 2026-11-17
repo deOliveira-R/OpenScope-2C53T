@@ -3138,6 +3138,11 @@ static volatile uint8_t *acq_write_ch2(void)
  * the newest commit against a frame one commit older (2026-09-23). */
 static volatile bool acq_stage_ordered = false;
 static volatile bool acq_pub_ordered = false;
+/* ...and the seam came from the core's reply header, not from a search in the
+ * samples: the trigger is then at index 512 by construction (trig_edge.h). */
+static volatile bool acq_stage_ordered_core = false;
+static volatile bool acq_pub_ordered_core = false;
+static bool acq_rot_from_hdr = false;        /* set by fpga_acq_unrotate_staging() */
 /* Single-channel 250 MS/s (dsp/interleave.h): the staged / published CH1
  * record is the merge of both converters. Published with the record, like
  * `ordered`, so the rate a reader applies always matches the buffer. */
@@ -3181,6 +3186,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch1_buf, acq_stage_ch1, FPGA_ADC_BUF_SIZE);
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
+    acq_pub_ordered_core = acq_stage_ordered_core;
     acq_pub_il = acq_stage_il;
     acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
@@ -3951,12 +3957,6 @@ void     fpga_acq_poll_gap_set(uint16_t ms)  { acq_poll_gap_ms = ms ? ms : 30u; 
  * the either-edge behaviour for comparison. */
 static bool acq_edge_filter = true;
 void     fpga_acq_edge_filter_set(bool on)   { acq_edge_filter = on; }
-bool     fpga_acq_edge_filter_get(void)      { return acq_edge_filter; }
-uint16_t fpga_acq_poll_gap_get(void)         { return acq_poll_gap_ms; }
-void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
-bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
-bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
-bool fpga_acq_design_ours(void)               { return acq_design_ours; }
 static bool acq_edge_count_only = false;     /* bench: classify and count, never drop */
 void     fpga_acq_edge_count_only_set(bool on) { acq_edge_count_only = on; }
 bool     fpga_acq_edge_count_only_get(void)    { return acq_edge_count_only; }
@@ -3964,6 +3964,13 @@ bool     fpga_acq_edge_filter_in_use(void)
 {
     return trig_edge_filter_use(acq_edge_filter, acq_core_has(FPGA_CORE_CAP_EDGE), acq_edge_count_only) == TRIG_EDGE_FILTER_DROP;
 }
+bool     fpga_acq_edge_filter_get(void)      { return acq_edge_filter; }
+uint16_t fpga_acq_poll_gap_get(void)         { return acq_poll_gap_ms; }
+void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
+bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
+bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
+bool fpga_acq_record_core_ordered(void)       { return acq_pub_ordered_core; }
+bool fpga_acq_design_ours(void)               { return acq_design_ours; }
 bool fpga_acq_core_has(uint8_t cap)           { return acq_core_has(cap); }
 core_ident_t fpga_core_ident(void)
 {
@@ -4009,6 +4016,7 @@ int16_t fpga_acq_unrotate_offset_get(void)    { return acq_unrotate_offset; }
  * Returns the rotation applied (0..1023), or -1 when none was. */
 static int32_t fpga_acq_unrotate_staging(bool triggered)
 {
+    acq_rot_from_hdr = false;
     if (!triggered) return -1;
     volatile uint8_t *bufs[2] = { acq_write_ch1(), acq_write_ch2() };
     uint32_t k = 0;
@@ -4032,6 +4040,7 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
         }
         k = (uint32_t)hs;
         acq_seam_n[0]++;
+        acq_rot_from_hdr = true;
     } else
     /* Value step first, then linear prediction (fast periodic records whose
      * segments meet at similar values; bench 2026-09-22: 3/10 records at
@@ -5018,6 +5027,7 @@ static void fpga_warmtest_acq_task(void *pv)
         if ((marker || varies) && fpga.spi3_hw_timeouts == hw_to_before) {
             fpga.acq_last_rot = fpga_acq_unrotate_staging(triggered);   /* dev plan 2.3: seam-based */
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
+            acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr;
             acq_stage_il = triggered && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
             acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)

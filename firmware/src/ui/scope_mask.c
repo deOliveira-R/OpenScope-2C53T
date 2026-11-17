@@ -189,9 +189,10 @@ void scope_mask_on_commit(const volatile uint8_t *ch1, const volatile uint8_t *c
     f.cond = cond_now();
     f.anchor = -1;
     if (ch1 != NULL && ss->trigger.source != TRIG_SRC_CH2)
-        f.anchor = (int16_t)trig_edge_anchor(ch1,
+        f.anchor = (int16_t)trig_edge_anchor_of(ch1,
                         trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }),
-                        ss->trigger.edge == TRIG_RISING);
+                        ss->trigger.edge == TRIG_RISING,
+                        time_ordered && fpga_acq_record_core_ordered(), NULL);
 
     mask_pf_state_t before = m->state;
     mask_pf_result_t r = mask_pf_frame(m, &f);

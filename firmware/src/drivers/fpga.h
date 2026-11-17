@@ -1285,6 +1285,7 @@ bool     fpga_acq_edge_filter_in_use(void);    /* false on a core that selects t
 /* true when the latest committed record was un-rotated at its seam, so the
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
+bool     fpga_acq_record_core_ordered(void);   /* ...and its start came from the core's header: trigger exactly at 512 */
 bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
 bool     fpga_acq_core_has(uint8_t cap);       /* the running core is ours, identified itself, and has these FPGA_CORE_CAP_* bits */
 core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */

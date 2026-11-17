@@ -22,6 +22,7 @@
 #ifndef TRIG_EDGE_H
 #define TRIG_EDGE_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "../util/units.h"   /* rec_code_t, trig_level_rec */
@@ -78,6 +79,28 @@ int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k);
  * mask pass/fail test (scope_mask.c). If they ever disagreed, the mask would
  * test a different alignment from the one on the glass. */
 int trig_edge_anchor(const volatile uint8_t *rec, rec_code_t crossing, int rising);
+
+/* The same on a record whose start OpenScope's capture core named (the seam in
+ * the reply header): the core stores the trigger crossing TRIG_EDGE_TRIG_POS
+ * samples after the seam, so there is nothing to search. Rising: rec[511] <
+ * crossing <= rec[512]. In the 250 MS/s merged record the other converter's
+ * sample sits between those two, and the crossing may be one index earlier.
+ * Returns 512, 511, or -1 when neither place holds the crossing (the level
+ * as the firmware knows it is not the core's: the caller then searches).
+ * No Schmitt arming and no level range: a slow ramp that never goes 3 counts
+ * below the level inside the search window still has its trigger here. */
+int trig_edge_anchor_known(const volatile uint8_t *rec, rec_code_t crossing, int rising);
+
+/* The anchor of a time-ordered record: the known place when the core ordered
+ * it, else (or when that check fails) the search. *exact, when not NULL,
+ * says which. */
+static inline int trig_edge_anchor_of(const volatile uint8_t *rec, rec_code_t crossing, int rising,
+                                      bool core_ordered, bool *exact)
+{
+    int a = core_ordered ? trig_edge_anchor_known(rec, crossing, rising) : -1;
+    if (exact) *exact = (a >= 0);
+    return (a >= 0) ? a : trig_edge_anchor(rec, crossing, rising);
+}
 
 /* ── Software edge search (parity C3, stock 0x08028DE4) ──────────────────
  *

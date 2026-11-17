@@ -10,6 +10,7 @@
  *     invisible by construction) must be refused, not guessed.
  */
 #include <math.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -338,6 +339,32 @@ int main(void)
         for (unsigned i = 0; i < EDGE_FIXTURE_N; i++)
             if (trig_edge_classify(EDGE_FIXTURES[i].rec, below) != TRIG_EDGE_CLASS_UNKNOWN) cls++;
         CHECK(cls == 0, "no real record classifies at level 0 (%d did)", cls);
+    }
+
+    printf("[11] the trigger of a record our core ordered: at 512 by construction\n");
+    {
+        static uint8_t r[1024];
+        bool exact = false;
+        /* a slow ramp, 1 code per 60 samples, crossing 100 at index 512: it never goes 3 counts below the level
+         * inside the search window, so the search has no anchor; the known place has it */
+        for (int i = 0; i < 1024; i++) r[i] = (uint8_t)(i < 512 ? 99 - (511 - i) / 60 : 100 + (i - 512) / 60);
+        CHECK(trig_edge_anchor(r, RC(100), 1) == -1, "slow rising ramp: the search finds no anchor");
+        CHECK(trig_edge_anchor_known(r, RC(100), 1) == 512, "slow rising ramp: the known place is 512");
+        CHECK(trig_edge_anchor_of(r, RC(100), 1, true, &exact) == 512 && exact, "core-ordered: 512, exact");
+        CHECK(trig_edge_anchor_of(r, RC(100), 1, false, &exact) == -1 && !exact, "not core-ordered: the search's answer");
+        CHECK(trig_edge_anchor_known(r, RC(100), 0) == -1, "wrong direction: not there");
+        for (int i = 0; i < 1024; i++) r[i] = (uint8_t)(255 - r[i]);         /* mirror: falling through 155 */
+        CHECK(trig_edge_anchor_known(r, RC(156), 0) == 512, "slow falling ramp: 512");
+        /* merged 250 MS/s record: the other converter's sample at 511 is already past the level */
+        for (int i = 0; i < 1024; i++) r[i] = (uint8_t)(i < 511 ? 90 : 110);
+        CHECK(trig_edge_anchor_known(r, RC(100), 1) == 511, "merged record: crossing one index earlier");
+        /* the firmware's level is not where the core fired: fall back to the search */
+        for (int i = 0; i < 1024; i++) r[i] = (uint8_t)(i < 520 ? 60 : 140);
+        CHECK(trig_edge_anchor_known(r, RC(100), 1) == -1, "no crossing at 511/512: not claimed");
+        CHECK(trig_edge_anchor_of(r, RC(100), 1, true, &exact) == 520 && !exact, "then the search decides (520), not exact");
+        /* levels the search refuses (outside 4..251) */
+        for (int i = 0; i < 1024; i++) r[i] = (uint8_t)(i < 512 ? 0 : 5);
+        CHECK(trig_edge_anchor(r, RC(2), 1) == -1 && trig_edge_anchor_known(r, RC(2), 1) == 512, "level 2: known place only");
     }
 
     printf("\n%s\n", fails ? "FAILED" : "all passed");

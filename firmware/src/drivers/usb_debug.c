@@ -2496,7 +2496,7 @@ static void print_trigger_status(void)
                      (unsigned)fpga_trigger_reconcile_code());
     usb_debug_printf("trigger position: asked column %d; last window landed at %d (anchor %s)\r\n",
                      (int)prop_get(P(TRIG_X)), (int)scope_ui_trig_x_actual(),
-                     a == 2 ? "hardware" : a == 1 ? "soft" : "none");
+                     a == 2 ? (scope_ui_trig_anchor_exact() ? "hardware, the core's index" : "hardware, searched") : a == 1 ? "soft" : "none");
 }
 
 /* `fpga scope trigger` -- print_trigger_status(). The settings themselves

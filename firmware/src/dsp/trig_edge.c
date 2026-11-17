@@ -177,6 +177,19 @@ int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k)
     return trig_edge_find_seam(rec, k) || trig_edge_find_seam_lpc(rec, k);
 }
 
+int trig_edge_anchor_known(const volatile uint8_t *rec, rec_code_t crossing, int rising)
+{
+    if (rec == 0)
+        return -1;
+    const int c = (int)crossing.v;
+    for (int i = TRIG_POS; i >= TRIG_POS - 1; i--) {
+        const int p = (int)rec[i - 1], s = (int)rec[i];
+        if (rising ? (p < c && s >= c) : (p >= c && s < c))
+            return i;
+    }
+    return -1;
+}
+
 int trig_edge_anchor(const volatile uint8_t *rec, rec_code_t crossing, int rising)
 {
     const int c = (int)crossing.v;
