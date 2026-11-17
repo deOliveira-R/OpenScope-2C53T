@@ -1,0 +1,10 @@
+rtl/core_pkg.sv
+rtl/clkgen.sv
+rtl/adc_front.sv
+rtl/timebase.sv
+rtl/trigger.sv
+rtl/capture.sv
+rtl/spi_slave.sv
+rtl/cmd.sv
+rtl/cmd_sync.sv
+rtl/top.sv

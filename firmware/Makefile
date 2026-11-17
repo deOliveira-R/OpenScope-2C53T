@@ -1605,6 +1605,11 @@ $(BUILD_DIR)/test_core_ident: tests/test_core_ident.c src/dsp/core_ident.h src/d
 test-core-ident: $(BUILD_DIR)/test_core_ident
 	$(BUILD_DIR)/test_core_ident
 
+# drivers/fpga_core_regs.h must be what the capture core's package generates (fpga/core/rtl/core_pkg.sv).
+.PHONY: test-core-regs-header
+test-core-regs-header:
+	python3 -I ../fpga/core/tools/gen_c_header.py --check src/drivers/fpga_core_regs.h
+
 .PHONY: test-fpga-slot
 test-fpga-slot: $(BUILD_DIR)/test_fpga_slot
 	$<

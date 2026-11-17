@@ -1,0 +1,22 @@
+# Core D5 against D4 (ref/capcore_d4.v with its two 'always @*' made always_comb, simulation only), D4 aligned once at the start (see tb/lockstep.sv).
+netlist, vendor cell models: LOCKSTEP PASS
+netlist, vendor cell models: LOCKSTEP PASS
+netlist, vendor cell models: LOCKSTEP PASS
+netlist, vendor cell models: lockstep seed 1: 300 frames, 79 record reads, 8 held pairs, 2613628 comparisons, 0 mismatches
+netlist, vendor cell models: lockstep seed 2: 300 frames, 87 record reads, 14 held pairs, 3851862 comparisons, 0 mismatches
+netlist, vendor cell models: lockstep seed 3: 300 frames, 99 record reads, 10 held pairs, 4015551 comparisons, 0 mismatches
+netlist, vendor cell models: netlist against source: 0 mismatches
+netlist, vendor cell models: netlist against source: 0 mismatches
+netlist, vendor cell models: netlist against source: 0 mismatches
+source, our cell models: LOCKSTEP PASS
+source, our cell models: LOCKSTEP PASS
+source, our cell models: LOCKSTEP PASS
+source, our cell models: LOCKSTEP PASS
+source, our cell models: LOCKSTEP PASS
+source, our cell models: LOCKSTEP PASS
+source, our cell models: lockstep seed 1: 400 frames, 108 record reads, 8 held pairs, 3504868 comparisons, 0 mismatches
+source, our cell models: lockstep seed 2: 400 frames, 117 record reads, 15 held pairs, 4718929 comparisons, 0 mismatches
+source, our cell models: lockstep seed 3: 400 frames, 126 record reads, 12 held pairs, 4987988 comparisons, 0 mismatches
+source, our cell models: lockstep seed 4: 400 frames, 111 record reads, 13 held pairs, 4458047 comparisons, 0 mismatches
+source, our cell models: lockstep seed 5: 400 frames, 109 record reads, 8 held pairs, 4472325 comparisons, 0 mismatches
+source, our cell models: lockstep seed 6: 400 frames, 99 record reads, 8 held pairs, 4083534 comparisons, 0 mismatches

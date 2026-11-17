@@ -25,7 +25,9 @@ module tb;
   always @(posedge cb) bi = ai + 8'd40;        // (the value before this edge's step when both clocks rise together)
   always @(negedge cb) b <= #(`TCO) bi;
   GSR GSR(.GSRI(1'b1));
-  top #(.T50A(`TA), .T50B(`TB)) dut(clk, ca, cb, a, b, miso, sclk, cs, mosi, pc0, 1'b1);
+  // in this testbench "a"/"ca" are the converter on pins 18..27 (the core's converter B), "b"/"cb" the one on 39..46
+  top #(.T50A(`TA), .T50B(`TB)) dut(.clk25(clk), .chb_clk(ca), .cha_clk(cb), .chb_d(a), .cha_d(b), .spi_miso(miso),
+      .spi_sclk(sclk), .spi_cs_n(cs), .spi_mosi(mosi), .ready_n(pc0), .ctl30(1'b1));
   reg [7:0] rx [0:1100]; integer j, n, errs = 0;
   integer pc0_falls = 0; time t_fall = 0;
   always @(negedge pc0) begin pc0_falls = pc0_falls + 1; t_fall = $time; end
@@ -177,7 +179,7 @@ module tb;
     frame(8'h07, 8'h02, 1); #60000; racev = 0; racen = 0; racenh = 0;
     for (n=0; n<700; n=n+1) begin
       f0 = pc0_falls;
-      frame(8'h04, 8'hFF, 2); ha1 = rx[1]; ha2 = rx[2]; h = dut.pair_held; wpx = dut.wp;   // frozen while the pair lasts
+      frame(8'h04, 8'hFF, 2); ha1 = rx[1]; ha2 = rx[2]; h = dut.u_cmd.pair_held; wpx = dut.u_cap.wp;   // frozen while the pair lasts
       if (h !== (pc0_falls != f0)) begin $display("  FAIL race %0d: PC0 and the held pair disagree", n); errs=errs+1; end
       frame(8'h05, 8'hFF, 2); hb1 = rx[1]; hb2 = rx[2];
       if (h) begin
@@ -193,6 +195,26 @@ module tb;
     $display("race sweep, 700 pairs: op 04 seam valid in %0d, withheld in %0d held pairs (hold arrived as the frame began); %0d pairs not held", racev, racen, racenh);
     if (racev < 100) begin $display("FAIL the sweep did not exercise held pairs"); errs=errs+1; end
     $display("seam bytes checked against the data on %0d records; op 04 valid on %0d, withheld on %0d", hdr_checked, v04, nv04);
+    // identity
+    frame(8'hE2, 8'hFF, 9);
+    $display("E2: %h %h | %h %h ver %h tag %h caps %h depth %h check %h | %h", rx[0], rx[1], rx[2], rx[3], rx[4], rx[5], rx[6], rx[7], rx[8], rx[9]);
+    if (rx[0] !== 8'h80 || rx[1] !== 8'h00 || rx[2] !== 8'h4F || rx[3] !== 8'h53 || rx[4] !== 8'h01 || rx[5] !== 8'hD5 || rx[6] !== 8'h0F || rx[7] !== 8'h0A
+        || rx[8] !== (rx[2] ^ rx[3] ^ rx[4] ^ rx[5] ^ rx[6] ^ rx[7]) || rx[9] !== 8'h00) begin $display("FAIL identity"); errs=errs+1; end
+    frame(8'h04, 8'hFF, 2); if (rx[1][7] !== 1'b0) begin $display("FAIL byte 1 bit 7 after E2"); errs=errs+1; end
+    frame(8'h05, 8'hFF, 2);
+    // PLL loses lock: the capture is held at its start, PC0 idles, and it restarts by itself with the same settings
+    frame(8'hE0, 8'hFF, 15); if (rx[15] !== 8'h00) begin $display("FAIL lock-loss count before any loss: %h", rx[15]); errs=errs+1; end
+    force dut.u_clk.lock = 1'b0; #300;
+    if (dut.rst !== 1'b1 || pc0 !== 1'b1) begin $display("FAIL no reset on loss of lock"); errs=errs+1; end
+    pair(h); if (h) begin $display("FAIL a record handed over during reset"); errs=errs+1; end
+    wpx = dut.u_cap.wp; #2000; if (dut.u_cap.wp !== wpx) begin $display("FAIL samples stored during reset"); errs=errs+1; end
+    release dut.u_clk.lock; #1500;
+    if (dut.rst !== 1'b1) begin $display("FAIL reset released before 255 locked cycles"); errs=errs+1; end
+    #1000; if (dut.rst !== 1'b0) begin $display("FAIL reset not released"); errs=errs+1; end
+    #60000; pair(h); $display("after a loss of lock: handed over = %0d", h);
+    if (h) begin check_record(8'h90); check_dir(8'h90, 1); end else begin $display("  FAIL expected a held record"); errs=errs+1; end
+    frame(8'hE0, 8'hFF, 15); $display("E0 after the loss: lock-loss count %h, edge/hys %h, tb %h", rx[15], rx[14], rx[6]);
+    if (rx[15] !== 8'h01 || rx[6] !== 8'h04 || rx[14] !== 8'h02) begin $display("FAIL state after the loss"); errs=errs+1; end
     if (errs == 0) $display("ALL CHECKS PASSED"); else $display("CHECKS FAILED: %0d", errs);
     $finish;
   end
