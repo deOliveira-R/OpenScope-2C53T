@@ -3955,6 +3955,14 @@ uint16_t fpga_acq_post_edge_get(void)
      * one fill before the next record can be complete (EXP-46's bracket);
      * start polling a little early -- a read before completion is harmless. */
     float ms = 1024.0f / fs * 1000.0f + 100.0f;
+    /* OpenScope's core has no hold: it starts the next capture when the op
+     * 05 of the pair ends and can hold again one record later. Only the
+     * fill is waited for, with the poll gap as the floor so that fast
+     * timebases do not turn the task into a busy loop. */
+    if (acq_core_caps != 0u) {
+        ms = 1024.0f / fs * 1000.0f + 1.0f;
+        if (ms < (float)acq_poll_gap_ms) ms = (float)acq_poll_gap_ms;
+    }
     if (ms > 5000.0f) ms = 5000.0f;
     return (uint16_t)ms;
 }
