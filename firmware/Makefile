@@ -1597,6 +1597,14 @@ $(BUILD_DIR)/test_trig_edge_reg: tests/test_trig_edge_reg.c src/dsp/trig_edge_re
 test-trig-edge-reg: $(BUILD_DIR)/test_trig_edge_reg
 	$(BUILD_DIR)/test_trig_edge_reg
 
+# Identity of our capture core (dsp/core_ident.h, op E2). See tests/test_core_ident.c.
+$(BUILD_DIR)/test_core_ident: tests/test_core_ident.c src/dsp/core_ident.h src/drivers/fpga_core_regs.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/drivers $< -o $@
+
+.PHONY: test-core-ident
+test-core-ident: $(BUILD_DIR)/test_core_ident
+	$(BUILD_DIR)/test_core_ident
+
 .PHONY: test-fpga-slot
 test-fpga-slot: $(BUILD_DIR)/test_fpga_slot
 	$<

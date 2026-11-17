@@ -2130,6 +2130,28 @@ static void cmd_fpga_unrotate(const char *args)
                      (unsigned long)fpga_acq_seam_count(5));
 }
 
+/* `fpga core` — which capture core runs, by its own account (op E2, asked once when it was loaded). */
+static void cmd_fpga_core(const char *args)
+{
+    (void)args;
+    const core_ident_t id = fpga_core_ident();
+    if (!fpga_acq_design_ours()) { usb_send_str("core: the running design is not known to be ours; not asked\r\n"); return; }
+    if (!id.valid) {
+        usb_debug_printf("core: ours, no identity (older than D5, or protocol %u unknown); reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+                         (unsigned)id.proto, fpga.core_ident[0], fpga.core_ident[1], fpga.core_ident[2], fpga.core_ident[3],
+                         fpga.core_ident[4], fpga.core_ident[5], fpga.core_ident[6], fpga.core_ident[7], fpga.core_ident[8]);
+        return;
+    }
+    usb_debug_printf("core: tag %02X  protocol %u  record %u samples  caps %02X:%s%s%s%s\r\n",
+                     (unsigned)id.tag, (unsigned)id.proto, 1u << id.depth_log2, (unsigned)id.caps,
+                     core_ident_has(&id, FPGA_CORE_CAP_SEAM)    ? " seam"     : "",
+                     core_ident_has(&id, FPGA_CORE_CAP_EDGE)    ? " edge"     : "",
+                     core_ident_has(&id, FPGA_CORE_CAP_REAL50)  ? " real50"   : "",
+                     core_ident_has(&id, FPGA_CORE_CAP_LOCKRST) ? " lock-rst" : "");
+    if (id.tag != FPGA_CORE_TAG)
+        usb_debug_printf("      (this firmware's header was made with tag %02X)\r\n", (unsigned)FPGA_CORE_TAG);
+}
+
 /* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
  * timebase <= 3, a quiet CH1 input. Sweeps the CH1 offset DAC over five codes
  * of this unit's calibration page (base+80, base+400, mid, upper-400, upper —
@@ -4440,6 +4462,8 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
           "fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
           "fpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n"),
+    CMD_A("fpga core", cmd_fpga_core, 0,
+          "fpga core                       Which capture core runs: tag, protocol, capabilities (its own answer)\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,
