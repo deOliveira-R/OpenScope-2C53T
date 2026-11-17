@@ -4072,8 +4072,8 @@ uint8_t fpga_interleave_knots_get(int16_t *a, int16_t *b)
     }
     return n;
 }
-bool fpga_interleave_skew_set(int32_t ppm) { return interleave_skew_set(&acq_il_corr, ppm); }
-int32_t fpga_interleave_skew_get(void)     { return acq_il_corr.skew_ppm; }
+bool fpga_interleave_skew_set(int32_t ppm) { return interleave_skew_set(&acq_il_corr, (ppm_period_t){ ppm }); }
+int32_t fpga_interleave_skew_get(void)     { return acq_il_corr.skew.ppm; }
 void fpga_interleave_corr_get(float *gain, float *offset)
 {
     if (gain)   *gain = acq_il_corr.gain;

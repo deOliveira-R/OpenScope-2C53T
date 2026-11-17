@@ -53,10 +53,11 @@ bool interleave_corr_set_knots(interleave_corr_t *c, uint8_t n,
     return true;
 }
 
-bool interleave_skew_set(interleave_corr_t *c, int32_t ppm)
+bool interleave_skew_set(interleave_corr_t *c, ppm_period_t skew)
 {
+    const int32_t ppm = skew.ppm;
     if (!c || ppm > IL_SKEW_PPM_MAX || ppm < -IL_SKEW_PPM_MAX) return false;
-    c->skew_ppm = 0;                         /* the merge skips the FIR while taps change */
+    c->skew.ppm = 0;                         /* the merge skips the FIR while taps change */
     __asm volatile ("" ::: "memory");
     if (ppm == 0) return true;
     const float d = 2.0f * (float)ppm * 1e-6f;   /* merged samples */
@@ -72,14 +73,14 @@ bool interleave_skew_set(interleave_corr_t *c, int32_t ppm)
      * a fitted sum of 1 - 1e-3 would move a level of 200 by 0.2 count. */
     c->skew_taps[IL_SKEW_M] += 1.0f - sum;
     __asm volatile ("" ::: "memory");
-    c->skew_ppm = ppm;
+    c->skew.ppm = ppm;
     return true;
 }
 
 static bool corr_is_identity(const interleave_corr_t *c)
 {
     return c == NULL ||
-           (c->n_knots < 2u && c->skew_ppm == 0 &&
+           (c->n_knots < 2u && c->skew.ppm == 0 &&
             ((c->gain == 1.0f && c->offset == 0.0f) || c->gain <= 0.0f));
 }
 
@@ -141,7 +142,7 @@ void interleave_merge(uint8_t *a, uint8_t *b, const interleave_corr_t *c)
     const unsigned lo = INTERLEAVE_WIN_LO, hi = INTERLEAVE_WIN_LO + half;
 
     if (!corr_is_identity(c)) {
-        if (c->skew_ppm != 0) skew_correct_b(a, b, c);
+        if (c->skew.ppm != 0) skew_correct_b(a, b, c);
         else for (unsigned k = lo; k < hi; k++) b[k] = interleave_correct_b(b[k], c);
     }
     /* Upper half first, walking down: out[i] = A or B at 256 + i/2 >= 512. */

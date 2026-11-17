@@ -20,6 +20,9 @@
  *      noise, range); round trip: merging with the measured skew reads ~0.5.
  */
 #include "../src/dsp/interleave_cal.h"
+
+/* The skew is a ppm_period_t (units.h): ppm of one converter period. */
+#define PPM(x) ((ppm_period_t){ (x) })
 #include "../src/dsp/interleave.h"
 
 #include <math.h>
@@ -172,9 +175,9 @@ static void test_skew_estimate(void)
             s_tau += e.tau;
         }
         if (pass == 0) sum = s_tau / 32; else sum2 = s_tau / 32;
-        if (pass == 0) CHECK(interleave_skew_set(&c, (int32_t)lround((sum - 0.5) * 1e6)), "measured skew refused");
+        if (pass == 0) CHECK(interleave_skew_set(&c, PPM((int32_t)lround((sum - 0.5) * 1e6))), "measured skew refused");
     }
-    const int32_t ppm = c.skew_ppm;
+    const int32_t ppm = c.skew.ppm;
     CHECK(ppm > -52000 && ppm < -46000, "raw skew %ld ppm, want ~-49000", (long)ppm);
     CHECK(fabs(sum2 - 0.5) < 0.003, "corrected records read tau %.4f, want 0.500", sum2);
     e.tau = (float)sum2;
