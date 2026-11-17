@@ -1680,7 +1680,7 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
      *    Zoomed (L > 1), the crossing is placed to 1/L sample from the two
      *    samples around it -- stock re-finds it on the interpolated copy for
      *    the same reason (0x08021EF0): at 10 ns/div one sample is 10-20 px. */
-    if ((ss->trigger.source != TRIG_SRC_CH2 || fpga_acq_design_ours()) && fpga_acq_record_time_ordered()) {
+    if ((ss->trigger.source != TRIG_SRC_CH2 || fpga_acq_core_has(FPGA_CORE_CAP_SEAM)) && fpga_acq_record_time_ordered()) {
         int a = hw_trigger_anchor(ss, src_buf);
         if (a >= 1) {
             /* a >= 1 means the level is 4..251 (trig_edge_anchor), so the

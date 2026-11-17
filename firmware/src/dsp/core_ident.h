@@ -46,4 +46,15 @@ static inline bool core_ident_has(const core_ident_t *id, uint8_t cap)
     return id->valid && (id->caps & cap) == cap;
 }
 
+/* The capability bits the firmware may act on: the core's own, and only when
+ * the firmware loaded the design itself (design_ours, trig_edge_reg.h) and
+ * the reply is a valid identity. Anything else is 0: the design is then
+ * treated like the factory's (no edge register, no seam in the header). */
+static inline uint8_t core_ident_trusted_caps(bool design_ours, const uint8_t *reply)
+{
+    if (!design_ours) return 0u;
+    const core_ident_t id = core_ident_parse(reply);
+    return id.valid ? id.caps : 0u;
+}
+
 #endif

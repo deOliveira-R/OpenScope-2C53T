@@ -3736,6 +3736,11 @@ static volatile bool acq_reprime_req = false;
 #define FPGA_BUILTIN_IS_CORE 0
 #endif
 static volatile bool    acq_design_ours = false;
+/* What the running core said it can do (op E2, core_ident.h); 0 for any design
+ * that is not ours or did not answer with a valid identity. Each use of a
+ * core feature asks for its bit here, not for acq_design_ours. */
+static volatile uint8_t acq_core_caps   = 0u;
+static inline bool acq_core_has(uint8_t cap) { return (acq_core_caps & cap) == cap; }
 /* The firmware's own constants against the capture core's package (drivers/fpga_core_regs.h, generated):
  * a core with another record length, trigger position or timebase list does not build into this firmware. */
 _Static_assert(TRIG_EDGE_REC_N == (1u << FPGA_CORE_ADDR_W), "record length differs from the core's");
@@ -3946,6 +3951,7 @@ void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
 bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
+bool fpga_acq_core_has(uint8_t cap)           { return acq_core_has(cap); }
 core_ident_t fpga_core_ident(void)
 {
     uint8_t r[CORE_IDENT_REPLY_LEN];
@@ -4000,9 +4006,9 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
      * periods, a square, DC) is then ordered like any other; the search in
      * the samples could not order those (bench 2026-11-16: 9 of the 13
      * generator waveforms). */
-    int hs = trig_seam_from_hdr(acq_design_ours, fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]);
+    int hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]);
     if (hs < 0)
-        hs = trig_seam_from_hdr(acq_design_ours, fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2]);
+        hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2]);
     if (hs >= 0) {
         if (acq_seam_check) {
             uint32_t kf = 0;
@@ -4770,7 +4776,7 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         acq_single_done_pub = single_done;
         {   /* trigger edge register: our core only (dsp/trig_edge_reg.h) */
-            const uint8_t want = trig_edge_reg_code(acq_design_ours,
+            const uint8_t want = trig_edge_reg_code(acq_core_has(FPGA_CORE_CAP_EDGE),
                                      ss_acq != NULL && ss_acq->trigger.edge == TRIG_FALLING);
             if (want != acq_edge_reg) {
                 fpga_scope_write_reg(FPGA_CORE_OP_EDGE, want);
@@ -5600,6 +5606,7 @@ bb_restore_pins:
     if (bb_outcome != 0 && !(bb_outcome == 1 && bb_arm_live)) {
         if (bb_outcome == 2) {               /* the FPGA is empty now */
             acq_design_ours = false;
+            acq_core_caps = 0u;
             acq_edge_reg = 0x00;
         }
         if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
@@ -5660,6 +5667,11 @@ bb_restore_pins:
             for (unsigned i = 1; i < CORE_IDENT_REPLY_LEN; i++)
                 fpga.core_ident[i] = spi3_xfer(0xFF);
             SPI3_CS_DEASSERT();
+        }
+        {   /* only a valid identity turns the core's features on */
+            uint8_t r[CORE_IDENT_REPLY_LEN];
+            for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
+            acq_core_caps = core_ident_trusted_caps(acq_design_ours, r);
         }
     }
     fpga_reconcile_timebase_after_arm();
@@ -6433,6 +6445,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     SPI3_CS_DEASSERT();
     acq_edge_reg = 0x00;                 /* the burst wrote 07 00 */
     acq_design_ours = false;             /* this path does not vouch for the design */
+    acq_core_caps = 0u;
 
     fpga_reconcile_timebase_after_arm();
 

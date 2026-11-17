@@ -40,6 +40,12 @@ int main(void)
     id = core_ident_parse(buf);
     CHECK(!id.valid && id.proto == 2 && id.tag == 0xD5);
 
+    /* capabilities are acted on only for a design we loaded that identified itself */
+    CHECK(core_ident_trusted_caps(true, d5) == 0x0F);
+    CHECK(core_ident_trusted_caps(false, d5) == 0);
+    CHECK(core_ident_trusted_caps(true, old) == 0);
+    CHECK(core_ident_trusted_caps(true, buf) == 0);          /* the newer protocol above */
+
     if (fails) { printf("test_core_ident: %d FAILED\n", fails); return 1; }
     printf("test_core_ident: all passed\n");
     return 0;

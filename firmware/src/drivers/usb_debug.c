@@ -2137,7 +2137,7 @@ static void cmd_fpga_core(const char *args)
     const core_ident_t id = fpga_core_ident();
     if (!fpga_acq_design_ours()) { usb_send_str("core: the running design is not known to be ours; not asked\r\n"); return; }
     if (!id.valid) {
-        usb_debug_printf("core: ours, no identity (older than D5, or protocol %u unknown); reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+        usb_debug_printf("core: loaded by us but no valid identity (older than D5, or protocol %u unknown): treated like the factory design; reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
                          (unsigned)id.proto, fpga.core_ident[0], fpga.core_ident[1], fpga.core_ident[2], fpga.core_ident[3],
                          fpga.core_ident[4], fpga.core_ident[5], fpga.core_ident[6], fpga.core_ident[7], fpga.core_ident[8]);
         return;
