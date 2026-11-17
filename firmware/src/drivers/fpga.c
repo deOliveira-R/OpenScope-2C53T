@@ -3941,6 +3941,12 @@ void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
 bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
+core_ident_t fpga_core_ident(void)
+{
+    uint8_t r[CORE_IDENT_REPLY_LEN];
+    for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
+    return core_ident_parse(r);
+}
 void fpga_acq_seam_check_set(bool on)         { acq_seam_check = on; }
 bool fpga_acq_seam_check_get(void)            { return acq_seam_check; }
 uint32_t fpga_acq_seam_count(unsigned i)      { return i < 6u ? acq_seam_n[i] : 0u; }
@@ -5640,6 +5646,16 @@ bb_restore_pins:
         acq_edge_reg = 0x00;
         acq_design_ours = trig_edge_reg_design_ours(FPGA_BUILTIN_IS_CORE, bb_outcome == 0,
                                                     (fpga.cfg_status_reg[2] & 0x20u) != 0u);
+        /* Ask our core which build it is (op E2; the E-range is never sent to
+         * a design that is not ours). A core older than D5 answers zeros. */
+        for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) fpga.core_ident[i] = 0u;
+        if (acq_design_ours) {
+            SPI3_CS_ASSERT();
+            fpga.core_ident[0] = spi3_xfer(FPGA_CORE_OP_IDENT);
+            for (unsigned i = 1; i < CORE_IDENT_REPLY_LEN; i++)
+                fpga.core_ident[i] = spi3_xfer(0xFF);
+            SPI3_CS_DEASSERT();
+        }
     }
     fpga_reconcile_timebase_after_arm();
     spi3_set_br(0);                      /* restore /2 for normal acquisition */

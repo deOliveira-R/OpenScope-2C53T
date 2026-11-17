@@ -29,6 +29,7 @@
 #include "../dsp/interleave_cal.h"
 #include "../ui/scope_roll.h"
 #include "../dsp/acq_cfg.h"
+#include "../dsp/core_ident.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 
@@ -381,6 +382,7 @@ typedef struct {
     volatile uint32_t h2_bytes_sent;       /* Bytes uploaded (should be 115638) */
     volatile uint8_t  h2_upload_done;      /* 1 = TX completed without error */
     volatile uint8_t  h2_close_status;     /* MISO byte after 0x3A close (stock: 0xF8) */
+    volatile uint8_t  core_ident[CORE_IDENT_REPLY_LEN];   /* reply to op E2 after a load of our core (all 0: not asked) */
     volatile uint8_t  scope_status[4];     /* MISO from post-upload 0x03 read
                                             * (stock boot: 00 01 42 2E — issue-#18 capture)
                                             * ⚠ all-zeros on healthy armed boots too —
@@ -1281,6 +1283,7 @@ bool     fpga_acq_edge_filter_get(void);
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
 bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
+core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
 void     fpga_acq_seam_check_set(bool on);     /* bench: compare the header's seam with the search */
 bool     fpga_acq_seam_check_get(void);
 uint32_t fpga_acq_seam_count(unsigned i);      /* 0 header, 1 search, 2 none, 3 same, 4 differ, 5 search none */
