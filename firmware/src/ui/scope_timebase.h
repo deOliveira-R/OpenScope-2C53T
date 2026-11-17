@@ -155,6 +155,14 @@ typedef enum {
 /* Capture sample rate in samples/second, or 0.0f when unknown. */
 float scope_timebase_sample_rate(uint8_t code);
 
+/* Which design the rates are for. Off (the default): the measured table, for
+ * the factory design. On: OpenScope's capture core, whose rates are exact
+ * (core clock / divider); real50 = the core clocks the converters at a real
+ * 50 MHz at code 0x05. Called where a design is loaded and has identified
+ * itself (drivers/fpga.c). */
+void scope_timebase_use_core_rates(bool on, bool real50);
+bool scope_timebase_core_rates(void);
+
 /* The whole table (SCOPE_TIMEBASE_CODE_COUNT entries, 0.0f = no rate), for a
  * caller that searches it (autoset, scope_selfcal.h). */
 const float *scope_timebase_rate_table(void);

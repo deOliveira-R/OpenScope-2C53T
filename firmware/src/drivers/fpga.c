@@ -3741,6 +3741,12 @@ static volatile bool    acq_design_ours = false;
  * core feature asks for its bit here, not for acq_design_ours. */
 static volatile uint8_t acq_core_caps   = 0u;
 static inline bool acq_core_has(uint8_t cap) { return (acq_core_caps & cap) == cap; }
+/* The one place the capabilities change: the sample rates follow the design. */
+static void acq_core_caps_set(uint8_t caps)
+{
+    acq_core_caps = caps;
+    scope_timebase_use_core_rates(caps != 0u, (caps & FPGA_CORE_CAP_REAL50) != 0u);
+}
 /* The firmware's own constants against the capture core's package (drivers/fpga_core_regs.h, generated):
  * a core with another record length, trigger position or timebase list does not build into this firmware. */
 _Static_assert(TRIG_EDGE_REC_N == (1u << FPGA_CORE_ADDR_W), "record length differs from the core's");
@@ -5606,7 +5612,7 @@ bb_restore_pins:
     if (bb_outcome != 0 && !(bb_outcome == 1 && bb_arm_live)) {
         if (bb_outcome == 2) {               /* the FPGA is empty now */
             acq_design_ours = false;
-            acq_core_caps = 0u;
+            acq_core_caps_set(0u);
             acq_edge_reg = 0x00;
         }
         if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
@@ -5671,7 +5677,7 @@ bb_restore_pins:
         {   /* only a valid identity turns the core's features on */
             uint8_t r[CORE_IDENT_REPLY_LEN];
             for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
-            acq_core_caps = core_ident_trusted_caps(acq_design_ours, r);
+            acq_core_caps_set(core_ident_trusted_caps(acq_design_ours, r));
         }
     }
     fpga_reconcile_timebase_after_arm();
@@ -6445,7 +6451,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     SPI3_CS_DEASSERT();
     acq_edge_reg = 0x00;                 /* the burst wrote 07 00 */
     acq_design_ours = false;             /* this path does not vouch for the design */
-    acq_core_caps = 0u;
+    acq_core_caps_set(0u);
 
     fpga_reconcile_timebase_after_arm();
 

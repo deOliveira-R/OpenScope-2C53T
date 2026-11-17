@@ -8,6 +8,7 @@
  */
 
 #include "scope_timebase.h"
+#include "../drivers/fpga_core_regs.h"   /* generated from the capture core's package */
 
 #include <stdio.h>
 
@@ -284,16 +285,43 @@ static const scope_tb_tier_t tier_by_code[SCOPE_TIMEBASE_CODE_COUNT] = {
     SCOPE_TB_MEASURED,      /* 0x14 EXP-18       */
 };
 
+/* OpenScope's own capture core: the rate is not measured, it is the core's
+ * clock over an integer the core's package states (fpga_core_regs.h). The
+ * table above stays the source for the factory design, whose dividers are
+ * not known. What neither knows is the unit's 25 MHz crystal: its error
+ * moves every rate by the same factor. */
+_Static_assert(SCOPE_TIMEBASE_CODE_COUNT == FPGA_CORE_TB_CODES, "timebase code count differs from the core's");
+static const uint32_t core_divider[SCOPE_TIMEBASE_CODE_COUNT] = FPGA_CORE_TB_DIVIDERS;
+static float core_rate[SCOPE_TIMEBASE_CODE_COUNT];
+static volatile bool core_rates_on;
+
+void scope_timebase_use_core_rates(bool on, bool real50)
+{
+    if (on) {
+        for (unsigned c = 0; c < SCOPE_TIMEBASE_CODE_COUNT; c++)
+            core_rate[c] = (float)FPGA_CORE_CLK_HZ / (float)core_divider[c];
+        /* 50 MS/s is not a division of the core clock: the converters get a
+         * real 50 MHz clock there, when the core says it has one. */
+        core_rate[FPGA_CORE_TB_50MS] = real50 ? (float)FPGA_CORE_RATE50_HZ : sample_rate[FPGA_CORE_TB_50MS];
+    }
+    core_rates_on = on;
+}
+
+bool scope_timebase_core_rates(void)
+{
+    return core_rates_on;
+}
+
 const float *scope_timebase_rate_table(void)
 {
-    return sample_rate;
+    return core_rates_on ? core_rate : sample_rate;
 }
 
 float scope_timebase_sample_rate(uint8_t code)
 {
     if (code >= SCOPE_TIMEBASE_CODE_COUNT)
         return 0.0f;
-    return sample_rate[code];
+    return core_rates_on ? core_rate[code] : sample_rate[code];
 }
 
 scope_tb_tier_t scope_timebase_get_tier(uint8_t code)
@@ -305,6 +333,8 @@ scope_tb_tier_t scope_timebase_get_tier(uint8_t code)
      * table says. Derive the guard rather than trusting the two to agree. */
     if (sample_rate[code] <= 0.0f)
         return SCOPE_TB_NONE;
+    if (core_rates_on)
+        return SCOPE_TB_MEASURED;        /* exact by construction */
 
     return tier_by_code[code];
 }

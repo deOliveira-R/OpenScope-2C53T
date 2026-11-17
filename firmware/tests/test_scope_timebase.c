@@ -364,6 +364,31 @@ static void test_view_zoom(void)
     CHECK(strcmp(a, "--") == 0, "no rate stays \"--\" in the view label, got \"%s\"", a);
 }
 
+/* OpenScope's own core: rates are the core's clock over the package's dividers. */
+static void test_core_rates(void)
+{
+    static const struct { uint8_t code; float fs; } want[] = {
+        { 0x00, 125e6f }, { 0x04, 125e6f }, { 0x05, 50e6f }, { 0x06, 25e6f }, { 0x07, 12.5e6f },
+        { 0x08, 5e6f }, { 0x09, 2.5e6f }, { 0x0A, 1.25e6f }, { 0x0B, 500e3f }, { 0x0C, 250e3f },
+        { 0x0D, 125e3f }, { 0x0E, 50e3f }, { 0x0F, 25e3f }, { 0x10, 12.5e3f }, { 0x11, 5e3f },
+        { 0x12, 2.5e3f }, { 0x13, 1250.0f }, { 0x14, 500.0f },
+    };
+    const float before = scope_timebase_sample_rate(0x0A);
+    CHECK(!scope_timebase_core_rates(), "the factory table must be the default");
+    scope_timebase_use_core_rates(true, true);
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++)
+        CHECK(scope_timebase_sample_rate(want[i].code) == want[i].fs, "core rate of code 0x%02X is %.1f, expected %.1f",
+              want[i].code, (double)scope_timebase_sample_rate(want[i].code), (double)want[i].fs);
+    CHECK(scope_timebase_rate_table()[0x0A] == 1.25e6f, "the table handed to searches must be the core's");
+    CHECK(scope_timebase_get_tier(0x0A) == SCOPE_TB_MEASURED, "an exact rate is a measured-tier rate");
+    CHECK(scope_timebase_sample_rate(SCOPE_TIMEBASE_CODE_COUNT) == 0.0f, "out of range stays 0");
+    scope_timebase_use_core_rates(true, false);          /* a core without the real 50 MHz clock */
+    CHECK(scope_timebase_sample_rate(0x05) == 49900000.0f, "code 0x05 without real50 keeps the measured rate");
+    scope_timebase_use_core_rates(false, false);
+    CHECK(scope_timebase_sample_rate(0x0A) == before && scope_timebase_rate_table()[0x0A] == before,
+          "switching back must restore the factory table");
+}
+
 int main(void)
 {
     test_view_zoom();
@@ -375,6 +400,7 @@ int main(void)
     test_out_of_range();
     test_derived_quantities();
     test_labels();
+    test_core_rates();
 
     if (failures == 0) {
         printf("test_scope_timebase: all checks passed\n");
