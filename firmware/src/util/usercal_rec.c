@@ -87,7 +87,7 @@ size_t usercal_encode(const usercal_t *u, uint8_t *buf, size_t cap)
                            (kn ? USERCAL_F_IL_KNOTS : 0u) | (sk ? USERCAL_F_IL_SKEW : 0u));
     /* An absent block is stored as identity so two "no interleave" records
      * are byte-identical (and the layer elides the second). */
-    put32(buf + OFF_IL_GAIN, (uint32_t)(u->il_present ? u->il_gain_ppm : 1000000));
+    put32(buf + OFF_IL_GAIN, (uint32_t)(u->il_present ? u->il_gain_e6 : 1000000));
     put32(buf + OFF_IL_OFF,  (uint32_t)(u->il_present ? u->il_off_e4 : 0));
     uint8_t *p = buf + OFF_CORR;
     for (unsigned c = 0; c < CALPAGE_CHANNELS; c++) {
@@ -176,7 +176,7 @@ usercal_status_t usercal_decode(const uint8_t *buf, size_t len, usercal_t *out)
     usercal_clear(out);
     out->table_crc   = get32(buf + OFF_TABLE);
     out->il_present  = il;
-    out->il_gain_ppm = gain;
+    out->il_gain_e6 = gain;
     out->il_off_e4   = off;
     out->il_n_knots  = nk;
     for (unsigned i = 0; i < nk; i++) { out->il_knot_a[i] = ka[i]; out->il_knot_b[i] = kb[i]; }

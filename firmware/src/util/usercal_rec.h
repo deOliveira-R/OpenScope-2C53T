@@ -42,7 +42,7 @@
  *   12   4     flags        bit0 = interleave line present
  *                           bit1 = interleave knots present (v2)
  *                           bit2 = interleave skew present (v2)
- *   16   4     il_gain_ppm  int32, B gain x 1e6   (500000..2000000)
+ *   16   4     il_gain_e6   int32, B gain x 1e6   (500000..2000000)
  *   20   4     il_off_e4    int32, B offset x 1e4 record units (+-1000000)
  *   24   8     valid[2]     u32 per channel: bit bank*10+range holds a delta
  *   32   240   corr         int16 [ch 2][bank 3][range 10][base, upper]
@@ -106,7 +106,7 @@
 typedef struct {
     uint32_t table_crc;
     bool     il_present;
-    int32_t  il_gain_ppm;
+    int32_t  il_gain_e6;                  /* gain x 1e6 (a gain_e6_t value; was il_gain_ppm) */
     int32_t  il_off_e4;
     uint8_t  il_n_knots;                  /* 0, or 2..IL_KNOTS_MAX (v2) */
     int16_t  il_knot_a[IL_KNOTS_MAX];     /* 1/100 record unit, ascending */

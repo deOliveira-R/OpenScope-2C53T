@@ -45,10 +45,10 @@ void usercal_capture(usercal_t *u)
             }
     float g, o;
     fpga_interleave_corr_get(&g, &o);
-    u->il_gain_ppm = round_i32(g * 1e6f);
+    u->il_gain_e6 = round_i32(g * 1e6f);
     u->il_off_e4   = round_i32(o * 1e4f);
     /* Identity (the boot default, fpga.c acq_il_corr) is "no correction". */
-    u->il_present  = (u->il_gain_ppm != 1000000 || u->il_off_e4 != 0);
+    u->il_present  = (u->il_gain_e6 != 1000000 || u->il_off_e4 != 0);
     u->il_n_knots  = fpga_interleave_knots_get(u->il_knot_a, u->il_knot_b);
     u->il_skew_ppm = fpga_interleave_skew_get();
 }
@@ -77,7 +77,7 @@ void usercal_apply(const usercal_t *u)
         rep.refused = (uint8_t)n;   /* stale page, or no page in use: none applied */
     }
     if (u->il_present) {
-        fpga_interleave_corr_set((float)u->il_gain_ppm / 1e6f, (float)u->il_off_e4 / 1e4f);
+        fpga_interleave_corr_set((float)u->il_gain_e6 / 1e6f, (float)u->il_off_e4 / 1e4f);
         rep.il_applied = true;
     }
     /* After the line: setting the line clears the knots. Both setters

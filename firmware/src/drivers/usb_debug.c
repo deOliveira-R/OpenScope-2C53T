@@ -3532,7 +3532,7 @@ static void cmd_cal_user(const char *args)
                          u.table_crc == live ? "matches" : "STALE vs", (unsigned long)live,
                          u.il_present ? "gain " : "none");
         if (u.il_present)
-            usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_ppm, (long)u.il_off_e4);
+            usb_debug_printf("%ld/1000000 offset %ld/10000", (long)u.il_gain_e6, (long)u.il_off_e4);
         usb_debug_printf(", %u knots, skew %ld ppm\r\n", (unsigned)u.il_n_knots, (long)u.il_skew_ppm);
     }
     usb_debug_printf("  boot: %s", usercal_status_str(r->load_st));

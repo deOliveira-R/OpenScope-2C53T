@@ -94,7 +94,7 @@ static void sample(usercal_t *u, int seed)
     usercal_clear(u);
     u->table_crc = 0x12345678u + (uint32_t)seed;
     u->il_present = true;
-    u->il_gain_ppm = 1012345 + seed;
+    u->il_gain_e6 = 1012345 + seed;
     u->il_off_e4 = -23456 - seed;
     /* Unit #2's bench levels (2026-11-11) as knots, and its skew. Test data. */
     static const int16_t ka[5] = { 977, 4961, 9898, 14860, 19902 };
@@ -118,7 +118,7 @@ static void sample(usercal_t *u, int seed)
 static bool same(const usercal_t *a, const usercal_t *b)
 {
     if (a->table_crc != b->table_crc || a->il_present != b->il_present) return false;
-    if (a->il_present && (a->il_gain_ppm != b->il_gain_ppm || a->il_off_e4 != b->il_off_e4)) return false;
+    if (a->il_present && (a->il_gain_e6 != b->il_gain_e6 || a->il_off_e4 != b->il_off_e4)) return false;
     if (a->il_n_knots != b->il_n_knots || a->il_skew_ppm != b->il_skew_ppm) return false;
     for (unsigned i = 0; i < a->il_n_knots; i++)
         if (a->il_knot_a[i] != b->il_knot_a[i] || a->il_knot_b[i] != b->il_knot_b[i]) return false;
@@ -183,7 +183,7 @@ static void test_canonical_encoding(void)
     CHECK(usercal_encode(&a, ba, sizeof(ba)) && usercal_encode(&b, bb, sizeof(bb)) &&
           memcmp(ba, bb, sizeof(ba)) == 0, "unflagged delta does not change the bytes");
     a.il_present = b.il_present = false;
-    b.il_gain_ppm = 1; b.il_off_e4 = 99;
+    b.il_gain_e6 = 1; b.il_off_e4 = 99;
     CHECK(usercal_encode(&a, ba, sizeof(ba)) && usercal_encode(&b, bb, sizeof(bb)) &&
           memcmp(ba, bb, sizeof(ba)) == 0, "absent interleave block is canonical");
 }
@@ -258,13 +258,13 @@ static void test_value_rejections(void)
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "delta beyond 12 bits");
 
     sample(&a, 0);
-    a.il_gain_ppm = USERCAL_IL_GAIN_MAX + 1;
+    a.il_gain_e6 = USERCAL_IL_GAIN_MAX + 1;
     usercal_encode(&a, buf, sizeof(buf));
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "interleave gain too high");
-    a.il_gain_ppm = USERCAL_IL_GAIN_MIN - 1;
+    a.il_gain_e6 = USERCAL_IL_GAIN_MIN - 1;
     usercal_encode(&a, buf, sizeof(buf));
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "interleave gain too low");
-    a.il_gain_ppm = 1000000; a.il_off_e4 = -USERCAL_IL_OFF_MAX - 1;
+    a.il_gain_e6 = 1000000; a.il_off_e4 = -USERCAL_IL_OFF_MAX - 1;
     usercal_encode(&a, buf, sizeof(buf));
     CHECK(usercal_decode(buf, sizeof(buf), &out) == USERCAL_ST_RANGE, "interleave offset too large");
     /* ...but only while the block is present. */
@@ -321,7 +321,7 @@ static void test_v1_migration(void)
     restamp_len(v1, USERCAL_V1_LEN);
     memset(&out, 0xA5, sizeof(out));
     CHECK(usercal_decode(v1, sizeof(v1), &out) == USERCAL_ST_OK, "v1 record refused");
-    CHECK(out.il_present && out.il_gain_ppm == a.il_gain_ppm && out.il_off_e4 == a.il_off_e4,
+    CHECK(out.il_present && out.il_gain_e6 == a.il_gain_e6 && out.il_off_e4 == a.il_off_e4,
           "v1 line lost");
     CHECK(out.il_n_knots == 0 && out.il_skew_ppm == 0, "v1 migrated with knots/skew");
     CHECK(usercal_count(&out) == usercal_count(&a) && out.table_crc == a.table_crc, "v1 deltas lost");
@@ -334,7 +334,7 @@ static void test_v1_migration(void)
 
     chip_blank();
     CHECK(flash_region_append(USERCAL_REGION, v1, sizeof(v1)) == FLASH_REGION_OK, "plant v1");
-    CHECK(usercal_store_load(&out) == USERCAL_ST_OK && out.il_gain_ppm == a.il_gain_ppm &&
+    CHECK(usercal_store_load(&out) == USERCAL_ST_OK && out.il_gain_e6 == a.il_gain_e6 &&
           out.il_n_knots == 0, "v1 record from the log");
     CHECK(usercal_store_save(&a) == FLASH_REGION_OK, "save after a v1");
     CHECK(usercal_store_load(&out) == USERCAL_ST_OK && same(&a, &out), "v2 save over v1 loads");
