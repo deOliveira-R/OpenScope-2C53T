@@ -1288,6 +1288,7 @@ bool     fpga_acq_record_time_ordered(void);
 bool     fpga_acq_record_core_ordered(void);   /* ...and its start came from the core's header: trigger exactly at 512 */
 bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
 bool     fpga_acq_core_has(uint8_t cap);       /* the running core is ours, identified itself, and has these FPGA_CORE_CAP_* bits */
+uint32_t fpga_acq_kind_count(unsigned i);      /* records by the op 05 header: 0 held, 1 not held, 2 held without a PC0 edge, 3 PC0 edge but not held */
 core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
 void     fpga_acq_seam_check_set(bool on);     /* bench: compare the header's seam with the search */
 bool     fpga_acq_seam_check_get(void);

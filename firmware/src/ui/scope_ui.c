@@ -1686,8 +1686,9 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     if ((ss->trigger.source != TRIG_SRC_CH2 || fpga_acq_core_has(FPGA_CORE_CAP_SEAM)) && fpga_acq_record_time_ordered()) {
         int a = hw_trigger_anchor(ss, src_buf);
         if (a >= 1) {
-            /* a >= 1 means the level is 4..251 (trig_edge_anchor), so the
-             * clamp in trig_level_rec() never acts here. */
+            /* From the search, a >= 1 means the level is 4..251 and the clamp
+             * in trig_level_rec() never acts; at the core's index the level
+             * may be at a rail, and the two samples still straddle it. */
             const int c = (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v;
             const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], c);
             if (back_q8) *back_q8 = (int16_t)back;

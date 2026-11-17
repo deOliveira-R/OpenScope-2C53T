@@ -3747,6 +3747,10 @@ static volatile bool    acq_design_ours = false;
  * core feature asks for its bit here, not for acq_design_ours. */
 static volatile uint8_t acq_core_caps   = 0u;
 static inline bool acq_core_has(uint8_t cap) { return (acq_core_caps & cap) == cap; }
+/* Record kind taken from the op 05 header (our core): [0] held, [1] not held,
+ * [2] held but no PC0 edge seen, [3] PC0 edge but not held. */
+static volatile uint32_t acq_kind_n[4];
+uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
 /* The one place the capabilities change: the sample rates follow the design. */
 static void acq_core_caps_set(uint8_t caps)
 {
@@ -4896,10 +4900,25 @@ static void fpga_warmtest_acq_task(void *pv)
         last_read_tick = xTaskGetTickCount();
         fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, last_read_tick * portTICK_PERIOD_MS);
-        bool triggered = (fpga.pc0_edges != edges_before);
-        if (!triggered) {                       /* the strobe is µs after the read; give the ISR a tick */
-            vTaskDelay(pdMS_TO_TICKS(1));
+        bool triggered;
+        if (acq_core_has(FPGA_CORE_CAP_SEAM)) {
+            /* Our core says it in the reply itself: the op 05 header carries
+             * the seam (V set) exactly when the op 04 before it found a held
+             * record and froze it for the pair (fpga/core/rtl/cmd.sv). That
+             * is the fact PC0 signals, without the interrupt, and it also
+             * says the record was still held when op 05 began. PC0 is only
+             * compared, for the bench (`fpga core`). */
+            triggered = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]) >= 0;
+            const bool pc0 = (fpga.pc0_edges != edges_before);
+            acq_kind_n[triggered ? 0 : 1]++;
+            if (triggered && !pc0) acq_kind_n[2]++;
+            if (!triggered && pc0) acq_kind_n[3]++;
+        } else {
             triggered = (fpga.pc0_edges != edges_before);
+            if (!triggered) {                   /* the strobe is µs after the read; give the ISR a tick */
+                vTaskDelay(pdMS_TO_TICKS(1));
+                triggered = (fpga.pc0_edges != edges_before);
+            }
         }
         acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
         edges_consumed = fpga.pc0_edges;

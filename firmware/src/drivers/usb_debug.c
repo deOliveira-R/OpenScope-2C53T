@@ -2155,6 +2155,9 @@ static void cmd_fpga_core(const char *args)
                      core_ident_has(&id, FPGA_CORE_CAP_LOCKRST) ? " lock-rst" : "");
     if (id.tag != FPGA_CORE_TAG)
         usb_debug_printf("      (this firmware's header was made with tag %02X)\r\n", (unsigned)FPGA_CORE_TAG);
+    usb_debug_printf("      reads by the op 05 header: held %lu, not held %lu; PC0 disagreed: held without an edge %lu, edge but not held %lu\r\n",
+                     (unsigned long)fpga_acq_kind_count(0), (unsigned long)fpga_acq_kind_count(1),
+                     (unsigned long)fpga_acq_kind_count(2), (unsigned long)fpga_acq_kind_count(3));
 }
 
 /* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
