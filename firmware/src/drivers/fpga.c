@@ -3750,6 +3750,8 @@ static inline bool acq_core_has(uint8_t cap) { return (acq_core_caps & cap) == c
 /* Record kind taken from the op 05 header (our core): [0] held, [1] not held,
  * [2] held but no PC0 edge seen, [3] PC0 edge but not held. */
 static volatile uint32_t acq_kind_n[4];
+static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_action) */
+uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
 /* The one place the capabilities change: the sample rates follow the design. */
 static void acq_core_caps_set(uint8_t caps)
@@ -4716,6 +4718,9 @@ static void fpga_warmtest_acq_task(void *pv)
      * pass for the one-shot. Stock's SINGLE path reads the write pointer
      * instead (op09/0A, 0x080215EE); dropping one read is our equivalent. */
     bool drop_next = false;
+    /* The task has not been reading records (STOP, a SINGLE record held,
+     * roll): what the FPGA holds by now is from before (trig_fresh_action). */
+    bool was_holding = false;
     for (;;) {
         if (!fpga.initialized || fpga.bus_released) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -4744,6 +4749,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * Nothing below applies -- no record, no handover, no re-arm. */
         if (acq_roll_on) {
             fpga_roll_service();
+            was_holding = true;
             continue;
         }
         roll_tick_armed = false;
@@ -4818,6 +4824,7 @@ static void fpga_warmtest_acq_task(void *pv)
             acq_cfg_touch(&s_acq_cfg_trk, xTaskGetTickCount() * portTICK_PERIOD_MS);
         }
         if (mode_now == TRIG_SINGLE && single_done) {
+            was_holding = true;
             vTaskDelay(pdMS_TO_TICKS(10));     /* hold the one record */
             continue;
         }
@@ -4832,9 +4839,37 @@ static void fpga_warmtest_acq_task(void *pv)
          * SINGLE hold above: reg 0x01 may still follow the keys, the held
          * record and its rate stay. Autoset/baseline set `running` first. */
         if (ss_acq != NULL && !ss_acq->running) {
+            was_holding = true;
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
+        /* Reading (again). A record the FPGA captured while nobody read, or
+         * before SINGLE was armed, must not pass for a new one: bench
+         * 2026-11-17, RUN after a STOP published one record from before the
+         * STOP in 6 of 6 (generator off since), and so did leaving a finished
+         * SINGLE. Our core is restarted by a register write (the level, with
+         * the value it has); for other designs the SINGLE arm drops one read
+         * as before. No capability bit says "a write restarts the capture":
+         * it is how protocol 1 works, so a valid identity is the condition. */
+        switch (trig_fresh_action(acq_core_caps != 0u, drop_next, was_holding)) {
+        case TRIG_FRESH_RESTART: {
+            fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, acq_trig_code);
+            acq_fresh_restarts++;
+            drop_next = false;
+            /* the capture starts now: wait for it like after a hand-over,
+             * and give AUTO its whole budget before a free-running read */
+            const uint32_t t = xTaskGetTickCount();
+            capture_in_flight = true;
+            last_handover_tick = t;
+            last_commit_tick = t;
+            break;
+        }
+        case TRIG_FRESH_DROP_NEXT:             /* drop_next stays set until the read */
+        case TRIG_FRESH_NONE:
+        default:
+            break;
+        }
+        was_holding = false;
         /* EXP-53/54 (2026-09-20..22) — PC0 is a HANDOVER strobe, not a
          * completion flag: it pulses 6–9 µs after an opcode-0x04 read that
          * finds a completed record (50 cycles at 0x10/0x12, never more). The

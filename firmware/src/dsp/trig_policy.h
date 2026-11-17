@@ -66,6 +66,24 @@ typedef enum {
 
 trig_acq_t trig_acq_decide(const trig_acq_in_t *in);
 
+/* Before the first read after the task has not been reading (STOP, a SINGLE
+ * record being held, roll) or after SINGLE is (re-)armed: the FPGA may hold a
+ * record from before, and its hand-over would pass for a new one.
+ *   core_restarts  OpenScope's core, identified: any register write restarts
+ *                  its capture with a fresh pre-trigger part (cmd.sv), so one
+ *                  write makes every later record newer than the write
+ *   single_armed   SINGLE was (re-)armed since the last read
+ *   was_holding    the task has not been reading
+ * Without the core: drop the next read after a SINGLE arm, as before; after a
+ * STOP nothing is done (the factory design's behaviour there is unmeasured). */
+typedef enum { TRIG_FRESH_NONE = 0, TRIG_FRESH_DROP_NEXT, TRIG_FRESH_RESTART } trig_fresh_t;
+static inline trig_fresh_t trig_fresh_action(bool core_restarts, bool single_armed, bool was_holding)
+{
+    if (core_restarts)
+        return (single_armed || was_holding) ? TRIG_FRESH_RESTART : TRIG_FRESH_NONE;
+    return single_armed ? TRIG_FRESH_DROP_NEXT : TRIG_FRESH_NONE;
+}
+
 /* A published record whose two channels belong to one moment. */
 static inline bool trig_acq_coherent(trig_acq_t a) { return a != TRIG_ACQ_FREERUN_SPLIT; }
 

@@ -124,6 +124,18 @@ int main(void)
         CHECK(longest <= 6, "every label fits the 44-px badge (<= 6 chars; longest %d)", longest);
     }
 
+    printf("the first read after a hold or a SINGLE arm\n");
+    {
+        CHECK(trig_fresh_action(true, false, false) == TRIG_FRESH_NONE, "core, steady reading: nothing");
+        CHECK(trig_fresh_action(true, true, false) == TRIG_FRESH_RESTART, "core, SINGLE armed: restart the capture");
+        CHECK(trig_fresh_action(true, false, true) == TRIG_FRESH_RESTART, "core, RUN after STOP: restart the capture");
+        CHECK(trig_fresh_action(true, true, true) == TRIG_FRESH_RESTART, "core, armed while stopped: restart");
+        CHECK(trig_fresh_action(false, true, false) == TRIG_FRESH_DROP_NEXT &&
+              trig_fresh_action(false, true, true) == TRIG_FRESH_DROP_NEXT, "another design, SINGLE armed: drop one read, as before");
+        CHECK(trig_fresh_action(false, false, true) == TRIG_FRESH_NONE &&
+              trig_fresh_action(false, false, false) == TRIG_FRESH_NONE, "another design otherwise: as before");
+    }
+
     printf("\n%s\n", fails ? "FAILED" : "all passed");
     return fails ? 1 : 0;
 }

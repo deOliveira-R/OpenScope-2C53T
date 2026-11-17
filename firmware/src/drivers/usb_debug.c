@@ -2158,6 +2158,7 @@ static void cmd_fpga_core(const char *args)
     usb_debug_printf("      reads by the op 05 header: held %lu, not held %lu; PC0 disagreed: held without an edge %lu, edge but not held %lu\r\n",
                      (unsigned long)fpga_acq_kind_count(0), (unsigned long)fpga_acq_kind_count(1),
                      (unsigned long)fpga_acq_kind_count(2), (unsigned long)fpga_acq_kind_count(3));
+    usb_debug_printf("      captures restarted before a first read (RUN, SINGLE arm): %lu\r\n", (unsigned long)fpga_acq_fresh_restarts());
 }
 
 /* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
