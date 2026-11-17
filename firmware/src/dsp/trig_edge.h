@@ -24,6 +24,8 @@
 
 #include <stdint.h>
 
+#include "../util/units.h"   /* rec_code_t, trig_level_rec */
+
 typedef enum {
     TRIG_EDGE_CLASS_UNKNOWN = 0,
     TRIG_EDGE_CLASS_RISING,
@@ -33,8 +35,11 @@ typedef enum {
 #define TRIG_EDGE_REC_N 1024u
 
 /* rec: the committed CH1 record (1024 samples, record units = ADC - 28).
- * crossing: the level in record units (reg 0x08 code - 28). */
-trig_edge_class_t trig_edge_classify(const volatile uint8_t *rec, int crossing);
+ * crossing: the level as a record code, trig_level_rec(reg 0x08 code)
+ * (units.h). A comparator code below the offset clamps to record 0, where no
+ * crossing exists (samples are never below 0), exactly as the unclamped
+ * code - 28 behaved. */
+trig_edge_class_t trig_edge_classify(const volatile uint8_t *rec, rec_code_t crossing);
 
 /* The seam of a committed record: the largest circular step, accepted only
  * when it is >= 2x every other step and >= 6 counts. On success *k is the
@@ -62,7 +67,7 @@ int trig_edge_find_seam_lpc(const volatile uint8_t *rec, uint32_t *k);
 int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k);
 
 /* The hardware trigger point of a TIME-ORDERED record: the crossing of
- * `crossing` (record units, = reg 0x08 code - 28, EXP-55/56) in the chosen
+ * `crossing` (a record code, trig_level_rec(reg 0x08 code), EXP-55/56) in the chosen
  * direction nearest index 512, within +/-48 (EXP-53: 501..520). Schmitt-armed
  * with 3 counts of hysteresis, searched over 448..560. Returns the index or
  * -1. Only meaningful on a record un-rotated at its seam -- on a raw rotated
@@ -71,7 +76,7 @@ int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k);
  * One copy, two callers: the display's hardware anchor (scope_ui.c) and the
  * mask pass/fail test (scope_mask.c). If they ever disagreed, the mask would
  * test a different alignment from the one on the glass. */
-int trig_edge_anchor(const volatile uint8_t *rec, int crossing, int rising);
+int trig_edge_anchor(const volatile uint8_t *rec, rec_code_t crossing, int rising);
 
 /* ── Software edge search (parity C3, stock 0x08028DE4) ──────────────────
  *
@@ -102,6 +107,10 @@ int trig_edge_anchor(const volatile uint8_t *rec, int crossing, int rising);
  * "Past the level" is INCLUSIVE here: s >= level rising, s <= level falling,
  * the compare the FPGA itself makes (the committed records fire on the code,
  * [9]) and the old soft trigger's. Stock's strict L < s is level = L + 1.
+ *
+ * `level` stays a plain int: this is the generic search, used with a
+ * software threshold (the record's own midline, scope_ui.c) and compared
+ * with stock's strict test at level +/- 1, which leaves 0..255.
  *
  * Searched i in [lo, hi), clamped to [1, n - 1 - confirm]. `confirm` = the
  * samples after i that must stay past the level: 1 = stock NORMAL/AUTO,

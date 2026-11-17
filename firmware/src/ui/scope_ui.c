@@ -1263,7 +1263,7 @@ static void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
  * The FPGA compares the ADC against reg 0x08 but the record carries ADC - 28,
  * so the crossing that fires sits at (code - 28) in record units: measured on
  * ranges 5 and 7 at six levels (EXP-55/56, median 28) and the same constant
- * as stock's FPGA_ADC_OFFSET. That record code is mapped through the SAME
+ * as stock's ADC offset (ADC_REC_OFFSET). That record code is mapped through the SAME
  * map the trigger-source trace is drawn with, so the line sits on the
  * trace where NORMAL would fire. Outside the band it clamps to the band edge
  * (autofit_y's clamp), which on screen reads as "level is above / below the
@@ -1287,10 +1287,7 @@ static int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
 {
     if (a == NULL || !a->on)
         return (int16_t)(SCOPE_MID_Y - ss->trigger.level);
-    int rec = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
-    if (rec < 0)   rec = 0;
-    if (rec > 255) rec = 255;
-    return autofit_y(a, (uint8_t)rec);
+    return autofit_y(a, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
 }
 
 /* Full-path variant: the trigger source's map exactly as
@@ -1412,10 +1409,7 @@ static void markers_build(const scope_state_t *ss, const theme_t *th,
     const autofit_t *src = (ss->trigger.source == TRIG_SRC_CH2) ? a2 : a1;
     int top = SCOPE_TOP, bot = band_bot, row;
     if (src != NULL && src->on) {
-        int rec = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
-        if (rec < 0)   rec = 0;
-        if (rec > 255) rec = 255;
-        row = autofit_y_raw(src, rec);
+        row = autofit_y_raw(src, (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
         top = src->y_top;
         if (src->y_bot < bot) bot = src->y_bot;
     } else {
@@ -1633,8 +1627,8 @@ static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *bu
 {
     /* Moved to trig_edge_anchor() 2026-10-03 so the mask test aligns on the
      * same crossing the glass does; behaviour unchanged. */
-    int c = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
-    return trig_edge_anchor(buf, c, ss->trigger.edge == TRIG_RISING);
+    return trig_edge_anchor(buf, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }),
+                            ss->trigger.edge == TRIG_RISING);
 }
 
 /* Free-run window: from index 0 at one column per sample, as before C5. A
@@ -1689,7 +1683,9 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     if ((ss->trigger.source != TRIG_SRC_CH2 || fpga_acq_design_ours()) && fpga_acq_record_time_ordered()) {
         int a = hw_trigger_anchor(ss, src_buf);
         if (a >= 1) {
-            const int c = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;
+            /* a >= 1 means the level is 4..251 (trig_edge_anchor), so the
+             * clamp in trig_level_rec() never acts here. */
+            const int c = (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v;
             const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], c);
             if (back_q8) *back_q8 = (int16_t)back;
             g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx, 0, N);

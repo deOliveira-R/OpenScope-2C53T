@@ -4947,7 +4947,7 @@ static void fpga_warmtest_acq_task(void *pv)
              * UNKNOWN (committed unfiltered), not as a wrong verdict. */
             const volatile uint8_t *wsrc =
                 (ss_acq != NULL && ss_acq->trigger.source == TRIG_SRC_CH2) ? w2 : w1;
-            trig_edge_class_t ec = trig_edge_classify(wsrc, (int)acq_trig_code + (int)FPGA_ADC_OFFSET);
+            trig_edge_class_t ec = trig_edge_classify(wsrc, trig_level_rec((adc_raw_t){ acq_trig_code }));
             bool want_rising = (fpga_stock_trigger_edge_byte() == (uint8_t)TRIG_RISING);
             if (ec == TRIG_EDGE_CLASS_UNKNOWN) {
                 fpga.acq_edge_unknown++;

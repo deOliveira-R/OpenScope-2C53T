@@ -54,7 +54,7 @@ static mask_pf_frame_t frame_of(const uint8_t *rec, int gen)
     f.len = 1024;
     f.triggered = true;
     f.time_ordered = true;
-    f.anchor = (int16_t)trig_edge_anchor(rec, CROSSING, 1);
+    f.anchor = (int16_t)trig_edge_anchor(rec, (rec_code_t){ CROSSING }, 1);
     f.gen = (uint32_t)gen;
     f.cond = cond0();
     return f;
@@ -92,7 +92,7 @@ static void run_groups(int (*pred)(const char *), xform_t xf, int arg,
     for (unsigned i = 0; i < MASK_FIXTURE_N; i++) {
         if (!pred(MASK_FIXTURES[i].group)) continue;
         const uint8_t *r = MASK_FIXTURES[i].rec;
-        int a = trig_edge_anchor(r, CROSSING, 1);
+        int a = trig_edge_anchor(r, (rec_code_t){ CROSSING }, 1);
         if (xf) { xf(buf, r, a, arg); r = buf; }
         mask_pf_frame_t f = frame_of(r, MASK_FIXTURES[i].gen);
         f.anchor = (int16_t)a;             /* the alignment the capture had */
@@ -157,7 +157,7 @@ int main(void)
 
     /* ── Anchors: the real function finds the crossing on every sine record. */
     for (unsigned i = 0; i < MASK_FIXTURE_N; i++) {
-        int a = trig_edge_anchor(MASK_FIXTURES[i].rec, CROSSING, 1);
+        int a = trig_edge_anchor(MASK_FIXTURES[i].rec, (rec_code_t){ CROSSING }, 1);
         if (!strcmp(MASK_FIXTURES[i].group, "sq4hz"))
             CHECK(a < 0, "sq4hz gen %d: expected no crossing, got %d", MASK_FIXTURES[i].gen, a);
         else
@@ -329,7 +329,7 @@ int main(void)
     mask_pf_teach_begin(&M, 0x01, PRE, 2);
     static uint8_t clip[1024];
     memcpy(clip, good, 1024);
-    int ca = trig_edge_anchor(clip, CROSSING, 1);
+    int ca = trig_edge_anchor(clip, (rec_code_t){ CROSSING }, 1);
     clip[ca - PRE + 10] = 255;
     fr = frame_of(clip, 1);
     rr = mask_pf_frame(&M, &fr);
