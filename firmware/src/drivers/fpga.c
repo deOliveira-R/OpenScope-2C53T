@@ -3750,6 +3750,14 @@ static inline bool acq_core_has(uint8_t cap) { return (acq_core_caps & cap) == c
 /* Record kind taken from the op 05 header (our core): [0] held, [1] not held,
  * [2] held but no PC0 edge seen, [3] PC0 edge but not held. */
 static volatile uint32_t acq_kind_n[4];
+/* The core's own account of its registers and PLL (op E0, dsp/core_status.h),
+ * read by the acquisition task between pairs. A register that differs from
+ * the firmware's copy in two successive readings is rewritten. */
+static fpga_core_watch_t acq_core_watch = { .check_on = true };
+static uint8_t           acq_core_watch_prev_diff;
+fpga_core_watch_t fpga_core_watch(void) { return acq_core_watch; }
+void fpga_core_watch_fix_set(bool on)   { acq_core_watch.check_on = on; acq_core_watch_prev_diff = 0u; }
+#define ACQ_CORE_WATCH_MS 1000u
 static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_action) */
 uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
@@ -4692,6 +4700,39 @@ static void fpga_roll_service(void)
  * static, not on the task's 256-word stack. 36 B. */
 static acq_cfg_track_t s_acq_cfg_trk;
 
+/* One reading of the core's status block, in the acquisition task. Returns
+ * true when a register was rewritten (the write restarted the capture). */
+static bool fpga_core_watch_poll(void)
+{
+    uint8_t r[CORE_STATUS_REPLY_LEN];
+    SPI3_CS_ASSERT();
+    r[0] = spi3_xfer(FPGA_CORE_OP_DBG_STAT);
+    for (unsigned i = 1; i < CORE_STATUS_REPLY_LEN; i++) r[i] = spi3_xfer(0xFF);
+    SPI3_CS_DEASSERT();
+    const core_status_t st = core_status_parse(r);
+    acq_core_watch.polls++;
+    if (!st.valid) {
+        acq_core_watch.bad++;
+        acq_core_watch_prev_diff = 0u;
+        return false;
+    }
+    acq_core_watch.last = st;
+    if (!st.locked) acq_core_watch.unlocked++;
+    const core_regs_copy_t copy = { acq_rate_idx, acq_trig_src_code, acq_trig_code, acq_edge_reg };
+    const uint8_t diff = core_status_reg_diff(&st, &copy);
+    const uint8_t fix = acq_core_watch.check_on ? core_status_to_fix(acq_core_watch_prev_diff, diff) : 0u;
+    acq_core_watch_prev_diff = diff;
+    if (fix == 0u)
+        return false;
+    if (fix & CORE_REG_DIFF_TB)   { fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, copy.tb); acq_core_watch.fixed[0]++; }
+    if (fix & CORE_REG_DIFF_SRC)  { fpga_scope_write_reg(FPGA_CORE_OP_SOURCE, copy.src);  acq_core_watch.fixed[1]++; }
+    if (fix & CORE_REG_DIFF_LVL)  { fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, copy.lvl);   acq_core_watch.fixed[2]++; }
+    if (fix & CORE_REG_DIFF_EDGE) { fpga_scope_write_reg(FPGA_CORE_OP_EDGE, copy.edge);   acq_core_watch.fixed[3]++; }
+    acq_core_watch_prev_diff = 0u;
+    acq_reprime_req = true;
+    return true;
+}
+
 static void fpga_warmtest_acq_task(void *pv)
 {
     (void)pv;
@@ -4721,6 +4762,7 @@ static void fpga_warmtest_acq_task(void *pv)
     /* The task has not been reading records (STOP, a SINGLE record held,
      * roll): what the FPGA holds by now is from before (trig_fresh_action). */
     bool was_holding = false;
+    uint32_t core_watch_tick = xTaskGetTickCount();
     for (;;) {
         if (!fpga.initialized || fpga.bus_released) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -4916,6 +4958,14 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         if (acq_read_br != 0xFF)
             spi3_set_br(acq_read_br);                       /* EXP-46 (b) */
+        /* Ask our core what it holds (never between the op 04 and the op 05
+         * of a pair, never a design that has not identified itself). */
+        if (acq_core_caps != 0u &&
+            (uint32_t)(xTaskGetTickCount() - core_watch_tick) >= pdMS_TO_TICKS(ACQ_CORE_WATCH_MS)) {
+            core_watch_tick = xTaskGetTickCount();
+            if (fpga_core_watch_poll())
+                continue;                                   /* a register was rewritten: capture restarted */
+        }
         /* The configuration before the read (dsp/acq_cfg.h): a change since
          * the last note restarts the settle window. */
         acq_cfg_t cfg_now;

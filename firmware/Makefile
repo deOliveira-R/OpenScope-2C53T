@@ -1605,6 +1605,14 @@ $(BUILD_DIR)/test_core_ident: tests/test_core_ident.c src/dsp/core_ident.h src/d
 test-core-ident: $(BUILD_DIR)/test_core_ident
 	$(BUILD_DIR)/test_core_ident
 
+# Status block of our capture core (dsp/core_status.h, op E0). See tests/test_core_status.c.
+$(BUILD_DIR)/test_core_status: tests/test_core_status.c src/dsp/core_status.h src/drivers/fpga_core_regs.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/drivers $< -o $@
+
+.PHONY: test-core-status
+test-core-status: $(BUILD_DIR)/test_core_status
+	$(BUILD_DIR)/test_core_status
+
 # drivers/fpga_core_regs.h must be what the capture core's package generates (fpga/core/rtl/core_pkg.sv).
 .PHONY: test-core-regs-header
 test-core-regs-header:

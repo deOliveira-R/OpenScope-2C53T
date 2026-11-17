@@ -2138,7 +2138,10 @@ static void cmd_fpga_unrotate(const char *args)
 /* `fpga core` — which capture core runs, by its own account (op E2, asked once when it was loaded). */
 static void cmd_fpga_core(const char *args)
 {
-    (void)args;
+    while (*args == ' ') args++;
+    if (strncmp(args, "fix on", 6) == 0)       fpga_core_watch_fix_set(true);
+    else if (strncmp(args, "fix off", 7) == 0) fpga_core_watch_fix_set(false);
+    else if (*args) { usb_send_str("usage: fpga core [fix on|off]\r\n"); return; }
     const core_ident_t id = fpga_core_ident();
     if (!fpga_acq_design_ours()) { usb_send_str("core: the running design is not known to be ours; not asked\r\n"); return; }
     if (!id.valid) {
@@ -2159,6 +2162,21 @@ static void cmd_fpga_core(const char *args)
                      (unsigned long)fpga_acq_kind_count(0), (unsigned long)fpga_acq_kind_count(1),
                      (unsigned long)fpga_acq_kind_count(2), (unsigned long)fpga_acq_kind_count(3));
     usb_debug_printf("      captures restarted before a first read (RUN, SINGLE arm): %lu\r\n", (unsigned long)fpga_acq_fresh_restarts());
+    const fpga_core_watch_t w = fpga_core_watch();
+    if (!w.last.valid)
+        usb_debug_printf("      status block: none read yet (%lu asked, %lu not a status block)\r\n", (unsigned long)w.polls, (unsigned long)w.bad);
+    else
+        usb_debug_printf("      status block: PLL %s, lock lost %u times, capture state %u; registers tb %02X src %02X level %02X edge %02X\r\n"
+                         "      (firmware's copies: tb %02X src %02X level %02X edge %02X)\r\n"
+                         "      read %lu times, %lu not a status block, %lu with the PLL unlocked\r\n",
+                         w.last.locked ? "locked" : "NOT LOCKED", (unsigned)w.last.nlost, (unsigned)w.last.cap_state,
+                         (unsigned)w.last.tb, (unsigned)w.last.src, (unsigned)w.last.lvl, (unsigned)w.last.edge,
+                         (unsigned)fpga_acq_rate_idx_get(), (unsigned)fpga_acq_trig_src_code_get(),
+                         (unsigned)fpga_acq_trig_code_get(), (unsigned)fpga_acq_edge_reg_get(),
+                         (unsigned long)w.polls, (unsigned long)w.bad, (unsigned long)w.unlocked);
+    usb_debug_printf("      registers rewritten (differed from the firmware's copy twice running; fix %s): tb %lu src %lu level %lu edge %lu\r\n",
+                     w.check_on ? "on" : "off", (unsigned long)w.fixed[0], (unsigned long)w.fixed[1],
+                     (unsigned long)w.fixed[2], (unsigned long)w.fixed[3]);
 }
 
 /* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
@@ -4472,7 +4490,7 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
           "fpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n"),
     CMD_A("fpga core", cmd_fpga_core, 0,
-          "fpga core                       Which capture core runs: tag, protocol, capabilities (its own answer)\r\n"),
+          "fpga core [fix on|off]          Which capture core runs, its status block, register check (fix off for bench register writes)\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,

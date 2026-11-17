@@ -30,6 +30,7 @@
 #include "../ui/scope_roll.h"
 #include "../dsp/acq_cfg.h"
 #include "../dsp/core_ident.h"
+#include "../dsp/core_status.h"
 #include "FreeRTOS.h"
 #include "queue.h"
 
@@ -1290,6 +1291,17 @@ bool     fpga_acq_design_ours(void);           /* the running FPGA design is our
 bool     fpga_acq_core_has(uint8_t cap);       /* the running core is ours, identified itself, and has these FPGA_CORE_CAP_* bits */
 uint32_t fpga_acq_kind_count(unsigned i);      /* records by the op 05 header: 0 held, 1 not held, 2 held without a PC0 edge, 3 PC0 edge but not held */
 uint32_t fpga_acq_fresh_restarts(void);        /* core captures restarted on RUN / SINGLE arm so no stale record is shown */
+/* The core's status block (op E0), read about once a second while records are read (core_status.h). */
+typedef struct {
+    core_status_t last;       /* the last valid reply (valid = false: none yet) */
+    uint32_t polls;           /* replies read */
+    uint32_t bad;             /* replies that were not a status block */
+    uint32_t unlocked;        /* replies with the PLL not locked */
+    uint32_t fixed[4];        /* registers rewritten: timebase, source, level, edge */
+    bool     check_on;        /* rewrite a register that differs from the firmware's copy twice running */
+} fpga_core_watch_t;
+fpga_core_watch_t fpga_core_watch(void);
+void     fpga_core_watch_fix_set(bool on);     /* off for bench scripts that write registers behind the firmware */
 core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
 void     fpga_acq_seam_check_set(bool on);     /* bench: compare the header's seam with the search */
 bool     fpga_acq_seam_check_get(void);
