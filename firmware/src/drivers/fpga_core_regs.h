@@ -8,6 +8,7 @@
 
 /* opcodes (first byte of a frame) */
 #define FPGA_CORE_OP_TIMEBASE        0x01u   /* 01 vv  timebase code */
+#define FPGA_CORE_OP_LEGACY02        0x02u   /* 02 vv  accepted, no effect (the firmware's arm burst sends 02 03) */
 #define FPGA_CORE_OP_LIVE            0x03u   /* 03     byte 2 = converter A now, byte 4 = converter B now */
 #define FPGA_CORE_OP_REC_A           0x04u   /* 04     record of converter A */
 #define FPGA_CORE_OP_REC_B           0x05u   /* 05     record of converter B */
@@ -22,6 +23,39 @@
 #define FPGA_CORE_DBG_TAIL           0x5Bu
 #define FPGA_CORE_TB_50MS            0x05u   /* the timebase code with the converters at 50 MHz */
 
+/* reg 07 (OP_EDGE): value = (hysteresis << EDGE_HYS_SHIFT) | edge mode */
+#define FPGA_CORE_EDGE_EITHER        0x00u   /* either direction (what the arm burst writes) */
+#define FPGA_CORE_EDGE_RISING        0x02u   /* rising only */
+#define FPGA_CORE_EDGE_FALLING       0x03u   /* falling only */
+#define FPGA_CORE_EDGE_MODE_MASK     0x03u
+#define FPGA_CORE_EDGE_HYS_SHIFT     4u      /* hysteresis in codes, bits 7:4 */
+
+/* ops 04 / 05: bytes 1-2 of the reply (the seam), then the samples */
+#define FPGA_CORE_SEAM_VALID         0x04u   /* byte 1 bit 2: bytes 1-2 hold the seam of a held record */
+#define FPGA_CORE_SEAM_HI_MASK       0x03u   /* byte 1 bits 1:0 = seam bits 9:8; byte 2 = seam bits 7:0 */
+#define FPGA_CORE_SEAM_B1_MASK       0xFCu   /* byte 1 & this == SEAM_VALID, else no seam is given */
+#define FPGA_CORE_REC_FIRST_SAMPLE   3u      /* reply byte of sample 0 */
+#define FPGA_CORE_LIVE_BYTE_A        2u      /* op 03: reply byte of converter A */
+#define FPGA_CORE_LIVE_BYTE_B        4u      /* op 03: reply byte of converter B */
+
+/* op E0: reply bytes of the status block */
+#define FPGA_CORE_DBG_I_HEAD         3u      /* B5 */
+#define FPGA_CORE_DBG_I_TAG          4u
+#define FPGA_CORE_DBG_I_STATE        5u      /* lock, pair held, edge[1:0], 00, capture state */
+#define FPGA_CORE_DBG_I_TB           6u
+#define FPGA_CORE_DBG_I_SRC          7u
+#define FPGA_CORE_DBG_I_LVL          8u
+#define FPGA_CORE_DBG_I_WP_HI        9u
+#define FPGA_CORE_DBG_I_WP_LO        10u
+#define FPGA_CORE_DBG_I_NHELD        11u     /* records held so far */
+#define FPGA_CORE_DBG_I_TAIL         12u     /* 5B */
+#define FPGA_CORE_DBG_I_T50          13u
+#define FPGA_CORE_DBG_I_EDGE         14u     /* {hysteresis, 00, edge} */
+#define FPGA_CORE_DBG_I_NLOST        15u     /* times the PLL lost lock (repeats to the end of the frame) */
+#define FPGA_CORE_DBG_STATE_LOCK     0x80u   /* state byte: PLL locked */
+#define FPGA_CORE_DBG_STATE_PAIR     0x40u   /* state byte: this frame belongs to a held pair */
+#define FPGA_CORE_DBG_STATE_CAP_MASK 0x03u   /* state byte: capture state (ST_*) */
+
 /* identity (op E2): bytes 2..8 of the reply */
 #define FPGA_CORE_ID_MAGIC0          0x4Fu   /* 'O' */
 #define FPGA_CORE_ID_MAGIC1          0x53u   /* 'S' */
@@ -32,10 +66,14 @@
 #define FPGA_CORE_CAP_LOCKRST        0x08u   /* capture held until the PLL has locked; E0 byte 15 counts losses */
 #define FPGA_CORE_CAPS               0x0Fu
 
-/* record geometry */
+/* clock and record geometry */
+#define FPGA_CORE_CLK_HZ             125000000u /* the core clock: 25 MHz reference x 5 */
+#define FPGA_CORE_RATE50_HZ          50000000u /* sample rate at TB_50MS (converters clocked at 50 MHz) */
+#define FPGA_CORE_TB_CODES           21u     /* timebase codes 0x00..0x14; larger codes act as 0x14 */
 #define FPGA_CORE_ADDR_W             10u     /* 1024 samples per record */
 #define FPGA_CORE_PRE_LAST           511u    /* samples before the trigger: 512 */
 #define FPGA_CORE_POST_LAST          510u    /* samples from the trigger on: 512 */
+#define FPGA_CORE_TRIG_INDEX         512u    /* a held record's trigger crossing, counted from the seam */
 
 /* capture state, as the E0 block shows it */
 #define FPGA_CORE_ST_PRE             0x00u   /* filling the part before the trigger */
@@ -47,5 +85,8 @@
 #define FPGA_CORE_RST_TB             0x08u
 #define FPGA_CORE_RST_SRC            0x00u
 #define FPGA_CORE_RST_LVL            0x80u
+
+/* timebase code -> 125 MHz cycles per stored sample (code TB_50MS: see RATE50_HZ) */
+#define FPGA_CORE_TB_DIVIDERS { 1u, 1u, 1u, 1u, 1u, 2u, 5u, 10u, 25u, 50u, 100u, 250u, 500u, 1000u, 2500u, 5000u, 10000u, 25000u, 50000u, 100000u, 250000u }
 
 #endif

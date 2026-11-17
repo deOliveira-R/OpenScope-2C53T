@@ -5,7 +5,9 @@ with the open tools (Yosys, nextpnr-himbaechel, Apicula) and with the vendor's, 
 firmware already used, so one firmware image drives either design.
 
 `firmware/src/drivers/fpga_bitstream_core.h` is the build of this folder (tag `D5`), built into the firmware.
-`firmware/src/drivers/fpga_core_regs.h` is generated from `rtl/core_pkg.sv`.
+`firmware/src/drivers/fpga_core_regs.h` is generated from `rtl/core_pkg.sv` (opcodes, bit fields, reply byte
+positions, record geometry, the timebase divider table); the firmware names every protocol number through it and
+`make test-core-regs-header` fails when the two disagree.
 
 ## What the core does
 

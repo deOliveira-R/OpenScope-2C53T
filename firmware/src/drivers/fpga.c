@@ -3736,6 +3736,11 @@ static volatile bool acq_reprime_req = false;
 #define FPGA_BUILTIN_IS_CORE 0
 #endif
 static volatile bool    acq_design_ours = false;
+/* The firmware's own constants against the capture core's package (drivers/fpga_core_regs.h, generated):
+ * a core with another record length, trigger position or timebase list does not build into this firmware. */
+_Static_assert(TRIG_EDGE_REC_N == (1u << FPGA_CORE_ADDR_W), "record length differs from the core's");
+_Static_assert(TRIG_EDGE_TRIG_POS == FPGA_CORE_TRIG_INDEX, "trigger position differs from the core's");
+_Static_assert(SCOPE_TIMEBASE_CODE_COUNT == FPGA_CORE_TB_CODES, "timebase code count differs from the core's");
 static volatile uint8_t acq_edge_reg    = 0x00;
 uint8_t fpga_acq_edge_reg_get(void) { return acq_edge_reg; }
 /* Single-channel interleave (2026-11-10, bench B4 on unit #2): with mask 1
@@ -4225,7 +4230,7 @@ bool fpga_apply_trigger_source(void)
     uint8_t code = (ss->trigger.source == TRIG_SRC_CH2) ? 0x01u : 0x00u;
     if (!fpga_acq_pause())
         return false;
-    fpga_scope_write_reg(0x06, code);
+    fpga_scope_write_reg(FPGA_CORE_OP_SOURCE, code);
     acq_trig_src_code = code;
     acq_reprime_req = true;
     fpga_acq_resume();
@@ -4340,7 +4345,7 @@ bool fpga_apply_timebase(uint8_t code)
 {
     if (!fpga_acq_pause())
         return false;
-    fpga_scope_write_reg(0x01, code);
+    fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, code);
     acq_rate_idx = code;
     acq_roll_on = false;          /* a Y-T code is in force: back to records */
     /* The timebase picks the calibration bank (>= 5 -> 0, 4 -> 1, <= 3 ->
@@ -4376,7 +4381,7 @@ bool fpga_apply_roll(void)
         code = ss->timebase_idx;
     if (!fpga_acq_pause())
         return false;
-    fpga_scope_write_reg(0x01, code);
+    fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, code);
     acq_rate_idx = code;
     acq_roll_step = step;
     acq_roll_stats.code = code;
@@ -4424,7 +4429,7 @@ bool fpga_apply_trigger_level(int level)
     uint8_t code = fpga_trigger_code_from_level(level);
     if (!fpga_acq_pause())
         return false;
-    fpga_scope_write_reg(0x08, code);
+    fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, code);
     acq_trig_code = code;
     acq_reprime_req = true;
     fpga_acq_resume();
@@ -4521,17 +4526,17 @@ static uint8_t fpga_warmtest_read_channel(uint8_t opcode, volatile uint8_t *buf)
     uint8_t h1 = spi3_xfer(0xFF);          /* the dummy byte stock discards */
     uint8_t h2 = spi3_xfer(0xFF);          /* EXP-58: stale, end of a previous block */
     {
-        volatile uint8_t *hdr = (opcode == 0x04) ? fpga.acq_hdr_ch1
+        volatile uint8_t *hdr = (opcode == FPGA_CORE_OP_REC_A) ? fpga.acq_hdr_ch1
                                                  : fpga.acq_hdr_ch2;
         hdr[0] = s0; hdr[1] = h1; hdr[2] = h2;
     }
-    if (opcode == 0x04)
+    if (opcode == FPGA_CORE_OP_REC_A)
         fpga.spi3_first_byte = s0;         /* debug overlay "1:" field */
 
     for (int i = 0; i < 1024; i++) {
         uint8_t raw = spi3_xfer(0xFF);
         if (i < 4) {
-            if (opcode == 0x04) fpga.diag_ch1_raw[i] = raw;
+            if (opcode == FPGA_CORE_OP_REC_A) fpga.diag_ch1_raw[i] = raw;
             else                fpga.diag_ch2_raw[i] = raw;
         }
         int16_t cal = (int16_t)raw + (int16_t)FPGA_ADC_OFFSET;
@@ -4591,7 +4596,7 @@ static void fpga_roll_service(void)
     uint16_t hw_to_before = fpga.spi3_hw_timeouts;
     uint8_t rx[5];
     SPI3_CS_ASSERT();
-    rx[0] = spi3_xfer(0x03);
+    rx[0] = spi3_xfer(FPGA_CORE_OP_LIVE);
     for (unsigned i = 1; i < 5u; i++)
         rx[i] = spi3_xfer(0xFF);
     SPI3_CS_DEASSERT();
@@ -4768,7 +4773,7 @@ static void fpga_warmtest_acq_task(void *pv)
             const uint8_t want = trig_edge_reg_code(acq_design_ours,
                                      ss_acq != NULL && ss_acq->trigger.edge == TRIG_FALLING);
             if (want != acq_edge_reg) {
-                fpga_scope_write_reg(0x07, want);
+                fpga_scope_write_reg(FPGA_CORE_OP_EDGE, want);
                 acq_edge_reg = want;
                 acq_reprime_req = true;        /* the write dropped the capture */
             }
@@ -4857,9 +4862,9 @@ static void fpga_warmtest_acq_task(void *pv)
         volatile uint8_t *w1 = acq_write_ch1();
         volatile uint8_t *w2 = acq_write_ch2();
         fpga.arm_read_cyc = DWT->CYCCNT;
-        uint8_t s1 = fpga_warmtest_read_channel(0x04, w1);
+        uint8_t s1 = fpga_warmtest_read_channel(FPGA_CORE_OP_REC_A, w1);
         if (acq_pair_gap_ms) vTaskDelay(pdMS_TO_TICKS(acq_pair_gap_ms));
-        uint8_t s2 = fpga_warmtest_read_channel(0x05, w2);
+        uint8_t s2 = fpga_warmtest_read_channel(FPGA_CORE_OP_REC_B, w2);
         last_read_tick = xTaskGetTickCount();
         fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, last_read_tick * portTICK_PERIOD_MS);
@@ -4973,7 +4978,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * CH1 buffer is non-constant (the marker appears only in the FIRST
          * window after data-ready per Stlkv, so a marker-only gate could
          * false-negative; varying data is accepted on its own merits). */
-        bool marker = (s1 == 0x80) || (s2 == 0x80);
+        bool marker = (s1 == FPGA_CORE_REPLY_FIRST) || (s2 == FPGA_CORE_REPLY_FIRST);
         bool varies = false;
         for (int i = 1; i < 1024; i++) {
             if (w1[i] != w1[0]) { varies = true; break; }
@@ -5036,7 +5041,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * re-arms — otherwise one bad read would wedge acquisition, which is
          * the deadlock this task's fallback path exists to avoid. */
         if (acq_rearm_enable) {
-            fpga_scope_write_reg(0x01, acq_rate_idx);
+            fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, acq_rate_idx);
             /* Let the re-armed capture COMPLETE before the next read (EXP-40).
              * With 0 this is exactly EXP-29's re-arm-then-read-immediately. */
             if (acq_rearm_wait_ms)
@@ -5623,8 +5628,8 @@ bb_restore_pins:
 #endif
     {
         static const uint8_t arm_cfg[][2] = {
-            { 0x01, 0x08 }, { 0x02, 0x03 }, { 0x06, 0x00 },
-            { 0x07, 0x00 }, { 0x08, 0xAD },
+            { FPGA_CORE_OP_TIMEBASE, 0x08 }, { FPGA_CORE_OP_LEGACY02, 0x03 }, { FPGA_CORE_OP_SOURCE, 0x00 },
+            { FPGA_CORE_OP_EDGE, FPGA_CORE_EDGE_EITHER }, { FPGA_CORE_OP_LEVEL, 0xAD },
         };
         for (unsigned i = 0; i < 5; i++) {
             SPI3_CS_ASSERT();
@@ -5636,7 +5641,7 @@ bb_restore_pins:
 #endif
         }
         SPI3_CS_ASSERT();
-        spi3_xfer(0x03);
+        spi3_xfer(FPGA_CORE_OP_LIVE);
         for (unsigned i = 0; i < 4; i++)
             fpga.scope_status[i] = spi3_xfer(0xFF);
         SPI3_CS_DEASSERT();
@@ -5921,7 +5926,7 @@ void fpga_reconcile_timebase_after_arm(void)
                                ? (uint8_t)acq_roll_code_override
                                : scope_roll_stock_code(acq_roll_step);
         SPI3_CS_ASSERT();
-        spi3_xfer(0x01);
+        spi3_xfer(FPGA_CORE_OP_TIMEBASE);
         spi3_xfer(rc);
         SPI3_CS_DEASSERT();
         acq_rate_idx = rc;
@@ -5930,7 +5935,7 @@ void fpga_reconcile_timebase_after_arm(void)
     }
     if (scope_timebase_sample_rate(ss->timebase_idx) > 0.0f) {
         SPI3_CS_ASSERT();
-        spi3_xfer(0x01);
+        spi3_xfer(FPGA_CORE_OP_TIMEBASE);
         spi3_xfer(ss->timebase_idx);
         SPI3_CS_DEASSERT();
         acq_rate_idx = ss->timebase_idx;
@@ -5954,7 +5959,7 @@ void fpga_reconcile_trigger_after_arm(void)
     scope_state_t *ss = scope_state_get();
     uint8_t code = fpga_trigger_code_from_level(ss->trigger.level);
     SPI3_CS_ASSERT();
-    spi3_xfer(0x08);
+    spi3_xfer(FPGA_CORE_OP_LEVEL);
     spi3_xfer(code);
     SPI3_CS_DEASSERT();
     acq_trig_code = code;
@@ -5963,7 +5968,7 @@ void fpga_reconcile_trigger_after_arm(void)
      * reach reg 0x06 too, or the FPGA fires on CH1 under a "C2" label. */
     uint8_t src = (ss->trigger.source == TRIG_SRC_CH2) ? 0x01u : 0x00u;
     SPI3_CS_ASSERT();
-    spi3_xfer(0x06);
+    spi3_xfer(FPGA_CORE_OP_SOURCE);
     spi3_xfer(src);
     SPI3_CS_DEASSERT();
     acq_trig_src_code = src;
@@ -6411,8 +6416,8 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     fpga_scope_delay_ms(opt->post_close_ms);
 
     static const uint8_t scope_cfg[][2] = {
-        { 0x01, 0x08 }, { 0x02, 0x03 }, { 0x06, 0x00 },
-        { 0x07, 0x00 }, { 0x08, 0xAD },
+        { FPGA_CORE_OP_TIMEBASE, 0x08 }, { FPGA_CORE_OP_LEGACY02, 0x03 }, { FPGA_CORE_OP_SOURCE, 0x00 },
+        { FPGA_CORE_OP_EDGE, FPGA_CORE_EDGE_EITHER }, { FPGA_CORE_OP_LEVEL, 0xAD },
     };
     for (unsigned i = 0; i < sizeof(scope_cfg) / sizeof(scope_cfg[0]); i++) {
         SPI3_CS_ASSERT();
@@ -6422,7 +6427,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     }
 
     SPI3_CS_ASSERT();
-    spi3_xfer(0x03);                          /* status read */
+    spi3_xfer(FPGA_CORE_OP_LIVE);                          /* status read */
     for (unsigned i = 0; i < 4; i++)
         fpga.scope_status[i] = spi3_xfer(0xFF);
     SPI3_CS_DEASSERT();
@@ -6937,11 +6942,11 @@ void fpga_init(void)
      * runtime opcodes on the now-configured user design. PB11/PC6 already HIGH. */
     fpga_scope_delay_ms(600);
     spi3_set_br(7);
-    fpga_scope_write_reg(0x01, 0x08);
-    fpga_scope_write_reg(0x02, 0x03);
-    fpga_scope_write_reg(0x06, 0x00);
-    fpga_scope_write_reg(0x07, 0x00);
-    fpga_scope_write_reg(0x08, 0xAD);
+    fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, 0x08);
+    fpga_scope_write_reg(FPGA_CORE_OP_LEGACY02, 0x03);
+    fpga_scope_write_reg(FPGA_CORE_OP_SOURCE, 0x00);
+    fpga_scope_write_reg(FPGA_CORE_OP_EDGE, FPGA_CORE_EDGE_EITHER);
+    fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, 0xAD);
     spi3_set_br(0);              /* back to /2 for acquisition */
 #endif
 
@@ -7077,7 +7082,8 @@ void fpga_init(void)
      * at boot. Kept compilable behind this flag for a future variant. */
     {
         static const uint8_t warm_cfg[][2] = {
-            {0x01, 0x08}, {0x02, 0x03}, {0x06, 0x00}, {0x07, 0x00}, {0x08, 0xAD},
+            {FPGA_CORE_OP_TIMEBASE, 0x08}, {FPGA_CORE_OP_LEGACY02, 0x03}, {FPGA_CORE_OP_SOURCE, 0x00},
+            {FPGA_CORE_OP_EDGE, FPGA_CORE_EDGE_EITHER}, {FPGA_CORE_OP_LEVEL, 0xAD},
         };
         for (unsigned wi = 0; wi < sizeof(warm_cfg) / sizeof(warm_cfg[0]); wi++) {
             SPI3_CS_ASSERT();
@@ -7087,7 +7093,7 @@ void fpga_init(void)
             systick_delay_ms(2);
         }
         SPI3_CS_ASSERT();
-        spi3_xfer(0x03);
+        spi3_xfer(FPGA_CORE_OP_LIVE);
         for (unsigned si = 0; si < 4; si++)
             fpga.scope_status[si] = spi3_xfer(0xFF);
         SPI3_CS_DEASSERT();

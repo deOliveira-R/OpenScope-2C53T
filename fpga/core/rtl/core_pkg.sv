@@ -4,6 +4,7 @@
 package core_pkg;
   // ---- opcodes (first byte of a frame)
   localparam logic [7:0] OP_TIMEBASE = 8'h01;   // 01 vv  timebase code
+  localparam logic [7:0] OP_LEGACY02 = 8'h02;   // 02 vv  accepted, no effect (the firmware's arm burst sends 02 03)
   localparam logic [7:0] OP_LIVE     = 8'h03;   // 03     byte 2 = converter A now, byte 4 = converter B now
   localparam logic [7:0] OP_REC_A    = 8'h04;   // 04     record of converter A
   localparam logic [7:0] OP_REC_B    = 8'h05;   // 05     record of converter B
@@ -14,13 +15,46 @@ package core_pkg;
   localparam logic [7:0] OP_DBG_STAT = 8'hE0;   // E0     status block
   localparam logic [7:0] OP_DBG_T50  = 8'hE1;   // E1 vv  bench: 50 MS/s sample cycles
   localparam logic [7:0] OP_IDENT    = 8'hE2;   // E2     which core is this, and what can it do
-  // (02 vv is accepted and has no effect; every other opcode is ignored.)
+  // (Every other opcode is ignored.)
   // Rule for every reply: bit 7 of byte 1 is 0. That bit leaves before the opcode has been taken in.
 
   localparam logic [7:0] REPLY_FIRST = 8'h80;   // byte 0 of every reply
   localparam logic [7:0] DBG_HEAD    = 8'hB5;   // E0 block: first and last byte
   localparam logic [7:0] DBG_TAIL    = 8'h5B;
   localparam logic [7:0] TB_50MS     = 8'h05;   // the timebase code with the converters at 50 MHz
+
+  // ---- reg 07 (OP_EDGE): value = (hysteresis << EDGE_HYS_SHIFT) | edge mode
+  localparam logic [7:0] EDGE_EITHER   = 8'h00;   // either direction (what the arm burst writes)
+  localparam logic [7:0] EDGE_RISING   = 8'h02;   // rising only
+  localparam logic [7:0] EDGE_FALLING  = 8'h03;   // falling only
+  localparam logic [7:0] EDGE_MODE_MASK = 8'h03;
+  localparam int EDGE_HYS_SHIFT = 4;              // hysteresis in codes, bits 7:4
+
+  // ---- ops 04 / 05: bytes 1-2 of the reply (the seam), then the samples
+  localparam logic [7:0] SEAM_VALID    = 8'h04;   // byte 1 bit 2: bytes 1-2 hold the seam of a held record
+  localparam logic [7:0] SEAM_HI_MASK  = 8'h03;   // byte 1 bits 1:0 = seam bits 9:8; byte 2 = seam bits 7:0
+  localparam logic [7:0] SEAM_B1_MASK  = 8'hFC;   // byte 1 & this == SEAM_VALID, else no seam is given
+  localparam int REC_FIRST_SAMPLE = 3;            // reply byte of sample 0
+  localparam int LIVE_BYTE_A = 2;                 // op 03: reply byte of converter A
+  localparam int LIVE_BYTE_B = 4;                 // op 03: reply byte of converter B
+
+  // ---- op E0: reply bytes of the status block
+  localparam int DBG_I_HEAD = 3;                  // B5
+  localparam int DBG_I_TAG = 4;
+  localparam int DBG_I_STATE = 5;                 // lock, pair held, edge[1:0], 00, capture state
+  localparam int DBG_I_TB = 6;
+  localparam int DBG_I_SRC = 7;
+  localparam int DBG_I_LVL = 8;
+  localparam int DBG_I_WP_HI = 9;
+  localparam int DBG_I_WP_LO = 10;
+  localparam int DBG_I_NHELD = 11;                // records held so far
+  localparam int DBG_I_TAIL = 12;                 // 5B
+  localparam int DBG_I_T50 = 13;
+  localparam int DBG_I_EDGE = 14;                 // {hysteresis, 00, edge}
+  localparam int DBG_I_NLOST = 15;                // times the PLL lost lock (repeats to the end of the frame)
+  localparam logic [7:0] DBG_STATE_LOCK = 8'h80;  // state byte: PLL locked
+  localparam logic [7:0] DBG_STATE_PAIR = 8'h40;  // state byte: this frame belongs to a held pair
+  localparam logic [7:0] DBG_STATE_CAP_MASK = 8'h03;   // state byte: capture state (ST_*)
 
   // ---- identity (op E2): bytes 2..8 of the reply
   localparam logic [7:0] ID_MAGIC0   = 8'h4F;   // 'O'
@@ -33,10 +67,14 @@ package core_pkg;
   localparam logic [7:0] CAP_LOCKRST = 8'h08;   // capture held until the PLL has locked; E0 byte 15 counts losses
   localparam logic [7:0] CAPS        = CAP_SEAM | CAP_EDGE | CAP_REAL50 | CAP_LOCKRST;
 
-  // ---- record geometry
+  // ---- clock and record geometry
+  localparam int CLK_HZ = 125000000;             // the core clock: 25 MHz reference x 5
+  localparam int RATE50_HZ = 50000000;           // sample rate at TB_50MS (converters clocked at 50 MHz)
+  localparam int TB_CODES = 21;                  // timebase codes 0x00..0x14; larger codes act as 0x14
   localparam int ADDR_W = 10;                               // 1024 samples per record
   localparam int PRE_LAST  = 511;               // samples before the trigger: 512
   localparam int POST_LAST = 510;               // samples from the trigger on: 512
+  localparam int TRIG_INDEX = 512;               // a held record's trigger crossing, counted from the seam
 
   // ---- capture state, as the E0 block shows it
   typedef enum logic [1:0] {

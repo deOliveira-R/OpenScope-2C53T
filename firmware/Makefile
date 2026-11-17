@@ -1590,8 +1590,8 @@ $(BUILD_DIR)/test_fpga_slot: tests/test_fpga_slot.c src/util/fpga_slot.c src/uti
 
 # The trigger edge register rule (dsp/trig_edge_reg.h): never to a design that
 # is not ours. See tests/test_trig_edge_reg.c.
-$(BUILD_DIR)/test_trig_edge_reg: tests/test_trig_edge_reg.c src/dsp/trig_edge_reg.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp $< -o $@
+$(BUILD_DIR)/test_trig_edge_reg: tests/test_trig_edge_reg.c src/dsp/trig_edge_reg.h src/drivers/fpga_core_regs.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/drivers $< -o $@
 
 .PHONY: test-trig-edge-reg
 test-trig-edge-reg: $(BUILD_DIR)/test_trig_edge_reg

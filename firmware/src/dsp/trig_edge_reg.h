@@ -18,6 +18,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "fpga_core_regs.h"   /* generated from the capture core's package */
 
 #define TRIG_EDGE_REG_HYST   8u      /* codes; unit #2: 0 wrong-way records at 8, 5 % at 4 */
 
@@ -37,8 +38,9 @@ static inline bool trig_edge_reg_design_ours(bool builtin_is_core, bool sent_by_
  * design that is not ours the answer never differs from it, so no write. */
 static inline uint8_t trig_edge_reg_code(bool design_ours, bool falling)
 {
-    if (!design_ours) return 0x00u;
-    return (uint8_t)((TRIG_EDGE_REG_HYST << 4) | (falling ? 0x03u : 0x02u));
+    if (!design_ours) return FPGA_CORE_EDGE_EITHER;
+    return (uint8_t)((TRIG_EDGE_REG_HYST << FPGA_CORE_EDGE_HYS_SHIFT) |
+                     (falling ? FPGA_CORE_EDGE_FALLING : FPGA_CORE_EDGE_RISING));
 }
 
 /* Where a held record's oldest sample is: reply bytes 1-2 of op 04 / op 05.
@@ -52,8 +54,8 @@ static inline uint8_t trig_edge_reg_code(bool design_ours, bool falling)
 static inline int trig_seam_from_hdr(bool design_ours, uint8_t b1, uint8_t b2)
 {
     if (!design_ours) return -1;
-    if ((b1 & 0xFCu) != 0x04u) return -1;         /* V set, nothing else above the pointer */
-    return (int)(((unsigned)(b1 & 0x03u) << 8) | (unsigned)b2);
+    if ((b1 & FPGA_CORE_SEAM_B1_MASK) != FPGA_CORE_SEAM_VALID) return -1;         /* V set, nothing else above the pointer */
+    return (int)(((unsigned)(b1 & FPGA_CORE_SEAM_HI_MASK) << 8) | (unsigned)b2);
 }
 
 #endif /* TRIG_EDGE_REG_H */

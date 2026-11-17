@@ -10,6 +10,7 @@ never spells an opcode itself.
 import re, sys, pathlib
 
 HERE = pathlib.Path(__file__).resolve().parent.parent
+TB_TABLE = []
 
 def sv_number(tok):
     m = re.fullmatch(r"(\d+)?'([hdb])([0-9a-fA-F_]+)", tok)
@@ -60,6 +61,17 @@ def parse():
                 v = evaluate(m.group(2), known)
                 known[m.group(1)] = v
                 items.append((m.group(1), v, m.group(3) or "", False))
+    # the timebase table: every "codes: tb_divider = 18'dN;" of the function, and its default
+    div, default = {}, None
+    for m in re.finditer(r"((?:8'h[0-9A-Fa-f]{2}\s*,\s*)*8'h[0-9A-Fa-f]{2})\s*:\s*tb_divider\s*=\s*18'd(\d+)\s*;", pkg):
+        for c in re.findall(r"8'h([0-9A-Fa-f]{2})", m.group(1)):
+            div[int(c, 16)] = int(m.group(2))
+    m = re.search(r"default\s*:\s*tb_divider\s*=\s*18'd(\d+)\s*;", pkg)
+    if not m or "TB_CODES" not in known:
+        raise SystemExit("gen_c_header: timebase table not found in the package")
+    default = int(m.group(1))
+    global TB_TABLE
+    TB_TABLE = [div.get(c, default) for c in range(known["TB_CODES"])]
     top = (HERE / "rtl/top.sv").read_text()
     m = re.search(r"parameter\s+logic\s*\[7:0\]\s+TAG\s*=\s*([^,\s]+)", top)
     if not m:
@@ -80,6 +92,8 @@ def render():
         text = f"{value}u" if decimal else f"0x{value:02X}u"
         line = f"#define FPGA_CORE_{name:<18} {text}"
         out.append(f"{line:<44} /* {comment} */" if comment else line)
+    out += ["", "/* timebase code -> 125 MHz cycles per stored sample (code TB_50MS: see RATE50_HZ) */",
+            "#define FPGA_CORE_TB_DIVIDERS { " + ", ".join(f"{d}u" for d in TB_TABLE) + " }"]
     out += ["", "#endif", ""]
     return "\n".join(out)
 

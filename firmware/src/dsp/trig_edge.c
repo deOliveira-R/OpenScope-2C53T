@@ -3,7 +3,7 @@
 
 #define N          TRIG_EDGE_REC_N
 #define MASK       (N - 1u)
-#define TRIG_POS   512
+#define TRIG_POS   ((int)TRIG_EDGE_TRIG_POS)
 #define SEARCH     24      /* crossing searched within +/-24 of the trigger
                               index: EXP-53 placed it 501..520 */
 #define SEAM_RATIO 2       /* seam jump must be >= 2x every other step   */

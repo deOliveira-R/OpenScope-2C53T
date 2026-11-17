@@ -33,6 +33,7 @@ typedef enum {
 } trig_edge_class_t;
 
 #define TRIG_EDGE_REC_N 1024u
+#define TRIG_EDGE_TRIG_POS 512u   /* a strobed record's trigger crossing, counted from its seam */
 
 /* rec: the committed CH1 record (1024 samples, record units = ADC - 28).
  * crossing: the level as a record code, trig_level_rec(reg 0x08 code)
