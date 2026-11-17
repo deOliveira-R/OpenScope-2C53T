@@ -49,7 +49,7 @@
  *  - The FIFO is a ring with a count, not a memmove: the drawn result is
  *    identical (newest right, oldest left, count saturating at 301), and a
  *    sequence counter lets the display task copy it without tearing.
- *  - The FIFO holds RECORD codes (raw + FPGA_ADC_OFFSET, the same domain as
+ *  - The FIFO holds RECORD codes (raw - ADC_REC_OFFSET, the same domain as
  *    the Y-T record), uncorrected. The amplitude correction is the unit's
  *    g = (m - 28)/150 (calpage_gain), applied where the Y-T trace applies
  *    it: in volts, via scope_cal_volts_per_count(). So roll and triggered
@@ -66,6 +66,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+
+#include "../util/units.h"   /* adc_raw_t, rec_code_t, volts_per_count_t, volts_t, ms_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,7 +86,7 @@ extern "C" {
 uint16_t scope_roll_arr(uint8_t step);
 
 /* Milliseconds between points: (ARR + 1) / 10 kHz. 0 out of range. */
-uint32_t scope_roll_period_ms(uint8_t step);
+ms_t scope_roll_period_ms(uint8_t step);
 
 /* Seconds per division: 25 points x the period. 0.0f out of range. */
 float scope_roll_seconds_per_div(uint8_t step);
@@ -106,7 +108,7 @@ typedef struct {
 } scope_roll_fifo_t;
 
 void scope_roll_fifo_reset(scope_roll_fifo_t *f);
-void scope_roll_fifo_push(scope_roll_fifo_t *f, uint8_t ch1, uint8_t ch2);
+void scope_roll_fifo_push(scope_roll_fifo_t *f, rec_code_t ch1, rec_code_t ch2);
 
 /* Point `age` of channel `ch` (0/1): age 0 = newest. False when age >= count. */
 bool scope_roll_fifo_get(const scope_roll_fifo_t *f, uint8_t ch, uint16_t age,
@@ -116,9 +118,11 @@ bool scope_roll_fifo_get(const scope_roll_fifo_t *f, uint8_t ch, uint16_t age,
  * flight. True when the copy is consistent (it always is with no writer). */
 bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *dst);
 
-/* Record code to store for one op03 byte: raw + adc_offset, clamped 0..255 —
- * the same transform the Y-T read applies (fpga_warmtest_read_channel). */
-uint8_t scope_roll_record_code(uint8_t raw, int adc_offset);
+/* Record code to store for one op03 byte: rec_from_raw() (units.h), raw -
+ * ADC_REC_OFFSET clamped to 0..REC_CODE_MAX — the same transform the Y-T read
+ * applies (fpga_warmtest_read_channel). The offset is a constant, not a
+ * parameter. */
+rec_code_t scope_roll_record_code(adc_raw_t raw);
 
 /* ── FIFO order and the roll trigger ────────────────────────────────── */
 
@@ -143,7 +147,7 @@ enum { SCOPE_ROLL_EDGE_RISING = 0, SCOPE_ROLL_EDGE_FALLING = 1, SCOPE_ROLL_EDGE_
  * crosses `level` (record code) in `edge`. False while the FIFO is not full
  * or the pair falls outside the FIFO. */
 bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,
-                         uint8_t level, uint8_t edge);
+                         rec_code_t level, uint8_t edge);
 
 /* What a hit does, by the mode (OUR numbering, scope_state.h: 0 AUTO,
  * 1 NORMAL, 2 SINGLE; stock's ms[0x17] is 0 NORMAL / 1 AUTO / 2 SINGLE).
@@ -172,7 +176,7 @@ scope_roll_trig_act_t scope_roll_trig_decide(uint8_t mode, bool hit);
  * the FIFO (the writer task). */
 scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
                                            uint8_t ch, int col_shift,
-                                           uint8_t level, uint8_t edge);
+                                           rec_code_t level, uint8_t edge);
 
 /* ── Timebase stepping ──────────────────────────────────────────────── */
 
@@ -220,9 +224,10 @@ int16_t scope_roll_y(const scope_roll_vmap_t *m, uint8_t code);
 /* Volts of one roll point, by the Y-T record's rule: (code - zero) x
  * volts_per_count, with zero from scope_measure_zero_for() and
  * volts_per_count from scope_cal_volts_per_count() (which carries the unit's
- * 1/g, g = (m - 28)/150). volts_per_count <= 0 means uncalibrated: returns
- * 0.0f and the caller prints counts. */
-float scope_roll_point_volts(uint8_t code, uint8_t zero, float volts_per_count);
+ * 1/g, g = (m - 28)/150). volts_per_count.vpc <= 0 means uncalibrated:
+ * returns 0 V and the caller prints counts. */
+volts_t scope_roll_point_volts(rec_code_t code, rec_code_t zero,
+                               volts_per_count_t volts_per_count);
 
 #ifdef __cplusplus
 }

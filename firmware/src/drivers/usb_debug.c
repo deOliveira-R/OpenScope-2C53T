@@ -2850,7 +2850,8 @@ static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
         snprintf(out, n, "code %u (zero %u, no cal)", (unsigned)code, (unsigned)zero);
         return;
     }
-    const float v = scope_roll_point_volts(code, zero, vpc);
+    const float v = scope_roll_point_volts((rec_code_t){ code }, (rec_code_t){ zero },
+                                           (volts_per_count_t){ vpc }).v;
     long mv = (long)(v * 1000.0f + (v >= 0.0f ? 0.5f : -0.5f));
     const char sign = (mv < 0) ? '-' : '+';
     if (mv < 0) mv = -mv;
@@ -2872,7 +2873,7 @@ static void roll_print_status(void)
     const int ov = fpga_roll_code_override_get();
     usb_debug_printf("roll: %s  step %u = %s/div, %lu ms/point  (ui %s, acq %s)\r\n",
                      ss->roll ? "ON" : "off", (unsigned)ss->roll_step, lbl,
-                     (unsigned long)scope_roll_period_ms(ss->roll_step),
+                     (unsigned long)scope_roll_period_ms(ss->roll_step).ms,
                      ss->roll ? "roll" : "Y-T",
                      fpga_roll_active() ? "op03" : "04/05");
     usb_debug_printf("reg 0x01 = 0x%02X (last apply; entry byte %s%02X)\r\n",

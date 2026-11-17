@@ -9,7 +9,7 @@ bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
     scope_measure_t m;
     if (out != NULL)
         memset(out, 0, sizeof(*out));
-    const uint32_t period_ms = scope_roll_period_ms(step);
+    const uint32_t period_ms = scope_roll_period_ms(step).ms;
     if (lin == NULL || out == NULL || ch > 1u || period_ms == 0u || lin->count < 2u)
         return false;
     if (n > lin->count || n == 0u)

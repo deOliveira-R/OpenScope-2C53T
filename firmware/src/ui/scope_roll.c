@@ -19,23 +19,25 @@ uint16_t scope_roll_arr(uint8_t step)
     return (step < SCOPE_ROLL_STEPS) ? roll_arr[step] : 0u;
 }
 
-uint32_t scope_roll_period_ms(uint8_t step)
+ms_t scope_roll_period_ms(uint8_t step)
 {
+    ms_t p = { 0u };
     if (step >= SCOPE_ROLL_STEPS)
-        return 0u;
-    return ((uint32_t)roll_arr[step] + 1u) * 1000u / SCOPE_ROLL_TICK_HZ;
+        return p;
+    p.ms = ((uint32_t)roll_arr[step] + 1u) * 1000u / SCOPE_ROLL_TICK_HZ;
+    return p;
 }
 
 float scope_roll_seconds_per_div(uint8_t step)
 {
-    return (float)scope_roll_period_ms(step) * (float)SCOPE_ROLL_POINTS_PER_DIV / 1000.0f;
+    return (float)scope_roll_period_ms(step).ms * (float)SCOPE_ROLL_POINTS_PER_DIV / 1000.0f;
 }
 
 void scope_roll_label(uint8_t step, char *out, uint32_t n)
 {
     if (out == NULL || n == 0u)
         return;
-    uint32_t ms = scope_roll_period_ms(step) * SCOPE_ROLL_POINTS_PER_DIV;
+    uint32_t ms = scope_roll_period_ms(step).ms * SCOPE_ROLL_POINTS_PER_DIV;
     if (ms == 0u)
         snprintf(out, n, "--");
     else if (ms < 1000u)
@@ -62,13 +64,13 @@ void scope_roll_fifo_reset(scope_roll_fifo_t *f)
     f->seq++;
 }
 
-void scope_roll_fifo_push(scope_roll_fifo_t *f, uint8_t ch1, uint8_t ch2)
+void scope_roll_fifo_push(scope_roll_fifo_t *f, rec_code_t ch1, rec_code_t ch2)
 {
     if (f == NULL)
         return;
     f->seq++;                                   /* odd: writing */
-    f->pt[0][f->head] = ch1;
-    f->pt[1][f->head] = ch2;
+    f->pt[0][f->head] = ch1.v;
+    f->pt[1][f->head] = ch2.v;
     f->head = (uint16_t)((f->head + 1u) % SCOPE_ROLL_POINTS);
     if (f->count < SCOPE_ROLL_POINTS)
         f->count++;
@@ -108,12 +110,9 @@ bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *d
     return false;
 }
 
-uint8_t scope_roll_record_code(uint8_t raw, int adc_offset)
+rec_code_t scope_roll_record_code(adc_raw_t raw)
 {
-    int v = (int)raw + adc_offset;
-    if (v < 0)   v = 0;
-    if (v > 255) v = 255;
-    return (uint8_t)v;
+    return rec_from_raw(raw);
 }
 
 bool scope_roll_tb_step(uint8_t *yt_idx, bool *roll, uint8_t *step, int dir,
@@ -215,11 +214,14 @@ int16_t scope_roll_y(const scope_roll_vmap_t *m, uint8_t code)
     return (int16_t)y;
 }
 
-float scope_roll_point_volts(uint8_t code, uint8_t zero, float volts_per_count)
+volts_t scope_roll_point_volts(rec_code_t code, rec_code_t zero,
+                               volts_per_count_t volts_per_count)
 {
-    if (!(volts_per_count > 0.0f))
-        return 0.0f;
-    return ((float)code - (float)zero) * volts_per_count;
+    volts_t v = { 0.0f };
+    if (!(volts_per_count.vpc > 0.0f))
+        return v;
+    v.v = ((float)code.v - (float)zero.v) * volts_per_count.vpc;
+    return v;
 }
 
 /* Reverse a[lo..hi] (inclusive). */
@@ -250,7 +252,7 @@ void scope_roll_fifo_linearize(scope_roll_fifo_t *f)
 }
 
 bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,
-                         uint8_t level, uint8_t edge)
+                         rec_code_t level, uint8_t edge)
 {
     if (f == NULL || ch > 1u || f->count != SCOPE_ROLL_POINTS)
         return false;
@@ -266,10 +268,10 @@ bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,
      * a > level and needs b > level; falling skips when a < level and needs
      * b < level. */
     if ((edge == SCOPE_ROLL_EDGE_RISING || edge == SCOPE_ROLL_EDGE_BOTH) &&
-        a <= level && b > level)
+        a <= level.v && b > level.v)
         return true;
     if ((edge == SCOPE_ROLL_EDGE_FALLING || edge == SCOPE_ROLL_EDGE_BOTH) &&
-        a >= level && b < level)
+        a >= level.v && b < level.v)
         return true;
     return false;
 }
@@ -283,7 +285,7 @@ scope_roll_trig_act_t scope_roll_trig_decide(uint8_t mode, bool hit)
 
 scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
                                            uint8_t ch, int col_shift,
-                                           uint8_t level, uint8_t edge)
+                                           rec_code_t level, uint8_t edge)
 {
     if (f == NULL || mode == 0u)          /* AUTO: stock skips the check (ms[0x17] == 1) */
         return SCOPE_ROLL_TRIG_NONE;
