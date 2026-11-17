@@ -2339,6 +2339,19 @@ check-state-owners:
 	cd .. && python3 -I scripts/check_state_owners.py --self-test
 	cd .. && python3 -I scripts/check_state_owners.py --src firmware/src
 
+# The FPGA_ADC_OFFSET ratchet (ARCH round, typed units, C2): the raw-to-record
+# offset is ADC_REC_OFFSET / rec_from_raw() in util/units.h; the old float
+# alias in drivers/fpga.h stays for the capture paths not converted yet (C3).
+# Counts its uses per file (scripts/check_adc_offset.py) against a baseline
+# that only shrinks; a new use fails. test-adc-offset-ratchet puts it in
+# test-all.
+.PHONY: check-adc-offset test-adc-offset-ratchet
+check-adc-offset:
+	cd .. && python3 -I scripts/check_adc_offset.py --self-test
+	cd .. && python3 -I scripts/check_adc_offset.py --src firmware/src
+
+test-adc-offset-ratchet: check-adc-offset
+
 .PHONY: check-owners
 check-owners:
 	cd .. && python3 -I scripts/check_reg_owners.py --self-test \
