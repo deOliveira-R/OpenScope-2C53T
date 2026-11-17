@@ -2091,18 +2091,23 @@ static void cmd_fpga_cfgsettle(const char *args)
                          (unsigned long)fpga_acq_cfg_drops());
 }
 
-/* `fpga edgefilter [on|off]` — the MCU-side trigger edge filter. */
+/* `fpga edgefilter [on|off|count|nocount]` — the MCU-side trigger edge filter (factory design only). */
 static void cmd_fpga_edgefilter(const char *args)
 {
     while (*args == ' ') args++;
     if (*args) {
-        if      (strncmp(args, "on",  2) == 0) fpga_acq_edge_filter_set(true);
-        else if (strncmp(args, "off", 3) == 0) fpga_acq_edge_filter_set(false);
-        else { usb_send_str("usage: fpga edgefilter [on|off]\r\n"); return; }
+        if      (strncmp(args, "on",  2) == 0)     fpga_acq_edge_filter_set(true);
+        else if (strncmp(args, "off", 3) == 0)     fpga_acq_edge_filter_set(false);
+        else if (strncmp(args, "count", 5) == 0)   fpga_acq_edge_count_only_set(true);
+        else if (strncmp(args, "nocount", 7) == 0) fpga_acq_edge_count_only_set(false);
+        else { usb_send_str("usage: fpga edgefilter [on|off|count|nocount]\r\n"); return; }
     }
     const scope_state_t *ss = scope_state_get();
-    usb_debug_printf("edge filter %s, edge %s: kept %lu dropped %lu unclassified %lu\r\n",
+    usb_debug_printf("edge filter %s (%s), edge %s: kept %lu dropped %lu unclassified %lu\r\n",
                      fpga_acq_edge_filter_get() ? "ON" : "OFF",
+                     fpga_acq_edge_count_only_get() ? "counting only, drops nothing"
+                       : fpga_acq_edge_filter_in_use() ? "in use"
+                       : fpga_acq_edge_filter_get() ? "not used: the core selects the edge" : "not used",
                      trigger_edge_labels[ss->trigger.edge],
                      (unsigned long)fpga.acq_edge_kept, (unsigned long)fpga.acq_edge_dropped,
                      (unsigned long)fpga.acq_edge_unknown);
@@ -4456,7 +4461,7 @@ static const shell_cmd_t shell_cmds[] = {
           "mask clear|reset|run            Drop mask | zero counts | release a fail hold\r\n"
           "mask dump                       Bounds per column (bench scripts)\r\n"),
     CMD_A("fpga edgefilter", cmd_fpga_edgefilter, 0,
-          "fpga edgefilter [on|off]        MCU trigger edge filter: keep Rising/Falling records (default on)\r\n"),
+          "fpga edgefilter [on|off|count|nocount]  MCU edge filter (factory design only); count = classify, never drop\r\n"),
     CMD_A("fpga cfgsettle", cmd_fpga_cfgsettle, 0,
           "fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,

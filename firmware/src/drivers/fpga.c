@@ -3957,6 +3957,13 @@ void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
 bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
+static bool acq_edge_count_only = false;     /* bench: classify and count, never drop */
+void     fpga_acq_edge_count_only_set(bool on) { acq_edge_count_only = on; }
+bool     fpga_acq_edge_count_only_get(void)    { return acq_edge_count_only; }
+bool     fpga_acq_edge_filter_in_use(void)
+{
+    return trig_edge_filter_use(acq_edge_filter, acq_core_has(FPGA_CORE_CAP_EDGE), acq_edge_count_only) == TRIG_EDGE_FILTER_DROP;
+}
 bool fpga_acq_core_has(uint8_t cap)           { return acq_core_has(cap); }
 core_ident_t fpga_core_ident(void)
 {
@@ -4963,7 +4970,9 @@ static void fpga_warmtest_acq_task(void *pv)
          * level was measured. UNKNOWN (seam not recoverable -- typically a
          * fast periodic signal, whose display the soft trigger already
          * aligns to the chosen edge) is committed unfiltered and counted. */
-        if (triggered && acq_edge_filter) {
+        const trig_edge_filter_use_t ef_use =
+            trig_edge_filter_use(acq_edge_filter, acq_core_has(FPGA_CORE_CAP_EDGE), acq_edge_count_only);
+        if (triggered && ef_use != TRIG_EDGE_FILTER_SKIP) {
             /* The SOURCE channel's record: with CH2 as the source (reg 0x06)
              * CH1's shape says nothing about the edge that fired. The level
              * offset was measured on CH1 only; on CH2 a wrong one comes back
@@ -4975,8 +4984,9 @@ static void fpga_warmtest_acq_task(void *pv)
             if (ec == TRIG_EDGE_CLASS_UNKNOWN) {
                 fpga.acq_edge_unknown++;
             } else if ((ec == TRIG_EDGE_CLASS_RISING) != want_rising) {
-                fpga.acq_edge_dropped++;
-                continue;
+                fpga.acq_edge_dropped++;       /* count-only: counted as "would drop", kept */
+                if (ef_use == TRIG_EDGE_FILTER_DROP)
+                    continue;
             } else {
                 fpga.acq_edge_kept++;
             }

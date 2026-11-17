@@ -1279,6 +1279,9 @@ void     fpga_acq_auto_live_set(bool on);
 bool     fpga_acq_auto_live_get(void);
 void     fpga_acq_edge_filter_set(bool on);    /* MCU-side trigger edge filter (EXP-55 follow-up) */
 bool     fpga_acq_edge_filter_get(void);
+void     fpga_acq_edge_count_only_set(bool on); /* bench: classify and count on any design, never drop */
+bool     fpga_acq_edge_count_only_get(void);
+bool     fpga_acq_edge_filter_in_use(void);    /* false on a core that selects the edge itself (trig_edge_reg.h) */
 /* true when the latest committed record was un-rotated at its seam, so the
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
