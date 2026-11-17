@@ -149,6 +149,11 @@ int sc_level_for_raw(float raw)
     return level;
 }
 
+int sc_level_for_rec(float rec)
+{
+    return sc_level_for_raw(rec + (float)ADC_REC_OFFSET);
+}
+
 int sc_center50(bool ch1_on, bool ch2_on, uint8_t trig_src, const int16_t min_pos[SC_CH],
                 int16_t pos[SC_CH])
 {
@@ -438,9 +443,9 @@ static sc_as_status_t as_finish(sc_autoset_t *a, const sc_rec_stats_t obs[SC_CH]
     if (tc >= 0) {
         a->trig_ch = (uint8_t)tc;
         /* 50 %: reg 0x08 on the midline of the record just measured at the
-         * final settings (raw = record + 28). */
+         * final settings (a record level: sc_level_for_rec adds the offset). */
         const float mid = 0.5f * ((float)obs[tc].min + (float)obs[tc].max);
-        a->trig_level = (int16_t)sc_level_for_raw(mid + 28.0f);
+        a->trig_level = (int16_t)sc_level_for_rec(mid);
         return SC_AS_DONE;
     }
     a->tb = a->orig_tb;                          /* no period to set it from */

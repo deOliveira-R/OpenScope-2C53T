@@ -84,6 +84,13 @@ static void test_stats(void)
     CHECK(sc_level_for_raw(128.0f) == 0, "raw 128 = level 0");
     CHECK(sc_level_for_raw(178.0f) == 40, "raw 178 = level 40 (50 * 206 / 256)");
     CHECK(sc_level_for_raw(0.0f) == -100 && sc_level_for_raw(255.0f) == 100, "level clamps");
+    /* Record units: the offset is added once, inside. Passing a record level
+     * to the raw form (the bug class) is 28 counts = 23 level steps off. */
+    CHECK(sc_level_for_rec(100.0f) == 0 && sc_level_for_rec(150.0f) == 40,
+          "record 100 = level 0, record 150 = level 40");
+    CHECK(sc_level_for_rec(100.0f) == sc_level_for_raw(100.0f + (float)ADC_REC_OFFSET) &&
+          sc_level_for_raw(100.0f) == -23, "record + offset = raw; a record level read as raw is -23");
+    CHECK(SC_REC_MAX == 227u && SC_ZERO_REC == 100, "rails and zero from units.h: 227, 100");
 
     int16_t pos[2];
     const int16_t free_[2] = { -100, -100 };
