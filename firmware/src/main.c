@@ -869,7 +869,7 @@ static void vDisplayTask(void *pvParameters)
                 taskENTER_CRITICAL();
                 uint8_t pm = lcd_read_power_mode();
                 taskEXIT_CRITICAL();
-                bool reinit = lcd_health_step(&g_lcd_health, pm, (uint32_t)(now * portTICK_PERIOD_MS),
+                bool reinit = lcd_health_step(&g_lcd_health, pm, ms_from_ticks(now),
                                               (uint8_t)current_mode);
                 if (!reinit && !lcd_health_pm_ok(pm)) {
                     /* Confirm a bad read 10 ms later instead of on the next
@@ -879,7 +879,7 @@ static void vDisplayTask(void *pvParameters)
                     pm = lcd_read_power_mode();
                     taskEXIT_CRITICAL();
                     reinit = lcd_health_step(&g_lcd_health, pm,
-                                             (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS),
+                                             ms_from_ticks(xTaskGetTickCount()),
                                              (uint8_t)current_mode);
                 }
                 if (reinit) {

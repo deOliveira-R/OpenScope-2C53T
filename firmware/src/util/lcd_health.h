@@ -13,6 +13,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "units.h"   /* ms_t */
+
 #define LCD_PM_SLEEP_OUT   0x10u
 #define LCD_PM_DISPLAY_ON  0x04u
 
@@ -37,8 +39,10 @@ extern lcd_health_t g_lcd_health;
 /* True when the power mode says the panel is awake and showing. */
 bool lcd_health_pm_ok(uint8_t pm);
 
-/* Feed one RDDPM read. Returns true when the caller must re-init the panel
- * (the second consecutive bad read); the event is then recorded. */
-bool lcd_health_step(lcd_health_t *h, uint8_t pm, uint32_t now_ms, uint8_t mode);
+/* Feed one RDDPM read. `now` is the uptime in milliseconds (ms_t: from the
+ * RTOS tick through ms_from_ticks(), never a bare tick count). Returns true
+ * when the caller must re-init the panel (the second consecutive bad read);
+ * the event is then recorded. */
+bool lcd_health_step(lcd_health_t *h, uint8_t pm, ms_t now, uint8_t mode);
 
 #endif
