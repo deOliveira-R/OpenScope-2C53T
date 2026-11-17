@@ -36,6 +36,10 @@
 
 static int failures = 0;
 
+/* Typed arguments (units.h): a timebase code and a sample rate. */
+#define TB(x) ((tb_code_t){ (uint8_t)(x) })
+#define FS(x) ((sample_rate_t){ (x) })
+
 #define CHECK(cond, ...)                                                      \
     do {                                                                      \
         if (!(cond)) {                                                        \
@@ -88,7 +92,7 @@ static void test_time_comes_from_the_rate_table(void)
               "code 0x%02X tier changed — update this test with the evidence",
               code);
 
-        const scope_cursor_reading_t r = scope_cursor_delta_t(code, 100);
+        const scope_cursor_reading_t r = scope_cursor_delta_t(TB(code), 100);
         CHECK(r.unit == SCOPE_CURSOR_UNIT_SECONDS,
               "code 0x%02X: a measured rate must yield seconds", code);
         CHECK(r.confidence == SCOPE_CURSOR_MEASURED,
@@ -107,7 +111,7 @@ static void test_volts_come_from_the_gain_table(void)
             const float k = scope_cal_volts_per_count(ch, rg);
             const scope_cursor_vmap_t m = vmap(ch, rg, FIXED_COUNTS_PER_PIXEL);
 
-            const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 40);
+            const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 40, 0, CUR_SECOND_MINUS_FIRST);
             CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS,
                   "ch%u r%u: a measured gain must yield volts", ch, rg);
             CHECK(r.confidence == SCOPE_CURSOR_MEASURED,
@@ -131,8 +135,8 @@ static void test_the_vertical_transform_is_the_renderers(void)
     const scope_cursor_vmap_t fixed  = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL);
     const scope_cursor_vmap_t zoomed = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL / 4.0f);
 
-    const float a = scope_cursor_delta_v(&fixed, 30).value;
-    const float b = scope_cursor_delta_v(&zoomed, 30).value;
+    const float a = scope_cursor_delta_v(&fixed, 30, 0, CUR_SECOND_MINUS_FIRST).value;
+    const float b = scope_cursor_delta_v(&zoomed, 30, 0, CUR_SECOND_MINUS_FIRST).value;
 
     CHECK(close_rel(a, b * 4.0f, 1e-5f),
           "dV must scale with the renderer's counts/pixel: %g vs %g",
@@ -144,21 +148,21 @@ static void test_one_over_dt(void)
     const uint8_t code = 0x10u;
     const float fs = scope_timebase_sample_rate(code);
 
-    scope_cursor_reading_t r = scope_cursor_one_over_dt(code, 100);
+    scope_cursor_reading_t r = scope_cursor_one_over_dt(TB(code), 100);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_HERTZ, "measured code must give Hz");
     CHECK(close_rel(r.value, fs / 100.0f, 1e-5f),
           "1/dt %g != %g / 100", (double)r.value, (double)fs);
 
     /* Sign must not survive into a frequency. */
-    r = scope_cursor_one_over_dt(code, -100);
+    r = scope_cursor_one_over_dt(TB(code), -100);
     CHECK(r.value > 0.0f, "1/dt must be positive for a negative dx");
 
     /* No interval => no frequency, and that is arithmetic, not calibration. */
-    r = scope_cursor_one_over_dt(code, 0);
+    r = scope_cursor_one_over_dt(TB(code), 0);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "dx=0 must refuse");
 
     /* No rate => no Hz either; 1/samples has no unit to fall back to. */
-    r = scope_cursor_one_over_dt(0x15u, 100);     /* past the table: no rate */
+    r = scope_cursor_one_over_dt(TB(0x15u), 100);     /* past the table: no rate */
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE,
           "a code with no rate must not produce a frequency");
 }
@@ -176,7 +180,7 @@ static void test_unmeasured_timebase_falls_back_to_samples(void)
         CHECK(scope_timebase_sample_rate(code) == 0.0f,
               "code 0x%02X was supposed to have no rate", code);
 
-        const scope_cursor_reading_t r = scope_cursor_delta_t(code, 137);
+        const scope_cursor_reading_t r = scope_cursor_delta_t(TB(code), 137);
         CHECK(r.unit == SCOPE_CURSOR_UNIT_SAMPLES,
               "code 0x%02X must fall back to samples, not seconds", code);
         CHECK(r.confidence == SCOPE_CURSOR_RAW, "samples are raw, not tiered");
@@ -198,7 +202,7 @@ static void test_uncalibrated_range_falls_back_to_counts(void)
                   "ch%u r%u was supposed to be uncalibrated", ch, rg);
 
             const scope_cursor_vmap_t m = vmap(ch, rg, 1.0f);
-            const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 50);
+            const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 50, 0, CUR_SECOND_MINUS_FIRST);
 
             CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS,
                   "ch%u r%u must fall back to counts, not volts", ch, rg);
@@ -217,12 +221,12 @@ static void test_unknown_transform_falls_back_to_pixels(void)
     /* No trace drawn, the demo waveform, or the cursors straddling two
      * differently-scaled bands. Pixels are the only exact statement. */
     const scope_cursor_vmap_t none = vmap(1u, 6u, 0.0f);
-    scope_cursor_reading_t r = scope_cursor_delta_v(&none, 20);
+    scope_cursor_reading_t r = scope_cursor_delta_v(&none, 20, 0, CUR_SECOND_MINUS_FIRST);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS,
           "no renderer transform must give pixels, not counts or volts");
     CHECK(r.value == 20.0f, "pixel delta must be exact");
 
-    r = scope_cursor_delta_v(NULL, 20);
+    r = scope_cursor_delta_v(NULL, 20, 0, CUR_SECOND_MINUS_FIRST);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS, "NULL map must not crash or convert");
 
     char s[16];
@@ -236,7 +240,7 @@ static void test_out_of_domain_channel_does_not_resolve(void)
      * neighbour; the cursor must inherit that refusal, not paper over it. */
     for (uint8_t ch = 0; ch <= 4; ch += 3) {
         const scope_cursor_vmap_t m = vmap(ch, 6u, 1.0f);
-        const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 10);
+        const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 10, 0, CUR_SECOND_MINUS_FIRST);
         CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS,
               "channel %u must not resolve to a calibrated channel", ch);
     }
@@ -254,7 +258,7 @@ static void test_provisional_ranges_are_marked(void)
               "r%u tier changed — update this test with the evidence", rg);
 
         const scope_cursor_vmap_t m = vmap(1u, rg, FIXED_COUNTS_PER_PIXEL);
-        const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 20);
+        const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 20, 0, CUR_SECOND_MINUS_FIRST);
 
         CHECK(r.confidence == SCOPE_CURSOR_PROVISIONAL,
               "r%u must be reported as provisional", rg);
@@ -264,7 +268,7 @@ static void test_provisional_ranges_are_marked(void)
 
     /* And a MEASURED one must NOT, or the marker says nothing. */
     const scope_cursor_vmap_t m6 = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL);
-    const scope_cursor_reading_t r6 = scope_cursor_delta_v(&m6, 20);
+    const scope_cursor_reading_t r6 = scope_cursor_delta_v(&m6, 20, 0, CUR_SECOND_MINUS_FIRST);
     scope_cursor_format(&r6, s, sizeof(s));
     CHECK(s[0] != '~', "a measured range must not be marked provisional: %s", s);
 }
@@ -279,7 +283,7 @@ static void test_provisional_timebase_is_marked(void)
     for (uint8_t code = 0; code < SCOPE_TIMEBASE_CODE_COUNT; code++) {
         CHECK(scope_timebase_get_tier(code) == SCOPE_TB_MEASURED,
               "code 0x%02X tier changed -- update this test with the evidence", code);
-        const scope_cursor_reading_t r = scope_cursor_delta_t(code, 100);
+        const scope_cursor_reading_t r = scope_cursor_delta_t(TB(code), 100);
         char s[16];
         scope_cursor_format(&r, s, sizeof(s));
         CHECK(s[0] != '~', "code 0x%02X must not carry the tilde, got %s", code, s);
@@ -293,19 +297,19 @@ static void test_formatting(void)
     char s[16];
 
     /* NONE is the "--" every other part of the scope UI uses. */
-    scope_cursor_reading_t r = scope_cursor_one_over_dt(0x10u, 0);
+    scope_cursor_reading_t r = scope_cursor_one_over_dt(TB(0x10u), 0);
     scope_cursor_format(&r, s, sizeof(s));
     CHECK(strcmp(s, "--") == 0, "a refusal must render as --, got %s", s);
 
     /* Sign survives into the readout: a cursor dragged backwards reads
      * negative rather than silently taking an absolute value. */
-    r = scope_cursor_delta_t(0x10u, -100);
+    r = scope_cursor_delta_t(TB(0x10u), -100);
     CHECK(r.value < 0.0f, "negative dx must give negative dt");
     scope_cursor_format(&r, s, sizeof(s));
     CHECK(s[0] == '-', "negative dt must print a sign, got %s", s);
 
     /* 100 samples at 12,490 S/s = 8.0064 ms. */
-    r = scope_cursor_delta_t(0x10u, 100);
+    r = scope_cursor_delta_t(TB(0x10u), 100);
     scope_cursor_format(&r, s, sizeof(s));
     CHECK(strcmp(s, "8.01ms") == 0, "expected 8.01ms, got %s", s);
 
@@ -335,7 +339,7 @@ static void negctl_old_constants_would_be_caught(void)
      */
     for (unsigned i = 0; i < sizeof(measured_codes); i++) {
         const uint8_t code = measured_codes[i];
-        const float real = scope_cursor_delta_t(code, 100).value;
+        const float real = scope_cursor_delta_t(TB(code), 100).value;
         const float old  = 100.0f * OLD_TIME_PER_PIXEL;
 
         CHECK(!close_rel(old, real, 0.05f),
@@ -347,7 +351,7 @@ static void negctl_old_constants_would_be_caught(void)
     for (unsigned i = 0; i < sizeof(measured_ranges); i++) {
         const uint8_t rg = measured_ranges[i];
         const scope_cursor_vmap_t m = vmap(1u, rg, FIXED_COUNTS_PER_PIXEL);
-        const float real = scope_cursor_delta_v(&m, 40).value;
+        const float real = scope_cursor_delta_v(&m, 40, 0, CUR_SECOND_MINUS_FIRST).value;
         const float old  = 40.0f * OLD_VOLTS_PER_PIXEL;
 
         CHECK(!close_rel(old, real, 0.05f),
@@ -365,9 +369,9 @@ static void negctl_answer_must_depend_on_the_code(void)
      * DIFFERENT answers on different timebase codes, in exactly the ratio the
      * rate table gives. A constant produces the same answer for all three.
      */
-    const float a = scope_cursor_delta_t(0x0Eu, 100).value;
-    const float b = scope_cursor_delta_t(0x0Fu, 100).value;
-    const float c = scope_cursor_delta_t(0x10u, 100).value;
+    const float a = scope_cursor_delta_t(TB(0x0Eu), 100).value;
+    const float b = scope_cursor_delta_t(TB(0x0Fu), 100).value;
+    const float c = scope_cursor_delta_t(TB(0x10u), 100).value;
 
     CHECK(!close_rel(a, b, 0.01f) && !close_rel(b, c, 0.01f),
           "dt did not change with the timebase code (%g / %g / %g) — the "
@@ -388,9 +392,9 @@ static void negctl_answer_must_depend_on_the_range(void)
     const scope_cursor_vmap_t m6 = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL);
     const scope_cursor_vmap_t m7 = vmap(1u, 7u, FIXED_COUNTS_PER_PIXEL);
 
-    const float a = scope_cursor_delta_v(&m5, 40).value;
-    const float b = scope_cursor_delta_v(&m6, 40).value;
-    const float c = scope_cursor_delta_v(&m7, 40).value;
+    const float a = scope_cursor_delta_v(&m5, 40, 0, CUR_SECOND_MINUS_FIRST).value;
+    const float b = scope_cursor_delta_v(&m6, 40, 0, CUR_SECOND_MINUS_FIRST).value;
+    const float c = scope_cursor_delta_v(&m7, 40, 0, CUR_SECOND_MINUS_FIRST).value;
 
     CHECK(!close_rel(a, b, 0.01f) && !close_rel(b, c, 0.01f),
           "dV did not change with the range (%g / %g / %g) — the readout is "
@@ -415,7 +419,7 @@ static void negctl_source_scale_reaches_the_cursor(void)
      */
     const float raw_ch1_r6_mv_per_count = 42.95f;   /* EXP-08, bench unit #1 */
     const scope_cursor_vmap_t m = vmap(1u, 6u, 1.0f);
-    const float got = scope_cursor_delta_v(&m, 1).value;
+    const float got = scope_cursor_delta_v(&m, 1, 0, CUR_SECOND_MINUS_FIRST).value;
 
     CHECK(close_rel(got,
                     raw_ch1_r6_mv_per_count * SCOPE_CAL_SOURCE_SCALE / 1000.0f,
@@ -434,41 +438,41 @@ static void test_record_rate_doubles_for_an_interleaved_record(void)
      * 100-column span is half the duration, and 1/dt doubles. */
     const uint8_t code = 0x0Eu;
     const float fs = scope_timebase_sample_rate(code);
-    const scope_cursor_conf_t cf = scope_cursor_tb_conf(code);
+    const scope_cursor_conf_t cf = scope_cursor_tb_conf(TB(code));
     CHECK(fs > 0.0f, "code 0x%02X needs a rate", code);
 
-    scope_cursor_reading_t a = scope_cursor_delta_t_fs(fs, cf, 100);
-    scope_cursor_reading_t b = scope_cursor_delta_t_fs(2.0f * fs, cf, 100);
+    scope_cursor_reading_t a = scope_cursor_delta_t_fs(FS(fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
+    scope_cursor_reading_t b = scope_cursor_delta_t_fs(FS(2.0f * fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
     CHECK(a.unit == SCOPE_CURSOR_UNIT_SECONDS && b.unit == SCOPE_CURSOR_UNIT_SECONDS,
           "both must be seconds");
     CHECK(close_rel(b.value, a.value / 2.0f, 1e-5f),
           "doubled record rate must halve dt: %g vs %g", (double)b.value, (double)a.value);
     CHECK(close_rel(b.value, 100.0f / (2.0f * fs), 1e-5f), "dt = dx / record rate");
 
-    a = scope_cursor_one_over_dt_fs(fs, cf, 100);
-    b = scope_cursor_one_over_dt_fs(2.0f * fs, cf, 100);
+    a = scope_cursor_one_over_dt_fs(FS(fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
+    b = scope_cursor_one_over_dt_fs(FS(2.0f * fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
     CHECK(close_rel(b.value, 2.0f * a.value, 1e-5f), "doubled rate must double 1/dt");
 
     /* The tb_code forms are exactly the rate forms at the table's rate. */
-    a = scope_cursor_delta_t(code, 100);
-    b = scope_cursor_delta_t_fs(fs, cf, 100);
+    a = scope_cursor_delta_t(TB(code), 100);
+    b = scope_cursor_delta_t_fs(FS(fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
     CHECK(a.value == b.value && a.unit == b.unit && a.confidence == b.confidence,
           "tb_code form must equal the table-rate form");
 
     /* No rate: samples for dt, refusal for 1/dt, regardless of confidence. */
-    a = scope_cursor_delta_t_fs(0.0f, SCOPE_CURSOR_MEASURED, 37);
+    a = scope_cursor_delta_t_fs(FS(0.0f), SCOPE_CURSOR_MEASURED, 0, 37, CUR_SECOND_MINUS_FIRST);
     CHECK(a.unit == SCOPE_CURSOR_UNIT_SAMPLES && a.value == 37.0f, "no rate -> samples");
-    a = scope_cursor_one_over_dt_fs(0.0f, SCOPE_CURSOR_MEASURED, 37);
+    a = scope_cursor_one_over_dt_fs(FS(0.0f), SCOPE_CURSOR_MEASURED, 0, 37, CUR_SECOND_MINUS_FIRST);
     CHECK(a.unit == SCOPE_CURSOR_UNIT_NONE, "no rate -> no 1/dt");
 }
 
 static void test_x_is_relative_to_the_reference_column(void)
 {
     const float fs = 1.0e6f;
-    scope_cursor_reading_t r = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 260, 160);
+    scope_cursor_reading_t r = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 260, 160);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_SECONDS && close_rel(r.value, 100e-6f, 1e-5f),
           "X1 100 columns after the trigger at 1 MS/s is +100 us");
-    r = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 60, 160);
+    r = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 60, 160);
     CHECK(close_rel(r.value, -100e-6f, 1e-5f), "left of the trigger is negative");
     char s[16];
     scope_cursor_format(&r, s, sizeof s);
@@ -477,11 +481,22 @@ static void test_x_is_relative_to_the_reference_column(void)
     /* Stock's "X1-X2" is X1 MINUS X2: the shell report feeds delta_t the
      * column difference v1 - v2, which must equal the two absolute readings'
      * difference whatever the reference column. */
-    const scope_cursor_reading_t x1 = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 90, 137);
-    const scope_cursor_reading_t x2 = scope_cursor_x_fs(fs, SCOPE_CURSOR_MEASURED, 250, 137);
-    const scope_cursor_reading_t d  = scope_cursor_delta_t_fs(fs, SCOPE_CURSOR_MEASURED, 90 - 250);
+    const scope_cursor_reading_t x1 = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 137);
+    const scope_cursor_reading_t x2 = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 250, 137);
+    const scope_cursor_reading_t d  = scope_cursor_delta_t_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_FIRST_MINUS_SECOND);
     CHECK(close_rel(x1.value - x2.value, d.value, 1e-4f) && d.value < 0.0f,
           "X1-X2 == X1 - X2 (negative when X1 is left of X2)");
+
+    /* The order is an argument, not a subtraction the caller does first: the
+     * same two columns read with opposite signs on the screen (second minus
+     * first) and in the shell report (first minus second), and 1/dt is the
+     * same positive number either way. */
+    const scope_cursor_reading_t scr = scope_cursor_delta_t_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_SECOND_MINUS_FIRST);
+    CHECK(scr.value > 0.0f && close_rel(scr.value, -d.value, 1e-6f),
+          "screen dt = -(shell X1-X2) for the same cursors");
+    const scope_cursor_reading_t i1 = scope_cursor_one_over_dt_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_SECOND_MINUS_FIRST);
+    const scope_cursor_reading_t i2 = scope_cursor_one_over_dt_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_FIRST_MINUS_SECOND);
+    CHECK(i1.value > 0.0f && i1.value == i2.value, "1/dt is positive and the same in either order");
 }
 
 static void test_absolute_y(void)
@@ -504,12 +519,14 @@ static void test_absolute_y(void)
      * minus first, = h1_y - h2_y rows: the same sign convention as dt), so
      * the Y1-Y2 readout and dV can never disagree. */
     scope_cursor_reading_t y1 = scope_cursor_y(&m, 70), y2 = scope_cursor_y(&m, 120);
-    scope_cursor_reading_t dv = scope_cursor_delta_v(&m, 70 - 120);
+    scope_cursor_reading_t dv = scope_cursor_delta_v(&m, 70, 120, CUR_SECOND_MINUS_FIRST);
     CHECK(close_rel(y2.value - y1.value, dv.value, 1e-4f), "Y2 - Y1 == dV");
-    /* Stock's "Y1-Y2" (the shell report): delta_v of h2 - h1 rows. */
-    scope_cursor_reading_t d12 = scope_cursor_delta_v(&m, 120 - 70);
+    /* Stock's "Y1-Y2" (the shell report): the same rows, first minus second. */
+    scope_cursor_reading_t d12 = scope_cursor_delta_v(&m, 70, 120, CUR_FIRST_MINUS_SECOND);
     CHECK(close_rel(y1.value - y2.value, d12.value, 1e-4f) && d12.value > 0.0f,
           "Y1-Y2 == Y1 - Y2 (positive when Y1 is above Y2)");
+    CHECK(dv.value == -d12.value && dv.value < 0.0f,
+          "rows grow down: the second cursor BELOW the first is a negative screen dV");
 
     /* Uncalibrated range: counts. */
     scope_cursor_vmap_t u = vmap(1u, 0u, 2.0f);
@@ -542,18 +559,18 @@ static void test_math_direct_scale(void)
           "one division above mid = +0.5 V on the math scale (%g)", (double)r.value);
     r = scope_cursor_y(&vm, 121 + 52);
     CHECK(fabsf(r.value + 1.0f) < 1e-4f, "two divisions below = -1 V (%g)", (double)r.value);
-    r = scope_cursor_delta_v(&vm, 13);
+    r = scope_cursor_delta_v(&vm, 13, 0, CUR_SECOND_MINUS_FIRST);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && fabsf(r.value - 0.25f) < 1e-4f,
           "dV = rows x step/26 (%g)", (double)r.value);
     CHECK(r.confidence == SCOPE_CURSOR_MEASURED, "tier carried from the sources");
     vm.direct = SCOPE_CURSOR_DIRECT_COUNTS;
-    r = scope_cursor_delta_v(&vm, 26);
+    r = scope_cursor_delta_v(&vm, 26, 0, CUR_SECOND_MINUS_FIRST);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS && r.confidence == SCOPE_CURSOR_RAW,
           "counts math stays counts, RAW");
     /* A math unit with no formatter (V^2, ratio): pixels / "--", never volts. */
     memset(&vm, 0, sizeof(vm));
     vm.mid_known = 1u; vm.mid_row = 121;
-    r = scope_cursor_delta_v(&vm, 7);
+    r = scope_cursor_delta_v(&vm, 7, 0, CUR_SECOND_MINUS_FIRST);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS, "no direct scale -> pixels");
     r = scope_cursor_y(&vm, 100);
     CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "no direct scale -> --");

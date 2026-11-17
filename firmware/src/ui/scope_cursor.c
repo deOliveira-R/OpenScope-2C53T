@@ -47,14 +47,17 @@ static scope_cursor_conf_t conf_from_tb(scope_tb_tier_t t)
     return SCOPE_CURSOR_RAW;
 }
 
-scope_cursor_conf_t scope_cursor_tb_conf(uint8_t tb_code)
+scope_cursor_conf_t scope_cursor_tb_conf(tb_code_t tb_code)
 {
-    return conf_from_tb(scope_timebase_get_tier(tb_code));
+    return conf_from_tb(scope_timebase_get_tier(tb_code.code));
 }
 
-scope_cursor_reading_t scope_cursor_delta_t_fs(float fs, scope_cursor_conf_t conf,
-                                               int32_t dx_px)
+scope_cursor_reading_t scope_cursor_delta_t_fs(sample_rate_t rate, scope_cursor_conf_t conf,
+                                               int32_t first_col, int32_t second_col,
+                                               cursor_order_t order)
 {
+    const float fs = rate.hz;
+    const int32_t dx_px = cursor_delta(first_col, second_col, order);
     /* Exact, and true whether or not a rate exists: the plot draws one sample
      * per column. */
     const float samples = (float)dx_px * SCOPE_CURSOR_SAMPLES_PER_PIXEL;
@@ -67,9 +70,12 @@ scope_cursor_reading_t scope_cursor_delta_t_fs(float fs, scope_cursor_conf_t con
     return make(SCOPE_CURSOR_UNIT_SECONDS, conf, samples / fs);
 }
 
-scope_cursor_reading_t scope_cursor_one_over_dt_fs(float fs, scope_cursor_conf_t conf,
-                                                   int32_t dx_px)
+scope_cursor_reading_t scope_cursor_one_over_dt_fs(sample_rate_t rate, scope_cursor_conf_t conf,
+                                                   int32_t first_col, int32_t second_col,
+                                                   cursor_order_t order)
 {
+    const float fs = rate.hz;
+    const int32_t dx_px = cursor_delta(first_col, second_col, order);
     const int32_t adx = (dx_px < 0) ? -dx_px : dx_px;
 
     /* Cursors on the same column: there is no interval, so there is no
@@ -87,22 +93,24 @@ scope_cursor_reading_t scope_cursor_one_over_dt_fs(float fs, scope_cursor_conf_t
     return make(SCOPE_CURSOR_UNIT_HERTZ, conf, 1.0f / dt);
 }
 
-scope_cursor_reading_t scope_cursor_x_fs(float fs, scope_cursor_conf_t conf,
+scope_cursor_reading_t scope_cursor_x_fs(sample_rate_t fs, scope_cursor_conf_t conf,
                                          int32_t col, int32_t ref_col)
 {
-    return scope_cursor_delta_t_fs(fs, conf, col - ref_col);
+    return scope_cursor_delta_t_fs(fs, conf, ref_col, col, CUR_SECOND_MINUS_FIRST);
 }
 
-scope_cursor_reading_t scope_cursor_delta_t(uint8_t tb_code, int32_t dx_px)
+scope_cursor_reading_t scope_cursor_delta_t(tb_code_t tb_code, int32_t dx_px)
 {
-    return scope_cursor_delta_t_fs(scope_timebase_sample_rate(tb_code),
-                                   scope_cursor_tb_conf(tb_code), dx_px);
+    const sample_rate_t fs = { scope_timebase_sample_rate(tb_code.code) };
+    return scope_cursor_delta_t_fs(fs, scope_cursor_tb_conf(tb_code),
+                                   0, dx_px, CUR_SECOND_MINUS_FIRST);
 }
 
-scope_cursor_reading_t scope_cursor_one_over_dt(uint8_t tb_code, int32_t dx_px)
+scope_cursor_reading_t scope_cursor_one_over_dt(tb_code_t tb_code, int32_t dx_px)
 {
-    return scope_cursor_one_over_dt_fs(scope_timebase_sample_rate(tb_code),
-                                       scope_cursor_tb_conf(tb_code), dx_px);
+    const sample_rate_t fs = { scope_timebase_sample_rate(tb_code.code) };
+    return scope_cursor_one_over_dt_fs(fs, scope_cursor_tb_conf(tb_code),
+                                       0, dx_px, CUR_SECOND_MINUS_FIRST);
 }
 
 scope_cursor_conf_t scope_cursor_cal_conf(uint8_t channel, uint8_t range_idx)
@@ -137,8 +145,10 @@ scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t ro
 }
 
 scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,
-                                            int32_t dy_px)
+                                            int32_t first_row, int32_t second_row,
+                                            cursor_order_t order)
 {
+    const int32_t dy_px = cursor_dy_volts_sign(first_row, second_row, order);
     if (map != NULL && map->direct != SCOPE_CURSOR_DIRECT_NONE && map->unit_per_pixel > 0.0f)
         return direct_reading(map, (float)dy_px * map->unit_per_pixel);
     if (map == NULL || map->counts_per_pixel <= 0.0f) {

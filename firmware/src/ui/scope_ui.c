@@ -2012,27 +2012,29 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 {
     const scope_state_t *ss = scope_state_get();
     const cursor_state_t *c = &ss->cursor;
-    const float fs = column_rate_for_display(ss);   /* columns, not samples */
-    const scope_cursor_conf_t cf = scope_cursor_tb_conf(ss->timebase_idx);
+    const sample_rate_t fs = { column_rate_for_display(ss) };   /* columns, not samples */
+    const scope_cursor_conf_t cf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
     const int16_t ta = scope_ui_trig_x_actual();
     const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
     /* The readouts carry stock's labels (0x0801CA7C: X1-X2, Y1-Y2), so they
      * are FIRST minus SECOND: the on-screen dt/dV are second minus first
      * (v2-v1, and h1-h2 rows = Y2-Y1) and read with the opposite sign. */
-    const int32_t ddx = (int32_t)c->v1_x - (int32_t)c->v2_x;
+    const cursor_order_t ord = CUR_FIRST_MINUS_SECOND;
     scope_cursor_reading_t r;
 
     r = scope_cursor_x_fs(fs, cf, c->v1_x, ref);      scope_cursor_format(&r, x1, 16);
     r = scope_cursor_x_fs(fs, cf, c->v2_x, ref);      scope_cursor_format(&r, x2, 16);
-    r = scope_cursor_delta_t_fs(fs, cf, ddx);         scope_cursor_format(&r, dx, 16);
-    r = scope_cursor_one_over_dt_fs(fs, cf, ddx);     scope_cursor_format(&r, ix, 16);
+    r = scope_cursor_delta_t_fs(fs, cf, c->v1_x, c->v2_x, ord);
+    scope_cursor_format(&r, dx, 16);
+    r = scope_cursor_one_over_dt_fs(fs, cf, c->v1_x, c->v2_x, ord);
+    scope_cursor_format(&r, ix, 16);
 
     scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
     r = scope_cursor_y(&vm, c->h1_y);                 scope_cursor_format(&r, y1, 16);
     r = scope_cursor_y(&vm, c->h2_y);                 scope_cursor_format(&r, y2, 16);
-    r = scope_cursor_delta_v(&vm, (int32_t)c->h2_y - (int32_t)c->h1_y);   /* Y1-Y2 */
+    r = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y, ord);   /* Y1-Y2 */
     scope_cursor_format(&r, dy, 16);
-    if (fs_out) *fs_out = fs;
+    if (fs_out) *fs_out = fs.hz;
 }
 
 /* The cursor layer, as both renderers draw it: dashed lines over the live
@@ -2145,14 +2147,15 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
                           c->mode == CURSOR_VERTICAL ? "CUR:T" :
                           c->mode == CURSOR_HORIZONTAL ? "CUR:V" : "CUR:TV");
     if (k < n && (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH)) {
-        const int32_t dx = (int32_t)c->v2_x - (int32_t)c->v1_x;
-        const float cfs = column_rate_for_display(ss);
-        const scope_cursor_conf_t cconf = scope_cursor_tb_conf(ss->timebase_idx);
-        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, dx);
+        const sample_rate_t cfs = { column_rate_for_display(ss) };
+        const scope_cursor_conf_t cconf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
+        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, c->v1_x, c->v2_x,
+                                                           CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&r, buf, sizeof(buf));
         k += (size_t)snprintf(out + k, n - k, "  dt=%s", buf);
         if (k < n) {
-            r = scope_cursor_one_over_dt_fs(cfs, cconf, dx);
+            r = scope_cursor_one_over_dt_fs(cfs, cconf, c->v1_x, c->v2_x,
+                                            CUR_SECOND_MINUS_FIRST);
             scope_cursor_format(&r, buf, sizeof(buf));
             k += (size_t)snprintf(out + k, n - k, "  1/dt=%s", buf);
         }
@@ -2160,9 +2163,9 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
     if (k < n && (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH)) {
         /* Second minus first, as dt; screen y grows downward. A delta that
          * straddles two differently-scaled bands stays in pixels. */
-        const int32_t dy = (int32_t)c->h1_y - (int32_t)c->h2_y;
         scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
-        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, dy);
+        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y,
+                                                         CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&dv, buf, sizeof(buf));
         if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
             (void)snprintf(out + k, n - k, "  dVm=%s", buf);
