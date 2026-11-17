@@ -1019,6 +1019,28 @@ test-units-negative: tests/test_units_negative.c src/util/units.h | $(BUILD_DIR)
 	if [ $$bad -ne 0 ]; then exit 1; fi; \
 	echo "units-negative: control compiles, all $(words $(UNITS_NEG_CASES)) mixing cases rejected"
 
+# Typed units in the pure modules (ARCH round, C2). The module headers must
+# REJECT the calls the bare-integer interfaces allowed (a raw ADC byte as a
+# record code, the offset as a parameter, a cursor difference with no order,
+# a gain as a skew, ticks as milliseconds); case 0 is the correct use.
+UNITS_C2_NEG_CASES = 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20
+UNITS_C2_NEG_HDRS  = src/util/units.h src/ui/scope_measure.h src/ui/scope_roll.h \
+                     src/ui/scope_cursor.h src/dsp/trig_edge.h src/dsp/interleave.h \
+                     src/util/lcd_health.h
+UNITS_C2_NEG_CC    = $(HOST_CC) -std=gnu11 -Wall -Wextra -Werror -fsyntax-only -Isrc/util
+
+.PHONY: test-units-c2-negative
+test-units-c2-negative: tests/test_units_c2_negative.c $(UNITS_C2_NEG_HDRS) | $(BUILD_DIR)
+	@$(UNITS_C2_NEG_CC) -DCASE=0 $< \
+		|| { echo "units-c2-negative: positive control (CASE 0) does not compile"; exit 1; }
+	@bad=0; for n in $(UNITS_C2_NEG_CASES); do \
+		if $(UNITS_C2_NEG_CC) -DCASE=$$n $< 2>/dev/null; then \
+			echo "units-c2-negative: CASE $$n COMPILED (must fail)"; bad=1; \
+		fi; \
+	done; \
+	if [ $$bad -ne 0 ]; then exit 1; fi; \
+	echo "units-c2-negative: control compiles, all $(words $(UNITS_C2_NEG_CASES)) mixing cases rejected"
+
 # Property model (src/model/, ARCH-1 M0): the registry core, host only, not
 # linked into the firmware yet. The table, lookup/glob, parse/format with
 # units, clamp/step/wrap, all-or-nothing multi-set validation, epochs, RO
