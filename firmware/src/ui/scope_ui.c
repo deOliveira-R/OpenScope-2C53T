@@ -1676,14 +1676,18 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
 
     /* 1. Hardware anchor (2026-09-22): a time-ordered record carries the
      *    hardware trigger at index 512, and the crossing nearest it IS the
-     *    event that fired. CH1 only -- the level register was measured there.
+     *    event that fired. On the stock design CH1 only -- the level register
+     *    was measured there; on our core the level is exact on both
+     *    converters, so CH2 as the source is anchored the same way (before,
+     *    it fell to the soft anchor below, which searches its own level:
+     *    bench 2026-11-16, a sine's peak sat on the trigger column).
      *    Tested on the trigger SOURCE, not the buffer address: `spi3 frame`
      *    passes a snapshot copy, and an address test made the bench check
      *    exercise the fallback while the screen used the anchor (v17).
      *    Zoomed (L > 1), the crossing is placed to 1/L sample from the two
      *    samples around it -- stock re-finds it on the interpolated copy for
      *    the same reason (0x08021EF0): at 10 ns/div one sample is 10-20 px. */
-    if (ss->trigger.source != TRIG_SRC_CH2 && fpga_acq_record_time_ordered()) {
+    if ((ss->trigger.source != TRIG_SRC_CH2 || fpga_acq_design_ours()) && fpga_acq_record_time_ordered()) {
         int a = hw_trigger_anchor(ss, src_buf);
         if (a >= 1) {
             const int c = (int)fpga_acq_trig_code_get() + (int)FPGA_ADC_OFFSET;

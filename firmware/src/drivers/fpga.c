@@ -3775,6 +3775,12 @@ static volatile uint16_t acq_post_edge_ms = 0;
 static volatile uint16_t acq_poll_gap_ms = 30;   /* EXP-54: poll cadence after the poll start (stock: 29 ms) */
 static volatile bool     acq_unrotate = true;    /* 2026-09-22: seam-based (dev plan 2.3); `fpga unrotate off` for the raw record */
 static volatile int16_t  acq_unrotate_offset = 0;
+/* Where the seam of a strobed record came from (`fpga unrotate`): the core's
+ * reply header (trig_seam_from_hdr), the search in the samples, or nowhere.
+ * acq_seam_check (bench): with a header pointer in hand, run the search too
+ * and count how the two compare. */
+static volatile bool     acq_seam_check = false;
+static volatile uint32_t acq_seam_n[6];          /* header, search, none, check: same, differ, search found none */
 static volatile uint8_t  acq_read_br = 0xFF;
 /* EXP-72 (2026-10-05): handover log. One entry per PC0-strobed read: ms
  * since the previous handover, roll reads polled in between, strobes on this
@@ -3934,6 +3940,10 @@ uint16_t fpga_acq_poll_gap_get(void)         { return acq_poll_gap_ms; }
 void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
 bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
+bool fpga_acq_design_ours(void)               { return acq_design_ours; }
+void fpga_acq_seam_check_set(bool on)         { acq_seam_check = on; }
+bool fpga_acq_seam_check_get(void)            { return acq_seam_check; }
+uint32_t fpga_acq_seam_count(unsigned i)      { return i < 6u ? acq_seam_n[i] : 0u; }
 bool fpga_meter_wave_available(void)
 {
     /* Mirrors the task-creation chain in fpga_init(): only the stock-path
@@ -3972,11 +3982,36 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
     if (!triggered) return -1;
     volatile uint8_t *bufs[2] = { acq_write_ch1(), acq_write_ch2() };
     uint32_t k = 0;
+    /* Our core (v3 on) says where the seam is, in the reply header of the two
+     * reads just made. The op 05 header first: it always carries the pair's
+     * pointer, the op 04 one is withheld when the record was held only as
+     * that frame began. A record with no step at its seam (a whole number of
+     * periods, a square, DC) is then ordered like any other; the search in
+     * the samples could not order those (bench 2026-11-16: 9 of the 13
+     * generator waveforms). */
+    int hs = trig_seam_from_hdr(acq_design_ours, fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]);
+    if (hs < 0)
+        hs = trig_seam_from_hdr(acq_design_ours, fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2]);
+    if (hs >= 0) {
+        if (acq_seam_check) {
+            uint32_t kf = 0;
+            if (trig_edge_find_seam_any(bufs[0], &kf) || trig_edge_find_seam_any(bufs[1], &kf))
+                acq_seam_n[kf == (uint32_t)hs ? 3 : 4]++;
+            else
+                acq_seam_n[5]++;
+        }
+        k = (uint32_t)hs;
+        acq_seam_n[0]++;
+    } else
     /* Value step first, then linear prediction (fast periodic records whose
      * segments meet at similar values; bench 2026-09-22: 3/10 records at
      * 201 Hz / 0x10 kept an internal break with the value step alone). */
-    if (!trig_edge_find_seam_any(bufs[0], &k) && !trig_edge_find_seam_any(bufs[1], &k))
+    if (!trig_edge_find_seam_any(bufs[0], &k) && !trig_edge_find_seam_any(bufs[1], &k)) {
+        acq_seam_n[2]++;
         return -1;
+    } else {
+        acq_seam_n[1]++;
+    }
     if (!acq_unrotate) return (int32_t)k;        /* reported (status), not applied */
     if (k == 0) return 0;
     /* In place, no staging buffer (this used a 1 KB static tmp[]; RAM diet

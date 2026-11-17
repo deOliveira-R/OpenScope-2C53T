@@ -33,6 +33,17 @@ int main(void)
     /* an upload that did not reach DONE */
     CHECK(trig_edge_reg_code(trig_edge_reg_design_ours(true, true, false), false) == 0x00);
 
+    /* the seam in the reply header: only from our design, only with V set */
+    CHECK(trig_seam_from_hdr(true, 0x04, 0x00) == 0);
+    CHECK(trig_seam_from_hdr(true, 0x07, 0xFF) == 1023);
+    CHECK(trig_seam_from_hdr(true, 0x06, 0x71) == 0x271);
+    CHECK(trig_seam_from_hdr(true, 0x00, 0x00) == -1);          /* core v2, or no held record */
+    CHECK(trig_seam_from_hdr(true, 0x03, 0xFF) == -1);          /* a pointer without V */
+    for (int hi = 0; hi < 256; hi++)                            /* any other bit above the pointer: not ours */
+        if ((hi & 0xFC) != 0x04) CHECK(trig_seam_from_hdr(true, (uint8_t)hi, 0x55) == -1);
+    for (int hi = 0; hi < 256; hi++)                            /* a design that is not ours: never */
+        CHECK(trig_seam_from_hdr(false, (uint8_t)hi, 0x12) == -1);
+
     printf(fails ? "test_trig_edge_reg: %d FAILED\n" : "test_trig_edge_reg: all passed\n", fails);
     return fails ? 1 : 0;
 }

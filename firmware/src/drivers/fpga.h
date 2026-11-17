@@ -1280,6 +1280,10 @@ bool     fpga_acq_edge_filter_get(void);
 /* true when the latest committed record was un-rotated at its seam, so the
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
+bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
+void     fpga_acq_seam_check_set(bool on);     /* bench: compare the header's seam with the search */
+bool     fpga_acq_seam_check_get(void);
+uint32_t fpga_acq_seam_count(unsigned i);      /* 0 header, 1 search, 2 none, 3 same, 4 differ, 5 search none */
 /* true when this build creates the meter-waveform sampler task ("mtr_wave").
  * The coldtrace family does not, so its meter screen must not wait for
  * samples that never come (2026-09-30). */

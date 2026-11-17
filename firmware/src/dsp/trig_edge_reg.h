@@ -41,4 +41,19 @@ static inline uint8_t trig_edge_reg_code(bool design_ours, bool falling)
     return (uint8_t)((TRIG_EDGE_REG_HYST << 4) | (falling ? 0x03u : 0x02u));
 }
 
+/* Where a held record's oldest sample is: reply bytes 1-2 of op 04 / op 05.
+ * Core v3 (tag D4) on sends  byte 1 = 00000 V s9 s8,  byte 2 = s7..s0  with
+ * V = 1 only when the frame reads a held record and the pointer s is that
+ * record's write pointer (the trigger is then at (s + 512) mod 1024). Core v2
+ * sends 00 00, and what the stock design leaves in these bytes is not a
+ * pointer, so the bytes are read only when the design is known to be ours.
+ * Returns 0..1023, or -1 for "no pointer here": the caller then looks for the
+ * seam in the samples as before. */
+static inline int trig_seam_from_hdr(bool design_ours, uint8_t b1, uint8_t b2)
+{
+    if (!design_ours) return -1;
+    if ((b1 & 0xFCu) != 0x04u) return -1;         /* V set, nothing else above the pointer */
+    return (int)(((unsigned)(b1 & 0x03u) << 8) | (unsigned)b2);
+}
+
 #endif /* TRIG_EDGE_REG_H */

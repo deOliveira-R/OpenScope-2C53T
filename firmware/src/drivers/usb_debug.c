@@ -2117,10 +2117,17 @@ static void cmd_fpga_unrotate(const char *args)
     if (*args) {
         if      (strncmp(args, "on",  2) == 0) fpga_acq_unrotate_set(true);
         else if (strncmp(args, "off", 3) == 0) fpga_acq_unrotate_set(false);
-        else { usb_send_str("usage: fpga unrotate [on|off]\r\n"); return; }
+        else if (strncmp(args, "check on",  8) == 0) fpga_acq_seam_check_set(true);
+        else if (strncmp(args, "check off", 9) == 0) fpga_acq_seam_check_set(false);
+        else { usb_send_str("usage: fpga unrotate [on|off|check on|check off]\r\n"); return; }
     }
     usb_debug_printf("acq unrotate %s (seam-based); last strobed record's seam at %ld (-1 = none found)\r\n",
                      fpga_acq_unrotate_get() ? "ON" : "OFF", (long)fpga.acq_last_rot);
+    usb_debug_printf("seam from: core header %lu  search %lu  none %lu;  check %s: same %lu  differ %lu  search found none %lu\r\n",
+                     (unsigned long)fpga_acq_seam_count(0), (unsigned long)fpga_acq_seam_count(1),
+                     (unsigned long)fpga_acq_seam_count(2), fpga_acq_seam_check_get() ? "ON" : "off",
+                     (unsigned long)fpga_acq_seam_count(3), (unsigned long)fpga_acq_seam_count(4),
+                     (unsigned long)fpga_acq_seam_count(5));
 }
 
 /* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
