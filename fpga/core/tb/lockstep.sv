@@ -27,6 +27,8 @@ module lockstep;
 
   // ---- comparison: on any change, let the instant settle, then compare
   integer errs = 0; longint unsigned checks = 0; reg aligned = 0;
+  integer fmode = 0, nforce = 0, nforced = 0;
+  initial if ($test$plusargs("force")) fmode = 1;
   wire [3:0] vo = {miso_o, cka_o, ckb_o, rdy_o}, vn = {miso_n, cka_n, ckb_n, rdy_n};
   integer errs_s = 0; reg lockd = 0;
   always @(vn or vs) begin
@@ -39,7 +41,7 @@ module lockstep;
   always @(vo or vn) begin
     #0.002;
     checks = checks + 1;
-    if (aligned && vo !== vn) begin
+    if (aligned && !fmode && vo !== vn) begin
       errs = errs + 1;
       if (errs <= 10) $display("MISMATCH at %0t ps: old {miso,ckA,ckB,rdy} = %b, new = %b", $time, vo, vn);
     end
@@ -65,6 +67,7 @@ module lockstep;
   // ---- SPI traffic
   integer nfr, f, t, j, len, per, kind, abort_at, nrec = 0, nheldpairs = 0, r;
   reg [7:0] op, val, o, rx, hb1; real jit;
+  reg [7:0] rxn, hb1n;                         // the same bytes from the new core (hb1 is core D4's)
   task automatic frame(input [7:0] fop, input [7:0] fval, input integer flen, input integer half, input integer cut);
     // flen = bytes after the opcode; half = SCLK half period in 0.5 ns steps; cut >= 0: CS rises after that many bits
     integer nb; real h;
@@ -76,9 +79,9 @@ module lockstep;
           o = (t == 0) ? fop : (t == 1 ? fval : 8'hFF);
           for (j = 7; j >= 0; j = j - 1) begin
             if (nb == cut) disable bits;
-            sclk = 0; mosi = o[j]; #(h); sclk = 1; rx[j] = miso_o; #(h); nb = nb + 1;
+            sclk = 0; mosi = o[j]; #(h); sclk = 1; rx[j] = miso_o; rxn[j] = miso_n; #(h); nb = nb + 1;
           end
-          if (t == 1) hb1 = rx;
+          if (t == 1) begin hb1 = rx; hb1n = rxn; end
           if (($urandom(seed) % 3) == 0) #(($urandom(seed) % 60) * 1.0);    // the MCU's gaps between bytes
         end
       end
@@ -104,10 +107,22 @@ module lockstep;
       kind = $urandom(seed) % 100;
       per  = (($urandom(seed) % 4) == 0) ? 17 + ($urandom(seed) % 40) : 16;  // half period 8 ns (60 MHz) or slower
       if (($urandom(seed) % 25) == 0) mode = $urandom(seed) % 5;
+      // +force (netlist runs): op 09 in one frame out of eight. Core D4 does not know it, so the comparison with
+      // D4 is off in such a run; the netlist against the source is what is checked.
+      if (fmode && ($urandom(seed) % 8) == 0) begin frame(8'h09, $urandom(seed), $urandom(seed) % 3, per, -1); nforce = nforce + 1; end
+      // ... and now and then the case op 09 is for: a level no sample reaches, fast timebase, time for the memory
+      // to fill, the request (before or after that time), then the pair.
+      if (fmode && ($urandom(seed) % 6) == 0) begin
+        frame(8'h07, 8'h02 | ($urandom(seed) & 8'h01), 1, per, -1); frame(8'h01, $urandom(seed) % 5, 1, per, -1); frame(8'h08, 8'hFF, 1, per, -1);
+        if (($urandom(seed) % 2) == 0) begin frame(8'h09, 8'hFF, 0, per, -1); nforce = nforce + 1; #(12000.0 + ($urandom(seed) % 4000)); end
+        else begin #(($urandom(seed) % 14000) * 1.0); frame(8'h09, 8'hFF, 0, per, -1); nforce = nforce + 1; #(($urandom(seed) % 12000) * 1.0); end
+        frame(8'h04, 8'hFF, (($urandom(seed) % 2) == 0) ? 1026 : 8, per, -1); nrec = nrec + 1;
+        frame(8'h05, 8'hFF, (($urandom(seed) % 2) == 0) ? 1026 : 8, per, -1); if (hb1n[2]) nheldpairs = nheldpairs + 1; if (hb1n[2] && hb1n[3]) nforced = nforced + 1;
+      end
       if (kind < 30) begin                                                  // a record pair
         len = (($urandom(seed) % 3) == 0) ? 1026 : 2 + ($urandom(seed) % 40);
         frame(8'h04, 8'hFF, len, per, -1); nrec = nrec + 1;
-        if (($urandom(seed) % 10) != 0) begin frame(8'h05, 8'hFF, len, per, -1); if (hb1[2]) nheldpairs = nheldpairs + 1; end
+        if (($urandom(seed) % 10) != 0) begin frame(8'h05, 8'hFF, len, per, -1); if (hb1[2]) nheldpairs = nheldpairs + 1; if (hb1n[2] && hb1n[3]) nforced = nforced + 1; end
       end else if (kind < 45) begin                                         // timebase: fast ones mostly, sometimes any
         r = $urandom(seed) % 10;
         val = (r < 6) ? ($urandom(seed) % 8) : (r < 9) ? ($urandom(seed) % 21) : $urandom(seed);
@@ -119,7 +134,7 @@ module lockstep;
       else if (kind < 84) frame(8'hE0, 8'hFF, 15 + ($urandom(seed) % 4), per, -1);
       else if (kind < 88) begin val = $urandom(seed); val[2:0] = val[2:0] % 5; val[6:4] = val[6:4] % 5; frame(8'hE1, val, 1, per, -1); end
       else if (kind < 92) frame(8'h02, $urandom(seed), 1, per, -1);
-      else if (kind < 96) begin op = $urandom(seed); if (op == 8'hE2) op = 8'hE3; frame(op, $urandom(seed), $urandom(seed) % 8, per, -1); end   // any opcode but E2 (new)
+      else if (kind < 96) begin op = $urandom(seed); if (op == 8'hE2 || op == 8'h09) op = 8'hE3; frame(op, $urandom(seed), $urandom(seed) % 8, per, -1); end   // any opcode but E2 and 09 (new since D4)
       else begin                                                           // a frame cut short at any bit
         r = $urandom(seed) % 6; op = (r == 0) ? 8'h04 : (r == 1) ? 8'h05 : (r == 2) ? 8'h01 : (r == 3) ? 8'h08 : (r == 4) ? 8'h07 : 8'hE0;
         frame(op, $urandom(seed), 6, per, $urandom(seed) % 40);
@@ -132,6 +147,7 @@ module lockstep;
 `ifdef NETLIST
     $display("netlist against source: %0d mismatches", errs_s);
 `endif
+    if (fmode) $display("(+force: %0d op 09 frames, %0d forced records read; core D4 not compared)", nforce, nforced);
     if (nheldpairs < 5) $display("(few held pairs in this seed: %0d)", nheldpairs);
     if (errs == 0 && errs_s == 0) $display("LOCKSTEP PASS"); else $display("LOCKSTEP FAIL");
     $finish;

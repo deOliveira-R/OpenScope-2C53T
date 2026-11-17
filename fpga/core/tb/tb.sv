@@ -58,15 +58,37 @@ module tb;
     end
   endtask
   // The seam bytes: never valid without a handed record; op 05 of a handed pair always valid; op 04's, when
-  // valid, the same pointer; nothing but the valid bit and the pointer in them.
+  // valid, the same pointer; nothing but the valid bit, the pointer and (only after an op 09, with the valid bit)
+  // the forced bit in them.
+  integer want_forced = 0;
   task hdr_rules(input integer handed);
     begin
-      if (ha1[7:3] !== 5'b0 || hb1[7:3] !== 5'b0) begin $display("  FAIL seam byte 1 has other bits: %h %h", ha1, hb1); errs=errs+1; end
+      if (ha1[7:4] !== 4'b0 || hb1[7:4] !== 4'b0) begin $display("  FAIL seam byte 1 has other bits: %h %h", ha1, hb1); errs=errs+1; end
+      if ((ha1[3] && !ha1[2]) || (hb1[3] && !hb1[2])) begin $display("  FAIL forced bit without the valid bit: %h %h", ha1, hb1); errs=errs+1; end
+      if (handed && hb1[3] !== (want_forced ? 1'b1 : 1'b0)) begin $display("  FAIL forced bit %b, expected %0d", hb1[3], want_forced); errs=errs+1; end
+      if (handed && ha1[2] && ha1[3] !== hb1[3]) begin $display("  FAIL op 04 and op 05 disagree on forced"); errs=errs+1; end
       if (!handed && (ha1 !== 8'h00 || ha2 !== 8'h00 || hb1 !== 8'h00 || hb2 !== 8'h00)) begin $display("  FAIL seam bytes without a held record: %h %h / %h %h", ha1, ha2, hb1, hb2); errs=errs+1; end
       if (handed && !hb1[2]) begin $display("  FAIL op 05 of a held pair without a valid seam"); errs=errs+1; end
       if (handed && ha1[2] && {ha1[1:0], ha2} !== {hb1[1:0], hb2}) begin $display("  FAIL op 04 and op 05 give different seams: %h%h / %h%h", ha1, ha2, hb1, hb2); errs=errs+1; end
       hseam = {hb1[1:0], hb2};
       if (handed) begin if (ha1[2]) v04 = v04 + 1; else nv04 = nv04 + 1; end
+    end
+  endtask
+  // A forced record: one place where the ring is not continuous, and it is where the header says; B and A from
+  // the same addresses; the triangle moves one code per sample everywhere else.
+  task check_forced;
+    integer big, bad, kk;
+    begin
+      seam = -1; big = 0;
+      for (k=0;k<1024;k=k+1) begin
+        kk = (k+1) % 1024;
+        steps = (A[kk] > A[k]) ? A[kk]-A[k] : A[k]-A[kk];
+        if (steps > 1) begin big = big + 1; seam = kk; end
+      end
+      bad = 0; for (k=0;k<1024;k=k+1) begin kk = B[k] - A[k]; if (kk < 0) kk = -kk; if (kk < 37 || kk > 43) bad = bad + 1; end
+      $display("  forced record: discontinuities %0d at %0d, header seam %0d, |B - A| outside 40 +-3 in %0d places", big, seam, hseam, bad);
+      if (big > 1 || (big == 1 && seam != hseam)) begin $display("  FAIL not one seam where the header says"); errs=errs+1; end
+      if (bad != 0) begin $display("  FAIL A/B not from the same addresses"); errs=errs+1; end
     end
   endtask
   task check_record(input [7:0] lvl);
@@ -198,7 +220,7 @@ module tb;
     // identity
     frame(8'hE2, 8'hFF, 9);
     $display("E2: %h %h | %h %h ver %h tag %h caps %h depth %h check %h | %h", rx[0], rx[1], rx[2], rx[3], rx[4], rx[5], rx[6], rx[7], rx[8], rx[9]);
-    if (rx[0] !== 8'h80 || rx[1] !== 8'h00 || rx[2] !== 8'h4F || rx[3] !== 8'h53 || rx[4] !== 8'h01 || rx[5] !== 8'hD5 || rx[6] !== 8'h0F || rx[7] !== 8'h0A
+    if (rx[0] !== 8'h80 || rx[1] !== 8'h00 || rx[2] !== 8'h4F || rx[3] !== 8'h53 || rx[4] !== 8'h01 || rx[5] !== 8'hD6 || rx[6] !== 8'h1F || rx[7] !== 8'h0A
         || rx[8] !== (rx[2] ^ rx[3] ^ rx[4] ^ rx[5] ^ rx[6] ^ rx[7]) || rx[9] !== 8'h00) begin $display("FAIL identity"); errs=errs+1; end
     frame(8'h04, 8'hFF, 2); if (rx[1][7] !== 1'b0) begin $display("FAIL byte 1 bit 7 after E2"); errs=errs+1; end
     frame(8'h05, 8'hFF, 2);
@@ -215,6 +237,38 @@ module tb;
     if (h) begin check_record(8'h90); check_dir(8'h90, 1); end else begin $display("  FAIL expected a held record"); errs=errs+1; end
     frame(8'hE0, 8'hFF, 15); $display("E0 after the loss: lock-loss count %h, edge/hys %h, tb %h", rx[15], rx[14], rx[6]);
     if (rx[15] !== 8'h01 || rx[6] !== 8'h04 || rx[14] !== 8'h02) begin $display("FAIL state after the loss"); errs=errs+1; end
+    // ---- op 09: a record without a trigger
+    // (a) level above the signal: no trigger ever. Not held until op 09; then held, forced, 1024 successive samples.
+    frame(8'h07, 8'h02, 1); frame(8'h08, 8'hFC, 1); #60000;   // converter A reaches F8
+    pair(h); if (h) begin $display("FAIL a record without a crossing and without op 09"); errs=errs+1; end
+    frame(8'h09, 8'hFF, 0); #400; want_forced = 1;
+    frame(8'hE0, 8'hFF, 13); if (rx[5][2:0] !== 3'b111) begin $display("FAIL E0 state %h after op 09: expected forced + held", rx[5]); errs=errs+1; end
+    pair(h); $display("op 09 with no trigger possible: handed over = %0d, op 05 byte 1 = %h", h, hb1);
+    if (h) check_forced; else begin $display("  FAIL expected a forced record"); errs=errs+1; end
+    want_forced = 0;
+    //     the request is used up: the next capture waits for a trigger again
+    #60000; pair(h); if (h) begin $display("FAIL a second record from one op 09"); errs=errs+1; end
+    frame(8'hE0, 8'hFF, 13); if (rx[5][2] !== 1'b0) begin $display("FAIL forced still set in E0"); errs=errs+1; end
+    // (b) op 09 right after a restart: nothing is held until the whole memory is newer than the restart
+    //     (1024 samples = 8.2 us here); then it is.
+    frame(8'h08, 8'hFD, 1); frame(8'h09, 8'hFF, 0); #2000;
+    wpx = dut.u_cap.wp;
+    pair(h); if (h) begin $display("FAIL forced record before the memory was all new"); errs=errs+1; end
+    #9000; want_forced = 1; pair(h); $display("op 09 right after a restart, read 9 us later: handed over = %0d", h);
+    if (h) check_forced; else begin $display("  FAIL expected a forced record"); errs=errs+1; end
+    want_forced = 0;
+    // (c) a trigger wins: op 09 while a triggered record is already held, and op 09 before a trigger that comes
+    frame(8'h08, 8'h90, 1); #60000; frame(8'h09, 8'hFF, 0); #400;
+    pair(h); $display("op 09 while a triggered record is held: handed over = %0d, op 05 byte 1 = %h", h, hb1);
+    if (h) begin check_record(8'h90); check_dir(8'h90, 1); end else begin $display("  FAIL expected a held record"); errs=errs+1; end
+    #60000; pair(h); if (h) begin check_record(8'h90); check_dir(8'h90, 1); end else begin $display("  FAIL expected a held record"); errs=errs+1; end
+    frame(8'h08, 8'h91, 1); frame(8'h09, 8'hFF, 0); #60000;
+    pair(h); $display("op 09 during PRE, trigger arrives while armed: handed over = %0d, op 05 byte 1 = %h", h, hb1);
+    if (h) begin check_record(8'h91); check_dir(8'h91, 1); end else begin $display("  FAIL expected a held record"); errs=errs+1; end
+    // (d) op 09 is not a register write: it does not restart a capture in flight
+    frame(8'h08, 8'h90, 1); #3000; wpx = dut.u_cap.cnt; frame(8'h09, 8'hFF, 0); #200;
+    if (dut.u_cap.st !== 2'd0 || dut.u_cap.cnt <= wpx) begin $display("FAIL op 09 restarted the capture (state %0d)", dut.u_cap.st); errs=errs+1; end
+    #60000; pair(h); if (h) begin check_record(8'h90); end else begin $display("  FAIL expected a held record"); errs=errs+1; end
     if (errs == 0) $display("ALL CHECKS PASSED"); else $display("CHECKS FAILED: %0d", errs);
     $finish;
   end

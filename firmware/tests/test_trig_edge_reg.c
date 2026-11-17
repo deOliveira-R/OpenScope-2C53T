@@ -39,8 +39,11 @@ int main(void)
     CHECK(trig_seam_from_hdr(true, 0x06, 0x71) == 0x271);
     CHECK(trig_seam_from_hdr(true, 0x00, 0x00) == -1);          /* core v2, or no held record */
     CHECK(trig_seam_from_hdr(true, 0x03, 0xFF) == -1);          /* a pointer without V */
-    for (int hi = 0; hi < 256; hi++)                            /* any other bit above the pointer: not ours */
-        if ((hi & 0xFC) != 0x04) CHECK(trig_seam_from_hdr(true, (uint8_t)hi, 0x55) == -1);
+    for (int hi = 0; hi < 256; hi++)                            /* any other bit above the pointer and the forced bit: not ours */
+        if ((hi & 0xF4) != 0x04) CHECK(trig_seam_from_hdr(true, (uint8_t)hi, 0x55) == -1);
+    CHECK(trig_seam_from_hdr(true, 0x0E, 0x71) == 0x271 && trig_hdr_forced(0x0E));   /* core D6: a forced record */
+    CHECK(!trig_hdr_forced(0x06));
+    CHECK(trig_seam_from_hdr(true, 0x08, 0x00) == -1);          /* forced without V: no seam */
     for (int hi = 0; hi < 256; hi++)                            /* a design that is not ours: never */
         CHECK(trig_seam_from_hdr(false, (uint8_t)hi, 0x12) == -1);
 

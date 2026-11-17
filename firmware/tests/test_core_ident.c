@@ -8,14 +8,19 @@ static int fails;
 
 int main(void)
 {
-    /* what core D5 sends (fpga/core/tb/tb.sv prints the same bytes) */
+    /* what core D6 sends (fpga/core/tb/tb.sv prints the same bytes) */
+    const uint8_t d6[CORE_IDENT_REPLY_LEN] = { 0x80, 0x00, 0x4F, 0x53, 0x01, 0xD6, 0x1F, 0x0A, 0xDE };
+    core_ident_t id = core_ident_parse(d6);
+    CHECK(id.valid && id.proto == 1 && id.tag == 0xD6 && id.caps == 0x1F && id.depth_log2 == 10);
+    CHECK(core_ident_has(&id, FPGA_CORE_CAP_FORCE));
+    CHECK(d6[5] == FPGA_CORE_TAG && d6[6] == FPGA_CORE_CAPS && d6[7] == FPGA_CORE_ADDR_W);
+    /* core D5: the same protocol, without op 09 */
     const uint8_t d5[CORE_IDENT_REPLY_LEN] = { 0x80, 0x00, 0x4F, 0x53, 0x01, 0xD5, 0x0F, 0x0A, 0xCD };
-    core_ident_t id = core_ident_parse(d5);
+    id = core_ident_parse(d5);
     CHECK(id.valid && id.proto == 1 && id.tag == 0xD5 && id.caps == 0x0F && id.depth_log2 == 10);
     CHECK(core_ident_has(&id, FPGA_CORE_CAP_SEAM));
     CHECK(core_ident_has(&id, FPGA_CORE_CAP_SEAM | FPGA_CORE_CAP_LOCKRST));
-    CHECK(!core_ident_has(&id, 0x10));
-    CHECK(d5[5] == FPGA_CORE_TAG && d5[6] == FPGA_CORE_CAPS && d5[7] == FPGA_CORE_ADDR_W);
+    CHECK(!core_ident_has(&id, FPGA_CORE_CAP_FORCE));
 
     /* a core that does not know the op (D3, D4): 80 then zeros */
     const uint8_t old[CORE_IDENT_REPLY_LEN] = { 0x80, 0, 0, 0, 0, 0, 0, 0, 0 };

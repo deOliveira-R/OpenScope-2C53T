@@ -3758,6 +3758,14 @@ static uint8_t           acq_core_watch_prev_diff;
 fpga_core_watch_t fpga_core_watch(void) { return acq_core_watch; }
 void fpga_core_watch_fix_set(bool on)   { acq_core_watch.check_on = on; acq_core_watch_prev_diff = 0u; }
 #define ACQ_CORE_WATCH_MS 1000u
+/* AUTO without a trigger on a core with op 09 (dsp/trig_policy.h): [0] requests
+ * sent, [1] forced records read, [2] reads after a request that found no
+ * record yet (the memory was not all new since the last restart). */
+static volatile uint32_t acq_force_n[3];
+static volatile bool     acq_force_on = true;    /* `fpga core force off`: the old roll-read fallback, for comparison */
+uint32_t fpga_acq_force_count(unsigned i) { return i < 3u ? acq_force_n[i] : 0u; }
+void fpga_acq_force_set(bool on)          { acq_force_on = on; }
+bool fpga_acq_force_get(void)             { return acq_force_on; }
 static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_action) */
 uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
@@ -4771,6 +4779,9 @@ static void fpga_warmtest_acq_task(void *pv)
      * roll): what the FPGA holds by now is from before (trig_fresh_action). */
     bool was_holding = false;
     uint32_t core_watch_tick = xTaskGetTickCount();
+    /* op 09 (CAP_FORCE): the last triggered record or restart, from which
+     * AUTO's budget runs; a request is out; when it was sent. */
+    uint32_t last_trig_tick = xTaskGetTickCount();
     for (;;) {
         if (!fpga.initialized || fpga.bus_released) {
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -4869,6 +4880,11 @@ static void fpga_warmtest_acq_task(void *pv)
         if (acq_reprime_req) {                 /* a register write dropped the capture */
             acq_reprime_req = false;
             capture_in_flight = false;
+            /* AUTO's budget is not restarted here: with no trigger about, a
+             * setting that keeps changing (a held key) would otherwise show
+             * nothing for a whole budget after every step. The request for a
+             * forced record goes out again with the next read, and the core
+             * still lets a trigger win while its memory refills. */
             /* ...and the records in flight describe the old configuration,
              * even when the snapshot ends where it began (dsp/acq_cfg.h) */
             acq_cfg_touch(&s_acq_cfg_trk, xTaskGetTickCount() * portTICK_PERIOD_MS);
@@ -4912,6 +4928,7 @@ static void fpga_warmtest_acq_task(void *pv)
             capture_in_flight = true;
             last_handover_tick = t;
             last_commit_tick = t;
+            last_trig_tick = t;
             break;
         }
         case TRIG_FRESH_DROP_NEXT:             /* drop_next stays set until the read */
@@ -4974,6 +4991,24 @@ static void fpga_warmtest_acq_task(void *pv)
             if (fpga_core_watch_poll())
                 continue;                                   /* a register was rewritten: capture restarted */
         }
+        /* AUTO and no trigger for a whole budget, on a core with op 09: ask
+         * it to hold a record as it is, just before reading. Between polls
+         * the capture stays armed, so a trigger that comes is still caught
+         * and its record read instead (the request does nothing to a record
+         * already held). The hold happens at the next stored sample: wait
+         * for one, and for the crossing between the two clocks. */
+        bool forced_asked = false;
+        if (acq_force_on && acq_core_has(FPGA_CORE_CAP_FORCE) && auto_mode && !acq_gate_enable &&
+            (uint32_t)(xTaskGetTickCount() - last_trig_tick) >= pdMS_TO_TICKS(fpga_acq_auto_wait_get())) {
+            SPI3_CS_ASSERT();
+            spi3_xfer(FPGA_CORE_OP_FORCE);
+            SPI3_CS_DEASSERT();
+            acq_force_n[0]++;
+            forced_asked = true;
+            const float fs = scope_timebase_sample_rate(acq_rate_idx);
+            uint32_t ms = (fs > 0.0f) ? (uint32_t)(1000.0f / fs) + 1u : 3u;
+            vTaskDelay(pdMS_TO_TICKS(ms > 5u ? 5u : ms));
+        }
         /* The configuration before the read (dsp/acq_cfg.h): a change since
          * the last note restarts the settle window. */
         acq_cfg_t cfg_now;
@@ -5013,12 +5048,20 @@ static void fpga_warmtest_acq_task(void *pv)
                 triggered = (fpga.pc0_edges != edges_before);
             }
         }
+        /* `held`: the read is a record the FPGA held and handed over. On a
+         * core with op 09 it may have been held on request (forced) instead
+         * of by a trigger: handed over, time-ordered and simultaneous like
+         * any record, but not `triggered`. */
+        const bool held = triggered;
+        const bool forced = held && acq_core_has(FPGA_CORE_CAP_FORCE) && trig_hdr_forced(fpga.acq_hdr_ch2[1]);
+        if (forced) { triggered = false; acq_force_n[1]++; }
+        if (triggered) last_trig_tick = last_read_tick;
         acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
         edges_consumed = fpga.pc0_edges;
         bool first_read = !capture_in_flight;
         capture_in_flight = true;
-        if (triggered || first_read) {
-            if (triggered && !first_read && acq_holdlog_on && acq_holdlog_n < FPGA_HOLDLOG_N) {
+        if (held || first_read) {
+            if (held && !first_read && acq_holdlog_on && acq_holdlog_n < FPGA_HOLDLOG_N) {
                 uint32_t dt = last_read_tick - last_handover_tick;
                 uint32_t ne = fpga.pc0_edges - edges_before;
                 fpga_holdlog_ent_t *e = &acq_holdlog[acq_holdlog_n];
@@ -5051,7 +5094,9 @@ static void fpga_warmtest_acq_task(void *pv)
          *   - AUTO fallback: no handover for a whole budget -- show the
          *     free-running buffer so a quiet or off-level input still moves,
          *     marked SPLIT when both channels are on (two moments, #84). */
-        uint32_t since = acq_auto_live ? (last_read_tick - last_handover_tick)
+        const bool can_force = acq_force_on && acq_core_has(FPGA_CORE_CAP_FORCE);
+        uint32_t since = can_force     ? (last_read_tick - last_trig_tick)
+                       : acq_auto_live ? (last_read_tick - last_handover_tick)
                                        : (last_read_tick - last_commit_tick);
         const trig_acq_in_t pin = {
             .mode         = (uint8_t)mode_now,
@@ -5062,8 +5107,18 @@ static void fpga_warmtest_acq_task(void *pv)
             .interleave   = fpga_interleave_active(),
             .two_channels = (fpga.channel_mask == 3u),
             .single_done  = single_done,
+            .forced       = forced,
+            .can_force    = can_force,
         };
         const trig_acq_t kind = trig_acq_decide(&pin);
+        if (kind == TRIG_ACQ_FORCE) {
+            /* The budget is up and this read found no record: either the
+             * request went out just before it and the memory was not all
+             * new yet (the core keeps the request), or the budget ran out
+             * during the read. The next poll asks again. Nothing to show. */
+            if (forced_asked) acq_force_n[2]++;
+            continue;
+        }
         if (kind == TRIG_ACQ_HOLD) {
             if (!triggered) {
                 if (auto_mode && acq_gate_enable) acq_gate_skips++;
@@ -5137,10 +5192,11 @@ static void fpga_warmtest_acq_task(void *pv)
          * which "varies" and would pass. If spi3_hw_timeouts moved during the
          * two reads, at least one byte is fabricated: reject. */
         if ((marker || varies) && fpga.spi3_hw_timeouts == hw_to_before) {
-            fpga.acq_last_rot = fpga_acq_unrotate_staging(triggered);   /* dev plan 2.3: seam-based */
+            fpga.acq_last_rot = fpga_acq_unrotate_staging(held);   /* dev plan 2.3: seam-based */
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
-            acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr;
-            acq_stage_il = triggered && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
+            /* a forced record is in time order but has no trigger at 512 */
+            acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr && !forced;
+            acq_stage_il = held && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
             acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)
                 interleave_merge(acq_stage_ch1, acq_stage_ch2, &acq_il_corr);

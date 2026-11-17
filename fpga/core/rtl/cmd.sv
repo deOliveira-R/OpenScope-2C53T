@@ -7,9 +7,12 @@
 //             pointer is given (no held record, or the record was held only after this frame had begun: V and s
 //             come from one snapshot taken before the frame). The op 05 of a pair always has V = 1.
 //             An op 04 that finds a held record starts a "pair": the record stays frozen until the op 05 frame
-//             that follows has ended.
+//             that follows has ended. With V = 1, byte 1 bit 3 = 1 says the record was held by op 09, not by a
+//             trigger: it has no crossing at s + 512.
+//   09        hold a record without a trigger, as soon as the memory is all newer than the last restart
+//             (capture.sv). Not a register write: the capture in flight is not dropped.
 //   03        byte 2 = converter A now, byte 4 = converter B now.
-//   E0        debug: B5, TAG, state (lock, pair held, edge[1:0], 00, capture state), timebase, source, level,
+//   E0        debug: B5, TAG, state (lock, pair held, edge[1:0], 0, forced, capture state), timebase, source, level,
 //             write pointer (2), records held so far, 5B, 50 MS/s cycles, {hysteresis, 00, edge},
 //             times the PLL lost lock (this byte repeats to the end of the frame).
 //   E1 vv     bench: 50 MS/s sample cycles, bits 2:0 for converter A and 6:4 for B (0..4 each).
@@ -37,6 +40,7 @@ module cmd #(
   output logic                         cfg_tog,     // toggles with every register write
   output logic                         rd04_tog,    // toggles when an op 04 starts a pair
   output logic                         pair_op05,   // this frame is the op 05 of a pair (a flop: it crosses)
+  output logic                         force_tog,   // toggles with every op 09
   // from the 125 MHz side
   input  wire                          held,        // live (synchronised here)
   input  wire                          lock,
@@ -44,6 +48,7 @@ module cmd #(
   input  wire  [7:0]                   nlost,
   input  wire  [core_pkg::ADDR_W-1:0]  snap_wp,     // snapshot taken before the frame: still while it runs
   input  wire  core_pkg::cap_state_e   snap_st,
+  input  wire                          snap_forced,
   input  wire  [7:0]                   snap_a,
   input  wire  [7:0]                   snap_b
 );
@@ -52,7 +57,7 @@ module cmd #(
   logic       h1 = 1'b0, h2 = 1'b0;
   initial begin
     regs = {core_pkg::RST_TB, core_pkg::RST_SRC, core_pkg::RST_LVL, 2'b00, 4'd0, T50A, T50B};
-    cfg_tog = 1'b0; rd04_tog = 1'b0; rd_addr = '0; pair_op05 = 1'b0;
+    cfg_tog = 1'b0; rd04_tog = 1'b0; rd_addr = '0; pair_op05 = 1'b0; force_tog = 1'b0;
   end
 
   // ---- opcode and register writes
@@ -62,6 +67,7 @@ module cmd #(
       op <= rx_byte;
       pair_op05 <= (rx_byte == core_pkg::OP_REC_B) && pair_held;   // an op 04 changes pair_held and clears this
       if (rx_byte == core_pkg::OP_REC_A) begin pair_held <= h2; if (h2) rd04_tog <= ~rd04_tog; end
+      if (rx_byte == core_pkg::OP_FORCE) force_tog <= ~force_tog;
     end
     if (!cs_n && byte_i == 4'd1 && bit_i == 3'd7) begin
       if (op == core_pkg::OP_TIMEBASE) begin regs.tb  <= rx_byte; cfg_tog <= ~cfg_tog; end
@@ -80,7 +86,7 @@ module cmd #(
   always_ff @(posedge sclk) if (bit_i == 3'd6) rd_q <= rd_data;         // one edge before the next byte starts
 
   // ---- reply
-  wire [7:0] state  = {lock, pair_held, regs.edge_mode, 2'b00, snap_st};
+  wire [7:0] state  = {lock, pair_held, regs.edge_mode, 1'b0, snap_forced, snap_st};
   // The seam is valid only when the snapshot taken before this frame already showed the record held (snap_wp and
   // snap_st are one snapshot) and the frame is part of a pair. Bit 7 of byte 1 goes out before pair_held of an
   // op 04 is known, so it is a constant 0.
@@ -93,7 +99,7 @@ module cmd #(
     if (tx_byte_i == 4'd0) tx_byte = core_pkg::REPLY_FIRST;
     else if (op == core_pkg::OP_REC_A && tx_byte_i >= 4'd3) tx_byte = rd_q[7:0];
     else if (op == core_pkg::OP_REC_B && tx_byte_i >= 4'd3) tx_byte = rd_q[15:8];
-    else if (is_rec && tx_byte_i == 4'd1) tx_byte = seam_v ? {5'b0, 1'b1, snap_wp[9:8]} : 8'h00;
+    else if (is_rec && tx_byte_i == 4'd1) tx_byte = seam_v ? {4'b0, snap_forced, 1'b1, snap_wp[9:8]} : 8'h00;
     else if (is_rec && tx_byte_i == 4'd2) tx_byte = seam_v ? snap_wp[7:0] : 8'h00;
     else if (op == core_pkg::OP_LIVE) begin
       if (tx_byte_i == 4'd2) tx_byte = snap_a; else if (tx_byte_i == 4'd4) tx_byte = snap_b;

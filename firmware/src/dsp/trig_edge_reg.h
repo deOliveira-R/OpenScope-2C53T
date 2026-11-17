@@ -59,7 +59,7 @@ static inline trig_edge_filter_use_t trig_edge_filter_use(bool filter_on, bool c
 }
 
 /* Where a held record's oldest sample is: reply bytes 1-2 of op 04 / op 05.
- * Core v3 (tag D4) on sends  byte 1 = 00000 V s9 s8,  byte 2 = s7..s0  with
+ * Core v3 (tag D4) on sends  byte 1 = 0000 F V s9 s8,  byte 2 = s7..s0  (F from D6 on, see trig_hdr_forced)  with
  * V = 1 only when the frame reads a held record and the pointer s is that
  * record's write pointer (the trigger is then at (s + 512) mod 1024). Core v2
  * sends 00 00, and what the stock design leaves in these bytes is not a
@@ -71,6 +71,14 @@ static inline int trig_seam_from_hdr(bool design_ours, uint8_t b1, uint8_t b2)
     if (!design_ours) return -1;
     if ((b1 & FPGA_CORE_SEAM_B1_MASK) != FPGA_CORE_SEAM_VALID) return -1;         /* V set, nothing else above the pointer */
     return (int)(((unsigned)(b1 & FPGA_CORE_SEAM_HI_MASK) << 8) | (unsigned)b2);
+}
+
+/* The record with that seam was held on request (op 09), not by a trigger:
+ * it has no crossing at seam + 512. Meaningful only when trig_seam_from_hdr()
+ * gave a seam and the core has CAP_FORCE. */
+static inline bool trig_hdr_forced(uint8_t b1)
+{
+    return (b1 & FPGA_CORE_SEAM_FORCED) != 0u;
 }
 
 #endif /* TRIG_EDGE_REG_H */

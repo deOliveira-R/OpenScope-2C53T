@@ -4,7 +4,7 @@
 #ifndef FPGA_CORE_REGS_H
 #define FPGA_CORE_REGS_H
 
-#define FPGA_CORE_TAG                0xD5u   /* the build this header was made with */
+#define FPGA_CORE_TAG                0xD6u   /* the build this header was made with */
 
 /* opcodes (first byte of a frame) */
 #define FPGA_CORE_OP_TIMEBASE        0x01u   /* 01 vv  timebase code */
@@ -15,6 +15,7 @@
 #define FPGA_CORE_OP_SOURCE          0x06u   /* 06 vv  trigger source, bit 0: 0 = A, 1 = B */
 #define FPGA_CORE_OP_EDGE            0x07u   /* 07 vv  bits 1:0 edge mode, bits 7:4 hysteresis in codes */
 #define FPGA_CORE_OP_LEVEL           0x08u   /* 08 vv  trigger level, raw code */
+#define FPGA_CORE_OP_FORCE           0x09u   /* 09     hold a record without a trigger (see capture.sv); not a register */
 #define FPGA_CORE_OP_DBG_STAT        0xE0u   /* E0     status block */
 #define FPGA_CORE_OP_DBG_T50         0xE1u   /* E1 vv  bench: 50 MS/s sample cycles */
 #define FPGA_CORE_OP_IDENT           0xE2u   /* E2     which core is this, and what can it do */
@@ -33,7 +34,8 @@
 /* ops 04 / 05: bytes 1-2 of the reply (the seam), then the samples */
 #define FPGA_CORE_SEAM_VALID         0x04u   /* byte 1 bit 2: bytes 1-2 hold the seam of a held record */
 #define FPGA_CORE_SEAM_HI_MASK       0x03u   /* byte 1 bits 1:0 = seam bits 9:8; byte 2 = seam bits 7:0 */
-#define FPGA_CORE_SEAM_B1_MASK       0xFCu   /* byte 1 & this == SEAM_VALID, else no seam is given */
+#define FPGA_CORE_SEAM_FORCED        0x08u   /* byte 1 bit 3, with SEAM_VALID: the record was held by op 09, not by a trigger */
+#define FPGA_CORE_SEAM_B1_MASK       0xF4u   /* byte 1 & this == SEAM_VALID, else no seam is given */
 #define FPGA_CORE_REC_FIRST_SAMPLE   3u      /* reply byte of sample 0 */
 #define FPGA_CORE_LIVE_BYTE_A        2u      /* op 03: reply byte of converter A */
 #define FPGA_CORE_LIVE_BYTE_B        4u      /* op 03: reply byte of converter B */
@@ -41,7 +43,7 @@
 /* op E0: reply bytes of the status block */
 #define FPGA_CORE_DBG_I_HEAD         3u      /* B5 */
 #define FPGA_CORE_DBG_I_TAG          4u
-#define FPGA_CORE_DBG_I_STATE        5u      /* lock, pair held, edge[1:0], 00, capture state */
+#define FPGA_CORE_DBG_I_STATE        5u      /* lock, pair held, edge[1:0], 0, forced, capture state */
 #define FPGA_CORE_DBG_I_TB           6u
 #define FPGA_CORE_DBG_I_SRC          7u
 #define FPGA_CORE_DBG_I_LVL          8u
@@ -54,6 +56,7 @@
 #define FPGA_CORE_DBG_I_NLOST        15u     /* times the PLL lost lock (repeats to the end of the frame) */
 #define FPGA_CORE_DBG_STATE_LOCK     0x80u   /* state byte: PLL locked */
 #define FPGA_CORE_DBG_STATE_PAIR     0x40u   /* state byte: this frame belongs to a held pair */
+#define FPGA_CORE_DBG_STATE_FORCED   0x04u   /* state byte: the held record was forced (op 09) */
 #define FPGA_CORE_DBG_STATE_CAP_MASK 0x03u   /* state byte: capture state (ST_*) */
 
 /* identity (op E2): bytes 2..8 of the reply */
@@ -64,7 +67,8 @@
 #define FPGA_CORE_CAP_EDGE           0x02u   /* reg 07: trigger direction and hysteresis */
 #define FPGA_CORE_CAP_REAL50         0x04u   /* timebase 05 clocks the converters at a real 50 MHz */
 #define FPGA_CORE_CAP_LOCKRST        0x08u   /* capture held until the PLL has locked; E0 byte 15 counts losses */
-#define FPGA_CORE_CAPS               0x0Fu
+#define FPGA_CORE_CAP_FORCE          0x10u   /* op 09 holds a record without a trigger; byte 1 bit 3 of ops 04/05 marks it */
+#define FPGA_CORE_CAPS               0x1Fu
 
 /* clock and record geometry */
 #define FPGA_CORE_CLK_HZ             125000000u /* the core clock: 25 MHz reference x 5 */

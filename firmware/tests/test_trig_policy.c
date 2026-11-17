@@ -124,6 +124,37 @@ int main(void)
         CHECK(longest <= 6, "every label fits the 44-px badge (<= 6 chars; longest %d)", longest);
     }
 
+    printf("AUTO with a core that holds a record on request (op 09)\n");
+    {
+        trig_acq_in_t in = { .mode = TRIG_POL_AUTO, .can_force = true };
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "roll read inside the budget: hold");
+        in.first_read = true;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "the first read after a settings change is still a roll read: hold");
+        in.first_read = false; in.budget_up = true;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FORCE, "budget up: ask the core, publish nothing");
+        in.interleave = true; in.two_channels = true;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FORCE, "also with interleave or two channels (it held forever / was SPLIT before)");
+        in.gate_on = true;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "stock gate: triggered records only");
+        in.gate_on = false; in.forced = true;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FREERUN, "the forced record: free-run, never SPLIT, both channels on");
+        in.budget_up = false;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FREERUN, "the forced record is shown whatever the budget says by then");
+        in.triggered = true; in.forced = false;
+        CHECK(trig_acq_decide(&in) == TRIG_ACQ_TRIGGERED, "a triggered record stays a triggered record");
+        for (unsigned m = TRIG_POL_NORMAL; m <= TRIG_POL_SINGLE; m++) {
+            trig_acq_in_t n = { .mode = (uint8_t)m, .can_force = true, .budget_up = true, .first_read = true };
+            CHECK(trig_acq_decide(&n) == TRIG_ACQ_HOLD, "NORMAL / SINGLE never ask for a forced record");
+            n.forced = true;
+            CHECK(trig_acq_decide(&n) == TRIG_ACQ_HOLD, "NORMAL / SINGLE: a forced record left over from AUTO is not shown");
+        }
+        /* without the capability nothing changes */
+        trig_acq_in_t o = { .mode = TRIG_POL_AUTO, .budget_up = true };
+        CHECK(trig_acq_decide(&o) == TRIG_ACQ_FREERUN, "no op 09: the roll read, as before");
+        o.two_channels = true;
+        CHECK(trig_acq_decide(&o) == TRIG_ACQ_FREERUN_SPLIT, "no op 09, two channels: SPLIT, as before");
+    }
+
     printf("the first read after a hold or a SINGLE arm\n");
     {
         CHECK(trig_fresh_action(true, false, false) == TRIG_FRESH_NONE, "core, steady reading: nothing");

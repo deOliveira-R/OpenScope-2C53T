@@ -11,6 +11,16 @@ trig_acq_t trig_acq_decide(const trig_acq_in_t *in)
         return TRIG_ACQ_HOLD;
     if (in->triggered)
         return TRIG_ACQ_TRIGGERED;
+    const bool is_auto0 = (in->mode == TRIG_POL_AUTO);
+    /* A record the core held on request: AUTO's untriggered picture. If the
+     * mode has left AUTO since the request, it is not shown. */
+    if (in->forced)
+        return is_auto0 ? TRIG_ACQ_FREERUN : TRIG_ACQ_HOLD;
+    /* With such a core a roll read is never shown: ask for a record instead,
+     * once no trigger has come for a budget. The stock gate still means
+     * "triggered records only". */
+    if (in->can_force)
+        return (is_auto0 && !in->gate_on && in->budget_up) ? TRIG_ACQ_FORCE : TRIG_ACQ_HOLD;
 
     /* A roll read from here on. */
     const bool is_auto = (in->mode == TRIG_POL_AUTO);

@@ -2139,9 +2139,11 @@ static void cmd_fpga_unrotate(const char *args)
 static void cmd_fpga_core(const char *args)
 {
     while (*args == ' ') args++;
-    if (strncmp(args, "fix on", 6) == 0)       fpga_core_watch_fix_set(true);
-    else if (strncmp(args, "fix off", 7) == 0) fpga_core_watch_fix_set(false);
-    else if (*args) { usb_send_str("usage: fpga core [fix on|off]\r\n"); return; }
+    if (strncmp(args, "fix on", 6) == 0)         fpga_core_watch_fix_set(true);
+    else if (strncmp(args, "fix off", 7) == 0)   fpga_core_watch_fix_set(false);
+    else if (strncmp(args, "force on", 8) == 0)  fpga_acq_force_set(true);
+    else if (strncmp(args, "force off", 9) == 0) fpga_acq_force_set(false);
+    else if (*args) { usb_send_str("usage: fpga core [fix on|off] [force on|off]\r\n"); return; }
     const core_ident_t id = fpga_core_ident();
     if (!fpga_acq_design_ours()) { usb_send_str("core: the running design is not known to be ours; not asked\r\n"); return; }
     if (!id.valid) {
@@ -2150,12 +2152,17 @@ static void cmd_fpga_core(const char *args)
                          fpga.core_ident[4], fpga.core_ident[5], fpga.core_ident[6], fpga.core_ident[7], fpga.core_ident[8]);
         return;
     }
-    usb_debug_printf("core: tag %02X  protocol %u  record %u samples  caps %02X:%s%s%s%s\r\n",
+    usb_debug_printf("core: tag %02X  protocol %u  record %u samples  caps %02X:%s%s%s%s%s\r\n",
                      (unsigned)id.tag, (unsigned)id.proto, 1u << id.depth_log2, (unsigned)id.caps,
                      core_ident_has(&id, FPGA_CORE_CAP_SEAM)    ? " seam"     : "",
                      core_ident_has(&id, FPGA_CORE_CAP_EDGE)    ? " edge"     : "",
                      core_ident_has(&id, FPGA_CORE_CAP_REAL50)  ? " real50"   : "",
-                     core_ident_has(&id, FPGA_CORE_CAP_LOCKRST) ? " lock-rst" : "");
+                     core_ident_has(&id, FPGA_CORE_CAP_LOCKRST) ? " lock-rst" : "",
+                     core_ident_has(&id, FPGA_CORE_CAP_FORCE)   ? " force"    : "");
+    usb_debug_printf("      AUTO without a trigger: %s; requests %lu, forced records read %lu, not ready yet %lu\r\n",
+                     !core_ident_has(&id, FPGA_CORE_CAP_FORCE) ? "reads of the running memory (this core has no op 09)"
+                       : fpga_acq_force_get() ? "records held on request (op 09)" : "reads of the running memory (force off)",
+                     (unsigned long)fpga_acq_force_count(0), (unsigned long)fpga_acq_force_count(1), (unsigned long)fpga_acq_force_count(2));
     if (id.tag != FPGA_CORE_TAG)
         usb_debug_printf("      (this firmware's header was made with tag %02X)\r\n", (unsigned)FPGA_CORE_TAG);
     usb_debug_printf("      reads by the op 05 header: held %lu, not held %lu; PC0 disagreed: held without an edge %lu, edge but not held %lu\r\n",
@@ -4490,7 +4497,7 @@ static const shell_cmd_t shell_cmds[] = {
           "fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
           "fpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n"),
     CMD_A("fpga core", cmd_fpga_core, 0,
-          "fpga core [fix on|off]          Which capture core runs, its status block, register check (fix off for bench register writes)\r\n"),
+          "fpga core [fix on|off] [force on|off]  The capture core: identity, status, register check, AUTO's forced records\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,

@@ -11,6 +11,7 @@ package core_pkg;
   localparam logic [7:0] OP_SOURCE   = 8'h06;   // 06 vv  trigger source, bit 0: 0 = A, 1 = B
   localparam logic [7:0] OP_EDGE     = 8'h07;   // 07 vv  bits 1:0 edge mode, bits 7:4 hysteresis in codes
   localparam logic [7:0] OP_LEVEL    = 8'h08;   // 08 vv  trigger level, raw code
+  localparam logic [7:0] OP_FORCE    = 8'h09;   // 09     hold a record without a trigger (see capture.sv); not a register
   // E0..EF exist only in OpenScope's core. Never send them to another design.
   localparam logic [7:0] OP_DBG_STAT = 8'hE0;   // E0     status block
   localparam logic [7:0] OP_DBG_T50  = 8'hE1;   // E1 vv  bench: 50 MS/s sample cycles
@@ -33,7 +34,8 @@ package core_pkg;
   // ---- ops 04 / 05: bytes 1-2 of the reply (the seam), then the samples
   localparam logic [7:0] SEAM_VALID    = 8'h04;   // byte 1 bit 2: bytes 1-2 hold the seam of a held record
   localparam logic [7:0] SEAM_HI_MASK  = 8'h03;   // byte 1 bits 1:0 = seam bits 9:8; byte 2 = seam bits 7:0
-  localparam logic [7:0] SEAM_B1_MASK  = 8'hFC;   // byte 1 & this == SEAM_VALID, else no seam is given
+  localparam logic [7:0] SEAM_FORCED   = 8'h08;   // byte 1 bit 3, with SEAM_VALID: the record was held by op 09, not by a trigger
+  localparam logic [7:0] SEAM_B1_MASK  = 8'hF4;   // byte 1 & this == SEAM_VALID, else no seam is given
   localparam int REC_FIRST_SAMPLE = 3;            // reply byte of sample 0
   localparam int LIVE_BYTE_A = 2;                 // op 03: reply byte of converter A
   localparam int LIVE_BYTE_B = 4;                 // op 03: reply byte of converter B
@@ -41,7 +43,7 @@ package core_pkg;
   // ---- op E0: reply bytes of the status block
   localparam int DBG_I_HEAD = 3;                  // B5
   localparam int DBG_I_TAG = 4;
-  localparam int DBG_I_STATE = 5;                 // lock, pair held, edge[1:0], 00, capture state
+  localparam int DBG_I_STATE = 5;                 // lock, pair held, edge[1:0], 0, forced, capture state
   localparam int DBG_I_TB = 6;
   localparam int DBG_I_SRC = 7;
   localparam int DBG_I_LVL = 8;
@@ -54,6 +56,7 @@ package core_pkg;
   localparam int DBG_I_NLOST = 15;                // times the PLL lost lock (repeats to the end of the frame)
   localparam logic [7:0] DBG_STATE_LOCK = 8'h80;  // state byte: PLL locked
   localparam logic [7:0] DBG_STATE_PAIR = 8'h40;  // state byte: this frame belongs to a held pair
+  localparam logic [7:0] DBG_STATE_FORCED = 8'h04;   // state byte: the held record was forced (op 09)
   localparam logic [7:0] DBG_STATE_CAP_MASK = 8'h03;   // state byte: capture state (ST_*)
 
   // ---- identity (op E2): bytes 2..8 of the reply
@@ -65,7 +68,8 @@ package core_pkg;
   localparam logic [7:0] CAP_EDGE    = 8'h02;   // reg 07: trigger direction and hysteresis
   localparam logic [7:0] CAP_REAL50  = 8'h04;   // timebase 05 clocks the converters at a real 50 MHz
   localparam logic [7:0] CAP_LOCKRST = 8'h08;   // capture held until the PLL has locked; E0 byte 15 counts losses
-  localparam logic [7:0] CAPS        = CAP_SEAM | CAP_EDGE | CAP_REAL50 | CAP_LOCKRST;
+  localparam logic [7:0] CAP_FORCE   = 8'h10;   // op 09 holds a record without a trigger; byte 1 bit 3 of ops 04/05 marks it
+  localparam logic [7:0] CAPS        = CAP_SEAM | CAP_EDGE | CAP_REAL50 | CAP_LOCKRST | CAP_FORCE;
 
   // ---- clock and record geometry
   localparam int CLK_HZ = 125000000;             // the core clock: 25 MHz reference x 5

@@ -32,6 +32,18 @@
  *      free-run ("Auto").
  * NORMAL and SINGLE never show a roll read (unchanged).
  *
+ * With OpenScope's core (can_force) AUTO never shows a roll read either. A
+ * roll read is a memory that is being written while it is read: at 125 MS/s
+ * it is rewritten 12 times during one channel's read, and the two channels
+ * are read one after the other. Instead, when no trigger has come for a
+ * budget, the core is asked before each read to hold a record as it is; a
+ * read that still finds none is TRIG_ACQ_FORCE (nothing to show). The forced
+ * record arrives like a triggered one and is published as TRIG_ACQ_FREERUN:
+ * 1024 successive samples, both converters at the same moments, in time
+ * order -- so it is never SPLIT, and it may be merged to 250 MS/s. Only the
+ * trigger crossing is missing. The core lets a trigger win for as long as
+ * the request waits.
+ *
  * Mode values are scope_state.h's trigger_mode_t: 0 AUTO, 1 NORMAL, 2 SINGLE.
  * (Stock's ms[0x17] is 0 NORMAL, 1 AUTO, 2 SINGLE -- ADDENDUM_A S3; this
  * module does not use stock's numbering.)
@@ -55,13 +67,17 @@ typedef struct {
     bool    interleave;     /* the record would be the 250 MS/s two-converter merge */
     bool    two_channels;   /* both channels on */
     bool    single_done;    /* SINGLE already holds its one record */
+    /* OpenScope's core with op 09 (CAP_FORCE). Both false: everything above, as before. */
+    bool    forced;         /* this read is a record the core held on request, without a trigger */
+    bool    can_force;      /* the core can be asked for one */
 } trig_acq_in_t;
 
 typedef enum {
     TRIG_ACQ_HOLD = 0,          /* do not publish: keep the trace on screen */
     TRIG_ACQ_TRIGGERED,         /* a handed-over record (the edge filter may still drop it) */
     TRIG_ACQ_FREERUN,           /* AUTO roll read, one channel on: coherent */
-    TRIG_ACQ_FREERUN_SPLIT      /* AUTO roll read, both on: CH1 and CH2 are two moments */
+    TRIG_ACQ_FREERUN_SPLIT,     /* AUTO roll read, both on: CH1 and CH2 are two moments */
+    TRIG_ACQ_FORCE              /* publish nothing; the core is to be asked to hold a record without a trigger (op 09) */
 } trig_acq_t;
 
 trig_acq_t trig_acq_decide(const trig_acq_in_t *in);

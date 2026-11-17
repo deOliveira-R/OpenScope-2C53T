@@ -4,7 +4,7 @@ The FPGA design OpenScope loads into the scope's GW1N-UV2 (QN48). Written from s
 with the open tools (Yosys, nextpnr-himbaechel, Apicula) and with the vendor's, and answers the SPI commands the
 firmware already used, so one firmware image drives either design.
 
-`firmware/src/drivers/fpga_bitstream_core.h` is the build of this folder (tag `D5`), built into the firmware.
+`firmware/src/drivers/fpga_bitstream_core.h` is the build of this folder (tag `D6`), built into the firmware.
 `firmware/src/drivers/fpga_core_regs.h` is generated from `rtl/core_pkg.sv` (opcodes, bit fields, reply byte
 positions, record geometry, the timebase divider table); the firmware names every protocol number through it and
 `make test-core-regs-header` fails when the two disagree.
@@ -18,6 +18,9 @@ positions, record geometry, the timebase divider table); the firmware names ever
   sits in the middle of the record.
 - Hands the record over on ops 04 and 05 with a header that says where the oldest sample is (the seam), so the
   firmware does not have to search for it. Re-arms by itself after the pair has been read.
+- Holds a record without a trigger when asked (op 09), for Auto mode on a signal that never crosses the level:
+  1024 successive samples of both converters, in order, marked "forced" in the header. Before D6 the firmware
+  read the memory while it was being written, which is neither.
 - Pin 38 (PC0 on the MCU) pulses low when a held record starts going out.
 - Captures nothing until the PLL has locked, and counts the times lock was lost.
 - Says what it is: op E2 returns a magic, the protocol version, the build tag and capability bits.
@@ -74,15 +77,15 @@ that is in the firmware was made with:
 | nextpnr | `deOliveira-R/nextpnr`, branch `gw1n2-pllo`, commit `3b8ebf91` |
 | Apicula | `deOliveira-R/apicula`, branch `gw1n2-clocks-pllo`, commit `7b483c4` |
 
-With those and seed 7, `build/top.fs` has sha256 `7d039e88c8918dcc3252f265386ad87d020cf5fe505dc488ff9a52844ac72fbd`
-(clk 168 MHz, SCLK 78.9 MHz after routing; the vendor tool gives 138.9 and 93.0). nextpnr's result depends
+With those and seed 7, `build/top.fs` has sha256 `808b1b248d34758b05af1a93801e6a4aa73ae31592aeb92ab65f71214cc6648d`
+(clk 136.4 MHz, SCLK 76.6 MHz after routing; the vendor tool gives 135.1 and 75.1). nextpnr's result depends
 strongly on the seed (clk 128..168 MHz over eight seeds), which is why it is pinned; a build that misses
 125 / 62.5 MHz fails. `build.sh` also refuses a clock constraint that matches no net (nextpnr only warns).
 
 To put a build into the firmware:
 
     python3 scripts/fs2header.py --symbol fpga_bitstream_core --size-macro FPGA_BITSTREAM_CORE_SIZE \
-        --name capcore_d5 --guard FPGA_BITSTREAM_CORE_H fpga/core/build/top.fs \
+        --name capcore_d6 --guard FPGA_BITSTREAM_CORE_H fpga/core/build/top.fs \
         firmware/src/drivers/fpga_bitstream_core.h
 
 or load it into the unit's bitstream slot without reflashing: `scripts/fpga_put.py build/top.fs --name NAME --load`.
@@ -104,18 +107,27 @@ What Yosys 0.71 (`read_verilog -sv`, no plugin), Icarus Verilog 13 and Gowin 1.9
 - MISO changes on the rising SCLK edge (SPI mode 3) and the reply's first byte is `80`.
 - Bit 7 of byte 1 of every reply is 0: that bit leaves before the opcode has been taken in.
 - Ops `E0`..`EF` exist only in this core (`E0` status, `E1` bench tuning, `E2` identity). Do not send them to the
-  factory design.
+  factory design. Op `09` (hold a record without a trigger) is sent only to a core whose identity has `CAP_FORCE`.
 - A change of behaviour gets a new `TAG`, a change a firmware could misread a new `PROTO_VER`.
 
 ## Verification
 
-- **Against D4, in simulation:** `tb/lockstep_runs_d5.log`: six seeds on the source (26 million comparisons) and
-  three on the Yosys netlist (10 million), no mismatch. D4 is brought to this core's state once, after the PLL has
+- **Against D4, in simulation:** `tb/lockstep_runs_d6.log` (D5: `tb/lockstep_runs_d5.log`): six seeds on the source (26 million comparisons)
+  and three on the Yosys netlist (13 million), no mismatch. Three more netlist runs with op 09 in the traffic (141
+  forced records read): the netlist equals the source; D4 does not know the op and is not compared there. D4 is brought to this core's state once, after the PLL has
   locked (this core starts later by design); the netlist equals the source with no alignment.
 - **Directed testbench:** records, seam header against the data, trigger direction and hysteresis, 50 MS/s, a
-  700-pair sweep of the hand-over race, identity, loss of lock. Passes on our cell models and on the vendor's.
+  700-pair sweep of the hand-over race, identity, loss of lock, and op 09 (no trigger possible; right after a
+  restart; while a triggered record is held; before a trigger that comes; not a restart). Passes on our cell
+  models and on the vendor's.
 - **Cell models:** DDR cells and RAM equal to the vendor's at every instant, with the same number of output
   changes; PLL equal in frequency and lock (phase not compared; CLEAR not exercised).
-- **On the unit:** the D4 regression set repeated on D5 (trigger position and direction on both channels, all
+- **On the unit, D6:** untriggered Auto at four timebases: 48 of 48 forced records in time order and without a break at
+  32 records/s (the read of the running memory it replaces: 0 of 48 in order, a break in 43); a trigger still wins
+  (2 Hz triggers among forced records, none asked for while triggers come, none in Normal); one channel at
+  250 MS/s without a trigger updates (it froze before). The D5 set repeated: trigger position and direction, seam
+  header, slowest timebase, roll, stale-record and register-check tests, 250 MS/s image -51.6 / -49.1 dBc, 50 MS/s
+  rate. Run from the slot and as the built-in copy. Cold boot: pending.
+- **On the unit, D5:** the D4 regression set repeated on D5 (trigger position and direction on both channels, all
   timebases, seam header against the search, roll, 250 MS/s image at about -51 dBc), a 3-hour run with reloads, and
   a cold boot onto the built-in copy.

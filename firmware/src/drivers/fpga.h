@@ -1290,6 +1290,9 @@ bool     fpga_acq_record_core_ordered(void);   /* ...and its start came from the
 bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
 bool     fpga_acq_core_has(uint8_t cap);       /* the running core is ours, identified itself, and has these FPGA_CORE_CAP_* bits */
 uint32_t fpga_acq_kind_count(unsigned i);      /* records by the op 05 header: 0 held, 1 not held, 2 held without a PC0 edge, 3 PC0 edge but not held */
+uint32_t fpga_acq_force_count(unsigned i);     /* AUTO without a trigger, op 09: 0 requests, 1 forced records read, 2 reads that found the record not ready */
+void     fpga_acq_force_set(bool on);          /* off: the roll-read fallback, as with a core without op 09 */
+bool     fpga_acq_force_get(void);
 uint32_t fpga_acq_fresh_restarts(void);        /* core captures restarted on RUN / SINGLE arm so no stale record is shown */
 /* The core's status block (op E0), read about once a second while records are read (core_status.h). */
 typedef struct {
