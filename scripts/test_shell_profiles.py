@@ -178,7 +178,7 @@ def main():
         names = [r[0] for r in rows]
         dup = sorted({n for n in names if names.count(n) > 1})
         check(not dup, "%s: duplicated rows %s" % (label, dup))
-    check(len(base) > 110, "baseline: only %d rows" % len(base))   # a truncated baseline; 130 rows on 2026-11-17
+    check(len(base) > 110, "baseline: only %d rows" % len(base))   # a truncated baseline; 118 rows on 2026-11-18
 
     # a. bench = baseline, row for row
     lost = sorted(set(base) - set(bench))

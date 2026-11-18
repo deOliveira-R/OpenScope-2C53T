@@ -143,10 +143,10 @@ USBDRIVE_bit       := 2
 # or the flash path needs is core (usb_debug.c) and stays. On by default so
 # that a plain `make` and the bench image are what they were; the profile
 # `full` leaves it out.
-# A/B 2026-11-14 (app-coldtrace-meter): 56,616 B flash, 1,296 B RAM
-# (shell_bench.o 40.6 KB; the rows and their help text in usb_debug.o 10.1 KB;
-# code in fpga.o, flash_fs.o, lcd.o and others that only these commands call
-# 6.7 KB).
+# A/B 2026-11-18 (app-coldtrace-meter): 31,864 B flash, 264 B RAM
+# (shell_bench.o 24.0 KB; the rows and their help text in usb_debug.o 4.4 KB;
+# code in fpga_slot.o, fpga.o, flash_fs.o, lcd.o and others that only these
+# commands call 4.3 KB).
 FEATURE_LIST += BENCHSHELL
 BENCHSHELL_desc      := Bench shell: raw FPGA SPI3 GPIO USART memory and flash commands
 BENCHSHELL_default   := 1
@@ -166,7 +166,7 @@ BENCHSHELL_bit       := 3
 # A/B 2026-11-14 (app-coldtrace-meter): 23,560 B flash, 560 B RAM
 # (shell_meterdebug.o 19.5 KB; rows and help text 2.3 KB; the waveform
 # sampler's diagnostics in meter_voltage_wave.o and fpga.o 2.0 KB, 512 B RAM).
-# Both off (profile full): 80,200 B flash, 1,856 B RAM less than bench.
+# Both off (profile full, 2026-11-18): 55,640 B flash, 824 B RAM less than bench.
 FEATURE_LIST += METERDEBUG
 METERDEBUG_desc      := Meter link diagnostics in the shell (trace and dump and stream)
 METERDEBUG_default   := 1

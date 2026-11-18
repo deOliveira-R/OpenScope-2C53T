@@ -16,11 +16,14 @@ With a feature off its sources are not compiled, `help` does not list its comman
 
 | image | flash (text+data) | static RAM (bss) |
 |---|---|---|
-| `bench` (`app-coldtrace-meter`) | 603,372 B | 204,896 B |
-| `full` (`app-full`) | 523,180 B | 203,040 B |
+| `bench` (`app-coldtrace-meter`) | 555,336 B | 205,132 B |
+| `full` (`app-full`) | 499,696 B | 204,308 B |
+| `re` (`app-re`) | 568,880 B | 206,396 B |
 
-A/B on the bench image: `benchshell` 56,608 B flash and 1,296 B RAM, `meterdebug` 23,568 B flash and 560 B RAM
-(`make features-ab FEATURE=benchshell`).
+Measured 2026-11-18 (`arm-none-eabi-size`). A/B on the bench image: `benchshell` 31,864 B flash and 264 B RAM
+(`make features-ab FEATURE=benchshell`); `meterdebug` 23,568 B flash and 560 B RAM (2026-11-14, not measured
+again). The toolkit is the difference between `re` and `bench`: 13,544 B flash, 1,264 B RAM (the pin log's
+buffer).
 
 ## How a command is placed
 
