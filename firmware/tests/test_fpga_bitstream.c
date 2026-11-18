@@ -1,62 +1,60 @@
 /*
- * The stock FPGA configuration bitstream (src/drivers/fpga_bitstream_stock.c)
- * is the one copy in the image and holds the stock bytes: its size and CRC32
- * against the values read out of the image that had two copies (both
- * identical, sha256 5a0e7338...5c3b as the source states), 2026-11-14, and
- * the Gowin stream structure that says what it is: preamble, sync word,
- * IDCODE check, the SRAM write of 722 frames of 160 bytes, the trailer.
+ * The FPGA design built into the image (src/drivers/fpga_bitstream_core.h,
+ * generated from fpga/core's .fs): is it a complete Gowin configuration
+ * stream for THIS chip? A stream for another device is refused by the FPGA
+ * (IDCODE check) and the unit would boot with no capture core, so the test
+ * fails the build first. The layout is Gowin's for the GW1N family:
+ * 0xFF padding, sync word, IDCODE check, "write SRAM" with the frame count,
+ * the frames, a fixed trailer.
  *
  * Build/run:  make -C firmware test-fpga-bitstream
  */
 #include <stdio.h>
 #include <stdint.h>
-#include "fpga_bitstream_stock.h"
+#include "fpga_bitstream_core.h"
 
-static uint32_t crc32(const uint8_t *p, uint32_t n)
-{
-    uint32_t c = 0xFFFFFFFFu;
-    for (uint32_t i = 0; i < n; i++) {
-        c ^= p[i];
-        for (int k = 0; k < 8; k++) c = (c >> 1) ^ (0xEDB88320u & (0u - (c & 1u)));
-    }
-    return ~c;
-}
+#define GW_SYNC_OFF      0x16u   /* A5 C3 after 22 bytes of 0xFF */
+#define GW_IDCODE_OFF    0x18u   /* 06 00 00 00 + the IDCODE */
+#define GW_WRITE_OFF     0x40u   /* 3B 80 + frame count (big endian) */
+#define GW_FRAMES_OFF    0x44u
+#define GW_FRAME_BYTES   160u    /* GW1N-2: 1,216 bits of data + CRC16 + 6 x 0xFF */
+#define GW_FRAME_PAD     6u
+#define GW_TRAILER_BYTES 50u
+static const uint8_t GW1N2_IDCODE[4] = { 0x01, 0x20, 0x68, 0x1B };
 
 int main(void)
 {
+    const uint8_t *b = fpga_bitstream_core;
+    unsigned bad = 0;
     int fails = 0;
-    const uint32_t crc = crc32(fpga_bitstream_stock, FPGA_BITSTREAM_STOCK_SIZE);
-    if (FPGA_BITSTREAM_STOCK_SIZE != 115638u || sizeof fpga_bitstream_stock != 115638u) {
-        printf("FAIL size %u\n", (unsigned)sizeof fpga_bitstream_stock); fails++;
-    }
-    if (crc != 0x3B789B6Du) { printf("FAIL crc32 %08X, expected 3B789B6D\n", (unsigned)crc); fails++; }
-    /* the Gowin sync word and IDCODE where the stock payload has them */
-    if (fpga_bitstream_stock[0x16] != 0xA5 || fpga_bitstream_stock[0x17] != 0xC3 ||
-        fpga_bitstream_stock[0x1C] != 0x01 || fpga_bitstream_stock[0x1D] != 0x20 ||
-        fpga_bitstream_stock[0x1E] != 0x68 || fpga_bitstream_stock[0x1F] != 0x1B) {
-        printf("FAIL sync word / IDCODE\n"); fails++;
-    }
-    /* the stream's structure: 0xFF x 22, A5 C3, 0x06 + IDCODE, 0x3B 80 02 D2
-     * (write SRAM, 722 frames) at 0x40, frames of 160 bytes from 0x44 each
-     * ending FF x 6, then the trailer ending 08 00 00 00 + FF x 10 */
-    {
-        const uint8_t *b = fpga_bitstream_stock;
-        unsigned bad = 0;
-        for (unsigned i = 0; i < 22u; i++) bad += b[i] != 0xFF;
-        bad += b[0x18] != 0x06;
-        bad += !(b[0x40] == 0x3B && b[0x41] == 0x80 && b[0x42] == 0x02 && b[0x43] == 0xD2);
-        const unsigned frames = ((unsigned)b[0x42] << 8) | b[0x43], start = 0x44u, fs = 160u;
+
+    if (sizeof fpga_bitstream_core != FPGA_BITSTREAM_CORE_SIZE) { printf("FAIL size macro\n"); fails++; }
+    for (unsigned i = 0; i < GW_SYNC_OFF; i++) bad += b[i] != 0xFF;
+    bad += !(b[GW_SYNC_OFF] == 0xA5 && b[GW_SYNC_OFF + 1u] == 0xC3);
+    if (bad) { printf("FAIL padding / sync word\n"); fails++; }
+
+    bad = b[GW_IDCODE_OFF] != 0x06;
+    for (unsigned i = 0; i < 4u; i++) bad += b[GW_IDCODE_OFF + 4u + i] != GW1N2_IDCODE[i];
+    if (bad) { printf("FAIL IDCODE: not a GW1N-2 stream\n"); fails++; }
+
+    bad = !(b[GW_WRITE_OFF] == 0x3B && b[GW_WRITE_OFF + 1u] == 0x80);
+    const unsigned frames = ((unsigned)b[GW_WRITE_OFF + 2u] << 8) | b[GW_WRITE_OFF + 3u];
+    const unsigned end = GW_FRAMES_OFF + frames * GW_FRAME_BYTES;
+    if (bad || end + GW_TRAILER_BYTES != FPGA_BITSTREAM_CORE_SIZE) {
+        printf("FAIL write-SRAM header: %u frames do not fill %u bytes\n", frames,
+               (unsigned)FPGA_BITSTREAM_CORE_SIZE);
+        fails++;
+    } else {
+        bad = 0;
         for (unsigned k = 0; k < frames; k++)
-            for (unsigned j = fs - 6u; j < fs; j++) bad += b[start + k * fs + j] != 0xFF;
-        const unsigned end = start + frames * fs;     /* 115,588 */
-        const unsigned tail = FPGA_BITSTREAM_STOCK_SIZE - end;
-        bad += tail != 50u;
-        bad += !(b[end + 20] == 0x0A);                 /* user code (0) */
-        bad += !(b[end + 36] == 0x08 && b[end + 37] == 0 && b[end + 38] == 0 && b[end + 39] == 0);
-        for (unsigned i = end + 40u; i < FPGA_BITSTREAM_STOCK_SIZE; i++) bad += b[i] != 0xFF;
-        if (bad) { printf("FAIL Gowin stream structure: %u mismatches\n", bad); fails++; }
+            for (unsigned j = GW_FRAME_BYTES - GW_FRAME_PAD; j < GW_FRAME_BYTES; j++)
+                bad += b[GW_FRAMES_OFF + k * GW_FRAME_BYTES + j] != 0xFF;
+        /* trailer: ... 08 00 00 00 (write disable) then 0xFF to the end */
+        bad += !(b[end + 36u] == 0x08 && b[end + 37u] == 0 && b[end + 38u] == 0 && b[end + 39u] == 0);
+        for (unsigned i = end + 40u; i < FPGA_BITSTREAM_CORE_SIZE; i++) bad += b[i] != 0xFF;
+        if (bad) { printf("FAIL frame padding / trailer: %u mismatches\n", bad); fails++; }
     }
-    printf("test_fpga_bitstream: %u bytes, crc32 %08X, %d failures\n",
-           (unsigned)FPGA_BITSTREAM_STOCK_SIZE, (unsigned)crc, fails);
+    printf("test_fpga_bitstream: %s, %u bytes, %u frames, %d failures\n", FPGA_BITSTREAM_NAME,
+           (unsigned)FPGA_BITSTREAM_CORE_SIZE, frames, fails);
     return fails ? 1 : 0;
 }

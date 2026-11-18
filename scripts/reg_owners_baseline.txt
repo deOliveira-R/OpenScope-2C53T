@@ -11,10 +11,6 @@ drivers/fpga_scanner.c	scan_tier6	GPIOC.out	3
 drivers/fpga_scanner.c	scan_usart_cmd	USART2	1
 drivers/fw_loader.c	fwl_ram_install	WDT	1
 drivers/shell_bench.c	cmd_bench_restore	?PTR	2
-drivers/shell_bench.c	cmd_fpga_dbgarm	GPIOB.cfg	1
-drivers/shell_bench.c	cmd_fpga_dbgarm	GPIOB.out	2
-drivers/shell_bench.c	cmd_fpga_dbgclk	GPIOC.cfg	2
-drivers/shell_bench.c	cmd_fpga_dbgclk	GPIOC.out	5
 drivers/shell_bench.c	cmd_fpga_selftest	SPI3	2
 drivers/shell_bench.c	cmd_gpio_set	?PTR	2
 drivers/shell_bench.c	cmd_spi3_acqread_one	GPIOB.out	2

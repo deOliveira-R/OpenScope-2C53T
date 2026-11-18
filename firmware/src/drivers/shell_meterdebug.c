@@ -95,7 +95,6 @@
 #include "watchdog.h"
 #include "../util/cal_backup_core.h"
 
-#include "fpga_bitstream_stock.h"
 #include "FreeRTOS.h"
 #include "task.h"
 

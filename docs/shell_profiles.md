@@ -103,7 +103,7 @@ form prints a usage line that names the property and changes nothing.
 They are named after where the code used to be, not after the model: the procedures want to become actions
 of their instrument and the read-outs diagnostics of it.
 
-## benchshell (87 rows, plus `fpga dbgclk` and `fpga dbgarm` in an `FPGA_ALT_BITSTREAM` build)
+## benchshell
 
 `usart raw`, `usart tx`, `gpio set`, `gpio mode`, `bench snapshot`, `bench restore`, `gpio read`, `gpio scan`,
 `buzzer test`, `mem read`, `mem write`, `trig2`, `trig`, `flash wtest`, `flash diag`, `fpga cmd`, `fpga frame`,

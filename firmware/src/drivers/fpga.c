@@ -22,7 +22,7 @@
  */
 
 #include "fpga.h"
-#include "fpga_bitstream_stock.h"
+#include "fpga_bitstream_core.h"
 #include "flash_fs.h"
 #include "../util/fpga_slot.h"
 #include "../util/cal_backup_core.h"
@@ -3053,11 +3053,6 @@ static volatile bool acq_reprime_req = false;
  * acq_edge_reg: the value the register holds (every arm burst writes 0x00).
  * The acquisition task writes the register when the two disagree, so the edge
  * follows the UI and comes back by itself after any arm burst. */
-#if defined(FPGA_CORE_BITSTREAM) && !defined(FPGA_ALT_BITSTREAM)
-#define FPGA_BUILTIN_IS_CORE 1
-#else
-#define FPGA_BUILTIN_IS_CORE 0
-#endif
 static volatile bool    acq_design_ours = false;
 /* The design in the FPGA is OpenScope's capture core: this firmware loaded
  * it, it identified itself and has every capability the firmware needs
@@ -4797,9 +4792,9 @@ uint8_t fpga_bitbang_config_sequence(void)
     GPIOB->clr = BB_CS;
     (void)bb_xfer(0x3B);
     if (bb_src_fn == NULL) {
-        for (uint32_t i = 0; i < FPGA_BITSTREAM_SIZE; ++i)
-            (void)bb_xfer(fpga_bitstream[i]);
-        fpga.h2_bytes_sent = FPGA_BITSTREAM_SIZE;
+        for (uint32_t i = 0; i < FPGA_BITSTREAM_CORE_SIZE; ++i)
+            (void)bb_xfer(fpga_bitstream_core[i]);
+        fpga.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
     } else {
         /* Payload from a source (the flash slot), 256 bytes at a time. The
          * clock simply stops between chunks; the frame stays open (CS low). */
@@ -4889,7 +4884,7 @@ bb_restore_pins:
          * here on: only on our own core, and only when this upload was ours
          * and ended with DONE (a design that stayed is unknown). */
         acq_edge_reg = 0x00;
-        acq_design_ours = trig_edge_reg_loaded_by_us(FPGA_BUILTIN_IS_CORE, bb_outcome == 0,
+        acq_design_ours = trig_edge_reg_loaded_by_us(bb_outcome == 0,
                                                     (fpga.cfg_status_reg[2] & 0x20u) != 0u);
         /* Ask our core which build it is (op E2; the E-range is never sent to
          * a design that is not ours). A core older than D5 answers zeros. */
@@ -5543,7 +5538,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     fpga.h2_rx_other_count = 0;
     fpga.h2_close_rx_len = 0;
     memset((void *)fpga.h2_close_rx, 0, sizeof(fpga.h2_close_rx));
-    spi3_pump_h2_record(fpga_bitstream, FPGA_BITSTREAM_SIZE);
+    spi3_pump_h2_record(fpga_bitstream_core, FPGA_BITSTREAM_CORE_SIZE);
     if (!opt->single_br) spi3_set_br(opt->cmd_br);  /* EXP-34: keep SPE untouched */
     /* Trailing clocks: Gowin runs the CRC-check / DONE / wakeup on CCLK cycles
      * AFTER the last config byte. Our sequence sent none; rosenrot00's working
@@ -5552,7 +5547,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     for (uint32_t i = 0; i < opt->trailing_clocks; i++)
         spi3_xfer(0x00);
     SPI3_CS_DEASSERT();
-    fpga.h2_bytes_sent = FPGA_BITSTREAM_SIZE;
+    fpga.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
     fpga.h2_upload_done = 1;
     cfg_trace_capture(opt, 4);   /* T4: full bitstream sent, before the 3A close */
 

@@ -92,7 +92,7 @@
 #include "watchdog.h"
 #include "../util/cal_backup_core.h"
 
-#include "fpga_bitstream_stock.h"
+#include "fpga_bitstream_core.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
@@ -687,13 +687,7 @@ static void cmd_version(void)
     usb_debug_printf(
         "OpenScope 2C53T\r\n"
         "Build: " __DATE__ " " __TIME__ ", gcc " __VERSION__ "\r\n"
-#ifdef FPGA_ALT_BITSTREAM
-        "FPGA payload: " FPGA_BITSTREAM_NAME " (ALT — not the stock scope design)\r\n"
-#elif defined(FPGA_CORE_BITSTREAM)
         "FPGA built-in design: " FPGA_BITSTREAM_NAME " (OpenScope's own capture core)\r\n"
-#else
-        "FPGA built-in design: stock\r\n"
-#endif
         "MCU: AT32F403A @ %uMHz\r\n"
         "SRAM: 224KB (EOPB0=0xFE)\r\n",
         system_core_clock / 1000000

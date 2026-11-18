@@ -10,9 +10,9 @@ static int fails;
 
 int main(void)
 {
-    /* loaded by us: this firmware sent the upload, of a build with our core in it, and it started */
-    for (int b = 0; b < 2; b++) for (int sb = 0; sb < 2; sb++) for (int dn = 0; dn < 2; dn++)
-        CHECK(trig_edge_reg_loaded_by_us(b, sb, dn) == (b && sb && dn));
+    /* loaded by us: this firmware sent the upload and the design started */
+    for (int sb = 0; sb < 2; sb++) for (int dn = 0; dn < 2; dn++)
+        CHECK(trig_edge_reg_loaded_by_us(sb, dn) == (sb && dn));
 
     /* reg 07: rising only / falling only, hysteresis in the high nibble */
     CHECK(trig_edge_reg_code(false) == 0x82);

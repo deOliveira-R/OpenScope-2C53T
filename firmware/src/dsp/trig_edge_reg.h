@@ -27,9 +27,9 @@
  *               already running and stayed is unknown)
  *   done        the FPGA reported DONE after that upload
  * Only then is the design asked who it is (core_ident.h). */
-static inline bool trig_edge_reg_loaded_by_us(bool builtin_is_core, bool sent_by_us, bool done)
+static inline bool trig_edge_reg_loaded_by_us(bool sent_by_us, bool done)
 {
-    return builtin_is_core && sent_by_us && done;
+    return sent_by_us && done;
 }
 
 /* The value register 0x07 must hold for the edge the UI asks for. */

@@ -66,17 +66,6 @@ void cmd_fpga_selftest(void);
 void cmd_fpga_reinit(const char *args);
 void cmd_spi3_seq(const char *args);
 void cmd_spi3_probe(void);
-#if defined(FPGA_ALT_BITSTREAM)
-void cmd_fpga_dbgclk(const char *args);
-void cmd_fpga_dbgarm(const char *args);
-#define BENCHSHELL_ALT_BITSTREAM_ROWS \
-    CMD_A("fpga dbgclk", cmd_fpga_dbgclk, 0, \
-          "fpga dbgclk <count> [half_us]   debugclk image: N rising edges on PC6 (=N samples)\r\n"), \
-    CMD_A("fpga dbgarm", cmd_fpga_dbgarm, 0, \
-          "fpga dbgarm [low_ms]            debugclk image: re-arm via PB11 low->high (run_enable)\r\n"),
-#else
-#define BENCHSHELL_ALT_BITSTREAM_ROWS
-#endif
 
 #define BENCHSHELL_SHELL_ROWS \
     CMD_A("usart raw", cmd_usart_raw, SC_NEEDARGS, \
@@ -117,7 +106,6 @@ void cmd_fpga_dbgarm(const char *args);
           "fpga diag clear                 Clear FPGA bench counters/state\r\n"), \
     CMD_V("fpga selftest", cmd_fpga_selftest, SC_EXACT, \
           "fpga selftest                   Precondition table: SPI3 clk, IDCODE anchor,\r\n" "                                USART2 state, every driven pin's mode+level\r\n"), \
-    BENCHSHELL_ALT_BITSTREAM_ROWS \
     CMD_V("fpga busrelease", cmd_fpga_bus_release, SC_EXACT, \
           "fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n"), \
     CMD_V("fpga busreacquire", cmd_fpga_bus_reacquire, SC_EXACT, \

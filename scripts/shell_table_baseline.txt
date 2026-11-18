@@ -1,7 +1,7 @@
 # The debug shell command table of profile `bench` (every feature on): name, handler,
 # flags, help text (- = alias row), tab separated, sorted. Read by
-# scripts/test_shell_profiles.py and rewritten by its --update; the default build flags
-# (no FPGA_ALT_BITSTREAM rows). The state commands the property model replaced were
+# scripts/test_shell_profiles.py and rewritten by its --update; the default build flags.
+# The state commands the property model replaced were
 # retired from it on purpose (docs/shell_profiles.md has the table).
 ?	cmd_help	0x01	-
 batt	cmd_batt	0x00	batt                            Battery gauge: raw/resting mV, percent, external power\r\n
