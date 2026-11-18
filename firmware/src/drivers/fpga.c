@@ -1507,14 +1507,6 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
     return true;
 }
 
-void fpga_scope_heartbeat(void)
-{
-    /* Warm-handoff: the FPGA free-runs whatever stock armed; there is nothing
-     * to re-arm, no dvom_TX task to drain the queue these sends would fill
-     * (each send would block the display task 100 ms once it's full), and
-     * fpga_trigger_scope_read feeds a queue whose consumer doesn't exist. */
-}
-
 /* ═══════════════════════════════════════════════════════════════════
  * USART2 IRQ Handler
  *
@@ -3561,22 +3553,17 @@ static void fpga_warmtest_acq_task(void *pv)
     }
 }
 
-/* See fpga.h. Real in EVERY build since 2026-08-20 (audit P0.1). The old
- * non-warmtest body was `return true` — justified by "the queue-driven task
- * only touches SPI3 on explicit triggers, which the shell user controls",
- * which was false: the display loop's fpga_scope_heartbeat() posts a trigger
- * every 7 frames whenever the scope is running, so every shell command that
- * 'parked' was unprotected on the shared bus in default builds. */
+/* See fpga.h. The acquisition task reads SPI3 continuously, so every shell
+ * command that uses the bus parks it here first. */
 bool fpga_acq_pause(void)
 {
     if (acq_task_handle == NULL)
         return true;
     acq_pause_req = true;
     acq_pause_ack = false;      /* demand a FRESH ack from the park point */
-    /* Worst-case ack latency = one full loop pass. Warm-handoff task: the
+    /* Worst-case ack latency = one full pass of the acquisition loop: the
      * trigger-mode edge wait (≤FPGA_NORMAL_TRIG_WAIT_MS) + two 1026-byte
-     * reads + 10 ms. Queue task: one acquisition (≤ a few ms) or the 100 ms
-     * bounded queue wait. 1 s is comfortable margin for both. */
+     * reads + 10 ms. 1 s is a comfortable margin. */
     for (int i = 0; i < 100; i++) {
         if (acq_pause_ack)
             return true;
@@ -5189,14 +5176,12 @@ BaseType_t fpga_send_cmd(uint8_t cmd_high, uint8_t cmd_low)
 
     /* Use interrupt-driven TX via the dvom_TX task queue.
      * Non-blocking send — don't stall the calling task.
-     * The scheduler-state check matters (audit 2026-08-20, P0.5): main()
-     * enters the boot mode (fpga_set_meter_mode / fpga_enter_scope_mode)
-     * AFTER fpga_create_tasks() but BEFORE vTaskStartScheduler(), so the
-     * queue exists with no consumer running — a long mode-entry sequence
-     * silently overflowed the depth-10 queue and truncated mid-sequence.
-     * Pre-scheduler, send polled instead (safe: the ISR TX engine cannot be
-     * mid-frame before the scheduler starts). fpga_timed_send_cmd() has
-     * always carried this same guard. */
+     * The scheduler-state check matters (audit 2026-08-20, P0.5): between
+     * fpga_create_tasks() and vTaskStartScheduler() the queue exists with
+     * no consumer running, and a sequence longer than its depth of 10 would
+     * be cut short without a sign. Before the scheduler, send polled
+     * instead (safe: the ISR TX engine cannot be mid-frame before the
+     * scheduler starts). fpga_timed_send_cmd() carries this same guard. */
     if (usart_tx_queue != NULL &&
         xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
         uint32_t item = ((uint32_t)cmd_high << 8) | cmd_low | FPGA_TX_OBEY_BIT;
@@ -5430,21 +5415,6 @@ void fpga_edgecap_15(uint8_t reps)
 
     /* Restore AF bus so later shell commands work. */
     fpga_spi3_bus_reacquire();
-}
-
-void fpga_enter_scope_mode(void)
-{
-    /* Warm-handoff: main() calls this PRE-SCHEDULER, where the timed-send
-     * fallback would transmit ~20 polled USART2 frames (incl. FPGA_CMD_RESET)
-     * straight onto the wire — the exact perturbation this build exists to
-     * avoid. The FPGA is already in scope mode; do nothing. */
-}
-
-void fpga_enter_siggen_mode(void)
-{
-    /* Warm-handoff: no USART frames and no relay moves outside the scope
-     * posture this build exists to preserve. The generator itself (DAC2)
-     * needs nothing from the FPGA or the meter SoC. */
 }
 
 /*

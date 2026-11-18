@@ -286,16 +286,14 @@ bool input_mode_switch(device_mode_t m)
     }
     meter_autoselect_cancel();
     if (!ui_router_switch_mode(m)) return false;
-    /* Tell the FPGA which mode we're entering.
-     * Each mode needs different FPGA commands and analog MUX config. */
+    /* Only the meter has hardware to prepare on entry (the meter chip's
+     * function). The scope and the generator need nothing: the FPGA and the
+     * front end stay in the scope posture, which the meter link restores
+     * when it goes off. */
     if (current_mode == MODE_MULTIMETER) {
         /* Background: no frozen buttons. Nothing is sent when the meter
          * link is already on and running this function (fpga.c). */
         fpga_meter_screen_entered(meter_submode);
-    } else if (current_mode == MODE_SIGNAL_GEN) {
-        fpga_enter_siggen_mode();
-    } else if (current_mode == MODE_OSCILLOSCOPE) {
-        fpga_enter_scope_mode();
     }
     /* Settings and home: the FPGA keeps the posture it had. PC11 is not
      * written here any more: the meter link has one owner (the display

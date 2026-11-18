@@ -593,7 +593,6 @@ static void scope_render(uint32_t frame, redraw_action_t action)
  * The scope screen's draw() and tick(), display task. Until ARCH-1 B7 these
  * were the scope arms of redraw_all() and of the display loop; they are the
  * same code behind the screen's hooks. */
-static uint32_t g_scope_entered_frame;      /* for the acquisition warm-up */
 
 /* draw(): FULL (REDRAW_ALL, after the bars) and RESTORE are the full render
  * of the view. UPDATE (a key or a `set` posted DCMD_DRAW_ACTIVE + scope) is
@@ -655,20 +654,6 @@ redraw_action_t scope_view_tick(uint32_t frame)
         /* CAN readout (`can screen on`): 5 Hz, its own row. */
         if (time_view && !page_up && can_scope_screen_on() && (frame & 3u) == 0u)
             scope_ui_can_row_refresh();
-    }
-    if (ss_anim->running) {
-        /* ── Scope heartbeat / acquisition re-arm ───────────
-         * Keep the existing warmup and cadence for now, but use the
-         * stock-like cmd-3 path instead of a bare SPI trigger. That
-         * re-applies timebase state before each queued read, matching
-         * the live shell experiments more closely. */
-#ifndef EMULATOR_BUILD
-        if ((frame - g_scope_entered_frame) >= 10 /* 500ms warmup */
-            && (frame % 7) == 0
-            && fpga.initialized) {
-            fpga_scope_heartbeat();
-        }
-#endif
     }
     {
         /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
@@ -837,10 +822,8 @@ static void vDisplayTask(void *pvParameters)
              * 2026-08-17: HIGH -> 276 bytes returned, LOW -> 0, HIGH -> 276.
              * It now follows the meter link policy, evaluated just above
              * (meter_link_service): the screen is one of its three inputs. */
-            if (current_mode == MODE_OSCILLOSCOPE) {
-                g_scope_entered_frame = frame;
+            if (current_mode == MODE_OSCILLOSCOPE)
                 ui_popup_overlay_cancel();    /* scope popups are the scope's own */
-            }
             redraw_gate_invalidate(&scope_gate);
             redraw_gate_invalidate(&native_gate);
             last_rendered_mode = current_mode;
@@ -1568,29 +1551,20 @@ int main(void)
     meter_autoselect_create_task();
 
     if (current_mode == MODE_MULTIMETER) {
-        /* A warm-handoff image reaches here only with FPGA_METER_SUBMODES
-         * (startup_policy.h; Startup on Boot = Meter, or Restore after a
-         * save on the meter). Its USART2 is parked (ctrl1 = 0, IRQ masked,
-         * FPGA_USART_SILENT_SCOPE) and fpga_meter_reset_transport() re-arms it
-         * only with the scheduler running, so a transition from here would
-         * busy-wait ~3 s for a SoC frame and 5 x 300 ms for a selector echo
-         * that cannot arrive, and the SoC would boot into its own Auto while
-         * meter_submode says otherwise. Hand it to the poll task instead: it
-         * runs the same transition `mode meter N` runs, once the scheduler
-         * is up. */
+        /* Booting into the meter (Startup on Boot = Meter, or Restore after
+         * a save on the meter; startup_policy.h). fpga_init() leaves USART2
+         * parked (ctrl1 = 0, IRQ masked) and fpga_meter_reset_transport()
+         * re-arms it only with the scheduler running, so a transition from
+         * here would busy-wait ~3 s for a SoC frame and 5 x 300 ms for a
+         * selector echo that cannot arrive, and the SoC would boot into its
+         * own Auto while meter_submode says otherwise. Hand it to the poll
+         * task instead: it runs the same transition `mode meter N` runs,
+         * once the scheduler is up. */
         fpga_request_meter_mode(meter_submode);
-    } else if (current_mode == MODE_SIGNAL_GEN) {
-        /* Startup on Boot = Signal Generator. GPIO only (fpga.c), no USART,
-         * so it is safe before the scheduler, like the scope entry below. */
-        fpga_enter_siggen_mode();
-    } else {
-        /* Scope, and home (stock "None", and Restore without a last
-         * instrument): home keeps the scope posture, as the settings page
-         * does. A no-op in a warm-handoff image, like the generator entry
-         * above: there the FPGA already is in the scope posture and home
-         * and the generator touch neither it nor the meter link. */
-        fpga_enter_scope_mode();
     }
+    /* Every other boot screen (scope, generator, home) needs nothing here:
+     * fpga_init() left the FPGA and the front end in the scope posture, and
+     * the generator (DAC channel 2) uses neither the FPGA nor the meter chip. */
 #endif
 
     /* Create 1-second timer for uptime/status updates */

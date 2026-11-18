@@ -850,27 +850,10 @@ void fpga_edgecap_15(uint8_t reps);
 bool fpga_acq_pause(void);
 void fpga_acq_resume(void);
 
-/*
- * Enter oscilloscope mode: send FPGA scope configuration commands
- * (0x00, 0x01, 0x0B-0x11) and fire initial SPI3 acquisition triggers.
- *
- * Call at boot (device starts in scope mode) and when switching
- * from meter/siggen back to oscilloscope.
- */
-void fpga_enter_scope_mode(void);
-
 /* Bench gain-cal hook: apply scope frontend range <n> (0..VDIV_COUNT-1) with
  * DC coupling forced, for per-range gain characterisation from the shell. */
 void fpga_scope_set_range_diag(uint8_t range_idx);
 void fpga_scope_set_range_diag_ch(uint8_t ch, uint8_t range_idx);
-
-/*
- * Enter signal generator mode: send FPGA siggen configuration commands
- * (0x02-0x06, 0x08) and switch analog MUX to route DAC output to BNC.
- *
- * Call when switching to signal generator mode.
- */
-void fpga_enter_siggen_mode(void);
 
 /*
  * Configure FPGA for a specific meter submode.
@@ -933,13 +916,6 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
                                        uint32_t high_ms,
                                        uint16_t *planned_gpio,
                                        uint16_t *actual_gpio);
-
-/*
- * Recompute the current scope timebase block (0x26/0x27/0x28), update the
- * local acquisition policy, and queue the next SPI read. Mirrors stock
- * internal cmd 3 as closely as our current architecture allows.
- */
-void fpga_scope_heartbeat(void);
 
 /*
  * Send a raw 10-byte USART2 frame to the FPGA (bypasses queue).
