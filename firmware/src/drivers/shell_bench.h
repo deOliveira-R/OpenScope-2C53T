@@ -31,8 +31,10 @@ void     gpio_cfg_nibble_set(gpio_type *port, uint8_t pin_no, uint8_t nibble);
  * acquisition task (fpga_acq_pause). `spi3 opread` here, `spi3 opsweep` in
  * the toolkit. */
 #include <stdbool.h>
-/* Longest window: four times the 1024-byte record of one channel, enough for
- * a word-wide block RAM pair read whole (bench plan 2026-08-14, step 0b). */
+/* The longest window the two commands accept. The value came with them
+ * (bench plan 2026-08-14, step 0b) and its reason was not written down; it
+ * is twice the sweep's default of 2048 bytes (1024 words of a word-wide
+ * block RAM pair). */
 #define SPI3_OPREAD_MAX_LEN 4096u
 bool     spi3_opread_window(uint8_t opcode, uint32_t len, bool dump);
 /* One channel read (opcode 0x04 or 0x05) with its statistics: `spi3 acqread`
