@@ -43,7 +43,6 @@ main.c	vApplicationMallocFailedHook	PRIMASK	1
 main.c	vApplicationStackOverflowHook	PRIMASK	1
 tasks/input_handler.c	input_handle_button	SCS	1
 tasks/input_handler.c	power_off_now	GPIOC.out	1
-tasks/input_handler.c	ui_env_screenshot	GPIOC.out	2
 ui/status_bar.c	draw_status_bar	GPIOC.out	1
 util/cal_backup.c	mcu_flash_restore_from_region	FLASH	2
 util/cal_dump.c	diag_delay_ms	WDT	1
