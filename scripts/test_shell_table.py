@@ -60,10 +60,10 @@ class ShellTableInvariants(unittest.TestCase):
         assert len(cls.rows) > 100, f"table parse broke: {len(cls.rows)} rows"
 
     def test_handlers_defined(self):
-        # The property and UI routes have their handlers in src/model/.
+        # The property, session and UI routes have their handlers in src/model/.
         model = DRIVERS.parent / "model"
         text = self.text + "".join((model / n).read_text()
-                                   for n in ("model_shell.c", "ui_shell.c"))
+                                   for n in ("model_shell.c", "session_shell.c", "ui_shell.c"))
         missing = [r["fn"] for r in self.rows
                    if not re.search(r"^(?:static )?void %s\([^;{]*\)\s*\{" % r["fn"],
                                     text, re.M)]

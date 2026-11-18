@@ -72,6 +72,14 @@ Load it in Ghidra. [re_guide.md](re_guide.md) has the project settings and the
 headless scripts (`reverse_engineering/ghidra_scripts/`). Start from the
 strings and the vector table.
 
+Two address conventions are in use for the 2C53T image, and the tools do not
+agree on one. The image runs at `0x08007000`, so a run-time address is the
+file offset plus `0x08007000`. The Ghidra project and the older analysis
+files load it at `0x08000000`, so their addresses are `0x7000` lower
+([freertos_tasks.md](freertos_tasks.md)). `trace_peripheral_writes.py` takes
+file offsets and defaults to the Ghidra base; `find_gpio_pulses.py` defaults
+to the run-time base. Check which one a number is in before using it.
+
 Then ask the image three direct questions.
 
 Which peripheral registers does one function write?
@@ -138,7 +146,10 @@ the LCD bus (EXMC, addresses in each file).
 The Makefile links at `0x08000000` and has no flash rule. Writing there
 replaces the bootloader. Decide where the probe goes on your unit, link for
 that address (`LDSCRIPT=`), and flash it by the route you would use for any
-image, with its checks.
+image, with its checks. `LDSCRIPT=../../../firmware/ld/at32f403a_app.ld`
+links, but that is not enough to run under a bootloader: the vendor's
+system init sets the vector table to `0x08000000` (`VECT_TAB_OFFSET` 0), so a
+probe that uses interrupts needs that changed too. Not tried on a unit.
 
 ## 4. Find the MCU-FPGA buses and how the FPGA is configured
 
