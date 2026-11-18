@@ -218,14 +218,14 @@ static void bc_make_obs(bc_sim_t *s, const sc_basecal_t *b, sc_rec_stats_t obs[2
                       + (s->open_mv[c] / mv) * urand();
             if (s->sine_amp_mv > 0.0f)
                 v += s->sine_amp_mv / mv * sinf(6.2831853f * (float)i / 97.0f);
-            rec[i] = (i < 40u) ? 0u : clamp_rec(v);   /* invalid head, as on the device */
+            rec[i] = clamp_rec(v);                    /* a whole record, as the capture core hands it over */
         }
         if (s->burst_len) {   /* one burst somewhere in the body */
             const unsigned at = 200u + (unsigned)((urand() + 1.0f) * 0.5f * (float)(REC_LEN - 300u - s->burst_len));
             for (unsigned i = at; i < at + s->burst_len; i++)
                 rec[i] = clamp_rec((float)rec[i] + s->burst_amp * urand());
         }
-        sc_rec_stats(rec, REC_LEN, HEAD, &obs[c]);
+        sc_rec_stats(rec, REC_LEN, 0u, &obs[c]);          /* as the firmware calls it */
     }
 }
 
@@ -473,6 +473,13 @@ typedef struct {
 
 static float rates[SC_TB_CODES];
 static float mvs[SC_RANGES];
+/* No real source is locked to the scope's crystal. The simulated one is this
+ * far off its nominal frequency (what the bench source measured, 2026-11-17).
+ * Exactly locked, a tone at a whole multiple of the sample rate reads as DC
+ * at that timebase -- true of any sampling scope, and not what these cases
+ * are about. (With the old measured rates the test's round frequencies were
+ * never exact multiples; with the core's exact rates they are.) */
+#define AS_SRC_OFFSET 1.0013f
 
 static void as_make_obs(as_sim_t *s, const sc_autoset_t *a, sc_rec_stats_t obs[2])
 {
@@ -484,26 +491,27 @@ static void as_make_obs(as_sim_t *s, const sc_autoset_t *a, sc_rec_stats_t obs[2
         const float cpv = 1000.0f / mvs[a->range[c]];   /* counts per volt */
         const float zero = s->page ? 100.0f + (float)a->pos[c] : s->nopage_offset[c];
         const float ph = 0.37f + (float)s->records * 0.61f;
+        const float gf = g->freq * AS_SRC_OFFSET;
         for (unsigned i = 0; i < REC_LEN; i++) {
             const float t = (float)i / fs;
-            float w = sinf(6.2831853f * g->freq * t + ph);
+            float w = sinf(6.2831853f * gf * t + ph);
             float ring = 0.0f;
             if (g->square) {
                 const float duty = (g->duty > 0.0f) ? g->duty : 0.5f;
-                float fr = g->freq * t + ph / 6.2831853f;
+                float fr = gf * t + ph / 6.2831853f;
                 fr -= floorf(fr);
                 const bool hi = fr < duty;
                 w = hi ? 1.0f : -1.0f;
                 if (g->ring_v > 0.0f) {
-                    const float dt = (hi ? fr : fr - duty) / g->freq;
+                    const float dt = (hi ? fr : fr - duty) / gf;
                     ring = (hi ? 1.0f : -1.0f) * g->ring_v * expf(-dt / g->ring_tau) *
                            sinf(6.2831853f * g->ring_f * dt);
                 }
             }
             const float v = g->dc_v + g->amp_v * w + ring;
-            rec[i] = (i < 40u) ? 0u : clamp_rec(zero + v * cpv + s->noise * urand());
+            rec[i] = clamp_rec(zero + v * cpv + s->noise * urand());
         }
-        sc_rec_stats(rec, REC_LEN, HEAD, &obs[c]);
+        sc_rec_stats(rec, REC_LEN, 0u, &obs[c]);          /* as the firmware calls it */
     }
 }
 

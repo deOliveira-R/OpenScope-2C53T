@@ -3561,12 +3561,7 @@ uint32_t fpga_acq_force_count(unsigned i) { return i < 3u ? acq_force_n[i] : 0u;
 static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_action) */
 uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
-/* The one place the state changes: the sample rates are the core's. */
-static void acq_core_ok_set(bool ok)
-{
-    acq_core_ok = ok;
-    scope_timebase_use_core_rates(ok, true);
-}
+static void acq_core_ok_set(bool ok) { acq_core_ok = ok; }
 /* The firmware's own constants against the capture core's package (drivers/fpga_core_regs.h, generated):
  * a core with another record length, trigger position or timebase list does not build into this firmware. */
 _Static_assert(TRIG_EDGE_REC_N == (1u << FPGA_CORE_ADDR_W), "record length differs from the core's");

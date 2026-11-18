@@ -308,10 +308,10 @@ static void test_formatting(void)
     scope_cursor_format(&r, s, sizeof(s));
     CHECK(s[0] == '-', "negative dt must print a sign, got %s", s);
 
-    /* 100 samples at 12,490 S/s = 8.0064 ms. */
+    /* 100 samples at 12,500 S/s = 8.00 ms. */
     r = scope_cursor_delta_t(TB(0x10u), 100);
     scope_cursor_format(&r, s, sizeof(s));
-    CHECK(strcmp(s, "8.01ms") == 0, "expected 8.01ms, got %s", s);
+    CHECK(strcmp(s, "8.00ms") == 0, "expected 8.00ms, got %s", s);
 
     /* A tiny buffer must truncate, not overflow. */
     char tiny[4];
