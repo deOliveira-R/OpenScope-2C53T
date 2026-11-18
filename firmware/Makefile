@@ -1672,7 +1672,7 @@ app-re: CFLAGS += -DNO_WATCHDOG
 app-re: clean all
 
 # guest-coldtrace-meter: app-coldtrace-meter linked for the factory bootloader
-# (GUEST_BUILD, default profile, watchdog on).
+# (GUEST_BUILD: vectors moved to 0x08007000, no watchdog; default profile).
 guest-coldtrace-meter: CFLAGS += -DGUEST_BUILD
 guest-coldtrace-meter: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-meter: clean all

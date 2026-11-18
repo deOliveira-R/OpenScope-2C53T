@@ -160,8 +160,10 @@ the unit:
 - `uartsniff` (step 3) shows whether a USART carries traffic.
 - The shell of our firmware reads the FPGA's configuration port: `spi3 gowin`
   reads IDCODE, USERCODE and STATUS; `fpga selftest` checks the clock, the
-  IDCODE and every driven pin. Do not read STATUS on a design that is
-  capturing: it desynchronises it until the next power cycle.
+  IDCODE and every driven pin. On the factory design of the 2C53T, reading
+  STATUS while it captures desynchronises it until the next power cycle; our
+  capture core ignores configuration-port opcodes, so there these reads (and
+  `re pinsweep`, step 9) are safe while it runs.
 
 To see the state of the factory firmware at one instant, park it there and
 read its peripherals over SWD:
