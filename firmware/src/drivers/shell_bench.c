@@ -1420,7 +1420,7 @@ void cmd_fpga_autowait(const char *args)
         }
         fpga_acq_auto_wait_set((uint16_t)ms);
     }
-    snprintf(buf, sizeof(buf), "acq AUTO edge-wait %u ms before the free-run fallback read (%s, rate idx 0x%02X)\r\n",
+    snprintf(buf, sizeof(buf), "acq AUTO waits %u ms for a trigger before an untriggered record (%s, rate idx 0x%02X)\r\n",
              (unsigned)fpga_acq_auto_wait_get(),
              fpga_acq_auto_wait_is_override() ? "override" : "derived from timebase",
              fpga_acq_rate_idx_get());
@@ -1450,7 +1450,7 @@ void cmd_fpga_postedge(const char *args)
     }
     usb_debug_printf("acq poll start %u ms after a handover (%s, rate idx 0x%02X)\r\n",
                      (unsigned)fpga_acq_post_edge_get(),
-                     fpga_acq_post_edge_is_override() ? "override" : "derived: fill + 100 ms",
+                     fpga_acq_post_edge_is_override() ? "override" : "derived, dsp/acq_timing.h",
                      fpga_acq_rate_idx_get());
 }
 
@@ -1465,7 +1465,7 @@ void cmd_fpga_pollgap(const char *args)
     }
     usb_debug_printf("acq poll gap %u ms; poll starts %u ms after a handover (%s); last handover after %lu poll reads, %lu total\r\n",
                      (unsigned)fpga_acq_poll_gap_get(), (unsigned)fpga_acq_post_edge_get(),
-                     fpga_acq_post_edge_is_override() ? "override" : "derived: fill + 100 ms",
+                     fpga_acq_post_edge_is_override() ? "override" : "derived, dsp/acq_timing.h",
                      (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads);
 }
 

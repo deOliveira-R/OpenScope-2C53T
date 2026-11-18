@@ -49,9 +49,11 @@ static inline core_status_t core_status_parse(const uint8_t *r)
 /* The registers as the firmware believes them. */
 typedef struct { uint8_t tb, src, lvl, edge; } core_regs_copy_t;
 
-/* Which registers differ: bit 0 timebase, 1 source, 2 level, 3 edge. The core
- * keeps only the bits it uses of the source (bit 0) and of the edge register
- * (bits 7:4 and 1:0) -- compare those. */
+/* Which registers differ: bit 0 timebase, 1 source, 2 level, 3 edge. Of the
+ * source the core uses bit 0 (core_pkg.sv, cfg_t.src), of the edge register
+ * it keeps the hysteresis and the mode: compare those bits only. */
+#define CORE_REG_SRC_USED   0x01u
+#define CORE_REG_EDGE_USED  ((uint8_t)((0x0Fu << FPGA_CORE_EDGE_HYS_SHIFT) | FPGA_CORE_EDGE_MODE_MASK))
 #define CORE_REG_DIFF_TB    0x01u
 #define CORE_REG_DIFF_SRC   0x02u
 #define CORE_REG_DIFF_LVL   0x04u
@@ -60,9 +62,9 @@ static inline uint8_t core_status_reg_diff(const core_status_t *s, const core_re
 {
     uint8_t d = 0u;
     if (s->tb != c->tb) d |= CORE_REG_DIFF_TB;
-    if ((s->src & 0x01u) != (c->src & 0x01u)) d |= CORE_REG_DIFF_SRC;
+    if ((s->src & CORE_REG_SRC_USED) != (c->src & CORE_REG_SRC_USED)) d |= CORE_REG_DIFF_SRC;
     if (s->lvl != c->lvl) d |= CORE_REG_DIFF_LVL;
-    if ((s->edge & 0xF3u) != (c->edge & 0xF3u)) d |= CORE_REG_DIFF_EDGE;
+    if ((s->edge & CORE_REG_EDGE_USED) != (c->edge & CORE_REG_EDGE_USED)) d |= CORE_REG_DIFF_EDGE;
     return d;
 }
 

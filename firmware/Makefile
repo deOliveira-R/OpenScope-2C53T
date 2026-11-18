@@ -1605,6 +1605,14 @@ $(BUILD_DIR)/test_core_ident: tests/test_core_ident.c src/dsp/core_ident.h src/d
 test-core-ident: $(BUILD_DIR)/test_core_ident
 	$(BUILD_DIR)/test_core_ident
 
+# The acquisition's waits, named (dsp/acq_timing.h). See tests/test_acq_timing.c.
+$(BUILD_DIR)/test_acq_timing: tests/test_acq_timing.c src/dsp/acq_timing.h src/drivers/fpga_core_regs.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/drivers $< -o $@
+
+.PHONY: test-acq-timing
+test-acq-timing: $(BUILD_DIR)/test_acq_timing
+	$(BUILD_DIR)/test_acq_timing
+
 # Status block of our capture core (dsp/core_status.h, op E0). See tests/test_core_status.c.
 $(BUILD_DIR)/test_core_status: tests/test_core_status.c src/dsp/core_status.h src/drivers/fpga_core_regs.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/drivers $< -o $@

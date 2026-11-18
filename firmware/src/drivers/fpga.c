@@ -36,6 +36,7 @@
 #include "../dsp/interleave.h"
 #include "../dsp/interleave_cal.h"
 #include "../dsp/trig_policy.h"
+#include "../dsp/acq_timing.h"
 #include "../dsp/acq_cfg.h"
 #include "../ui/ui.h"
 #include "../ui/scope_state.h"
@@ -187,7 +188,7 @@ static TaskHandle_t      rx_task_handle  = NULL;
 #define FPGA_AUTO_CADENCE_MS 30u
 #endif
 #ifndef FPGA_AUTO_TRIG_WAIT_MS
-#define FPGA_AUTO_TRIG_WAIT_MS 25u
+#define FPGA_AUTO_TRIG_WAIT_MS ACQ_AUTO_MIN_MS      /* dsp/acq_timing.h; a build may give another floor */
 #endif
 #ifndef FPGA_NORMAL_TRIG_WAIT_MS
 #define FPGA_NORMAL_TRIG_WAIT_MS 300u
@@ -3096,7 +3097,6 @@ static void fpga_meter_adc_sampler_task(void *pv)
  * 2026-08-20 (audit P0.1): the queue-driven task is periodically active too
  * (display heartbeat every 7 frames), so it needs a real park as well. */
 static volatile bool acq_pause_req = false;
-#define ACQ_WAIT_SLICE_MS 20u     /* the capture task's longest sleep between pause checks */
 static volatile bool acq_pause_ack = false;
 
 /* ── Torn-frame fix (audit 2026-08-20, P0.2) ─────────────────────────────
@@ -3762,7 +3762,6 @@ static fpga_core_watch_t acq_core_watch = { .check_on = true };
 static uint8_t           acq_core_watch_prev_diff;
 fpga_core_watch_t fpga_core_watch(void) { return acq_core_watch; }
 void fpga_core_watch_fix_set(bool on)   { acq_core_watch.check_on = on; acq_core_watch_prev_diff = 0u; }
-#define ACQ_CORE_WATCH_MS 1000u
 /* AUTO without a trigger on a core with op 09 (dsp/trig_policy.h): [0] requests
  * sent, [1] forced records read, [2] reads after a request that found no
  * record yet (the memory was not all new since the last restart). */
@@ -3821,7 +3820,7 @@ static volatile uint16_t acq_pair_gap_ms = 0;
  * the task's reads (0..7 = /2../256; 0xFF = leave whatever is set) — shell
  * reads at /256 yield an edge every time. */
 static volatile uint16_t acq_post_edge_ms = 0;
-static volatile uint16_t acq_poll_gap_ms = 30;   /* EXP-54: poll cadence after the poll start (stock: 29 ms) */
+static volatile uint16_t acq_poll_gap_ms = ACQ_POLL_GAP_MS;   /* dsp/acq_timing.h; `fpga pollgap` overrides */
 static volatile bool     acq_unrotate = true;    /* 2026-09-22: seam-based (dev plan 2.3); `fpga unrotate off` for the raw record */
 static volatile int16_t  acq_unrotate_offset = 0;
 /* Where the seam of a strobed record came from (`fpga unrotate`): the core's
@@ -3940,14 +3939,8 @@ void fpga_acq_auto_wait_set(uint16_t ms)  { acq_auto_wait_ms = ms; }
 uint16_t fpga_acq_auto_wait_get(void)
 {
     if (acq_auto_wait_ms) return acq_auto_wait_ms;
-    float fs = scope_timebase_sample_rate(acq_rate_idx);
-    if (fs <= 0.0f) return FPGA_AUTO_TRIG_WAIT_MS;
-    /* Must exceed the post-edge re-arm bracket (EXP-46) by a couple of fills,
-     * or the fallback read lands while the FPGA still refuses to arm. */
-    float ms = 3.0f * 1024.0f / fs * 1000.0f + 230.0f;
-    if (ms < (float)FPGA_AUTO_TRIG_WAIT_MS) ms = (float)FPGA_AUTO_TRIG_WAIT_MS;
-    if (ms > 1000.0f) ms = 1000.0f;
-    return (uint16_t)ms;
+    /* The numbers and their origins: dsp/acq_timing.h. */
+    return acq_time_auto_wait_ms(scope_timebase_sample_rate(acq_rate_idx), (uint16_t)FPGA_AUTO_TRIG_WAIT_MS);
 }
 bool fpga_acq_auto_wait_is_override(void) { return acq_auto_wait_ms != 0; }
 void fpga_acq_pair_gap_set(uint16_t ms)   { acq_pair_gap_ms = ms; }
@@ -3962,22 +3955,9 @@ void fpga_acq_post_edge_set(uint16_t ms)  { acq_post_edge_ms = ms; }
 uint16_t fpga_acq_post_edge_get(void)
 {
     if (acq_post_edge_ms) return acq_post_edge_ms;
-    float fs = scope_timebase_sample_rate(acq_rate_idx);
-    if (fs <= 0.0f) return 600u;
-    /* EXP-54: poll START after a handover. The FPGA holds ~189 ms then needs
-     * one fill before the next record can be complete (EXP-46's bracket);
-     * start polling a little early -- a read before completion is harmless. */
-    float ms = 1024.0f / fs * 1000.0f + 100.0f;
-    /* OpenScope's core has no hold: it starts the next capture when the op
-     * 05 of the pair ends and can hold again one record later. Only the
-     * fill is waited for, with the poll gap as the floor so that fast
-     * timebases do not turn the task into a busy loop. */
-    if (acq_core_caps != 0u) {
-        ms = 1024.0f / fs * 1000.0f + 1.0f;
-        if (ms < (float)acq_poll_gap_ms) ms = (float)acq_poll_gap_ms;
-    }
-    if (ms > 5000.0f) ms = 5000.0f;
-    return (uint16_t)ms;
+    /* The factory design holds about 190 ms after a hand-over (EXP-46/54);
+     * our core has no hold. The numbers and their origins: dsp/acq_timing.h. */
+    return acq_time_post_record_ms(scope_timebase_sample_rate(acq_rate_idx), acq_core_caps != 0u, acq_poll_gap_ms);
 }
 bool fpga_acq_post_edge_is_override(void) { return acq_post_edge_ms != 0; }
 /* EXP-48/49 (2026-09-14): from the edge until the bracket ends the FPGA holds
@@ -3985,7 +3965,7 @@ bool fpga_acq_post_edge_is_override(void) { return acq_post_edge_ms != 0; }
  * (and committed) at edge + fill + margin instead of at the bracket's end;
  * the ARMING read is then issued at fpga_acq_post_edge_get(). Same records
  * per second, each one ~200 ms sooner. Unmeasured rates: 300 ms. */
-void     fpga_acq_poll_gap_set(uint16_t ms)  { acq_poll_gap_ms = ms ? ms : 30u; }
+void     fpga_acq_poll_gap_set(uint16_t ms)  { acq_poll_gap_ms = ms ? ms : ACQ_POLL_GAP_MS; }
 /* Rising/Falling is an MCU-side filter: the FPGA fires on either edge and no
  * register selects one (EXP-53 50j, EXP-55). Default ON, so the Trigger Edge
  * setting means what it says in NORMAL/SINGLE; `fpga edgefilter off` restores
@@ -4260,10 +4240,7 @@ uint8_t fpga_trigger_status(void)
 {
     const scope_state_t *ss = scope_state_get();
 #if FPGA_WARM_HANDOFF_TEST
-    uint32_t stale = 2u * (uint32_t)fpga_acq_post_edge_get();
-    uint32_t aw = 2u * (uint32_t)fpga_acq_auto_wait_get();
-    if (aw > stale) stale = aw;
-    stale += 250u;
+    const uint32_t stale = acq_time_trigd_stale_ms(fpga_acq_post_edge_get(), fpga_acq_auto_wait_get());
     return (uint8_t)trig_status_eval((uint8_t)ss->trigger.mode, ss->running,
                                      acq_single_done_pub, (trig_acq_t)acq_pub_kind,
                                      xTaskGetTickCount() - acq_last_trig_tick, stale);
@@ -5011,9 +4988,7 @@ static void fpga_warmtest_acq_task(void *pv)
             SPI3_CS_DEASSERT();
             acq_force_n[0]++;
             forced_asked = true;
-            const float fs = scope_timebase_sample_rate(acq_rate_idx);
-            uint32_t ms = (fs > 0.0f) ? (uint32_t)(1000.0f / fs) + 1u : 3u;
-            vTaskDelay(pdMS_TO_TICKS(ms > 5u ? 5u : ms));
+            vTaskDelay(pdMS_TO_TICKS(acq_time_force_settle_ms(scope_timebase_sample_rate(acq_rate_idx))));
         }
         /* The configuration before the read (dsp/acq_cfg.h): a change since
          * the last note restarts the settle window. */
