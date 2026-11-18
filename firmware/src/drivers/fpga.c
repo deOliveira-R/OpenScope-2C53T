@@ -195,7 +195,6 @@ static TaskHandle_t      rx_task_handle  = NULL;
 #endif
 
 static volatile bool data_ready = false;
-static volatile bool scope_reinit_pending = false;
 static volatile bool meter_transition_busy = false;
 static volatile bool meter_moves_relays;      /* `meter relays on`: old projection (A/B) */
 /* M1/M2 state: see fpga_meter_fast_switch_set() and fpga_meter_keepalive_set(). */
@@ -315,88 +314,6 @@ static void fpga_meter_reset_transport(void)
 
     if (rx_task_handle != NULL) vTaskResume(rx_task_handle);
     if (tx_task_handle != NULL) vTaskResume(tx_task_handle);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Stock-State Bench Shadow
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void fpga_stock_shadow_write(uint8_t visible_state,
-                                    uint8_t phase,
-                                    uint8_t substate,
-                                    uint8_t flags,
-                                    uint8_t e1a,
-                                    uint8_t e1b,
-                                    uint8_t e1c,
-                                    uint8_t e1d,
-                                    uint8_t latch_355)
-{
-    fpga.stock_shadow.visible_state = visible_state;
-    fpga.stock_shadow.phase = phase;
-    fpga.stock_shadow.substate = substate;
-    fpga.stock_shadow.flags = flags;
-    fpga.stock_shadow.e1a = e1a;
-    fpga.stock_shadow.e1b = e1b;
-    fpga.stock_shadow.e1c = e1c;
-    fpga.stock_shadow.e1d = e1d;
-    fpga.stock_shadow.latch_355 = latch_355;
-    memset((void *)fpga.stock_shadow.detail_bits, 0, sizeof(fpga.stock_shadow.detail_bits));
-}
-
-void fpga_stock_diag_set(uint8_t visible_state,
-                         uint8_t phase,
-                         uint8_t substate,
-                         uint8_t flags,
-                         uint8_t e1a,
-                         uint8_t e1b,
-                         uint8_t e1c,
-                         uint8_t e1d,
-                         uint8_t latch_355)
-{
-    fpga_stock_shadow_write(visible_state, phase, substate, flags,
-                            e1a, e1b, e1c, e1d, latch_355);
-}
-
-void fpga_stock_diag_seed_base2(void)
-{
-    /* Conservative base-scope posture from the recovered compact owner:
-     * visible state 2, no packed preset active, no staged right-panel handoff.
-     * We intentionally leave no implied right-panel selection armed. */
-    fpga_stock_shadow_write(2, 0, 0, 0, 0, 0, 0, 0, 0);
-}
-
-void fpga_stock_diag_reset(void)
-{
-    fpga_stock_diag_seed_base2();
-}
-
-void fpga_stock_diag_seed_state5(uint8_t e1b, uint8_t e1d)
-{
-    /* Stable right-panel editor posture. Use a small nonzero default entry
-     * count in shell helpers so state-6 gating experiments have something to
-     * work with, but keep the packed preset bytes inactive. */
-    fpga_stock_shadow_write(5, 0, 0, 0, 0, e1b, 0, e1d, 0);
-}
-
-void fpga_stock_diag_seed_state6(uint8_t e1b, uint8_t e1d)
-{
-    /* Transient state above the right-panel editor. Stock only appears to
-     * reach this when E1B is nonzero, so callers should seed it accordingly. */
-    fpga_stock_shadow_write(6, 0, 0, 0, 0, e1b, 0, e1d, 0);
-}
-
-void fpga_stock_diag_seed_preset(uint8_t visible_state,
-                                 uint8_t phase,
-                                 uint8_t substate,
-                                 uint8_t flags,
-                                 uint8_t latch_355)
-{
-    fpga.stock_shadow.visible_state = visible_state;
-    fpga.stock_shadow.phase = phase;
-    fpga.stock_shadow.substate = substate;
-    fpga.stock_shadow.flags = flags;
-    fpga.stock_shadow.latch_355 = latch_355;
-    memset((void *)fpga.stock_shadow.detail_bits, 0, sizeof(fpga.stock_shadow.detail_bits));
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -1179,318 +1096,13 @@ static void fpga_timed_send_cmd(uint8_t cmd_hi, uint8_t cmd_lo, uint32_t delay_m
     fpga_timed_send_cmd_ex(cmd_hi, cmd_lo, delay_ms, false);
 }
 
-static void fpga_scope_select_timing(const scope_state_t *ss,
-                                     uint8_t *run_mode,
-                                     uint8_t *sample_depth,
-                                     uint8_t *tb_prescaler,
-                                     uint8_t *tb_period,
-                                     uint8_t *tb_mode,
-                                     uint8_t *acq_mode);
-static void fpga_send_scope_range_block(const scope_state_t *ss);
-static uint8_t fpga_scope_trigger_lsb(const scope_state_t *ss);
-static uint8_t fpga_scope_trigger_mode_byte(const scope_state_t *ss);
-static uint8_t fpga_scope_prefix_cmd(const scope_state_t *ss);
-
 /* A stock word to the meter SoC, OBEYED (AA 55 when the header is on). This is
  * what a meter transition's selector, the debug boot-order replay's selector
- * and the shell's `fpga wire words` use. The batch replays use the unobeyed
- * variant below. */
+ * and the shell's `fpga wire words` use. */
 void fpga_wire_send_word(uint16_t word, uint32_t delay_ms)
 {
     fpga_timed_send_cmd_ex((uint8_t)(word >> 8), (uint8_t)(word & 0xFF),
                            delay_ms, true);
-}
-
-/*
- * The shell's stock-shape replays (`fpga wire entry/scope`, `spi3 scopetest`,
- * `stock diag bridge`) go through this UNOBEYED variant. They exist to probe
- * the FPGA config-entry path by reproducing stock's USART2 byte stream, not to
- * command the meter -- and their bank words are eight live meter function
- * selectors (DCV, Diode, DC A, DC mA / ACV, Continuity, AC mA, AC A) plus
- * 0x0501 (Auto) and 0x0503 (unmeasured). Obeyed, one `fpga wire entry` would
- * walk the SoC through five functions. A word meant for the SoC is sent with
- * `fpga wire words`, which stays obeyed.
- */
-static void fpga_wire_send_word_unobeyed(uint16_t word, uint32_t delay_ms)
-{
-    fpga_timed_send_cmd((uint8_t)(word >> 8), (uint8_t)(word & 0xFF), delay_ms);
-}
-
-static void fpga_wire_send_bank_words(uint8_t bank_mode)
-{
-    static const uint16_t ch1_words[] = { 0x050C, 0x050E, 0x0510, 0x0511 };
-    static const uint16_t ch2_words[] = { 0x050D, 0x0517, 0x0516, 0x0515 };
-
-    if (bank_mode == 0 || bank_mode == 2) {
-        for (size_t i = 0; i < sizeof(ch1_words) / sizeof(ch1_words[0]); i++) {
-            fpga_wire_send_word_unobeyed(ch1_words[i], 15);
-        }
-    }
-
-    if (bank_mode == 1 || bank_mode == 2) {
-        for (size_t i = 0; i < sizeof(ch2_words) / sizeof(ch2_words[0]); i++) {
-            fpga_wire_send_word_unobeyed(ch2_words[i], 15);
-        }
-    }
-}
-
-static void fpga_send_scope_runtime_blocks(const scope_state_t *ss)
-{
-    uint8_t run_mode;
-    uint8_t sample_depth;
-    uint8_t tb_prescaler;
-    uint8_t tb_period;
-    uint8_t tb_mode;
-    uint8_t acq_mode;
-    uint8_t trigger_prefix;
-
-    fpga_scope_select_timing(ss, &run_mode, &sample_depth,
-                             &tb_prescaler, &tb_period, &tb_mode, &acq_mode);
-    fpga.acq_mode = acq_mode;
-
-    fpga_send_scope_range_block(ss);
-
-    fpga_timed_send_cmd(run_mode, FPGA_CMD_FREQ_20, 15);
-    fpga_timed_send_cmd(sample_depth, FPGA_CMD_FREQ_21, 15);
-    fpga_timed_send_cmd(tb_prescaler, 0x26, 15);
-    fpga_timed_send_cmd(tb_period, 0x27, 15);
-    fpga_timed_send_cmd(tb_mode, 0x28, 20);
-
-    trigger_prefix = fpga_scope_prefix_cmd(ss);
-    fpga_timed_send_cmd(0x00, trigger_prefix, 15);
-    fpga_timed_send_cmd(fpga_scope_trigger_lsb(ss), 0x16, 15);
-    fpga_timed_send_cmd(0x00, 0x17, 15);
-    fpga_timed_send_cmd(fpga_scope_trigger_mode_byte(ss), 0x18, 15);
-    fpga_timed_send_cmd(0x00, 0x19, 20);
-}
-
-void fpga_wire_entry(uint8_t bank_mode)
-{
-    if (!fpga.initialized) return;
-
-    fpga_wire_send_word_unobeyed(0x02A0, 20);
-    fpga_wire_send_word_unobeyed(0x0501, 15);
-    fpga_wire_send_bank_words(bank_mode);
-    fpga_wire_send_word_unobeyed(0x0503, 20);
-}
-
-void fpga_wire_scope_sequence(uint8_t bank_mode)
-{
-    const scope_state_t *ss;
-
-    if (!fpga.initialized) return;
-
-    ss = scope_state_get();
-    fpga_wire_entry(bank_mode);
-    fpga_send_scope_runtime_blocks(ss);
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Stock-State Bench Drivers
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void fpga_stock_shadow_clear_detail(void)
-{
-    memset((void *)fpga.stock_shadow.detail_bits, 0, sizeof(fpga.stock_shadow.detail_bits));
-}
-
-static bool fpga_stock_shadow_detail_nonzero(void)
-{
-    for (size_t i = 0; i < sizeof(fpga.stock_shadow.detail_bits); i++) {
-        if (fpga.stock_shadow.detail_bits[i] != 0) return true;
-    }
-    return false;
-}
-
-static void fpga_stock_shadow_seed_detail_from_cursor(void)
-{
-    uint8_t max_items = fpga.stock_shadow.e1b;
-    uint8_t index = fpga.stock_shadow.e1d;
-    uint8_t byte_index;
-    uint8_t bit_index;
-
-    fpga_stock_shadow_clear_detail();
-    if (max_items == 0) return;
-
-    if (index >= max_items) index = (uint8_t)(max_items - 1);
-    if (index > 47) index = 47;
-
-    byte_index = index / 6;
-    bit_index = index % 6;
-    fpga.stock_shadow.detail_bits[byte_index] = (uint8_t)(1U << bit_index);
-}
-
-static void fpga_stock_shadow_fill_detail(void)
-{
-    uint8_t max_items = fpga.stock_shadow.e1b;
-    uint8_t remaining = (max_items > 48) ? 48 : max_items;
-
-    fpga_stock_shadow_clear_detail();
-    for (size_t i = 0; i < sizeof(fpga.stock_shadow.detail_bits) && remaining > 0; i++) {
-        uint8_t bits = (remaining >= 6) ? 6 : remaining;
-        fpga.stock_shadow.detail_bits[i] = (uint8_t)((1U << bits) - 1U);
-        remaining = (remaining > bits) ? (uint8_t)(remaining - bits) : 0;
-    }
-}
-
-static void fpga_stock_shadow_adjust(bool next)
-{
-    uint8_t limit = fpga.stock_shadow.e1b;
-
-    if (!fpga.initialized) return;
-    if (limit == 0) return;
-
-    if (fpga.stock_shadow.e1d >= limit) {
-        fpga.stock_shadow.e1d = (uint8_t)(limit - 1);
-    } else if (next) {
-        if ((uint8_t)(fpga.stock_shadow.e1d + 1U) < limit) {
-            fpga.stock_shadow.e1d++;
-        }
-    } else if (fpga.stock_shadow.e1d > 0) {
-        fpga.stock_shadow.e1d--;
-    }
-
-    if (fpga.stock_shadow.visible_state == 5 && fpga.stock_shadow.e1c == 0) {
-        fpga_timed_send_cmd(0x00, 0x27, 15);
-        fpga_timed_send_cmd(0x00, 0x28, 20);
-    } else if (fpga.stock_shadow.visible_state == 6) {
-        fpga_timed_send_cmd(0x00, 0x29, 20);
-    }
-}
-
-void fpga_stock_diag_prev(void)
-{
-    fpga_stock_shadow_adjust(false);
-}
-
-void fpga_stock_diag_next(void)
-{
-    fpga_stock_shadow_adjust(true);
-}
-
-void fpga_stock_diag_select(void)
-{
-    if (!fpga.initialized) return;
-    if (fpga.stock_shadow.visible_state != 5) return;
-    if (fpga.stock_shadow.e1c != 0 || fpga.stock_shadow.e1b == 0) return;
-
-    if (fpga.stock_shadow.e1a == 0) {
-        fpga.stock_shadow.e1a = 1;
-        fpga_stock_shadow_seed_detail_from_cursor();
-    } else {
-        fpga.stock_shadow.e1a = 0;
-        fpga_stock_shadow_clear_detail();
-    }
-
-    fpga_timed_send_cmd(0x00, 0x28, 15);
-    fpga_timed_send_cmd(0x00, 0x26, 20);
-}
-
-void fpga_stock_diag_toggle(void)
-{
-    if (!fpga.initialized) return;
-    if (fpga.stock_shadow.visible_state != 5) return;
-    if (fpga.stock_shadow.e1c != 0 || fpga.stock_shadow.e1b == 0) return;
-
-    if (fpga.stock_shadow.e1a == 2) {
-        fpga.stock_shadow.e1a = 1;
-        fpga_stock_shadow_seed_detail_from_cursor();
-    } else {
-        fpga.stock_shadow.e1a = 2;
-        fpga_stock_shadow_fill_detail();
-    }
-
-    fpga_timed_send_cmd(0x00, 0x26, 15);
-    fpga_timed_send_cmd(0x00, 0x28, 20);
-}
-
-void fpga_stock_diag_commit(void)
-{
-    if (!fpga.initialized) return;
-
-    if (fpga.stock_shadow.visible_state == 5 &&
-        fpga.stock_shadow.e1c == 0 &&
-        fpga.stock_shadow.e1a != 0 &&
-        fpga_stock_shadow_detail_nonzero()) {
-        fpga.stock_shadow.e1c = 2;
-        fpga_timed_send_cmd(0x00, 0x2A, 20);
-        return;
-    }
-
-    if (fpga.stock_shadow.visible_state == 5 && fpga.stock_shadow.e1c == 2) {
-        fpga.stock_shadow.e1c = 1;
-        fpga_timed_send_cmd(0x00, 0x2A, 20);
-        return;
-    }
-
-    if (fpga.stock_shadow.visible_state == 5 && fpga.stock_shadow.e1c == 1) {
-        fpga_timed_send_cmd(0x00, 0x2B, 20);
-    }
-}
-
-void fpga_stock_diag_consume(void)
-{
-    if (!fpga.initialized) return;
-    if (fpga.stock_shadow.visible_state != 9 || fpga.stock_shadow.latch_355 == 0) return;
-
-    if (fpga.stock_shadow.substate == 2) {
-        fpga_stock_diag_seed_base2();
-        return;
-    }
-
-    fpga.stock_shadow.phase = 1;
-    fpga.stock_shadow.substate = 2;
-    fpga.stock_shadow.flags = 0;
-    fpga_timed_send_cmd(0x00, 0x13, 15);
-    fpga_timed_send_cmd(0x00, 0x14, 20);
-}
-
-void fpga_stock_diag_bridge_fixed(void)
-{
-    if (!fpga.initialized) return;
-
-    /* Candidate downstream branch after the detailed sub2=5 path stages
-     * 0x0501 at F69 and queues 0x13, then 0x14. We do not claim this is
-     * exact stock control flow; it is a bounded bench probe of the fixed
-     * 0x0501 materializer family around 0x08006060. */
-    fpga_timed_send_cmd(0x00, 0x13, 15);
-    fpga_timed_send_cmd(0x00, 0x14, 20);
-    fpga_wire_send_word_unobeyed(0x0501, 15);
-    fpga_timed_send_cmd(0x00, 0x1D, 15);
-    fpga_timed_send_cmd(0x00, 0x1B, 20);
-}
-
-void fpga_stock_diag_bridge_dynamic(uint8_t bank_mode)
-{
-    if (!fpga.initialized) return;
-
-    /* Alternate candidate downstream branch: after 0x13/0x14, land in the
-     * dynamic 0x050x family materializer around 0x08006120 instead of the
-     * fixed 0x0501 sibling. */
-    fpga_timed_send_cmd(0x00, 0x13, 15);
-    fpga_timed_send_cmd(0x00, 0x14, 20);
-    fpga_wire_send_bank_words(bank_mode);
-    fpga_timed_send_cmd(0x00, 0x1B, 20);
-}
-
-void fpga_stock_diag_reenter(void)
-{
-    if (!fpga.initialized) return;
-
-    /* Conservative stock-ish bridging:
-     * - visible state 6 enters the editor by collapsing to state 5
-     * - visible state 9 can consume its packed preset before we re-enter the
-     *   current clean-room scope configuration path
-     */
-    if (fpga.stock_shadow.visible_state == 9 && fpga.stock_shadow.latch_355 != 0) {
-        fpga_stock_diag_consume();
-    }
-
-    if (fpga.stock_shadow.visible_state == 6 && fpga.stock_shadow.e1b != 0) {
-        fpga.stock_shadow.visible_state = 5;
-    }
-
-    fpga_scope_reinit();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2129,26 +1741,6 @@ static void fpga_scope_select_runtime(const scope_state_t *ss,
     fpga_scope_select_timing(ss, run_mode, sample_depth,
                              tb_prescaler, tb_period, tb_mode, acq_mode);
     fpga.acq_mode = *acq_mode;
-}
-
-void fpga_scope_refresh_acq_mode(void)
-{
-    const scope_state_t *ss;
-    uint8_t run_mode;
-    uint8_t sample_depth;
-    uint8_t tb_prescaler;
-    uint8_t tb_period;
-    uint8_t tb_mode;
-    uint8_t acq_mode;
-
-    if (!fpga.initialized) return;
-
-    ss = scope_state_get();
-    fpga_scope_select_runtime(ss, &run_mode, &sample_depth,
-                              &tb_prescaler, &tb_period, &tb_mode, &acq_mode);
-
-    fpga_timed_send_cmd(run_mode, FPGA_CMD_FREQ_20, 15);
-    fpga_timed_send_cmd(sample_depth, FPGA_CMD_FREQ_21, 20);
 }
 
 void fpga_scope_heartbeat(void)
@@ -6066,7 +5658,6 @@ void fpga_init(void)
 {
     /* Clear state */
     memset(&fpga, 0, sizeof(fpga));
-    fpga_stock_diag_reset();
 
     /* ---------------------------------------------------------------
      * Step 1: AFIO remap — disable JTAG-DP, keep SW-DP
@@ -7160,23 +6751,6 @@ void fpga_scope_reinit(void)
     fpga_scope_posture_gen++;     /* fpga.h: the model re-sends stored SPI3 sets */
 }
 
-void fpga_request_scope_reinit(void)
-{
-    scope_reinit_pending = true;
-}
-
-bool fpga_service_requests(void)
-{
-    extern volatile device_mode_t current_mode;
-
-    if (!scope_reinit_pending || !fpga.initialized) return false;
-    if (current_mode != MODE_OSCILLOSCOPE) return false;
-
-    scope_reinit_pending = false;
-    fpga_scope_reinit();
-    return true;
-}
-
 void fpga_enter_scope_mode(void)
 {
 #if FPGA_WARM_HANDOFF_TEST
@@ -7193,7 +6767,6 @@ void fpga_enter_scope_mode(void)
      * 0x08029D40 has no mode-switch caller; the manual has you leave it
      * running and look at it in scope mode). */
 
-    fpga_stock_diag_seed_base2();
     fpga_scope_reinit();
     /* CH1's / CH2's offset references (DAC1 / TMR13) from the restored
      * range and position (no-op without a usable cal page). The generator
@@ -7224,8 +6797,8 @@ void fpga_enter_siggen_mode(void)
      * scope = 2), so case 2 (0x08012A6C: 02 03 04 05 06 08 ...) is the
      * scope arm. Siggen entry 0x0800E5E4 sets F68 = 3 and tail-calls the
      * dispatcher, whose case 3 (0x08012ACE) queues 00 08 09 07/0A 16 17
-     * 18 19: internal selector bytes (07/0A and 16..19 are the ones our
-     * `fpga scope trig` shell command treats as trigger ops), none of them
+     * 18 19: internal selector bytes (07/0A and 16..19 are the trigger
+     * words of fpga_send_scope_sequence), none of them
      * a generator op, so they are not replayed either. The generator itself is pure MCU (DAC2,
      * TMR7, DMA2) in stock: 0x08029D40 and 0x08029E14 touch no USART. */
 
@@ -7531,18 +7104,6 @@ void fpga_meter_reinit(uint8_t submode)
 #endif
     if (!fpga.initialized) return;
     fpga_apply_meter_transition(submode, true);
-}
-
-void fpga_scope_wake(void)
-{
-#if FPGA_WARM_HANDOFF_TEST
-    return;
-#endif
-    if (!fpga.initialized) return;
-
-    fpga_send_meter_wake_preamble();
-    fpga_scope_delay_ms(10);
-    fpga_scope_reinit();
 }
 
 void fpga_send_raw_frame(const uint8_t *frame)

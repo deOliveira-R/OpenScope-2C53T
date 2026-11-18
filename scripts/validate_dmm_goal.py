@@ -604,7 +604,7 @@ def verify_meter_transition_production_contract() -> dict[str, Any]:
     )
     reinit = between(
         "void fpga_meter_reinit(uint8_t submode)",
-        "\nvoid fpga_scope_wake",
+        "\nvoid fpga_send_raw_frame",
     )
 
     required_helper = [

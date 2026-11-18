@@ -668,41 +668,6 @@ void usb_debug_sh_print_recent_tx_frames(void)
     usb_print_recent_tx_frames();
 }
 
-static void fpga_stock_diag_print(void)
-{
-    /* MCU-SIDE MODEL, NOT A DEVICE READ. Every field here is written by our own
-     * `fpga stock ...` commands (fpga_stock_shadow_write); nothing in it is
-     * clocked off the FPGA. All-zero means "not seeded", not "the FPGA reports
-     * zero". Labelled because it prints next to blocks that ARE device reads. */
-    usb_debug_printf(
-        "\r\n=== Stock Shadow (MCU-side model — not read from the FPGA) ===\r\n"
-        "F68..6B: %u / %u / %u / %u\r\n"
-        "E1A..D:  %u / %u / %u / %u\r\n"
-        "0x355:   %u\r\n",
-        fpga.stock_shadow.visible_state,
-        fpga.stock_shadow.phase,
-        fpga.stock_shadow.substate,
-        fpga.stock_shadow.flags,
-        fpga.stock_shadow.e1a,
-        fpga.stock_shadow.e1b,
-        fpga.stock_shadow.e1c,
-        fpga.stock_shadow.e1d,
-        fpga.stock_shadow.latch_355
-    );
-
-    usb_debug_printf("E12..19:");
-    for (size_t i = 0; i < sizeof(fpga.stock_shadow.detail_bits); i++) {
-        usb_debug_printf(" %02X", fpga.stock_shadow.detail_bits[i]);
-    }
-    usb_send_str("\r\n");
-}
-
-/* For the feature shell files (shell_internal.h); fpga_stock_diag_print() unchanged. */
-void usb_debug_sh_stock_diag_print(void)
-{
-    fpga_stock_diag_print();
-}
-
 /* ═══════════════════════════════════════════════════════════════════
  * Command Handlers
  * ═══════════════════════════════════════════════════════════════════ */
@@ -1000,8 +965,6 @@ static void cmd_status(void)
             usb_send_str("\r\n");
         }
     }
-
-    fpga_stock_diag_print();
 
     /* Show last RX frame if valid */
     if (fpga.rx_frame_valid) {

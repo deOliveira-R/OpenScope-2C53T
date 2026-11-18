@@ -970,12 +970,6 @@ static void vDisplayTask(void *pvParameters)
         if (task_call_serve(&g_display_call))
             health_checkin(health_slot_display);
 
-#ifndef EMULATOR_BUILD
-        if (fpga_service_requests()) {
-            g_scope_entered_frame = frame;
-        }
-#endif
-
         /* Periodic redraws for active modes.
          *
          * All modes receive explicit redraws via queue commands above
