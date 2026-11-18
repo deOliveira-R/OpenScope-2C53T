@@ -3889,8 +3889,8 @@ static void cmd_siggen(const char *args)
  *   SC_NEEDARGS command requires arguments; a bare name prints the row's
  *               help instead of running the handler — this preserves the
  *               old chain's "trailing space required" contract and matters
- *               because parse_int("") SUCCEEDS with 0, so e.g. a bare
- *               "fpga cmd" would otherwise send 0x00 0x00 at the FPGA.
+ *               because parse_int("") SUCCEEDS with 0, so a handler given
+ *               a bare name would otherwise act on the value 0.
  *   SC_SPI3     handler drives the raw SPI3 bus: the dispatcher parks the
  *               acquisition task around the call (audit P0.1).
  *

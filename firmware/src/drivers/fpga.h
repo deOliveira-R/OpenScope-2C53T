@@ -950,7 +950,7 @@ void fpga_send_raw_frame(const uint8_t *frame);
 
 /* A stock word to the meter SoC, OBEYED: with the AA 55 header on, a 0x05xx
  * word sent here switches the meter SoC's function (a meter transition's
- * selector, `fpga wire words`). */
+ * selector). */
 void fpga_wire_send_word(uint16_t word, uint32_t delay_ms);
 /* USART2 late bring-up — see the block comment in fpga.c. `fpga usart on`
  * enables it the way fpga_init would and reports CTRL1/BAUDR back so the

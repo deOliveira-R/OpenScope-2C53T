@@ -42,7 +42,6 @@ void     cmd_spi3_acqread_one(uint8_t opcode);
 
 void cmd_usart_tx(const char *args);
 void cmd_usart_raw(const char *args);
-void cmd_fpga_frame(const char *args);
 void cmd_bench_snapshot(void);
 void cmd_bench_restore(void);
 void cmd_gpio_mode(const char *args);
@@ -56,7 +55,6 @@ void cmd_flash_diag(void);
 void cmd_flash_wtest(const char *args);
 void cmd_scope_trig(const char *args);
 void cmd_scope_trig2(const char *args);
-void cmd_fpga_cmd(const char *args);
 void cmd_fpga_usart(const char *args);
 void cmd_fpga_autowait(const char *args);
 void cmd_fpga_pollgap(const char *args);
@@ -69,7 +67,6 @@ void cmd_fpga_diag_clear(void);
 void cmd_fpga_configbb(void);
 void cmd_fpga_slot(const char *args);
 void cmd_fpga_reload(const char *args);
-void cmd_fpga_wire_words(const char *args);
 void cmd_fpga_meter_reinit(const char *args);
 void cmd_spi3_read(const char *args);
 void cmd_spi3_frame(void);
@@ -112,10 +109,6 @@ void cmd_spi3_seq(const char *args);
           "flash wtest <addr> CONFIRM      Non-destructive write-primitive self-test (blank 4KB sector)\r\n"), \
     CMD_V("flash diag", cmd_flash_diag, SC_EXACT, \
           "flash diag                      W25Q SR1/SR2/SR3 + WEL-latch check\r\n"), \
-    CMD_A("fpga cmd", cmd_fpga_cmd, SC_NEEDARGS, \
-          "fpga cmd <hi> <lo>              Send FPGA command bytes (HEX)\r\n" "  e.g.: fpga cmd 05 14 (sends 0x05 0x14)\r\n" "        fpga cmd 0x0509 (sends 0x05 0x09)\r\n"), \
-    CMD_A("fpga frame", cmd_fpga_frame, SC_NEEDARGS, \
-          "fpga frame <hi> <lo> [p1..p5 [ck]]  Build/send full 10-byte frame (HEX)\r\n" "  e.g.: fpga frame 00 0B 01 00 00 00 00\r\n"), \
     CMD_V("fpga diag clear", cmd_fpga_diag_clear, SC_EXACT, \
           "fpga diag clear                 Clear FPGA bench counters/state\r\n"), \
     CMD_V("fpga selftest", cmd_fpga_selftest, SC_EXACT, \
@@ -126,8 +119,6 @@ void cmd_spi3_seq(const char *args);
           "fpga reload [builtin|slot]      Power-cycle the FPGA (PC6) and load a design, no unit power cycle\r\n"), \
     CMD_V("fpga configbb", cmd_fpga_configbb, SC_EXACT, \
           "fpga configbb                   Run GPIO bit-bang SSPI config on demand (H7 step 1)\r\n"), \
-    CMD_A("fpga wire words", cmd_fpga_wire_words, SC_NEEDARGS, \
-          "fpga wire words <w...>         Send final 16-bit wire words directly\r\n"), \
     CMD_V("fpga scope cal", cmd_fpga_scope_cal, SC_EXACT, \
           "fpga scope cal                  Dump the compiled vertical cal table (mV/count, V/div, tier)\r\n"), \
     CMD_A("fpga scope freq", cmd_fpga_scope_freq, 0, \

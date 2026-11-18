@@ -1,8 +1,8 @@
 /*
  * OpenScope 2C53T - the bench shell (FEATURE_BENCHSHELL)
  *
- * The bring-up and bench commands of the debug shell: raw FPGA frames and
- * wire words, SPI3, GPIO, USART, memory and W25Q pokes, the FPGA design slot
+ * The bring-up and bench commands of the debug shell: SPI3 to the FPGA,
+ * GPIO, words to the meter chip on USART2, memory and W25Q pokes, the FPGA design slot
  * and reload, the acquisition experiments (EXP-xx knobs). The commands that
  * exist only to find out how an unknown board works are the reverse-engineering
  * toolkit (src/re/, FEATURE_RETOOLS), which calls the bus helpers this file
@@ -328,12 +328,12 @@ void cmd_usart_tx(const char *args)
      * parsed up to eight, so `usart tx 00 09 AA BB CC` sent two bytes and
      * reported "queued" with no hint that three were dropped — an operator
      * building a frame here got a two-byte command and a plausible receipt.
-     * `fpga frame` is the command that takes a whole frame; say so instead of
-     * quietly truncating. */
+     * `usart raw` (the toolkit, app-re) is the command that takes a whole
+     * frame; say so instead of quietly truncating. */
     while (*p == ' ') p++;
     if (count > 2 || *p != '\0') {
         usb_send_str("ERR: usart tx sends exactly two bytes (cmd_hi cmd_lo).\r\n"
-                     "     For a full 10-byte frame use: fpga frame <hi> <lo> [p1..p5 [ck]]\r\n");
+                     "     For a full 10-byte frame use: usart raw <10 hex bytes> (app-re image)\r\n");
         return;
     }
 
@@ -403,70 +403,6 @@ void cmd_usart_raw(const char *args)
     fpga_send_raw_frame(frame);
 
     /* Wait for response */
-    vTaskDelay(pdMS_TO_TICKS(200));
-    fpga_diag_print_delta(&before);
-}
-
-void cmd_fpga_frame(const char *args)
-{
-    uint8_t frame[10] = {0};
-    uint8_t bytes[8];
-    int count = 0;
-    const char *p = args;
-    fpga_diag_snapshot_t before;
-
-    while (*p && count < 8) {
-        while (*p == ' ') p++;
-        if (!*p) break;
-
-        uint32_t val;
-        /* HEX — matches `usart raw` and the examples in this command's own
-         * help, which decimal parsing would have rejected (EXP-23). */
-        if (parse_hex32(p, &val) != 0 || val > 0xFF) {
-            usb_debug_printf("ERR: bad hex byte at '%s'\r\n", p);
-            return;
-        }
-
-        bytes[count++] = (uint8_t)val;
-        while (*p && *p != ' ') p++;
-    }
-
-    while (*p == ' ') p++;
-    if (*p != '\0') {
-        usb_send_str("ERR: too many bytes\r\n");
-        return;
-    }
-
-    if (count < 2) {
-        usb_send_str("Usage: fpga frame <hi> <lo> [p1 p2 p3 p4 p5 [ck]]\r\n"
-                     "  Builds [00 00 hi lo p1 p2 p3 p4 p5 ck]\r\n"
-                     "  Default ck = (hi + lo) & 0xFF\r\n"
-                     "  e.g.: fpga frame 00 0B 01 00 00 00 00\r\n");
-        return;
-    }
-
-    frame[2] = bytes[0];
-    frame[3] = bytes[1];
-    for (int i = 2; i < count && i < 7; i++) {
-        frame[i + 2] = bytes[i];
-    }
-
-    if (count >= 8) {
-        frame[9] = bytes[7];
-    } else {
-        frame[9] = (uint8_t)((frame[2] + frame[3]) & 0xFF);
-    }
-
-    if (!usart_tx_wire_live()) return;
-
-    usb_debug_printf("TX frame:");
-    for (int i = 0; i < 10; i++) {
-        usb_debug_printf(" %02X", frame[i]);
-    }
-    usb_send_str("\r\n");
-
-    fpga_diag_snapshot_take(&before);
-    fpga_send_raw_frame(frame);
     vTaskDelay(pdMS_TO_TICKS(200));
     fpga_diag_print_delta(&before);
 }
@@ -1172,57 +1108,6 @@ void cmd_scope_trig2(const char *args)
                      code, code, (unsigned long)(mv / 1000), (unsigned long)(mv % 1000));
 }
 
-void cmd_fpga_cmd(const char *args)
-{
-    uint32_t cmd_hi = 0, cmd_lo = 0;
-    const char *space = strchr(args, ' ');
-    fpga_diag_snapshot_t before;
-
-    char cmd_str[8];
-    if (space) {
-        int len = space - args;
-        if (len >= (int)sizeof(cmd_str)) { usb_send_str("ERR\r\n"); return; }
-        memcpy(cmd_str, args, len);
-        cmd_str[len] = '\0';
-        /* HEX, not parse_int(). FPGA command bytes are written in hex
-         * everywhere in this project; parsing them as decimal made
-         * `fpga cmd 05 14` transmit 0x050E and print a plausible
-         * confirmation of the wrong command (EXP-23). */
-        if (parse_hex32(space + 1, &cmd_lo) != 0 || cmd_lo > 0xFF) {
-            usb_send_str("Usage: fpga cmd <hi> <lo>   (HEX)\r\n");
-            return;
-        }
-    } else {
-        strncpy(cmd_str, args, sizeof(cmd_str) - 1);
-        cmd_str[sizeof(cmd_str) - 1] = '\0';
-    }
-
-    if (parse_hex32(cmd_str, &cmd_hi) != 0) {
-        usb_send_str("Usage: fpga cmd <hi> <lo>   (HEX)\r\n");
-        return;
-    }
-
-    if (space == NULL) {
-        /* Single combined value form: fpga cmd 0x0509 */
-        if (cmd_hi > 0xFFFF) {
-            usb_send_str("Usage: fpga cmd <hi> <lo>   (HEX)\r\n");
-            return;
-        }
-        cmd_lo = cmd_hi & 0xFF;
-        cmd_hi = (cmd_hi >> 8) & 0xFF;
-    } else if (cmd_hi > 0xFF) {
-        usb_send_str("Usage: fpga cmd <hi> <lo>   (HEX)\r\n");
-        return;
-    }
-
-    fpga_diag_snapshot_take(&before);
-    if (!usart_send_cmd_reporting((uint8_t)cmd_hi, (uint8_t)cmd_lo)) return;
-
-    /* Wait for response */
-    vTaskDelay(pdMS_TO_TICKS(200));
-    fpga_diag_print_delta(&before);
-}
-
 /* `fpga usart [on|off]` — bring USART2 up AFTER config (stock's order) and
  * report the registers back. Coldtrace builds leave it dark; stock's channel
  * configuration command lives on this bus. Prints RX counters so "did anything
@@ -1752,51 +1637,6 @@ void cmd_fpga_configbb(void)
     usb_debug_printf("  close IDCODE(0x11)=%s (silent=port CLOSED=configured)\r\n",
                      fpga.probe_id_bit_close == 0 ? "0x0120681B ANSWERS (still open)"
                                                   : "silent/unanchored");
-}
-
-void cmd_fpga_wire_words(const char *args)
-{
-    char buf[192];
-    char *saveptr = NULL;
-    char *tok;
-    uint32_t value;
-    uint16_t words[48];
-    size_t count = 0;
-    fpga_diag_snapshot_t before;
-
-    if (args == NULL || *args == '\0' || strlen(args) >= sizeof(buf)) {
-        usb_send_str("Usage: fpga wire words <word1> [word2 ...]\r\n");
-        return;
-    }
-
-    strcpy(buf, args);
-
-    /* Parse the WHOLE list before transmitting any of it. This used to send
-     * each word as it was parsed, so `fpga wire words 0501 0502 oops` drove
-     * two words onto the wire and then printed nothing but a usage line — the
-     * operator reads "syntax error, nothing happened" while the FPGA has been
-     * half-driven. Validate first, then commit. */
-    tok = strtok_r(buf, " \t", &saveptr);
-    while (tok != NULL) {
-        if (count >= (sizeof(words) / sizeof(words[0]))) {
-            usb_debug_printf("ERR: at most %u words\r\n",
-                             (unsigned)(sizeof(words) / sizeof(words[0])));
-            return;
-        }
-        if (parse_int(tok, &value) != 0 || value > 0xFFFF) {
-            usb_send_str("Usage: fpga wire words <word1> [word2 ...]\r\n");
-            return;
-        }
-        words[count++] = (uint16_t)value;
-        tok = strtok_r(NULL, " \t", &saveptr);
-    }
-
-    fpga_diag_snapshot_take(&before);
-    for (size_t i = 0; i < count; i++)
-        fpga_wire_send_word(words[i], 15);
-
-    usb_debug_printf("Wire words sent: %u\r\n", (unsigned)count);
-    fpga_diag_print_delta(&before);
 }
 
 void cmd_fpga_meter_reinit(const char *args)

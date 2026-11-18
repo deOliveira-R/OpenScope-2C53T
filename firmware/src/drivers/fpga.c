@@ -1072,8 +1072,8 @@ static void fpga_timed_send_cmd(uint8_t cmd_hi, uint8_t cmd_lo, uint32_t delay_m
 }
 
 /* A stock word to the meter SoC, OBEYED (AA 55 when the header is on). This is
- * what a meter transition's selector, the debug boot-order replay's selector
- * and the shell's `fpga wire words` use. */
+ * what a meter transition's selector and the debug boot-order replay's
+ * selector use. */
 void fpga_wire_send_word(uint16_t word, uint32_t delay_ms)
 {
     fpga_timed_send_cmd_ex((uint8_t)(word >> 8), (uint8_t)(word & 0xFF),

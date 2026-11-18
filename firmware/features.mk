@@ -135,8 +135,8 @@ USBDRIVE_shared    := usb_debug.o:cmd_usb$$|usb_share|usbmode
 USBDRIVE_bit       := 2
 
 # ── bench shell ───────────────────────────────────────────────────────
-# The bring-up and bench commands of the debug shell (raw FPGA frames, SPI3,
-# GPIO, USART, memory and W25Q pokes, the FPGA design slot and reload, the
+# The bring-up and bench commands of the debug shell (SPI3 to the FPGA,
+# GPIO, words to the meter chip on USART2, memory and W25Q pokes, the FPGA design slot and reload, the
 # acquisition experiment knobs). Handlers:
 # src/drivers/shell_bench.c, rows: shell_bench.h. Off: `help` does not list
 # them and they answer "Unknown command"; everything a user, the host client

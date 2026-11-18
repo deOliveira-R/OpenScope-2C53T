@@ -8,13 +8,12 @@
  *   help                           - List available commands
  *   version                        - Firmware version info
  *   status                         - FPGA and system status
- *   usart tx <hex bytes>           - Send raw USART2 frame to FPGA
+ *   usart tx <hi> <lo>             - Send a two-byte word on USART2 (the meter chip)
  *   gpio set <port><pin> <0|1>     - Set GPIO pin state
  *   gpio read <port><pin>          - Read GPIO pin state
  *   gpio scan                      - Scan all FPGA-related pins
  *   mem read <hex_addr> [count]    - Read memory/registers (32-bit)
  *   mem write <hex_addr> <hex_val> - Write memory/register (32-bit)
- *   fpga cmd <cmd> [param]         - Send FPGA command (decimal)
  *   meter wave                     - Show DMM voltage waveform sample stats
  *   spi3 read [len]                - Raw SPI3 read and hex dump
  */

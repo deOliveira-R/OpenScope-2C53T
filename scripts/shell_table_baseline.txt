@@ -28,11 +28,9 @@ flash wtest	cmd_flash_wtest	0x02	flash wtest <addr> CONFIRM      Non-destructive
 fpga acqbr	cmd_fpga_acqbr	0x00	fpga acqbr [0-7|off]            SPI3 clock the acq task sets before each pair (EXP-46)\r\n
 fpga autowait	cmd_fpga_autowait	0x00	fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n
 fpga cfgsettle	cmd_fpga_cfgsettle	0x00	fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n
-fpga cmd	cmd_fpga_cmd	0x02	fpga cmd <hi> <lo>              Send FPGA command bytes (HEX)\r\n  e.g.: fpga cmd 05 14 (sends 0x05 0x14)\r\n        fpga cmd 0x0509 (sends 0x05 0x09)\r\n
 fpga configbb	cmd_fpga_configbb	0x01	fpga configbb                   Run GPIO bit-bang SSPI config on demand (H7 step 1)\r\n
 fpga core	cmd_fpga_core	0x00	fpga core [fix on|off]          The capture core: identity, status, register check, AUTO's forced records\r\n
 fpga diag clear	cmd_fpga_diag_clear	0x01	fpga diag clear                 Clear FPGA bench counters/state\r\n
-fpga frame	cmd_fpga_frame	0x02	fpga frame <hi> <lo> [p1..p5 [ck]]  Build/send full 10-byte frame (HEX)\r\n  e.g.: fpga frame 00 0B 01 00 00 00 00\r\n
 fpga interleave	cmd_fpga_interleave	0x00	fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\nfpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n
 fpga meter reinit	cmd_fpga_meter_reinit	0x00	fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n
 fpga pollgap	cmd_fpga_pollgap	0x00	fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n
@@ -55,7 +53,6 @@ fpga selftest	cmd_fpga_selftest	0x01	fpga selftest                   Preconditio
 fpga slot	cmd_fpga_slot	0x00	fpga slot [info|put <len> <crc32hex> <name> [force]|data <off> <hex>|pos|end|boot on|off|clear]\r\n                                FPGA design stored on the flash (scripts/fpga_put.py)\r\n
 fpga unrotate	cmd_fpga_unrotate	0x00	fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n
 fpga usart	cmd_fpga_usart	0x00	fpga usart [on|off]             Bring USART2 up post-config; show CTRL1+RX\r\n
-fpga wire words	cmd_fpga_wire_words	0x02	fpga wire words <w...>         Send final 16-bit wire words directly\r\n
 fwapply	cmd_fwapply	0x01	fwapply                         Install the staged image over the app slot\r\n
 fwload	cmd_fwload	0x02	fwload <size> <crc32hex> [a|b]  Stage an image into W25Q cache slot a/b\r\n  then stream exactly <size> raw bytes (scripts/cdc_flash.py does both)\r\n
 fwstat	cmd_fwstat	0x01	fwstat                          Staging state / byte count / verdict\r\n
