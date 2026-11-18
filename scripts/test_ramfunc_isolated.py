@@ -132,7 +132,7 @@ def ram_func_symbols(elf: Path) -> set:
 
 def build_guest() -> Path:
     env = dict(os.environ)
-    subprocess.run(["make", "guest", f"BUILD_DIR={BUILD_DIR}"], cwd=FIRMWARE, env=env,
+    subprocess.run(["make", "guest-coldtrace-meter", f"BUILD_DIR={BUILD_DIR}"], cwd=FIRMWARE, env=env,
                    capture_output=True, text=True, check=True)
     return FIRMWARE / BUILD_DIR / "firmware.elf"
 
@@ -151,7 +151,7 @@ def guest_elf() -> Path:
         try:
             _GUEST_ELF = build_guest()
         except subprocess.CalledProcessError as e:
-            raise AssertionError(f"make guest failed:\n{e.stdout[-2000:]}\n{e.stderr[-2000:]}")
+            raise AssertionError(f"make guest-coldtrace-meter failed:\n{e.stdout[-2000:]}\n{e.stderr[-2000:]}")
     return _GUEST_ELF
 
 

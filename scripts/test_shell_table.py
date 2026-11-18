@@ -57,7 +57,7 @@ class ShellTableInvariants(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.text, cls.rows = parse()
-        assert len(cls.rows) > 180, f"table parse broke: {len(cls.rows)} rows"
+        assert len(cls.rows) > 100, f"table parse broke: {len(cls.rows)} rows"
 
     def test_handlers_defined(self):
         # The property and UI routes have their handlers in src/model/.

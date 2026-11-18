@@ -115,7 +115,7 @@ BUILDS = (
               [AT32_LIB, FREERTOS]),
     # The bench build: image at 0x08007000 under the FNIRSI factory IAP
     # bootloader, -DGUEST_BUILD. Every bench session runs this one.
-    BuildSpec("guest", FIRMWARE, ["make", "guest"], "build-gate-guest", "firmware.bin",
+    BuildSpec("guest", FIRMWARE, ["make", "guest-coldtrace-meter"], "build-gate-guest", "firmware.bin",
               [AT32_LIB, FREERTOS]),
     # -DEMULATOR_BUILD. Compiles a materially different set of code paths
     # (stubbed clock init, tasks compiled out), so it catches breakage the two
@@ -325,7 +325,7 @@ class FirmwareBuildTests(unittest.TestCase):
         self._assert_builds("app")
 
     def test_guest_builds(self) -> None:
-        """`make guest` -- the bench image at 0x08007000. Ground rule 5's headline target."""
+        """`make guest-coldtrace-meter` -- the image at 0x08007000 under the factory bootloader."""
         self._assert_builds("guest")
 
     def test_emu_builds(self) -> None:
