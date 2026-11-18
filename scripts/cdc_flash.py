@@ -16,7 +16,7 @@ it — a clean boot. The CDC port disappears; that is success, not a crash. Keep
 USB attached: the cable carries the power rail through the reset.
 
 The image must be linked for the app slot the installer writes, 0x08007000 —
-`make guest` here, and the 2C23T port's own default. The plain `make` flavour is
+`make guest-coldtrace-meter` here, and the 2C23T port's own default. The plain `make` flavour is
 for the HID bootloader: its vector table sits at 0x08004000, so `objcopy` emits a
 file based there, and installing it at 0x08007000 puts everything 0x3000 low. It
 passes every gate on the way (at offset 0 it holds a real vector table) and the

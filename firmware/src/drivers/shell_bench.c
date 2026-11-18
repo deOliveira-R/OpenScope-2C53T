@@ -1920,7 +1920,7 @@ static void spi3_frame_dump(const char *name, const uint8_t *buf)
  * Coherence: the acq task commits CH1+CH2 atomically under acq_frame_gen
  * (odd = commit in progress), so a copy bracketed by an unchanged EVEN
  * generation is one capture on both channels — which is what makes the
- * CH1-vs-CH2 relative-phase measurement in scripts/exp22_stability.py valid.
+ * CH1-vs-CH2 relative-phase measurement valid.
  * Touches RAM only (no SPI3), so acq stays live, same as `spi3 read`. */
 void cmd_spi3_frame(void)
 {

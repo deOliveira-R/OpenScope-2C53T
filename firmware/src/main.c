@@ -1254,7 +1254,7 @@ int main(void)
      * For now, use Settings > Firmware Update for software DFU entry. */
 
     /* NOTE: EOPB0 must be set to 0xFE (224KB SRAM) via DFU option bytes
-     * before this firmware will work. See eopb0_setup.c or use:
+     * before this firmware will work. Use:
      *   dfu-util -a 1 -d 2e3c:df11 -s 0x1FFFF800 -D option_bytes48.bin */
 
     /* Feed watchdog early — IWDG may still be running from previous boot

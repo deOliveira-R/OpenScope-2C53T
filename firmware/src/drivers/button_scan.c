@@ -19,7 +19,7 @@
 /* ═══════════════════════════════════════════════════════════════════
  * Hardware-confirmed button bit → button_id_t mapping
  *
- * Bit indices from fulltest2.c hardware test (2026-04-01):
+ * Bit indices from a hardware test (2026-04-01):
  *   0=POWER, 1=AUTO, 2=CH1, 3=MOVE, 4=SELECT, 5=TRIGGER,
  *   6=PRM(?), 7=CH2, 8=SAVE, 9=MENU, 10=UP, 11=DOWN,
  *   12=LEFT, 13=RIGHT, 14=PLAY/PAUSE
@@ -226,9 +226,9 @@ void button_scan_init(QueueHandle_t button_queue) {
      *
      * PB7 (PRM) is active-HIGH, unlike PC8/PC13 which are active-LOW. It
      * needs a PULL-DOWN so the idle state reads 0 and a press reads 1.
-     * Previously this was configured pull-up (copied from fulltest2.c),
+     * Previously this was configured pull-up (copied from an early test program),
      * which made PB7 always read HIGH → press was undetectable. Working
-     * config confirmed against btntest2.c @ line 176 (2026-04-01 bench test).
+     * config confirmed on the bench (2026-04-01).
      */
     pin_input_pullup  (GPIOC, GPIO_PINS_8);   /* PC8: POWER (active LOW) */
     pin_input_pulldown(GPIOB, GPIO_PINS_7);   /* PB7: PRM   (active HIGH) */

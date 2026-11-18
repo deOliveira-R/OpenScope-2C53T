@@ -306,6 +306,32 @@ replies; `gpio set`, `gpio read` and `pinlog` drive and watch pins.
 `scripts/bench.py` wraps them with a signal generator and with statistics
 that refuse a result that has no control ([README-bench.md](../../scripts/README-bench.md)).
 
+The firmware has its own reverse-engineering feature, off in every product
+and bench image:
+
+```
+make -C firmware app-re        # the bench image plus the toolkit commands (profile `re`)
+```
+
+`re pinsweep` lists the candidate pins; `re pinsweep run` looks for the MCU
+pin wired to the FPGA's RECONFIG_N. It pulses one candidate low at a time and
+watches the configuration port's STATUS register, each read checked against
+the IDCODE. A hit can leave the FPGA without a design (`fpga reload builtin`
+loads ours again). Board data: `firmware/src/re/pin_sweep_table.h` holds the
+candidates, the pins that must never be pulsed (the power latch first) and
+the IDCODE; `make -C firmware test-re-pin-sweep` fails the build if a
+candidate is on the forbidden list. Not run on the 2C53T since it became a
+shell command: the pin is known here (PC6).
+
+Build knobs for bench work on the configuration path:
+
+| Build | What it changes |
+|---|---|
+| `make guest-coldtrace-la` | `FPGA_BB_HALF_DELAY=60`: the bit-bang configuration clock slowed to 1-2 MHz, so a 24 MS/s logic analyser decodes the whole upload |
+| `make app-rtt` | `DEBUG_SHELL_RTT_ONLY`: the shell on RTT only, for a board whose USB does not enumerate yet (needs a debug probe) |
+| `make app-faulttest` | `FAULT_SELFTEST`: raises a fault 10 s after boot, to check the fault record without a probe |
+| `make guest-caldump` | `CAL_DUMP_MODE`: step 8's read-only dump of one internal flash sector |
+
 ## Other documents in this directory
 
 | File | What it holds |

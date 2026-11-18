@@ -2540,7 +2540,7 @@ static void draw_scope_debug(const theme_t *th)
      *      on-device proof of which clock the config frame actually ran at.
      * ED = STATUS_REGISTER (0x41) read at /256 immediately after 0x15.
      *      SYSTEM_EDIT_MODE is bit 7 of the ASSEMBLED 32-bit word, i.e. bit 7 of
-     *      ED[3] — NOT bit 7 of ED[0], as this comment and scripts/swd_fpga_status.sh
+     *      ED[3] — NOT bit 7 of ED[0], as this comment and tools/re/swd/swd_fpga_status.sh
      *      both said until 2026-07-28. (Same verdict either way for 0x00039020:
      *      ED[3]=0x20, bit 7 clear. But the test was reading bit 31.)
      *      Exp H demoted this from "the wall" to a non-discriminator: stock reads
