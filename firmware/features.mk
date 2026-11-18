@@ -192,6 +192,8 @@ PROFILE_full_without    := benchshell meterdebug
 
 # Named targets and their profile (any target not listed: default).
 PROFILE_OF_app-coldtrace-meter := bench
+PROFILE_OF_app-rtt := bench
+PROFILE_OF_app-faulttest := bench
 PROFILE_OF_app-full := full
 
 ######################################################################

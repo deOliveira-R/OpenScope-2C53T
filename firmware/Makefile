@@ -588,16 +588,6 @@ emu: LDFLAGS += -Wl,--allow-multiple-definition
 emu: LDSCRIPT = ld/at32f403a.ld
 emu: clean all
 
-# Build a GUEST image that runs at 0x08007000 under the FNIRSI STOCK bootloader
-# (unit #2), flashed via the stock IAP drive (mcopy). main.c adjusts VTOR to
-# 0x7000 and skips the watchdog when GUEST_BUILD is defined. Used to run the
-# SPI3/FPGA debug shell on a known-good FPGA.
-# [LIVE] Standard bench image. The default for every bench session:
-#        `make guest` -> factory IAP -> read the LCD SCOPE_DEBUG_OVERLAY.
-guest: CFLAGS += -DGUEST_BUILD
-guest: LDSCRIPT = ld/at32f403a_guest.ld
-guest: clean all
-
 # Flash app via USB HID bootloader (bootloader must be running)
 flash: $(BUILD_DIR)/$(TARGET).bin
 	python3 ../scripts/flash_preflight.py hid-app --image $< --address 0x08004000
@@ -1332,7 +1322,7 @@ test-shmem-layout: $(BUILD_DIR)/test_shmem_layout $(BUILD_DIR)/test_shmem_layout
 	$(BUILD_DIR)/test_shmem_layout
 	$(BUILD_DIR)/test_shmem_layout_cmsis
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-la guest-debugclk fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace test-interleave-cal
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-caldump guest-coldtrace-la guest-debugclk fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus test-interleave-cal
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page
@@ -1597,68 +1587,36 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 	$<
 
 # ═══════════════════════════════════════════════════════════════════════════
-# BENCH / EXPERIMENT IMAGE INDEX                          (index added 2026-08-13)
+# BENCH IMAGE INDEX                (index added 2026-08-13, cut down 2026-11-17)
 #
-# Everything below this line is a bench image. They accumulated one per
-# experiment over four months of chasing FPGA config entry, and from the target
-# names alone there is no way to tell which two you would actually flash today
-# from the eighteen that answered a question and are kept only so the answer
-# stays reproducible.
+# Everything below this line is a named image. Until 2026-11-17 there was one
+# target per experiment of the four months spent on FPGA config entry, kept so
+# that every claim in the write-ups could be re-run. The firmware now drives
+# only OpenScope's own capture core, and the targets that existed to repeat an
+# answered question on the factory FPGA design were removed (git history has
+# them; the write-ups stay). What is left:
 #
-# NOTHING HERE IS DELETED, deliberately. Each target is the executable form of
-# an experiment written up in CLAUDE.md and analysis_v120/; deleting one would
-# leave a claim in the docs with no way to re-run it. They are TAGGED instead:
-# every target below carries a [LIVE] / [HISTORICAL] / [PARKED] / [BLOCKED] line
-# immediately above it, with its experiment and result.
+#   app-coldtrace-meter    the daily bench image: cold boot -> configured FPGA
+#                          -> live capture, meter submodes, bench profile
+#   app-full               the user image (profile `full`)
+#   app-rtt                app-coldtrace-meter, debug shell on RTT only
+#   app-faulttest          app-coldtrace-meter, fault-handler self-test
+#   guest-coldtrace-meter  app-coldtrace-meter's hardware flags, linked for the
+#                          factory bootloader
+#   guest-coldtrace-la     the same without meter submodes, bit-bang config
+#                          SCK slowed for 24 MS/s logic analyzers
+#   guest-caldump          read-only dump of the saved-config sector
+#   guest-debugclk         loads the debugclk_hw_top DIAGNOSTIC bitstream
+#   guest-sweep            Exps O/Q, RECONFIG_N pin sweeps (historical, NEGATIVE)
 #
-#   [LIVE]        part of the current bench loop, or an arm of a question that
-#                 is still open. Flash these.
-#   [HISTORICAL]  one-shot experiment, already answered. Kept for
-#                 reproducibility; re-run only to re-check a specific result.
-#   [PARKED]      built but never validated on hardware.
-#   [BLOCKED]     cannot run on bench unit #1 for a known reason.
+# A guest-* image runs at 0x08007000 under the FNIRSI factory bootloader and
+# is flashed through its IAP drive: main.c moves VTOR and skips the watchdog
+# when GUEST_BUILD is defined. An app-* image has the HID-bootloader layout.
 #
-# LIVE, in the order you would reach for them:
-#   guest              standard bench image (IAP + LCD overlay loop)
-#   guest-coldtrace    cold boot -> configured FPGA -> live trace (the rig)
-#   guest-coldtrace-la    same, bit-bang config SCK slowed for 24 MS/s logic analyzers
-#   guest-debugclk     coldtrace but loads the debugclk_hw_top DIAGNOSTIC bitstream
-#
-# HISTORICAL (all NEGATIVE unless noted), newest first:
-#   guest-reconfig-pc9  Exp T   PC9 RECONFIG_N pulse
-#   guest-sweep         Exps O/Q  RECONFIG_N pin sweeps
-#   guest-reconfig-pc2  Exp G   PC2 pulse
-#   guest-reconfig-pb12 Exp G   PB12 pulse
-#   guest-faulttest     2026-08-11 fault-handler self-test
-#
-# BLOCKED: guest-rtt (RDP makes RTT unreachable on unit #1).
-#
-# Full writeups: CLAUDE.md, analysis_v120/expE_swd_state_diff_2026-07-28.md,
-# docs/build_a_config_entry_test.md, docs/fpga_warm_handoff_test.md.
+# Full writeups: CLAUDE.md, docs/build_a_config_entry_test.md,
+# docs/fpga_warm_handoff_test.md.
 # ═══════════════════════════════════════════════════════════════════════════
 
-# Cold-config + live-readout rig (bench plan item 4, 2026-08-13). The reliable
-# arm-test bench: the warmtest 0x04/0x05 read/render pipeline (which latches the
-# demo trace OFF on real data) with the bit-bang COLD config injected at boot
-# (Build B breaks the wall) plus the engine-arm writes. So config (DONE_FINAL) +
-# arm attempt + a TRUSTWORTHY trace signal in one image. SUCCESS = demo square
-# wave disappears -> real continuous capture = cold boot to live trace. If it
-# stays with OK: climbing, the readout works but the engine is still unarmed.
-# [LIVE] THE shippable rig. Cold boot -> configured FPGA -> live capture,
-#        bench-confirmed 2026-08-13. Start here when in doubt.
-# [LIVE] guest-persist — HISTORICAL: guest-coldtrace PLUS runtime settings
-# persistence. The supervised bench check below PASSED on 2026-08-20 (unit #1:
-# first record written, restored across three consecutive power cycles), so
-# SETTINGS_PERSIST_WRITES now defaults to 1 (src/util/config.h) and EVERY
-# build persists — this target is redundant but kept so the procedure that
-# commissioned the first runtime W25Q writer stays on record:
-#   1. Dump 0xF10000-0xF1FFFF first and confirm it is 0xFF-blank on the unit.
-#   2. Cold-boot check: config entry must still reach CFG:0003F460 (DONE_FINAL).
-#      settings_store_init() runs after fpga_init() so it should not perturb it.
-#   3. Change theme -> press another button >2 s later (or MENU) -> power off ->
-#      power on. The theme should return.
-#   4. Dump again and confirm ONLY 0xF10000+ changed.
-# Factory calibration lives at 0x000000-0x1FFFFF, a READONLY region ~14 MB away.
 # [LIVE] guest-caldump — READ-ONLY diagnostic. Reports MCU flash
 # 0x08006000..0x08006FFF, the saved-config sector that is stock's candidate home
 # for per-device calibration. Nobody has ever read it on any unit: RDP blocks
@@ -1667,18 +1625,18 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 # Writes NOTHING. Links at 0x08007000 so it cannot overlap the region it reads.
 # Runs immediately after LCD bring-up and never returns — no FPGA init, no
 # scheduler. Report the CRC32 it prints. See src/util/cal_dump.h.
-# app-coldtrace — guest-coldtrace's live-capture build in the HID-bootloader
-# layout (vectors 0x08004000, code 0x08007000, 0x08006000 left for the
-# calibration page), so it runs under OpenScope's bootloader and updates over
-# USB without the IAP drive. GUEST_BUILD only moves VTOR and skips the watchdog;
-# NO_WATCHDOG keeps the latter off for long shell experiments.
-app-coldtrace: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG
-app-coldtrace: clean all
+guest-caldump: CFLAGS += -DGUEST_BUILD -DCAL_DUMP_MODE=1
+guest-caldump: LDSCRIPT = ld/at32f403a_guest.ld
+guest-caldump: clean all
 
-# app-coldtrace-meter: the same image with meter submodes (FPGA_METER_SUBMODES),
-# as guest-coldtrace-meter does for the guest layout. Without it the warm-handoff
-# build returns from fpga_set_meter_mode() at once: meter frames still stream, but
-# no function change is ever sent. The daily bench image on unit #2.
+# app-coldtrace-meter: the daily bench image. Cold boot -> the bit-bang config
+# loads the capture core -> live capture, in the HID-bootloader layout (vectors
+# 0x08004000, code 0x08007000, 0x08006000 left for the calibration page), so
+# it runs under OpenScope's bootloader and updates over USB without the IAP
+# drive. NO_WATCHDOG keeps the watchdog off for long shell experiments.
+# FPGA_METER_SUBMODES makes the meter's functions reachable: without it the
+# warm-handoff build returns from fpga_set_meter_mode() at once (meter frames
+# still stream, but no function change is ever sent).
 app-coldtrace-meter: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
 app-coldtrace-meter: clean all
 
@@ -1688,80 +1646,43 @@ app-coldtrace-meter: clean all
 app-full: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
 app-full: clean all
 
-guest-caldump: CFLAGS += -DGUEST_BUILD -DCAL_DUMP_MODE=1
-guest-caldump: LDSCRIPT = ld/at32f403a_guest.ld
-guest-caldump: clean all
+# app-rtt: app-coldtrace-meter with the debug shell on RTT only
+# (DEBUG_SHELL_RTT_ONLY, 2026-08-11), which cuts the USB CDC half out of the
+# console. Measured on the bench unit: usbd_connect_state_get() reports
+# CONFIGURED even though CDC never enumerates (error -71), so usb_send_bytes()
+# enters the CDC TX path and the shell task stalls there instead of returning
+# to poll RTT -- the banner reached the RTT ring (rtt_write runs first) and
+# nothing followed. RTT exists to bypass that transport; this stops the tee
+# re-introducing it. It needs a debugger attached, so it is of no use on a
+# unit with read-out protection set (bench unit #1: attaching kills the CPU).
+.PHONY: app-rtt app-faulttest
+app-rtt: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1 -DDEBUG_SHELL_RTT_ONLY=1
+app-rtt: clean all
 
-guest-persist: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DSETTINGS_PERSIST_WRITES=1
-guest-persist: LDSCRIPT = ld/at32f403a_guest.ld
-guest-persist: clean all
+# app-faulttest: app-coldtrace-meter with the fault-handler self-test
+# (FAULT_SELFTEST, 2026-08-11). Fires `udf #0` from a task ~10 s after boot.
+# Answers (a) does the fault handler record anything at all, and (b) does the
+# device freeze on its own with NO debugger attached -- the confound that made
+# the "~55 s HardFault" reading suspect, since that freeze had only ever been
+# observed after an OpenOCD attach.
+app-faulttest: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1 -DFAULT_SELFTEST=1
+app-faulttest: clean all
 
-guest-coldtrace: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1
-guest-coldtrace: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace: clean all
-
-# [M1 2026-09-04] guest-coldtrace-meter — coldtrace plus reachable meter submodes.
-#
-# EXP-23 measured the actual gap in guest-coldtrace: the meter is NOT dead (a
-# 1.61 V cell reads 1.6158 V while SPI3 acquisition keeps running), but all 11
-# submodes drive a bit-identical analog frontend and an identical TX frame,
-# because FPGA_WARM_HANDOFF_TEST no-ops fpga_set_meter_mode(). Only DC Voltage
-# is reachable, and only because that happens to be the posture it boots in.
-#
-# FPGA_METER_SUBMODES lets meter entry posture the frontend per submode, and
-# makes scope entry put the scope posture back (the frontend is shared). It
-# deliberately does NOT re-enable fpga_scope_reinit() or fpga_enter_scope_mode():
-# those also re-send USART sequences and reset data_ready, and this build's
-# configured/armed FPGA state is not something to spend on a mode switch.
-#
-# ⚠ ACCEPTANCE TEST BEFORE FOLDING THIS INTO guest-coldtrace — the frontend is
-# shared, so the risk is that a visit to the meter breaks the scope:
-#   1. scope captures (SPI3 OK climbing)                    <- must hold
-#   2. mode meter 0, cell on leads, reads correctly          <- EXP-23 baseline
-#   3. mode meter 6, `gpio scan` diff vs step 2 NON-EMPTY    <- the actual fix
-#   4. mode scope, SPI3 OK still climbing, trace still right <- the regression
-# Step 4 is the one that decides whether this ships.
+# guest-coldtrace-meter: app-coldtrace-meter's hardware flags, linked for the
+# factory bootloader (GUEST_BUILD, default profile). FPGA_METER_SUBMODES
+# (M1, 2026-09-04) lets meter entry posture the frontend per submode and
+# makes scope entry put the scope posture back (the frontend is shared);
+# EXP-23 had measured that without it all 11 submodes drive an identical
+# frontend and TX frame and only DC Voltage is reachable.
 guest-coldtrace-meter: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_METER_SUBMODES=1
 guest-coldtrace-meter: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-meter: clean all
 
-# [CH2 OFFSET 2026-08-17] guest-coldtrace-ch2 — coldtrace plus a boot-time arm
-# of the CH2 vertical-offset reference (TMR13 CH1 PWM-DAC on PA6).
-#
-# EXP-06 measured CH1's full gain ladder (21.23 / 42.04 / 91.41 / 108.83 /
-# 228.30 / 491.67 mV per count, cross-checked against Stlkv's independent
-# numbers on another unit) but could only get ONE usable tap out of CH2: every
-# other mux code parked at a fixed DC level (mean 0, 232, 255, 26) and railed
-# regardless of drive amplitude. That is the signature of a missing vertical
-# offset, not a gain-table error. CH1's offset is DAC1 on PA4, which
-# fpga_init() arms mid-scale and `fpga scope center` tunes per range; CH2's is
-# a TMR13 PWM-DAC on PA6 that our firmware has never programmed.
-#
-# This target only sets FPGA_CH2_TRIGGER, which arms TMR13 at boot alongside
-# the DAC1 write. The runtime knobs (`trig2 raw`, `fpga scope center ch2`)
-# self-init and work on ANY build.
-#
-# PA6 CONFIRMED as the CH2 offset reference: EXP-07 (2026-08-17, TMR13 moves
-# CH2's mean, DAC1 does not) and EXP-21 (2026-08-21, independent CH2 signal +
-# Lissajous once armed). FPGA_CH2_TRIGGER defaults to 1 in fpga.c since
-# 2026-09-14, so this target is now IDENTICAL to guest-coldtrace and is kept
-# as a name people have in their notes. The A/B control is
-# guest-coldtrace-noch2 below: same image with the CH2 arm compiled out.
-guest-coldtrace-ch2: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_CH2_TRIGGER=1
-guest-coldtrace-ch2: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace-ch2: clean all
-
-# Control build for the CH2 arm: coldtrace with FPGA_CH2_TRIGGER=0, i.e. the
-# image every "CH2 reads all zeros" note before 2026-09-14 was taken on.
-guest-coldtrace-noch2: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_CH2_TRIGGER=0
-guest-coldtrace-noch2: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace-noch2: clean all
-
-# [LA 2026-08-15] guest-coldtrace-la — coldtrace with the bit-bang config clock
-# slowed (FPGA_BB_HALF_DELAY=60 nops per half period, ~1-2 MHz SCK) so a
-# 24 MS/s logic analyzer can decode the whole config sequence (issue #18:
-# maksidze's captures of the undelayed loop were aliased). Otherwise identical
-# to guest-coldtrace.
+# [LA 2026-08-15] guest-coldtrace-la -- the bit-bang config clock slowed
+# (FPGA_BB_HALF_DELAY=60 nops per half period, ~1-2 MHz SCK) so a 24 MS/s
+# logic analyzer can decode the whole config sequence (issue #18: maksidze's
+# captures of the undelayed loop were aliased). Otherwise the flags of
+# guest-coldtrace-meter without FPGA_METER_SUBMODES.
 guest-coldtrace-la: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_BB_HALF_DELAY=60
 guest-coldtrace-la: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-la: clean all
@@ -1820,74 +1741,6 @@ fpga-alt-header:
 	python3 ../scripts/fs2header.py $(FPGA_ALT_FS) src/drivers/fpga_bitstream_alt.h \
 		--name $(FPGA_ALT_NAME) --notes-file $(FPGA_ALT_NOTES)
 
-# Experiment G (2026-07-28): RECONFIG_N pulse candidates. Exp F closed every
-# enumerable static MCU-state difference and the wall held, which sends us back
-# to apicula's answer (docs/CONFIG_ENTRY_REPLY_FROM_APICULA.md): a running GW1N
-# needs RECONFIG_N (low pulse >=25ns) or a power cycle before CONFIG_ENABLE will
-# engage. Exp E's static snapshot cannot see a pulse — a pin pulsed LOW earlier
-# reads HIGH at the config-enable instant, exactly like one merely held HIGH.
-# PC2 and PB12 are the only pins stock drives that we float (outside the Exp
-# C-refuted frontend bank), so they are the candidates. Fidelity build + pulse.
-#   ^ CORRECTED 2026-08-11: that "only" was wrong, and it was wrong because the
-#     enumeration behind it compared output LEVELS. PC1, PA6, PC11, PD2, PD3,
-#     PD6 and PD13 are also driven by stock and floated by us — see guest-pc1 /
-#     guest-fidelity2 above. It does not affect Exp G's own result (PC2 and PB12
-#     were pulsed and refuted), only the claim that the candidate list was
-#     complete.
-# [HISTORICAL] Exp G (2026-07-28) — RECONFIG_N candidate PC2. NEGATIVE.
-guest-reconfig-pc2: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_FIDELITY_RECONFIG_PORT=3 -DFPGA_FIDELITY_RECONFIG_PIN=2
-guest-reconfig-pc2: LDSCRIPT = ld/at32f403a_guest.ld
-guest-reconfig-pc2: clean all
-
-# [HISTORICAL] Exp G (2026-07-28) — RECONFIG_N candidate PB12. NEGATIVE.
-guest-reconfig-pb12: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_FIDELITY_RECONFIG_PORT=2 -DFPGA_FIDELITY_RECONFIG_PIN=12
-guest-reconfig-pb12: LDSCRIPT = ld/at32f403a_guest.ld
-guest-reconfig-pb12: clean all
-
-# Experiment T (2026-08-11): RECONFIG_N candidate PC9 — the pin every previous
-# search excluded by construction.
-#
-# Two independent leads point here:
-#
-# 1. rosenrot00/OpenScope-2C23T (independent 2C23T firmware whose scope WORKS)
-#    pulses PC9 LOW 10ms -> HIGH 1ms immediately before its bitstream on the HW3
-#    path, and PC8 on HW4. Same silicon family, same opcodes, same 160-byte
-#    frame structure as our blob. Its HW3 loader also reads PC8 back as DONE.
-#
-# 2. Stock 2C53T does the same thing. Every PC9 access in V1.2.0:
-#      0x0802AAB2  master_init +0x62   gpio_init(GPIOC, {pins=0x200})
-#      0x0802AAB6  master_init +0x66   GPIOC->BRR  = 0x200   => PC9 LOW
-#      0x0802B412  master_init +0x9C2  GPIOC->BSRR = 0x200   => PC9 HIGH
-#      0x08029D3A  housekeeping/IWDG   GPIOC->BRR  = 0x200   => LOW (shutdown)
-#    CONFIG_ENABLE is at 0x0802DA42 = master_init +0x2FF2, i.e. AFTER both.
-#    Bases resolved by hand (r7 = movw #0x1014 + movt #0x4001 = GPIOC_BRR;
-#    r2 = 0x40011000, [r2,#16] = BSRR) — find_gpio_pulses.py reports the
-#    0x0802AAB6 mask as unresolved and so never surfaced this pin.
-#
-# WHY IT WAS NEVER TESTED: fpga.c's sweep table excludes PC9 by name ("power
-# hold — driving it low kills the device"), so Exps O/Q swept twelve pins that
-# could not contain the answer. And Exp E/F/R's static diffs all read PC9 as
-# output+HIGH in BOTH firmwares (GPIOC CRH nibble 1 vs 3, ODR bit9 set in both)
-# because stock raises it 9.8KB of code before the park point — the transition
-# blind spot Exp G warned about, hit exactly.
-#
-# SAFETY: run this with USB ATTACHED. Exp R established that releasing the PC9
-# hold does not power the device down while VBUS is present (that is why a
-# POWER-button shutdown on USB hangs on "Goodbye" instead of going dark). Stock
-# gets away with the same low period because the user's finger is still on POWER.
-#
-# CAVEAT: the static evidence has two readings and does not separate them —
-# (A) a RECONFIG_N assert released before config, or (B) ordinary power-hold
-# sequencing (don't latch the rail until the firmware has decided to boot).
-# This build is what separates them. Read ED: on the LCD overlay; the anchor
-# (0x11 -> 0x0120681B) still applies, and the real success signal is Exp L/M's
-# open/closed test — a configured part STOPS answering 0x11.
-# [HISTORICAL] Exp T (2026-08-11) — RECONFIG_N candidate PC9. NEGATIVE at
-#              this pulse POSITION; stock's position variant was never run.
-guest-reconfig-pc9: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_FIDELITY_RECONFIG_PORT=3 -DFPGA_FIDELITY_RECONFIG_PIN=9
-guest-reconfig-pc9: LDSCRIPT = ld/at32f403a_guest.ld
-guest-reconfig-pc9: clean all
-
 # RECONFIG_N candidate pin sweep (2026-07-28), button-gated.
 # Exp N: no config command moves the STATUS register while every read command
 # answers correctly — the documented behaviour of a running auto-booted GW1N that
@@ -1910,29 +1763,6 @@ guest-reconfig-pc9: clean all
 guest-sweep: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_PIN_SWEEP_BUILD=1
 guest-sweep: LDSCRIPT = ld/at32f403a_guest.ld
 guest-sweep: clean all
-
-# RTT-only debug shell (2026-08-11). Cuts the USB CDC half out of the console.
-# Measured on the bench unit: usbd_connect_state_get() reports CONFIGURED even
-# though CDC never enumerates (error -71), so usb_send_bytes() enters the CDC TX
-# path and the shell task stalls there instead of returning to poll RTT — the
-# banner reached the RTT ring (rtt_write runs first) and nothing followed.
-# RTT exists to bypass that transport; this stops the tee re-introducing it.
-# [BLOCKED] RTT console. Works as code, but is UNREACHABLE on bench unit #1:
-#           RDP is set, so attaching a debugger kills the CPU. Needs a
-#           different unit or an RDP clear (mass erase) to be useful.
-guest-rtt: CFLAGS += -DGUEST_BUILD -DDEBUG_SHELL_RTT_ONLY=1
-guest-rtt: LDSCRIPT = ld/at32f403a_guest.ld
-guest-rtt: clean all
-
-# Fault-handler self-test (2026-08-11). Fires `udf #0` from a task ~10 s after
-# boot. Answers (a) does the fault handler record anything at all, and (b) does
-# the device freeze on its own with NO debugger attached — the confound that
-# makes the "~55 s HardFault" reading suspect, since the freeze so far has only
-# ever been observed after an OpenOCD attach.
-# [HISTORICAL] 2026-08-11 one-shot fault-handler self-test.
-guest-faulttest: CFLAGS += -DGUEST_BUILD -DFAULT_SELFTEST=1
-guest-faulttest: LDSCRIPT = ld/at32f403a_guest.ld
-guest-faulttest: clean all
 
 # Register-owner gate (ARCH round, task A0). Host-only: scans src/**/*.c for writes to
 # peripheral registers outside their owner (scripts/reg_owners.txt) and fails on any write
