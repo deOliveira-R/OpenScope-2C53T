@@ -40,7 +40,6 @@ int ok(scope_roll_fifo_t *f, const uint8_t *rec, interleave_corr_t *c, lcd_healt
     return (int)v.v + (int)period.ms + (int)dt.value + (int)ctx.zero_count.v
          + scope_roll_trig_hit(f, 0, 0, level, SCOPE_ROLL_EDGE_RISING)
          + trig_edge_anchor(rec, level, 1)
-         + (int)trig_edge_classify(rec, level)
          + interleave_skew_set(c, skew)
          + lcd_health_step(h, 0x9C, ms_from_ticks(ticks), 0);
 }
@@ -56,8 +55,8 @@ rec_code_t bad(void) { return scope_measure_zero_for(1, 0, -28); }
 uint8_t bad(void) { uint8_t z = scope_measure_zero_for(1, 0); return z; }
 #elif CASE == 6   /* the comparator code (raw) as the anchor's record level */
 int bad(const uint8_t *rec, adc_raw_t trig_code) { return trig_edge_anchor(rec, trig_code, 1); }
-#elif CASE == 7   /* a bare int as the classifier's record level */
-int bad(const uint8_t *rec) { return (int)trig_edge_classify(rec, 100); }
+#elif CASE == 7   /* a bare int as the known anchor's record level */
+int bad(const uint8_t *rec) { return trig_edge_anchor_known(rec, 100, 1); }
 #elif CASE == 8   /* the comparator code (raw) as the roll trigger level */
 int bad(const scope_roll_fifo_t *f, adc_raw_t trig_code) { return scope_roll_trig_hit(f, 0, 0, trig_code, 0); }
 #elif CASE == 9   /* a raw code as the measurement zero */

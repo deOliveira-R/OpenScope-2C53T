@@ -3767,17 +3767,13 @@ int16_t fpga_acq_unrotate_offset_get(void)    { return acq_unrotate_offset; }
  * seam sits at the FPGA's write pointer, with the trigger 512 samples after
  * the seam (EXP-53/54). The pointer is not recoverable from MCU timestamps
  * (EXP-53 postscript: PC0 strobes 6-9 us after the read, so the EXP-52
- * latency model this replaces measured nothing), but the seam itself is
- * visible in the data: trig_edge_find_seam() returns the oldest sample when
- * the step there stands out (>= 2x every other step). Both channels share the
- * pointer, so both are rotated by the CH1 seam (CH2's if CH1 has none).
- * After this, index 0 is the oldest sample and the trigger is at index 512.
+ * latency model this replaces measured nothing); the core names it in the
+ * reply header of the two reads (below). Both channels share the pointer, so
+ * both are rotated by it. After this, index 0 is the oldest sample and the
+ * trigger is at index 512.
  *
- * Not applied when no seam stands out: for an integer number of periods the
- * wrap is already continuous; for a fast signal the pointer is not
- * recoverable and the record is left as read (and the soft trigger still
- * aligns the display). Free-run reads (not strobed) are left alone: the
- * rolling buffer has no trigger at 512 to put anywhere.
+ * Reads that are not a held record are left alone: the rolling buffer has
+ * no trigger at 512 to put anywhere.
  *
  * Returns the rotation applied (0..1023), or -1 when none was. */
 static int32_t fpga_acq_unrotate_staging(bool triggered)

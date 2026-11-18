@@ -1168,8 +1168,8 @@ $(BUILD_DIR)/test_fuse: tests/test_fuse.c src/ui/fuse_model.c src/ui/fuse_model.
 test-fuse: $(BUILD_DIR)/test_fuse
 	$<
 
-# MCU-side trigger edge filter (trigger-modes S2 (c)): real EXP-55/56 records,
-# a level-off-the-signal negative control, and a synthetic period sweep.
+# The trigger anchor, the software edge search and the in-place rotation
+# (dsp/trig_edge.c), the anchor on real EXP-55/56 records.
 $(BUILD_DIR)/test_trig_edge: tests/test_trig_edge.c src/dsp/trig_edge.c src/dsp/trig_edge.h \
                              tests/fixtures/trig_edge_records.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Itests \

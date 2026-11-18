@@ -1,23 +1,15 @@
 /*
- * Which edge fired a committed record? (trigger-modes S2 (c), 2026-09-22)
+ * Where the trigger is in a record, and the software edge search.
  *
- * The FPGA triggers on EITHER edge of (reg 0x08 - 28) and no register selects
- * one (EXP-53 50j, EXP-55). So "Rising" / "Falling" is a filter on the MCU:
- * classify each strobed record and let the acquisition loop drop the wrong
- * ones. The record is one continuous 1024-sample segment rotated so the seam
- * sits at the FPGA's write pointer, with the trigger 512 samples after it
- * (EXP-53/54).
+ * A record is 1024 samples in record units (ADC - 28). OpenScope's capture
+ * core names the record's start in its reply header (dsp/trig_edge_reg.h);
+ * the acquisition task rotates the record there (trig_edge_rotate_left), so
+ * index 0 is the oldest sample and a triggered record has its crossing at
+ * index 512. The functions here find that crossing (the anchor) for the
+ * display and the mask test, and search an edge in software where there is
+ * no hardware one.
  *
- * The classifier REFUSES rather than guesses. It answers UNKNOWN when the seam
- * does not stand out from the signal's own sample-to-sample steps (fast or
- * integer-period signals, where the pointer is not recoverable), when the
- * record does not cross the level near the trigger point, or when no slope
- * clears the noise. The caller commits UNKNOWN records unfiltered: on a fast
- * periodic signal both edges are in every record and the display's soft
- * trigger already aligns to the chosen one.
- *
- * Host-tested on 58 real records (EXP-55/56) and a synthetic sweep, with a
- * negative control: tests/test_trig_edge.c.
+ * Host-tested: tests/test_trig_edge.c.
  */
 #ifndef TRIG_EDGE_H
 #define TRIG_EDGE_H
@@ -27,53 +19,17 @@
 
 #include "../util/units.h"   /* rec_code_t, trig_level_rec */
 
-typedef enum {
-    TRIG_EDGE_CLASS_UNKNOWN = 0,
-    TRIG_EDGE_CLASS_RISING,
-    TRIG_EDGE_CLASS_FALLING
-} trig_edge_class_t;
-
 #define TRIG_EDGE_REC_N 1024u
-#define TRIG_EDGE_TRIG_POS 512u   /* a strobed record's trigger crossing, counted from its seam */
-
-/* rec: the committed CH1 record (1024 samples, record units = ADC - 28).
- * crossing: the level as a record code, trig_level_rec(reg 0x08 code)
- * (units.h). A comparator code below the offset clamps to record 0, where no
- * crossing exists (samples are never below 0), exactly as the unclamped
- * code - 28 behaved. */
-trig_edge_class_t trig_edge_classify(const volatile uint8_t *rec, rec_code_t crossing);
-
-/* The seam of a committed record: the largest circular step, accepted only
- * when it is >= 2x every other step and >= 6 counts. On success *k is the
- * index of the OLDEST sample (the newer side of the step), so rotating the
- * record left by k puts it in time order with the trigger at index 512.
- * Returns 0 (and leaves *k alone) when the seam does not stand out -- for an
- * integer number of periods the wrap is continuous and there is nothing to
- * undo; for a fast signal the pointer is not recoverable. */
-int trig_edge_find_seam(const volatile uint8_t *rec, uint32_t *k);
-
-/* The seam by linear prediction, for records where the value step does not
- * stand out (fast periodic signals: the two segments can meet at similar
- * values but different phase). An order-8 predictor is fitted to the
- * circular record (autocorrelation + Levinson); a continuous signal,
- * harmonics included, is predicted well everywhere except where the
- * predictor reaches back across the seam. Accepted only when the peak
- * prediction error is >= 3x the largest error more than 8 samples away; the
- * seam is the earliest index within 8 before the peak whose error is >= 35%
- * of it. Bias measured on synthetic records: exact or 1-2 samples LATE,
- * never early. Integer periods (no seam in the circular record) refused.
- * No working buffer: the error is recomputed per pass. */
-int trig_edge_find_seam_lpc(const volatile uint8_t *rec, uint32_t *k);
-
-/* Value step first (never off in any test), else linear prediction. */
-int trig_edge_find_seam_any(const volatile uint8_t *rec, uint32_t *k);
+#define TRIG_EDGE_TRIG_POS 512u   /* a triggered record's crossing, counted from the record's start */
 
 /* The hardware trigger point of a TIME-ORDERED record: the crossing of
- * `crossing` (a record code, trig_level_rec(reg 0x08 code), EXP-55/56) in the chosen
- * direction nearest index 512, within +/-48 (EXP-53: 501..520). Schmitt-armed
- * with 3 counts of hysteresis, searched over 448..560. Returns the index or
- * -1. Only meaningful on a record un-rotated at its seam -- on a raw rotated
- * record index 512 is not the trigger.
+ * `crossing` (a record code, trig_level_rec(reg 0x08 code), units.h; EXP-55/56)
+ * in the chosen direction nearest index 512, within +/-48 (EXP-53: 501..520).
+ * Schmitt-armed with 3 counts of hysteresis, searched over 448..560. Returns
+ * the index or -1. A comparator code below the ADC offset clamps to record 0,
+ * where no crossing exists (samples are never below 0). Only meaningful on a
+ * record rotated to its start -- on a raw rotated record index 512 is not
+ * the trigger.
  *
  * One copy, two callers: the display's hardware anchor (scope_ui.c) and the
  * mask pass/fail test (scope_mask.c). If they ever disagreed, the mask would
@@ -149,8 +105,8 @@ int trig_edge_search_stock(const volatile uint8_t *rec, int n, int lo, int hi,
                            int level, int rising, unsigned confirm);
 
 /* Rotate rec[0..n) left by k in place (k >= n is taken mod n): afterwards
- * rec[i] is the old rec[(i + k) % n]. The un-rotation after
- * trig_edge_find_seam*() is exactly this with k = the seam. By three
+ * rec[i] is the old rec[(i + k) % n]. Putting a record in time order is
+ * exactly this with k = the seam the core's reply header names. By three
  * reversals, so it needs no working buffer: fpga.c used to stage it through a
  * 1 KB static tmp[] that was only ever live inside this copy (RAM diet,
  * 2026-11-11). */
