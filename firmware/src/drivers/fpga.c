@@ -1,24 +1,23 @@
 /*
  * OpenScope 2C53T - FPGA Communication Driver
  *
- * Implements the complete FPGA interface as reverse-engineered from
- * the stock firmware's FPGA task (FUN_08036934, 11.6KB).
+ * The FPGA runs our own capture core, loaded at every boot; the meter chip
+ * is a separate part on USART2.
  *
- * Boot sequence follows FPGA_BOOT_SEQUENCE.md (53 steps):
- *   1. AFIO remap to free PB3/4/5 from JTAG
- *   2. USART2 init at 9600 baud
- *   3. USART2 init; stock post-H2 boot bytes are SPI3 queue triggers
- *   4. SPI3 init and enable (Mode 3, /2 prescaler = 60MHz)
- *   5. PC6 HIGH after SPI3 is enabled (FPGA SPI enable)
- *   6. SysTick delays for FPGA timing
- *   7. SPI3 handshake + H2 table upload
- *   8. Queue stock post-H2 SPI3 triggers
- *   9. Apply DCV frontend projection, driving PB11 HIGH before meter activation
+ * fpga_init(), in order:
+ *   1. remap to free PB3/PB4/PB5 from JTAG
+ *   2. USART2 set to 9600 baud and left disabled (the meter link enables it)
+ *   3. SPI3 init and enable (mode 3, /2 = 60 MHz), then PC6 high
+ *   4. the design is uploaded on the same pins as GPIO (fpga_boot_upload),
+ *      then the core is identified and its registers are written
+ *   5. PC0 (record ready) on EXINT0, the two trigger references, the
+ *      front-end relays and coupling
  *
- * Runtime architecture (3 FreeRTOS tasks):
- *   - fpga_usart_tx_task: Sends 10-byte command frames via USART2
- *   - fpga_usart_rx_task: Processes received meter/status data
- *   - fpga_acquisition_task: SPI3 bulk ADC data reads (9 modes)
+ * Tasks (fpga_create_tasks):
+ *   - fpga_acq_task:        reads records from the core over SPI3
+ *   - fpga_usart_tx_task:   sends 10-byte command frames to the meter chip
+ *   - fpga_usart_rx_task:   handles the meter chip's frames
+ *   - fpga_meter_poll_task: meter function changes and the keepalive
  */
 
 #include "fpga.h"
@@ -109,7 +108,6 @@ volatile uint8_t  fpga_meter_adc_max_sample;
 
 /* FreeRTOS handles */
 static QueueHandle_t     usart_tx_queue  = NULL;  /* 32-bit: hi|lo + OBEY bit16 */
-static QueueHandle_t     spi3_acq_queue  = NULL;  /* 1-byte trigger mode */
 
 typedef struct {
     uint8_t frame[FPGA_RX_FRAME_SIZE];
@@ -282,7 +280,6 @@ static void fpga_meter_reset_transport(void)
 
     if (usart_tx_queue != NULL) xQueueReset(usart_tx_queue);
     if (meter_rx_queue != NULL) xQueueReset(meter_rx_queue);
-    if (spi3_acq_queue != NULL) xQueueReset(spi3_acq_queue);
     fpga_meter_adc_reset_generation++;
 
     fpga.tx_index = 0;
@@ -1935,67 +1932,11 @@ static void fpga_meter_poll_task(void *pv)
     }
 }
 
-/* Private post-H2 boot queue tags.
- * These values intentionally do not overlap with normal acquisition trigger bytes
- * (FPGA_ACQ_* + 1) so public acquisition cannot collide with boot choreography.
- */
-enum {
-    FPGA_POST_H2_TRIGGER_FAST_TB = 0xF1u,
-    FPGA_POST_H2_TRIGGER_ROLL = 0xF2u,
-    FPGA_POST_H2_TRIGGER_METER_ADC = 0xF3u,
-    FPGA_POST_H2_TRIGGER_SIGGEN = 0xF4u,
-    FPGA_POST_H2_TRIGGER_STATUS = 0xF5u,
-};
-
-static void fpga_enqueue_stock_post_h2_spi3_boot_triggers(void)
-{
-    static const uint8_t stock_triggers[] = {
-        FPGA_POST_H2_TRIGGER_FAST_TB,
-        FPGA_POST_H2_TRIGGER_ROLL,
-        FPGA_POST_H2_TRIGGER_METER_ADC,
-        FPGA_POST_H2_TRIGGER_SIGGEN,
-        FPGA_POST_H2_TRIGGER_STATUS,
-    };
-
-    for (unsigned i = 0; i < sizeof(stock_triggers); i++) {
-        uint8_t trigger = stock_triggers[i];
-        fpga.post_h2_spi3_boot_enqueued++;
-        if (xQueueSend(spi3_acq_queue, &trigger, 0) == pdTRUE) {
-            fpga.post_h2_spi3_boot_mask |= (uint8_t)(1u << i);
-        } else {
-            fpga.post_h2_spi3_boot_dropped++;
-        }
-    }
-}
-
-/*
- * SPI3 Acquisition Task (fpga equivalent)
- * Waits on spi3_acq_queue for trigger events, then performs SPI3
- * transfers to read ADC sample data from FPGA.
- *
- * Stock firmware protocol (from fpga_task_annotated.c lines 775-925):
- *   1. Pre-acquisition CS transaction:
- *      CS_ASSERT → spi3_xfer(command_code) → CS_DEASSERT
- *      command_code = ~0x7F ^ voltage_range = 0x80 | (voltage_range & 0x7F)
- *      This tells the FPGA what acquisition to prepare.
- *
- *   2. Bulk data CS transaction (case 2 = normal scope):
- *      CS_ASSERT → spi3_xfer(0xFF) [discard echo] →
- *      512× { spi3_xfer(0xFF) [CH1], spi3_xfer(0xFF) [CH2] } →
- *      CS_DEASSERT
- *
- * Without step 1, the FPGA returns constant/empty data (all 0xFF or
- * all same value) because it hasn't been told what to acquire.
- */
-
-/* Cooperative pause handshake, shared by BOTH acquisition tasks (the
- * queue-driven one below and the warm-handoff continuous one). Protocol (see
+/* Cooperative pause handshake of the acquisition task. Protocol (see
  * fpga_acq_pause): requester sets req, clears ack, then waits for a FRESH
  * ack — the task raises ack only at its park point, never inside a CS frame,
  * and re-raises it every parked cycle so a stale ack from a previous pause
- * can never satisfy a new request. Moved out of the warm-handoff #if on
- * 2026-08-20 (audit P0.1): the queue-driven task is periodically active too
- * (display heartbeat every 7 frames), so it needs a real park as well. */
+ * can never satisfy a new request. */
 static volatile bool acq_pause_req = false;
 static volatile bool acq_pause_ack = false;
 
@@ -2623,7 +2564,7 @@ static void ilcal_window(const volatile uint8_t *w, float *mean, uint8_t *spread
         if (x < mn) mn = x;
         if (x > mx) mx = x;
     }
-    /* Rails in record units: fpga_warmtest_read_channel stores raw + FPGA_ADC_OFFSET
+    /* Rails in record units: fpga_acq_read_channel stores raw + FPGA_ADC_OFFSET
      * (-28) clamped, so raw 255 reads 227 and anything at raw <= 28 reads 0. */
     const uint8_t rail_hi = (uint8_t)(255 + (int)FPGA_ADC_OFFSET);
     *mean   = n ? (float)s2 / (float)n : (float)m;
@@ -2933,7 +2874,7 @@ void EXINT0_IRQHandler(void)
     fpga.pc0_last_cyc  = DWT->CYCCNT;
 }
 
-/* ─── Warm-handoff acquisition (2026-08-12) ──────────────────────────
+/* ─── Reading one record (2026-08-12) ────────────────────────────────
  * The real per-channel read protocol from the issue-#18 stock capture,
  * bench-proven on this board by Stlkv's port: PC0 data-ready (active LOW),
  * then ONE 1026-byte CS-LOW window per channel — the opcode byte (0x04=CH1,
@@ -2971,7 +2912,7 @@ void EXINT0_IRQHandler(void)
  * byte out is stale. The window is now 1027 bytes: opcode, dummy, stale, then
  * 1024 samples. Longer windows (1043, 2063 bytes) caused no fault in EXP-58.
  */
-static uint8_t fpga_warmtest_read_channel(uint8_t opcode, volatile uint8_t *buf)
+static uint8_t fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
 {
     SPI3_CS_ASSERT();
     uint8_t s0 = spi3_xfer(opcode);        /* MISO during opcode: 0x80 marker
@@ -3145,7 +3086,7 @@ static bool fpga_core_watch_poll(void)
     return true;
 }
 
-static void fpga_warmtest_acq_task(void *pv)
+static void fpga_acq_task(void *pv)
 {
     (void)pv;
     uint32_t edges_consumed = 0;   /* pc0_edges value at our last pair read */
@@ -3414,8 +3355,8 @@ static void fpga_warmtest_acq_task(void *pv)
         volatile uint8_t *w1 = acq_write_ch1();
         volatile uint8_t *w2 = acq_write_ch2();
         fpga.arm_read_cyc = DWT->CYCCNT;
-        uint8_t s1 = fpga_warmtest_read_channel(FPGA_CORE_OP_REC_A, w1);
-        uint8_t s2 = fpga_warmtest_read_channel(FPGA_CORE_OP_REC_B, w2);
+        uint8_t s1 = fpga_acq_read_channel(FPGA_CORE_OP_REC_A, w1);
+        uint8_t s2 = fpga_acq_read_channel(FPGA_CORE_OP_REC_B, w2);
         last_read_tick = xTaskGetTickCount();
         fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, last_read_tick * portTICK_PERIOD_MS);
@@ -4761,29 +4702,11 @@ void fpga_init(void)
     (void)0;
 
     /* ---------------------------------------------------------------
-     * Step 3: USART init only, then wait for FPGA to finish booting
-     *
-     * The stock firmware does ~2-3 seconds of LCD init, boot screen
-     * animation (including a power-button-release wait loop), SPI flash
-     * reads, and timer/FreeRTOS setup BEFORE touching SPI3. During all
-     * that time, the FPGA is loading its bitstream from internal flash
-     * and initializing its SPI slave.
-     *
-     * Our custom firmware reaches this point much faster (~500ms after
-     * power-on). If we start SPI3 before the FPGA finishes booting,
-     * the SPI slave won't be active yet → MISO stuck at 0xFF.
-     *
-     * Add an explicit delay to match the stock firmware's implicit
-     * boot time. Try 2000ms as a conservative starting point.
-     *
-     * Stock xQueueSend sites at 0x08026DCE..0x08026E2A target the SPI3 trigger
-     * queue at 0x20002D78, not the USART/DVOM wire queue. The local queue does
-     * not exist until fpga_create_tasks(), so those bytes are queued there after
-     * the SPI3 task queue is created.
+     * Step 3: a short settle before SPI3 is set up. PC6/PB11/PC11 were
+     * driven at the very top of main(). The 50 ms dates from the builds
+     * that took over an FPGA the factory firmware had loaded; whether the
+     * upload in Step 6 still needs it has not been measured.
      * --------------------------------------------------------------- */
-    /* FPGA is already configured by stock — don't wait 2s (that long float
-     * is what stopped capture in round 1). PC6/PB11/PC11 were driven to scope
-     * posture at the very top of main(); just settle briefly. */
     systick_delay_ms(50);
 
     /* ---------------------------------------------------------------
@@ -4989,7 +4912,7 @@ void fpga_init(void)
      * pre-config (the plain warm handoff), DO the bit-bang cold config HERE, then
      * fall through to the warmtest read/render pipeline. This is the reliable
      * arm-test bench: real config (Build B breaks the wall, DONE_FINAL set) plus
-     * the fpga_warmtest_acq_task 0x04/0x05 readout that latches the demo trace off
+     * the fpga_acq_task 0x04/0x05 readout that latches the demo trace off
      * on real data. Runs AFTER PB11 (IOR1B) and with PC6 (IOB7B) already HIGH from
      * Step 4, so the engine-arm co-enables are asserted when the FPGA_CONFIG_B_ARM
      * writes fire inside the sequence. `make guest-coldtrace`. */
@@ -5113,18 +5036,17 @@ void fpga_init(void)
  * Task Creation
  * ═══════════════════════════════════════════════════════════════════ */
 
-QueueHandle_t fpga_create_tasks(void)
+void fpga_create_tasks(void)
 {
     /* Only create FPGA tasks if init succeeded.
      * If fpga_init() failed or was skipped, the rest of the
      * firmware still works — just no scope/meter data. */
     if (!fpga.initialized) {
-        return NULL;
+        return;
     }
 
     /* Create queues */
     usart_tx_queue = xQueueCreate(10, sizeof(uint32_t));
-    spi3_acq_queue = xQueueCreate(15, sizeof(uint8_t));
     meter_rx_queue = xQueueCreate(8, sizeof(fpga_meter_rx_event_t));
 
     /* P0.2 frame staging (see fpga_acq_frames_commit). Heap, not BSS — the
@@ -5141,29 +5063,15 @@ QueueHandle_t fpga_create_tasks(void)
         memset(acq_stage_ch2, 128, FPGA_ADC_BUF_SIZE);
     }
 
-    /* Warm-handoff test: ONE task — the PC0-gated read-only loop speaking
-     * the real 0x04/0x05 protocol (fpga_warmtest_acq_task above). No
-     * dvom_TX/dvom_RX/meter_poll: USART2 is dark (FPGA_USART_SILENT_SCOPE is
-     * paired by the Makefile target) and nothing may re-posture the FPGA out
-     * of the scope mode stock left it in. */
-    xTaskCreate(fpga_warmtest_acq_task, "fpga", 256, NULL, 3, &acq_task_handle);
-    /* The meter tasks ARE created here now (2026-08-17). The comment above used
-     * to say USART2 is dark in these builds and nothing may re-posture the FPGA
-     * — the first half is no longer true by choice (PC11 + UEN now follow the UI
-     * mode) and the second is respected because every one of these tasks is
-     * gated on the meter link (meter_link_serving; it was the meter screen
-     * until the link got its own policy), so with the link off the wire is
-     * quiet, and with it on only the meter's own words go out. Without them
-     * PC11 high produces an audible relay click and a frozen DMM screen:
-     * nothing polls, nothing decodes. */
+    /* The acquisition task: reads records from the core over SPI3. */
+    xTaskCreate(fpga_acq_task, "fpga", 256, NULL, 3, &acq_task_handle);
+    /* The meter tasks. Each is gated on the meter link (meter_link_serving),
+     * so with the link off USART2 is quiet, and with it on only the meter's
+     * own words go out. */
     xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
     xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
     /* 192, not 64: function changes (fpga_set_meter_mode) now run here. */
     xTaskCreate(fpga_meter_poll_task,  "meter_poll", 192, NULL, 2, &meter_poll_handle);
-
-    fpga_enqueue_stock_post_h2_spi3_boot_triggers();
-
-    return spi3_acq_queue;
 }
 
 /* ═══════════════════════════════════════════════════════════════════

@@ -237,7 +237,7 @@ void cmd_spi3_edgecap(const char *args)
 /* Full proven-shape 0x04 read; returns the sample span. Used as the wedge
  * canary between sweep steps. Full 1026-byte window on purpose — do NOT
  * shorten it (frame shape is part of the protocol; see the 0x05 hazard note
- * on fpga_warmtest_read_channel). Consumes one capture frame. */
+ * on fpga_acq_read_channel). Consumes one capture frame. */
 static unsigned spi3_canary_span(void)
 {
     uint8_t smin = 255, smax = 0;

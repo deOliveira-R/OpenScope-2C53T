@@ -122,7 +122,7 @@ STOCK_HEADER_DROP = 2
 
 #: Default payload length for ``spi3 opread`` — stock's channel-read shape.
 #: Do NOT shorten it: frame shape is part of the protocol (see the 0x05 hazard
-#: note on ``fpga_warmtest_read_channel``).
+#: note on ``fpga_acq_read_channel``).
 STOCK_WINDOW_BYTES = 1026
 
 #: Samples that survive ``STOCK_WINDOW_BYTES`` minus ``STOCK_HEADER_DROP``.

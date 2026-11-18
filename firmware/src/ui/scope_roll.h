@@ -120,7 +120,7 @@ bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *d
 
 /* Record code to store for one op03 byte: rec_from_raw() (units.h), raw -
  * ADC_REC_OFFSET clamped to 0..REC_CODE_MAX — the same transform the Y-T read
- * applies (fpga_warmtest_read_channel). The offset is a constant, not a
+ * applies (fpga_acq_read_channel). The offset is a constant, not a
  * parameter. */
 rec_code_t scope_roll_record_code(adc_raw_t raw);
 

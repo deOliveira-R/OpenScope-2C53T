@@ -115,36 +115,6 @@
 #define FPGA_CMD_CONT_DIODE   0x2C   /* Continuity/diode mode */
 
 /* ═══════════════════════════════════════════════════════════════════
- * SPI3 Acquisition Modes (trigger_byte - 1)
- * ═══════════════════════════════════════════════════════════════════ */
-
-typedef enum {
-    FPGA_ACQ_FAST_TB     = 0,  /* Fast timebase config only */
-    FPGA_ACQ_ROLL        = 1,  /* Roll mode (circular buffer, 300 samples) */
-    FPGA_ACQ_NORMAL      = 2,  /* Normal scope (1024 bytes, interleaved) */
-    FPGA_ACQ_DUAL        = 3,  /* Dual channel (2048 bytes, split) */
-    FPGA_ACQ_EXTENDED    = 4,  /* Extended command only */
-    FPGA_ACQ_METER_ADC   = 5,  /* Meter ADC read */
-    FPGA_ACQ_SIGGEN      = 6,  /* Signal gen feedback */
-    FPGA_ACQ_STATUS      = 7,  /* Status/pre-acquisition command exchange */
-    FPGA_ACQ_CALIBRATE   = 8,  /* Calibration readback */
-} fpga_acq_mode_t;
-
-/*
- * Diagnostic-only DMM waveform sampler trigger.
- *
- * Stock V1.2.0 uses public trigger byte 6 for SPI3 case 5
- * (`trigger_byte - 1 == FPGA_ACQ_METER_ADC`) during the post-H2 queue block at
- * 0x08026DCE..0x08026E2A. Keep the debug sampler on a private byte so it cannot
- * steal stock trigger semantics.
- */
-#define FPGA_ACQ_DIAG_METER_ADC_TRIGGER 0xF0u
-
-/* ═══════════════════════════════════════════════════════════════════
- * Stock-State Bench Shadow
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* ═══════════════════════════════════════════════════════════════════
  * FPGA State
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -669,15 +639,15 @@ uint8_t fpga_boot_live(void);
 void fpga_init(void);
 
 /*
- * Create FreeRTOS tasks for FPGA communication:
- *   - USART TX task (dvom_TX): formats and sends command frames
- *   - USART RX task (dvom_RX): processes received data frames
- *   - Acquisition task (fpga): SPI3 ADC data reads
+ * Create the FreeRTOS tasks of this driver:
+ *   - acquisition task (fpga): reads records from the core over SPI3
+ *   - USART TX task (dvom_TX): formats and sends command frames to the meter chip
+ *   - USART RX task (dvom_RX): processes the meter chip's frames
+ *   - meter poll task (meter_poll): meter function changes and the keepalive
  *
- * Returns the acquisition task queue handle for triggering reads.
  * Must be called after fpga_init() and before vTaskStartScheduler().
  */
-QueueHandle_t fpga_create_tasks(void);
+void fpga_create_tasks(void);
 
 /*
  * Send a command to the FPGA via USART2 TX queue.
