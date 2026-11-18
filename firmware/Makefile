@@ -598,114 +598,6 @@ guest: CFLAGS += -DGUEST_BUILD
 guest: LDSCRIPT = ld/at32f403a_guest.ld
 guest: clean all
 
-# Warm-handoff experiment build (guest image), reworked 2026-08-12 after
-# Stlkv's live-trace result (issue #18). Comes up READ-ONLY against an FPGA
-# already scope-configured by stock: skips the SSPI config sequence, arms the
-# trigger DAC (DAC1 mid-scale — the reset zeroes it and captures read flat
-# zeros until it is restored), and runs a PC0-gated acquisition task speaking
-# the real 0x04/0x05 per-channel protocol, feeding the scope UI. Success is
-# on the LCD: the synthetic demo trace disappears when the first real frame
-# lands (no USB needed — CDC is dead on the bench unit). Pairs
-# FPGA_USART_SILENT_SCOPE so USART2 stays electrically dark (UEN clear).
-# See fpga.c FPGA_WARM_HANDOFF_TEST and docs/fpga_warm_handoff_test.md.
-# [LIVE] Warm-handoff dev loop (~2 min/iteration) for scope-side work with
-#        no cold-config risk. Needs stock flashed first + unbroken power.
-# guest-warmtest-usart — warm handoff with USART2 ALIVE (2026-08-17).
-#
-# The 2026-08-12 warm-handoff run proved our READ path against an FPGA that
-# STOCK configured, but it only ever checked CH1. It never checked CH2, and it
-# never checked the meter — and on 2026-08-17 the meter was found DEAD on
-# builds that configure the FPGA themselves ([[config-kills-the-meter]]:
-# USART2 STS=0x000000C0, TDC set, RDBF/ORERR never set, no byte ever returns).
-#
-# This build exists to ask both questions at once against a KNOWN-GOOD
-# configuration. FPGA_WARM_HANDOFF_TEST returns early from fpga_init before any
-# config sequence, so stock's SRAM configuration survives untouched; USART2 is
-# still initialised earlier in fpga_init, so with the silent flag off the bus is
-# live and `usart raw` + `fpga usart` can measure whether the meter answers.
-#
-# meter+CH2 both work  -> our bit-bang configuration is deficient, ONE root cause
-# neither works        -> our runtime code, not the configuration
-# split                -> two independent faults
-guest-warmtest-usart: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=0 -DFPGA_BENCH_SAVE_PC12=1
-guest-warmtest-usart: LDSCRIPT = ld/at32f403a_guest.ld
-guest-warmtest-usart: clean all
-
-guest-warmtest: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_BENCH_SAVE_PC12=1
-guest-warmtest: LDSCRIPT = ld/at32f403a_guest.ld
-guest-warmtest: clean all
-
-# Warm handoff + CH2 trigger bring-up (bench plan item 5, 2026-08-13). Layers the
-# TMR13 CH1 PWM-DAC reference (PA6) onto the warm-handoff scope build so a live
-# CH2 trace can be validated — CH2 was predicted dead because our firmware never
-# programmed TMR13 (ripcord contract 38: CH2's comparator ref is TMR13_C1DT, same
-# cal formula as DAC1). Stock TMR13 config decoded from master_init: PSC=0,
-# ARR=4094, CH1 PWM, C1EN|C1P, CEN. ⚠ Drives PA6 as AF PWM — confirm on the bench
-# that PA6 is the CH2 reference (it was "Unknown" in HARDWARE_PINOUT). Watch for a
-# CH2 trace appearing the way CH1 did after the DAC1 fix. See scope_trigger.c.
-# [LIVE] Queued bench item (dev plan F3): CH2 trigger reference via TMR13.
-#        Decoded, NOT yet confirmed on hardware.
-guest-warmtest-ch2: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CH2_TRIGGER=1 -DFPGA_BENCH_SAVE_PC12=1
-guest-warmtest-ch2: LDSCRIPT = ld/at32f403a_guest.ld
-guest-warmtest-ch2: clean all
-
-# USART-silent scope-boot experiment (guest image). Holds USART2 UEN CLEAR through
-# the whole boot, skips Step 3b + Step 8 USART traffic, creates no dvom/meter/acq
-# auto-tasks — so the SPI3 wire stays quiet and `fpga reinit`/`spi3 xfer` run
-# unperturbed. Tests the stock-bringup-diff hypothesis that live USART2 keeps the
-# FPGA's NV design owning the SSPI pins. See fpga.c FPGA_USART_SILENT_SCOPE and
-# docs/fpga_stock_bringup_diff_plan.md.
-# [HISTORICAL] 2026-06-13 user-mode-lockout test. REFUTED — do not re-chase.
-#              (The FPGA_USART_SILENT_SCOPE flag itself is still used by most
-#              live targets; it is this standalone image that is retired.)
-guest-usart-silent: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1
-guest-usart-silent: LDSCRIPT = ld/at32f403a_guest.ld
-guest-usart-silent: clean all
-
-# External-master bring-up build (guest image). fpga_init() brings up the
-# peripherals then calls fpga_bus_release() instead of its own SSPI upload:
-# tri-states PB3/PB5/PB6 (Hi-Z), stages PC6/PB11 HIGH, keeps PC9 power-hold,
-# creates no auto-tasks. Pairs FPGA_USART_SILENT_SCOPE to keep the wire fully
-# quiet, so the FPGA's config port is pristine for an external ESP32 (SSPI pads)
-# or FT232H (JTAG TAP pads, issue #18). UNTESTED. See fpga.c FPGA_BUS_RELEASED_BOOT
-# and tools/esp32_sspi_bringup/README.md.
-# [PARKED — UNTESTED] External-master bring-up (ESP32/FT232H). Never run on
-#              hardware. The JTAG/external rationale weakened after Exp J
-#              showed SSPI reaches the config engine fine.
-guest-bringup: CFLAGS += -DGUEST_BUILD -DFPGA_BUS_RELEASED_BOOT=1 -DFPGA_USART_SILENT_SCOPE=1
-guest-bringup: LDSCRIPT = ld/at32f403a_guest.ld
-guest-bringup: clean all
-
-# H7 step 1 (2026-08-26): guest-bringup PLUS FPGA_CONFIG_B so the bit-bang loader
-# is COMPILED (not run at boot — BUS_RELEASED_BOOT still takes the early-return
-# branch). Gives `fpga configbb` to fire bit-bang on demand and `fpga reinit` to
-# fire hardware-SPI on demand, from ONE build with identical off-SPI pin state —
-# the clean on-board A/B of bit-bang-success vs HW-SPI-failure. CDC stays up
-# (no config at boot). See docs/experiments/2026-08-26-31-*.
-guest-bringup-bb: CFLAGS += -DGUEST_BUILD -DFPGA_BUS_RELEASED_BOOT=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1
-guest-bringup-bb: LDSCRIPT = ld/at32f403a_guest.ld
-guest-bringup-bb: clean all
-
-# EXP-36 (2026-08-26): guest-bringup-bb with the bit-bang SCK SLOWED to ~470kHz
-# (FPGA_BB_HALF_DELAY=250) so `fpga configbb` clocks at AF's /256 rate. AF walls
-# at /2, /64 AND /256 (rate excluded for AF). If a slowed GPIO bit-bang STILL
-# configures, then at a MATCHED ~470kHz rate GPIO drive configures where AF drive
-# walls -> the differentiator is GPIO-vs-AF electrical drive, not rate. If it
-# fails, bit-bang's success is rate-dependent and the framing changes.
-guest-bringup-bb-slow: CFLAGS += -DGUEST_BUILD -DFPGA_BUS_RELEASED_BOOT=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_BB_HALF_DELAY=250
-guest-bringup-bb-slow: LDSCRIPT = ld/at32f403a_guest.ld
-guest-bringup-bb-slow: clean all
-
-# EXP-33 (2026-08-26): guest-bringup-bb but the on-demand `fpga configbb` uses
-# stock's EXACT bit-bang framing (WITH 0x05, 100ms gaps, no prelude reads,
-# immediate close) via FPGA_CONFIG_B_FAITHFUL. Forks "framing" vs "GPIO-vs-AF
-# electrical drive": if this still configures (port open->closed via spi3 gowin),
-# framing is excluded. FAITHFUL does not read cfg_status_reg — verdict is the
-# before/after anchor, not the configbb printout.
-guest-bringup-bb-faithful: CFLAGS += -DGUEST_BUILD -DFPGA_BUS_RELEASED_BOOT=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_FAITHFUL=1
-guest-bringup-bb-faithful: LDSCRIPT = ld/at32f403a_guest.ld
-guest-bringup-bb-faithful: clean all
-
 # Flash app via USB HID bootloader (bootloader must be running)
 flash: $(BUILD_DIR)/$(TARGET).bin
 	python3 ../scripts/flash_preflight.py hid-app --image $< --address 0x08004000
@@ -1441,7 +1333,7 @@ test-shmem-layout: $(BUILD_DIR)/test_shmem_layout $(BUILD_DIR)/test_shmem_layout
 	$(BUILD_DIR)/test_shmem_layout
 	$(BUILD_DIR)/test_shmem_layout_cmsis
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest guest-warmtest guest-usart-silent emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-slow guest-coldtrace-la guest-debugclk guest-configA-gap guest-configA-csdummy guest-configA-gapless guest-bringup guest-bringup-bb guest-bringup-bb-slow guest-coldtrace-hwspi guest-bringup-bb-faithful fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace test-interleave-cal
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all guest emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-persist guest-caldump guest-coldtrace-la guest-debugclk fpga-alt-header guest-coldtrace-meter test-key-model test-can-bus app-coldtrace test-interleave-cal
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page
@@ -1730,228 +1622,21 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 # LIVE, in the order you would reach for them:
 #   guest              standard bench image (IAP + LCD overlay loop)
 #   guest-coldtrace    cold boot -> configured FPGA -> live trace (the rig)
-#   guest-coldtrace-slow  same, AUTO read cadence 500 ms (acq starvation test)
 #   guest-coldtrace-la    same, bit-bang config SCK slowed for 24 MS/s logic analyzers
 #   guest-debugclk     coldtrace but loads the debugclk_hw_top DIAGNOSTIC bitstream
-#   guest-configB      config only; also the queued CDC single-variable test
-#   guest-configB-arm  config + engine arm, no live readout
-#   guest-warmtest     warm-handoff dev loop for scope-side work
-#   guest-warmtest-ch2 CH2 trigger bring-up — decoded, NOT bench-confirmed
-#   guest-configA      \ the two arms of the still-open bit-bang-vs-AF /
-#   guest-config05     / no-0x05 bisect
 #
 # HISTORICAL (all NEGATIVE unless noted), newest first:
 #   guest-reconfig-pc9  Exp T   PC9 RECONFIG_N pulse
-#   guest-reload        Exp S   Gowin RELOAD 0x3C
-#   guest-pc1           Exp R   PC1 LOW + PC2 HIGH
-#   guest-fidelity2     Exp R   full config-register set
 #   guest-sweep         Exps O/Q  RECONFIG_N pin sweeps
-#   guest-trace         Exp N   anchored STATUS at every CS-frame boundary
-#   guest-idcode        Exp J   POSITIVE — the first anchored measurement;
-#                               its method is now mandatory project-wide
 #   guest-reconfig-pc2  Exp G   PC2 pulse
 #   guest-reconfig-pb12 Exp G   PB12 pulse
-#   guest-fidelity      Exp F   all five enumerables (also a base for others)
-#   guest-spin          Exp E   SWD park at CONFIG_ENABLE
-#   guest-usart-silent  2026-06-13 user-mode-lockout test — refuted
 #   guest-faulttest     2026-08-11 fault-handler self-test
 #
-# PARKED: guest-bringup (external master, never run).
 # BLOCKED: guest-rtt (RDP makes RTT unreachable on unit #1).
 #
 # Full writeups: CLAUDE.md, analysis_v120/expE_swd_state_diff_2026-07-28.md,
 # docs/build_a_config_entry_test.md, docs/fpga_warm_handoff_test.md.
 # ═══════════════════════════════════════════════════════════════════════════
-
-# Experiment E (2026-07-27): park in fpga_init at the exact config-enable instant
-# (prelude 05/12 sent, CS LOW, 0x15 not yet clocked) so SWD can dump peripheral
-# state for a diff vs the stock spin image (/tmp/APP_2C53T_expE_spin_stock.bin).
-# The device intentionally never reaches the scheduler — reflash to recover.
-# [HISTORICAL] Exp E (2026-07-27/28) — SWD park at CONFIG_ENABLE. Answered:
-#              clock tree identical; see the raw dumps in analysis_v120.
-#              Note SWD on this unit is halt-and-poke only (RDP kills the CPU
-#              on attach), so re-running has a real cost.
-guest-spin: CFLAGS += -DGUEST_BUILD -DFPGA_SPIN_AT_CONFIG_ENABLE=1
-guest-spin: LDSCRIPT = ld/at32f403a_guest.ld
-guest-spin: clean all
-
-# Experiment F (2026-07-28): stock-fidelity config build. Closes ALL five
-# enumerable MCU-state differences the Exp E SWD diff found at the CONFIG_ENABLE
-# instant, in one image: SPI3 BR back to stock's /2, PB4/MISO pulled up instead
-# of floating, PC2 + PB12 driven push-pull HIGH, USART2 UEN held clear (via
-# FPGA_USART_SILENT_SCOPE), and the SPI2 clock gate enabled. probe_edit is turned
-# on so the 0x41 STATUS read still happens at /256 in its own CS frame — read it
-# on the LCD overlay as ED:. Wall breaks => bisect the five. Wall holds => MCU-side
-# state is excluded and the FT232H JTAG oracle is the only remaining test.
-# See reverse_engineering/analysis_v120/expE_swd_state_diff_2026-07-28.md
-# [HISTORICAL] Exp F (2026-07-28) — all five 'enumerables' closed at once.
-#              NEGATIVE (ED:00039020). Still useful as the fidelity BASE that
-#              several targets below build on.
-guest-fidelity: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1
-guest-fidelity: LDSCRIPT = ld/at32f403a_guest.ld
-guest-fidelity: clean all
-
-# Experiment R (2026-08-11): the pins a LEVEL diff could not see.
-#
-# Exp F's "all five enumerables closed" was scoped to its method. It compared
-# stock-vs-ours output LEVELS (ODT), which cannot distinguish a pin stock drives
-# LOW from a pin we leave FLOATING — both report 0. Re-diffing the same Exp E
-# dumps on the CONFIG registers (CRL/CRH) finds ~20 differences, of which these
-# are open: PC1, PA6, PC11, PD2, PD3, PD6, PD13.
-#
-#   guest-pc1        fidelity + PC1 driven push-pull LOW. The clean single-pin
-#                    case: stock and ours have IDENTICAL ODT bit1, and differ
-#                    only in the CRL nibble (0x1 driven-low vs 0x4 floating).
-#                    PC1 is `Unknown` in HARDWARE_PINOUT.md and no build of ours
-#                    has ever driven it. Stock holds PC2 HIGH + PC1 LOW at
-#                    CONFIG_ENABLE (the ==3 arm of the selector at 0x0802C608);
-#                    Exp F matched PC2, so this closes the pair.
-#
-#   guest-fidelity2  fidelity + PC1 + the rest of the uncovered set. Excludes
-#                    the Exp C-refuted frontend bank, the button matrix (we need
-#                    SAVE/POWER), SPI2 AF pins, and PD12 (our EXMC owns it).
-#
-# Read ED: on the LCD overlay as usual. If either breaks the wall, bisect.
-# [HISTORICAL] Exp R (2026-08-11) — PC1 LOW + PC2 HIGH. NEGATIVE.
-guest-pc1: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_FIDELITY_DRIVE_PC1=1
-guest-pc1: LDSCRIPT = ld/at32f403a_guest.ld
-guest-pc1: clean all
-
-# [HISTORICAL] Exp R (2026-08-11) — the full config-register set. NEGATIVE.
-#              Closed the config-register class; static MCU state excluded.
-guest-fidelity2: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_FIDELITY_DRIVE_PC1=1 -DFPGA_FIDELITY_DRIVE_UNCOVERED=1
-guest-fidelity2: LDSCRIPT = ld/at32f403a_guest.ld
-guest-fidelity2: clean all
-
-# Experiment S (2026-08-11): Gowin SSPI RELOAD (0x3C) before the prelude.
-#
-# Gowin documents two ways to make a running part accept a new configuration:
-# pulse RECONFIG_N, or power-cycle it. As of Exp R BOTH are closed to us --
-# every GPIO form of a RECONFIG_N pulse is refuted (Exps G/O/Q, plus maksidze's
-# measurement that QN48 pin 48 never pulses), and a genuine FPGA power cycle
-# leaves STATUS at 00039020.
-#
-# RELOAD is the third form: the same request as a COMMAND, on a bus we have
-# proven the part decodes (Exp J: four opcodes, four distinct replies).
-#
-# The send code and the reload_3c field have existed since June, but the only
-# way to reach them was the debug shell -- which needs USB CDC (never enumerated
-# on this unit) or RTT (impossible while RDP is set). There was never a make
-# target, so this has NEVER been run on a validated readout. It sits in the
-# re-run backlog with the trailing-clock sweep and Exp H on stock.
-#
-# Built on the fidelity base so the ONLY difference from Exp F/R is the 0x3C
-# frame. Read ED: on the LCD overlay; anchor still applies.
-# [HISTORICAL] Exp S (2026-08-11) — Gowin RELOAD 0x3C. NEGATIVE.
-guest-reload: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_RELOAD_3C_BUILD=1
-guest-reload: LDSCRIPT = ld/at32f403a_guest.ld
-guest-reload: clean all
-
-# Build A (2026-08-13): isolate the load-bearing variable behind Stlkv's #18
-# cold-start success. Stlkv drove OUR pins (PB6 CS) with OUR 115,638-byte payload
-# via a GPIO bit-bang loop and got DONE_FINAL set. That narrows the difference
-# from our two months of refusals to three candidates: (1) slow/gapped clocking
-# of the WHOLE sequence, (2) the richer prelude reads (0x11/0x13/0x41 before
-# CONFIG_ENABLE), (3) GPIO-mode vs hardware-SPI-AF pins.
-#
-# Build A tests (1)+(2) on our EXISTING hardware-SPI3 path WITHOUT bit-banging:
-# cmd_br AND upload_br both /256, plus prelude_reads before INIT_ADDR. If the
-# wall breaks here, the bit-bang (Build B) is unnecessary and this folds into
-# fpga_init as the default cold-boot path. If it holds, GPIO-vs-AF is the last
-# variable and Build B is next.
-#
-# NOTE the /256 upload takes ~2.0s (115638 x 8 x 256/120MHz); the splash->trace
-# gap is expected, not a hang. Read the LCD overlay: SUCCESS = CFG line shows D1
-# (DONE_FINAL) and S1:037F (both phases at /256 confirmed on-device). Built on
-# the USART-silent base so the only deltas from the Exp F/R fidelity baseline are
-# the three Build A knobs. See docs/bench_plan_2026-08-13.md and issue #18.
-# [LIVE] Failed control (CFG:00039020 D0) — but still live, because the
-#        bit-bang-vs-AF / no-0x05 bisect it belongs to is still OPEN.
-guest-configA: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_A=1
-guest-configA: LDSCRIPT = ld/at32f403a_guest.ld
-guest-configA: clean all
-
-# BIS-3 gap test (2026-08-25): guest-configA PLUS an inter-byte gap inserted into
-# the hardware-SPI 0x3B payload (FPGA_HW_UPLOAD_GAP_NOPS). Tests the ONE transport
-# difference byte-fidelity was blind to: hardware SPI streams the payload gaplessly
-# from the FIFO, bit-bang leaves ~1.4 us inter-byte gaps. Clock RATE was already
-# excluded (2026-06-12 BR sweep /16==/2); this varies the GAP on the same fast
-# clock. Overlay forced on so the CFG: line is readable WITHOUT CDC (this is a
-# hardware-SPI build; per the build-type correlation those lose USB CDC).
-#
-# Sweep GAP for ~1.4 us at 240 MHz (~100-350): `make guest-configA-gap GAP=200`.
-# READ: LCD overlay CFG: line. D1 = DONE_FINAL set -> the gapless FIFO stream was
-# the wall, and a gapped hardware-SPI path configures ~100x faster than bit-bang.
-# D0 = gaps are not the variable either; weight shifts back to prelude/state.
-# Zero-hardware arm of the config-transport bisect (runs on unit #1, no Tang Nano).
-GAP ?= 200
-guest-configA-gap: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_A=1 -DFPGA_HW_UPLOAD_GAP_NOPS=$(GAP) -DSCOPE_DEBUG_OVERLAY
-guest-configA-gap: LDSCRIPT = ld/at32f403a_guest.ld
-guest-configA-gap: clean all
-
-# H2 (the converged lead — docs/config_entry_hw_spi_hypotheses.md): re-add
-# bb_cmd16's / stock's CS-HIGH 0x00 dummy byte before each HW-SPI prelude frame.
-# READ: LCD overlay CFG: line on a COLD FPGA (unplug/replug), anchor A0.
-#   D1 / A-1 / demo trace gone => the removed CS-high clocks WERE the error.
-#   D0 A0                      => H2 walls; fall back to -settle / -idle / LA.
-guest-configA-csdummy: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_A=1 -DFPGA_HW_CS_DUMMY=1 -DSCOPE_DEBUG_OVERLAY
-guest-configA-csdummy: LDSCRIPT = ld/at32f403a_guest.ld
-guest-configA-csdummy: clean all
-
-# Post-H6 suspect (a): clock the mode-0 prelude frames (05/12/15) GAPLESSLY —
-# no mid-frame SCK idle between each command byte and its 0x00 — matching both
-# working transports (bit-bang + stock). LAST untested firmware axis after H1-H6.
-# READ: LCD overlay CFG: line on a COLD FPGA (unplug/replug), anchor A0.
-#   D1 / A-1 / demo trace gone => the intra-frame polled stall WAS the wall.
-#   D0 A0                      => cadence excluded; firmware exhausted => LA (H7).
-guest-configA-gapless: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_A=1 -DFPGA_HW_PRELUDE_GAPLESS=1 -DSCOPE_DEBUG_OVERLAY
-guest-configA-gapless: LDSCRIPT = ld/at32f403a_guest.ld
-guest-configA-gapless: clean all
-
-# 0x05-omit test (2026-08-13, issue #18): the HARDWARE-SPI config path with the
-# 0x05 ERASE_SRAM frame skipped, so the prelude is 0x12 INIT_ADDR -> 0x15
-# CONFIG_ENABLE. This is the single-variable experiment maksidze proposed and we
-# committed to running in parallel.
-#
-# WHY: our working Build B bit-bang loader ALSO omits 0x05, while the failing
-# hardware-SPI loader sends it -- so "bit-bang vs AF-mode" and "no-0x05 vs 0x05"
-# have never been separated. maksidze's stock /64 capture already proved a GW1N
-# can be configured over slow hardware SPI, which excludes clock rate and leaves
-# the prelude as the live suspect.
-#
-# READ: the LCD overlay CFG: line. 0003F460 / D1 = DONE_FINAL set -> the prelude
-# was the answer all along, and we gain a config path ~100x faster than
-# bit-banging 115,638 bytes. 00039020 / D0 = unchanged wall -> 0x05 is not the
-# variable and the bit-bang/AF difference is what matters.
-# [LIVE] Other arm of the same open bisect: hardware-SPI with 0x05 omitted.
-guest-config05: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_OMIT_05=1 -DSCOPE_DEBUG_OVERLAY
-guest-config05: LDSCRIPT = ld/at32f403a_guest.ld
-guest-config05: clean all
-
-# Build B (2026-08-13): true bit-bang transplant of the maksidze/Stlkv V0.4
-# loader (ported byte-for-byte from Stlkv/OpenScope-2C23T-2C53T-port). Runs the
-# whole SSPI handshake on GPIO-mode PB3/4/5/6 instead of the SPI3 peripheral,
-# then restores SPI3 AF. Tested only if Build A's wall holds — it isolates the
-# LAST candidate, GPIO/bit-bang clocking vs hardware-SPI AF. If B breaks the wall
-# where A did not, GPIO-vs-AF is the answer. Same LCD verdict: CFG line D1 =
-# DONE_FINAL. See fpga_bitbang_config_sequence(), docs/build_a_config_entry_test.md.
-# [LIVE] Config-only half of the winning rig; also the image queued for the
-#        CDC single-variable test (dev plan F1).
-guest-configB: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1
-guest-configB: LDSCRIPT = ld/at32f403a_guest.ld
-guest-configB: clean all
-
-# Build B + engine-arm (bench plan item 4, 2026-08-13). After the bit-bang config
-# breaks the wall (DONE_FINAL set) the capture engine is UNARMED. This layers
-# stock's post-config sequence (600ms -> five writes 01 08/02 03/06 00/07 00/08 AD
-# -> 0x03 status read) onto Build B. Read SS byte 1 (01 = armed candidate) and
-# watch the demo trace: it DISAPPEARS on first real sample = armed. See fpga.c
-# fpga_bitbang_config_sequence FPGA_CONFIG_B_ARM block.
-# [LIVE] Config + engine-arm, no live readout. Kept as the isolation point
-#        between 'config took' and 'engine armed'.
-guest-configB-arm: CFLAGS += -DGUEST_BUILD -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1
-guest-configB-arm: LDSCRIPT = ld/at32f403a_guest.ld
-guest-configB-arm: clean all
 
 # Cold-config + live-readout rig (bench plan item 4, 2026-08-13). The reliable
 # arm-test bench: the warmtest 0x04/0x05 read/render pipeline (which latches the
@@ -2012,39 +1697,6 @@ guest-persist: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_S
 guest-persist: LDSCRIPT = ld/at32f403a_guest.ld
 guest-persist: clean all
 
-# guest-coldtrace-usart — coldtrace with USART2 ALIVE (2026-08-17).
-#
-# Identical to guest-coldtrace except FPGA_USART_SILENT_SCOPE is 0, so the
-# dvom_TX/dvom_RX/meter tasks are created and fpga_init runs the meter boot
-# sequence over USART2.
-#
-# WHY: stock's command table puts SCOPE CHANNEL CONFIGURATION on USART2 --
-# cmd 0x01 = "configure channel", type 0 = CH1 / type 1 = CH2, and 0x0B-0x11 =
-# channel/trigger/timebase (FPGA_TASK_ANALYSIS.md). CH2 has been chased on SPI3
-# for a month; that bus is now exhausted (full stock command set decoded and
-# matched, regs 01/02/06/07/08/09 swept, 02/06/07 re-swept with re-arm on).
-#
-# AND WHY THIS BUILD RATHER THAN A SHELL POKE: on 2026-08-17 USART2 was enabled
-# at runtime and verified by register readback (CTRL1 0x00000000 -> 0x0000202C,
-# BAUDR 0x30D4 = stock's), yet NOTHING answered -- not even 0x0508/0x0509, the
-# meter frames fpga_init itself sends in non-silent builds. So the USART results
-# are VOID, not negative: there is no validated instrument. Two causes were
-# found and only one is fixed. `usart tx` QUEUES, and coldtrace never creates
-# the task that drains the queue, so those frames were never transmitted at all
-# (this also voids the earlier 2026-08-16 "no echo ever returned" negative).
-# `usart raw` does transmit directly, and still drew no reply.
-#
-# This build exists to supply the missing positive control: if the METER works
-# here, USART2 is proven end-to-end and a silent scope command finally means
-# something. If the meter does NOT work here, the fault is in our USART bring-up
-# and no scope conclusion can be drawn from that bus at all.
-#
-# Config entry is unchanged (FPGA_CONFIG_B bit-bang), and stock's own order is
-# preserved: USART2 stays dark through config and comes up afterwards.
-guest-coldtrace-usart: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=0 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1
-guest-coldtrace-usart: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace-usart: clean all
-
 guest-coldtrace: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1
 guest-coldtrace: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace: clean all
@@ -2073,14 +1725,6 @@ guest-coldtrace: clean all
 guest-coldtrace-meter: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_METER_SUBMODES=1
 guest-coldtrace-meter: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-meter: clean all
-
-# H7 confirmation (2026-08-26): coldtrace's warm-handoff + live-readout pipeline,
-# but config via HARDWARE-SPI at /2 (stock's write rate) instead of bit-bang. Tests
-# whether HW-SPI /2 config is a REAL config (live trace) — the shell A/B showed it
-# closes the port where /256 walls. NOT FPGA_CONFIG_B (that is the bit-bang path).
-guest-coldtrace-hwspi: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_A_HWSPI=1
-guest-coldtrace-hwspi: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace-hwspi: clean all
 
 # [CH2 OFFSET 2026-08-17] guest-coldtrace-ch2 — coldtrace plus a boot-time arm
 # of the CH2 vertical-offset reference (TMR13 CH1 PWM-DAC on PA6).
@@ -2122,29 +1766,6 @@ guest-coldtrace-noch2: clean all
 guest-coldtrace-la: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_BB_HALF_DELAY=60
 guest-coldtrace-la: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-la: clean all
-
-# [BENCH 2026-08-15] guest-coldtrace-slow — coldtrace with the AUTO free-run
-# read cadence throttled from 30 ms to 500 ms (> one ~430 ms buffer fill).
-# Single-variable test of the acq-path "flat buffer" bug
-# (analysis_v120/scope_display_next_session_2026-08-14.md): spi3 opread always
-# follows an acq-task park (>= one full fill) and sees the swing, while the
-# 30 Hz acq loop may be starving the capture. If `fpga acq` first bytes /
-# overlay span now match `spi3 opread 04 1026`, the mechanism is cadence.
-guest-coldtrace-slow: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_AUTO_CADENCE_MS=500u -DFPGA_AUTO_TRIG_WAIT_MS=5u
-guest-coldtrace-slow: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace-slow: clean all
-
-# [BENCH 2026-08-14] guest-coldtrace-faithful — coldtrace with the config+arm
-# sequence made BYTE-EXACT to stock's June-capture wire protocol (see the
-# FPGA_CONFIG_B_FAITHFUL comment block in fpga.c for the five deltas closed).
-# Target observation: does the engine land in stock's state — post-arm 0x03
-# status 00 01 42 2E 2E, CH1 header byte2 flag semantics (00/01), and buffer
-# auto-refresh at ~26-45/s with a quiet input (the "23x mystery"). NOTE: this
-# build cannot read DONE_FINAL (no config-port reads by design); judge success
-# by the 0x03 SS bytes, demo-trace disappearance, and live OK/PC0 rates.
-guest-coldtrace-faithful: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_CONFIG_B_FAITHFUL=1
-guest-coldtrace-faithful: LDSCRIPT = ld/at32f403a_guest.ld
-guest-coldtrace-faithful: clean all
 
 # [BENCH 2026-08-16] guest-debugclk — guest-coldtrace with a DIFFERENT FPGA
 # payload: the debugclk_hw_top diagnostic image instead of the stock bitstream
@@ -2267,48 +1888,6 @@ guest-reconfig-pb12: clean all
 guest-reconfig-pc9: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_FIDELITY_RECONFIG_PORT=3 -DFPGA_FIDELITY_RECONFIG_PIN=9
 guest-reconfig-pc9: LDSCRIPT = ld/at32f403a_guest.ld
 guest-reconfig-pc9: clean all
-
-# Experiment J (2026-07-28): ANCHORED opcode-discrimination probe.
-# Exp I established that every FPGA status number this project has recorded was
-# a phase-slice of the free-running 0xC8100001 MISO pattern, not a register read
-# — the root cause being that no measurement here has ever had a known correct
-# answer. This build fixes that: it reads 0x11 READ_IDCODE at /256 and looks for
-# 0x0120681B (known independently from the Gowin .fs preamble at file offset
-# 0x4AD19), with 0x00 / 0x41 / 0x13 alongside as controls, 8 bytes each so a
-# repeating 4-byte pattern is visible as data rather than inferred.
-#   IDCODE found + ID != NP  => the FPGA decodes SSPI opcodes; the 2026-06-13
-#                               "not in config-receive mode" conclusion (which is
-#                               what pointed this project at JTAG) collapses.
-#   all opcodes identical    => that conclusion finally rests on a valid
-#                               measurement, and the FT232H is the route.
-# Built on the fidelity image so the wire conditions match Exp F/I.
-# See reverse_engineering/analysis_v120/expE_swd_state_diff_2026-07-28.md § Exp I/J
-# [HISTORICAL] Exp J (2026-07-28) — POSITIVE, and the most important target
-#              in this list: the first anchored measurement. Its method (read
-#              IDCODE 0x11 at /256, require 0x0120681B) is now MANDATORY for
-#              every FPGA measurement in this project.
-guest-idcode: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_IDCODE_PROBE=1
-guest-idcode: LDSCRIPT = ld/at32f403a_guest.ld
-guest-idcode: clean all
-
-# Step-resolved anchored config-status trace (2026-07-28).
-# Exp M proved we never enter config mode: the port answers IDCODE at every
-# checkpoint and STATUS never moves. This build resolves that by STEP — the
-# anchored STATUS is captured at all six CS-frame boundaries (pristine, after
-# 05, after 12, after 15, after the full upload, after 3A), each one validated
-# against the known IDCODE first and DISCARDED if the anchor fails.
-#   all six identical => the part ignores every config command while still
-#                        answering reads; the failure is config ENTRY, full stop.
-#   one step moves    => that is where our sequence first has an effect, and
-#                        where to aim next.
-#   an 'x' partway    => the config port CLOSED at that step (Exp L behaviour),
-#                        which would mean something DID take.
-# Built on the fidelity image so wire conditions match Exp F/I/M.
-# [HISTORICAL] Exp N (2026-07-28) — anchored STATUS at all six CS-frame
-#              boundaries. NEGATIVE: no config command moved the register.
-guest-trace: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CFG_TRACE_BUILD=1
-guest-trace: LDSCRIPT = ld/at32f403a_guest.ld
-guest-trace: clean all
 
 # RECONFIG_N candidate pin sweep (2026-07-28), button-gated.
 # Exp N: no config command moves the STATUS register while every read command
