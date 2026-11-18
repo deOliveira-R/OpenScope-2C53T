@@ -39,9 +39,11 @@ bool     spi3_opread_window(uint8_t opcode, uint32_t len, bool dump);
  * here, the read-back after the toolkit's `fpga reinit`. The caller holds the
  * bus (SC_SPI3 on its row). */
 void     cmd_spi3_acqread_one(uint8_t opcode);
+/* Can a byte leave PA2 now (USART2 enabled, transmitter on)? Prints the
+ * refusal when not. `usart tx` here, `usart raw` in the toolkit. */
+bool     usart_tx_wire_live(void);
 
 void cmd_usart_tx(const char *args);
-void cmd_usart_raw(const char *args);
 void cmd_bench_snapshot(void);
 void cmd_bench_restore(void);
 void cmd_gpio_mode(const char *args);
@@ -79,8 +81,6 @@ void cmd_fpga_selftest(void);
 void cmd_spi3_seq(const char *args);
 
 #define BENCHSHELL_SHELL_ROWS \
-    CMD_A("usart raw", cmd_usart_raw, SC_NEEDARGS, \
-          "usart raw <10 hex bytes>       Send raw 10-byte USART frame\r\n" "  e.g.: usart raw 00 00 00 0B 01 00 00 00 00 0B\r\n"), \
     CMD_A("usart tx", cmd_usart_tx, SC_NEEDARGS, \
           "usart tx <cmd_hi> <cmd_lo>      Send FPGA command (queued, or direct if no dvom_TX)\r\n"), \
     CMD_A("gpio set", cmd_gpio_set, SC_NEEDARGS, \

@@ -118,7 +118,6 @@ ui press	cmd_ui_press	0x02	ui press <KEY> [n]              Press a key n times (
 ui screen	cmd_ui_screen	0x01	ui screen                       Where the UI is: one key=value line for scripts\r\n
 ui seq	cmd_ui_seq	0x02	ui seq <tok> ...                tok = KEY | KEY*n | long:KEY | wait:ms (all parsed first)\r\n
 uptime	cmd_uptime	0x01	uptime                          Show uptime\r\n
-usart raw	cmd_usart_raw	0x02	usart raw <10 hex bytes>       Send raw 10-byte USART frame\r\n  e.g.: usart raw 00 00 00 0B 01 00 00 00 00 0B\r\n
 usart tx	cmd_usart_tx	0x02	usart tx <cmd_hi> <cmd_lo>      Send FPGA command (queued, or direct if no dvom_TX)\r\n
 usb	cmd_usb	0x00	usb [status]                    USB device mode, switch result, CDC/MSC counters\r\nusb share [on|off]              Re-enumerate as CDC + read-only gallery drive / CDC only\r\nusb trace                       Last attach: resets/SETUPs, then the SCSI commands\r\n
 version	cmd_version	0x01	version                         Firmware info\r\n

@@ -26,6 +26,7 @@ void cmd_fpga_bus_release(void);              /* re_fpga_config.c */
 void cmd_fpga_bus_reacquire(void);
 void cmd_fpga_reinit(const char *args);
 void cmd_pinlog(const char *args);            /* re_board.c */
+void cmd_usart_raw(const char *args);
 
 /* The 1 s timer hook of `pinlog` (usb_debug_pinlog_tick() forwards to it). */
 void retools_pinlog_tick(void);
@@ -49,7 +50,9 @@ void retools_pinlog_tick(void);
     CMD_A("spi3 edgecap", cmd_spi3_edgecap, SC_SPI3, \
           "spi3 edgecap [reps]             EXP-37: AF vs bit-bang 0x15 frames for LA edge-diff\r\n"), \
     CMD_V("spi3 probe", cmd_spi3_probe, SC_EXACT | SC_SPI3, \
-          "spi3 probe                      Bit-bang MISO probe; pokes SPI3 registers directly\r\n"),
+          "spi3 probe                      Bit-bang MISO probe; pokes SPI3 registers directly\r\n"), \
+    CMD_A("usart raw", cmd_usart_raw, SC_NEEDARGS, \
+          "usart raw <10 hex bytes>       Send raw 10-byte USART frame\r\n" "  e.g.: usart raw 00 00 00 0B 01 00 00 00 00 0B\r\n"),
 
 #else  /* !FEATURE_RETOOLS: not in this build */
 
