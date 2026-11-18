@@ -51,6 +51,7 @@ Feature brainstorms, market research, and community feedback. These capture the 
 
 RE methodology and analysis docs. The primary RE artifacts live in [`reverse_engineering/`](../reverse_engineering/) — these are supplementary.
 
+- [Toolkit and method](re/README.md) — how to open up an MCU + FPGA instrument from nothing, step by step, with the tool in `tools/re/` for each step
 - [Firmware Analysis](re/firmware_analysis.md) — Binary structure, version history (V1.0.3-V1.2.0), size comparison
 - [Function Map](re/function_map.md) — Named functions, variables, two-region string system
 - [RE Guide](re/re_guide.md) — Tools (Ghidra, binwalk), methodology, how to get started
