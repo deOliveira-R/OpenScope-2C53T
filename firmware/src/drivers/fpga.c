@@ -3079,6 +3079,9 @@ static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a 
 uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
 static void acq_core_ok_set(bool ok) { acq_core_ok = ok; }
+/* Register writes asked for while no usable core was loaded (not sent). */
+static volatile uint32_t acq_reg_writes_refused = 0;
+uint32_t fpga_acq_reg_writes_refused(void) { return acq_reg_writes_refused; }
 /* The firmware's own constants against the capture core's package (drivers/fpga_core_regs.h, generated):
  * a core with another record length, trigger position or timebase list does not build into this firmware. */
 _Static_assert(TRIG_EDGE_REC_N == (1u << FPGA_CORE_ADDR_W), "record length differs from the core's");
@@ -3518,6 +3521,10 @@ void fpga_reconcile_timebase_after_arm(void);                 /* below */
  * "used but never defined" warning on app/emu/guest builds. */
 static void fpga_scope_write_reg(uint8_t reg, uint8_t val)
 {
+    /* The opcodes are our core's. A design that is not a usable core of ours
+     * (acq_core_ok false: NoCore) is sent nothing; the caller's copy of the
+     * setting still changes, so the value is in force once a core is loaded. */
+    if (!acq_core_ok) { acq_reg_writes_refused++; return; }
     SPI3_CS_ASSERT();
     spi3_xfer(reg);
     spi3_xfer(val);

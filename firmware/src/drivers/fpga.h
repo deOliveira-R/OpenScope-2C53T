@@ -1154,6 +1154,7 @@ typedef struct {
     bool     check_on;        /* rewrite a register that differs from the firmware's copy twice running */
 } fpga_core_watch_t;
 fpga_core_watch_t fpga_core_watch(void);
+uint32_t fpga_acq_reg_writes_refused(void);   /* setting changes not sent: no usable core */
 void     fpga_core_watch_fix_set(bool on);     /* off for bench scripts that write registers behind the firmware */
 core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
 uint32_t fpga_acq_seam_count(unsigned i);      /* held records: 0 ordered by the header's seam, 1 without a seam */

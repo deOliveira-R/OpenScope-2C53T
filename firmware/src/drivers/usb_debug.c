@@ -2070,6 +2070,9 @@ static void cmd_fpga_core(const char *args)
     else if (strncmp(args, "fix off", 7) == 0)   fpga_core_watch_fix_set(false);
     else if (*args) { usb_send_str("usage: fpga core [fix on|off]\r\n"); return; }
     const core_ident_t id = fpga_core_ident();
+    if (!fpga_acq_core_ok())
+        usb_debug_printf("core: no usable core; register writes asked for and not sent: %lu\r\n",
+                         (unsigned long)fpga_acq_reg_writes_refused());
     if (!fpga_acq_design_ours()) { usb_send_str("core: NOT USABLE: the design in the FPGA was not loaded by this firmware; not asked, nothing is acquired\r\n"); return; }
     if (!id.valid) {
         usb_debug_printf("core: NOT USABLE: loaded by us but no valid identity (older than D5, or protocol %u unknown); nothing is acquired; reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
