@@ -1,14 +1,25 @@
 #!/usr/bin/env bash
-# Experiment E — SWD peripheral state dump at the config-enable instant.
+# SWD peripheral state dump of a parked target, for a mechanical diff of two
+# firmwares at the same instant (docs/re/README.md, step 3).
 #
-# Target must be running a *spin* image, parked with the prelude (05/12) sent,
-# CS LOW, and CONFIG_ENABLE (0x15) not yet clocked:
-#   stock : /tmp/APP_2C53T_expE_spin_stock.bin   (b . patched at flash 0x0802DA42)
-#   ours  : /tmp/OPENSCOPE_expE_spin_guest.bin   (make guest-spin)
+# Park each firmware at the instant of interest with a branch-to-self:
+#   factory : patch `b .` (bytes FE E7) over the instruction to stop at, in a
+#             copy of the factory image, and flash that copy. On the 2C53T
+#             V1.2.0 the instant studied was flash 0x0802DA42: FPGA prelude
+#             (05/12) sent, CS low, config-enable (0x15) not yet clocked.
+#   ours    : a `for (;;) {}` at the matching line of our own firmware.
 #
 # Dumps every register that could plausibly differ, so the two runs can be
-# diffed mechanically:  ./swd_state_dump.sh stock   then   ./swd_state_dump.sh ours
+# diffed:  ./swd_state_dump.sh stock   then   ./swd_state_dump.sh ours
 #   diff -u /tmp/swd_stock.txt /tmp/swd_ours.txt
+#
+# Board data: the register list below is the AT32F403A's (GPIOA-E, AFIO, the
+# clock tree, SPI3, USART2). Replace it for another MCU.
+#
+# The OpenOCD config is at32_minimal.cfg next to this script (override with
+# SWD_CFG=path). This script was last run with a stm32f1x-based config that
+# was later found to freeze the target on attach; at32_minimal.cfg is the
+# replacement and has not been run with this script.
 #
 # NOTES (from docs/SWD_GOLDEN_REFERENCE_2026_06_09.md):
 #  - Unplug the ST-Link before any IAP flash (it browns out the USB-powered
@@ -21,7 +32,7 @@ set -u
 
 LABEL="${1:-dump}"
 OUT="/tmp/swd_${LABEL}.txt"
-CFG="${HOME}/at32_attach.cfg"
+CFG="${SWD_CFG:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/at32_minimal.cfg}"
 
 [ -f "$CFG" ] || { echo "missing $CFG"; exit 1; }
 

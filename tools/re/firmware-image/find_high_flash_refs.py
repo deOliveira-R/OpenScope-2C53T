@@ -16,10 +16,6 @@ from collections import defaultdict
 from pathlib import Path
 
 
-DEFAULT_FIRMWARE = Path(
-    "/Users/david/Desktop/osc/archive/2C53T Firmware V1.2.0/"
-    "APP_2C53T_V1.2.0_251015.bin"
-)
 DEFAULT_BASE = 0x08000000
 FLASH_START = 0x08000000
 FLASH_END = 0x08100000
@@ -40,9 +36,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "firmware",
-        nargs="?",
         type=Path,
-        default=DEFAULT_FIRMWARE,
         help="Raw firmware image to scan",
     )
     parser.add_argument(

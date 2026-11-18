@@ -27,9 +27,15 @@
 #     The first version tested bit 31 and would have missed a real hit.
 #
 # Requires a spin image parked with the 05/12 prelude sent, CS LOW, and 0x15 not
-# yet clocked:
-#   stock : /tmp/APP_2C53T_expE_spin_stock.bin
-#   ours  : /tmp/OPENSCOPE_expE_spin_guest.bin   (make guest-spin)
+# yet clocked. How to make one (factory image patched with `b .`, or a
+# `for (;;) {}` in our own firmware) is in swd_state_dump.sh.
+#
+# Board data: SPI3 at 0x40003C00, CS on PB6, the Gowin opcodes and the GW1N-2
+# IDCODE. Replace them for another board or FPGA.
+#
+# The OpenOCD config is at32_minimal.cfg next to this script (override with
+# SWD_CFG=path); see the note in swd_state_dump.sh about which config this was
+# last run with.
 #
 # What it does, with the CPU halted:
 #   1. verify the park from peripherals (pc is useless here — RDP artifact)
@@ -55,12 +61,12 @@
 # SAFETY: reads/writes only SPI3 + GPIOB. Never touches PC9 (power hold).
 # Unplug the ST-Link before any IAP flash; replug only once the image is parked.
 #
-# Usage:  scripts/swd_fpga_status.sh stock|ours
+# Usage:  tools/re/swd/swd_fpga_status.sh stock|ours
 set -u
 
 LABEL="${1:-dump}"
 OUT="/tmp/swd_fpgastatus_${LABEL}.txt"
-CFG="${HOME}/at32_attach.cfg"
+CFG="${SWD_CFG:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/at32_minimal.cfg}"
 [ -f "$CFG" ] || { echo "missing $CFG"; exit 1; }
 
 # AT32F403A SPI3 (0x40003C00): CTRL1 +0x00, CTRL2 +0x04, STS +0x08, DT +0x0C.

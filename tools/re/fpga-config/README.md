@@ -1,5 +1,11 @@
 # External SSPI bring-up rig (ESP32 + optional FT232H)
 
+> Part of the reverse-engineering toolkit (`docs/re/README.md`, step 4). The
+> config-entry problem described below was solved in the MCU firmware before
+> this rig was ever wired up, so the text under "Why this exists" is the state
+> of June 2026. The rig is kept because an external master on the FPGA's
+> configuration port is the fast way to study any such port.
+
 > ⚠️ **EXPERIMENTAL — UNTESTED ON HARDWARE (2026-06-14).**
 > This whole branch (`experimental/esp32-bringup`) is bench-validation-pending.
 > We expect to test it in the next couple of days once magnet wire arrives.
@@ -39,8 +45,8 @@ the recipe then goes back into `fpga.c`.
 1. **Solder** magnet wire (30–34 AWG) to the SPI3 pads — SCK, MISO, MOSI, CS —
    **plus a GND** via. Strain-relieve each joint (hot glue / Kapton); these pads
    lift if the wire flexes. Scrape/tin the enamel before soldering.
-2. **Flash** the 2C53T with this branch's firmware (`make guest` for the
-   factory-bootloader unit; `make` otherwise).
+2. **Flash** the 2C53T with an OpenScope image whose debug shell has
+   `fpga busrelease` (the `bench` shell profile has it).
 3. In the 2C53T debug shell, run **`fpga busrelease`** — the MCU tri-states
    PB3/PB5/PB6, keeps PC6/PB11 HIGH, and holds PC9 power. The bus is now ours.
 4. **(Oracle, ideally first)** If you have the FT232H on the JTAG TAP pads,
@@ -81,13 +87,12 @@ help            list commands
 MCU-driven SPI3 lines (PB3 SCK / PB5 MOSI / PB6 CS → floating input), disables
 the SPI3 peripheral, and stages PC6=HIGH / PB11=HIGH while leaving the PC9 power
 hold untouched. The acquisition task checks `fpga.bus_released` and stays off
-the bus. There is intentionally **no un-release command** — power-cycle or
-re-flash to reclaim the bus.
+the bus. `fpga busreacquire` takes the bus back.
 
 ## Status / TODO
 
 - [ ] Bench-validate `fpga busrelease` actually Hi-Z's the lines (scope the pads).
 - [ ] Confirm the IDCODE read framing (dummy-byte count) against the #18 capture.
-- [ ] Add the 115,638-byte bitstream upload path (`0x3B` + data + `0x3A`) once the
-      IDCODE/prelude round-trip is confirmed — the array can be generated from
-      `firmware/src/drivers/fpga_bitstream_stock.c`.
+- [ ] Add a bitstream upload path (`0x3B` + data + `0x3A`) once the
+      IDCODE/prelude round-trip is confirmed — `scripts/fs2header.py` turns a
+      `.fs` into a C array.

@@ -1,6 +1,6 @@
 # stock-caplog — a logger that rides inside stock V1.2.0
 
-`scripts/stock_caplog/` answers questions of the form *"what does the stock firmware
+`tools/re/stock-caplog/` answers questions of the form *"what does the stock firmware
 actually send / actually touch when I do X?"* without a logic analyzer and without opening
 the case. It patches the user's own stock V1.2.0 APP image with two six-byte hooks and a
 692-byte code cave, runs, and leaves its log in a corner of SRAM that survives a
@@ -33,7 +33,7 @@ but `vTaskDelay`, which the TX hook displaced and replays.
 
 ## Procedure (factory IAP bootloader)
 
-1. Build: `python3 scripts/stock_caplog/build_caplog_image.py`
+1. Build: `python3 tools/re/stock-caplog/build_caplog_image.py`
    (needs `arm-none-eabi-gcc` on PATH and the stock image at
    `archive/2C53T Firmware V1.2.0/APP_2C53T_V1.2.0_251015.bin`; any other sha256 is refused).
    Output: `firmware/build/APP_2C53T_V1.2.0_caplog.bin`, 12 bytes changed in the original,
@@ -44,14 +44,14 @@ but `vTaskDelay`, which the TX hook displaced and replays.
 4. MENU+Power again **without removing power**, flash a reader that leaves `0x20037000`
    alone. Measured path: the 2C23T port firmware (its shell answers `mem <addr> <len>`).
    Booting this firmware instead zeroes the block (its `.bss` covers it).
-5. `python3 scripts/stock_caplog/caplog_dump.py --port /dev/ttyACM0 --save run.caplog`
+5. `python3 tools/re/stock-caplog/caplog_dump.py --port /dev/ttyACM0 --save run.caplog`
    — the tool probes the shell and speaks either `mem read <addr> 64` (this firmware) or
    `mem <addr> 256` (the port). `--decode run.caplog` re-renders a saved block. A `BAD` magic
    means the block did not survive or stock never ticked with the hooks in; do not read
    numbers out of it. Units with the OpenScope HID bootloader: `--hid` reads through
    `hid_flash.py` without booting an application at all — untested, see Limits.
 
-## What it has established so far (unit #2, 2026-09-07; samples in `scripts/stock_caplog/samples/`)
+## What it has established so far (unit #2, 2026-09-07; samples in `tools/re/stock-caplog/samples/`)
 
 1. **One word per function, no pairs.** Walking stock's meter menu: `0C 17 0B 0A 12 11 10 14`
    in menu order — DC Voltage, Continuity, Resistance, **Capacitance = 0x0A**, Temperature,

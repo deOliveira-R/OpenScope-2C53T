@@ -5,7 +5,7 @@ The shell prints `FLASHDUMP <len>\r\n` then streams exactly <len> raw bytes
 (usb_send_bytes). This reads them cleanly (binary, no text mangling) and
 writes a contiguous region to a file by issuing 4096-byte dumps.
 
-Usage: python3 scripts/flash_capture.py <start_hex_or_dec> <total_len> <outfile>
+Usage: python3 tools/re/flash/flash_capture.py <start_hex_or_dec> <total_len> <outfile>
 """
 import glob
 import sys

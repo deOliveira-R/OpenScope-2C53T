@@ -29,8 +29,8 @@ Two defects in the previous version, both of which mattered:
    dropped and never counted as a hit.
 
 Usage:
-    scripts/find_gpio_pulses.py <stock.bin> [--link-base 0x08007000]
-    scripts/find_gpio_pulses.py <stock.bin> --show-unresolved
+    tools/re/firmware-image/find_gpio_pulses.py <stock.bin> [--link-base 0x08007000]
+    tools/re/firmware-image/find_gpio_pulses.py <stock.bin> --show-unresolved
 """
 import argparse
 import re

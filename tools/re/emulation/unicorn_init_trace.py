@@ -11,7 +11,11 @@ those computed at runtime, passed through HAL functions, or loaded from
 RAM. This is the ground truth for what the stock firmware writes.
 
 Usage:
-    python3 unicorn_init_trace.py
+    python3 tools/re/emulation/unicorn_init_trace.py <factory APP image>
+
+Board data: the entry and stop addresses of the init function, the stubbed
+calls, the RAM/flash map and the register name table are those of the 2C53T
+factory firmware V1.2.0 on an AT32F403A. Needs unicorn.
 
 Part of the SPI3 compliance audit escalation (2026-04-06).
 """
@@ -453,20 +457,12 @@ class InitTracer:
         print(f"\nCSV: {csv_path}")
 
 
-def default_stock_binary_path():
-    return (Path(__file__).resolve().parents[1] /
-            "archive" / "2C53T Firmware V1.2.0" /
-            "APP_2C53T_V1.2.0_251015.bin")
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="Trace stock V1.2.0 init MMIO writes in Unicorn")
     parser.add_argument(
         "binary",
-        nargs="?",
-        default=str(default_stock_binary_path()),
-        help="stock APP binary path")
+        help="factory APP image (2C53T V1.2.0: the addresses in this file are that version's)")
     args = parser.parse_args()
 
     binary_path = args.binary

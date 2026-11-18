@@ -6,6 +6,14 @@ This is a software-only fallback for the "W25Q128 boot sniff" question when
 physical probing is impractical. It executes the stock master-init function
 under Unicorn, backs SPI2 reads with the real dumped W25Q128 image, and logs
 flash transactions observed on PB12/PB13/PB14/PB15.
+
+Usage:
+    python3 tools/re/emulation/unicorn_stock_flash_trace.py --binary <factory APP image> \
+        --dump <external flash image> --out <report.txt>
+
+Board data: every address in this file (entry point, stubbed calls, seeded
+RAM, the SPI2 pins and registers) is that of the 2C53T factory firmware
+V1.2.0. Needs unicorn.
 """
 
 from __future__ import annotations
@@ -88,9 +96,6 @@ SKIP_JUMPS = {
     0x08026EAE: (0x08026EB2, "timer3_init_call"),
 }
 
-DEFAULT_STOCK = Path("/Users/david/Desktop/osc/archive/2C53T Firmware V1.2.0/APP_2C53T_V1.2.0_251015.bin")
-DEFAULT_DUMP = Path("/Users/david/Desktop/osc/archive/w25q128_dump.bin")
-DEFAULT_OUT = Path("/Users/david/Desktop/osc/reverse_engineering/analysis_v120/unicorn_stock_flash_trace_2026_04_08.txt")
 DISPLAY_ALLOC_STATE = 0x20001070
 DISPLAY_ALLOC_POOL = 0x20008000
 DISPLAY_ALLOC_SIZE = 0x2BC00
@@ -799,10 +804,10 @@ def main() -> int:
         return int(addr_s, 0), text.encode("ascii") + b"\x00"
 
     parser = argparse.ArgumentParser(description="Trace stock firmware SPI2 flash accesses in Unicorn")
-    parser.add_argument("--binary", type=Path, default=DEFAULT_STOCK)
-    parser.add_argument("--dump", type=Path, default=DEFAULT_DUMP)
+    parser.add_argument("--binary", type=Path, required=True, help="factory APP image (2C53T V1.2.0)")
+    parser.add_argument("--dump", type=Path, required=True, help="image of the external flash (flash_backup.py)")
     parser.add_argument("--dump-out", type=Path, help="optional path to save the mutated in-memory SPI flash image after emulation")
-    parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
+    parser.add_argument("--out", type=Path, required=True, help="text report to write")
     parser.add_argument("--entry", type=parse_int, default=MASTER_INIT)
     parser.add_argument("--seed-display-alloc", action="store_true")
     parser.add_argument("--seed-high-flash-fs", action="store_true")

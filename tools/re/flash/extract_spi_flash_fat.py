@@ -176,7 +176,7 @@ def main() -> int:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("/Users/david/Desktop/osc/archive/w25q128_extract"),
+        required=True,
         help="Directory to extract into",
     )
     parser.add_argument(

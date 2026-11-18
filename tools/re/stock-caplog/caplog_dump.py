@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Read the stock-caplog SRAM block out of the OpenScope debug shell and decode it.
 
-    python3 scripts/stock_caplog/caplog_dump.py --port /dev/ttyACM0 --save run.caplog
-    python3 scripts/stock_caplog/caplog_dump.py --hid --save run.caplog      # HID bootloader, untested
-    python3 scripts/stock_caplog/caplog_dump.py --decode run.caplog
+    python3 tools/re/stock-caplog/caplog_dump.py --port /dev/ttyACM0 --save run.caplog
+    python3 tools/re/stock-caplog/caplog_dump.py --hid --save run.caplog      # HID bootloader, untested
+    python3 tools/re/stock-caplog/caplog_dump.py --decode run.caplog
 
 The block is 0x700 bytes at 0x20037000. It is written by the logger in
-scripts/stock_caplog/caplog.c while the *stock* firmware runs, and read back
+tools/re/stock-caplog/caplog.c while the *stock* firmware runs, and read back
 after a MENU+Power round trip -- the rail stays up, the SRAM keeps the block --
 by a firmware that leaves that SRAM alone. THIS FIRMWARE DOES NOT: its .bss ends
 above 0x20037000 (`_ebss` 0x200375D4 in the app flavour, higher in guest) and
@@ -31,7 +31,7 @@ import struct
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # scripts/ for hid_flash.py
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))  # for hid_flash.py
 
 BASE = 0x20037000
 SIZE = 0x700

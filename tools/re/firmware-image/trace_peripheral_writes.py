@@ -8,19 +8,28 @@ store instruction (STR/STRH/STRB) targeting peripheral MMIO space
 base+offset addressing.
 
 Usage:
-    python3 trace_peripheral_writes.py <binary> <start_offset> <length>
-    python3 trace_peripheral_writes.py  # defaults to stock V1.2.0 master_init
+    python3 tools/re/firmware-image/trace_peripheral_writes.py <binary> <start_offset> <length> [--base ADDR]
+
+    <start_offset> and <length> are file offsets of the function to scan.
+    Example, 2C53T factory firmware V1.2.0, the master init function
+    (0x08023A50 .. 0x080276F2):  <image> 0x23A50 0x3CA2
 
 Output: sorted table of peripheral register writes.
 
-Part of the SPI3 compliance audit escalation (2026-04-06).
+Board data: the register name table (AT32F403A peripherals). The scan itself
+works on any Cortex-M Thumb-2 image. Needs capstone.
 """
 
+import argparse
 import sys
 import struct
 from collections import defaultdict
 from capstone import *
 from capstone.arm import *
+
+# Where a raw image is loaded when --base is not given: the start of the
+# internal flash of AT32 and STM32 parts.
+DEFAULT_LOAD_ADDRESS = 0x08000000
 
 # Peripheral address ranges
 PERIPH_BASE = 0x40000000
@@ -433,20 +442,15 @@ def trace_stores(binary_data, base_addr, start_offset, length, label="stock"):
 
 
 def main():
-    # Default: stock V1.2.0 master_init (FUN_08023A50)
-    binary_path = "/Users/david/Desktop/osc/archive/2C53T Firmware V1.2.0/APP_2C53T_V1.2.0_251015.bin"
-    base_addr = 0x08000000
-
-    # master_init: 0x08023A50 to approximately 0x080276F2 (15.4KB)
-    start_offset = 0x23A50
-    length = 0x276F2 - 0x23A50  # ~15.6KB
-
-    if len(sys.argv) > 1:
-        binary_path = sys.argv[1]
-    if len(sys.argv) > 2:
-        start_offset = int(sys.argv[2], 0)
-    if len(sys.argv) > 3:
-        length = int(sys.argv[3], 0)
+    parser = argparse.ArgumentParser(
+        description="List every store to peripheral registers in one region of a raw Cortex-M image.")
+    parser.add_argument("binary", help="raw firmware image")
+    parser.add_argument("start_offset", type=lambda s: int(s, 0), help="file offset where the scan starts")
+    parser.add_argument("length", type=lambda s: int(s, 0), help="bytes to scan")
+    parser.add_argument("--base", type=lambda s: int(s, 0), default=DEFAULT_LOAD_ADDRESS,
+                        help="address the image is loaded at (default: start of AT32/STM32 flash)")
+    args = parser.parse_args()
+    binary_path, start_offset, length, base_addr = args.binary, args.start_offset, args.length, args.base
 
     with open(binary_path, 'rb') as f:
         binary_data = f.read()

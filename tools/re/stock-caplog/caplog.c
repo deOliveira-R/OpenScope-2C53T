@@ -1,6 +1,6 @@
 /* caplog -- a logger that rides inside stock V1.2.0.
  *
- * Built by scripts/stock_caplog/build_caplog_image.py into a code cave appended
+ * Built by tools/re/stock-caplog/build_caplog_image.py into a code cave appended
  * to the user's own stock APP image (0x080BE700, the same 2 KB flash page the
  * image ends in) and entered from two six-byte hooks:
  *   caplog_tx()   from the dvom TX task right after a frame to the meter SoC is

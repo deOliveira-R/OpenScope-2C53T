@@ -3,8 +3,8 @@
 code-cave logger that records every USART2 frame to the meter SoC and every GPIO
 change, into SRAM that survives a MENU+Power round trip.
 
-    python3 scripts/stock_caplog/build_caplog_image.py
-    python3 scripts/stock_caplog/build_caplog_image.py --stock path/to/APP_2C53T_V1.2.0_251015.bin
+    python3 tools/re/stock-caplog/build_caplog_image.py
+    python3 tools/re/stock-caplog/build_caplog_image.py --stock path/to/APP_2C53T_V1.2.0_251015.bin
 
 Nothing stock is redistributed: the script reads the stock image you already
 have (default: archive/2C53T Firmware V1.2.0/APP_2C53T_V1.2.0_251015.bin, which
@@ -22,7 +22,7 @@ What it does:
 
 The result flashes like any stock APP image (factory IAP: MENU+Power volume,
 scripts/iap_flash.py). Read the block back after the run with
-scripts/stock_caplog/caplog_dump.py. See docs/stock_caplog.md for the procedure
+tools/re/stock-caplog/caplog_dump.py. See docs/stock_caplog.md for the procedure
 and what the hooks proved so far.
 """
 
@@ -39,7 +39,7 @@ import tempfile
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-ROOT = HERE.parent.parent
+ROOT = HERE.parents[2]
 DEFAULT_STOCK = ROOT / "archive" / "2C53T Firmware V1.2.0" / "APP_2C53T_V1.2.0_251015.bin"
 DEFAULT_OUT = ROOT / "firmware" / "build" / "APP_2C53T_V1.2.0_caplog.bin"
 

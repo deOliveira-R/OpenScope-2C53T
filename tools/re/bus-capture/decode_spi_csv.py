@@ -18,8 +18,11 @@ the bytes that matter — a successful config returns 0xF8 on the 0x3A close;
 a wedged FPGA floats MISO high (0xFF) at every checkpoint.
 
 Usage:
-    python3 scripts/decode_spi_csv.py digital.csv
-    python3 scripts/decode_spi_csv.py digital.csv --pin-stats
+    python3 tools/re/bus-capture/decode_spi_csv.py digital.csv
+    python3 tools/re/bus-capture/decode_spi_csv.py digital.csv --pin-stats
+
+Board data: the column order (T, MOSI, CS, ... below), the SPI mode and what
+the report says about opcodes 0x3B/0x3A/0x03. Standard library only.
 """
 import csv
 import sys
@@ -119,6 +122,9 @@ def pin_stats(rows):
 if __name__ == '__main__':
     if len(sys.argv) < 2:
         sys.exit(__doc__)
+    if sys.argv[1] in ('-h', '--help'):
+        print(__doc__)
+        sys.exit(0)
     data = load(sys.argv[1])
     if '--pin-stats' in sys.argv:
         pin_stats(data)

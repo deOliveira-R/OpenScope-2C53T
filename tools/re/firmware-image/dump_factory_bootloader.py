@@ -6,8 +6,10 @@ Reads internal flash from app context via the debug shell's `mem read` command
 that still has the factory bootloader at 0x08000000 (i.e., one that flashes
 via MENU+Power IAP).
 
-Usage: uv run python scripts/dump_factory_bootloader.py [outfile]
-Default outfile: archive/factory_iap_bootloader_2C53T.bin
+Usage: uv run python tools/re/firmware-image/dump_factory_bootloader.py <outfile>
+
+Board data: BASE and SIZE (the factory bootloader's region on the 2C53T) and
+the reply format of this firmware's `mem read`. Needs pyserial.
 """
 import glob
 import re
@@ -75,7 +77,9 @@ def read_chunk(ser, addr, words, retries=3):
 
 
 def main():
-    out_path = sys.argv[1] if len(sys.argv) > 1 else "archive/factory_iap_bootloader_2C53T.bin"
+    if len(sys.argv) != 2 or sys.argv[1] in ("-h", "--help"):
+        raise SystemExit(__doc__)
+    out_path = sys.argv[1]
     port = find_port()
     ser = serial.Serial(port, 115200, timeout=0.1)
     print(f"# connected: {port}")

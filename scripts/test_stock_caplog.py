@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for the stock-caplog logger (scripts/stock_caplog/).
+"""Tests for the stock-caplog logger (tools/re/stock-caplog/).
 
 Three layers, each skipping honestly when its input is missing:
   1. pure: the Thumb-2 b.w encoder against the bytes of the reference patch,
@@ -22,7 +22,7 @@ import unittest
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-CAPLOG = REPO / "scripts" / "stock_caplog"
+CAPLOG = REPO / "tools" / "re" / "stock-caplog"
 SAMPLES = CAPLOG / "samples"
 
 
