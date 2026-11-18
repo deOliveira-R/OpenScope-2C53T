@@ -2,18 +2,16 @@
 """The bench regression: every hardware acceptance that guards a shipped
 feature, run as one command against one unit, with one log.
 
-Until 2026-10-03 "the regression" meant `exp22_stability.py --trigger-only`
-by convention -- the v0.4.0 release cited it, and nothing else on the bench
-was re-run before a release. Features accepted since (mask pass/fail,
-EXP-69; coupling / probe / SAVE, EXP-70) had acceptance scripts but nothing
-that made a release re-run them. This is that thing.
-
 Suites, in run order (each sets up its own scope state and generator):
 
-  trigger    exp22_stability.py --trigger-only   trigger modes / edge / position /
-                                                  record integrity (EXP-54..58)
   mask       mask_bench.py                       mask pass/fail A-H (EXP-69)
   coupling   coupling_bench.py                   AC/DC relays, probe 1X/10X (EXP-70)
+
+There is no trigger suite here. The old one (`exp22_stability.py
+--trigger-only`) drove switches of the factory FPGA design's acquisition path
+(`fpga edgefilter`, `fpga postedge`), which the firmware no longer has, and
+was removed with them. The capture core's trigger acceptance is not in this
+repository yet; a suite for it joins SUITES when it is.
 
 The verdict of each suite is ITS OWN exit code -- this runner does not
 re-judge anything, it only refuses to call a run green when a suite failed,
@@ -28,7 +26,7 @@ Usage:
   python3 scripts/bench_regression.py --only mask     # one suite
   python3 scripts/bench_regression.py --list          # show, run nothing
 Log: reverse_engineering/captures/regression/<date>_<build>/ (one .log per
-suite + SUMMARY.txt; exp22's frames saved as .npz like the v0.4.0 run).
+suite + SUMMARY.txt).
 """
 import argparse
 import datetime
@@ -44,7 +42,6 @@ sys.path.insert(0, str(HERE))
 from bench import Scope  # noqa: E402
 
 SUITES = [
-    ("trigger", "exp22_stability.py", ["--trigger-only"], "--scope-port", "--jds-port", 1800),
     ("mask", "mask_bench.py", [], "--scope", "--jds", 900),
     ("coupling", "coupling_bench.py", [], "--scope", "--jds", 900),
 ]
@@ -93,8 +90,6 @@ def main():
     results = []
     for name, script, extra, sflag, jflag, timeout in suites:
         cmd = [sys.executable, str(HERE / script)] + extra + [sflag, a.scope, jflag, a.jds]
-        if name == "trigger":
-            cmd += ["--save", str(out / "trigger_frames.npz")]
         print("\n== %s: %s" % (name, " ".join(Path(c).name if c.endswith(".py") else c for c in cmd[1:])),
               flush=True)
         t0 = time.time()

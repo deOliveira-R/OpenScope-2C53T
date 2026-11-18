@@ -29,14 +29,15 @@ busy.
 ## The bench regression — run before every release
 
 ```bash
-python3 scripts/bench_regression.py            # all suites, ~30 min, unit + JDS6600 attached
+python3 scripts/bench_regression.py            # all suites, unit + JDS6600 attached
 python3 scripts/bench_regression.py --only mask
 ```
 
 One command runs every hardware acceptance that guards a shipped feature:
-`exp22_stability.py --trigger-only` (trigger modes, edge, position, record
-integrity), `mask_bench.py` (mask pass/fail, EXP-69) and `coupling_bench.py`
-(AC/DC relays and probe 1X/10X, EXP-70). Each suite's verdict is its own exit
+`mask_bench.py` (mask pass/fail, EXP-69) and `coupling_bench.py`
+(AC/DC relays and probe 1X/10X, EXP-70). The trigger suite of the factory
+FPGA design (`exp22_stability.py --trigger-only`) went with that design's
+switches; the capture core has no trigger suite here yet. Each suite's verdict is its own exit
 code; the runner only refuses to call the run green when a suite failed,
 crashed, timed out, or the device's build line changed mid-run (a reset).
 Logs, one per suite plus `SUMMARY.txt`, go to
@@ -46,8 +47,7 @@ Wiring: JDS6600 CH1 → scope CH1, CH2 → CH2. Do DC-level work on JDS CH1 only
 its CH2 offset is unreliable (see the `JDS6600` docstring).
 
 A new acceptance script joins `SUITES` in `bench_regression.py` when its
-feature ships. Until 2026-10-03 "the regression" was exp22 alone, by
-convention, and later acceptances were never re-run before a release.
+feature ships.
 
 ---
 

@@ -33,6 +33,7 @@ The criteria use |delta|, which that does not affect.
 
 Usage:  python3 scripts/coupling_bench.py
 """
+import re
 import sys
 import time
 from pathlib import Path
@@ -40,10 +41,35 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from bench import Scope, JDS6600  # noqa: E402
-from exp22_stability import grab_frame  # noqa: E402
+from bench import Scope, JDS6600, BenchError, parse_dump  # noqa: E402
 
 OFFSET_V = 1.0
+
+# The header line of `spi3 frame` (firmware/src/drivers/shell_bench.c) and the
+# record length it dumps per channel.
+FRAME_RE = re.compile(r"FRAME gen=(\d+) coherent=(\d+) src=CH(\d) off=(\d+) soft=(\d+)")
+FRAME_SAMPLES = 1024
+
+
+def grab_frame(sc):
+    """One coherent CH1+CH2 record pair from `spi3 frame`, as float arrays."""
+    txt = sc.cmd("spi3 frame", timeout=25.0)
+    m = FRAME_RE.search(txt)
+    if not m:
+        raise BenchError("no FRAME header in reply:\n%s" % txt[:300])
+    hdr = dict(gen=int(m.group(1)), coherent=int(m.group(2)), src=int(m.group(3)),
+               off=int(m.group(4)), soft=int(m.group(5)))
+    # CH1 and CH2 dumps both start at offset 0000: split at the CH2 header so
+    # parse_dump's strict drop-detection still applies to each half.
+    i = txt.find("CH2 (")
+    if i < 0:
+        raise BenchError("no CH2 dump in reply")
+    ch1 = parse_dump(txt[:i])
+    ch2 = parse_dump(txt[i:])
+    if len(ch1) != FRAME_SAMPLES or len(ch2) != FRAME_SAMPLES:
+        raise BenchError("short dump: ch1=%d ch2=%d" % (len(ch1), len(ch2)))
+    hdr["ch1"], hdr["ch2"] = ch1, ch2
+    return hdr
 
 
 def coupling(sc):

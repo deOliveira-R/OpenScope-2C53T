@@ -231,7 +231,6 @@ def verify_ac_status_boundary() -> dict[str, Any]:
         "reverse_engineering/analysis_v120/meter_math_pipeline_annotated.c",
         "reverse_engineering/analysis_v120/meter_fsm_deep_dive.md",
         "reverse_engineering/analysis_v120/fpga_task_decompile.txt",
-        "scripts/decompile_fpga_task.py",
     ]
     forbidden = [
         "rx[7] bit 2 = " + "AC flag",

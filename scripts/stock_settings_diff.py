@@ -2,7 +2,7 @@
 """Compare two stock settings / flash dumps and summarize changed regions.
 
 The tool is intentionally read-only.  Use it after taking two dumps with
-`dump_spi_flash.py` or `hid_flash.py` memory reads, changing exactly one stock
+`flash_backup.py` or `hid_flash.py` memory reads, changing exactly one stock
 setting between the dumps.
 """
 
