@@ -25,7 +25,6 @@ flash dump	cmd_flash_dump	0x02	flash dump <addr> <len>         Stream external f
 flash jedec	cmd_flash_jedec	0x01	flash jedec                     Read external W25Q128 JEDEC ID\r\n
 flash read	cmd_flash_read	0x02	flash read <addr> <len>         Read external flash bytes (max 256)\r\n
 flash wtest	cmd_flash_wtest	0x02	flash wtest <addr> CONFIRM      Non-destructive write-primitive self-test (blank 4KB sector)\r\n
-fpga acq	cmd_fpga_acq	0x00	fpga acq [mode]                 Trigger SPI3 acquisition\r\n
 fpga acqbr	cmd_fpga_acqbr	0x00	fpga acqbr [0-7|off]            SPI3 clock the acq task sets before each pair (EXP-46)\r\n
 fpga autowait	cmd_fpga_autowait	0x00	fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n
 fpga busreacquire	cmd_fpga_bus_reacquire	0x01	fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n
@@ -36,16 +35,9 @@ fpga configbb	cmd_fpga_configbb	0x01	fpga configbb                   Run GPIO bi
 fpga core	cmd_fpga_core	0x00	fpga core [fix on|off]          The capture core: identity, status, register check, AUTO's forced records\r\n
 fpga diag clear	cmd_fpga_diag_clear	0x01	fpga diag clear                 Clear FPGA bench counters/state\r\n
 fpga frame	cmd_fpga_frame	0x02	fpga frame <hi> <lo> [p1..p5 [ck]]  Build/send full 10-byte frame (HEX)\r\n  e.g.: fpga frame 00 0B 01 00 00 00 00\r\n
-fpga holdlog	cmd_fpga_holdlog	0x00	fpga holdlog [on|off]           Per-handover interval log (EXP-72); no arg = dump\r\n
-fpga holdread	cmd_fpga_holdread	0x00	fpga holdread                   Retired (EXP-54)\r\n
 fpga interleave	cmd_fpga_interleave	0x00	fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\nfpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n
 fpga meter reinit	cmd_fpga_meter_reinit	0x00	fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n
-fpga pairgap	cmd_fpga_pairgap	0x00	fpga pairgap [ms]               Gap between the 04 and 05 reads (EXP-45)\r\n
 fpga pollgap	cmd_fpga_pollgap	0x00	fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n
-fpga postedge	cmd_fpga_postedge	0x00	fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n
-fpga rate	cmd_fpga_rate	0x00	fpga rate [hexidx]              reg-0x01 rate index the re-arm rewrites\r\n
-fpga rearm	cmd_fpga_rearm	0x00	fpga rearm [on|off]             Stock post-read re-arm (reg01) A/B toggle\r\n
-fpga rearmwait	cmd_fpga_rearmwait	0x00	fpga rearmwait [ms]             Settle after re-arm before next read (EXP-40)\r\n
 fpga reinit	cmd_fpga_reinit	0x04	fpga reinit [br][gap][close][f0|1|2][u<ms>][a-e<pin>][s2|sd[h|l]][tc<n>] Replay cfg\r\n    f=prelude frame: 0 split(stock) 1 combined 2 merge15+3B; u=pre-upload gap; k<br>=cmd-phase clk div; tc<n>=trailing clocks\r\n    pe=probe SYSTEM_EDIT_MODE after 0x15 (STATUS@/256); rl=send 0x3C RELOAD before prelude; reports 0x41 STATUS\r\n
 fpga reload	cmd_fpga_reload	0x00	fpga reload [builtin|slot]      Power-cycle the FPGA (PC6) and load a design, no unit power cycle\r\n
 fpga roll	cmd_fpga_roll	0x00	fpga roll [code <hex>|code stock]  Roll (tb.roll, tb.rollstep) status: fifo, op03, newest point; code = entry byte\r\n

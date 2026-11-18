@@ -15,7 +15,6 @@
  *   mem read <hex_addr> [count]    - Read memory/registers (32-bit)
  *   mem write <hex_addr> <hex_val> - Write memory/register (32-bit)
  *   fpga cmd <cmd> [param]         - Send FPGA command (decimal)
- *   fpga acq [mode]                - Trigger SPI3 acquisition
  *   meter wave                     - Show DMM voltage waveform sample stats
  *   spi3 read [len]                - Raw SPI3 read and hex dump
  */

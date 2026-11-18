@@ -3435,79 +3435,9 @@ void fpga_meter_screen_entered(uint8_t submode)
     fpga_request_meter_mode(submode);
 }
 
-/* NOTE: deliberately OUTSIDE the FPGA_WARM_HANDOFF_TEST guard below. The debug
- * shell references these unconditionally, so guarding them broke `make guest`
- * at link time (caught 2026-08-17). The state is two bytes; the guarded part is
- * only the acquisition task's USE of it. */
-/* ── Stock's re-arm handshake (2026-08-17) ───────────────────────────────
- *
- * Stock does NOT free-run and read whenever it feels like it. Its acquisition
- * loop is: gate on the timebase (op 0x01 blocks until enough samples have
- * accumulated), read the 0x04/0x05 pair, then RE-ARM by writing reg 0x01 with
- * the timebase index again. Decoded independently twice — from stock's op-01
- * handler here, and by Stlkv on a second unit (issue #18, his section 6).
- *
- * Our acq task has always done the middle step only. Consequences we have
- * actually measured, and expect this to fix:
- *   - Stlkv counted capture glitches in the first ~26 us of the window in
- *     124/168 frames: a sample drops off the plateau and recovers over ~10
- *     samples, which no real signal can do. That is a buffer being read while
- *     it is still being written.
- *   - A free-running buffer can never be compared against itself, which is why
- *     the op04-vs-op05 byte-identity test — the cheapest discriminator we have
- *     for the CH2 fault — is currently impossible to run.
- *
- * RUNTIME-TOGGLEABLE ON PURPOSE. Every FPGA conclusion in this project that
- * turned out to be wrong was a single-shot measurement with no control; the
- * ones that held up were A/B/A. `fpga rearm on|off` flips this between reads
- * with no reflash, so the same boot, the same probe and the same signal can
- * produce both arms of the comparison.
- *
- * Default OFF: free-run is the bench-proven configuration that produced the
- * cold-boot-to-live-trace result, and it stays the default until this is shown
- * to be at least as good on hardware. */
-#ifndef FPGA_ACQ_REARM_DEFAULT
-#define FPGA_ACQ_REARM_DEFAULT 0
-#endif
-static volatile bool    acq_rearm_enable = (FPGA_ACQ_REARM_DEFAULT != 0);
-
-/* ── Stock's acquisition GATE (2026-09-13, EXP-30) ───────────────────────
- *
- * The re-arm above is stock's THIRD step. This is its FIRST, and EXP-29
- * showed the re-arm alone does not close the record seam: A/B/A across
- * `fpga rearm` moved the median phase discontinuity from 21.6 samples to
- * 24.1, i.e. not at all. The same experiment showed WHY the seam exists —
- * one discontinuity per record whose location marches through the buffer at
- * a near-constant rate, which is the signature of reading across a live
- * write pointer.
- *
- * The mechanism is a few lines below: in AUTO mode, when no PC0 edge arrives
- * within the wait window, the task "falls through and reads the live buffer".
- * That free-run read has no interlock with the capture engine at all, and in
- * AUTO — the default — it is the common case, not the rare one.
- *
- * With the gate on, a missing trigger is a timeout and we do NOT read. Only
- * a genuine data-ready edge produces a record.
- *
- * USE IT WITH THE RE-ARM. Stock does both, and they are load-bearing for
- * each other: the gate waits for PC0, and the re-arm is what starts the next
- * capture so another PC0 can arrive. Gate ON with re-arm OFF risks the
- * documented stopped-engine deadlock (PC0 is not spontaneous when the engine
- * is not running), which is exactly why the old fallback read exists.
- *
- * DEFAULT OFF. Free-run is the bench-proven configuration that produced the
- * cold-boot-to-live-trace result, and this stays opt-in until it is shown to
- * be at least as good on hardware. Runtime-toggleable so one boot, one probe
- * and one signal can produce every arm of the comparison. */
-/* EXP-40 (2026-09-14): a settle time AFTER the re-arm write, before the next
- * read. Stock's op-01 handler is gated on `tbl[0x0804D833 + tb] + 0x32`
- * elapsed since the last arm — a TIME table (u8, ~1024/fs in 10 ms units:
- * 9/21/41/82 at codes 0x10..0x13), not a status bit. EXP-29 re-armed and then
- * read ~30 ms later regardless of timebase, i.e. mid-capture at every code
- * slower than 0x0E; this is the missing half. 0 = no wait (EXP-29's shape).
- * Runtime `fpga rearmwait <ms>`; the bench script derives ms from the rate
- * table so there is one source. */
-static volatile uint16_t acq_rearm_wait_ms = 0;
+/* NOTE: deliberately OUTSIDE the FPGA_WARM_HANDOFF_TEST guard below: the debug
+ * shell references these in every build. The guarded part is only the
+ * acquisition task's USE of them. */
 /* EXP-41/42 (2026-09-14): the AUTO edge-wait budget, runtime-settable. PC0
  * is a real data-ready line: a READ starts a capture, the capture completes
  * when the ADC crosses the reg-0x08 trigger level, and completion pulses PC0
@@ -3590,18 +3520,6 @@ static struct {
     volatile bool clipped;
     float sum_a, sum_b, amin, amax, bmin, bmax;   /* of the per-record means */
 } acq_ilcal;
-/* EXP-45 (2026-09-14): gap between the 0x04 and 0x05 reads of a pair. Shell
- * reads 50 ms apart each produce a PC0 edge; the task's back-to-back pair
- * (~140 us apart at /2) produces none, which is why NORMAL could not sustain
- * itself. Runtime `fpga pairgap <ms>`, default 0 = the historical shape. */
-static volatile uint16_t acq_pair_gap_ms = 0;
-/* EXP-46 (2026-09-14): (a) delay between a PC0 edge and the pair read that
- * consumes it — gated AUTO shows exactly 0.50 edges per pair at any pair
- * gap: the read issued immediately on the edge never yields the next edge,
- * the fallback read 327 ms later always does. (b) an explicit SPI3 clock for
- * the task's reads (0..7 = /2../256; 0xFF = leave whatever is set) — shell
- * reads at /256 yield an edge every time. */
-static volatile uint16_t acq_post_edge_ms = 0;
 static volatile uint16_t acq_poll_gap_ms = ACQ_POLL_GAP_MS;   /* dsp/acq_timing.h; `fpga pollgap` overrides */
 static volatile bool     acq_unrotate = true;    /* 2026-09-22: seam-based (dev plan 2.3); `fpga unrotate off` for the raw record */
 static volatile int16_t  acq_unrotate_offset = 0;
@@ -3609,38 +3527,11 @@ static volatile int16_t  acq_unrotate_offset = 0;
  * (`fpga unrotate`): [0] ordered, [1] a held record without a seam (never
  * expected: the op 05 header of a pair always carries it). */
 static volatile uint32_t acq_seam_n[2];
+/* EXP-46 (2026-09-14): an explicit SPI3 clock for the task's reads (0..7 =
+ * /2../256; 0xFF = leave whatever is set). `fpga acqbr`. */
 static volatile uint8_t  acq_read_br = 0xFF;
-/* EXP-72 (2026-10-05): handover log. One entry per PC0-strobed read: ms
- * since the previous handover, roll reads polled in between, strobes on this
- * pair. Heap block taken on the first `fpga holdlog on` (coldtrace static RAM
- * is full); recorded in the task, so the measured window carries no shell
- * traffic. */
-static fpga_holdlog_ent_t *acq_holdlog;
-static volatile uint16_t   acq_holdlog_n;
-static volatile bool       acq_holdlog_on;
-bool fpga_holdlog_start(void)
-{
-    if (!acq_holdlog)
-        acq_holdlog = (fpga_holdlog_ent_t *)pvPortMalloc(FPGA_HOLDLOG_N * sizeof(fpga_holdlog_ent_t));
-    if (!acq_holdlog) return false;
-    acq_holdlog_on = false;
-    acq_holdlog_n = 0;
-    acq_holdlog_on = true;
-    return true;
-}
-void fpga_holdlog_stop(void) { acq_holdlog_on = false; }
-bool fpga_holdlog_active(void) { return acq_holdlog_on; }
-uint16_t fpga_holdlog_count(void) { return acq_holdlog_n; }
-bool fpga_holdlog_get(uint16_t i, fpga_holdlog_ent_t *out)
-{
-    if (!acq_holdlog || i >= acq_holdlog_n) return false;
-    *out = acq_holdlog[i];
-    return true;
-}
 /* Reg 0x01 value currently in force -- the ONE variable that mirrors the
- * hardware register. 0x08 is what the arm block writes at config time; the
- * re-arm must rewrite THIS, not a constant, or it would silently undo any
- * timebase the UI or the shell has selected.
+ * hardware register. 0x08 is what the arm block writes at config time.
  *
  * 2026-08-19: that comment described an intent the code never implemented.
  * The UI's timebase button wrote scope_state.timebase_idx and nothing else;
@@ -3695,9 +3586,6 @@ void fpga_usart_scope_enable(bool on)
 uint32_t fpga_usart_ctrl1(void) { return USART2->ctrl1; }
 uint32_t fpga_usart_baudr(void) { return USART2->baudr; }
 
-void fpga_acq_rearm_set(bool on)      { acq_rearm_enable = on; }
-bool fpga_acq_rearm_get(void)         { return acq_rearm_enable; }
-void fpga_acq_rearm_wait_set(uint16_t ms) { acq_rearm_wait_ms = ms; }
 void fpga_acq_auto_wait_set(uint16_t ms)  { acq_auto_wait_ms = ms; }
 /* AUTO edge-wait budget in force. Override if set; else derived from the
  * timebase in force: 4x the 1024-sample fill at that rate (EXP-42: edges per
@@ -3712,27 +3600,13 @@ uint16_t fpga_acq_auto_wait_get(void)
     return acq_time_auto_wait_ms(scope_timebase_sample_rate(acq_rate_idx), (uint16_t)FPGA_AUTO_TRIG_WAIT_MS);
 }
 bool fpga_acq_auto_wait_is_override(void) { return acq_auto_wait_ms != 0; }
-void fpga_acq_pair_gap_set(uint16_t ms)   { acq_pair_gap_ms = ms; }
-void fpga_acq_post_edge_set(uint16_t ms)  { acq_post_edge_ms = ms; }
-/* Post-edge delay in force. Override if set; else DERIVED (EXP-46, 2026-09-14,
- * six predicted brackets at 0x0E/0x0F/0x10/0x11/0x12 all hit): after PC0
- * announces the trigger the FPGA will not arm again until one 1024-sample
- * fill plus ~180-210 ms has elapsed — a read before that is ignored and the
- * next capture never starts (why NORMAL froze and gated AUTO sat at exactly
- * 0.50 edges per pair). fill + 230 ms leaves ~30 ms over the measured
- * bracket. Unmeasured rates get 600 ms. */
+/* The wait after a record before the next poll, derived from the timebase in
+ * force. */
 uint16_t fpga_acq_post_edge_get(void)
 {
-    if (acq_post_edge_ms) return acq_post_edge_ms;
     /* One fill, never less than the poll gap: dsp/acq_timing.h. */
     return acq_time_post_record_ms(scope_timebase_sample_rate(acq_rate_idx), acq_poll_gap_ms);
 }
-bool fpga_acq_post_edge_is_override(void) { return acq_post_edge_ms != 0; }
-/* EXP-48/49 (2026-09-14): from the edge until the bracket ends the FPGA holds
- * the completed record and ignores reads as arms, so the record can be read
- * (and committed) at edge + fill + margin instead of at the bracket's end;
- * the ARMING read is then issued at fpga_acq_post_edge_get(). Same records
- * per second, each one ~200 ms sooner. Unmeasured rates: 300 ms. */
 void     fpga_acq_poll_gap_set(uint16_t ms)  { acq_poll_gap_ms = ms ? ms : ACQ_POLL_GAP_MS; }
 uint16_t fpga_acq_poll_gap_get(void)         { return acq_poll_gap_ms; }
 void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
@@ -3810,7 +3684,6 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
 #endif
 void fpga_acq_read_br_set(uint8_t br)     { acq_read_br = br; }
 uint8_t fpga_acq_read_br_get(void)      { return acq_read_br; }
-uint16_t fpga_acq_pair_gap_get(void)    { return acq_pair_gap_ms; }
 uint8_t fpga_acq_trig_code_get(void)      { return acq_trig_code; }
 
 /* UI trigger level (-100..100, screen pixels about mid-scale, the renderer's
@@ -3825,8 +3698,6 @@ uint8_t fpga_trigger_code_from_level(int level)
     if (code > 254) code = 254;
     return (uint8_t)code;
 }
-uint16_t fpga_acq_rearm_wait_get(void)  { return acq_rearm_wait_ms; }
-void fpga_acq_rate_idx_set(uint8_t v) { acq_rate_idx = v; }
 uint8_t fpga_acq_rate_idx_get(void)   { return acq_rate_idx; }
 
 void fpga_interleave_set(bool on) { acq_il_enable = on; acq_reprime_req = true; }
@@ -4041,14 +3912,12 @@ bool fpga_apply_channel_enables(void)
 /* See fpga.h. Push a timebase code to the hardware NOW and record it as the
  * value in force, so the axis label and the sample rate cannot disagree.
  *
- * Writing immediately rather than leaving it to the re-arm is deliberate:
- * acq_rearm_enable defaults OFF, so relying on the re-arm loop would mean the
- * button still did nothing on a default build. Parking the acquisition task
- * first is the same discipline every shell command that touches SPI3 uses --
- * an interleaved CS frame corrupts both transfers. If the task will not park
- * we skip the register write and report failure rather than risk the bus;
- * the caller keeps the old rate, which is honest, where a torn write would
- * leave the hardware at an unknown rate the label could not describe. */
+ * Parking the acquisition task first is the same discipline every shell
+ * command that touches SPI3 uses -- an interleaved CS frame corrupts both
+ * transfers. If the task will not park we skip the register write and report
+ * failure rather than risk the bus; the caller keeps the old rate, which is
+ * honest, where a torn write would leave the hardware at an unknown rate the
+ * label could not describe. */
 void fpga_reconcile_timebase_after_arm(void);                 /* below */
 
 /* One CS-framed scope-engine register write: opcode byte, value byte.
@@ -4732,7 +4601,6 @@ static void fpga_warmtest_acq_task(void *pv)
         volatile uint8_t *w2 = acq_write_ch2();
         fpga.arm_read_cyc = DWT->CYCCNT;
         uint8_t s1 = fpga_warmtest_read_channel(FPGA_CORE_OP_REC_A, w1);
-        if (acq_pair_gap_ms) vTaskDelay(pdMS_TO_TICKS(acq_pair_gap_ms));
         uint8_t s2 = fpga_warmtest_read_channel(FPGA_CORE_OP_REC_B, w2);
         last_read_tick = xTaskGetTickCount();
         fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
@@ -4762,15 +4630,6 @@ static void fpga_warmtest_acq_task(void *pv)
         bool first_read = !capture_in_flight;
         capture_in_flight = true;
         if (held || first_read) {
-            if (held && !first_read && acq_holdlog_on && acq_holdlog_n < FPGA_HOLDLOG_N) {
-                uint32_t dt = last_read_tick - last_handover_tick;
-                uint32_t ne = fpga.pc0_edges - edges_before;
-                fpga_holdlog_ent_t *e = &acq_holdlog[acq_holdlog_n];
-                e->dt_ms = (uint16_t)(dt > 0xFFFFu ? 0xFFFFu : dt);
-                e->polls = (uint8_t)(polls_since_handover > 255u ? 255u : polls_since_handover);
-                e->edges = (uint8_t)(ne > 255u ? 255u : ne);
-                acq_holdlog_n++;
-            }
             last_handover_tick = last_read_tick;
             fpga.acq_polls_last = polls_since_handover;
             polls_since_handover = 0;
@@ -4871,20 +4730,6 @@ static void fpga_warmtest_acq_task(void *pv)
                 scope_vpos_recover();
                 fpga.spi3_timeout_count = 0;
             }
-        }
-
-        /* RE-ARM (stock's shape; off by default, `fpga rearm on` to enable).
-         * Stock writes reg 0x01 with the timebase index after each 0x04/0x05
-         * pair, which completes the capture cycle and starts the next one.
-         * Placed AFTER the accept/reject logic so a rejected frame still
-         * re-arms — otherwise one bad read would wedge acquisition, which is
-         * the deadlock this task's fallback path exists to avoid. */
-        if (acq_rearm_enable) {
-            fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, acq_rate_idx);
-            /* Let the re-armed capture COMPLETE before the next read (EXP-40).
-             * With 0 this is exactly EXP-29's re-arm-then-read-immediately. */
-            if (acq_rearm_wait_ms)
-                vTaskDelay(pdMS_TO_TICKS(acq_rearm_wait_ms));
         }
 
         /* Bound the read rate lightly; the display's own 50 ms frame loop

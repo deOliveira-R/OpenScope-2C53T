@@ -5,7 +5,7 @@
  * firmware drove the scope's factory FPGA design, follows from the CORE's
  * construction, or was CHOSEN. The task
  * (drivers/fpga.c) calls the functions; the shell can override some waits at
- * run time (`fpga autowait`, `fpga postedge`, `fpga pollgap`), which does not
+ * run time (`fpga autowait`, `fpga pollgap`), which does not
  * change what the defaults are.
  *
  * Pure, host tested (tests/test_acq_timing.c). */

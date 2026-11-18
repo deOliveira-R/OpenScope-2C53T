@@ -35,19 +35,11 @@ void cmd_flash_wtest(const char *args);
 void cmd_scope_trig(const char *args);
 void cmd_scope_trig2(const char *args);
 void cmd_fpga_cmd(const char *args);
-void cmd_fpga_acq(const char *args);
 void cmd_fpga_usart(const char *args);
-void cmd_fpga_rearm(const char *args);
-void cmd_fpga_rearmwait(const char *args);
 void cmd_fpga_autowait(const char *args);
-void cmd_fpga_pairgap(const char *args);
-void cmd_fpga_postedge(const char *args);
 void cmd_fpga_pollgap(const char *args);
-void cmd_fpga_holdlog(const char *args);
 void cmd_fpga_scope_coupling(const char *args);
-void cmd_fpga_holdread(const char *args);
 void cmd_fpga_acqbr(const char *args);
-void cmd_fpga_rate(const char *args);
 void cmd_fpga_scope_reinit(void);
 void cmd_fpga_scope_zero(const char *args);
 void cmd_fpga_scope_freq(const char *args);
@@ -210,30 +202,16 @@ void cmd_fpga_dbgarm(const char *args);
           "fpga scope freq [n]             Run the shipped frequency estimator n times, with diagnostics\r\n"), \
     CMD_A("fpga scope zero", cmd_fpga_scope_zero, 0, \
           "fpga scope zero                 Record mean vs each channel's 0 V, and the offset DAC in force\r\n"), \
-    CMD_A("fpga postedge", cmd_fpga_postedge, 0, \
-          "fpga postedge [ms]              Poll start after a handover, ms (EXP-54; derived fill + 100)\r\n"), \
     CMD_A("fpga scope coupling", cmd_fpga_scope_coupling, 0, \
           "fpga scope coupling             Coupling label vs PD12/PD13 relay pins (read-only)\r\n"), \
     CMD_A("fpga pollgap", cmd_fpga_pollgap, 0, \
           "fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n"), \
-    CMD_A("fpga holdlog", cmd_fpga_holdlog, 0, \
-          "fpga holdlog [on|off]           Per-handover interval log (EXP-72); no arg = dump\r\n"), \
-    CMD_A("fpga holdread", cmd_fpga_holdread, 0, \
-          "fpga holdread                   Retired (EXP-54)\r\n"), \
     CMD_A("fpga acqbr", cmd_fpga_acqbr, 0, \
           "fpga acqbr [0-7|off]            SPI3 clock the acq task sets before each pair (EXP-46)\r\n"), \
-    CMD_A("fpga pairgap", cmd_fpga_pairgap, 0, \
-          "fpga pairgap [ms]               Gap between the 04 and 05 reads (EXP-45)\r\n"), \
     CMD_A("fpga usart", cmd_fpga_usart, 0, \
           "fpga usart [on|off]             Bring USART2 up post-config; show CTRL1+RX\r\n"), \
-    CMD_A("fpga rearm", cmd_fpga_rearm, 0, \
-          "fpga rearm [on|off]             Stock post-read re-arm (reg01) A/B toggle\r\n"), \
     CMD_A("fpga autowait", cmd_fpga_autowait, 0, \
           "fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n"), \
-    CMD_A("fpga rearmwait", cmd_fpga_rearmwait, 0, \
-          "fpga rearmwait [ms]             Settle after re-arm before next read (EXP-40)\r\n"), \
-    CMD_A("fpga rate", cmd_fpga_rate, 0, \
-          "fpga rate [hexidx]              reg-0x01 rate index the re-arm rewrites\r\n"), \
     CMD_V("fpga scope reinit", cmd_fpga_scope_reinit, SC_EXACT, \
           "fpga scope reinit               Re-apply scope frontend + FPGA cfg\r\n"), \
     CMD_A("fpga meter reinit", cmd_fpga_meter_reinit, 0, \
@@ -256,8 +234,6 @@ void cmd_fpga_dbgarm(const char *args);
           "lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n"), \
     CMD_A("lcd", cmd_lcd, 0, \
           "lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n"), \
-    CMD_A("fpga acq", cmd_fpga_acq, 0, \
-          "fpga acq [mode]                 Trigger SPI3 acquisition\r\n"), \
     CMD_A("fpga reinit", cmd_fpga_reinit, SC_SPI3, \
           "fpga reinit [br][gap][close][f0|1|2][u<ms>][a-e<pin>][s2|sd[h|l]][tc<n>] Replay cfg\r\n" "    f=prelude frame: 0 split(stock) 1 combined 2 merge15+3B; u=pre-upload gap; k<br>=cmd-phase clk div; tc<n>=trailing clocks\r\n" "    pe=probe SYSTEM_EDIT_MODE after 0x15 (STATUS@/256); rl=send 0x3C RELOAD before prelude; reports 0x41 STATUS\r\n"), \
     CMD_A("spi3 xfer", cmd_spi3_xfer, SC_SPI3, \

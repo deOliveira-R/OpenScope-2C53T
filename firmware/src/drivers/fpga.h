@@ -1131,12 +1131,6 @@ void fpga_wire_scope_sequence(uint8_t bank_mode);
  */
 void fpga_stock_diag_reenter(void);
 
-/* ── Acquisition re-arm (stock's handshake) ──────────────────────────────
- * Runtime toggle, so the A/B/A can run inside one boot with no reflash.
- * `fpga rearm on|off` in the debug shell; `fpga rate <idx>` sets the reg-0x01
- * value that the re-arm rewrites (0x08 = 5.00 MS/s, the config-time default).
- * See the block comment above acq_rearm_enable in fpga.c for why this exists
- * and what it is expected to fix. */
 /* USART2 late bring-up — see the block comment in fpga.c. `fpga usart on`
  * enables it the way fpga_init would and reports CTRL1/BAUDR back so the
  * precondition is verified, not assumed. */
@@ -1221,19 +1215,10 @@ bool    fpga_meter_holds_fe(void);
 void    fpga_meter_relays_set(bool on);
 bool    fpga_meter_relays_get(void);
 
-void    fpga_acq_rearm_set(bool on);
-bool    fpga_acq_rearm_get(void);
-/* Settle time after the re-arm write before the next read (EXP-40); 0 = none. */
-void     fpga_acq_rearm_wait_set(uint16_t ms);
-uint16_t fpga_acq_rearm_wait_get(void);
 /* AUTO-mode edge-wait budget before the free-run fallback read (EXP-42); 0 = compiled default. */
 void     fpga_acq_auto_wait_set(uint16_t ms);
 uint16_t fpga_acq_auto_wait_get(void);
 
-/* Stock's acquisition GATE: in AUTO, refuse to read without a data-ready
- * edge instead of free-running across the engine's write pointer (EXP-29
- * located the seam there). Default OFF, and meant to be used WITH the
- * re-arm above — see the block comment in fpga.c. */
 /* Apply a timebase code (SPI reg 0x01) to the hardware and record it as the
  * value in force. This is the ONLY correct way to change the sample rate:
  * writing scope_state.timebase_idx alone relabels the axis without touching
@@ -1249,25 +1234,12 @@ bool    fpga_apply_trigger_level(int level);
 uint8_t fpga_trigger_code_from_level(int level);
 uint8_t fpga_acq_trig_code_get(void);
 bool    fpga_acq_auto_wait_is_override(void);
-void     fpga_acq_pair_gap_set(uint16_t ms);
-void     fpga_acq_post_edge_set(uint16_t ms);
-uint16_t fpga_acq_post_edge_get(void);
-bool     fpga_acq_post_edge_is_override(void);
-/* EXP-50: delay from the PC0 edge to the read of the HELD record (committed),
- * derived fill + 30 ms; the arming read follows at fpga_acq_post_edge_get(). */
+uint16_t fpga_acq_post_edge_get(void);          /* the wait after a record before the next poll (dsp/acq_timing.h) */
 void     fpga_acq_poll_gap_set(uint16_t ms);   /* EXP-54: poll cadence, ms (0 -> 30) */
 uint16_t fpga_acq_poll_gap_get(void);
-/* EXP-72 handover log (heap, 128 entries; see fpga.c). */
-#define FPGA_HOLDLOG_N 128u
-typedef struct { uint16_t dt_ms; uint8_t polls; uint8_t edges; } fpga_holdlog_ent_t;
 /* Ask the meter poll task to switch the meter chip to `submode` (returns at
  * once; the newest request wins). fpga_set_meter_mode() is the blocking form. */
 void     fpga_request_meter_mode(uint8_t submode);
-bool     fpga_holdlog_start(void);
-void     fpga_holdlog_stop(void);
-bool     fpga_holdlog_active(void);
-uint16_t fpga_holdlog_count(void);
-bool     fpga_holdlog_get(uint16_t i, fpga_holdlog_ent_t *out);
 /* true when the latest committed record was un-rotated at its seam, so the
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
@@ -1304,7 +1276,6 @@ void     fpga_acq_unrotate_offset_set(int16_t samples);
 int16_t  fpga_acq_unrotate_offset_get(void);
 void     fpga_acq_read_br_set(uint8_t br);
 uint8_t  fpga_acq_read_br_get(void);
-uint16_t fpga_acq_pair_gap_get(void);
 
 /* Vertical sibling of fpga_apply_timebase (EXP-19): drive channel ch's
  * (1 or 2) frontend relay bank to range idx. The caller owns updating
@@ -1331,7 +1302,6 @@ bool    fpga_apply_coupling(uint8_t ch, uint8_t coupling);   /* a coupling_t */
 void    fpga_reconcile_trigger_after_arm(void);
 uint8_t fpga_trigger_reconcile_code(void);
 
-void    fpga_acq_rate_idx_set(uint8_t v);
 uint8_t fpga_acq_rate_idx_get(void);
 
 /* ── Roll mode (parity C11; ui/scope_roll.h has the stock evidence) ──────

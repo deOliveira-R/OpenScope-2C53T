@@ -1303,47 +1303,6 @@ void cmd_fpga_cmd(const char *args)
     fpga_diag_print_delta(&before);
 }
 
-void cmd_fpga_acq(const char *args)
-{
-    BaseType_t ok;
-
-    if (args && *args) {
-        uint32_t mode = FPGA_ACQ_NORMAL + 1;  /* Explicit low-level trigger byte */
-        /* The return MUST be checked. parse_int() writes *out unconditionally,
-         * so a non-numeric argument did not fall back to the default above —
-         * it overwrote it with 0, fired a real acquisition on trigger byte 0
-         * and printed "mode 0: queued", which reads as a confirmation of
-         * something the operator never asked for. */
-        if (parse_int(args, &mode) != 0 || mode > 0xFF) {
-            usb_debug_printf("fpga acq: bad mode '%s'. Usage: fpga acq [0-255]\r\n", args);
-            return;
-        }
-        ok = fpga_trigger_acquisition((uint8_t)mode);
-        usb_debug_printf("Acquisition trigger mode %lu: %s\r\n",
-                         mode, ok == pdTRUE ? "queued" : "FULL");
-    } else {
-        ok = fpga_trigger_scope_read();
-        usb_debug_printf("Scope acquisition trigger: %s (policy mode %u)\r\n",
-                         ok == pdTRUE ? "queued" : "FULL",
-                         fpga.acq_mode);
-    }
-
-    /* Wait for data */
-    vTaskDelay(pdMS_TO_TICKS(500));
-
-    if (fpga.spi3_ok_count > 0) {
-        usb_debug_printf("SPI3 OK=%u  First bytes: CH1[%02X %02X %02X %02X] CH2[%02X %02X %02X %02X] varies=%d\r\n",
-                         fpga.spi3_ok_count,
-                         fpga.diag_ch1_raw[0], fpga.diag_ch1_raw[1],
-                         fpga.diag_ch1_raw[2], fpga.diag_ch1_raw[3],
-                         fpga.diag_ch2_raw[0], fpga.diag_ch2_raw[1],
-                         fpga.diag_ch2_raw[2], fpga.diag_ch2_raw[3],
-                         fpga.diag_data_varies);
-    } else {
-        usb_send_str("No SPI3 data received\r\n");
-    }
-}
-
 /* `fpga usart [on|off]` — bring USART2 up AFTER config (stock's order) and
  * report the registers back. Coldtrace builds leave it dark; stock's channel
  * configuration command lives on this bus. Prints RX counters so "did anything
@@ -1367,45 +1326,6 @@ void cmd_fpga_usart(const char *args)
     usb_send_str(buf);
 }
 
-/* `fpga rearm [on|off]` — stock's post-read re-arm write (reg 0x01 <- rate idx).
- * Runtime-toggleable so the comparison can be run A/B/A inside one boot: the
- * same probe, the same signal, the same FPGA configuration, one variable. */
-void cmd_fpga_rearm(const char *args)
-{
-    char buf[96];
-    while (*args == ' ') args++;
-    if (*args) {
-        if      (strncmp(args, "on",  2) == 0) fpga_acq_rearm_set(true);
-        else if (strncmp(args, "off", 3) == 0) fpga_acq_rearm_set(false);
-        else { usb_send_str("usage: fpga rearm [on|off]\r\n"); return; }
-    }
-    snprintf(buf, sizeof(buf), "acq re-arm %s (reg 01 <- 0x%02X after each 04/05 pair)\r\n",
-             fpga_acq_rearm_get() ? "ON" : "OFF", fpga_acq_rate_idx_get());
-    usb_send_str(buf);
-}
-
-/* `fpga rearmwait [ms]` — settle after the re-arm write before the next read
- * (EXP-40). Stock's op-01 gate is a per-timebase TIME table, so the re-arm
- * alone (EXP-29) read mid-capture at slow codes. Readback prints what is in
- * force; the bench script derives ms from scope_timebase.c's rate table. */
-void cmd_fpga_rearmwait(const char *args)
-{
-    char buf[112];
-    while (*args == ' ') args++;
-    if (*args) {
-        uint32_t ms = 0;
-        if (parse_int(args, &ms) != 0 || ms > 60000u) {
-            usb_send_str("usage: fpga rearmwait [ms 0..60000]\r\n"); return;
-        }
-        fpga_acq_rearm_wait_set((uint16_t)ms);
-    }
-    snprintf(buf, sizeof(buf), "acq re-arm wait %u ms after reg01 write (re-arm %s)\r\n",
-             (unsigned)fpga_acq_rearm_wait_get(), fpga_acq_rearm_get() ? "ON" : "OFF");
-    usb_send_str(buf);
-    if (fpga_acq_rearm_wait_get() && !fpga_acq_rearm_get())
-        usb_send_str("  NOTE: wait only applies with `fpga rearm on`.\r\n");
-}
-
 /* `fpga autowait [ms]` — AUTO-mode budget to wait for a PC0 edge before the
  * free-run fallback read (EXP-42). A read starts a capture; completion pulses
  * PC0; the compiled 25 ms is shorter than the capture at slow timebases. */
@@ -1427,33 +1347,6 @@ void cmd_fpga_autowait(const char *args)
     usb_send_str(buf);
 }
 
-/* `fpga pairgap [ms]` — delay between the 0x04 and 0x05 reads of a pair (EXP-45). */
-void cmd_fpga_pairgap(const char *args)
-{
-    while (*args == ' ') args++;
-    if (*args) {
-        uint32_t ms = 0;
-        if (parse_int(args, &ms) != 0 || ms > 1000u) { usb_send_str("usage: fpga pairgap [ms 0..1000]\r\n"); return; }
-        fpga_acq_pair_gap_set((uint16_t)ms);
-    }
-    usb_debug_printf("acq pair gap %u ms between the 04 and 05 reads\r\n", (unsigned)fpga_acq_pair_gap_get());
-}
-
-/* `fpga postedge [ms]` — delay between a PC0 edge and the pair read (EXP-46). */
-void cmd_fpga_postedge(const char *args)
-{
-    while (*args == ' ') args++;
-    if (*args) {
-        uint32_t ms = 0;
-        if (parse_int(args, &ms) != 0 || ms > 5000u) { usb_send_str("usage: fpga postedge [ms 0..5000, 0 = derive from timebase]\r\n"); return; }
-        fpga_acq_post_edge_set((uint16_t)ms);
-    }
-    usb_debug_printf("acq poll start %u ms after a handover (%s, rate idx 0x%02X)\r\n",
-                     (unsigned)fpga_acq_post_edge_get(),
-                     fpga_acq_post_edge_is_override() ? "override" : "derived, dsp/acq_timing.h",
-                     fpga_acq_rate_idx_get());
-}
-
 /* `fpga pollgap [ms]` — poll cadence after the poll start (EXP-54). */
 void cmd_fpga_pollgap(const char *args)
 {
@@ -1465,25 +1358,8 @@ void cmd_fpga_pollgap(const char *args)
     }
     usb_debug_printf("acq poll gap %u ms; poll starts %u ms after a handover (%s); last handover after %lu poll reads, %lu total\r\n",
                      (unsigned)fpga_acq_poll_gap_get(), (unsigned)fpga_acq_post_edge_get(),
-                     fpga_acq_post_edge_is_override() ? "override" : "derived, dsp/acq_timing.h",
+                     "derived, dsp/acq_timing.h",
                      (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads);
-}
-
-/* `fpga holdlog [on|off]` -- EXP-72: per-handover interval log, recorded by
- * the acq task (no shell traffic in the window). No argument dumps it. */
-void cmd_fpga_holdlog(const char *args)
-{
-    while (*args == ' ') args++;
-    if (strncmp(args, "on", 2) == 0) {
-        usb_send_str(fpga_holdlog_start() ? "holdlog on (cleared)\r\n" : "holdlog: no heap\r\n");
-        return;
-    }
-    if (strncmp(args, "off", 3) == 0) fpga_holdlog_stop();
-    uint16_t n = fpga_holdlog_count();
-    usb_debug_printf("holdlog %s n=%u (dt_ms polls edges)\r\n", fpga_holdlog_active() ? "on" : "off", (unsigned)n);
-    fpga_holdlog_ent_t e;
-    for (uint16_t k = 0; k < n && fpga_holdlog_get(k, &e); k++)
-        usb_debug_printf("hl %u %u %u\r\n", (unsigned)e.dt_ms, (unsigned)e.polls, (unsigned)e.edges);
 }
 
 /* `fpga scope coupling` — READ-ONLY: each channel's coupling label beside the
@@ -1509,13 +1385,6 @@ void cmd_fpga_scope_coupling(const char *args)
     }
 }
 
-/* `fpga holdread` — retired by EXP-54: the read that strobes PC0 is the record. */
-void cmd_fpga_holdread(const char *args)
-{
-    (void)args;
-    usb_send_str("retired (EXP-54): PC0 strobes the read that hands over the record, so that read is committed; use fpga pollgap / fpga postedge\r\n");
-}
-
 /* `fpga acqbr [0-7|off]` — SPI3 clock divider the acq task sets before each pair (EXP-46). */
 void cmd_fpga_acqbr(const char *args)
 {
@@ -1530,27 +1399,6 @@ void cmd_fpga_acqbr(const char *args)
     }
     if (fpga_acq_read_br_get() == 0xFF) usb_send_str("acq read clock: not set by the task (whatever is in force)\r\n");
     else usb_debug_printf("acq read clock: br=%u (/%u) set before each pair\r\n", fpga_acq_read_br_get(), 2u << fpga_acq_read_br_get());
-}
-
-/* `fpga rate [idx]` — the reg-0x01 value the re-arm rewrites. Setting it here
- * keeps the re-arm from silently reverting a timebase chosen elsewhere. */
-void cmd_fpga_rate(const char *args)
-{
-    char buf[80];
-    while (*args == ' ') args++;
-    if (*args) {
-        /* parse_hex32(), not a bare strtoul(): `fpga rate scope` used to
-         * silently become 0x00 and be echoed back as a successful setting,
-         * changing what the re-arm writes into FPGA reg 0x01. */
-        uint32_t v;
-        if (parse_hex32(args, &v) != 0 || v > 0xFF) {
-            usb_send_str("usage: fpga rate <hex idx>\r\n");
-            return;
-        }
-        fpga_acq_rate_idx_set((uint8_t)v);
-    }
-    snprintf(buf, sizeof(buf), "acq rate idx = 0x%02X\r\n", fpga_acq_rate_idx_get());
-    usb_send_str(buf);
 }
 
 void cmd_fpga_scope_reinit(void)
