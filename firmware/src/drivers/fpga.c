@@ -589,12 +589,6 @@ static void spi3_pump_h2_record(const uint8_t *tx, uint32_t n)
 #define FPGA_WARM_HANDOFF_TEST  0
 #endif
 
-/* The five scope-engine restart writes after a warm hand-off: off (bench
- * run 2, see the block that tests it). */
-#ifndef FPGA_WARMTEST_SEND_CFG_WRITES
-#define FPGA_WARMTEST_SEND_CFG_WRITES  0
-#endif
-
 /* USART-silent scope-boot experiment (2026-06-13, stock-bringup-diff finding).
  * Stock holds USART2 UEN CLEAR through the entire scope boot and never runs the
  * dvom/meter tasks before the SPI3 config; our firmware enables USART2 + runs
@@ -803,28 +797,6 @@ static void spi3_pump_h2_record(const uint8_t *tx, uint32_t n)
  * and three failed boots latch the bootloader into SAFE MODE. */
 #ifndef FPGA_PIN_SWEEP_BUILD
 #define FPGA_PIN_SWEEP_BUILD  0
-#endif
-
-/* Boot-into-bus-released experiment (2026-06-14, experimental/esp32-bringup).
- * For the external-master bench rig: the MCU brings up SPI3/USART/control pins,
- * then — instead of running its own SSPI config upload — immediately hands the
- * bus to an external master (ESP32 on the SPI3 pads, or an FT232H on the JTAG
- * TAP pads @maksidze traced in #18). fpga_init() calls fpga_bus_release()
- * (tri-states PB3/PB5/PB6, stages PC6/PB11 HIGH, PC9 power-hold kept) and bails
- * before the meter frontend + meter USART traffic, so the FPGA's config port is
- * pristine for JTAG/SSPI with ZERO MCU interference. No auto-tasks created.
- * UNTESTED. See tools/esp32_sspi_bringup/README.md. Revert to 0 for normal builds. */
-#ifndef FPGA_BUS_RELEASED_BOOT
-#define FPGA_BUS_RELEASED_BOOT  0
-#endif
-
-/* H7 confirmation (2026-08-26): configure over HARDWARE-SPI at /2 (stock's write
- * rate) inside the warm-handoff/coldtrace branch, then arm + run the live readout.
- * The shell A/B showed HW-SPI config at /2 CLOSES the port (configured signature)
- * where /256 walls; this build tests whether that is a REAL config by looking for
- * a live trace. `make guest-coldtrace-hwspi`. */
-#ifndef FPGA_CONFIG_A_HWSPI
-#define FPGA_CONFIG_A_HWSPI  0
 #endif
 
 static void spi3_set_br(uint32_t br)
@@ -3871,7 +3843,7 @@ bool fpga_meter_wave_available(void)
 {
     /* Mirrors the task-creation chain in fpga_init(): only the stock-path
      * branch creates fpga_meter_adc_sampler_task. */
-#if FPGA_BUS_RELEASED_BOOT || FPGA_WARM_HANDOFF_TEST || FPGA_USART_SILENT_SCOPE
+#if FPGA_WARM_HANDOFF_TEST || FPGA_USART_SILENT_SCOPE
     return false;
 #else
     return true;
@@ -6874,17 +6846,7 @@ void fpga_init(void)
      * handshake now lives in fpga_spi3_config_sequence() so the debug shell
      * (`fpga reinit`) can replay it on demand for fast iteration without a
      * reflash. Parameters let us sweep the variables under investigation. */
-#if FPGA_BUS_RELEASED_BOOT
-    /* Boot-into-bus-released: hand SPI3 to an external master and stay off it.
-     * Do NOT run the MCU's SSPI config upload — leave the FPGA's config port
-     * pristine for an FT232H (JTAG TAP) or ESP32 (SSPI pads). fpga_bus_release()
-     * tri-states PB3/PB5/PB6, stages PC6/PB11 HIGH, keeps PC9 power-hold, and the
-     * acq task is gated off via fpga.bus_released. Mark init done and bail before
-     * the meter-frontend routing + meter USART traffic (keep the wire quiet). */
-    fpga.initialized = true;
-    fpga_bus_release();
-    return;
-#elif FPGA_WARM_HANDOFF_TEST
+#if FPGA_WARM_HANDOFF_TEST
     /* Warm-handoff test: the FPGA was already configured (scope) by stock
      * before the no-power-loss handoff. Do NOT run the SSPI config sequence —
      * the running design's config port is closed anyway, and reading it
@@ -6909,28 +6871,6 @@ void fpga_init(void)
      * Step 4, so the engine-arm co-enables are asserted when the FPGA_CONFIG_B_ARM
      * writes fire inside the sequence. `make guest-coldtrace`. */
     fpga_boot_upload();
-#elif FPGA_CONFIG_A_HWSPI
-    /* H7 confirmation: HARDWARE-SPI config at /2 (stock's write rate), then the
-     * same five-write arm coldtrace uses. If the demo trace latches off, HW-SPI
-     * config-entry works and the wall was write-rate (/256) all along. */
-    fpga_spi3_config_sequence(&(fpga_cfg_seq_opts_t){
-        .upload_br = 0,          /* /2 (60MHz) — stock's upload rate */
-        .cmd_br    = 0,          /* /2 (60MHz) — stock's prelude WRITE rate */
-        .prelude_gap_ms = 100,
-        .post_close_ms  = 600,
-        .arm_pb11  = 1,
-        .probe_edit = 1,
-    });
-    /* Five-write engine arm (coldtrace's FPGA_CONFIG_B_ARM burst), at /256 —
-     * runtime opcodes on the now-configured user design. PB11/PC6 already HIGH. */
-    fpga_scope_delay_ms(600);
-    spi3_set_br(7);
-    fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, 0x08);
-    fpga_scope_write_reg(FPGA_CORE_OP_LEGACY02, 0x03);
-    fpga_scope_write_reg(FPGA_CORE_OP_SOURCE, 0x00);
-    fpga_scope_write_reg(FPGA_CORE_OP_EDGE, FPGA_CORE_EDGE_EITHER);
-    fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, 0xAD);
-    spi3_set_br(0);              /* back to /2 for acquisition */
 #endif
 
     /* PC0 = FPGA data-ready, active LOW. Nothing else in the image ever
@@ -7043,45 +6983,6 @@ void fpga_init(void)
     /* (The PC12-HIGH override that used to sit here is gone: PC12 is the input
      * PATH select, not the DC-coupling select — the range table now sets it
      * per range, and coupling is PD12/PD13 above. Bench 2026-08-15.) */
-
-    /* Scope-engine restart — the fallback knob, promoted to the main path
-     * after the first bench run (2026-08-12): with DAC1 restored but nothing
-     * else sent, PC0 stayed HIGH forever (OK:0, TO climbing) — the capture
-     * engine does not resume on its own after an MCU reset. Stock's runtime
-     * init sends these five writes ~600 ms after the 0x3A close; per Stlkv
-     * register 0x02 is the acquisition-mode selector (03 = run) and 0x08
-     * carries the digital trigger level (offset-binary, 0xAD = level 0x2D).
-     * These are SCOPE-ENGINE opcodes (0x01/0x02/0x06/0x07/0x08), each in its
-     * own CS frame — NOT Gowin config-port opcodes — and Stlkv bench-proved
-     * them safe against a live design. The 0x03 status read populates the
-     * overlay's SS: field (stock boot capture: 00 01 42 2E 2E; Stlkv's
-     * inherited state: 80 00 00 00). */
-#if FPGA_WARMTEST_SEND_CFG_WRITES
-    /* DISABLED BY DEFAULT after bench run 2 (2026-08-12): sending these did
-     * not move anything (SS: read back all zeros, PC0 still stuck HIGH), and
-     * Stlkv's issue-#18 report says that in HIS rig "after the five writes
-     * PC0 goes constant-high" — i.e. they may STALL a free-running engine
-     * rather than start a stopped one. His working capture never sent them
-     * at boot. Kept compilable behind this flag for a future variant. */
-    {
-        static const uint8_t warm_cfg[][2] = {
-            {FPGA_CORE_OP_TIMEBASE, 0x08}, {FPGA_CORE_OP_LEGACY02, 0x03}, {FPGA_CORE_OP_SOURCE, 0x00},
-            {FPGA_CORE_OP_EDGE, FPGA_CORE_EDGE_EITHER}, {FPGA_CORE_OP_LEVEL, 0xAD},
-        };
-        for (unsigned wi = 0; wi < sizeof(warm_cfg) / sizeof(warm_cfg[0]); wi++) {
-            SPI3_CS_ASSERT();
-            spi3_xfer(warm_cfg[wi][0]);
-            spi3_xfer(warm_cfg[wi][1]);
-            SPI3_CS_DEASSERT();
-            systick_delay_ms(2);
-        }
-        SPI3_CS_ASSERT();
-        spi3_xfer(FPGA_CORE_OP_LIVE);
-        for (unsigned si = 0; si < 4; si++)
-            fpga.scope_status[si] = spi3_xfer(0xFF);
-        SPI3_CS_DEASSERT();
-    }
-#endif
 
     fpga.initialized = true;
     return;
@@ -7352,11 +7253,7 @@ QueueHandle_t fpga_create_tasks(void)
         memset(acq_stage_ch2, 128, FPGA_ADC_BUF_SIZE);
     }
 
-#if FPGA_BUS_RELEASED_BOOT
-    /* Bus-released boot: create NO auto-tasks — the MCU has handed SPI3 to an
-     * external master and must not drive the bus or send USART traffic. */
-    (void)tx_task_handle; (void)rx_task_handle; (void)acq_task_handle;
-#elif FPGA_WARM_HANDOFF_TEST
+#if FPGA_WARM_HANDOFF_TEST
     /* Warm-handoff test: ONE task — the PC0-gated read-only loop speaking
      * the real 0x04/0x05 protocol (fpga_warmtest_acq_task above). No
      * dvom_TX/dvom_RX/meter_poll: USART2 is dark (FPGA_USART_SILENT_SCOPE is
