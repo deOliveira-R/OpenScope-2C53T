@@ -26,7 +26,7 @@ module clkgen (
   initial begin rst = 1'b1; nlost = 8'd0; end
   always_ff @(posedge clk or negedge lock)
     if (!lock) begin ok_cnt <= 8'd0; rst_a <= 1'b1; end
-    else if (ok_cnt != 8'hFF) ok_cnt <= ok_cnt + 8'd1;
+    else if (ok_cnt != core_pkg::LOCK_OK_CYCLES) ok_cnt <= ok_cnt + 8'd1;
     else rst_a <= 1'b0;
   always_ff @(posedge clk) begin
     rst_m <= rst_a; rst <= rst_m;

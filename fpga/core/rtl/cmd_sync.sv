@@ -57,7 +57,7 @@ module cmd_sync #(
     r04_s <= {r04_s[1:0], rd04_tog}; cs_s <= {cs_s[1:0], cs_n}; frc_s <= {frc_s[1:0], force_tog};
     p05_s <= {p05_s[0], pair_op05};
     if (cfg_ev) cfg <= regs;
-    if (rst) pc0 <= 10'd0; else if (r04_s[2] ^ r04_s[1]) pc0 <= 10'd1023; else if (pc0 != 10'd0) pc0 <= pc0 - 1'b1;
+    if (rst) pc0 <= 10'd0; else if (r04_s[2] ^ r04_s[1]) pc0 <= core_pkg::READY_PULSE_CYCLES; else if (pc0 != 10'd0) pc0 <= pc0 - 1'b1;
     if (cs_s[2]) begin snap_a <= cha_s; snap_b <= chb_s; snap_wp <= wp; snap_st <= st; snap_forced <= forced; end
   end
 endmodule

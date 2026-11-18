@@ -14,7 +14,7 @@
 #include <stdint.h>
 #include "fpga_core_regs.h"
 
-#define CORE_IDENT_REPLY_LEN 9u      /* bytes 0..8 of the reply */
+#define CORE_IDENT_REPLY_LEN (FPGA_CORE_ID_I_CHECK + 1u)   /* bytes 0..8 of the reply */
 
 typedef struct {
     bool    valid;        /* magic, version and check byte all as expected */
@@ -28,14 +28,15 @@ typedef struct {
 static inline core_ident_t core_ident_parse(const uint8_t *reply)
 {
     core_ident_t id = { false, 0u, 0u, 0u, 0u };
-    const uint8_t check = (uint8_t)(reply[2] ^ reply[3] ^ reply[4] ^ reply[5] ^ reply[6] ^ reply[7]);
+    uint8_t check = 0u;
+    for (unsigned i = FPGA_CORE_ID_I_MAGIC0; i <= FPGA_CORE_ID_I_DEPTH; i++) check ^= reply[i];
     if (reply[0] != FPGA_CORE_REPLY_FIRST || reply[1] != 0x00u) return id;
-    if (reply[2] != FPGA_CORE_ID_MAGIC0 || reply[3] != FPGA_CORE_ID_MAGIC1) return id;
-    if (reply[8] != check) return id;
-    id.proto      = reply[4];
-    id.tag        = reply[5];
-    id.caps       = reply[6];
-    id.depth_log2 = reply[7];
+    if (reply[FPGA_CORE_ID_I_MAGIC0] != FPGA_CORE_ID_MAGIC0 || reply[FPGA_CORE_ID_I_MAGIC1] != FPGA_CORE_ID_MAGIC1) return id;
+    if (reply[FPGA_CORE_ID_I_CHECK] != check) return id;
+    id.proto      = reply[FPGA_CORE_ID_I_PROTO];
+    id.tag        = reply[FPGA_CORE_ID_I_TAG];
+    id.caps       = reply[FPGA_CORE_ID_I_CAPS];
+    id.depth_log2 = reply[FPGA_CORE_ID_I_DEPTH];
     /* a protocol this firmware was not written for: report it, do not trust it */
     id.valid      = (id.proto == FPGA_CORE_PROTO_VER);
     return id;

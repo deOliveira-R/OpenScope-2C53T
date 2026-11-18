@@ -36,6 +36,8 @@
 #define FPGA_CORE_SEAM_HI_MASK       0x03u   /* byte 1 bits 1:0 = seam bits 9:8; byte 2 = seam bits 7:0 */
 #define FPGA_CORE_SEAM_FORCED        0x08u   /* byte 1 bit 3, with SEAM_VALID: the record was held by op 09, not by a trigger */
 #define FPGA_CORE_SEAM_B1_MASK       0xF4u   /* byte 1 & this == SEAM_VALID, else no seam is given */
+#define FPGA_CORE_SEAM_I_HI          1u      /* reply byte with the flags and seam bits 9:8 */
+#define FPGA_CORE_SEAM_I_LO          2u      /* reply byte with seam bits 7:0 */
 #define FPGA_CORE_REC_FIRST_SAMPLE   3u      /* reply byte of sample 0 */
 #define FPGA_CORE_LIVE_BYTE_A        2u      /* op 03: reply byte of converter A */
 #define FPGA_CORE_LIVE_BYTE_B        4u      /* op 03: reply byte of converter B */
@@ -58,11 +60,19 @@
 #define FPGA_CORE_DBG_STATE_PAIR     0x40u   /* state byte: this frame belongs to a held pair */
 #define FPGA_CORE_DBG_STATE_FORCED   0x04u   /* state byte: the held record was forced (op 09) */
 #define FPGA_CORE_DBG_STATE_CAP_MASK 0x03u   /* state byte: capture state (ST_*) */
+#define FPGA_CORE_DBG_STATE_EDGE_SHIFT 4u    /* state byte bits 5:4: edge mode */
 
 /* identity (op E2): bytes 2..8 of the reply */
 #define FPGA_CORE_ID_MAGIC0          0x4Fu   /* 'O' */
 #define FPGA_CORE_ID_MAGIC1          0x53u   /* 'S' */
 #define FPGA_CORE_PROTO_VER          0x01u   /* changes when a firmware written for the old one would misread */
+#define FPGA_CORE_ID_I_MAGIC0        2u      /* reply bytes of the identity */
+#define FPGA_CORE_ID_I_MAGIC1        3u
+#define FPGA_CORE_ID_I_PROTO         4u
+#define FPGA_CORE_ID_I_TAG           5u
+#define FPGA_CORE_ID_I_CAPS          6u
+#define FPGA_CORE_ID_I_DEPTH         7u      /* log2 of the record length */
+#define FPGA_CORE_ID_I_CHECK         8u      /* XOR of bytes ID_I_MAGIC0..ID_I_DEPTH */
 #define FPGA_CORE_CAP_SEAM           0x01u   /* ops 04/05 carry the seam in bytes 1-2 */
 #define FPGA_CORE_CAP_EDGE           0x02u   /* reg 07: trigger direction and hysteresis */
 #define FPGA_CORE_CAP_REAL50         0x04u   /* timebase 05 clocks the converters at a real 50 MHz */
@@ -78,6 +88,8 @@
 #define FPGA_CORE_PRE_LAST           511u    /* samples before the trigger: 512 */
 #define FPGA_CORE_POST_LAST          510u    /* samples from the trigger on: 512 */
 #define FPGA_CORE_TRIG_INDEX         512u    /* a held record's trigger crossing, counted from the seam */
+#define FPGA_CORE_READY_PULSE_CYCLES 1023u   /* PC0 low for this many core clock cycles (8.2 us) when a pair starts */
+#define FPGA_CORE_LOCK_OK_CYCLES     255u    /* the PLL must stay locked this many cycles (2 us) before the capture runs */
 
 /* capture state, as the E0 block shows it */
 #define FPGA_CORE_ST_PRE             0x00u   /* filling the part before the trigger */

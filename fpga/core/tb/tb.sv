@@ -79,6 +79,9 @@ module tb;
   task check_forced;
     integer big, bad, kk;
     begin
+      if ((hb1 & core_pkg::SEAM_B1_MASK) !== core_pkg::SEAM_VALID || (hb1 & core_pkg::SEAM_FORCED) !== core_pkg::SEAM_FORCED
+          || (hb1 & ~(core_pkg::SEAM_VALID | core_pkg::SEAM_FORCED | core_pkg::SEAM_HI_MASK)) !== 8'h00)
+        begin $display("  FAIL seam byte %h is not what the package's masks say", hb1); errs=errs+1; end
       seam = -1; big = 0;
       for (k=0;k<1024;k=k+1) begin
         kk = (k+1) % 1024;
@@ -243,6 +246,13 @@ module tb;
     pair(h); if (h) begin $display("FAIL a record without a crossing and without op 09"); errs=errs+1; end
     frame(8'h09, 8'hFF, 0); #400; want_forced = 1;
     frame(8'hE0, 8'hFF, 13); if (rx[5][2:0] !== 3'b111) begin $display("FAIL E0 state %h after op 09: expected forced + held", rx[5]); errs=errs+1; end
+    //     the state byte against the package's masks: locked, forced, held, edge mode 10 (reg 07 = 02), no pair
+    if (rx[core_pkg::DBG_I_STATE] !== (core_pkg::DBG_STATE_LOCK | core_pkg::DBG_STATE_FORCED | (8'h02 << core_pkg::DBG_STATE_EDGE_SHIFT) | {6'b0, core_pkg::ST_HELD}))
+      begin $display("FAIL E0 state byte %h is not what the package's masks say", rx[core_pkg::DBG_I_STATE]); errs=errs+1; end
+    frame(8'h07, 8'h53, 1); frame(8'hE0, 8'hFF, 14);          // hysteresis 5, falling
+    if (rx[core_pkg::DBG_I_EDGE] !== ((8'h05 << core_pkg::EDGE_HYS_SHIFT) | core_pkg::EDGE_FALLING))
+      begin $display("FAIL E0 edge byte %h is not what the package's layout says", rx[core_pkg::DBG_I_EDGE]); errs=errs+1; end
+    frame(8'h07, 8'h02, 1); frame(8'h09, 8'hFF, 0); #12000;    // the write restarted the capture: ask again, wait for the memory
     pair(h); $display("op 09 with no trigger possible: handed over = %0d, op 05 byte 1 = %h", h, hb1);
     if (h) check_forced; else begin $display("  FAIL expected a forced record"); errs=errs+1; end
     want_forced = 0;

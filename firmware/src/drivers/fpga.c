@@ -4043,9 +4043,9 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
      * periods, a square, DC) is then ordered like any other; the search in
      * the samples could not order those (bench 2026-11-16: 9 of the 13
      * generator waveforms). */
-    int hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]);
+    int hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0)
-        hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2]);
+        hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
     if (hs >= 0) {
         if (acq_seam_check) {
             uint32_t kf = 0;
@@ -5017,7 +5017,7 @@ static void fpga_warmtest_acq_task(void *pv)
              * is the fact PC0 signals, without the interrupt, and it also
              * says the record was still held when op 05 began. PC0 is only
              * compared, for the bench (`fpga core`). */
-            triggered = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]) >= 0;
+            triggered = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
             const bool pc0 = (fpga.pc0_edges != edges_before);
             acq_kind_n[triggered ? 0 : 1]++;
             if (triggered && !pc0) acq_kind_n[2]++;
@@ -5034,7 +5034,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * of by a trigger: handed over, time-ordered and simultaneous like
          * any record, but not `triggered`. */
         const bool held = triggered;
-        const bool forced = held && acq_core_has(FPGA_CORE_CAP_FORCE) && trig_hdr_forced(fpga.acq_hdr_ch2[1]);
+        const bool forced = held && acq_core_has(FPGA_CORE_CAP_FORCE) && trig_hdr_forced(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI]);
         if (forced) { triggered = false; acq_force_n[1]++; }
         if (triggered) last_trig_tick = last_read_tick;
         acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
@@ -5162,7 +5162,7 @@ static void fpga_warmtest_acq_task(void *pv)
         for (int i = 1; i < 1024; i++) {
             if (w1[i] != w1[0]) { varies = true; break; }
         }
-        /* The old third gate term tested acq_hdr_ch1[2]==0x01 as a stock
+        /* The old third gate term tested acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]==0x01 as a stock
          * "buffer-valid" flag. Refuted 2026-08-15 by stock's own dispatch:
          * stock discards only two bytes, so that byte is sample[0], and on
          * this board it reads mid-scale (0x7C/0x79) and never 0x01. The term

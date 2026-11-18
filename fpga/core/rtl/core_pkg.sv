@@ -36,6 +36,8 @@ package core_pkg;
   localparam logic [7:0] SEAM_HI_MASK  = 8'h03;   // byte 1 bits 1:0 = seam bits 9:8; byte 2 = seam bits 7:0
   localparam logic [7:0] SEAM_FORCED   = 8'h08;   // byte 1 bit 3, with SEAM_VALID: the record was held by op 09, not by a trigger
   localparam logic [7:0] SEAM_B1_MASK  = 8'hF4;   // byte 1 & this == SEAM_VALID, else no seam is given
+  localparam int SEAM_I_HI = 1;                   // reply byte with the flags and seam bits 9:8
+  localparam int SEAM_I_LO = 2;                   // reply byte with seam bits 7:0
   localparam int REC_FIRST_SAMPLE = 3;            // reply byte of sample 0
   localparam int LIVE_BYTE_A = 2;                 // op 03: reply byte of converter A
   localparam int LIVE_BYTE_B = 4;                 // op 03: reply byte of converter B
@@ -58,11 +60,19 @@ package core_pkg;
   localparam logic [7:0] DBG_STATE_PAIR = 8'h40;  // state byte: this frame belongs to a held pair
   localparam logic [7:0] DBG_STATE_FORCED = 8'h04;   // state byte: the held record was forced (op 09)
   localparam logic [7:0] DBG_STATE_CAP_MASK = 8'h03;   // state byte: capture state (ST_*)
+  localparam int DBG_STATE_EDGE_SHIFT = 4;        // state byte bits 5:4: edge mode
 
   // ---- identity (op E2): bytes 2..8 of the reply
   localparam logic [7:0] ID_MAGIC0   = 8'h4F;   // 'O'
   localparam logic [7:0] ID_MAGIC1   = 8'h53;   // 'S'
   localparam logic [7:0] PROTO_VER   = 8'h01;   // changes when a firmware written for the old one would misread
+  localparam int ID_I_MAGIC0 = 2;                 // reply bytes of the identity
+  localparam int ID_I_MAGIC1 = 3;
+  localparam int ID_I_PROTO = 4;
+  localparam int ID_I_TAG = 5;
+  localparam int ID_I_CAPS = 6;
+  localparam int ID_I_DEPTH = 7;                  // log2 of the record length
+  localparam int ID_I_CHECK = 8;                  // XOR of bytes ID_I_MAGIC0..ID_I_DEPTH
   // capability bits
   localparam logic [7:0] CAP_SEAM    = 8'h01;   // ops 04/05 carry the seam in bytes 1-2
   localparam logic [7:0] CAP_EDGE    = 8'h02;   // reg 07: trigger direction and hysteresis
@@ -79,6 +89,8 @@ package core_pkg;
   localparam int PRE_LAST  = 511;               // samples before the trigger: 512
   localparam int POST_LAST = 510;               // samples from the trigger on: 512
   localparam int TRIG_INDEX = 512;               // a held record's trigger crossing, counted from the seam
+  localparam int READY_PULSE_CYCLES = 1023;      // PC0 low for this many core clock cycles (8.2 us) when a pair starts
+  localparam int LOCK_OK_CYCLES = 255;           // the PLL must stay locked this many cycles (2 us) before the capture runs
 
   // ---- capture state, as the E0 block shows it
   typedef enum logic [1:0] {

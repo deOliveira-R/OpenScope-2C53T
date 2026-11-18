@@ -82,10 +82,14 @@ module cmd #(
   logic [15:0] rd_q = 16'd0;
   always_ff @(posedge sclk or posedge cs_n)
     if (cs_n) rd_addr <= '0;
-    else if (bit_i == 3'd7 && byte_i >= 4'd2) rd_addr <= rd_addr + 1'b1;
+    else if (bit_i == 3'd7 && byte_i >= core_pkg::REC_FIRST_SAMPLE - 1) rd_addr <= rd_addr + 1'b1;
   always_ff @(posedge sclk) if (bit_i == 3'd6) rd_q <= rd_data;         // one edge before the next byte starts
 
   // ---- reply
+  // Three reply bytes are written as bit concatenations, not from core_pkg's masks: the state byte here (lock,
+  // pair, edge mode at DBG_STATE_EDGE_SHIFT, 0, forced, capture state), the seam's first byte and the edge register's
+  // read-back below. Built from the masks they synthesise to an equivalent but different netlist, and the build is
+  // kept bit-identical. tb/tb.sv checks all three against the masks.
   wire [7:0] state  = {lock, pair_held, regs.edge_mode, 1'b0, snap_forced, snap_st};
   // The seam is valid only when the snapshot taken before this frame already showed the record held (snap_wp and
   // snap_st are one snapshot) and the frame is part of a pair. Bit 7 of byte 1 goes out before pair_held of an
@@ -97,36 +101,36 @@ module cmd #(
   always_comb begin
     tx_byte = 8'h00;
     if (tx_byte_i == 4'd0) tx_byte = core_pkg::REPLY_FIRST;
-    else if (op == core_pkg::OP_REC_A && tx_byte_i >= 4'd3) tx_byte = rd_q[7:0];
-    else if (op == core_pkg::OP_REC_B && tx_byte_i >= 4'd3) tx_byte = rd_q[15:8];
-    else if (is_rec && tx_byte_i == 4'd1) tx_byte = seam_v ? {4'b0, snap_forced, 1'b1, snap_wp[9:8]} : 8'h00;
-    else if (is_rec && tx_byte_i == 4'd2) tx_byte = seam_v ? snap_wp[7:0] : 8'h00;
+    else if (op == core_pkg::OP_REC_A && tx_byte_i >= core_pkg::REC_FIRST_SAMPLE) tx_byte = rd_q[7:0];
+    else if (op == core_pkg::OP_REC_B && tx_byte_i >= core_pkg::REC_FIRST_SAMPLE) tx_byte = rd_q[15:8];
+    else if (is_rec && tx_byte_i == core_pkg::SEAM_I_HI) tx_byte = seam_v ? {4'b0, snap_forced, 1'b1, snap_wp[9:8]} : 8'h00;   // SEAM_FORCED, SEAM_VALID, seam 9:8
+    else if (is_rec && tx_byte_i == core_pkg::SEAM_I_LO) tx_byte = seam_v ? snap_wp[7:0] : 8'h00;
     else if (op == core_pkg::OP_LIVE) begin
-      if (tx_byte_i == 4'd2) tx_byte = snap_a; else if (tx_byte_i == 4'd4) tx_byte = snap_b;
+      if (tx_byte_i == core_pkg::LIVE_BYTE_A) tx_byte = snap_a; else if (tx_byte_i == core_pkg::LIVE_BYTE_B) tx_byte = snap_b;
     end else if (op == core_pkg::OP_DBG_STAT) case (tx_byte_i)
-        4'd3:  tx_byte = core_pkg::DBG_HEAD;
-        4'd4:  tx_byte = TAG;
-        4'd5:  tx_byte = state;
-        4'd6:  tx_byte = regs.tb;
-        4'd7:  tx_byte = regs.src;
-        4'd8:  tx_byte = regs.lvl;
-        4'd9:  tx_byte = {6'b0, snap_wp[9:8]};
-        4'd10: tx_byte = snap_wp[7:0];
-        4'd11: tx_byte = nheld;
-        4'd12: tx_byte = core_pkg::DBG_TAIL;
-        4'd13: tx_byte = {1'b0, regs.t50b, 1'b0, regs.t50a};
-        4'd14: tx_byte = {regs.hys, 2'b00, regs.edge_mode};
-        4'd15: tx_byte = nlost;
+        core_pkg::DBG_I_HEAD:  tx_byte = core_pkg::DBG_HEAD;
+        core_pkg::DBG_I_TAG:   tx_byte = TAG;
+        core_pkg::DBG_I_STATE: tx_byte = state;
+        core_pkg::DBG_I_TB:    tx_byte = regs.tb;
+        core_pkg::DBG_I_SRC:   tx_byte = regs.src;
+        core_pkg::DBG_I_LVL:   tx_byte = regs.lvl;
+        core_pkg::DBG_I_WP_HI: tx_byte = {6'b0, snap_wp[9:8]};
+        core_pkg::DBG_I_WP_LO: tx_byte = snap_wp[7:0];
+        core_pkg::DBG_I_NHELD: tx_byte = nheld;
+        core_pkg::DBG_I_TAIL:  tx_byte = core_pkg::DBG_TAIL;
+        core_pkg::DBG_I_T50:   tx_byte = {1'b0, regs.t50b, 1'b0, regs.t50a};
+        core_pkg::DBG_I_EDGE:  tx_byte = {regs.hys, 2'b00, regs.edge_mode};   // reg 07 as written (EDGE_HYS_SHIFT)
+        core_pkg::DBG_I_NLOST: tx_byte = nlost;
         default: tx_byte = 8'h00;
       endcase
     else if (op == core_pkg::OP_IDENT) case (tx_byte_i)
-        4'd2:  tx_byte = core_pkg::ID_MAGIC0;
-        4'd3:  tx_byte = core_pkg::ID_MAGIC1;
-        4'd4:  tx_byte = core_pkg::PROTO_VER;
-        4'd5:  tx_byte = TAG;
-        4'd6:  tx_byte = core_pkg::CAPS;
-        4'd7:  tx_byte = ID_DEPTH;
-        4'd8:  tx_byte = ID_CHECK;
+        core_pkg::ID_I_MAGIC0: tx_byte = core_pkg::ID_MAGIC0;
+        core_pkg::ID_I_MAGIC1: tx_byte = core_pkg::ID_MAGIC1;
+        core_pkg::ID_I_PROTO:  tx_byte = core_pkg::PROTO_VER;
+        core_pkg::ID_I_TAG:    tx_byte = TAG;
+        core_pkg::ID_I_CAPS:   tx_byte = core_pkg::CAPS;
+        core_pkg::ID_I_DEPTH:  tx_byte = ID_DEPTH;
+        core_pkg::ID_I_CHECK:  tx_byte = ID_CHECK;
         default: tx_byte = 8'h00;
       endcase
   end

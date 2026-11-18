@@ -109,6 +109,10 @@ What Yosys 0.71 (`read_verilog -sv`, no plugin), Icarus Verilog 13 and Gowin 1.9
 - Ops `E0`..`EF` exist only in this core (`E0` status, `E1` bench tuning, `E2` identity). Do not send them to the
   factory design. Op `09` (hold a record without a trigger) is sent only to a core whose identity has `CAP_FORCE`.
 - A change of behaviour gets a new `TAG`, a change a firmware could misread a new `PROTO_VER`.
+- Every protocol number is named in `rtl/core_pkg.sv` and the source uses the names. Three reply bytes in `cmd.sv`
+  are bit concatenations instead (state byte, first seam byte, edge read-back): built from the masks they
+  synthesise to an equivalent but different netlist, which would change a verified bitstream for no gain.
+  `tb/tb.sv` checks those bytes against the masks.
 
 ## Verification
 
