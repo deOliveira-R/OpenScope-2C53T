@@ -23,10 +23,14 @@ from pathlib import Path
 DRIVERS = Path(__file__).resolve().parent.parent / "firmware/src/drivers"
 # The table is in usb_debug.c; since the feature manifest's F3 the rows and
 # handlers of the bench shell and of the meter diagnostics are in their own
-# files (FEATURE_BENCHSHELL, FEATURE_METERDEBUG). The invariants hold over
-# all of them, whatever a given image is built with.
+# files (FEATURE_BENCHSHELL, FEATURE_METERDEBUG, FEATURE_RETOOLS). The
+# invariants hold over all of them, whatever a given image is built with.
 SRCS = [DRIVERS / n for n in ("usb_debug.c", "shell_bench.h", "shell_bench.c",
                               "shell_meterdebug.h", "shell_meterdebug.c")]
+# The reverse-engineering toolkit (FEATURE_RETOOLS): its rows and every source
+# file of src/re/, so that a command moved there stays under invariant 4.
+RE_DIR = DRIVERS.parent / "re"
+SRCS += [RE_DIR / "shell_re.h"] + sorted(RE_DIR.glob("*.c"))
 
 ROW_RE = re.compile(
     r'CMD_([AV])\("(?P<name>[^"]+)",\s*(?P<fn>\w+),\s*(?P<flags>[^,]+),\s*'

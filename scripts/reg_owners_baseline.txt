@@ -4,12 +4,8 @@ drivers/shell_bench.c	cmd_bench_restore	?PTR	2
 drivers/shell_bench.c	cmd_fpga_selftest	SPI3	2
 drivers/shell_bench.c	cmd_gpio_set	?PTR	2
 drivers/shell_bench.c	cmd_spi3_acqread_one	GPIOB.out	2
-drivers/shell_bench.c	cmd_spi3_gowin	SPI3	2
-drivers/shell_bench.c	cmd_spi3_probe	GPIOB.out	2
-drivers/shell_bench.c	cmd_spi3_probe	SPI3	3
 drivers/shell_bench.c	cmd_spi3_seq	GPIOB.out	4
 drivers/shell_bench.c	cmd_spi3_xfer	GPIOB.out	2
-drivers/shell_bench.c	spi3_canary_span	GPIOB.out	2
 drivers/shell_bench.c	spi3_gowin_read_reg	GPIOB.out	2
 drivers/shell_bench.c	spi3_opread_window	GPIOB.out	2
 drivers/shell_bench.c	spi3_raw_xfer	SPI3	1
@@ -23,6 +19,10 @@ main.c	main	WDT	6
 main.c	main	XMC	4
 main.c	vApplicationMallocFailedHook	PRIMASK	1
 main.c	vApplicationStackOverflowHook	PRIMASK	1
+re/re_spi3.c	cmd_spi3_gowin	SPI3	2
+re/re_spi3.c	cmd_spi3_probe	GPIOB.out	2
+re/re_spi3.c	cmd_spi3_probe	SPI3	3
+re/re_spi3.c	spi3_canary_span	GPIOB.out	2
 re/shell_re.c	cmd_re_pinsweep	?PTR	5
 re/shell_re.c	cmd_re_pinsweep	GPIOB.out	2
 tasks/input_handler.c	input_handle_button	SCS	1

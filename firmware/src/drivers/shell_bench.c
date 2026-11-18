@@ -1,10 +1,12 @@
 /*
  * OpenScope 2C53T - the bench shell (FEATURE_BENCHSHELL)
  *
- * The reverse-engineering and bring-up commands of the debug shell: raw FPGA
- * frames and wire words, SPI3, GPIO, USART, memory and W25Q pokes, the stock
- * state shadow, the acquisition experiments (EXP-xx knobs), the pin log. No
- * user function depends on them; an image built without the feature (profile
+ * The bring-up and bench commands of the debug shell: raw FPGA frames and
+ * wire words, SPI3, GPIO, USART, memory and W25Q pokes, the FPGA design slot
+ * and reload, the acquisition experiments (EXP-xx knobs). The commands that
+ * exist only to find out how an unknown board works are the reverse-engineering
+ * toolkit (src/re/, FEATURE_RETOOLS), which calls the bus helpers this file
+ * exports through shell_bench.h. No user function depends on them; an image built without the feature (profile
  * `full`) does not compile this file, `help` does not list the commands and
  * they answer "Unknown command".
  *
@@ -1523,27 +1525,6 @@ void cmd_fpga_diag_clear(void)
     usb_send_str("FPGA diagnostics cleared\r\n");
 }
 
-/* EXPERIMENTAL (experimental/esp32-bringup) — UNTESTED. Hand the SPI3 bus to
- * an external SSPI master (ESP32) on the back-side test pads. Re-flash to undo. */
-void cmd_fpga_bus_release(void)
-{
-    fpga_bus_release();
-    usb_send_str("SPI3 bus RELEASED to external master.\r\n");
-    usb_send_str("  PB3(SCK)/PB5(MOSI)/PB6(CS) -> Hi-Z, MCU off the bus.\r\n");
-    usb_send_str("  PB4(MISO) input (FPGA-driven, shared read).\r\n");
-    usb_send_str("  PC6=HIGH (SPI en), PB11=HIGH (active), PC9 power-hold kept.\r\n");
-    usb_send_str("  ESP32 may now drive SSPI. Re-flash/power-cycle to reclaim.\r\n");
-}
-
-void cmd_fpga_bus_reacquire(void)
-{
-    fpga_spi3_bus_reacquire();
-    usb_send_str("SPI3 bus REACQUIRED by MCU.\r\n");
-    usb_send_str("  PB3(SCK)/PB5(MOSI) -> SPI3 AF, PB6(CS) -> GPIO out HIGH.\r\n");
-    usb_send_str("  PB4(MISO) input pull-up (stock idle), PC6=HIGH, SPE=1.\r\n");
-    usb_send_str("  Config port left untouched. `fpga reinit` now drives it.\r\n");
-}
-
 /*
  * FPGA design slot (util/fpga_slot.h) and runtime reload (fpga_reload()).
  *   fpga slot [info]                          what is stored, and whether its CRC holds
@@ -1970,59 +1951,6 @@ void cmd_spi3_frame(void)
     spi3_frame_dump("CH2", s2);
 }
 
-/* pinlog [start]: bench tool. Once a second (usb_debug_pinlog_tick, from the
- * 1 s timer) store every GPIO port's input word and the last battery ADC
- * result, so a pin that follows "USB attached" can be found: start it,
- * unplug the cable for ~10 s, plug it back, then `pinlog` prints the rows. */
-#define PINLOG_N 90
-static struct { uint16_t t; uint16_t idt[5]; uint16_t adc; } s_pinlog[PINLOG_N];
-static volatile uint8_t s_pinlog_n;
-static volatile uint8_t s_pinlog_on;
-static uint16_t s_pinlog_t;
-
-/* Rows are stored only on a change: a quiet pin flips (the LCD bus on D/E,
- * PA6, PB4-PB6, PB8 (PWM, backlight) and PC0 strobe are masked out) or the battery ADC moves by 12
- * counts (~20 mV). So the log can stay armed for hours. */
-void benchshell_pinlog_tick(void)
-{
-    if (!s_pinlog_on) return;
-    s_pinlog_t++;
-    if (s_pinlog_n >= PINLOG_N) return;
-    const uint16_t a = (uint16_t)GPIOA->idt, b = (uint16_t)GPIOB->idt, c = (uint16_t)GPIOC->idt;
-    const uint16_t adc = (uint16_t)(ADC1->odt & 0xFFFu);
-    const uint8_t i = s_pinlog_n;
-    if (i > 0) {
-        const int d = (int)adc - (int)s_pinlog[i - 1].adc;
-        if (((a ^ s_pinlog[i - 1].idt[0]) & (uint16_t)~(1u << 6)) == 0 &&
-            ((b ^ s_pinlog[i - 1].idt[1]) & (uint16_t)~0x0170u) == 0 &&
-            ((c ^ s_pinlog[i - 1].idt[2]) & (uint16_t)~(1u << 0)) == 0 &&
-            d > -12 && d < 12)
-            return;
-    }
-    s_pinlog[i].t = s_pinlog_t;
-    s_pinlog[i].idt[0] = a; s_pinlog[i].idt[1] = b; s_pinlog[i].idt[2] = c;
-    s_pinlog[i].idt[3] = (uint16_t)GPIOD->idt;
-    s_pinlog[i].idt[4] = (uint16_t)GPIOE->idt;
-    s_pinlog[i].adc    = adc;
-    s_pinlog_n = (uint8_t)(i + 1u);
-}
-
-void cmd_pinlog(const char *args)
-{
-    while (*args == ' ') args++;
-    if (strncmp(args, "start", 5) == 0) {
-        s_pinlog_on = 0; s_pinlog_n = 0; s_pinlog_t = 0; s_pinlog_on = 1;
-        usb_debug_printf("pinlog: armed, %d change rows\r\n", PINLOG_N);
-        return;
-    }
-    const uint8_t n = s_pinlog_n;
-    usb_debug_printf("pinlog: %u rows at %u s (s: A B C D E adc)\r\n", (unsigned)n, (unsigned)s_pinlog_t);
-    for (uint8_t i = 0; i < n; i++)
-        usb_debug_printf("%u: %04X %04X %04X %04X %04X %u\r\n", (unsigned)s_pinlog[i].t,
-                         s_pinlog[i].idt[0], s_pinlog[i].idt[1], s_pinlog[i].idt[2],
-                         s_pinlog[i].idt[3], s_pinlog[i].idt[4], (unsigned)s_pinlog[i].adc);
-}
-
 /* lcd [selftest]: panel health (util/lcd_health.h). selftest sends the
  * ST7789 a software reset (0x01), the state seen once on unit #2, so the
  * display task's check has to find it and recover within ~2 s. */
@@ -2240,7 +2168,7 @@ void cmd_spi3_xfer(const char *args)
  * not touch the acquisition task" was false (audit 2026-08-20, P0.1): the
  * acq task preempts this task mid-CS-window unless parked. All callers now
  * run under the dispatch-level spi3_shell_claim(). */
-static void cmd_spi3_acqread_one(uint8_t opcode)
+void cmd_spi3_acqread_one(uint8_t opcode)
 {
     uint8_t first16[16];
     uint16_t smin = 255, smax = 0;
@@ -2299,9 +2227,9 @@ void cmd_spi3_acqread(void)
  * WRITES (opsweep skips them: the 0xFF payload filler would smash live
  * registers — 0x01 is the run register); 0x03 = status read; 0x04/0x05 =
  * channel reads (kept in the sweep as positive controls). */
-#define SPI3_OPREAD_MAX_LEN 4096u
-
-static bool spi3_opread_window(uint8_t opcode, uint32_t len, bool dump)
+/* SPI3_OPREAD_MAX_LEN: shell_bench.h (the toolkit's `spi3 opsweep` uses this
+ * window too). */
+bool spi3_opread_window(uint8_t opcode, uint32_t len, bool dump)
 {
     uint8_t first16[16];
     uint8_t r0, r1, r2;
@@ -2337,26 +2265,6 @@ static bool spi3_opread_window(uint8_t opcode, uint32_t len, bool dump)
         usb_debug_printf(" %02X", first16[i]);
     usb_send_str("\r\n");
     return smax > smin;                    /* payload varies */
-}
-
-/* Full proven-shape 0x04 read; returns the sample span. Used as the wedge
- * canary between sweep steps. Full 1026-byte window on purpose — do NOT
- * shorten it (frame shape is part of the protocol; see the 0x05 hazard note
- * on fpga_warmtest_read_channel). Consumes one capture frame. */
-static unsigned spi3_canary_span(void)
-{
-    uint8_t smin = 255, smax = 0;
-    GPIOB->clr = (1 << 6);
-    (void)spi3_raw_xfer(0x04);
-    (void)spi3_raw_xfer(0xFF);
-    (void)spi3_raw_xfer(0xFF);
-    for (uint32_t i = 0; i < 1023; i++) {
-        uint8_t s = spi3_raw_xfer(0xFF);
-        if (s < smin) smin = s;
-        if (s > smax) smax = s;
-    }
-    GPIOB->scr = (1 << 6);
-    return (unsigned)(smax - smin);
 }
 
 /* spi3 opread <op-hex> [len [dump]] — one read window of `len` payload bytes
@@ -2411,102 +2319,15 @@ void cmd_spi3_opread(const char *args)
     fpga_acq_resume();
 }
 
-/* spi3 opsweep [start end [len]] — sweep opcodes (hex bounds, default
- * 00..3F, known writes skipped), one window each, 0x04 canary between
- * steps. Run with the ESP32 feeding a LIVE slow signal into CH1: the
- * canary then has span>0, so a wedged readout mux is detectable and the
- * sweep aborts naming the offending opcode. A hit = an unknown opcode
- * whose payload varies / is non-FF — re-read it twice with different
- * siggen settings (spi3 opread <op> 2048 dump) to confirm it tracks. */
-void cmd_spi3_opsweep(const char *args)
-{
-    char buf[64];
-    char *saveptr = NULL;
-    char *tok, *end;
-    uint32_t start = 0x00, stop = 0x3F, len = 2048;  /* 1024 words: BSRAM_1/2
-                                                        is a word-wide pair */
-    static const uint8_t skip[] = { 0x01, 0x02, 0x06, 0x07, 0x08 };
-    unsigned flat_streak = 0;
-
-    if (strlen(args) >= sizeof(buf)) { usb_send_str("ERR: line too long\r\n"); return; }
-    strcpy(buf, args);
-
-    tok = strtok_r(buf, " \t", &saveptr);
-    if (tok) {
-        start = strtoul(tok, &end, 16);
-        if (*end != '\0' || start > 0xFF) { usb_send_str("ERR: bad start\r\n"); return; }
-        tok = strtok_r(NULL, " \t", &saveptr);
-        if (!tok) { usb_send_str("Usage: spi3 opsweep [start end [len]]\r\n"); return; }
-        stop = strtoul(tok, &end, 16);
-        if (*end != '\0' || stop > 0xFF || stop < start) { usb_send_str("ERR: bad end\r\n"); return; }
-        tok = strtok_r(NULL, " \t", &saveptr);
-        if (tok) {
-            len = strtoul(tok, &end, 0);
-            if (*end != '\0' || len == 0 || len > SPI3_OPREAD_MAX_LEN) {
-                usb_debug_printf("ERR: len 1..%u\r\n", SPI3_OPREAD_MAX_LEN);
-                return;
-            }
-        }
-    }
-
-    if (!fpga_acq_pause()) {
-        usb_send_str("ERR: acq task did not park — bus not safe, aborting\r\n");
-        return;
-    }
-
-    unsigned base_span = spi3_canary_span();
-    usb_debug_printf("=== opsweep %02lX..%02lX len=%lu  baseline 0x04 span=%u ===\r\n",
-                     (unsigned long)start, (unsigned long)stop,
-                     (unsigned long)len, base_span);
-    if (base_span == 0)
-        usb_send_str("WARN: CH1 is flat — feed the siggen into CH1 first, or the\r\n"
-                     "      canary cannot tell a wedged mux from no signal.\r\n");
-
-    for (uint32_t op = start; op <= stop; op++) {
-        bool skipped = false;
-        for (unsigned i = 0; i < sizeof(skip); i++)
-            if (op == skip[i]) { skipped = true; break; }
-        if (skipped) {
-            usb_debug_printf("op %02lX: SKIP (known write reg)\r\n", (unsigned long)op);
-            continue;
-        }
-
-        spi3_opread_window((uint8_t)op, len, false);
-        vTaskDelay(pdMS_TO_TICKS(150));    /* cadence floor, see fpga.c */
-        unsigned cspan = spi3_canary_span();
-        usb_debug_printf("      canary span=%u\r\n", cspan);
-        if (base_span > 0) {
-            flat_streak = (cspan == 0) ? flat_streak + 1 : 0;
-            if (flat_streak >= 2) {
-                usb_debug_printf("ABORT: canary flat twice — engine likely wedged "
-                                 "by op %02lX or %02lX. FPGA power cycle to recover\r\n"
-                                 "(POWER->Goodbye->UNPLUG USB->replug).\r\n",
-                                 (unsigned long)op, (unsigned long)(op - 1));
-                break;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(150));
-    }
-
-    usb_send_str("=== opsweep done ===\r\n");
-    fpga_acq_resume();
-}
-
-/* spi3 gowin — read the Gowin SSPI ID / USERCODE / STATUS registers using
- * rosenrot00's PROVEN-WORKING 2C23T framing and decode the status bits.
+/* One Gowin SSPI register read (IDCODE / USERCODE / STATUS) using
+ * rosenrot00's PROVEN-WORKING 2C23T framing. `fpga selftest` reads the IDCODE
+ * with it; the toolkit's `spi3 gowin` and `re pinsweep` (src/re/) read and
+ * decode the status bits.
  *
  * Framing (per fpga_hw4_read_register32 in the 2C23T loader): one flush byte
  * clocked with CS HIGH, then CS LOW, then opcode + 3 zero bytes, then 4 read
  * bytes, then CS HIGH. The opcode sits in the MSB of a 32-bit "address word"
- * (0x11<<24 etc), exactly as their read_register32(0x11000000) does.
- *
- * Why this matters: our `spi3 xfer 41 ...` returned 0x00000000 on a *running*
- * NV-booted FPGA. A configured GW1N must report DONE_FINAL / GOWIN_VLD / READY
- * in its status register — zero means either our READ FRAMING is wrong (this
- * command tests that by also reading IDCODE, which must equal 0x0120681B for
- * the GW1N-2) or the part is genuinely unconfigured. Either answer unblocks us.
- *
- * Gowin status-register bit names from openFPGALoader src/gowin.cpp. */
+ * (0x11<<24 etc), exactly as their read_register32(0x11000000) does. */
 uint32_t spi3_gowin_read_reg(uint8_t opcode)
 {
     /* flush byte with CS HIGH (CS is idle-high here) */
@@ -2535,133 +2356,6 @@ uint32_t spi3_set_baud(uint32_t br)
     *ctrl1 = (*ctrl1 & ~(7u << 3)) | ((br & 7u) << 3);      /* set MDIV */
     *ctrl1 |= (1u << 6);                                    /* SPE = 1 */
     return prev;
-}
-
-void cmd_spi3_gowin(void)
-{
-    static const struct { uint32_t mask; const char *name; } STATUS_BITS[] = {
-        { 1u << 0,  "CRC Error" },
-        { 1u << 1,  "Bad Command" },
-        { 1u << 2,  "ID Verify Failed" },
-        { 1u << 3,  "Timeout" },
-        { 1u << 5,  "Memory Erase" },
-        { 1u << 6,  "Preamble" },
-        { 1u << 7,  "System Edit Mode" },
-        { 1u << 8,  "Program spiFlash directly" },
-        { 1u << 10, "Non-JTAG config active" },
-        { 1u << 11, "Bypass" },
-        { 1u << 12, "Gowin VLD" },
-        { 1u << 13, "Done Final" },
-        { 1u << 14, "Security Final" },
-        { 1u << 15, "Ready" },
-        { 1u << 16, "POR" },
-        { 1u << 17, "FLASH lock" },
-    };
-
-    usb_send_str("=== Gowin SSPI registers (rosenrot00 framing) ===\r\n");
-
-    /* Read at two clock rates: /2 (60MHz, our normal) and /256 (~470kHz,
-     * closer to rosenrot00's bit-bang). If the slow read returns the real
-     * IDCODE but the fast one doesn't, the SSPI read path is clock-limited. */
-    static const struct { uint32_t br; const char *label; } SPEEDS[] = {
-        { 0u, "/2  (60MHz)" },
-        { 7u, "/256(~470kHz)" },
-    };
-
-    uint32_t saved = 0;
-    for (unsigned s = 0; s < sizeof(SPEEDS) / sizeof(SPEEDS[0]); s++) {
-        if (s == 0) saved = spi3_set_baud(SPEEDS[s].br);
-        else        (void)spi3_set_baud(SPEEDS[s].br);
-
-        uint32_t id  = spi3_gowin_read_reg(0x11);   /* READ_IDCODE   */
-        uint32_t usr = spi3_gowin_read_reg(0x13);   /* READ_USERCODE */
-        uint32_t st  = spi3_gowin_read_reg(0x41);   /* READ_STATUS   */
-
-        /* The IDCODE read in THIS window, at THIS clock, is the anchor: it is
-         * the only value here with an independently known correct answer
-         * (0x0120681B, from the Gowin .fs preamble at file offset 0x4AD19).
-         * If it does not match, the read path is not trustworthy and neither
-         * is the STATUS taken through it — so the decode is withheld rather
-         * than printed as a list of named bits.
-         *
-         * This is not hypothetical. The /2 pass below is KNOWN BAD (fpga.c
-         * ~1564: at /2 the MISO bit is latched one edge early). Six weeks of
-         * this project ran on "0x8001C810 = READY POR", which was 0x00039020
-         * shifted by one bit and set bits 4/11/31 that are not defined Gowin
-         * bits at all. The old code here printed that decode with no caveat. */
-        int anchored = (id == 0x0120681BUL);
-
-        usb_debug_printf("\r\n[clk %s]%s\r\n", SPEEDS[s].label,
-                         SPEEDS[s].br == 0
-                             ? "  <-- KNOWN-INVALID READ CLOCK (fpga.c:1564);"
-                               " kept only as the negative control"
-                             : "");
-        usb_debug_printf("IDCODE  (0x11): 0x%08lX  %s\r\n", id,
-                         anchored ? "== GW1N-2 OK (read path ANCHORED)"
-                                  : "!= 0x0120681B -> READ PATH NOT ANCHORED");
-        usb_debug_printf("USERCODE(0x13): 0x%08lX%s\r\n", usr,
-                         anchored ? "" : "  (unanchored — do not quote)");
-        usb_debug_printf("STATUS  (0x41): 0x%08lX%s\r\n", st,
-                         anchored ? "" : "  (unanchored — do not quote)");
-        if (!anchored) {
-            usb_send_str("  decode: WITHHELD — the anchor failed, so this word is not\r\n"
-                         "          known to be a register value. A stable wrong number\r\n"
-                         "          is indistinguishable from a right one.\r\n");
-        } else {
-            usb_send_str("  decode:");
-            int any = 0;
-            for (unsigned i = 0; i < sizeof(STATUS_BITS) / sizeof(STATUS_BITS[0]); i++) {
-                if (st & STATUS_BITS[i].mask) {
-                    usb_debug_printf(" [%s]", STATUS_BITS[i].name);
-                    any = 1;
-                }
-            }
-            usb_send_str(any ? "\r\n" : " (no bits set)\r\n");
-        }
-    }
-
-    /* Restore the original CTRL1 (baud + SPE) for the rest of the system. */
-    {
-        volatile uint32_t *ctrl1 = (volatile uint32_t *)0x40003C00;
-        *ctrl1 &= ~(1u << 6);
-        *ctrl1 = saved;
-    }
-
-    usb_send_str("\r\nHow to read this (Exps J and L, 2026-07-28):\r\n"
-                 "  IDCODE 0x0120681B at /256 = read path is valid; STATUS can be trusted.\r\n"
-                 "  IDCODE silent/zero at /256 = the SSPI config port has CLOSED. That is\r\n"
-                 "    what a SUCCESSFULLY CONFIGURED part looks like (the pins belong to the\r\n"
-                 "    user design from then on) -- but a dead bus looks identical, so\r\n"
-                 "    corroborate with DONE_FINAL from the config path and a live trace.\r\n"
-                 "  The /2 pass is expected to be garbage; it is the negative control.\r\n");
-}
-
-/* spi3 edgecap [reps] — EXP-37 LA edge-capture. Emits [reps] identical 0x15
- * CONFIG_ENABLE frames over AF hardware-SPI3 (/256), a 60ms gap, then [reps] over
- * GPIO bit-bang — same pins/rate/frame, drive type the only variable. Isolated
- * frames; does NOT configure. Arm sigrok (D0=SCK/D1=MISO/D2=MOSI/D3=CS) BEFORE
- * running, then diff the two bursts.
- *
- * The rig needs the bit-bang transport, which only exists under FPGA_CONFIG_B.
- * The command stays in the table on every build and says so, rather than
- * disappearing from `help` and leaving the operator guessing. */
-void cmd_spi3_edgecap(const char *args)
-{
-    uint32_t reps = 16;
-    /* parse_int(), not a bare strtoul(): a non-numeric argument used to become
-     * 0 and then be clamped back to the default, so the command silently ran
-     * something other than what was typed. Numeric out-of-range still clamps,
-     * as it always has. */
-    if (args && *args && parse_int(args, &reps) != 0) {
-        usb_send_str("Usage: spi3 edgecap [reps]\r\n");
-        return;
-    }
-    if (reps == 0 || reps > 255) reps = 16;
-    usb_debug_printf("edgecap: %lu AF 0x15 frames (/256), 60ms gap, %lu bit-bang 0x15 frames\r\n",
-                     reps, reps);
-    usb_send_str("  emitting now — capture window should be armed on D0=SCK D1=MISO D2=MOSI D3=CS\r\n");
-    fpga_edgecap_15((uint8_t)reps);
-    usb_send_str("edgecap: done. AF burst | gap | GPIO burst are in the capture.\r\n");
 }
 
 /* ─── fpga selftest ────────────────────────────────────────────────────────
@@ -2767,188 +2461,6 @@ void cmd_fpga_selftest(void)
                  "         posture back with `bench restore` so it cannot leak into the next.\r\n");
 }
 
-/* fpga reinit [br] [prelude_gap_ms] [post_close_ms] — replay the full SPI3
- * config handshake on demand (prelude → 0x3B bitstream → 0x3A close → scope
- * config) and report the result. Lets us sweep the handshake parameters in
- * seconds without reflashing, chasing why our upload activates the FPGA slave
- * but never reaches stock's configured state (close F8 / status 00 01 42 2E).
- * Defaults match the stock-captured timing: br=0 (/2), gap=100ms, close=600ms. */
-void cmd_fpga_reinit(const char *args)
-{
-    /* guest-bringup leaves the bus released (PB3/5/6 Hi-Z, SPE off). reinit means
-     * "take the bus and configure", so reacquire it first — otherwise the whole
-     * handshake clocks into a dead wire (H7, 2026-08-26). No-op on other builds. */
-    if (fpga.bus_released) {
-        fpga_spi3_bus_reacquire();
-        usb_send_str("reinit: bus was released -> reacquired SPI3 (PB3/4/5/6, SPE)\r\n");
-    }
-
-    fpga_cfg_seq_opts_t opt = {
-        .upload_br = 0, .prelude_gap_ms = 100, .post_close_ms = 600, .arm_pb11 = 1,
-        .reset_port = 0, .reset_pin = 0, .reset_low_ms = 10,
-        .prelude_frame_mode = 0, .pre_upload_gap_ms = 0, .cmd_br = 0,
-        .strap_pd2 = 0, .strap_pd1213 = 0, .trailing_clocks = 0,
-        .probe_edit = 0, .reload_3c = 0,
-    };
-    char buf[80];
-    if (args && *args) {
-        if (strlen(args) >= sizeof(buf)) { usb_send_str("ERR: line too long\r\n"); return; }
-        strcpy(buf, args);
-        char *save = NULL;
-        char *t0 = strtok_r(buf, " \t", &save);
-        char *t1 = t0 ? strtok_r(NULL, " \t", &save) : NULL;
-        char *t2 = t1 ? strtok_r(NULL, " \t", &save) : NULL;
-        /* Every number below is parse_int()-checked. Bare strtoul() used to
-         * turn an unparseable token into 0 SILENTLY, which on this command is
-         * the worst possible failure: `fpga reinit slow` discarded all three
-         * stock-captured defaults (br=0/gap=100/close=600), ran a different
-         * handshake, and echoed "br=0 gap=0ms close=0ms" as though that were
-         * what was asked for. 0 is a legal value, so the echo could not
-         * disambiguate it. This is a sweep tool; a typo must not quietly
-         * become a data point. */
-        if ((t0 && parse_int(t0, &opt.upload_br) != 0) ||
-            (t1 && parse_int(t1, &opt.prelude_gap_ms) != 0) ||
-            (t2 && parse_int(t2, &opt.post_close_ms) != 0)) {
-            usb_send_str("ERR: br/gap/close must be numbers. See `help`.\r\n");
-            return;
-        }
-        /* Remaining tokens are optional, order-independent, prefix-classified:
-         *   a..e<pin> = FPGA reset pulse pin (e.g. b9)
-         *   f<0|1|2>  = prelude frame mode (split/combined/merge)
-         *   u<ms>     = pre-upload digest gap after CONFIG_ENABLE */
-        for (char *tk = strtok_r(NULL, " \t", &save); tk;
-             tk = strtok_r(NULL, " \t", &save)) {
-            uint32_t n;
-            if (tk[0] >= 'a' && tk[0] <= 'e' && tk[1]) {   /* <port><pin> */
-                if (parse_int(tk + 1, &n) != 0 || n > 15u) goto reinit_bad_token;
-                opt.reset_port = (uint8_t)(tk[0] - 'a' + 1);
-                opt.reset_pin  = (uint8_t)n;
-            } else if (tk[0] == 'f') {
-                if (parse_int(tk + 1, &n) != 0 || n > 2u) goto reinit_bad_token;
-                opt.prelude_frame_mode = (uint8_t)n;
-            } else if (tk[0] == 'u') {
-                if (parse_int(tk + 1, &n) != 0) goto reinit_bad_token;
-                opt.pre_upload_gap_ms = n;
-            } else if (tk[0] == 'k') {  /* 'k' (clock) — NOT 'c', which collides
-                                         * with reset-port c (a..e) above */
-                if (parse_int(tk + 1, &n) != 0 || n > 7u) goto reinit_bad_token;
-                opt.cmd_br = n;
-            } else if (tk[0] == 's' && tk[1] != '\0') {
-                                        /* strap-hold: s2[h|l]=PD2, sd[h|l]=PD12+13
-                                         * (default HIGH = stock). GPIO-audit lead.
-                                         * sb = single-BR (EXP-34): no SPE toggle
-                                         * through the config transaction.
-                                         * tk[1] is tested first now: reading tk[2]
-                                         * on a bare "s" ran off the end of the
-                                         * token. */
-                uint8_t lvl = (tk[2] == 'l') ? 2 : 1;
-                if (tk[1] == '2')      opt.strap_pd2    = lvl;
-                else if (tk[1] == 'd') opt.strap_pd1213 = lvl;
-                else if (tk[1] == 'b') opt.single_br    = 1;
-                else goto reinit_bad_token;
-            } else if (tk[0] == 't' && tk[1] == 'c') {  /* tc<N> = trailing clocks
-                                         * after bitstream, before 0x3A (sibling ~200) */
-                if (parse_int(tk + 2, &n) != 0 || n > 0xFFFFu) goto reinit_bad_token;
-                opt.trailing_clocks = (uint16_t)n;
-            } else if (strcmp(tk, "pe") == 0) {  /* pe = probe SYSTEM_EDIT_MODE:
-                                         * read STATUS at /256 right after 0x15 */
-                opt.probe_edit = 1;
-            } else if (strcmp(tk, "rl") == 0) {  /* rl = send 0x3C RELOAD before
-                                         * the prelude (software reconfig trigger) */
-                opt.reload_3c = 1;
-            } else {
-                /* No silent drop. The chain used to end here with nothing, so a
-                 * mistyped sweep option ran the BASELINE handshake and reported
-                 * success — and got written down as a data point for a
-                 * parameter that was never applied. */
-reinit_bad_token:
-                usb_debug_printf("ERR: unknown or malformed reinit option '%s' — "
-                                 "nothing was sent. See `help`.\r\n", tk);
-                return;
-            }
-        }
-    }
-
-    static const char *const frame_name[] = { "split", "combined", "merge" };
-    const char *fn = opt.prelude_frame_mode < 3 ? frame_name[opt.prelude_frame_mode] : "?";
-    if (opt.reset_port)
-        usb_debug_printf("reinit: br=%lu gap=%lums close=%lums frame=%s(%u) upgap=%lums cmdbr=%lu RESET=%c%u(%ums)\r\n",
-                         opt.upload_br, opt.prelude_gap_ms, opt.post_close_ms,
-                         fn, opt.prelude_frame_mode, opt.pre_upload_gap_ms, opt.cmd_br,
-                         'A' + opt.reset_port - 1, opt.reset_pin, opt.reset_low_ms);
-    else
-        usb_debug_printf("reinit: br=%lu prelude_gap=%lums post_close=%lums frame=%s(%u) upgap=%lums cmdbr=%lu (no reset)\r\n",
-                         opt.upload_br, opt.prelude_gap_ms, opt.post_close_ms,
-                         fn, opt.prelude_frame_mode, opt.pre_upload_gap_ms, opt.cmd_br);
-    if (opt.strap_pd2 || opt.strap_pd1213)
-        usb_debug_printf("reinit: STRAP PD2=%s PD12/13=%s (held thru handshake)\r\n",
-                         opt.strap_pd2 == 1 ? "HIGH" : opt.strap_pd2 == 2 ? "LOW" : "-",
-                         opt.strap_pd1213 == 1 ? "HIGH" : opt.strap_pd1213 == 2 ? "LOW" : "-");
-    if (opt.trailing_clocks)
-        usb_debug_printf("reinit: trailing_clocks=%u (after bitstream, before 0x3A)\r\n",
-                         opt.trailing_clocks);
-    if (opt.single_br)
-        usb_send_str("reinit: SINGLE-BR — no spi3_set_br/SPE toggle through the transaction (EXP-34)\r\n");
-
-    uint8_t close = fpga_spi3_config_sequence(&opt);
-
-    usb_debug_printf("0x3A close: %02X (stock F8)\r\n", close);
-    usb_debug_printf("0x03 status: %02X %02X %02X %02X (stock 00 01 42 2E)\r\n",
-                     fpga.scope_status[0], fpga.scope_status[1],
-                     fpga.scope_status[2], fpga.scope_status[3]);
-
-    /* Gowin STATUS_REGISTER (0x41) — the authoritative config status. Decode the
-     * named bits so one reinit run tells us WHICH side of the wall we're on:
-     *   all-FF  -> FPGA not driving MISO (never entered config-receive)
-     *   CRC/IDV -> bytes reached the config engine (wire/content problem)
-     *   DONE    -> config actually took. */
-    uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
-                  ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-                  ((uint32_t)fpga.cfg_status_reg[2] << 8) |
-                  (uint32_t)fpga.cfg_status_reg[3];
-    usb_debug_printf("0x41 STATUS: %02X %02X %02X %02X (raw=%08lX)\r\n",
-                     fpga.cfg_status_reg[0], fpga.cfg_status_reg[1],
-                     fpga.cfg_status_reg[2], fpga.cfg_status_reg[3], sr);
-    if (sr == 0xFFFFFFFFu || sr == 0x00000000u) {
-        usb_debug_printf("  -> %s (no valid status; FPGA not in SSPI config-receive)\r\n",
-                         sr == 0xFFFFFFFFu ? "all-FF" : "all-00");
-    } else {
-        usb_debug_printf("  flags:%s%s%s%s%s%s%s\r\n",
-                         (sr & (1u << 0))  ? " CRC_ERR"   : "",
-                         (sr & (1u << 1))  ? " BAD_CMD"   : "",
-                         (sr & (1u << 2))  ? " ID_FAIL"   : "",
-                         (sr & (1u << 12)) ? " GWVLD"     : "",
-                         (sr & (1u << 13)) ? " DONE"      : "",
-                         (sr & (1u << 15)) ? " READY"     : "",
-                         (sr & (1u << 16)) ? " POR"       : "");
-    }
-    /* Post-CONFIG_ENABLE STATUS (probe_edit): did 0x15 engage SYSTEM_EDIT_MODE
-     * (bit7)? Read at /256 right after 0x15, before the bitstream — the precise
-     * wall test (openFPGALoader's enableCfg() polls exactly this bit). */
-    if (opt.reload_3c)
-        usb_send_str("reinit: sent 0x3C RELOAD before prelude\r\n");
-    if (opt.probe_edit) {
-        uint32_t es = ((uint32_t)fpga.edit_mode_status[0] << 24) |
-                      ((uint32_t)fpga.edit_mode_status[1] << 16) |
-                      ((uint32_t)fpga.edit_mode_status[2] << 8) |
-                      (uint32_t)fpga.edit_mode_status[3];
-        usb_debug_printf("post-0x15 STATUS@/256: %02X %02X %02X %02X (raw=%08lX)\r\n",
-                         fpga.edit_mode_status[0], fpga.edit_mode_status[1],
-                         fpga.edit_mode_status[2], fpga.edit_mode_status[3], es);
-        usb_debug_printf("  EDIT_MODE(bit7)=%s  flags:%s%s%s%s%s%s\r\n",
-                         (es & (1u << 7))  ? "YES (config-receive engaged!)" : "no (0x15 did NOT engage)",
-                         (es & (1u << 0))  ? " CRC_ERR" : "",
-                         (es & (1u << 2))  ? " ID_FAIL" : "",
-                         (es & (1u << 12)) ? " GWVLD"   : "",
-                         (es & (1u << 13)) ? " DONE"    : "",
-                         (es & (1u << 15)) ? " READY"   : "",
-                         (es & (1u << 17)) ? " FLASH_LOCK" : "");
-    }
-    usb_send_str("--- acqread after reinit ---\r\n");
-    cmd_spi3_acqread_one(0x04);
-    cmd_spi3_acqread_one(0x05);
-}
-
 /* spi3 seq <bytes> | <bytes> [| ...] — like "spi3 xfer" but pulse CS (PB6
  * HIGH then LOW, ~tens of us inside this one handler) at each "|" separator.
  * Reproduces ripcord's cmd-09 pattern "09 FF FF | 0A FF FF", where a
@@ -3000,75 +2512,4 @@ void cmd_spi3_seq(const char *args)
         if (pulse_after[i]) usb_send_str(" |");
     }
     usb_send_str("\r\n");
-}
-
-/* ═══════════════════════════════════════════════════════════════════
- * Command Dispatcher
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* Extracted from the old dispatch chain (was an inline block). SPI3 claim/
- * release is handled by the dispatcher via SC_SPI3. */
-void cmd_spi3_probe(void)
-{
-    /* Bit-bang SPI3 probe: disable SPI peripheral, manually toggle
-     * SCK and read MISO to test if the FPGA drives the line. This pokes the
-     * SPI3 registers directly, so an unparked acq task would corrupt far
-     * more than one frame — SC_SPI3 on the table row handles the park. */
-    usb_send_str("=== SPI3 Bit-Bang Probe ===\r\n");
-
-    /* Read PB4 (MISO) idle state */
-    uint32_t miso_idle = (GPIOB->idt & (1 << 4)) ? 1 : 0;
-    usb_debug_printf("MISO idle (CS high): %lu\r\n", miso_idle);
-
-    /* Assert CS (PB6 LOW) */
-    GPIOB->clr = (1 << 6);
-    for (volatile int d = 0; d < 1000; d++);  /* brief delay */
-    uint32_t miso_cs = (GPIOB->idt & (1 << 4)) ? 1 : 0;
-    usb_debug_printf("MISO after CS assert: %lu\r\n", miso_cs);
-
-    /* Try reading through SPI peripheral */
-    volatile uint32_t *spi_sts = (volatile uint32_t *)0x40003C08;
-    volatile uint32_t *spi_dt  = (volatile uint32_t *)0x40003C0C;
-
-    /* Clear any pending RX data */
-    if (*spi_sts & 0x01) { (void)*spi_dt; }
-
-    /* Send 0x00 and read response */
-    uint32_t timeout = 100000;
-    while (!(*spi_sts & 0x02) && --timeout);  /* Wait TXE */
-    *spi_dt = 0x00;  /* Send dummy byte */
-    timeout = 100000;
-    while (!(*spi_sts & 0x01) && --timeout);  /* Wait RXNE */
-    uint8_t rx = (uint8_t)*spi_dt;
-    usb_debug_printf("SPI3 xfer(0x00) = 0x%02X (timeout=%lu)%s\r\n", rx, timeout,
-                     timeout ? "" : "  <-- RXNE TIMED OUT: byte is stale, not a reply");
-
-    /* Send 0x05 (FPGA query cmd) */
-    timeout = 100000;
-    while (!(*spi_sts & 0x02) && --timeout);
-    *spi_dt = 0x05;
-    timeout = 100000;
-    while (!(*spi_sts & 0x01) && --timeout);
-    rx = (uint8_t)*spi_dt;
-    usb_debug_printf("SPI3 xfer(0x05) = 0x%02X (timeout=%lu)%s\r\n", rx, timeout,
-                     timeout ? "" : "  <-- RXNE TIMED OUT: byte is stale, not a reply");
-
-    /* Send another 0x00 */
-    timeout = 100000;
-    while (!(*spi_sts & 0x02) && --timeout);
-    *spi_dt = 0x00;
-    timeout = 100000;
-    while (!(*spi_sts & 0x01) && --timeout);
-    rx = (uint8_t)*spi_dt;
-    usb_debug_printf("SPI3 xfer(0x00) = 0x%02X (timeout=%lu)%s\r\n", rx, timeout,
-                     timeout ? "" : "  <-- RXNE TIMED OUT: byte is stale, not a reply");
-
-    /* Deassert CS */
-    GPIOB->scr = (1 << 6);
-    usb_debug_printf("SPI3 STS: 0x%08lX  CTRL1: 0x%08lX\r\n",
-                     *spi_sts, *(volatile uint32_t *)0x40003C00);
-
-    /* Also check PC6 state */
-    usb_debug_printf("PC6 (SPI enable): %d\r\n",
-                     (GPIOC->idt & (1 << 6)) ? 1 : 0);
 }

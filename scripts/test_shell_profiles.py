@@ -25,8 +25,10 @@ usb_debug.c through the preprocessor with that set's flags) and checks:
      stay, without their setting forms (their handlers print a usage line
      that names the property);
   f. profile `re` is `bench` plus the reverse-engineering toolkit's rows
-     (src/re/shell_re.h), each named "re ...", none of which runs anything in
-     `bench`.
+     (src/re/shell_re.h), none of which runs anything in `bench`: there each
+     answers "Unknown command", not caught by a shorter bench row. (Only
+     `re pinsweep` is named "re ..."; the commands that came from the bench
+     shell keep the names the documents and scripts use.)
 
 The baseline is the table of profile `bench`. A deliberate change of a command
 (a new row, a retired one, a changed help line) is made in the fixture too:
@@ -224,16 +226,19 @@ def main():
                 check(hit is None, "%s: retired %r would run %r" % (label, line, hit[0] if hit else None))
 
     # f. the reverse-engineering toolkit (profile re): bench plus its own rows,
-    #    every one named "re ...", none reachable in bench
+    #    none reachable in bench, each reaching its own row in re
     retools = table_of(a.make, "PROFILE=re")
     only_re = set(retools) - set(bench)
     check(set(bench) <= set(retools), "re: a bench row is missing")
     check(only_re, "re: the toolkit brings no rows")
+    names = [r[0] for r in retools]
+    dup = sorted({n for n in names if names.count(n) > 1})
+    check(not dup, "re: duplicated rows %s" % dup)
     for row in sorted(only_re):
-        check(row[0].startswith("re "), "re: toolkit row %r is not named 're ...'" % row[0])
         for line in (row[0], row[0] + " run"):
             hit = dispatch(bench, line)
             check(hit is None, "bench: %r would run %r" % (line, hit[0] if hit else None))
+        check(dispatch(retools, row[0]) == row or (row[2] & 0x02), "re: %r does not reach its own row" % row[0])
 
     helped = lambda rows: sum(1 for r in rows if r[3] != "-")
     print("shell profiles: bench %d rows (%d help entries) = baseline; full %d rows; benchshell %d; meterdebug %d"

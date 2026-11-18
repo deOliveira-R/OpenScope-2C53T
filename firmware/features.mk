@@ -135,9 +135,9 @@ USBDRIVE_shared    := usb_debug.o:cmd_usb$$|usb_share|usbmode
 USBDRIVE_bit       := 2
 
 # ── bench shell ───────────────────────────────────────────────────────
-# The reverse-engineering and bring-up commands of the debug shell (raw FPGA
-# frames, SPI3, GPIO, USART, memory and W25Q pokes, the stock-state shadow,
-# the acquisition experiment knobs, the pin log). Handlers:
+# The bring-up and bench commands of the debug shell (raw FPGA frames, SPI3,
+# GPIO, USART, memory and W25Q pokes, the FPGA design slot and reload, the
+# acquisition experiment knobs). Handlers:
 # src/drivers/shell_bench.c, rows: shell_bench.h. Off: `help` does not list
 # them and they answer "Unknown command"; everything a user, the host client
 # or the flash path needs is core (usb_debug.c) and stays. On by default so
@@ -182,13 +182,15 @@ METERDEBUG_bit       := 4
 # Commands for finding out how an unknown board works (src/re/, guide:
 # docs/re/README.md): they pulse pins and probe buses, so no product or
 # bench image has them. `make app-re` (profile re) is the bench image plus
-# these. They use the bench shell's bus helpers.
+# these. They use the bench shell's bus helpers. One file per subject:
+# shell_re.c (`re pinsweep`), re_spi3.c (the SPI bus to the FPGA),
+# re_fpga_config.c (the configuration port), re_board.c (pins).
 FEATURE_LIST += RETOOLS
 RETOOLS_desc      := Reverse-engineering toolkit: pin sweep and bus probing commands
 RETOOLS_default   := 0
 RETOOLS_requires  := BENCHSHELL
 RETOOLS_conflicts :=
-RETOOLS_srcs      := src/re/shell_re.c
+RETOOLS_srcs      := src/re/shell_re.c src/re/re_spi3.c src/re/re_fpga_config.c src/re/re_board.c
 RETOOLS_incs      := -Isrc/re
 RETOOLS_defs      :=
 RETOOLS_shared    :=

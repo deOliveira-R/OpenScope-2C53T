@@ -27,8 +27,6 @@ flash read	cmd_flash_read	0x02	flash read <addr> <len>         Read external fla
 flash wtest	cmd_flash_wtest	0x02	flash wtest <addr> CONFIRM      Non-destructive write-primitive self-test (blank 4KB sector)\r\n
 fpga acqbr	cmd_fpga_acqbr	0x00	fpga acqbr [0-7|off]            SPI3 clock the acq task sets before each pair (EXP-46)\r\n
 fpga autowait	cmd_fpga_autowait	0x00	fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n
-fpga busreacquire	cmd_fpga_bus_reacquire	0x01	fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n
-fpga busrelease	cmd_fpga_bus_release	0x01	fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n
 fpga cfgsettle	cmd_fpga_cfgsettle	0x00	fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n
 fpga cmd	cmd_fpga_cmd	0x02	fpga cmd <hi> <lo>              Send FPGA command bytes (HEX)\r\n  e.g.: fpga cmd 05 14 (sends 0x05 0x14)\r\n        fpga cmd 0x0509 (sends 0x05 0x09)\r\n
 fpga configbb	cmd_fpga_configbb	0x01	fpga configbb                   Run GPIO bit-bang SSPI config on demand (H7 step 1)\r\n
@@ -38,7 +36,6 @@ fpga frame	cmd_fpga_frame	0x02	fpga frame <hi> <lo> [p1..p5 [ck]]  Build/send fu
 fpga interleave	cmd_fpga_interleave	0x00	fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\nfpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n
 fpga meter reinit	cmd_fpga_meter_reinit	0x00	fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n
 fpga pollgap	cmd_fpga_pollgap	0x00	fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n
-fpga reinit	cmd_fpga_reinit	0x04	fpga reinit [br][gap][close][f0|1|2][u<ms>][a-e<pin>][s2|sd[h|l]][tc<n>] Replay cfg\r\n    f=prelude frame: 0 split(stock) 1 combined 2 merge15+3B; u=pre-upload gap; k<br>=cmd-phase clk div; tc<n>=trailing clocks\r\n    pe=probe SYSTEM_EDIT_MODE after 0x15 (STATUS@/256); rl=send 0x3C RELOAD before prelude; reports 0x41 STATUS\r\n
 fpga reload	cmd_fpga_reload	0x00	fpga reload [builtin|slot]      Power-cycle the FPGA (PC6) and load a design, no unit power cycle\r\n
 fpga roll	cmd_fpga_roll	0x00	fpga roll [code <hex>|code stock]  Roll (tb.roll, tb.rollstep) status: fifo, op03, newest point; code = entry byte\r\n
 fpga scope autoset	cmd_fpga_scope_autoset	0x01	fpga scope autoset              Autoset, as short AUTO (V/div, position, timebase, trigger)\r\n
@@ -97,7 +94,6 @@ meter stream	cmd_meter_stream	0x00	meter stream [count] [delay_ms] Print compact
 meter trace	cmd_meter_trace	0x01	meter trace                     One machine-readable DMM producer record\r\n
 meter wave	cmd_meter_wave_args	0x00	meter wave                      Show DMM voltage waveform sample stats\r\nmeter wave reset                Reset DMM waveform diagnostics\r\nmeter wave sampler [on|off]     Enable/disable experimental SPI3 sampler\r\nmeter wave path [direct|preacq] Get/set DMM waveform SPI path\r\nmeter wave selector [auto|N]    DMM wave selector byte\r\nmeter wave preacq [auto|N]      DMM wave pre-acq byte\r\n
 persist	cmd_persist	0x00	persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n
-pinlog	cmd_pinlog	0x00	pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n
 reboot bootloader	cmd_reboot_bootloader	0x01	reboot bootloader               Reboot into USB HID updater\r\n
 reset settings	cmd_reset_settings	0x00	reset settings CONFIRM          Built-in defaults over the user settings, applied and saved\r\n  (never calibration, gallery, logo); list changed shows what differs now\r\n
 screen dump	cmd_screen_dump	0x00	screen dump [shadow] [x y w h]  Dump text indexed4 LCD shadow\r\n
@@ -109,12 +105,8 @@ set	cmd_model_set	0x02	set <prop> <value> | set p=v .. Set through the input tas
 settings	cmd_settings	0x01	settings                        Persistence status: bound, load result, writes, failures\r\n
 siggen	cmd_siggen	0x00	siggen [dump]                   Signal generator state: gen.*, TMR7/DAC/DMA2 ch4; dump = the cycle\r\n
 spi3 acqread	cmd_spi3_acqread	0x05	spi3 acqread                    Read CH1/CH2 via real 0x04/0x05 protocol\r\n
-spi3 edgecap	cmd_spi3_edgecap	0x04	spi3 edgecap [reps]             EXP-37: AF vs bit-bang 0x15 frames for LA edge-diff\r\n
 spi3 frame	cmd_spi3_frame	0x01	spi3 frame                      Coherent CH1+CH2 snapshot + gen + render trig offset\r\n
-spi3 gowin	cmd_spi3_gowin	0x05	spi3 gowin                      Read+decode Gowin ID/USERCODE/STATUS regs\r\n
 spi3 opread	cmd_spi3_opread	0x00	spi3 opread <op> [len [dump]]   One read window under any opcode + stats\r\n
-spi3 opsweep	cmd_spi3_opsweep	0x00	spi3 opsweep [a b [len]]        Sweep read opcodes (BSRAM_1/2 hunt, Step 0b)\r\n
-spi3 probe	cmd_spi3_probe	0x05	spi3 probe                      Bit-bang MISO probe; pokes SPI3 registers directly\r\n
 spi3 read	cmd_spi3_read	0x00	spi3 read [len]                 Raw SPI3 read + hex dump\r\n
 spi3 seq	cmd_spi3_seq	0x04	spi3 seq <b..> | <b..>          xfer w/ mid-sequence CS pulse at '|'\r\n
 spi3 xfer	cmd_spi3_xfer	0x04	spi3 xfer <hex...>              Send arbitrary MOSI bytes, dump MISO\r\n

@@ -3605,11 +3605,11 @@ static void cmd_persist(const char *args)
     usb_debug_printf("\r\n");
 }
 
-/* The 1 s timer hook of the bench pin log (`pinlog`, shell_bench.c): a no-op
- * in an image without the bench shell. */
+/* The 1 s timer hook of the pin log (`pinlog`, src/re/re_board.c): a no-op
+ * in an image without the reverse-engineering toolkit. */
 void usb_debug_pinlog_tick(void)
 {
-    benchshell_pinlog_tick();
+    retools_pinlog_tick();
 }
 
 /* batt: the gauge's inputs and outputs in one line. */

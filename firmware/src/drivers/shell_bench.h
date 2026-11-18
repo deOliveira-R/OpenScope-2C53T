@@ -25,9 +25,20 @@ uint32_t spi3_gowin_read_reg(uint8_t opcode);
 uint32_t spi3_set_baud(uint32_t br);
 uint8_t  gpio_cfg_nibble(gpio_type *port, uint8_t pin_no);
 void     gpio_cfg_nibble_set(gpio_type *port, uint8_t pin_no, uint8_t nibble);
-
-/* The 1 s timer hook of `pinlog` (usb_debug_pinlog_tick() forwards to it). */
-void benchshell_pinlog_tick(void);
+/* One read window on the running design: CS low, the opcode, two filler
+ * bytes, `len` payload bytes; prints the statistics (and the bytes with
+ * `dump`), returns true when the payload varies. The caller parks the
+ * acquisition task (fpga_acq_pause). `spi3 opread` here, `spi3 opsweep` in
+ * the toolkit. */
+#include <stdbool.h>
+/* Longest window: four times the 1024-byte record of one channel, enough for
+ * a word-wide block RAM pair read whole (bench plan 2026-08-14, step 0b). */
+#define SPI3_OPREAD_MAX_LEN 4096u
+bool     spi3_opread_window(uint8_t opcode, uint32_t len, bool dump);
+/* One channel read (opcode 0x04 or 0x05) with its statistics: `spi3 acqread`
+ * here, the read-back after the toolkit's `fpga reinit`. The caller holds the
+ * bus (SC_SPI3 on its row). */
+void     cmd_spi3_acqread_one(uint8_t opcode);
 
 void cmd_usart_tx(const char *args);
 void cmd_usart_raw(const char *args);
@@ -55,8 +66,6 @@ void cmd_fpga_scope_zero(const char *args);
 void cmd_fpga_scope_freq(const char *args);
 void cmd_fpga_scope_cal(void);
 void cmd_fpga_diag_clear(void);
-void cmd_fpga_bus_release(void);
-void cmd_fpga_bus_reacquire(void);
 void cmd_fpga_configbb(void);
 void cmd_fpga_slot(const char *args);
 void cmd_fpga_reload(const char *args);
@@ -64,19 +73,13 @@ void cmd_fpga_wire_words(const char *args);
 void cmd_fpga_meter_reinit(const char *args);
 void cmd_spi3_read(const char *args);
 void cmd_spi3_frame(void);
-void cmd_pinlog(const char *args);
 void cmd_lcd(const char *args);
 void cmd_lcd_readback(const char *args);
 void cmd_spi3_xfer(const char *args);
 void cmd_spi3_acqread(void);
 void cmd_spi3_opread(const char *args);
-void cmd_spi3_opsweep(const char *args);
-void cmd_spi3_gowin(void);
-void cmd_spi3_edgecap(const char *args);
 void cmd_fpga_selftest(void);
-void cmd_fpga_reinit(const char *args);
 void cmd_spi3_seq(const char *args);
-void cmd_spi3_probe(void);
 
 #define BENCHSHELL_SHELL_ROWS \
     CMD_A("usart raw", cmd_usart_raw, SC_NEEDARGS, \
@@ -117,10 +120,6 @@ void cmd_spi3_probe(void);
           "fpga diag clear                 Clear FPGA bench counters/state\r\n"), \
     CMD_V("fpga selftest", cmd_fpga_selftest, SC_EXACT, \
           "fpga selftest                   Precondition table: SPI3 clk, IDCODE anchor,\r\n" "                                USART2 state, every driven pin's mode+level\r\n"), \
-    CMD_V("fpga busrelease", cmd_fpga_bus_release, SC_EXACT, \
-          "fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n"), \
-    CMD_V("fpga busreacquire", cmd_fpga_bus_reacquire, SC_EXACT, \
-          "fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n"), \
     CMD_A("fpga slot", cmd_fpga_slot, 0, \
           "fpga slot [info|put <len> <crc32hex> <name> [force]|data <off> <hex>|pos|end|boot on|off|clear]\r\n" "                                FPGA design stored on the flash (scripts/fpga_put.py)\r\n"), \
     CMD_A("fpga reload", cmd_fpga_reload, 0, \
@@ -147,14 +146,10 @@ void cmd_spi3_probe(void);
           "fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n"), \
     CMD_A("fpga meter reinit", cmd_fpga_meter_reinit, 0, \
           "fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n"), \
-    CMD_A("pinlog", cmd_pinlog, 0, \
-          "pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n"), \
     CMD_A("lcd readback", cmd_lcd_readback, 0, \
           "lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n"), \
     CMD_A("lcd", cmd_lcd, 0, \
           "lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n"), \
-    CMD_A("fpga reinit", cmd_fpga_reinit, SC_SPI3, \
-          "fpga reinit [br][gap][close][f0|1|2][u<ms>][a-e<pin>][s2|sd[h|l]][tc<n>] Replay cfg\r\n" "    f=prelude frame: 0 split(stock) 1 combined 2 merge15+3B; u=pre-upload gap; k<br>=cmd-phase clk div; tc<n>=trailing clocks\r\n" "    pe=probe SYSTEM_EDIT_MODE after 0x15 (STATUS@/256); rl=send 0x3C RELOAD before prelude; reports 0x41 STATUS\r\n"), \
     CMD_A("spi3 xfer", cmd_spi3_xfer, SC_SPI3, \
           "spi3 xfer <hex...>              Send arbitrary MOSI bytes, dump MISO\r\n"), \
     CMD_A("spi3 seq", cmd_spi3_seq, SC_SPI3, \
@@ -166,19 +161,10 @@ void cmd_spi3_probe(void);
     CMD_V("spi3 acqread", cmd_spi3_acqread, SC_EXACT | SC_SPI3, \
           "spi3 acqread                    Read CH1/CH2 via real 0x04/0x05 protocol\r\n"), \
     CMD_A("spi3 opread", cmd_spi3_opread, 0, \
-          "spi3 opread <op> [len [dump]]   One read window under any opcode + stats\r\n"), \
-    CMD_A("spi3 opsweep", cmd_spi3_opsweep, 0, \
-          "spi3 opsweep [a b [len]]        Sweep read opcodes (BSRAM_1/2 hunt, Step 0b)\r\n"), \
-    CMD_V("spi3 gowin", cmd_spi3_gowin, SC_EXACT | SC_SPI3, \
-          "spi3 gowin                      Read+decode Gowin ID/USERCODE/STATUS regs\r\n"), \
-    CMD_A("spi3 edgecap", cmd_spi3_edgecap, SC_SPI3, \
-          "spi3 edgecap [reps]             EXP-37: AF vs bit-bang 0x15 frames for LA edge-diff\r\n"), \
-    CMD_V("spi3 probe", cmd_spi3_probe, SC_EXACT | SC_SPI3, \
-          "spi3 probe                      Bit-bang MISO probe; pokes SPI3 registers directly\r\n"),
+          "spi3 opread <op> [len [dump]]   One read window under any opcode + stats\r\n"),
 
 #else  /* !FEATURE_BENCHSHELL: not in this build */
 
-static inline void benchshell_pinlog_tick(void) { }
 #define BENCHSHELL_SHELL_ROWS            /* no rows */
 
 #endif /* FEATURE_BENCHSHELL */
