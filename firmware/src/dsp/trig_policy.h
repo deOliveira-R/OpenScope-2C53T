@@ -112,6 +112,7 @@ typedef enum {
     TRIG_ST_AUTO_SPLIT,     /* AUTO free-run, two channels not simultaneous */
     TRIG_ST_ARMED,          /* SINGLE: "Await Trigger..." (stock 0x0801C8C2) */
     TRIG_ST_SINGLE_DONE,    /* SINGLE: captured and held (stock: STOP, 0x0802163E) */
+    TRIG_ST_NOCORE,         /* the FPGA holds no usable capture core: nothing is acquired (core_ident.h) */
     TRIG_ST_COUNT
 } trig_status_t;
 

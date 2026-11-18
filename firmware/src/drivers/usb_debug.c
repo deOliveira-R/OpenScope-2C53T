@@ -819,13 +819,10 @@ static void cmd_status(void)
     usb_debug_printf(
         "PC0 edges: %lu\r\n"
         "acq latency: %lu ms (strobe -> commit, last cycle); poll reads before it: %lu (total %lu)\r\n"
-        "acq edge filter: %s  kept %lu  dropped %lu  unclassified %lu\r\n"
         "acq rotation: %ld samples (seam of the last strobed record; -1 = none)\r\n"
         "acq hdr CH1: %02X %02X %02X  CH2: %02X %02X %02X\r\n",
         (unsigned long)fpga.pc0_edges,
         (unsigned long)fpga.acq_last_latency_ms, (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads,
-        fpga_acq_edge_filter_get() ? "ON" : "OFF", (unsigned long)fpga.acq_edge_kept,
-        (unsigned long)fpga.acq_edge_dropped, (unsigned long)fpga.acq_edge_unknown,
         (long)fpga.acq_last_rot,
         fpga.acq_hdr_ch1[0], fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2],
         fpga.acq_hdr_ch2[0], fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]
@@ -2091,28 +2088,6 @@ static void cmd_fpga_cfgsettle(const char *args)
                          (unsigned long)fpga_acq_cfg_drops());
 }
 
-/* `fpga edgefilter [on|off|count|nocount]` — the MCU-side trigger edge filter (factory design only). */
-static void cmd_fpga_edgefilter(const char *args)
-{
-    while (*args == ' ') args++;
-    if (*args) {
-        if      (strncmp(args, "on",  2) == 0)     fpga_acq_edge_filter_set(true);
-        else if (strncmp(args, "off", 3) == 0)     fpga_acq_edge_filter_set(false);
-        else if (strncmp(args, "count", 5) == 0)   fpga_acq_edge_count_only_set(true);
-        else if (strncmp(args, "nocount", 7) == 0) fpga_acq_edge_count_only_set(false);
-        else { usb_send_str("usage: fpga edgefilter [on|off|count|nocount]\r\n"); return; }
-    }
-    const scope_state_t *ss = scope_state_get();
-    usb_debug_printf("edge filter %s (%s), edge %s: kept %lu dropped %lu unclassified %lu\r\n",
-                     fpga_acq_edge_filter_get() ? "ON" : "OFF",
-                     fpga_acq_edge_count_only_get() ? "counting only, drops nothing"
-                       : fpga_acq_edge_filter_in_use() ? "in use"
-                       : fpga_acq_edge_filter_get() ? "not used: the core selects the edge" : "not used",
-                     trigger_edge_labels[ss->trigger.edge],
-                     (unsigned long)fpga.acq_edge_kept, (unsigned long)fpga.acq_edge_dropped,
-                     (unsigned long)fpga.acq_edge_unknown);
-}
-
 /* `fpga unrotate [on|off]` — time-order strobed records at their seam (dev plan 2.3). */
 static void cmd_fpga_unrotate(const char *args)
 {
@@ -2122,17 +2097,12 @@ static void cmd_fpga_unrotate(const char *args)
     if (*args) {
         if      (strncmp(args, "on",  2) == 0) fpga_acq_unrotate_set(true);
         else if (strncmp(args, "off", 3) == 0) fpga_acq_unrotate_set(false);
-        else if (strncmp(args, "check on",  8) == 0) fpga_acq_seam_check_set(true);
-        else if (strncmp(args, "check off", 9) == 0) fpga_acq_seam_check_set(false);
-        else { usb_send_str("usage: fpga unrotate [on|off|check on|check off]\r\n"); return; }
+        else { usb_send_str("usage: fpga unrotate [on|off]\r\n"); return; }
     }
     usb_debug_printf("acq unrotate %s (seam-based); last strobed record's seam at %ld (-1 = none found)\r\n",
                      fpga_acq_unrotate_get() ? "ON" : "OFF", (long)fpga.acq_last_rot);
-    usb_debug_printf("seam from: core header %lu  search %lu  none %lu;  check %s: same %lu  differ %lu  search found none %lu\r\n",
-                     (unsigned long)fpga_acq_seam_count(0), (unsigned long)fpga_acq_seam_count(1),
-                     (unsigned long)fpga_acq_seam_count(2), fpga_acq_seam_check_get() ? "ON" : "off",
-                     (unsigned long)fpga_acq_seam_count(3), (unsigned long)fpga_acq_seam_count(4),
-                     (unsigned long)fpga_acq_seam_count(5));
+    usb_debug_printf("held records ordered by the header's seam: %lu; held without a seam: %lu\r\n",
+                     (unsigned long)fpga_acq_seam_count(0), (unsigned long)fpga_acq_seam_count(1));
 }
 
 /* `fpga core` — which capture core runs, by its own account (op E2, asked once when it was loaded). */
@@ -2141,13 +2111,11 @@ static void cmd_fpga_core(const char *args)
     while (*args == ' ') args++;
     if (strncmp(args, "fix on", 6) == 0)         fpga_core_watch_fix_set(true);
     else if (strncmp(args, "fix off", 7) == 0)   fpga_core_watch_fix_set(false);
-    else if (strncmp(args, "force on", 8) == 0)  fpga_acq_force_set(true);
-    else if (strncmp(args, "force off", 9) == 0) fpga_acq_force_set(false);
-    else if (*args) { usb_send_str("usage: fpga core [fix on|off] [force on|off]\r\n"); return; }
+    else if (*args) { usb_send_str("usage: fpga core [fix on|off]\r\n"); return; }
     const core_ident_t id = fpga_core_ident();
-    if (!fpga_acq_design_ours()) { usb_send_str("core: the running design is not known to be ours; not asked\r\n"); return; }
+    if (!fpga_acq_design_ours()) { usb_send_str("core: NOT USABLE: the design in the FPGA was not loaded by this firmware; not asked, nothing is acquired\r\n"); return; }
     if (!id.valid) {
-        usb_debug_printf("core: loaded by us but no valid identity (older than D5, or protocol %u unknown): treated like the factory design; reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+        usb_debug_printf("core: NOT USABLE: loaded by us but no valid identity (older than D5, or protocol %u unknown); nothing is acquired; reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
                          (unsigned)id.proto, fpga.core_ident[0], fpga.core_ident[1], fpga.core_ident[2], fpga.core_ident[3],
                          fpga.core_ident[4], fpga.core_ident[5], fpga.core_ident[6], fpga.core_ident[7], fpga.core_ident[8]);
         return;
@@ -2159,9 +2127,10 @@ static void cmd_fpga_core(const char *args)
                      core_ident_has(&id, FPGA_CORE_CAP_REAL50)  ? " real50"   : "",
                      core_ident_has(&id, FPGA_CORE_CAP_LOCKRST) ? " lock-rst" : "",
                      core_ident_has(&id, FPGA_CORE_CAP_FORCE)   ? " force"    : "");
-    usb_debug_printf("      AUTO without a trigger: %s; requests %lu, forced records read %lu, not ready yet %lu\r\n",
-                     !core_ident_has(&id, FPGA_CORE_CAP_FORCE) ? "reads of the running memory (this core has no op 09)"
-                       : fpga_acq_force_get() ? "records held on request (op 09)" : "reads of the running memory (force off)",
+    if (!fpga_acq_core_ok())
+        usb_debug_printf("      NOT USABLE: this firmware needs caps %02X (seam edge real50 force); nothing is acquired\r\n",
+                         (unsigned)CORE_IDENT_REQUIRED_CAPS);
+    usb_debug_printf("      AUTO without a trigger: records held on request (op 09); requests %lu, forced records read %lu, not ready yet %lu\r\n",
                      (unsigned long)fpga_acq_force_count(0), (unsigned long)fpga_acq_force_count(1), (unsigned long)fpga_acq_force_count(2));
     if (id.tag != FPGA_CORE_TAG)
         usb_debug_printf("      (this firmware's header was made with tag %02X)\r\n", (unsigned)FPGA_CORE_TAG);
@@ -4490,15 +4459,13 @@ static const shell_cmd_t shell_cmds[] = {
           "mask teach [n] [ch1|ch2|both]   Teach from the next n good records (default 8)\r\n"
           "mask clear|reset|run            Drop mask | zero counts | release a fail hold\r\n"
           "mask dump                       Bounds per column (bench scripts)\r\n"),
-    CMD_A("fpga edgefilter", cmd_fpga_edgefilter, 0,
-          "fpga edgefilter [on|off|count|nocount]  MCU edge filter (factory design only); count = classify, never drop\r\n"),
     CMD_A("fpga cfgsettle", cmd_fpga_cfgsettle, 0,
           "fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n"),
     CMD_A("fpga interleave", cmd_fpga_interleave, 0,
           "fpga interleave [cal [piecewise]|tone]  Single-channel merge status (il.*); cal = B from a DC sweep (shorted CH1); tone = skew + B gain from a 5-50 MHz tone\r\n"
           "fpga interleave skew measure    B timing skew from a 5-50 MHz tone\r\n"),
     CMD_A("fpga core", cmd_fpga_core, 0,
-          "fpga core [fix on|off] [force on|off]  The capture core: identity, status, register check, AUTO's forced records\r\n"),
+          "fpga core [fix on|off]          The capture core: identity, status, register check, AUTO's forced records\r\n"),
     CMD_A("fpga unrotate", cmd_fpga_unrotate, 0,
           "fpga unrotate [on|off]          Time-order strobed records at the seam; trigger at 512 (default on)\r\n"),
     CMD_A("fpga scope trigger", cmd_fpga_scope_trigger, 0,

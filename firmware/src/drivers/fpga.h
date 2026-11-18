@@ -401,9 +401,6 @@ typedef struct {
     volatile uint32_t acq_last_latency_ms; /* edge -> commit of the held record, last cycle */
     volatile uint32_t acq_poll_reads;      /* EXP-54: reads that found the rolling buffer (no strobe), total */
     volatile uint32_t acq_polls_last;      /* EXP-54: such reads before the last handover */
-    volatile uint32_t acq_edge_kept;       /* edge filter: strobed records of the chosen edge */
-    volatile uint32_t acq_edge_dropped;    /* edge filter: strobed records of the other edge */
-    volatile uint32_t acq_edge_unknown;    /* edge filter: not classifiable -> committed unfiltered */
     volatile uint32_t pc0_edges;           /* PC0 (data-ready) falling edges via EXINT0.
                                             * One per fresh ready event — the instrument
                                             * for engine cycle rate per trigger regime,
@@ -1278,22 +1275,15 @@ uint16_t fpga_holdlog_count(void);
 bool     fpga_holdlog_get(uint16_t i, fpga_holdlog_ent_t *out);
 void     fpga_acq_auto_live_set(bool on);
 bool     fpga_acq_auto_live_get(void);
-void     fpga_acq_edge_filter_set(bool on);    /* MCU-side trigger edge filter (EXP-55 follow-up) */
-bool     fpga_acq_edge_filter_get(void);
-void     fpga_acq_edge_count_only_set(bool on); /* bench: classify and count on any design, never drop */
-bool     fpga_acq_edge_count_only_get(void);
-bool     fpga_acq_edge_filter_in_use(void);    /* false on a core that selects the edge itself (trig_edge_reg.h) */
 /* true when the latest committed record was un-rotated at its seam, so the
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
 bool     fpga_acq_record_core_ordered(void);   /* ...and its start came from the core's header: trigger exactly at 512 */
 bool     fpga_acq_record_whole(void);          /* held by our core and ordered by its header: no invalid head (ui/scope_record.h) */
 bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
-bool     fpga_acq_core_has(uint8_t cap);       /* the running core is ours, identified itself, and has these FPGA_CORE_CAP_* bits */
+bool     fpga_acq_core_ok(void);               /* the FPGA holds our core, identified and complete; else nothing is acquired */
 uint32_t fpga_acq_kind_count(unsigned i);      /* records by the op 05 header: 0 held, 1 not held, 2 held without a PC0 edge, 3 PC0 edge but not held */
 uint32_t fpga_acq_force_count(unsigned i);     /* AUTO without a trigger, op 09: 0 requests, 1 forced records read, 2 reads that found the record not ready */
-void     fpga_acq_force_set(bool on);          /* off: the roll-read fallback, as with a core without op 09 */
-bool     fpga_acq_force_get(void);
 uint32_t fpga_acq_fresh_restarts(void);        /* core captures restarted on RUN / SINGLE arm so no stale record is shown */
 /* The core's status block (op E0), read about once a second while records are read (core_status.h). */
 typedef struct {
@@ -1307,9 +1297,7 @@ typedef struct {
 fpga_core_watch_t fpga_core_watch(void);
 void     fpga_core_watch_fix_set(bool on);     /* off for bench scripts that write registers behind the firmware */
 core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
-void     fpga_acq_seam_check_set(bool on);     /* bench: compare the header's seam with the search */
-bool     fpga_acq_seam_check_get(void);
-uint32_t fpga_acq_seam_count(unsigned i);      /* 0 header, 1 search, 2 none, 3 same, 4 differ, 5 search none */
+uint32_t fpga_acq_seam_count(unsigned i);      /* held records: 0 ordered by the header's seam, 1 without a seam */
 /* true when this build creates the meter-waveform sampler task ("mtr_wave").
  * The coldtrace family does not, so its meter screen must not wait for
  * samples that never come (2026-09-30). */

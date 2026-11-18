@@ -30,6 +30,10 @@
  * wait for the bus (bench 2026-11-14). */
 #define ACQ_WAIT_SLICE_MS               20u
 
+/* The task's sleep while the FPGA holds no usable core (core_ident.h).
+ * CHOSEN: a reload that brings the core back is noticed within this. */
+#define ACQ_NO_CORE_IDLE_MS             50u
+
 /* How often the core's status block is read (dsp/core_status.h). CHOSEN: a
  * register that differs twice running is rewritten, i.e. within about 2 s. */
 #define ACQ_CORE_WATCH_MS               1000u

@@ -35,9 +35,8 @@ fpga busrelease	cmd_fpga_bus_release	0x01	fpga busrelease                 Hand S
 fpga cfgsettle	cmd_fpga_cfgsettle	0x00	fpga cfgsettle [ms|off|default] Records only after the capture config settled; drops so far\r\n
 fpga cmd	cmd_fpga_cmd	0x02	fpga cmd <hi> <lo>              Send FPGA command bytes (HEX)\r\n  e.g.: fpga cmd 05 14 (sends 0x05 0x14)\r\n        fpga cmd 0x0509 (sends 0x05 0x09)\r\n
 fpga configbb	cmd_fpga_configbb	0x01	fpga configbb                   Run GPIO bit-bang SSPI config on demand (H7 step 1)\r\n
-fpga core	cmd_fpga_core	0x00	fpga core [fix on|off] [force on|off]  The capture core: identity, status, register check, AUTO's forced records\r\n
+fpga core	cmd_fpga_core	0x00	fpga core [fix on|off]          The capture core: identity, status, register check, AUTO's forced records\r\n
 fpga diag clear	cmd_fpga_diag_clear	0x01	fpga diag clear                 Clear FPGA bench counters/state\r\n
-fpga edgefilter	cmd_fpga_edgefilter	0x00	fpga edgefilter [on|off|count|nocount]  MCU edge filter (factory design only); count = classify, never drop\r\n
 fpga frame	cmd_fpga_frame	0x02	fpga frame <hi> <lo> [p1..p5 [ck]]  Build/send full 10-byte frame (HEX)\r\n  e.g.: fpga frame 00 0B 01 00 00 00 00\r\n
 fpga holdlog	cmd_fpga_holdlog	0x00	fpga holdlog [on|off]           Per-handover interval log (EXP-72); no arg = dump\r\n
 fpga holdread	cmd_fpga_holdread	0x00	fpga holdread                   Retired (EXP-54)\r\n

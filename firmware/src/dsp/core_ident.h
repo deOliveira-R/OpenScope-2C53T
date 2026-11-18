@@ -47,15 +47,24 @@ static inline bool core_ident_has(const core_ident_t *id, uint8_t cap)
     return id->valid && (id->caps & cap) == cap;
 }
 
-/* The capability bits the firmware may act on: the core's own, and only when
- * the firmware loaded the design itself (design_ours, trig_edge_reg.h) and
- * the reply is a valid identity. Anything else is 0: the design is then
- * treated like the factory's (no edge register, no seam in the header). */
-static inline uint8_t core_ident_trusted_caps(bool design_ours, const uint8_t *reply)
+/* What this firmware needs from the core: it has no other way to do these
+ * things (the factory design's ways were removed 2026-11-17).
+ *   SEAM    the record's start and "this read is a held record" (ops 04/05)
+ *   EDGE    the trigger direction (reg 07)
+ *   REAL50  the 50 MS/s timebase's sample rate
+ *   FORCE   Auto's record when no trigger comes (op 09) */
+#define CORE_IDENT_REQUIRED_CAPS \
+    (FPGA_CORE_CAP_SEAM | FPGA_CORE_CAP_EDGE | FPGA_CORE_CAP_REAL50 | FPGA_CORE_CAP_FORCE)
+
+/* May the firmware acquire with the design in the FPGA? Only when it loaded
+ * that design itself (loaded_by_us), the design answered with a valid
+ * identity and has every required capability. Anything else: no acquisition
+ * (drivers/fpga.c shows "NoCore"), never a guess at another protocol. */
+static inline bool core_ident_usable(bool loaded_by_us, const uint8_t *reply)
 {
-    if (!design_ours) return 0u;
+    if (!loaded_by_us) return false;
     const core_ident_t id = core_ident_parse(reply);
-    return id.valid ? id.caps : 0u;
+    return core_ident_has(&id, CORE_IDENT_REQUIRED_CAPS);
 }
 
 #endif

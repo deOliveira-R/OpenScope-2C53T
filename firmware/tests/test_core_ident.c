@@ -46,10 +46,13 @@ int main(void)
     CHECK(!id.valid && id.proto == 2 && id.tag == 0xD5);
 
     /* capabilities are acted on only for a design we loaded that identified itself */
-    CHECK(core_ident_trusted_caps(true, d5) == 0x0F);
-    CHECK(core_ident_trusted_caps(false, d5) == 0);
-    CHECK(core_ident_trusted_caps(true, old) == 0);
-    CHECK(core_ident_trusted_caps(true, buf) == 0);          /* the newer protocol above */
+    /* usable: loaded by us, a valid identity, every required capability */
+    CHECK(core_ident_usable(true, d6));
+    CHECK(!core_ident_usable(false, d6));                    /* a design that stayed, or one we did not load */
+    CHECK(!core_ident_usable(true, d5));                     /* D5: no op 09 */
+    CHECK(!core_ident_usable(true, old));                    /* D3 / D4: no identity */
+    CHECK(!core_ident_usable(true, buf));                    /* the newer protocol above */
+    CHECK((CORE_IDENT_REQUIRED_CAPS & FPGA_CORE_CAPS) == CORE_IDENT_REQUIRED_CAPS);   /* this tree's core has them */
 
     if (fails) { printf("test_core_ident: %d FAILED\n", fails); return 1; }
     printf("test_core_ident: all passed\n");

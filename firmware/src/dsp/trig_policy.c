@@ -65,6 +65,7 @@ const char *trig_status_label(trig_status_t s)
     case TRIG_ST_AUTO_SPLIT:  return "Auto*";
     case TRIG_ST_ARMED:       return "Await";
     case TRIG_ST_SINGLE_DONE: return "STOP";
+    case TRIG_ST_NOCORE:      return "NoCore";
     default:                  return "?";
     }
 }
@@ -79,6 +80,7 @@ const char *trig_status_word(trig_status_t s)
     case TRIG_ST_AUTO_SPLIT:  return "auto-freerun-split";
     case TRIG_ST_ARMED:       return "single-armed";
     case TRIG_ST_SINGLE_DONE: return "single-captured";
+    case TRIG_ST_NOCORE:      return "no-core";
     default:                  return "?";
     }
 }

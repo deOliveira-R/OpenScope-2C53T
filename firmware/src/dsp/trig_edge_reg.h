@@ -9,10 +9,9 @@
  * and then hands over only records of the edge the UI asks for. Before, it
  * fired on both and the MCU's edge filter threw the wrong-way records away:
  * more than half of them, and the badge flickered between Trig'd and Wait.
- * The MCU's filter is for the factory design only (trig_edge_filter_use):
- * on a core that selects the edge every record already has the wanted one,
- * and the filter, which has to guess the record's start from the samples,
- * could only throw good records away (unit #2: 1 in 139 of a 1 kHz square).
+ * The firmware once filtered records by their edge itself, for the factory
+ * design; that filter had to guess the record's start from the samples and
+ * threw good records away (unit #2: 84 of 84 of a decaying pulse). Gone.
  *
  * Pure functions, so the rule "never to a design that is not ours" has a host
  * test (tests/test_trig_edge_reg.c). */
@@ -44,18 +43,6 @@ static inline uint8_t trig_edge_reg_code(bool design_ours, bool falling)
     if (!design_ours) return FPGA_CORE_EDGE_EITHER;
     return (uint8_t)((TRIG_EDGE_REG_HYST << FPGA_CORE_EDGE_HYS_SHIFT) |
                      (falling ? FPGA_CORE_EDGE_FALLING : FPGA_CORE_EDGE_RISING));
-}
-
-/* What the MCU's edge filter (trig_edge_classify) does with a strobed record.
- *   filter_on          the user's switch (`fpga edgefilter`, default on)
- *   core_selects_edge  the running core has CAP_EDGE: reg 07 does the job
- *   count_only         bench switch: classify and count, never drop */
-typedef enum { TRIG_EDGE_FILTER_SKIP = 0, TRIG_EDGE_FILTER_COUNT, TRIG_EDGE_FILTER_DROP } trig_edge_filter_use_t;
-static inline trig_edge_filter_use_t trig_edge_filter_use(bool filter_on, bool core_selects_edge, bool count_only)
-{
-    if (count_only) return TRIG_EDGE_FILTER_COUNT;
-    if (core_selects_edge || !filter_on) return TRIG_EDGE_FILTER_SKIP;
-    return TRIG_EDGE_FILTER_DROP;
 }
 
 /* Where a held record's oldest sample is: reply bytes 1-2 of op 04 / op 05.

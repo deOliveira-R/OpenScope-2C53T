@@ -3546,11 +3546,12 @@ static volatile bool acq_reprime_req = false;
 #define FPGA_BUILTIN_IS_CORE 0
 #endif
 static volatile bool    acq_design_ours = false;
-/* What the running core said it can do (op E2, core_ident.h); 0 for any design
- * that is not ours or did not answer with a valid identity. Each use of a
- * core feature asks for its bit here, not for acq_design_ours. */
-static volatile uint8_t acq_core_caps   = 0u;
-static inline bool acq_core_has(uint8_t cap) { return (acq_core_caps & cap) == cap; }
+/* The design in the FPGA is OpenScope's capture core: this firmware loaded
+ * it, it identified itself and has every capability the firmware needs
+ * (core_ident_usable). Without that nothing is acquired: the task idles and
+ * the badge says NoCore. There is no other design this firmware can drive. */
+static volatile bool    acq_core_ok     = false;
+bool fpga_acq_core_ok(void) { return acq_core_ok; }
 /* Record kind taken from the op 05 header (our core): [0] held, [1] not held,
  * [2] held but no PC0 edge seen, [3] PC0 edge but not held. */
 static volatile uint32_t acq_kind_n[4];
@@ -3561,22 +3562,19 @@ static fpga_core_watch_t acq_core_watch = { .check_on = true };
 static uint8_t           acq_core_watch_prev_diff;
 fpga_core_watch_t fpga_core_watch(void) { return acq_core_watch; }
 void fpga_core_watch_fix_set(bool on)   { acq_core_watch.check_on = on; acq_core_watch_prev_diff = 0u; }
-/* AUTO without a trigger on a core with op 09 (dsp/trig_policy.h): [0] requests
- * sent, [1] forced records read, [2] reads after a request that found no
- * record yet (the memory was not all new since the last restart). */
+/* AUTO without a trigger (op 09, dsp/trig_policy.h): [0] requests sent, [1]
+ * forced records read, [2] reads after a request that found no record yet
+ * (the memory was not all new since the last restart). */
 static volatile uint32_t acq_force_n[3];
-static volatile bool     acq_force_on = true;    /* `fpga core force off`: the old roll-read fallback, for comparison */
 uint32_t fpga_acq_force_count(unsigned i) { return i < 3u ? acq_force_n[i] : 0u; }
-void fpga_acq_force_set(bool on)          { acq_force_on = on; }
-bool fpga_acq_force_get(void)             { return acq_force_on; }
 static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_action) */
 uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 uint32_t fpga_acq_kind_count(unsigned i) { return i < 4u ? acq_kind_n[i] : 0u; }
-/* The one place the capabilities change: the sample rates follow the design. */
-static void acq_core_caps_set(uint8_t caps)
+/* The one place the state changes: the sample rates are the core's. */
+static void acq_core_ok_set(bool ok)
 {
-    acq_core_caps = caps;
-    scope_timebase_use_core_rates(caps != 0u, (caps & FPGA_CORE_CAP_REAL50) != 0u);
+    acq_core_ok = ok;
+    scope_timebase_use_core_rates(ok, true);
 }
 /* The firmware's own constants against the capture core's package (drivers/fpga_core_regs.h, generated):
  * a core with another record length, trigger position or timebase list does not build into this firmware. */
@@ -3622,12 +3620,10 @@ static volatile uint16_t acq_post_edge_ms = 0;
 static volatile uint16_t acq_poll_gap_ms = ACQ_POLL_GAP_MS;   /* dsp/acq_timing.h; `fpga pollgap` overrides */
 static volatile bool     acq_unrotate = true;    /* 2026-09-22: seam-based (dev plan 2.3); `fpga unrotate off` for the raw record */
 static volatile int16_t  acq_unrotate_offset = 0;
-/* Where the seam of a strobed record came from (`fpga unrotate`): the core's
- * reply header (trig_seam_from_hdr), the search in the samples, or nowhere.
- * acq_seam_check (bench): with a header pointer in hand, run the search too
- * and count how the two compare. */
-static volatile bool     acq_seam_check = false;
-static volatile uint32_t acq_seam_n[6];          /* header, search, none, check: same, differ, search found none */
+/* Held records put in time order by the seam in the core's reply header
+ * (`fpga unrotate`): [0] ordered, [1] a held record without a seam (never
+ * expected: the op 05 header of a pair always carries it). */
+static volatile uint32_t acq_seam_n[2];
 static volatile uint8_t  acq_read_br = 0xFF;
 /* EXP-72 (2026-10-05): handover log. One entry per PC0-strobed read: ms
  * since the previous handover, roll reads polled in between, strobes on this
@@ -3756,7 +3752,7 @@ uint16_t fpga_acq_post_edge_get(void)
     if (acq_post_edge_ms) return acq_post_edge_ms;
     /* The factory design holds about 190 ms after a hand-over (EXP-46/54);
      * our core has no hold. The numbers and their origins: dsp/acq_timing.h. */
-    return acq_time_post_record_ms(scope_timebase_sample_rate(acq_rate_idx), acq_core_caps != 0u, acq_poll_gap_ms);
+    return acq_time_post_record_ms(scope_timebase_sample_rate(acq_rate_idx), true, acq_poll_gap_ms);
 }
 bool fpga_acq_post_edge_is_override(void) { return acq_post_edge_ms != 0; }
 /* EXP-48/49 (2026-09-14): from the edge until the bracket ends the FPGA holds
@@ -3765,20 +3761,6 @@ bool fpga_acq_post_edge_is_override(void) { return acq_post_edge_ms != 0; }
  * the ARMING read is then issued at fpga_acq_post_edge_get(). Same records
  * per second, each one ~200 ms sooner. Unmeasured rates: 300 ms. */
 void     fpga_acq_poll_gap_set(uint16_t ms)  { acq_poll_gap_ms = ms ? ms : ACQ_POLL_GAP_MS; }
-/* Rising/Falling is an MCU-side filter: the FPGA fires on either edge and no
- * register selects one (EXP-53 50j, EXP-55). Default ON, so the Trigger Edge
- * setting means what it says in NORMAL/SINGLE; `fpga edgefilter off` restores
- * the either-edge behaviour for comparison. */
-static bool acq_edge_filter = true;
-void     fpga_acq_edge_filter_set(bool on)   { acq_edge_filter = on; }
-static bool acq_edge_count_only = false;     /* bench: classify and count, never drop */
-void     fpga_acq_edge_count_only_set(bool on) { acq_edge_count_only = on; }
-bool     fpga_acq_edge_count_only_get(void)    { return acq_edge_count_only; }
-bool     fpga_acq_edge_filter_in_use(void)
-{
-    return trig_edge_filter_use(acq_edge_filter, acq_core_has(FPGA_CORE_CAP_EDGE), acq_edge_count_only) == TRIG_EDGE_FILTER_DROP;
-}
-bool     fpga_acq_edge_filter_get(void)      { return acq_edge_filter; }
 uint16_t fpga_acq_poll_gap_get(void)         { return acq_poll_gap_ms; }
 void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
@@ -3786,16 +3768,13 @@ bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
 bool fpga_acq_record_core_ordered(void)       { return acq_pub_ordered_core; }
 bool fpga_acq_record_whole(void)              { return acq_pub_whole; }
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
-bool fpga_acq_core_has(uint8_t cap)           { return acq_core_has(cap); }
 core_ident_t fpga_core_ident(void)
 {
     uint8_t r[CORE_IDENT_REPLY_LEN];
     for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
     return core_ident_parse(r);
 }
-void fpga_acq_seam_check_set(bool on)         { acq_seam_check = on; }
-bool fpga_acq_seam_check_get(void)            { return acq_seam_check; }
-uint32_t fpga_acq_seam_count(unsigned i)      { return i < 6u ? acq_seam_n[i] : 0u; }
+uint32_t fpga_acq_seam_count(unsigned i)      { return i < 2u ? acq_seam_n[i] : 0u; }
 bool fpga_meter_wave_available(void)
 {
     /* Mirrors the task-creation chain in fpga_init(): only the stock-path
@@ -3842,30 +3821,16 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
      * periods, a square, DC) is then ordered like any other; the search in
      * the samples could not order those (bench 2026-11-16: 9 of the 13
      * generator waveforms). */
-    int hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
+    int hs = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0)
-        hs = trig_seam_from_hdr(acq_core_has(FPGA_CORE_CAP_SEAM), fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
-    if (hs >= 0) {
-        if (acq_seam_check) {
-            uint32_t kf = 0;
-            if (trig_edge_find_seam_any(bufs[0], &kf) || trig_edge_find_seam_any(bufs[1], &kf))
-                acq_seam_n[kf == (uint32_t)hs ? 3 : 4]++;
-            else
-                acq_seam_n[5]++;
-        }
-        k = (uint32_t)hs;
-        acq_seam_n[0]++;
-        acq_rot_from_hdr = true;
-    } else
-    /* Value step first, then linear prediction (fast periodic records whose
-     * segments meet at similar values; bench 2026-09-22: 3/10 records at
-     * 201 Hz / 0x10 kept an internal break with the value step alone). */
-    if (!trig_edge_find_seam_any(bufs[0], &k) && !trig_edge_find_seam_any(bufs[1], &k)) {
-        acq_seam_n[2]++;
-        return -1;
-    } else {
+        hs = trig_seam_from_hdr(true, fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
+    if (hs < 0) {                                /* a held record always carries it: not reached */
         acq_seam_n[1]++;
+        return -1;
     }
+    k = (uint32_t)hs;
+    acq_seam_n[0]++;
+    acq_rot_from_hdr = true;
     if (!acq_unrotate) return (int32_t)k;        /* reported (status), not applied */
     if (k == 0) return 0;
     /* In place, no staging buffer (this used a 1 KB static tmp[]; RAM diet
@@ -4039,6 +4004,8 @@ uint8_t fpga_trigger_status(void)
 {
     const scope_state_t *ss = scope_state_get();
 #if FPGA_WARM_HANDOFF_TEST
+    if (!acq_core_ok)
+        return (uint8_t)TRIG_ST_NOCORE;          /* nothing is acquired: say so, whatever the mode */
     const uint32_t stale = acq_time_trigd_stale_ms(fpga_acq_post_edge_get(), fpga_acq_auto_wait_get());
     return (uint8_t)trig_status_eval((uint8_t)ss->trigger.mode, ss->running,
                                      acq_single_done_pub, (trig_acq_t)acq_pub_kind,
@@ -4578,6 +4545,15 @@ static void fpga_warmtest_acq_task(void *pv)
             continue;
         }
 
+        /* No usable core in the FPGA (core_ident_usable): nothing to read.
+         * The badge says NoCore; `fpga core` says why. A reload that brings
+         * the core back sets the flag again. */
+        if (!acq_core_ok) {
+            was_holding = true;
+            vTaskDelay(pdMS_TO_TICKS(ACQ_NO_CORE_IDLE_MS));
+            continue;
+        }
+
         /* Mask pass/fail (docs/specs/scope/mask-pass-fail.md): apply posted
          * requests here, in the one task that mutates the mask; and while a
          * failed record is held (stop-on-fail) read nothing, so the failing
@@ -4651,7 +4627,7 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         acq_single_done_pub = single_done;
         {   /* trigger edge register: our core only (dsp/trig_edge_reg.h) */
-            const uint8_t want = trig_edge_reg_code(acq_core_has(FPGA_CORE_CAP_EDGE),
+            const uint8_t want = trig_edge_reg_code(true,
                                      ss_acq != NULL && ss_acq->trigger.edge == TRIG_FALLING);
             if (want != acq_edge_reg) {
                 fpga_scope_write_reg(FPGA_CORE_OP_EDGE, want);
@@ -4699,7 +4675,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * the value it has); for other designs the SINGLE arm drops one read
          * as before. No capability bit says "a write restarts the capture":
          * it is how protocol 1 works, so a valid identity is the condition. */
-        switch (trig_fresh_action(acq_core_caps != 0u, drop_next, was_holding)) {
+        switch (trig_fresh_action(true, drop_next, was_holding)) {
         case TRIG_FRESH_RESTART: {
             fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, acq_trig_code);
             acq_fresh_restarts++;
@@ -4767,8 +4743,7 @@ static void fpga_warmtest_acq_task(void *pv)
             spi3_set_br(acq_read_br);                       /* EXP-46 (b) */
         /* Ask our core what it holds (never between the op 04 and the op 05
          * of a pair, never a design that has not identified itself). */
-        if (acq_core_caps != 0u &&
-            (uint32_t)(xTaskGetTickCount() - core_watch_tick) >= pdMS_TO_TICKS(ACQ_CORE_WATCH_MS)) {
+        if ((uint32_t)(xTaskGetTickCount() - core_watch_tick) >= pdMS_TO_TICKS(ACQ_CORE_WATCH_MS)) {
             core_watch_tick = xTaskGetTickCount();
             if (fpga_core_watch_poll())
                 continue;                                   /* a register was rewritten: capture restarted */
@@ -4780,7 +4755,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * already held). The hold happens at the next stored sample: wait
          * for one, and for the crossing between the two clocks. */
         bool forced_asked = false;
-        if (acq_force_on && acq_core_has(FPGA_CORE_CAP_FORCE) && auto_mode && !acq_gate_enable &&
+        if (auto_mode && !acq_gate_enable &&
             (uint32_t)(xTaskGetTickCount() - last_trig_tick) >= pdMS_TO_TICKS(fpga_acq_auto_wait_get())) {
             SPI3_CS_ASSERT();
             spi3_xfer(FPGA_CORE_OP_FORCE);
@@ -4808,32 +4783,24 @@ static void fpga_warmtest_acq_task(void *pv)
         last_read_tick = xTaskGetTickCount();
         fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, last_read_tick * portTICK_PERIOD_MS);
-        bool triggered;
-        if (acq_core_has(FPGA_CORE_CAP_SEAM)) {
-            /* Our core says it in the reply itself: the op 05 header carries
-             * the seam (V set) exactly when the op 04 before it found a held
-             * record and froze it for the pair (fpga/core/rtl/cmd.sv). That
-             * is the fact PC0 signals, without the interrupt, and it also
-             * says the record was still held when op 05 began. PC0 is only
-             * compared, for the bench (`fpga core`). */
-            triggered = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
+        /* The core says it in the reply itself: the op 05 header carries the
+         * seam (V set) exactly when the op 04 before it found a held record
+         * and froze it for the pair (fpga/core/rtl/cmd.sv), and the record
+         * was still held when op 05 began. PC0 signals the same; it is only
+         * compared, for the bench (`fpga core`). */
+        bool triggered = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
+        {
             const bool pc0 = (fpga.pc0_edges != edges_before);
             acq_kind_n[triggered ? 0 : 1]++;
             if (triggered && !pc0) acq_kind_n[2]++;
             if (!triggered && pc0) acq_kind_n[3]++;
-        } else {
-            triggered = (fpga.pc0_edges != edges_before);
-            if (!triggered) {                   /* the strobe is µs after the read; give the ISR a tick */
-                vTaskDelay(pdMS_TO_TICKS(1));
-                triggered = (fpga.pc0_edges != edges_before);
-            }
         }
         /* `held`: the read is a record the FPGA held and handed over. On a
          * core with op 09 it may have been held on request (forced) instead
          * of by a trigger: handed over, time-ordered and simultaneous like
          * any record, but not `triggered`. */
         const bool held = triggered;
-        const bool forced = held && acq_core_has(FPGA_CORE_CAP_FORCE) && trig_hdr_forced(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI]);
+        const bool forced = held && trig_hdr_forced(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI]);
         if (forced) { triggered = false; acq_force_n[1]++; }
         if (triggered) last_trig_tick = last_read_tick;
         acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
@@ -4874,7 +4841,7 @@ static void fpga_warmtest_acq_task(void *pv)
          *   - AUTO fallback: no handover for a whole budget -- show the
          *     free-running buffer so a quiet or off-level input still moves,
          *     marked SPLIT when both channels are on (two moments, #84). */
-        const bool can_force = acq_force_on && acq_core_has(FPGA_CORE_CAP_FORCE);
+        const bool can_force = true;
         uint32_t since = can_force     ? (last_read_tick - last_trig_tick)
                        : acq_auto_live ? (last_read_tick - last_handover_tick)
                                        : (last_read_tick - last_commit_tick);
@@ -4918,34 +4885,6 @@ static void fpga_warmtest_acq_task(void *pv)
                            acq_poll_gap_ms, acq_cfg_settle_cmd ? acq_cfg_settle_cmd : ACQ_CFG_SETTLE_MS)) {
             acq_cfg_drops++;
             continue;
-        }
-        /* Edge filter (2026-09-22). A strobed record whose trigger crossing
-         * runs the wrong way is handled exactly like a read that found the
-         * roll: NORMAL/SINGLE keep holding (SINGLE is not consumed), AUTO
-         * keeps its fallback budget. Classified on CH1, where reg 0x08's
-         * level was measured. UNKNOWN (seam not recoverable -- typically a
-         * fast periodic signal, whose display the soft trigger already
-         * aligns to the chosen edge) is committed unfiltered and counted. */
-        const trig_edge_filter_use_t ef_use =
-            trig_edge_filter_use(acq_edge_filter, acq_core_has(FPGA_CORE_CAP_EDGE), acq_edge_count_only);
-        if (triggered && ef_use != TRIG_EDGE_FILTER_SKIP) {
-            /* The SOURCE channel's record: with CH2 as the source (reg 0x06)
-             * CH1's shape says nothing about the edge that fired. The level
-             * offset was measured on CH1 only; on CH2 a wrong one comes back
-             * UNKNOWN (committed unfiltered), not as a wrong verdict. */
-            const volatile uint8_t *wsrc =
-                (ss_acq != NULL && ss_acq->trigger.source == TRIG_SRC_CH2) ? w2 : w1;
-            trig_edge_class_t ec = trig_edge_classify(wsrc, trig_level_rec((adc_raw_t){ acq_trig_code }));
-            bool want_rising = (fpga_stock_trigger_edge_byte() == (uint8_t)TRIG_RISING);
-            if (ec == TRIG_EDGE_CLASS_UNKNOWN) {
-                fpga.acq_edge_unknown++;
-            } else if ((ec == TRIG_EDGE_CLASS_RISING) != want_rising) {
-                fpga.acq_edge_dropped++;       /* count-only: counted as "would drop", kept */
-                if (ef_use == TRIG_EDGE_FILTER_DROP)
-                    continue;
-            } else {
-                fpga.acq_edge_kept++;
-            }
         }
         /* Anchor the success flags on frame validity — a fully dead bus
          * reads 0xFF everywhere (pull-up idle / spi3_xfer timeout), which
@@ -5554,7 +5493,7 @@ bb_restore_pins:
     if (bb_outcome != 0 && !(bb_outcome == 1 && bb_arm_live)) {
         if (bb_outcome == 2) {               /* the FPGA is empty now */
             acq_design_ours = false;
-            acq_core_caps_set(0u);
+            acq_core_ok_set(false);
             acq_edge_reg = 0x00;
         }
         if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
@@ -5606,10 +5545,10 @@ bb_restore_pins:
                 fpga.core_ident[i] = spi3_xfer(0xFF);
             SPI3_CS_DEASSERT();
         }
-        {   /* only a valid identity turns the core's features on */
+        {   /* only our core, identified and complete, is acquired from */
             uint8_t r[CORE_IDENT_REPLY_LEN];
             for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
-            acq_core_caps_set(core_ident_trusted_caps(acq_design_ours, r));
+            acq_core_ok_set(core_ident_usable(acq_design_ours, r));
         }
     }
     fpga_reconcile_timebase_after_arm();
@@ -6344,7 +6283,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     SPI3_CS_DEASSERT();
     acq_edge_reg = 0x00;                 /* the burst wrote 07 00 */
     acq_design_ours = false;             /* this path does not vouch for the design */
-    acq_core_caps_set(0u);
+    acq_core_ok_set(false);
 
     fpga_reconcile_timebase_after_arm();
 

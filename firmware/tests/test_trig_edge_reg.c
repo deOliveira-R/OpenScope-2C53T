@@ -47,14 +47,6 @@ int main(void)
     for (int hi = 0; hi < 256; hi++)                            /* a design that is not ours: never */
         CHECK(trig_seam_from_hdr(false, (uint8_t)hi, 0x12) == -1);
 
-    /* the MCU edge filter: for a design that does not select the edge itself */
-    CHECK(trig_edge_filter_use(true,  false, false) == TRIG_EDGE_FILTER_DROP);    /* factory design */
-    CHECK(trig_edge_filter_use(true,  true,  false) == TRIG_EDGE_FILTER_SKIP);    /* our core: never drops */
-    CHECK(trig_edge_filter_use(false, false, false) == TRIG_EDGE_FILTER_SKIP);    /* switched off */
-    CHECK(trig_edge_filter_use(false, true,  false) == TRIG_EDGE_FILTER_SKIP);
-    for (int a = 0; a < 2; a++) for (int b = 0; b < 2; b++)                       /* bench counting never drops */
-        CHECK(trig_edge_filter_use(a, b, true) == TRIG_EDGE_FILTER_COUNT);
-
     printf(fails ? "test_trig_edge_reg: %d FAILED\n" : "test_trig_edge_reg: all passed\n", fails);
     return fails ? 1 : 0;
 }
