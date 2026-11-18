@@ -159,8 +159,9 @@ the unit:
 
 - `uartsniff` (step 3) shows whether a USART carries traffic.
 - The shell of our firmware reads the FPGA's configuration port: `spi3 gowin`
-  reads IDCODE, USERCODE and STATUS; `fpga selftest` checks the clock, the
-  IDCODE and every driven pin. On the factory design of the 2C53T, reading
+  (a toolkit command: the `app-re` image, step 9) reads IDCODE, USERCODE and
+  STATUS; `fpga selftest` (every bench image) checks the clock, the IDCODE
+  and every driven pin. On the factory design of the 2C53T, reading
   STATUS while it captures desynchronises it until the next power cycle; our
   capture core ignores configuration-port opcodes, so there these reads (and
   `re pinsweep`, step 9) are safe while it runs.
@@ -191,8 +192,8 @@ Both scripts default to `at32_minimal.cfg`. They were last run with another
 config, so the first run with this one is a test of the pair.
 
 `tools/re/fpga-config/` is an ESP32 sketch that acts as an external master on
-the FPGA's configuration port, after `fpga busrelease` has taken the MCU off
-the bus. It tries a handshake in seconds where a firmware build takes
+the FPGA's configuration port, after `fpga busrelease` (toolkit, `app-re`
+image) has taken the MCU off the bus. It tries a handshake in seconds where a firmware build takes
 minutes. It has not been run on hardware. Board data: the opcodes and the
 wiring table in its README.
 
@@ -302,18 +303,40 @@ writes nothing. Read protection does not stop it (step 1).
 
 ## 9. Probe an FPGA design from the shell
 
-Once our firmware talks to the FPGA, the shell is the fastest probe:
-`spi3 xfer`, `spi3 seq`, `spi3 opread` and `spi3 opsweep` send bytes and read
-replies; `gpio set`, `gpio read` and `pinlog` drive and watch pins.
+Once our firmware talks to the FPGA, the shell is the fastest probe. The
+bench image has the commands that are also in daily use: `spi3 xfer`,
+`spi3 seq` and `spi3 opread` send bytes and read replies; `gpio set`,
+`gpio mode` and `gpio read` drive and read pins; `mem read` and `mem write`
+reach any register; `usart tx` sends one two-byte word on the USART.
 `scripts/bench.py` wraps them with a signal generator and with statistics
 that refuse a result that has no control ([README-bench.md](../../scripts/README-bench.md)).
 
-The firmware has its own reverse-engineering feature, off in every product
-and bench image:
+The commands that exist only to find out how a board works are a feature of
+their own, off in every product and bench image (there they answer
+`Unknown command`):
 
 ```
 make -C firmware app-re        # the bench image plus the toolkit commands (profile `re`)
 ```
+
+| Command | The question it answers |
+|---|---|
+| `re pinsweep [run]` | Which MCU pin is wired to the FPGA's RECONFIG_N? (below) |
+| `spi3 probe` | Does the FPGA drive MISO at all, idle and with chip select low? |
+| `spi3 gowin` | What do the configuration port's IDCODE, USERCODE and STATUS say? Read at two clock rates, the IDCODE as the known answer: a STATUS whose IDCODE is wrong is not decoded |
+| `spi3 edgecap [reps]` | Does a frame from the SPI peripheral differ on the wire from the same frame bit-banged on the same pins? It sends both bursts for a logic analyser (step 5) |
+| `spi3 opsweep [a b [len]]` | Which opcodes of the running design return data? One read window per opcode, a known read between them as the control; opcodes known to write are skipped |
+| `fpga busrelease`, `fpga busreacquire` | Can an external master configure the FPGA? The first takes the MCU off the SPI bus (`tools/re/fpga-config/`, step 4), the second takes the bus back |
+| `fpga reinit [...]` | Which step of the configuration handshake through the SPI peripheral matters? It replays the handshake with one parameter changed per run (clock divider, gaps, frame shape, a reset pulse on a chosen pin, trailing clocks) and prints the STATUS |
+| `pinlog [start]` | Which pin follows an event? It stores every port's input word and the battery ADC once a second, on a change only: start it, plug a cable or press a key, print the rows |
+| `usart raw <10 hex bytes>` | What does the chip on the USART answer to an arbitrary frame? It prints what the link's counters did and the frame that came back |
+
+Board data: the SPI3 register addresses and the chip-select pin (PB6) in
+`re_spi3.c`, the opcodes `spi3 opsweep` skips, the IDCODE, the pins
+`pinlog` masks as busy, the 10-byte frame of `usart raw`. The files are
+`firmware/src/re/re_spi3.c`, `re_fpga_config.c` and `re_board.c`; the bench
+shell (`src/drivers/shell_bench.c`) keeps the bus helpers they call. Run
+`fpga selftest` first: it says whether the bus reads right.
 
 `re pinsweep` lists the candidate pins; `re pinsweep run` looks for the MCU
 pin wired to the FPGA's RECONFIG_N. It pulses one candidate low at a time and

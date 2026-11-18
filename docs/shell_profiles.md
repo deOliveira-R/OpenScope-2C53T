@@ -1,15 +1,15 @@
 # Shell commands per build profile
 
-The debug shell (USB CDC, `firmware/src/drivers/usb_debug.c`) has a fixed core and two optional sets of
+The debug shell (USB CDC, `firmware/src/drivers/usb_debug.c`) has a fixed core and three optional sets of
 commands, which are build features of `firmware/features.mk`:
 
 | feature | HELLO bit | what | files |
 |---|---|---|---|
-| `benchshell` | 3 | reverse-engineering and bring-up commands: raw FPGA frames and wire words, SPI3, GPIO, USART, memory and W25Q pokes, the stock-state shadow, the acquisition experiment knobs, the pin log | `shell_bench.c`, `shell_bench.h` |
+| `benchshell` | 3 | bring-up and bench commands: SPI3 to the FPGA, GPIO, words to the meter chip on USART2, memory and W25Q pokes, the FPGA design slot and reload, the acquisition experiment knobs | `shell_bench.c`, `shell_bench.h` |
 | `meterdebug` | 4 | DMM link diagnostics: trace, dump, frontend, streams, mux and timing replays, waveform sampler state, link experiments | `shell_meterdebug.c`, `shell_meterdebug.h` |
-| `retools` | 5 | reverse-engineering toolkit: commands that pulse pins and probe buses to find out how a board works (`re pinsweep`). Off by default and in every product and bench image; profile `re` (`make app-re`) is `bench` plus these. Needs `benchshell` | `src/re/shell_re.c`, `shell_re.h`, `pin_sweep_table.h` |
+| `retools` | 5 | reverse-engineering toolkit: commands that pulse pins and probe buses to find out how a board works (`re pinsweep` and the board-probing commands that were in the bench shell). Off by default and in every product and bench image; profile `re` (`make app-re`) is `bench` plus these. Needs `benchshell` | `src/re/`: `shell_re.h`, `shell_re.c`, `re_spi3.c`, `re_fpga_config.c`, `re_board.c`, `pin_sweep_table.h` |
 
-Both are on by default, so a plain `make` and the bench image (`make app-coldtrace-meter`, profile `bench`)
+`benchshell` and `meterdebug` are on by default, so a plain `make` and the bench image (`make app-coldtrace-meter`, profile `bench`)
 have every command. The profile `full` (`make app-full`: the bench image's hardware flags) leaves both out.
 With a feature off its sources are not compiled, `help` does not list its commands and they answer
 `Unknown command` like any typo; `features` shows the feature as off and its HELLO bit is clear.
@@ -25,20 +25,26 @@ A/B on the bench image: `benchshell` 56,608 B flash and 1,296 B RAM, `meterdebug
 ## How a command is placed
 
 A command is **core** if a user, the host client, a host script used in normal operation or the flash and
-recovery path needs it; otherwise it belongs to one of the two features. Some core commands are today the only
+recovery path needs it; otherwise it belongs to one of the features. A command that exists to find out how an
+unknown board works (would we need it to reverse engineer this scope, or another board with an MCU and an
+FPGA, from scratch?) is in the toolkit, `retools`; one that our bench scripts call, or that develops or checks
+our own firmware, is in `benchshell`. Some core commands are today the only
 door to a real function of the instrument (marked below). They stay core until they have a property or a user
 command of their own.
 
-The handlers of the two features were moved out of `usb_debug.c` unchanged. What they need from the shell
+The handlers of `benchshell` and `meterdebug` were moved out of `usb_debug.c` unchanged, and those of the
+toolkit out of `shell_bench.c` unchanged; the toolkit calls the bus helpers `shell_bench.h` exports, never
+the reverse. What they need from the shell
 core (print, argument parsing, the scratch buffer) they reach through `shell_internal.h`: next to each static
 helper `usb_debug.c` has a thin accessor `usb_debug_sh_*`; the helpers themselves and the CDC core are untouched.
 Dispatch is by longest match, so the place of a row in the table only decides where `help` prints it: the
-core rows first, then the bench shell, then the meter diagnostics.
+core rows first, then the bench shell, the toolkit, the meter diagnostics.
 
 `make test-shell-profiles` reads the command table as each profile compiles it and checks it against
 `scripts/shell_table_baseline.txt` (the table of `bench`; `test_shell_profiles.py --update` rewrites it after
 a deliberate change): `bench` has exactly those rows, `full` has every core command, no row is lost,
-duplicated or caught by a shorter one, and no image has a retired command (below).
+duplicated or caught by a shorter one, no image has a retired command (below), and `re` is `bench` plus the
+toolkit's rows, none of which runs anything in `bench`.
 
 ## The interface to instrument state
 
@@ -72,21 +78,21 @@ Anything but `OK` / `CLAMPED` means the pair was not applied (`scripts/bench.py`
 A change whose owner is another task is posted (`meter.func`, `mask.*`, `sys.mode`): the reply says
 `; posted` and the value in force is read with `get` (or `meter state`, `mask`).
 
-## Core (63 rows, in every image; `stream` only with the stream feature)
+## Core (65 rows, in every image; `stream` only with the stream feature)
 
 `help`, `?`, `version`, `features`, `status`, `fwload`, `fwstat`, `fwapply`, `fwswap`, `siggen`, `flash jedec`,
 `flash read`, `flash dump`, `can decode`, `can stats`, `can screen`, `cal status`, `cal backup`, `cal restore`,
-`cal page`, `cal base`, `cal user`, `fpga scope autoset`, `fpga scope basecal`, `fpga scope center50`, `fft auto`,
-`fpga scope selfcal`, `screen dump`, `screen dumpbin`, `screenshot`, `logo`, `usb`, `screen shadow`,
-`fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `reset settings`, `session`, `get`, `set`,
-`list`, `describe`,
-`stream`, `ui press`, `ui long`, `ui seq`, `ui screen`, `mask`, `fpga edgefilter`, `fpga cfgsettle`,
-`fpga interleave`, `fpga unrotate`, `fpga scope trigger`, `fpga roll`, `fpga scope center`, `meter state`,
-`meter relays`, `persist`, `batt`, `meter auto`, `ui dump`, `reboot bootloader`, `uptime`, `tasks`
+`cal page`, `cal base`, `cal user`, `fpga scope autoset`, `fft auto`, `fpga scope basecal`,
+`fpga scope center50`, `fpga scope selfcal`, `screen dump`, `screen dumpbin`, `screenshot`, `logo`, `usb`,
+`screen shadow`, `fpga scope range`, `fpga scope measure`, `fpga scope cursor`, `settings`, `reset settings`,
+`session`, `get`, `set`, `list`, `describe`, `stream`, `ui press`, `ui long`, `ui seq`, `ui screen`, `mask`,
+`fpga cfgsettle`, `fpga interleave`, `fpga core`, `fpga unrotate`, `fpga scope trigger`, `fpga roll`,
+`fpga scope center`, `meter state`, `meter relays`, `persist`, `batt`, `meter auto`, `ui dump`,
+`reboot bootloader`, `uptime`, `tasks`
 
 Core today, but really a function of the instrument that wants a property or a user command:
 `fpga scope autoset/basecal/center50/selfcal`, `fpga scope range/center`, `fpga scope measure/cursor`,
-`fpga cfgsettle`, `fpga edgefilter`, `fpga unrotate`, `can decode/stats/screen`, `cal page/base/user`,
+`fpga cfgsettle`, `fpga unrotate`, `can decode/stats/screen`, `cal page/base/user`,
 `meter relays/auto`, `logo`.
 
 ### To be restructured
@@ -104,29 +110,37 @@ form prints a usage line that names the property and changes nothing.
 They are named after where the code used to be, not after the model: the procedures want to become actions
 of their instrument and the read-outs diagnostics of it.
 
-## benchshell
+## benchshell (36 rows)
 
-`usart raw`, `usart tx`, `gpio set`, `gpio mode`, `bench snapshot`, `bench restore`, `gpio read`, `gpio scan`,
-`buzzer test`, `mem read`, `mem write`, `trig2`, `trig`, `flash wtest`, `flash diag`, `fpga cmd`, `fpga frame`,
-`fpga diag clear`, `fpga selftest`, `fpga busrelease`, `fpga busreacquire`, `fpga configbb`, `fpga stock diag`,
-`fpga stock clear`, `fpga stock set`, `fpga stock preset`, `fpga stock base2`, `fpga stock state5`,
-`fpga stock state6`, `fpga stock prev`, `fpga stock next`, `fpga stock select`, `fpga stock toggle`,
-`fpga stock commit`, `fpga stock consume`, `fpga stock bridge fixed`, `fpga stock bridge dynamic`,
-`fpga stock reenter`, `fpga wire words`, `fpga wire entry`, `fpga wire scope`, `fpga scope cal`,
-`fpga scope freq`, `fpga scope zero`, `fpga postedge`, `fpga scope coupling`, `fpga pollgap`, `fpga autolive`,
-`fpga holdlog`, `fpga holdread`, `fpga acqbr`, `fpga pairgap`, `fpga usart`, `fpga rearm`, `fpga autowait`,
-`fpga rearmwait`, `fpga acqgate`, `fpga rate`, `fpga scope reinit`, `fpga meter reinit`, `fpga scope wake`,
-`fpga scope acqmode`, `fpga scope beat`, `fpga scope entry`, `fpga scope timing`, `fpga scope trig`, `pinlog`,
-`lcd readback`, `lcd`, `fpga acq`, `fpga reinit`, `spi3 xfer`, `spi3 seq`, `spi3 read`, `spi3 frame`,
-`spi3 acqread`, `spi3 opread`, `spi3 opsweep`, `spi3 armtest`, `spi3 gowin`, `spi3 edgecap`, `spi3 scopetest`,
-`spi3 acqtest`, `spi3 stock-readback`, `spi3 h2txdiag`, `spi3 h2verify`, `spi3 probe`
+`usart tx`, `gpio set`, `gpio mode`, `bench snapshot`, `bench restore`, `gpio read`, `gpio scan`, `buzzer test`,
+`mem read`, `mem write`, `trig2`, `trig`, `flash wtest`, `flash diag`, `fpga diag clear`, `fpga selftest`,
+`fpga slot`, `fpga reload`, `fpga configbb`, `fpga scope cal`, `fpga scope freq`, `fpga scope zero`,
+`fpga scope coupling`, `fpga pollgap`, `fpga acqbr`, `fpga usart`, `fpga autowait`, `fpga meter reinit`,
+`lcd readback`, `lcd`, `spi3 xfer`, `spi3 seq`, `spi3 read`, `spi3 frame`, `spi3 acqread`, `spi3 opread`
 
-## retools (1 row, profile `re` only)
+`usart tx` sends one obeyed two-byte word to the meter chip through the normal transmit queue; USART2 reaches
+nothing else. `fpga usart on` brings USART2 up when the meter link is off. `fpga pollgap`, `fpga acqbr` and
+`fpga autowait` are knobs of our own acquisition task (it reads all three). `fpga configbb` runs the boot's
+bit-bang configuration again on a configuration port that is open. `lcd readback` compares the panel's frame
+memory with the screenshot shadow.
 
-`re pinsweep [run]`: which MCU pin is wired to the FPGA's RECONFIG_N. Without an argument it lists the candidate
-pins and the pins that are never pulsed (both in `src/re/pin_sweep_table.h`, checked by `make test-re-pin-sweep`).
-With `run` it pulses each candidate low and watches the configuration port's STATUS register. A hit can leave the
-FPGA without a design: `fpga reload builtin` loads the capture core again. Guide: `docs/re/README.md`.
+## retools (10 rows, profile `re` only)
+
+The test for a command of the toolkit: would we need it to reverse engineer this scope, or another board with
+an MCU and an FPGA, from scratch? `re pinsweep` was written for it; the others were bench shell commands and
+keep their names. In a bench image they answer `Unknown command`. Guide: `docs/re/README.md`.
+
+| command | the question it answers | file (`firmware/src/re/`) |
+|---|---|---|
+| `re pinsweep [run]` | which MCU pin is wired to the FPGA's RECONFIG_N? Without an argument it lists the candidates and the pins never pulsed (`pin_sweep_table.h`, checked by `make test-re-pin-sweep`); `run` pulses each low and watches the configuration port's STATUS. A hit can leave the FPGA without a design: `fpga reload builtin` | `shell_re.c` |
+| `spi3 probe` | does the FPGA drive MISO at all, idle and with chip select low? | `re_spi3.c` |
+| `spi3 gowin` | what do the configuration port's IDCODE, USERCODE and STATUS say, and is the read path right (IDCODE as the known answer)? | `re_spi3.c` |
+| `spi3 edgecap [reps]` | does a frame sent by the SPI peripheral differ on the wire from the same frame bit-banged? (for a logic analyser) | `re_spi3.c` |
+| `spi3 opsweep [a b [len]]` | which opcodes of the running design return data? | `re_spi3.c` |
+| `fpga busrelease`, `fpga busreacquire` | can an external master configure the FPGA when the MCU is off the bus? (`tools/re/fpga-config/`) | `re_fpga_config.c` |
+| `fpga reinit [...]` | which step of the configuration handshake through the SPI peripheral matters? One parameter changed per run | `re_fpga_config.c` |
+| `pinlog [start]` | which pin follows an event (a cable plugged, a key, a relay)? | `re_board.c` |
+| `usart raw <10 hex bytes>` | what does the chip on USART2 answer to an arbitrary frame? | `re_board.c` |
 
 ## meterdebug (17 rows)
 

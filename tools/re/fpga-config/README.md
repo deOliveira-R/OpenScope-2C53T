@@ -46,7 +46,8 @@ the recipe then goes back into `fpga.c`.
    **plus a GND** via. Strain-relieve each joint (hot glue / Kapton); these pads
    lift if the wire flexes. Scrape/tin the enamel before soldering.
 2. **Flash** the 2C53T with an OpenScope image whose debug shell has
-   `fpga busrelease` (the `bench` shell profile has it).
+   `fpga busrelease` (the `re` shell profile has it: `make -C firmware app-re`;
+   a bench image answers `Unknown command`).
 3. In the 2C53T debug shell, run **`fpga busrelease`** — the MCU tri-states
    PB3/PB5/PB6, keeps PC6/PB11 HIGH, and holds PC9 power. The bus is now ours.
 4. **(Oracle, ideally first)** If you have the FT232H on the JTAG TAP pads,

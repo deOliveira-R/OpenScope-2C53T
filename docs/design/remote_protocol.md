@@ -49,7 +49,7 @@ Baud rate is meaningless on CDC ACM — the host may open at any rate.
 `scripts/serial_cmd.py` opens at 115200 out of habit.
 
 The shell already exposes ~60 commands (`cmd_help`, `usb_debug.c:404`). The useful ones for a
-remote tool: `version`, `status`, `uptime`, `gpio read`, `fpga cmd`, `trig`, `spi3 acqread`,
+remote tool: `version`, `status`, `uptime`, `gpio read`, `usart tx`, `trig`, `spi3 acqread`,
 `reboot bootloader`.
 
 **Host-side precedent already in the repo:** `scripts/serial_cmd.py` finds the port, flushes the

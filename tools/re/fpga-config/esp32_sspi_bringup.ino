@@ -14,7 +14,7 @@
  *  build → flash → pinhole-reset loop on the MCU.
  *
  *  USE WITH the 2C53T running the `experimental/esp32-bringup` firmware and
- *  the `fpga busrelease` debug-shell command issued first, so the MCU has
+ *  the `fpga busrelease` debug-shell command (the app-re image) issued first, so the MCU has
  *  tri-stated PB3/PB5/PB6 and handed us the bus (no contention). The MCU keeps
  *  the board powered (PC9) and holds PC6/PB11 HIGH for us.
  *
