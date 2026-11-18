@@ -7,7 +7,7 @@
 #
 #   ./scripts/rtt_shell.sh                 # interactive console on :9090
 #   ./scripts/rtt_shell.sh -e path.elf     # explicit ELF (default: firmware/build/firmware.elf)
-#   ./scripts/rtt_shell.sh -c "fpga idcode"   # run one command, print reply, exit
+#   ./scripts/rtt_shell.sh -c "fpga core"     # run one command, print reply, exit
 #
 # The control-block address is read out of the ELF with nm rather than found by
 # scanning SRAM: at 100 kHz SWD a 224 KB scan takes minutes. That means the ELF
