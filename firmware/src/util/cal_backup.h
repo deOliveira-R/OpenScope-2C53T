@@ -26,7 +26,7 @@
  * STORAGE — flagged for review. The backup lives in a DEDICATED W25Q region
  * (FLASH_REGION_FACTORY_CAL_BACKUP), not a FAT file and not MCU flash:
  *   - Not a FAT file: those live in stock-owned read-only volumes, and the
- *     project forbids inventing cal filenames (scripts/validate_dmm_goal.py).
+ *     project does not invent calibration filenames there.
  *   - Not MCU flash: the entire point is to survive an MCU-flash erase.
  *   - A dedicated region, not scratch/modules: the region layer's default-deny
  *     means a screenshot stream or a settings write can never reach it. This
