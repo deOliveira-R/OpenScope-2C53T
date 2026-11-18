@@ -1,13 +1,4 @@
 drivers/fpga.c	fpga_spi3_config_sequence	WDT	1
-drivers/fpga_scanner.c	#define SCAN_CS_HI	GPIOB.out	1
-drivers/fpga_scanner.c	#define SCAN_CS_LO	GPIOB.out	1
-drivers/fpga_scanner.c	fpga_scanner_run	WDT	1
-drivers/fpga_scanner.c	scan_keepalive	WDT	1
-drivers/fpga_scanner.c	scan_set_spi_mode	SPI3	3
-drivers/fpga_scanner.c	scan_spi_xfer	SPI3	1
-drivers/fpga_scanner.c	scan_tier6	GPIOB.out	3
-drivers/fpga_scanner.c	scan_tier6	GPIOC.out	3
-drivers/fpga_scanner.c	scan_usart_cmd	USART2	1
 drivers/fw_loader.c	fwl_ram_install	WDT	1
 drivers/shell_bench.c	cmd_bench_restore	?PTR	2
 drivers/shell_bench.c	cmd_fpga_selftest	SPI3	2

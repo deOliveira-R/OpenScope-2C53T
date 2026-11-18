@@ -74,9 +74,6 @@ C_SOURCES += src/drivers/battery_gauge.c
 C_SOURCES += src/drivers/fpga.c
 C_SOURCES += src/drivers/fpga_bitstream_core.c
 C_SOURCES += src/drivers/fpga_meter_plan.c
-# src/drivers/fpga_scanner.c (the 2026 SPI activation sweep) is not linked:
-# its Settings entry is gone and it cannot run from the shell (it takes over
-# the LCD and SPI3 for hours on the calling task). Kept as a source file.
 C_SOURCES += src/drivers/dac.c
 C_SOURCES += src/drivers/dac_output.c
 C_SOURCES += src/drivers/scope_trigger.c
@@ -1600,9 +1597,9 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 #   app-faulttest          app-coldtrace-meter, fault-handler self-test
 #   app-re                 app-coldtrace-meter plus the reverse-engineering
 #                          toolkit (profile `re`, src/re/, docs/re/README.md)
-#   guest-coldtrace-meter  app-coldtrace-meter's hardware flags, linked for the
+#   guest-coldtrace-meter  app-coldtrace-meter linked for the
 #                          factory bootloader
-#   guest-coldtrace-la     the same without meter submodes, bit-bang config
+#   guest-coldtrace-la     the same, bit-bang config
 #                          SCK slowed for 24 MS/s logic analyzers
 #   guest-caldump          read-only dump of the saved-config sector
 #
@@ -1632,16 +1629,16 @@ guest-caldump: clean all
 # 0x08004000, code 0x08007000, 0x08006000 left for the calibration page), so
 # it runs under OpenScope's bootloader and updates over USB without the IAP
 # drive. NO_WATCHDOG keeps the watchdog off for long shell experiments.
-# FPGA_METER_SUBMODES makes the meter's functions reachable: without it the
-# warm-handoff build returns from fpga_set_meter_mode() at once (meter frames
-# still stream, but no function change is ever sent).
-app-coldtrace-meter: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
+# There are no hardware-variant flags any more: every image boots the same
+# way (bit-bang configuration of the built-in core, USART2 for the meter
+# chip only, all meter functions).
+app-coldtrace-meter: CFLAGS += -DNO_WATCHDOG
 app-coldtrace-meter: clean all
 
-# app-full: the user image. The same hardware flags as app-coldtrace-meter, the
+# app-full: the user image. The same code path as app-coldtrace-meter, the
 # profile `full` (features.mk): every user-facing feature, without the bench
 # shell and the meter diagnostics.
-app-full: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
+app-full: CFLAGS += -DNO_WATCHDOG
 app-full: clean all
 
 # app-rtt: app-coldtrace-meter with the debug shell on RTT only
@@ -1654,7 +1651,7 @@ app-full: clean all
 # re-introducing it. It needs a debugger attached, so it is of no use on a
 # unit with read-out protection set (bench unit #1: attaching kills the CPU).
 .PHONY: app-rtt app-faulttest
-app-rtt: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1 -DDEBUG_SHELL_RTT_ONLY=1
+app-rtt: CFLAGS += -DNO_WATCHDOG -DDEBUG_SHELL_RTT_ONLY=1
 app-rtt: clean all
 
 # app-faulttest: app-coldtrace-meter with the fault-handler self-test
@@ -1663,7 +1660,7 @@ app-rtt: clean all
 # device freeze on its own with NO debugger attached -- the confound that made
 # the "~55 s HardFault" reading suspect, since that freeze had only ever been
 # observed after an OpenOCD attach.
-app-faulttest: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1 -DFAULT_SELFTEST=1
+app-faulttest: CFLAGS += -DNO_WATCHDOG -DFAULT_SELFTEST=1
 app-faulttest: clean all
 
 # app-re: app-coldtrace-meter plus the reverse-engineering toolkit (profile
@@ -1671,25 +1668,21 @@ app-faulttest: clean all
 # out how a board works (`re pinsweep`: which MCU pin reloads the FPGA).
 # Not for daily use; docs/re/README.md is the guide.
 .PHONY: app-re
-app-re: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
+app-re: CFLAGS += -DNO_WATCHDOG
 app-re: clean all
 
-# guest-coldtrace-meter: app-coldtrace-meter's hardware flags, linked for the
-# factory bootloader (GUEST_BUILD, default profile). FPGA_METER_SUBMODES
-# (M1, 2026-09-04) lets meter entry posture the frontend per submode and
-# makes scope entry put the scope posture back (the frontend is shared);
-# EXP-23 had measured that without it all 11 submodes drive an identical
-# frontend and TX frame and only DC Voltage is reachable.
-guest-coldtrace-meter: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_METER_SUBMODES=1
+# guest-coldtrace-meter: app-coldtrace-meter linked for the factory bootloader
+# (GUEST_BUILD, default profile, watchdog on).
+guest-coldtrace-meter: CFLAGS += -DGUEST_BUILD
 guest-coldtrace-meter: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-meter: clean all
 
 # [LA 2026-08-15] guest-coldtrace-la -- the bit-bang config clock slowed
 # (FPGA_BB_HALF_DELAY=60 nops per half period, ~1-2 MHz SCK) so a 24 MS/s
 # logic analyzer can decode the whole config sequence (issue #18: maksidze's
-# captures of the undelayed loop were aliased). Otherwise the flags of
-# guest-coldtrace-meter without FPGA_METER_SUBMODES.
-guest-coldtrace-la: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_BB_HALF_DELAY=60
+# captures of the undelayed loop were aliased). Otherwise guest-coldtrace-meter.
+# A reverse-engineering build knob: docs/re/README.md.
+guest-coldtrace-la: CFLAGS += -DGUEST_BUILD -DFPGA_BB_HALF_DELAY=60
 guest-coldtrace-la: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-la: clean all
 

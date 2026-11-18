@@ -78,21 +78,15 @@ static inline uint8_t startup_mode_to_config(startup_mode_t m)
     }
 }
 
-/* The mode to boot into. A warm-handoff build (FPGA_WARM_HANDOFF_TEST)
- * without FPGA_METER_SUBMODES is a scope-only image: its meter entry points
- * are no-ops (fpga.c), so it always boots into the scope. With the submodes
- * (the bench image) every choice is honoured: home and the generator do not
- * touch the FPGA or the scope front end there (bench 2026-11-14: the scope
- * front end and the meter link are independent), so there is no scope
- * posture left to protect.
+/* The mode to boot into: every choice is honoured (home and the generator do
+ * not touch the FPGA or the scope front end; bench 2026-11-14: the scope front
+ * end and the meter link are independent).
  *
  * last_screen (STARTUP_SCREEN_*, the loaded record's) only matters for
  * Restore: the instrument it names, or Home when it names none. Before the
  * record is loaded it is STARTUP_SCREEN_NONE. */
-static inline device_mode_t startup_boot_mode(startup_mode_t m, uint8_t last_screen,
-                                              bool warm_handoff, bool meter_submodes)
+static inline device_mode_t startup_boot_mode(startup_mode_t m, uint8_t last_screen)
 {
-    if (warm_handoff && !meter_submodes) return MODE_OSCILLOSCOPE;
     switch (m) {
     case STARTUP_METER:  return MODE_MULTIMETER;
     case STARTUP_HOME:   return MODE_HOME;

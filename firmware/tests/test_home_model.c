@@ -154,26 +154,16 @@ static void test_startup_policy(void)
                               MODE_HOME, MODE_HOME },
     };
 #undef ALL6
-    int plain = 1, bench = 1, scope_only = 1, sub_only = 1;
-    for (int m = 0; m < (int)STARTUP_COUNT; m++) {
-        for (int l = 0; l < 6; l++) {
-            const startup_mode_t sm = (startup_mode_t)m;
-            plain      &= startup_boot_mode(sm, last[l], false, false) == want[m][l];
-            /* submodes without a warm handoff is not a build we make; it is the plain table */
-            sub_only &= startup_boot_mode(sm, last[l], false, true) == want[m][l];
-            bench      &= startup_boot_mode(sm, last[l], true, true) == want[m][l];
-            scope_only &= startup_boot_mode(sm, last[l], true, false) == MODE_OSCILLOSCOPE;
-        }
-    }
-    CHECK("plain image: every choice honoured; Restore = the last instrument, else Home", plain);
-    CHECK("submodes alone change nothing", sub_only);
-    CHECK("bench image (warm handoff + meter submodes): the same table", bench);
-    CHECK("warm handoff without meter submodes: always the scope", scope_only);
+    int table = 1;
+    for (int m = 0; m < (int)STARTUP_COUNT; m++)
+        for (int l = 0; l < 6; l++)
+            table &= startup_boot_mode((startup_mode_t)m, last[l]) == want[m][l];
+    CHECK("every choice honoured; Restore = the last instrument, else Home", table);
     CHECK("the bug: Startup = Home in the bench image booted the scope",
-          startup_boot_mode(STARTUP_HOME, STARTUP_SCREEN_NONE, true, true) == MODE_HOME &&
-          startup_boot_mode(STARTUP_SIGGEN, STARTUP_SCREEN_NONE, true, true) == MODE_SIGNAL_GEN);
+          startup_boot_mode(STARTUP_HOME, STARTUP_SCREEN_NONE) == MODE_HOME &&
+          startup_boot_mode(STARTUP_SIGGEN, STARTUP_SCREEN_NONE) == MODE_SIGNAL_GEN);
     CHECK("an unknown choice boots the scope",
-          startup_boot_mode((startup_mode_t)42, STARTUP_SCREEN_METER, false, false) == MODE_OSCILLOSCOPE);
+          startup_boot_mode((startup_mode_t)42, STARTUP_SCREEN_METER) == MODE_OSCILLOSCOPE);
 
     /* The last screen in the record: mode + 1 for the instruments, 0 otherwise. */
     CHECK("a capture records scope 1, meter 2, generator 3",
@@ -188,7 +178,7 @@ static void test_startup_policy(void)
     CHECK("a load keeps 0..3 and reads anything else as none", ok);
     ok = 1;
     for (int m = 0; m <= (int)MODE_SIGNAL_GEN; m++)
-        ok &= startup_boot_mode(STARTUP_RESTORE, startup_screen_of_mode((device_mode_t)m), false, false)
+        ok &= startup_boot_mode(STARTUP_RESTORE, startup_screen_of_mode((device_mode_t)m))
               == (device_mode_t)m;
     CHECK("Restore after a save on an instrument boots that instrument", ok);
 

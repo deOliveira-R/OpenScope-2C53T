@@ -19,9 +19,6 @@
 
 /* Build-variant switch (Makefile target CFLAGS); 0 unless a target sets it.
  * main.c tests it before its own default, so the default lives here too. */
-#ifndef FPGA_WARM_HANDOFF_TEST
-#define FPGA_WARM_HANDOFF_TEST  0
-#endif
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -757,21 +754,6 @@ BaseType_t fpga_send_cmd_keepalive(uint8_t cmd_high, uint8_t cmd_low);
 void fpga_send_cmd_direct(uint8_t cmd_high, uint8_t cmd_low);
 
 /*
- * Trigger an SPI3 acquisition cycle.
- * mode: acquisition mode byte (1-9, maps to fpga_acq_mode_t + 1)
- *
- * Call this from the input/housekeeping context to initiate a read.
- * For double-buffered operation, call twice back-to-back.
- */
-BaseType_t fpga_trigger_acquisition(uint8_t mode);
-
-/*
- * Trigger a scope acquisition using the current scope-mode policy.
- * For bulk/dual captures this may queue more than one low-level SPI3 mode.
- */
-BaseType_t fpga_trigger_scope_read(void);
-
-/*
  * Check if valid ADC data is available.
  * Returns true after at least one successful SPI3 acquisition.
  */
@@ -825,12 +807,6 @@ bool fpga_meter_transition_busy(void);
 bool fpga_meter_mode_request_pending(void);
 
 /*
- * Set FPGA active mode (PB11).
- * Must be HIGH during oscilloscope/meter operation.
- */
-void fpga_set_active(bool active);
-
-/*
  * Release the SPI3 bus to an external SSPI master (ESP32) soldered to the
  * back-side SPI3 test pads. Tri-states PB3/PB5/PB6, keeps PC6/PB11 staged,
  * leaves PC9 power hold untouched. EXPERIMENTAL — see experimental/
@@ -853,12 +829,7 @@ void fpga_spi3_bus_reacquire(void);
  * — same pins/rate/frame, drive type the only variable. Isolated frames; does NOT
  * configure. Arm sigrok (D0=SCK/D1=MISO/D2=MOSI/D3=CS) before calling.
  * FPGA_CONFIG_B builds only — the bit-bang half is compiled out elsewhere. */
-#ifndef FPGA_CONFIG_B
-#define FPGA_CONFIG_B 0            /* the same default fpga.c gives it (-Wundef) */
-#endif
-#if FPGA_CONFIG_B
 void fpga_edgecap_15(uint8_t reps);
-#endif
 
 /*
  * Cooperative acquisition pause (Step 0b, bench plan 2026-08-14).
@@ -887,13 +858,6 @@ void fpga_acq_resume(void);
  * from meter/siggen back to oscilloscope.
  */
 void fpga_enter_scope_mode(void);
-
-/*
- * Re-apply the current oscilloscope configuration to the FPGA and
- * analog frontend. Safe to call from the USB debug shell while the
- * device is already in scope mode.
- */
-void fpga_scope_reinit(void);
 
 /* Bench gain-cal hook: apply scope frontend range <n> (0..VDIV_COUNT-1) with
  * DC coupling forced, for per-range gain characterisation from the shell. */
@@ -1120,18 +1084,12 @@ uint32_t fpga_acq_reg_writes_refused(void);   /* setting changes not sent: no us
 void     fpga_core_watch_fix_set(bool on);     /* off for bench scripts that write registers behind the firmware */
 core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
 uint32_t fpga_acq_seam_count(unsigned i);      /* held records: 0 ordered by the header's seam, 1 without a seam */
-/* true when this build creates the meter-waveform sampler task ("mtr_wave").
- * The coldtrace family does not, so its meter screen must not wait for
- * samples that never come (2026-09-30). */
-bool     fpga_meter_wave_available(void);
 /* EXP-52: un-rotate the record so index 0 is the trigger crossing. The FPGA's
  * capture memory is read from address 0; the write pointer starts at the
  * arming read and reaches L at the crossing, so the readout is rotated by L
  * = latency x fs. `offset` is a calibration term in samples added to L. */
 void     fpga_acq_unrotate_set(bool on);
 bool     fpga_acq_unrotate_get(void);
-void     fpga_acq_unrotate_offset_set(int16_t samples);
-int16_t  fpga_acq_unrotate_offset_get(void);
 void     fpga_acq_read_br_set(uint8_t br);
 uint8_t  fpga_acq_read_br_get(void);
 

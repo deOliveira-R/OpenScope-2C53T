@@ -74,13 +74,9 @@ extern void system_clock_config(void);
  * Global State (extern'd via ui.h for UI modules)
  * ═══════════════════════════════════════════════════════════════════ */
 
-#if FPGA_WARM_HANDOFF_TEST
 /* Warm-handoff build: boot straight into scope mode — the LCD (scope screen +
  * debug overlay) is the only readout on the bench unit (USB CDC dead). */
 volatile device_mode_t current_mode = MODE_OSCILLOSCOPE;
-#else
-volatile device_mode_t current_mode = MODE_MULTIMETER;
-#endif
 volatile startup_mode_t startup_mode = STARTUP_RESTORE;   /* the built-in default (sys.startup) */
 volatile uint32_t      uptime_seconds = 0;
 volatile uint8_t       active_channel = 0;  /* 0=CH1, 1=CH2 */
@@ -130,19 +126,12 @@ const char *startup_mode_name(startup_mode_t mode)
     }
 }
 
-#ifndef FPGA_WARM_HANDOFF_TEST
-#define FPGA_WARM_HANDOFF_TEST 0
-#endif
-#ifndef FPGA_METER_SUBMODES
-#define FPGA_METER_SUBMODES 0   /* as fpga.c: lifts the "scope-only" half of a warm build */
-#endif
 
 /* last_screen: STARTUP_SCREEN_* of the loaded record (model_last_screen()),
  * STARTUP_SCREEN_NONE while there is none yet. Only Restore looks at it. */
 static device_mode_t startup_target_mode(uint8_t last_screen)
 {
-    return startup_boot_mode(startup_mode, last_screen, FPGA_WARM_HANDOFF_TEST != 0,
-                             FPGA_METER_SUBMODES != 0);
+    return startup_boot_mode(startup_mode, last_screen);
 }
 
 #if FEATURE_FFT
@@ -1296,7 +1285,7 @@ int main(void)
     crm_periph_clock_enable(CRM_IOMUX_PERIPH_CLOCK, TRUE);
     crm_periph_clock_enable(CRM_XMC_PERIPH_CLOCK, TRUE);
 
-#if FPGA_WARM_HANDOFF_TEST
+#if !CAL_DUMP_MODE && !defined(EMULATOR_BUILD)   /* the dump tool touches no FPGA pin; the emulator has none */
     /* Warm-handoff round 2: drive the FPGA control pins to stock's scope-run
      * posture as EARLY as possible (right after the GPIO clocks) to minimise
      * the float window. Round 1 left these floating through ~2 s of init, which
@@ -1579,7 +1568,6 @@ int main(void)
     meter_autoselect_create_task();
 
     if (current_mode == MODE_MULTIMETER) {
-#if FPGA_WARM_HANDOFF_TEST
         /* A warm-handoff image reaches here only with FPGA_METER_SUBMODES
          * (startup_policy.h; Startup on Boot = Meter, or Restore after a
          * save on the meter). Its USART2 is parked (ctrl1 = 0, IRQ masked,
@@ -1591,9 +1579,6 @@ int main(void)
          * runs the same transition `mode meter N` runs, once the scheduler
          * is up. */
         fpga_request_meter_mode(meter_submode);
-#else
-        fpga_set_meter_mode(meter_submode);
-#endif
     } else if (current_mode == MODE_SIGNAL_GEN) {
         /* Startup on Boot = Signal Generator. GPIO only (fpga.c), no USART,
          * so it is safe before the scheduler, like the scope entry below. */

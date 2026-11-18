@@ -3434,10 +3434,13 @@ typedef enum {
 
 #define FFT_DEMO_SAMPLE_RATE_HZ  44100.0f
 
-#if defined(FPGA_WARM_HANDOFF_TEST) && FPGA_WARM_HANDOFF_TEST
-#define FFT_DEMO_REACHABLE 0
-#else
+/* The synthetic demo source: the emulator build only (it has no FPGA, so no
+ * record ever arrives). On hardware the spectrum is of the live record or
+ * it is blank. */
+#ifdef EMULATOR_BUILD
 #define FFT_DEMO_REACHABLE 1
+#else
+#define FFT_DEMO_REACHABLE 0
 #endif
 
 /* Sample rate the live spectrum may claim, 0 when it may not. */

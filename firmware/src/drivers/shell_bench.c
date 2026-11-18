@@ -1600,7 +1600,6 @@ void cmd_fpga_slot(const char *args)
                              info.state == FSLOT_EMPTY ? "none stored" : "damaged slot",
                              st != FSLOT_OK ? "unreadable" : blank ? "blank" : "NOT blank (foreign data or a torn upload)");
         }
-#if FPGA_CONFIG_B
         if (s_fpga_loaded[0] == '\0') {
             const char *b = fpga_boot_design();
             const uint8_t live = fpga_boot_live();
@@ -1608,7 +1607,6 @@ void cmd_fpga_slot(const char *args)
             else if (b)    snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "slot '%s' (boot%s)", b, live ? ", after removing a running design" : "");
             else           snprintf(s_fpga_loaded, sizeof s_fpga_loaded, "builtin (boot%s)", live ? ", after removing a running design" : "");
         }
-#endif
         usb_debug_printf("fpga slot: FPGA was sent: %s\r\n", s_fpga_loaded);
         return;
     }
@@ -1690,17 +1688,14 @@ void cmd_fpga_slot(const char *args)
     usb_send_str(usage);
 }
 
-#if FPGA_CONFIG_B
 static bool fslot_payload(void *ctx, uint32_t off, uint8_t *buf, uint32_t n)
 {
     (void)ctx;
     return fslot_read(off, buf, n) == FSLOT_OK;
 }
-#endif
 
 void cmd_fpga_reload(const char *args)
 {
-#if FPGA_CONFIG_B
     while (*args == ' ') args++;
     const bool slot = (strcmp(args, "slot") == 0);
     if (!slot && *args != '\0' && strcmp(args, "builtin") != 0) {
@@ -1747,10 +1742,6 @@ void cmd_fpga_reload(const char *args)
         usb_send_str("fpga reload: err not supported by this build's upload variant\r\n");
         break;
     }
-#else
-    (void)args;
-    usb_send_str("fpga reload: err not compiled (needs FPGA_CONFIG_B)\r\n");
-#endif
 }
 
 /* fpga configbb — run the GPIO bit-bang SSPI config on demand (H7 step 1).
@@ -1762,7 +1753,6 @@ void cmd_fpga_reload(const char *args)
  * so re-run only after another power cycle. */
 void cmd_fpga_configbb(void)
 {
-#if FPGA_CONFIG_B
     usb_send_str("bit-bang SSPI config (05-less V0.4 framing) — firing...\r\n");
     (void)fpga_bitbang_config_sequence();
     uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
@@ -1781,10 +1771,6 @@ void cmd_fpga_configbb(void)
     usb_debug_printf("  close IDCODE(0x11)=%s (silent=port CLOSED=configured)\r\n",
                      fpga.probe_id_bit_close == 0 ? "0x0120681B ANSWERS (still open)"
                                                   : "silent/unanchored");
-#else
-    usb_send_str("configbb: not compiled — rebuild with FPGA_CONFIG_B "
-                 "(make guest-bringup-bb)\r\n");
-#endif
 }
 
 void cmd_fpga_wire_words(const char *args)
@@ -2661,11 +2647,6 @@ void cmd_spi3_gowin(void)
  * disappearing from `help` and leaving the operator guessing. */
 void cmd_spi3_edgecap(const char *args)
 {
-#if !FPGA_CONFIG_B
-    (void)args;
-    usb_send_str("edgecap: FPGA_CONFIG_B builds only — the GPIO bit-bang half is not"
-                 " compiled here. Flash `make guest-bringup-bb`.\r\n");
-#else
     uint32_t reps = 16;
     /* parse_int(), not a bare strtoul(): a non-numeric argument used to become
      * 0 and then be clamped back to the default, so the command silently ran
@@ -2681,7 +2662,6 @@ void cmd_spi3_edgecap(const char *args)
     usb_send_str("  emitting now — capture window should be armed on D0=SCK D1=MISO D2=MOSI D3=CS\r\n");
     fpga_edgecap_15((uint8_t)reps);
     usb_send_str("edgecap: done. AF burst | gap | GPIO burst are in the capture.\r\n");
-#endif
 }
 
 /* ─── fpga selftest ────────────────────────────────────────────────────────

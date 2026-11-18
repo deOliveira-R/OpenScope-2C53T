@@ -1221,7 +1221,7 @@ static void test_meter_link_record(void)
 
 static device_mode_t boot_of(void)       /* the plain image's boot screen after a load */
 {
-    return startup_boot_mode((startup_mode_t)prop_get(P(SYS_STARTUP)), model_last_screen(), false, false);
+    return startup_boot_mode((startup_mode_t)prop_get(P(SYS_STARTUP)), model_last_screen());
 }
 
 static void test_last_screen_record(void)
@@ -1249,7 +1249,7 @@ static void test_last_screen_record(void)
     CHECK(prop_get(P(SYS_STARTUP)) == STARTUP_METER && boot_of() == MODE_MULTIMETER);
     CHECK(model_last_screen() == STARTUP_SCREEN_NONE);
     /* ... and if its owner then picks Restore, the next boot is Home */
-    CHECK(startup_boot_mode(STARTUP_RESTORE, model_last_screen(), false, false) == MODE_HOME);
+    CHECK(startup_boot_mode(STARTUP_RESTORE, model_last_screen()) == MODE_HOME);
 
     /* Saved again on any screen it is the same 60 bytes: a capture does not
      * look at the screen shown, so the update alone burns no record and a
