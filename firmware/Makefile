@@ -351,6 +351,23 @@ LDFLAGS += -lc -lm -lnosys
 ######################################################################
 TARGET = firmware
 
+# Plain `make` builds the image the unit runs every day: what
+# app-coldtrace-meter builds (profile bench from features.mk, watchdog off),
+# without the `clean` that target does first. `make flash` sends it.
+#
+# WATCHDOG: 0 = the hardware watchdog is never started (every image we have
+# run on the unit; long shell experiments cannot trip a reset). 1 = main.c
+# starts it after the tasks are created. An image with WATCHDOG=1 has not been
+# run on the unit.
+# The emulator image keeps its (empty) watchdog call: it cannot be run here
+# to confirm a change.
+WATCHDOG ?= 0
+ifneq ($(WATCHDOG),1)
+ifeq ($(filter emu,$(MAKECMDGOALS)),)
+CFLAGS += -DNO_WATCHDOG
+endif
+endif
+
 all: $(BUILD_DIR)/$(TARGET).bin
 
 # List of C objects
@@ -363,21 +380,22 @@ OBJECTS := $(OBJECTS:.S=.o)
 vpath %.s $(sort $(dir $(ASM_SOURCES)))
 vpath %.S $(sort $(dir $(ASM_SOURCES)))
 
-# Objects of different feature sets share build/: without this, changing the
-# set on the command line (WITH=, WITHOUT=) relinks objects compiled for the
-# other one. A stamp names the set the objects were built for; a different (or
-# no) stamp deletes them while the Makefile is read, before any rule runs (a
+# Objects of different images share build/: without this, plain `make` after
+# `make app-faulttest`, or a change of WITH=/WITHOUT=, links objects compiled
+# for the other image. build/image.stamp holds what the objects were compiled
+# as (IMAGE_ID, features.mk, plus WATCHDOG); if it differs, or is missing,
+# the objects are deleted while the Makefile is read, before any rule runs (a
 # timestamp prerequisite cannot do this: make's 1 s mtime resolution on macOS
-# misses a switch made within a second of the last compile). The stamp names
-# the set without the profile (FEATURES_STAMP_KEY): a named image target
-# cleans first, and a later plain `make flash` must not rebuild its image.
+# misses a switch made within a second of the last compile). The link writes
+# the stamp again, because a named image target runs `clean` after this.
 # Goals that build no image (tests, checks, the feature tools) never touch it.
-FEATURES_STAMP = $(BUILD_DIR)/features_$(FEATURES_STAMP_KEY).stamp
-NO_IMAGE_GOALS = clean test-% check-% features features-%
+IMAGE_STAMP = $(BUILD_DIR)/image.stamp
+IMAGE_STAMP_TEXT = $(IMAGE_ID) / watchdog $(WATCHDOG)
+NO_IMAGE_GOALS = clean test-% check-% features features-% bootloader flash-bootloader
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 ifneq ($(if $(MAKECMDGOALS),$(filter-out $(NO_IMAGE_GOALS),$(MAKECMDGOALS)),all),)
-ifneq ($(wildcard $(BUILD_DIR)/features_*.stamp),$(FEATURES_STAMP))
-$(shell rm -f $(BUILD_DIR)/*.o $(BUILD_DIR)/features_*.stamp; mkdir -p $(BUILD_DIR); touch $(FEATURES_STAMP))
+ifneq ($(strip $(shell cat $(IMAGE_STAMP) 2>/dev/null)),$(strip $(IMAGE_STAMP_TEXT)))
+$(shell rm -f $(BUILD_DIR)/*.o; mkdir -p $(BUILD_DIR); echo '$(IMAGE_STAMP_TEXT)' > $(IMAGE_STAMP))
 endif
 endif
 endif
@@ -431,6 +449,7 @@ $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile features.mk $(LDSCRIPT)
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	$(SZ) $@
 	@{ printf 'profile\t%s\n' '$(PROFILE)'; $(foreach f,$(FEATURE_LIST),printf 'feature\t%s\t%s\t%s\t%s\t%s\t%s\n' '$($(f)_name)' '$(FEATURE_$(f))' '$($(f)_bit)' '$(strip $(notdir $(patsubst %.c,%.o,$($(f)_srcs))))' '$(strip $($(f)_shared))' '$(strip $($(f)_desc))';) } > $(BUILD_DIR)/features.built
+	@echo '$(IMAGE_STAMP_TEXT)' > $(IMAGE_STAMP)
 	@echo "Features: $(if $(FEATURES_ON),$(FEATURES_ON),(none)) (profile $(PROFILE))"
 
 $(BUILD_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf $(BUILD_DIR)/option_bytes48.bin
@@ -547,7 +566,8 @@ _ft = $(MAKE) --no-print-directory -s features
 .PHONY: test-features
 test-features:
 	python3 -I ../scripts/features_report.py --self-test
-	@o="$$($(_ft))"; echo "$$o" | grep -E '^stream +off ' >/dev/null && echo "$$o" | grep -E '^usbdrive +on ' >/dev/null || { echo "FAIL: defaults"; exit 1; }
+	@o="$$($(_ft) PROFILE=default)"; echo "$$o" | grep -E '^stream +off ' >/dev/null && echo "$$o" | grep -E '^usbdrive +on ' >/dev/null || { echo "FAIL: defaults"; exit 1; }
+	@o="$$($(_ft))"; echo "$$o" | grep -E '^profile: $(DAILY_PROFILE)$$' >/dev/null && echo "$$o" | grep -E '^stream +on ' >/dev/null || { echo "FAIL: no goal is not the daily profile"; exit 1; }
 	@$(_ft) PROFILE=bench | grep -E '^stream +on ' >/dev/null || { echo "FAIL: bench profile"; exit 1; }
 	@$(_ft) PROFILE=bench WITHOUT=STREAM | grep -E '^stream +off ' >/dev/null || { echo "FAIL: WITHOUT over profile"; exit 1; }
 	@o="$$($(_ft) WITH=stream USB_MSC=0)"; echo "$$o" | grep -E '^stream +on ' >/dev/null && echo "$$o" | grep -E '^usbdrive +off ' >/dev/null || { echo "FAIL: WITH + USB_MSC=0"; exit 1; }
@@ -557,7 +577,7 @@ test-features:
 	@! $(_ft) WITH=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown feature accepted"; exit 1; }
 	@! $(_ft) PROFILE=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown profile accepted"; exit 1; }
 	@! $(_ft) WITH=stream WITHOUT=stream >/dev/null 2>&1 || { echo "FAIL: WITH and WITHOUT accepted"; exit 1; }
-	@! $(_ft) USBDRIVE_requires=STREAM >/dev/null 2>&1 || { echo "FAIL: requires not enforced"; exit 1; }
+	@! $(_ft) PROFILE=default USBDRIVE_requires=STREAM >/dev/null 2>&1 || { echo "FAIL: requires not enforced"; exit 1; }
 	@$(_ft) USBDRIVE_requires=STREAM WITH=stream >/dev/null 2>&1 || { echo "FAIL: requires met but refused"; exit 1; }
 	@! $(_ft) USBDRIVE_conflicts=FFT >/dev/null 2>&1 || { echo "FAIL: conflicts not enforced"; exit 1; }
 	@! $(_ft) FFT_bit=0 >/dev/null 2>&1 || { echo "FAIL: a bit used twice accepted"; exit 1; }
@@ -1628,17 +1648,15 @@ guest-caldump: clean all
 # loads the capture core -> live capture, in the HID-bootloader layout (vectors
 # 0x08004000, code 0x08007000, 0x08006000 left for the calibration page), so
 # it runs under OpenScope's bootloader and updates over USB without the IAP
-# drive. NO_WATCHDOG keeps the watchdog off for long shell experiments.
+# drive. Plain `make` builds the same image without cleaning first.
 # There are no hardware-variant flags any more: every image boots the same
 # way (bit-bang configuration of the built-in core, USART2 for the meter
 # chip only, all meter functions).
-app-coldtrace-meter: CFLAGS += -DNO_WATCHDOG
 app-coldtrace-meter: clean all
 
 # app-full: the user image. The same code path as app-coldtrace-meter, the
 # profile `full` (features.mk): every user-facing feature, without the bench
 # shell and the meter diagnostics.
-app-full: CFLAGS += -DNO_WATCHDOG
 app-full: clean all
 
 # app-rtt: app-coldtrace-meter with the debug shell on RTT only
@@ -1651,7 +1669,7 @@ app-full: clean all
 # re-introducing it. It needs a debugger attached, so it is of no use on a
 # unit with read-out protection set (bench unit #1: attaching kills the CPU).
 .PHONY: app-rtt app-faulttest
-app-rtt: CFLAGS += -DNO_WATCHDOG -DDEBUG_SHELL_RTT_ONLY=1
+app-rtt: CFLAGS += -DDEBUG_SHELL_RTT_ONLY=1
 app-rtt: clean all
 
 # app-faulttest: app-coldtrace-meter with the fault-handler self-test
@@ -1660,7 +1678,7 @@ app-rtt: clean all
 # device freeze on its own with NO debugger attached -- the confound that made
 # the "~55 s HardFault" reading suspect, since that freeze had only ever been
 # observed after an OpenOCD attach.
-app-faulttest: CFLAGS += -DNO_WATCHDOG -DFAULT_SELFTEST=1
+app-faulttest: CFLAGS += -DFAULT_SELFTEST=1
 app-faulttest: clean all
 
 # app-re: app-coldtrace-meter plus the reverse-engineering toolkit (profile
@@ -1668,7 +1686,6 @@ app-faulttest: clean all
 # out how a board works (`re pinsweep`: which MCU pin reloads the FPGA).
 # Not for daily use; docs/re/README.md is the guide.
 .PHONY: app-re
-app-re: CFLAGS += -DNO_WATCHDOG
 app-re: clean all
 
 # guest-coldtrace-meter: app-coldtrace-meter linked for the factory bootloader

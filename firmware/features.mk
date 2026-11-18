@@ -7,7 +7,7 @@
 #
 #   FEATURE_LIST += NAME
 #   NAME_desc      one line for `features` / `make features` (no quotes, no commas)
-#   NAME_default   0/1 in a plain `make`
+#   NAME_default   0/1 where no profile says otherwise (profile `default`)
 #   NAME_requires  features that must also be on   (upper-case names)
 #   NAME_conflicts features that must be off
 #   NAME_srcs      sources compiled only when the feature is on
@@ -211,7 +211,11 @@ PROFILE_re_with         := stream benchshell meterdebug retools
 PROFILE_re_without      :=
 
 # Named targets and their profile (any target not listed: default).
-PROFILE_OF_app-coldtrace-meter := bench
+# DAILY_GOALS build, send or inspect the image the unit runs every day (what
+# app-coldtrace-meter builds); plain `make` with no goal is one of them.
+DAILY_PROFILE := bench
+DAILY_GOALS   := all flash flash-dfu flash-all disasm size features app-coldtrace-meter
+$(foreach g,$(DAILY_GOALS),$(eval PROFILE_OF_$(g) := $(DAILY_PROFILE)))
 PROFILE_OF_app-rtt := bench
 PROFILE_OF_app-faulttest := bench
 PROFILE_OF_app-full := full
@@ -233,6 +237,9 @@ $(error features.mk: the goals name more than one profile ($(_fm_goal_profiles))
 endif
 ifneq ($(_fm_goal_profiles),)
 PROFILE ?= $(_fm_goal_profiles)
+endif
+ifeq ($(strip $(MAKECMDGOALS)),)
+PROFILE ?= $(DAILY_PROFILE)
 endif
 PROFILE ?= default
 ifeq ($(origin PROFILE_$(PROFILE)_with),undefined)
@@ -309,7 +316,7 @@ FEATURE_DEFS  += -DUSB_MSC=$(FEATURE_USBDRIVE)
 # Shell arithmetic for the mask (make has none): (1<<0)|(1<<2)|...
 FEATURES_MASK_EXPR := 0$(foreach f,$(FEATURE_LIST),$(if $(filter 1,$(FEATURE_$(f))),|(1<<$($(f)_bit))))
 
-# The feature set WITHOUT the profile: defaults + command line. It names the
-# object stamp (Makefile): named image targets always `clean` first, so only
-# a change made on the command line can meet objects of another set.
-FEATURES_STAMP_KEY := $(subst $(_fm_space),_,$(strip set $(foreach f,$(FEATURE_LIST),$(if $(filter 1,$(strip $(if $(filter $($(f)_name),$(_fm_cmd_without)),0,$(if $(filter $($(f)_name),$(_fm_cmd_with)),1,$($(f)_default))))),$($(f)_name)))))
+# What the objects in build/ were compiled as: profile, feature set, and the
+# image target when it is not the daily image (those add flags of their own).
+# The Makefile's image stamp compares it with what build/ holds.
+IMAGE_ID = $(strip $(PROFILE) / $(FEATURES_ON) / $(filter-out $(DAILY_GOALS) $(NO_IMAGE_GOALS),$(MAKECMDGOALS)))

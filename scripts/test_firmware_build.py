@@ -109,7 +109,8 @@ class BuildResult:
 
 
 BUILDS = (
-    # The default target: application image at 0x08004000, linked with
+    # The default target: the daily image (what app-coldtrace-meter builds:
+    # profile bench, watchdog off), application at 0x08004000, linked with
     # ld/at32f403a_app.ld. What `make flash` ships to a unit running our own
     # HID bootloader.
     BuildSpec("app", FIRMWARE, ["make"], "build-gate-app", "firmware.bin",
