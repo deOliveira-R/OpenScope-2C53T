@@ -20,4 +20,14 @@
 
 #define SCOPE_RECORD_HEAD_SKIP  128u
 
+/* The defect belongs to the factory FPGA design and to reads of a record
+ * memory that is still being written. A record that OpenScope's capture core
+ * held and whose start it named in the reply header is 1024 valid samples in
+ * time order (fpga/core/rtl/cmd.sv), triggered or held on request: nothing
+ * to skip. `whole` = fpga_acq_record_whole() for the record in hand. */
+static inline unsigned scope_record_head_skip(int whole)
+{
+    return whole ? 0u : SCOPE_RECORD_HEAD_SKIP;
+}
+
 #endif /* SCOPE_RECORD_H */

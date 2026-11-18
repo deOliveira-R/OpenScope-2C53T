@@ -1640,7 +1640,7 @@ static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *bu
 static uint16_t view_free_run(uint8_t L)
 {
     g_view.L  = L;
-    g_view.u0 = (L == 1u) ? 0 : (int32_t)SCOPE_RECORD_HEAD_SKIP * (int32_t)L;
+    g_view.u0 = (L == 1u) ? 0 : (int32_t)scope_record_head_skip(fpga_acq_record_whole()) * (int32_t)L;
     return (uint16_t)scope_geom_first_sample(&g_view);
 }
 
@@ -1713,7 +1713,9 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
      * underlying acquisition defect is filed, not fixed, by this.
      * The number itself lives in scope_record.h so the spectrum views skip
      * the same head (2026-09-15). */
-    const uint16_t SEAM_GUARD = SCOPE_RECORD_HEAD_SKIP;
+    /* 0 for a whole record of our capture core: it has no stale head and
+     * no seam inside (scope_record.h). */
+    const uint16_t SEAM_GUARD = (uint16_t)scope_record_head_skip(fpga_acq_record_whole());
 
     /* Auto-level: base the threshold at the SIGNAL'S OWN midline, not a fixed
      * ADC 128. The capture is frequently not centred (e.g. mean 84, range
@@ -2866,15 +2868,17 @@ void draw_xy_screen(bool full)
     if (have) {
         uint8_t *const xs = xy_xs;
         uint8_t *const ys = xy_ys;
+        uint16_t xy_skip = SCOPE_RECORD_HEAD_SKIP;
         for (int t = 0; t < 4; t++) {                /* coherent snapshot */
             uint32_t g0 = fpga_acq_frame_generation();
+            xy_skip = (uint16_t)scope_record_head_skip(fpga_acq_record_whole());
             memcpy(xs, (const void *)xb, FPGA_ADC_BUF_SIZE);
             memcpy(ys, (const void *)yb, FPGA_ADC_BUF_SIZE);
             if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
                 break;
         }
         uint8_t xmin = 255, xmax = 0, ymin = 255, ymax = 0;
-        for (uint16_t i = SCOPE_RECORD_HEAD_SKIP; i < FPGA_ADC_BUF_SIZE; i++) {
+        for (uint16_t i = xy_skip; i < FPGA_ADC_BUF_SIZE; i++) {
             if (xs[i] < xmin) xmin = xs[i];
             if (xs[i] > xmax) xmax = xs[i];
             if (ys[i] < ymin) ymin = ys[i];
@@ -2887,12 +2891,12 @@ void draw_xy_screen(bool full)
         /* Every sample joined to the next: a square's fast edge is a faint
          * line between its two levels, as on an analog X-Y display. */
         int pbx = 0, pby = 0;
-        for (uint16_t i = SCOPE_RECORD_HEAD_SKIP; i < FPGA_ADC_BUF_SIZE; i++) {
+        for (uint16_t i = xy_skip; i < FPGA_ADC_BUF_SIZE; i++) {
             int bx = (int)x0 + cxr + (int)lroundf((float)((int)xs[i] - ax.c0) * ax.px_per_code);
             int by = cyr - (int)lroundf((float)((int)ys[i] - ay.c0) * ay.px_per_code);
             if (bx < (int)x0) bx = x0; else if (bx > (int)x0 + side - 1) bx = x0 + side - 1;
             if (by < 0) by = 0; else if (by > side - 1) by = side - 1;
-            if (i > SCOPE_RECORD_HEAD_SKIP) xy_line_persist(pbx, pby, bx, by);
+            if (i > xy_skip) xy_line_persist(pbx, pby, bx, by);
             else persist_add_point((uint16_t)bx, (uint16_t)by);
             pbx = bx; pby = by;
         }
@@ -3574,7 +3578,8 @@ static bool  fft_ref_primed  = false;
  *
  * 2026-09-15 (FFT-live S1):
  *  - The record's invalid head is skipped (SCOPE_RECORD_HEAD_SKIP, the
- *    trace's SEAM_GUARD): 896 samples of static body go into the transform,
+ *    trace's SEAM_GUARD): 896 samples of static body go into the transform
+ *    (all 1024 of a whole record of our capture core, scope_record.h),
  *    windowed over the record rather than over the transform length
  *    (fft.c FFT_WINDOW_AT).
  *  - The frequency axis is REAL on measured timebase codes: the rate comes
@@ -3588,6 +3593,8 @@ static bool  fft_ref_primed  = false;
  *    nothing, so the demo signal is unreachable there by construction
  *    (spec S1). Plain `guest` and `emu` keep the demo, labelled DEMO.
  */
+static uint16_t g_fft_last_n;                /* record samples the last live spectrum analysed (`ui dump`) */
+uint16_t scope_ui_fft_last_n(void) { return g_fft_last_n; }
 typedef enum {
     FFT_SRC_NONE = 0,   /* live build, no capture yet: nothing to analyse */
     FFT_SRC_DEMO,       /* synthetic 1 kHz square at FFT_DEMO_SAMPLE_RATE_HZ */
@@ -3670,8 +3677,9 @@ static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
             fft_source_now(sel);
             n = 0;
             if (sel->state == FFT_SEL_OK)
-                n = fft_live_prepare((const uint8_t *)fft_source_buf(sel), FPGA_ADC_BUF_SIZE,
-                                     sbuf, FFT_SIZE);
+                n = fft_live_prepare_from((const uint8_t *)fft_source_buf(sel), FPGA_ADC_BUF_SIZE,
+                                          (uint16_t)scope_record_head_skip(fpga_acq_record_whole()),
+                                          sbuf, FFT_SIZE);
             if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
                 break;
         }
@@ -3683,6 +3691,7 @@ static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
         *fs_out = sel->rate_hz;
         fft_set_sample_rate(*fs_out);
         *n_out = n;
+        g_fft_last_n = n;
         /* FFT AUTO (the key, `fft auto`): on the record this frame analyses. */
         if (n > 0 && fft_auto_take()) fft_auto_configure(sbuf, n);
         return FFT_SRC_LIVE;

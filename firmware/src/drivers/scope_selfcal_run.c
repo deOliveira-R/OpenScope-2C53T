@@ -291,8 +291,9 @@ static bool read_obs(sc_rec_stats_t obs[2])
     /* The buffers only change inside a commit, which the generation
      * brackets, so reading them as plain bytes between two equal even
      * generations is the documented tear check (fpga.h). */
-    (void)sc_rec_stats((const uint8_t *)b1, FPGA_ADC_BUF_SIZE, SCOPE_RECORD_HEAD_SKIP, &obs[0]);
-    (void)sc_rec_stats((const uint8_t *)b2, FPGA_ADC_BUF_SIZE, SCOPE_RECORD_HEAD_SKIP, &obs[1]);
+    const uint16_t skip = (uint16_t)scope_record_head_skip(fpga_acq_record_whole());   /* inside the tear check, like the bytes */
+    (void)sc_rec_stats((const uint8_t *)b1, FPGA_ADC_BUF_SIZE, skip, &obs[0]);
+    (void)sc_rec_stats((const uint8_t *)b2, FPGA_ADC_BUF_SIZE, skip, &obs[1]);
     if (fpga_acq_frame_generation() != g1) {
         R.torn++;
         return false;

@@ -91,6 +91,16 @@ static void test_head_skip(void)
     for (uint16_t i = 0; i < n; i++)
         if (sbuf[i] == (int16_t)((0xFF - 128) * FFT_LIVE_GAIN)) touched_head++;
     CHECK(touched_head == 0, "no head sample (0xFF) reaches the transform input");
+    /* a whole record of our capture core: nothing skipped */
+    CHECK(scope_record_head_skip(1) == 0u && scope_record_head_skip(0) == SCOPE_RECORD_HEAD_SKIP,
+          "head skip: 0 for a whole record, %u otherwise", (unsigned)SCOPE_RECORD_HEAD_SKIP);
+    {
+        static int16_t w[FFT_SIZE];
+        uint16_t nw = fft_live_prepare_from(rec, REC_N, 0u, w, FFT_SIZE);
+        CHECK(nw == REC_N, "whole record: all %u samples go into the transform (%u)", (unsigned)REC_N, (unsigned)nw);
+        uint16_t nh = fft_live_prepare_from(rec, REC_N, SCOPE_RECORD_HEAD_SKIP, w, FFT_SIZE);
+        CHECK(nh == n, "skip = HEAD_SKIP is the old function");
+    }
     CHECK(fft_live_prepare(rec, SCOPE_RECORD_HEAD_SKIP, sbuf, FFT_SIZE) == 0,
           "a record no longer than the head yields 0 samples");
     CHECK(fft_live_prepare(rec, REC_N, sbuf, 10) == 10,

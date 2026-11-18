@@ -3142,6 +3142,10 @@ static volatile bool acq_pub_ordered = false;
  * samples: the trigger is then at index 512 by construction (trig_edge.h). */
 static volatile bool acq_stage_ordered_core = false;
 static volatile bool acq_pub_ordered_core = false;
+/* ...and whole: held by our core and put in time order by its header, with
+ * or without a trigger. All 1024 samples are valid (ui/scope_record.h). */
+static volatile bool acq_stage_whole = false;
+static volatile bool acq_pub_whole = false;
 static bool acq_rot_from_hdr = false;        /* set by fpga_acq_unrotate_staging() */
 /* Single-channel 250 MS/s (dsp/interleave.h): the staged / published CH1
  * record is the merge of both converters. Published with the record, like
@@ -3187,6 +3191,7 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_ordered_core = acq_stage_ordered_core;
+    acq_pub_whole = acq_stage_whole;
     acq_pub_il = acq_stage_il;
     acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
@@ -4000,6 +4005,7 @@ void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
 bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
 bool fpga_acq_record_core_ordered(void)       { return acq_pub_ordered_core; }
+bool fpga_acq_record_whole(void)              { return acq_pub_whole; }
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
 bool fpga_acq_core_has(uint8_t cap)           { return acq_core_has(cap); }
 core_ident_t fpga_core_ident(void)
@@ -5196,6 +5202,7 @@ static void fpga_warmtest_acq_task(void *pv)
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
             /* a forced record is in time order but has no trigger at 512 */
             acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr && !forced;
+            acq_stage_whole = acq_stage_ordered && acq_rot_from_hdr;
             acq_stage_il = held && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
             acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)

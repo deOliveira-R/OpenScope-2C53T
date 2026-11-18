@@ -1287,6 +1287,7 @@ bool     fpga_acq_edge_filter_in_use(void);    /* false on a core that selects t
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);
 bool     fpga_acq_record_core_ordered(void);   /* ...and its start came from the core's header: trigger exactly at 512 */
+bool     fpga_acq_record_whole(void);          /* held by our core and ordered by its header: no invalid head (ui/scope_record.h) */
 bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
 bool     fpga_acq_core_has(uint8_t cap);       /* the running core is ours, identified itself, and has these FPGA_CORE_CAP_* bits */
 uint32_t fpga_acq_kind_count(unsigned i);      /* records by the op 05 header: 0 held, 1 not held, 2 held without a PC0 edge, 3 PC0 edge but not held */

@@ -31,6 +31,10 @@
  * the head, or out_cap is 0); never writes more than out_cap. */
 uint16_t fft_live_prepare(const uint8_t *rec, uint16_t n,
                           int16_t *out, uint16_t out_cap);
+/* The same from record index `skip` on: scope_record_head_skip() of the
+ * record in hand (0 for a whole record of our capture core). */
+uint16_t fft_live_prepare_from(const uint8_t *rec, uint16_t n, uint16_t skip,
+                               int16_t *out, uint16_t out_cap);
 
 /* True when a frequency axis may be labelled in hertz. */
 bool fft_live_axis_known(float sample_rate_hz);
