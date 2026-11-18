@@ -1116,8 +1116,7 @@ test-redraw-gate: $(BUILD_DIR)/test_redraw_gate
 # the predicted bin, the window spanning the record — each with a negative
 # control. See tests/test_fft_live.c.
 $(BUILD_DIR)/test_fft_live: tests/test_fft_live.c src/dsp/fft_live.c src/dsp/fft_live.h \
-                            src/dsp/fft.c src/dsp/fft.h src/dsp/shared_mem.c \
-                            src/ui/scope_record.h | $(BUILD_DIR)
+                            src/dsp/fft.c src/dsp/fft.h src/dsp/shared_mem.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/ui \
 		$< src/dsp/fft_live.c src/dsp/fft.c src/dsp/shared_mem.c -lm -o $@
 

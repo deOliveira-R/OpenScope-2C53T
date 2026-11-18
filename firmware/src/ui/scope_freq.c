@@ -197,12 +197,10 @@ bool scope_freq_estimate(const uint8_t *samples, uint16_t n,
         return false;
 
     /* No signal, no frequency: an open input's few counts of noise can still
-     * have a "sharp" spectral line (bench, CH2 open: 73.2 kHz, every frame).
-     * The first 1/16 of the record is skipped (the record head is invalid,
-     * scope_record.h). */
+     * have a "sharp" spectral line (bench, CH2 open: 73.2 kHz, every frame). */
     {
         uint8_t mn = 255u, mx = 0u;
-        for (uint16_t i = (uint16_t)(n / 16u); i < n; i++) {
+        for (uint16_t i = 0; i < n; i++) {
             if (samples[i] < mn) mn = samples[i];
             if (samples[i] > mx) mx = samples[i];
         }

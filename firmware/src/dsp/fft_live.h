@@ -15,26 +15,20 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-#include "scope_record.h"
-
-/* First record index the spectrum analyses — see scope_record.h. */
-#define FFT_LIVE_HEAD_SKIP  SCOPE_RECORD_HEAD_SKIP
 
 /* Numeric gain applied when widening 8-bit samples to int16: a constant,
  * so it moves every bin by the same dB and cannot change the spectrum's
  * shape. 128 = <<7, leaving one bit of headroom in int16. */
 #define FFT_LIVE_GAIN       128
 
-/* Copy the valid body of an unsigned 8-bit record into a signed int16
- * buffer: out[i] = (rec[HEAD_SKIP + i] - 128) * FFT_LIVE_GAIN.
- * Returns the number of samples written (0 if the record is no longer than
- * the head, or out_cap is 0); never writes more than out_cap. */
+/* Copy an unsigned 8-bit record into a signed int16 buffer, its own mean
+ * removed: out[i] = (rec[i] - mean) * FFT_LIVE_GAIN. Every sample of a
+ * published record is valid (the capture core hands over whole records in
+ * time order), so the whole record is analysed. Returns the number of
+ * samples written (0 for an empty record or out_cap 0); never more than
+ * out_cap. */
 uint16_t fft_live_prepare(const uint8_t *rec, uint16_t n,
                           int16_t *out, uint16_t out_cap);
-/* The same from record index `skip` on: scope_record_head_skip() of the
- * record in hand (0 for a whole record of our capture core). */
-uint16_t fft_live_prepare_from(const uint8_t *rec, uint16_t n, uint16_t skip,
-                               int16_t *out, uint16_t out_cap);
 
 /* True when a frequency axis may be labelled in hertz. */
 bool fft_live_axis_known(float sample_rate_hz);

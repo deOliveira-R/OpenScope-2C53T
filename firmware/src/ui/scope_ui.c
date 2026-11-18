@@ -25,7 +25,6 @@
 #include "scope_roll.h"
 #include "scope_cursor.h"
 #include "scope_freq.h"
-#include "scope_record.h"
 #include "scope_geom.h"
 #include "yt_vmap.h"
 #include "math_channel.h"
@@ -1634,13 +1633,11 @@ static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *bu
                                fpga_acq_record_core_ordered(), &g_trig_anchor_exact);
 }
 
-/* Free-run window: from index 0 at one column per sample, as before C5. A
- * zoomed window is only 15-151 samples wide, so it starts past the record's
- * invalid head instead of drawing nothing but that head. */
+/* Free-run window: from index 0. */
 static uint16_t view_free_run(uint8_t L)
 {
     g_view.L  = L;
-    g_view.u0 = (L == 1u) ? 0 : (int32_t)scope_record_head_skip(fpga_acq_record_whole()) * (int32_t)L;
+    g_view.u0 = 0;
     return (uint16_t)scope_geom_first_sample(&g_view);
 }
 
@@ -1698,25 +1695,6 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
         }
     }
 
-    /* SEAM GUARD (EXP-22, 2026-09-03): the acquisition record is NOT always
-     * time-contiguous at its edges. Saved-frame analysis found ~9-14-sample
-     * phase discontinuities clustered at indices 32..96 (a stale head —
-     * residue roughly one read cadence old, the same defect family as the
-     * "reads are off by one byte" finding) and 864..928. A trigger crossing
-     * fabricated at such a seam locks the trace to an arbitrary phase — at
-     * 500 Hz it showed as frames flipping 180 degrees, ~11-sample p95 jitter,
-     * indistinguishable from free-run. Every frame whose seam fell OUTSIDE
-     * the drawn window locked to <0.1 sample, so the algorithm is sound and
-     * the guard just keeps it off the bad data: start the search at
-     * SEAM_GUARD, which also keeps the drawn window clear of the
-     * late seams for any signal above ~35 Hz at the slow timebases. The
-     * underlying acquisition defect is filed, not fixed, by this.
-     * The number itself lives in scope_record.h so the spectrum views skip
-     * the same head (2026-09-15). */
-    /* 0 for a whole record of our capture core: it has no stale head and
-     * no seam inside (scope_record.h). */
-    const uint16_t SEAM_GUARD = (uint16_t)scope_record_head_skip(fpga_acq_record_whole());
-
     /* Auto-level: base the threshold at the SIGNAL'S OWN midline, not a fixed
      * ADC 128. The capture is frequently not centred (e.g. mean 84, range
      * 34..136 on the bench), so a fixed 128 sits up near the peak where the
@@ -1727,7 +1705,7 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
      * SCOPE_H px == 256 counts). Min/max over the guarded region only, so a
      * seam's glitch cannot skew the threshold either. */
     uint8_t mn = 255, mx = 0;
-    for (uint16_t i = SEAM_GUARD; i < FPGA_ADC_BUF_SIZE; i++) {
+    for (uint16_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) {
         uint8_t s = src_buf[i];
         if (s < mn) mn = s;
         if (s > mx) mx = s;
@@ -1747,7 +1725,7 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
      *    falls straight back is a one-sample spike, not the edge. SINGLE
      *    keeps two points, as stock does. The measured case for adding it
      *    is in trig_edge.h (tests/test_trig_edge.c [7]-[9]). */
-    const int lo = (int)SEAM_GUARD + (int)before;
+    const int lo = (int)before;
     const int hi = (int)N - (int)after;           /* last start that fits, +1 */
     int a = trig_edge_search(src_buf, (int)FPGA_ADC_BUF_SIZE, lo, hi, thr,
                              ss->trigger.edge == TRIG_RISING, 3u,
@@ -1759,7 +1737,7 @@ static uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], thr);
     if (back_q8) *back_q8 = (int16_t)back;
     g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx,
-                                              (int32_t)SEAM_GUARD, N);
+                                              0, N);
     g_trig_anchor = 1;
     return (uint16_t)scope_geom_first_sample(&g_view);
 }
@@ -2768,17 +2746,15 @@ void draw_xy_screen(bool full)
     if (have) {
         uint8_t *const xs = xy_xs;
         uint8_t *const ys = xy_ys;
-        uint16_t xy_skip = SCOPE_RECORD_HEAD_SKIP;
         for (int t = 0; t < 4; t++) {                /* coherent snapshot */
             uint32_t g0 = fpga_acq_frame_generation();
-            xy_skip = (uint16_t)scope_record_head_skip(fpga_acq_record_whole());
             memcpy(xs, (const void *)xb, FPGA_ADC_BUF_SIZE);
             memcpy(ys, (const void *)yb, FPGA_ADC_BUF_SIZE);
             if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
                 break;
         }
         uint8_t xmin = 255, xmax = 0, ymin = 255, ymax = 0;
-        for (uint16_t i = xy_skip; i < FPGA_ADC_BUF_SIZE; i++) {
+        for (uint16_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) {
             if (xs[i] < xmin) xmin = xs[i];
             if (xs[i] > xmax) xmax = xs[i];
             if (ys[i] < ymin) ymin = ys[i];
@@ -2791,12 +2767,12 @@ void draw_xy_screen(bool full)
         /* Every sample joined to the next: a square's fast edge is a faint
          * line between its two levels, as on an analog X-Y display. */
         int pbx = 0, pby = 0;
-        for (uint16_t i = xy_skip; i < FPGA_ADC_BUF_SIZE; i++) {
+        for (uint16_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) {
             int bx = (int)x0 + cxr + (int)lroundf((float)((int)xs[i] - ax.c0) * ax.px_per_code);
             int by = cyr - (int)lroundf((float)((int)ys[i] - ay.c0) * ay.px_per_code);
             if (bx < (int)x0) bx = x0; else if (bx > (int)x0 + side - 1) bx = x0 + side - 1;
             if (by < 0) by = 0; else if (by > side - 1) by = side - 1;
-            if (i > xy_skip) xy_line_persist(pbx, pby, bx, by);
+            if (i > 0) xy_line_persist(pbx, pby, bx, by);
             else persist_add_point((uint16_t)bx, (uint16_t)by);
             pbx = bx; pby = by;
         }
@@ -3477,9 +3453,7 @@ static bool  fft_ref_primed  = false;
  * tear-check as the measurement badges (frame generation counter).
  *
  * 2026-09-15 (FFT-live S1):
- *  - The record's invalid head is skipped (SCOPE_RECORD_HEAD_SKIP, the
- *    trace's SEAM_GUARD): 896 samples of static body go into the transform
- *    (all 1024 of a whole record of our capture core, scope_record.h),
+ *  - The whole record goes into the transform (1024 samples),
  *    windowed over the record rather than over the transform length
  *    (fft.c FFT_WINDOW_AT).
  *  - The frequency axis is REAL on measured timebase codes: the rate comes
@@ -3577,9 +3551,8 @@ static fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
             fft_source_now(sel);
             n = 0;
             if (sel->state == FFT_SEL_OK)
-                n = fft_live_prepare_from((const uint8_t *)fft_source_buf(sel), FPGA_ADC_BUF_SIZE,
-                                          (uint16_t)scope_record_head_skip(fpga_acq_record_whole()),
-                                          sbuf, FFT_SIZE);
+                n = fft_live_prepare((const uint8_t *)fft_source_buf(sel), FPGA_ADC_BUF_SIZE,
+                                     sbuf, FFT_SIZE);
             if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
                 break;
         }

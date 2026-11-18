@@ -4,11 +4,10 @@
  * Host half of the fft-live spec (S1 by code, S3 regression shape). What
  * it pins, each with a negative control where one is possible:
  *
- *   1. fft_live_prepare() skips the invalid head: out[0] is record[128],
- *      and a record no longer than the head yields 0 samples.
+ *   1. fft_live_prepare() takes the whole record, its own mean removed.
  *   2. bin -> Hz only from a known rate: fft_live_bin_hz(12490, 4096, 328)
  *      = 1000.1 Hz; at rate 0 it is 0 and the label is "--".
- *   3. A synthetic 1 kHz tone in an 8-bit record with a garbage head lands
+ *   3. A synthetic 1 kHz tone in an 8-bit record lands
  *      its peak in bin 328 ± 1 at fs = 12,490 S/s (the measured 0x10 rate)
  *      and is reported within one bin of 1000 Hz. NEGATIVE CONTROL: with
  *      the rate set to the 0x0F figure (24,979) the same record must report
@@ -30,7 +29,6 @@
 
 #include "fft.h"
 #include "fft_live.h"
-#include "scope_record.h"
 
 #define FS_0X10   12490.0f    /* scope_timebase.c, measured (EXP-17) */
 #define FS_0X0F   24979.1f    /* the neighbouring code — the wrong rate */
@@ -52,14 +50,11 @@ static fft_result_t res;
 static void make_tone_record(float f_hz, float fs, uint8_t head_fill)
 {
     for (int i = 0; i < REC_N; i++) {
-        if (i < (int)SCOPE_RECORD_HEAD_SKIP) {
-            rec[i] = head_fill;                        /* the invalid head */
-        } else {
-            float v = 128.0f + 100.0f * sinf(2.0f * (float)M_PI * f_hz * (float)i / fs);
-            if (v < 0.0f) v = 0.0f;
-            if (v > 255.0f) v = 255.0f;
-            rec[i] = (uint8_t)(v + 0.5f);
-        }
+        (void)head_fill;                               /* records have no invalid head any more */
+        float v = 128.0f + 100.0f * sinf(2.0f * (float)M_PI * f_hz * (float)i / fs);
+        if (v < 0.0f) v = 0.0f;
+        if (v > 255.0f) v = 255.0f;
+        rec[i] = (uint8_t)(v + 0.5f);
     }
 }
 
@@ -77,34 +72,21 @@ static void init_fft(fft_window_t win, float fs)
     fft_init(&cfg);
 }
 
-/* ── 1. head skip ─────────────────────────────────────────────────── */
-static void test_head_skip(void)
+/* ── 1. the whole record ──────────────────────────────────────────── */
+static void test_whole_record(void)
 {
-    printf("\n[1] head skip\n");
+    printf("\n[1] the whole record\n");
     make_tone_record(1000.0f, FS_0X10, 0xFF);
     uint16_t n = fft_live_prepare(rec, REC_N, sbuf, FFT_SIZE);
-    CHECK(n == REC_N - SCOPE_RECORD_HEAD_SKIP,
-          "prepare yields %u samples (record minus head)", (unsigned)n);
-    CHECK(sbuf[0] == (int16_t)(((int16_t)rec[SCOPE_RECORD_HEAD_SKIP] - 128) * FFT_LIVE_GAIN),
-          "out[0] is record[%u], widened", (unsigned)SCOPE_RECORD_HEAD_SKIP);
-    int touched_head = 0;
-    for (uint16_t i = 0; i < n; i++)
-        if (sbuf[i] == (int16_t)((0xFF - 128) * FFT_LIVE_GAIN)) touched_head++;
-    CHECK(touched_head == 0, "no head sample (0xFF) reaches the transform input");
-    /* a whole record of our capture core: nothing skipped */
-    CHECK(scope_record_head_skip(1) == 0u && scope_record_head_skip(0) == SCOPE_RECORD_HEAD_SKIP,
-          "head skip: 0 for a whole record, %u otherwise", (unsigned)SCOPE_RECORD_HEAD_SKIP);
-    {
-        static int16_t w[FFT_SIZE];
-        uint16_t nw = fft_live_prepare_from(rec, REC_N, 0u, w, FFT_SIZE);
-        CHECK(nw == REC_N, "whole record: all %u samples go into the transform (%u)", (unsigned)REC_N, (unsigned)nw);
-        uint16_t nh = fft_live_prepare_from(rec, REC_N, SCOPE_RECORD_HEAD_SKIP, w, FFT_SIZE);
-        CHECK(nh == n, "skip = HEAD_SKIP is the old function");
-    }
-    CHECK(fft_live_prepare(rec, SCOPE_RECORD_HEAD_SKIP, sbuf, FFT_SIZE) == 0,
-          "a record no longer than the head yields 0 samples");
-    CHECK(fft_live_prepare(rec, REC_N, sbuf, 10) == 10,
-          "output capacity is honoured");
+    CHECK(n == REC_N, "prepare yields all %u samples", (unsigned)n);
+    int32_t sum = 0;
+    for (uint16_t i = 0; i < n; i++) sum += rec[i];
+    const int16_t mean = (int16_t)((sum + n / 2) / n);
+    CHECK(sbuf[0] == (int16_t)(((int16_t)rec[0] - mean) * FFT_LIVE_GAIN) &&
+          sbuf[n - 1] == (int16_t)(((int16_t)rec[n - 1] - mean) * FFT_LIVE_GAIN),
+          "out[0] is record[0] and out[last] is record[last], mean removed, widened");
+    CHECK(fft_live_prepare(rec, 0, sbuf, FFT_SIZE) == 0, "an empty record yields 0 samples");
+    CHECK(fft_live_prepare(rec, REC_N, sbuf, 10) == 10, "output capacity is honoured");
 }
 
 /* ── 2. bin -> Hz and refusal ─────────────────────────────────────── */
@@ -179,7 +161,7 @@ static float impulse_mag_db(uint16_t at, uint16_t count, uint16_t bin)
 static void test_window_spans_record(void)
 {
     printf("\n[4] window spans the record, not the transform\n");
-    const uint16_t count = REC_N - SCOPE_RECORD_HEAD_SKIP;   /* 896 */
+    const uint16_t count = REC_N;
     const uint16_t k = 40;
     init_fft(FFT_WINDOW_HANNING, FS_0X10);
 
@@ -212,7 +194,7 @@ static void test_unknown_rate(void)
     printf("\n[5] unknown rate\n");
     /* 8-bit square, ~fs/40 so the fundamental and H3 sit in clean bins */
     for (int i = 0; i < REC_N; i++)
-        rec[i] = (i < (int)SCOPE_RECORD_HEAD_SKIP) ? 0 : (((i / 20) & 1) ? 228 : 28);
+        rec[i] = (((i / 20) & 1) ? 228 : 28);
     uint16_t n = fft_live_prepare(rec, REC_N, sbuf, FFT_SIZE);
 
     init_fft(FFT_WINDOW_HANNING, 0.0f);
@@ -243,7 +225,7 @@ static void test_dc_removed(void)
     printf("\n[6] record mean removed, not 128\n");
     for (int i = 0; i < REC_N; i++) {
         float v = 67.0f + 50.0f * sinf(2.0f * (float)M_PI * 1000.0f * (float)i / FS_0X10);
-        rec[i] = (i < (int)SCOPE_RECORD_HEAD_SKIP) ? 0xFF : (uint8_t)(v + 0.5f);
+        rec[i] = (uint8_t)(v + 0.5f);
     }
     uint16_t n = fft_live_prepare(rec, REC_N, sbuf, FFT_SIZE);
     long sum = 0;
@@ -251,7 +233,7 @@ static void test_dc_removed(void)
     float mean = (float)sum / (float)n;
     CHECK(fabsf(mean) <= (float)FFT_LIVE_GAIN, "prepared input mean is %.1f (within one gain step of 0)", mean);
     long sum_old = 0;
-    for (uint16_t i = 0; i < n; i++) sum_old += ((int16_t)rec[SCOPE_RECORD_HEAD_SKIP + i] - 128) * FFT_LIVE_GAIN;
+    for (uint16_t i = 0; i < n; i++) sum_old += ((int16_t)rec[i] - 128) * FFT_LIVE_GAIN;
     float mean_old = (float)sum_old / (float)n;
     CHECK(mean_old < -50.0f * (float)FFT_LIVE_GAIN, "negative control: the old -128 formula leaves a mean of %.1f", mean_old);
     init_fft(FFT_WINDOW_HANNING, FS_0X10);
@@ -265,7 +247,7 @@ static void test_dc_removed(void)
 int main(void)
 {
     printf("test_fft_live: the live acquisition record as spectrum input\n");
-    test_head_skip();
+    test_whole_record();
     test_bin_hz();
     test_tone_bin();
     test_window_spans_record();

@@ -1,8 +1,9 @@
 /* The waits of the record acquisition, each with a name and its origin.
  *
  * Every number the capture task waits for is defined here and nowhere else:
- * what it is, and whether it was MEASURED, comes from the FACTORY design's
- * behaviour, follows from the CORE's construction, or was CHOSEN. The task
+ * what it is, and whether it was MEASURED, was INHERITED from the time the
+ * firmware drove the scope's factory FPGA design, follows from the CORE's
+ * construction, or was CHOSEN. The task
  * (drivers/fpga.c) calls the functions; the shell can override some waits at
  * run time (`fpga autowait`, `fpga postedge`, `fpga pollgap`), which does not
  * change what the defaults are.
@@ -40,16 +41,13 @@
 
 /* ---- the wait after a record ------------------------------------------- */
 
-/* FACTORY: after a hand-over that design does not arm again for about 190 ms
- * plus one fill (EXP-46: 180..210 ms measured at five timebases). Polling
- * starts a little before the end of that (EXP-54): fill + this. */
-#define ACQ_POST_FACTORY_HOLD_MS        100u
-/* FACTORY, timebase with no known rate: a wait that is long enough for any. */
-#define ACQ_POST_UNKNOWN_RATE_MS        600u
-/* CORE: our core starts the next capture when the pair has been read and can
- * hold again one record later. The wait is one fill plus this rounding
+/* CORE: the core starts the next capture when the pair has been read and
+ * can hold again one record later. The wait is one fill plus this rounding
  * margin, and never less than the poll gap. */
 #define ACQ_POST_CORE_MARGIN_MS         1u
+/* CHOSEN: with no rate for the timebase code (not expected: every code the
+ * UI offers has one), a wait that is long enough for any. */
+#define ACQ_POST_UNKNOWN_RATE_MS        600u
 /* CHOSEN: no wait after a record is longer than this, whatever the fill. */
 #define ACQ_POST_MAX_MS                 5000u
 
@@ -60,12 +58,10 @@
  * A signal that repeats more slowly than this gets untriggered pictures
  * between its triggered ones; a shorter wait shows the untriggered picture
  * sooner. Owner, 2026-11-17: leave as it is.
- * ACQ_AUTO_FILLS     MEASURED on the factory design: edges per read stop
- *                    rising by about 3.6 fills (EXP-42).
- * ACQ_AUTO_EXTRA_MS  FACTORY: its re-arm bracket (180..210 ms, EXP-46) with
- *                    about 30 ms to spare.
- *                    Our core has no such bracket: on it this is only Auto's
- *                    patience, and may be chosen freely.
+ * ACQ_AUTO_FILLS     INHERITED (measured on the factory design, EXP-42).
+ * ACQ_AUTO_EXTRA_MS  INHERITED: the factory design's re-arm time plus a
+ *                    margin (EXP-46). On our core both are only Auto's
+ *                    patience and may be chosen freely.
  * ACQ_AUTO_MIN_MS    CHOSEN floor; also the wait when the rate is unknown.
  * ACQ_AUTO_MAX_MS    CHOSEN: at the slowest timebases Auto shows something
  *                    after 1 s instead of waiting several fills. */
@@ -89,9 +85,9 @@
 
 /* The badge says Trig'd while triggered records keep coming: the last one is
  * younger than ACQ_TRIGD_WAITS times the longer of the two waits above, plus
- * ACQ_TRIGD_EXTRA_MS. FACTORY origin for the factor: a record arrives at most
- * once per wait, so one wait would flicker between records at the slow
- * timebases (EXP-72). The extra is CHOSEN; its origin is not on record. */
+ * ACQ_TRIGD_EXTRA_MS. The factor: a record arrives at most once per wait, so
+ * one wait would flicker between records at the slow timebases. The extra
+ * is INHERITED; its origin is not on record. */
 #define ACQ_TRIGD_WAITS                 2u
 #define ACQ_TRIGD_EXTRA_MS              250u
 
@@ -110,16 +106,13 @@ static inline uint16_t acq_time_auto_wait_ms(float fs, uint16_t min_ms)
     return (uint16_t)ms;
 }
 
-/* The wait after a record before the next poll, in ms. core = our core,
- * identified; poll_gap_ms = the poll gap in force. */
-static inline uint16_t acq_time_post_record_ms(float fs, bool core, uint16_t poll_gap_ms)
+/* The wait after a record before the next poll, in ms. poll_gap_ms = the
+ * poll gap in force. */
+static inline uint16_t acq_time_post_record_ms(float fs, uint16_t poll_gap_ms)
 {
     if (fs <= 0.0f) return ACQ_POST_UNKNOWN_RATE_MS;
-    float ms = acq_fill_ms(fs) + (float)ACQ_POST_FACTORY_HOLD_MS;
-    if (core) {
-        ms = acq_fill_ms(fs) + (float)ACQ_POST_CORE_MARGIN_MS;
-        if (ms < (float)poll_gap_ms) ms = (float)poll_gap_ms;
-    }
+    float ms = acq_fill_ms(fs) + (float)ACQ_POST_CORE_MARGIN_MS;
+    if (ms < (float)poll_gap_ms) ms = (float)poll_gap_ms;
     if (ms > (float)ACQ_POST_MAX_MS) ms = (float)ACQ_POST_MAX_MS;
     return (uint16_t)ms;
 }

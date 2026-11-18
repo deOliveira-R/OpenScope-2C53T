@@ -6,16 +6,10 @@
 uint16_t fft_live_prepare(const uint8_t *rec, uint16_t n,
                           int16_t *out, uint16_t out_cap)
 {
-    return fft_live_prepare_from(rec, n, FFT_LIVE_HEAD_SKIP, out, out_cap);
-}
-
-uint16_t fft_live_prepare_from(const uint8_t *rec, uint16_t n, uint16_t skip,
-                               int16_t *out, uint16_t out_cap)
-{
-    if (rec == 0 || out == 0 || n <= skip || out_cap == 0)
+    if (rec == 0 || out == 0 || n == 0 || out_cap == 0)
         return 0;
 
-    uint16_t count = (uint16_t)(n - skip);
+    uint16_t count = n;
     if (count > out_cap)
         count = out_cap;
 
@@ -26,10 +20,10 @@ uint16_t fft_live_prepare_from(const uint8_t *rec, uint16_t n, uint16_t skip,
      * header was right; the screen was not. */
     uint32_t sum = 0;
     for (uint16_t i = 0; i < count; i++)
-        sum += rec[skip + i];
+        sum += rec[i];
     int16_t mean = (int16_t)((sum + count / 2) / count);
     for (uint16_t i = 0; i < count; i++)
-        out[i] = (int16_t)(((int16_t)rec[skip + i] - mean)
+        out[i] = (int16_t)(((int16_t)rec[i] - mean)
                            * FFT_LIVE_GAIN);
     return count;
 }

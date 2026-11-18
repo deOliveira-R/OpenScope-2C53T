@@ -15,8 +15,7 @@
  * RECORD CONVENTIONS (OpenScope, not stock)
  * ---------------------------------------------------------------------------
  * A record byte is a rec_code_t value (units.h): clamp(raw - ADC_REC_OFFSET),
- * rec_from_raw(), so it spans 0..REC_CODE_MAX (0..227) and both ends are rails: a byte at 0 may be any raw <= 28. The first
- * SCOPE_RECORD_HEAD_SKIP samples are invalid (scope_record.h). With the
+ * rec_from_raw(), so it spans 0..REC_CODE_MAX (0..227) and both ends are rails: a byte at 0 may be any raw <= 28. With the
  * calibration page in use, 0 V sits at record 100 + pos (commit 113ce11:
  * stock's raw 128 + pos zero reference, ADDENDUM_A S7).
  *

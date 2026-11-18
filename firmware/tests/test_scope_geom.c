@@ -11,7 +11,7 @@
  *   [4] the sub-sample crossing: half a sample back at zoom 10 moves the
  *       window 5 columns, and the anchor still reports column tx;
  *   [5] stock's window: hardware anchor at 512, hpos -150..+150, every zoom
- *       -> the window stays inside [HEAD_SKIP, 1024) and is never clamped;
+ *       -> the window stays inside [0, 1024) and is never clamped;
  *   [6] clamping at the record end keeps every column inside the record and
  *       reports where the anchor really landed;
  *   [7] span (the samples a window needs either side of the trigger);
@@ -23,7 +23,6 @@
  */
 #include "../src/ui/scope_geom.h"
 #include "../src/dsp/sinc_interp.h"
-#include "../src/ui/scope_record.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -119,8 +118,8 @@ static void test_stock_window_fits(void)
             int32_t n0, n1; uint8_t p;
             scope_geom_col_src(&v, 0, &n0, &p);
             scope_geom_col_src(&v, (int)SCOPE_GEOM_COLS - 1, &n1, &p);
-            CHECK(n0 >= (int32_t)SCOPE_RECORD_HEAD_SKIP && n1 < N,
-                  "[5] L %u hpos %d: window %d..%d leaves [HEAD_SKIP, 1024)", Ls[li], hpos,
+            CHECK(n0 >= 0 && n1 < N,
+                  "[5] L %u hpos %d: window %d..%d leaves [0, 1024)", Ls[li], hpos,
                   (int)n0, (int)n1);
         }
     }

@@ -2941,10 +2941,6 @@ static volatile bool acq_pub_ordered = false;
  * samples: the trigger is then at index 512 by construction (trig_edge.h). */
 static volatile bool acq_stage_ordered_core = false;
 static volatile bool acq_pub_ordered_core = false;
-/* ...and whole: held by our core and put in time order by its header, with
- * or without a trigger. All 1024 samples are valid (ui/scope_record.h). */
-static volatile bool acq_stage_whole = false;
-static volatile bool acq_pub_whole = false;
 static bool acq_rot_from_hdr = false;        /* set by fpga_acq_unrotate_staging() */
 /* Single-channel 250 MS/s (dsp/interleave.h): the staged / published CH1
  * record is the merge of both converters. Published with the record, like
@@ -2990,7 +2986,6 @@ static void fpga_acq_frames_commit(void)
     memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_ordered_core = acq_stage_ordered_core;
-    acq_pub_whole = acq_stage_whole;
     acq_pub_il = acq_stage_il;
     acq_pub_idx = acq_rate_idx;
     acq_pub_kind = acq_stage_kind;
@@ -3734,9 +3729,8 @@ void fpga_acq_post_edge_set(uint16_t ms)  { acq_post_edge_ms = ms; }
 uint16_t fpga_acq_post_edge_get(void)
 {
     if (acq_post_edge_ms) return acq_post_edge_ms;
-    /* The factory design holds about 190 ms after a hand-over (EXP-46/54);
-     * our core has no hold. The numbers and their origins: dsp/acq_timing.h. */
-    return acq_time_post_record_ms(scope_timebase_sample_rate(acq_rate_idx), true, acq_poll_gap_ms);
+    /* One fill, never less than the poll gap: dsp/acq_timing.h. */
+    return acq_time_post_record_ms(scope_timebase_sample_rate(acq_rate_idx), acq_poll_gap_ms);
 }
 bool fpga_acq_post_edge_is_override(void) { return acq_post_edge_ms != 0; }
 /* EXP-48/49 (2026-09-14): from the edge until the bracket ends the FPGA holds
@@ -3750,7 +3744,6 @@ void fpga_acq_unrotate_set(bool on)           { acq_unrotate = on; }
 bool fpga_acq_unrotate_get(void)              { return acq_unrotate; }
 bool fpga_acq_record_time_ordered(void)       { return acq_pub_ordered; }
 bool fpga_acq_record_core_ordered(void)       { return acq_pub_ordered_core; }
-bool fpga_acq_record_whole(void)              { return acq_pub_whole; }
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
 core_ident_t fpga_core_ident(void)
 {
@@ -3805,9 +3798,9 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
      * periods, a square, DC) is then ordered like any other; the search in
      * the samples could not order those (bench 2026-11-16: 9 of the 13
      * generator waveforms). */
-    int hs = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
+    int hs = trig_seam_from_hdr(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0)
-        hs = trig_seam_from_hdr(true, fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
+        hs = trig_seam_from_hdr(fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0) {                                /* a held record always carries it: not reached */
         acq_seam_n[1]++;
         return -1;
@@ -4606,7 +4599,7 @@ static void fpga_warmtest_acq_task(void *pv)
         }
         acq_single_done_pub = single_done;
         {   /* trigger edge register: our core only (dsp/trig_edge_reg.h) */
-            const uint8_t want = trig_edge_reg_code(true,
+            const uint8_t want = trig_edge_reg_code(
                                      ss_acq != NULL && ss_acq->trigger.edge == TRIG_FALLING);
             if (want != acq_edge_reg) {
                 fpga_scope_write_reg(FPGA_CORE_OP_EDGE, want);
@@ -4758,7 +4751,7 @@ static void fpga_warmtest_acq_task(void *pv)
          * and froze it for the pair (fpga/core/rtl/cmd.sv), and the record
          * was still held when op 05 began. PC0 signals the same; it is only
          * compared, for the bench (`fpga core`). */
-        bool triggered = trig_seam_from_hdr(true, fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
+        bool triggered = trig_seam_from_hdr(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
         {
             const bool pc0 = (fpga.pc0_edges != edges_before);
             acq_kind_n[triggered ? 0 : 1]++;
@@ -4851,7 +4844,6 @@ static void fpga_warmtest_acq_task(void *pv)
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
             /* a forced record is in time order but has no trigger at 512 */
             acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr && !forced;
-            acq_stage_whole = acq_stage_ordered && acq_rot_from_hdr;
             acq_stage_il = held && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
             acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)
@@ -5469,7 +5461,7 @@ bb_restore_pins:
          * here on: only on our own core, and only when this upload was ours
          * and ended with DONE (a design that stayed is unknown). */
         acq_edge_reg = 0x00;
-        acq_design_ours = trig_edge_reg_design_ours(FPGA_BUILTIN_IS_CORE, bb_outcome == 0,
+        acq_design_ours = trig_edge_reg_loaded_by_us(FPGA_BUILTIN_IS_CORE, bb_outcome == 0,
                                                     (fpga.cfg_status_reg[2] & 0x20u) != 0u);
         /* Ask our core which build it is (op E2; the E-range is never sent to
          * a design that is not ours). A core older than D5 answers zeros. */
