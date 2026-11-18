@@ -480,36 +480,6 @@ typedef struct {
     volatile uint32_t cfg_trace[FPGA_CFG_TRACE_N];
     volatile int8_t   cfg_trace_anchor[FPGA_CFG_TRACE_N];
 
-    /* ── RECONFIG_N candidate pin sweep (2026-07-28) ───────────────────────
-     * Exp N showed no config command moves the STATUS register, which matches a
-     * running GW1N refusing configuration until RECONFIG_N is pulsed. This
-     * searches for that pin: for each candidate, pulse LOW->HIGH, send
-     * CONFIG_ENABLE, and read the anchored STATUS. Anything other than the
-     * baseline is a hit.
-     *
-     * Button-gated and run from the UI task, NOT from fpga_init: a bad pulse
-     * during init would fail the boot, and three failed boots latch the
-     * bootloader into SAFE MODE (seen twice on this unit already). Run from the
-     * UI it is recoverable with a power-cycle, and repeatable without a reflash. */
-    volatile uint8_t  sweep_state;      /* 0=idle 1=running 2=done */
-    volatile uint8_t  sweep_tested;     /* candidates completed */
-    volatile uint8_t  sweep_total;      /* candidates in the table */
-    volatile uint8_t  sweep_hits;       /* count whose STATUS left the baseline */
-    volatile uint8_t  sweep_anchor_fail;/* candidates whose IDCODE anchor failed —
-                                         * NOT hits: an unvalidated read is discarded,
-                                         * though a pin that CLOSES the config port
-                                         * would also land here and is worth a look */
-    volatile uint8_t  sweep_first_hit;  /* index into the candidate table, 0xFF = none */
-    volatile uint32_t sweep_baseline;   /* anchored STATUS before the sweep */
-    volatile uint32_t sweep_hit_status; /* anchored STATUS at the first hit */
-    volatile uint8_t  sweep_hit_phase;  /* 0 = none, 1 = during the post-pulse
-                                         * sampling window (the pulse ALONE did
-                                         * something — a reconfiguration), 2 =
-                                         * during the post-CONFIG_ENABLE window
-                                         * (the pulse made 0x15 land). Exp O could
-                                         * not distinguish these: it took a single
-                                         * snapshot at a fixed +1ms and would have
-                                         * missed a transient entirely. */
 
     /* Stock post-H2 SPI3 queue diagnostics. These counters prove only local
      * enqueue/execution of the stock trigger bytes; they are not FPGA ACK or
@@ -908,14 +878,6 @@ void fpga_edgecap_15(uint8_t reps);
  */
 bool fpga_acq_pause(void);
 void fpga_acq_resume(void);
-
-/* RECONFIG_N candidate pin sweep. Pulses each candidate LOW->HIGH, sends
- * CONFIG_ENABLE, and reads the anchored STATUS, looking for any pin that makes
- * the part respond. Restores every pin's original config as it goes.
- * Blocking, ~400ms. Call from a task, never from an ISR or from fpga_init.
- * Results land in fpga.sweep_*. Built only under FPGA_PIN_SWEEP_BUILD. */
-void fpga_reconfig_pin_sweep(void);
-const char *fpga_sweep_pin_name(uint8_t idx);
 
 /*
  * Enter oscilloscope mode: send FPGA scope configuration commands

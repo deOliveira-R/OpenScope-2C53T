@@ -2444,8 +2444,7 @@ static void dbg_pad(char *s, unsigned cap, unsigned width)
 static void draw_scope_debug(const theme_t *th)
 {
     /* Dark background strip */
-#if (defined(FPGA_PIN_SWEEP_BUILD) && FPGA_PIN_SWEEP_BUILD) || \
-    (defined(FPGA_CFG_TRACE_BUILD) && FPGA_CFG_TRACE_BUILD) || \
+#if (defined(FPGA_CFG_TRACE_BUILD) && FPGA_CFG_TRACE_BUILD) || \
     (defined(FPGA_IDCODE_PROBE) && FPGA_IDCODE_PROBE)
     /* Variant overlays draw variable-length content — keep the full refill. */
     lcd_fill_rect(0, SCOPE_DBG_Y, LCD_WIDTH, SCOPE_DBG_H, 0x0000);
@@ -2457,48 +2456,6 @@ static void draw_scope_debug(const theme_t *th)
 #endif
 
     char buf[64];
-
-#if defined(FPGA_PIN_SWEEP_BUILD) && FPGA_PIN_SWEEP_BUILD
-    /* ── RECONFIG_N pin sweep results ───────────────────────────────────────
-     * Press SAVE in scope mode to run it. Read HIT first: it is the only line
-     * that can say "we found something".
-     *   HIT:-- H:0 AF:0  -> every candidate pulsed, nothing moved the STATUS
-     *                       register. No MCU-owned pin stock drives is RECONFIG_N.
-     *   HIT:PCn          -> that pin changed the status after CONFIG_ENABLE.
-     *   AF non-zero      -> that many candidates failed the IDCODE anchor and
-     *                       were DISCARDED, not counted as hits. Worth a look
-     *                       anyway: a pin that CLOSES the config port would also
-     *                       land here (Exp L behaviour). */
-    {
-        const char *st = (fpga.sweep_state == 0) ? "IDLE" :
-                         (fpga.sweep_state == 1) ? "RUN"  : "DONE";
-        snprintf(buf, sizeof(buf), "SWEEP:%s %u/%u", st,
-                 (unsigned)fpga.sweep_tested, (unsigned)fpga.sweep_total);
-        font_draw_string(2, SCOPE_DBG_Y + 2, buf, 0x07E0, 0x0000, &font_small);
-
-        snprintf(buf, sizeof(buf), "BASE:%08lX",
-                 (unsigned long)fpga.sweep_baseline);
-        font_draw_string(2, SCOPE_DBG_Y + 15, buf, 0x07FF, 0x0000, &font_small);
-
-        /* PH distinguishes two very different findings, which Exp O's single
-         * snapshot could not tell apart:
-         *   P = the PULSE ALONE moved the status — the pin triggered something
-         *       on its own, which is what a real RECONFIG_N does (reload from NV).
-         *   C = the status only moved after CONFIG_ENABLE — the pulse made 0x15
-         *       land, i.e. it unlocked config entry. This is the jackpot. */
-        const char *ph = (fpga.sweep_hit_phase == 1) ? "P" :
-                         (fpga.sweep_hit_phase == 2) ? "C" : "-";
-        snprintf(buf, sizeof(buf), "HIT:%s/%s %08lX",
-                 fpga_sweep_pin_name(fpga.sweep_first_hit), ph,
-                 (unsigned long)fpga.sweep_hit_status);
-        font_draw_string(2, SCOPE_DBG_Y + 28, buf, 0xFFE0, 0x0000, &font_small);
-
-        snprintf(buf, sizeof(buf), "H:%u AF:%u  press SAVE",
-                 (unsigned)fpga.sweep_hits, (unsigned)fpga.sweep_anchor_fail);
-        font_draw_string(2, SCOPE_DBG_Y + 41, buf, 0xF81F, 0x0000, &font_small);
-    }
-    return;
-#endif
 
     /* Line 1 (green): transport counters from the real FPGA path */
     /* Line 1 (green): post-upload scope-engine config readback.

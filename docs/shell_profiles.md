@@ -7,6 +7,7 @@ commands, which are build features of `firmware/features.mk`:
 |---|---|---|---|
 | `benchshell` | 3 | reverse-engineering and bring-up commands: raw FPGA frames and wire words, SPI3, GPIO, USART, memory and W25Q pokes, the stock-state shadow, the acquisition experiment knobs, the pin log | `shell_bench.c`, `shell_bench.h` |
 | `meterdebug` | 4 | DMM link diagnostics: trace, dump, frontend, streams, mux and timing replays, waveform sampler state, link experiments | `shell_meterdebug.c`, `shell_meterdebug.h` |
+| `retools` | 5 | reverse-engineering toolkit: commands that pulse pins and probe buses to find out how a board works (`re pinsweep`). Off by default and in every product and bench image; profile `re` (`make app-re`) is `bench` plus these. Needs `benchshell` | `src/re/shell_re.c`, `shell_re.h`, `pin_sweep_table.h` |
 
 Both are on by default, so a plain `make` and the bench image (`make app-coldtrace-meter`, profile `bench`)
 have every command. The profile `full` (`make app-full`: the bench image's hardware flags) leaves both out.
@@ -119,6 +120,13 @@ of their instrument and the read-outs diagnostics of it.
 `lcd readback`, `lcd`, `fpga acq`, `fpga reinit`, `spi3 xfer`, `spi3 seq`, `spi3 read`, `spi3 frame`,
 `spi3 acqread`, `spi3 opread`, `spi3 opsweep`, `spi3 armtest`, `spi3 gowin`, `spi3 edgecap`, `spi3 scopetest`,
 `spi3 acqtest`, `spi3 stock-readback`, `spi3 h2txdiag`, `spi3 h2verify`, `spi3 probe`
+
+## retools (1 row, profile `re` only)
+
+`re pinsweep [run]`: which MCU pin is wired to the FPGA's RECONFIG_N. Without an argument it lists the candidate
+pins and the pins that are never pulsed (both in `src/re/pin_sweep_table.h`, checked by `make test-re-pin-sweep`).
+With `run` it pulses each candidate low and watches the configuration port's STATUS register. A hit can leave the
+FPGA without a design: `fpga reload builtin` loads the capture core again. Guide: `docs/re/README.md`.
 
 ## meterdebug (17 rows)
 

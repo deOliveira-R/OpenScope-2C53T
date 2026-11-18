@@ -1466,6 +1466,15 @@ $(BUILD_DIR)/test_trig_edge_reg: tests/test_trig_edge_reg.c src/dsp/trig_edge_re
 test-trig-edge-reg: $(BUILD_DIR)/test_trig_edge_reg
 	$(BUILD_DIR)/test_trig_edge_reg
 
+# The pin sweep's board data (src/re/pin_sweep_table.h): no candidate is a pin
+# that must never be pulsed (power hold first). See tests/test_re_pin_sweep.c.
+$(BUILD_DIR)/test_re_pin_sweep: tests/test_re_pin_sweep.c src/re/pin_sweep_table.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror $< -o $@
+
+.PHONY: test-re-pin-sweep
+test-re-pin-sweep: $(BUILD_DIR)/test_re_pin_sweep
+	$(BUILD_DIR)/test_re_pin_sweep
+
 # Identity of our capture core (dsp/core_ident.h, op E2). See tests/test_core_ident.c.
 $(BUILD_DIR)/test_core_ident: tests/test_core_ident.c src/dsp/core_ident.h src/drivers/fpga_core_regs.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/dsp -Isrc/drivers $< -o $@
@@ -1589,12 +1598,13 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 #   app-full               the user image (profile `full`)
 #   app-rtt                app-coldtrace-meter, debug shell on RTT only
 #   app-faulttest          app-coldtrace-meter, fault-handler self-test
+#   app-re                 app-coldtrace-meter plus the reverse-engineering
+#                          toolkit (profile `re`, src/re/, docs/re/README.md)
 #   guest-coldtrace-meter  app-coldtrace-meter's hardware flags, linked for the
 #                          factory bootloader
 #   guest-coldtrace-la     the same without meter submodes, bit-bang config
 #                          SCK slowed for 24 MS/s logic analyzers
 #   guest-caldump          read-only dump of the saved-config sector
-#   guest-sweep            Exps O/Q, RECONFIG_N pin sweeps (historical, NEGATIVE)
 #
 # A guest-* image runs at 0x08007000 under the FNIRSI factory bootloader and
 # is flashed through its IAP drive: main.c moves VTOR and skips the watchdog
@@ -1656,6 +1666,14 @@ app-rtt: clean all
 app-faulttest: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1 -DFAULT_SELFTEST=1
 app-faulttest: clean all
 
+# app-re: app-coldtrace-meter plus the reverse-engineering toolkit (profile
+# `re`, features.mk): shell commands that pulse pins and probe buses to find
+# out how a board works (`re pinsweep`: which MCU pin reloads the FPGA).
+# Not for daily use; docs/re/README.md is the guide.
+.PHONY: app-re
+app-re: CFLAGS += -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DNO_WATCHDOG -DFPGA_METER_SUBMODES=1
+app-re: clean all
+
 # guest-coldtrace-meter: app-coldtrace-meter's hardware flags, linked for the
 # factory bootloader (GUEST_BUILD, default profile). FPGA_METER_SUBMODES
 # (M1, 2026-09-04) lets meter entry posture the frontend per submode and
@@ -1674,29 +1692,6 @@ guest-coldtrace-meter: clean all
 guest-coldtrace-la: CFLAGS += -DGUEST_BUILD -DFPGA_WARM_HANDOFF_TEST=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_CONFIG_B=1 -DFPGA_CONFIG_B_ARM=1 -DFPGA_BB_HALF_DELAY=60
 guest-coldtrace-la: LDSCRIPT = ld/at32f403a_guest.ld
 guest-coldtrace-la: clean all
-
-# RECONFIG_N candidate pin sweep (2026-07-28), button-gated.
-# Exp N: no config command moves the STATUS register while every read command
-# answers correctly — the documented behaviour of a running auto-booted GW1N that
-# refuses configuration until RECONFIG_N is pulsed. This searches for that pin.
-# Press SAVE in scope mode: each candidate is pulsed LOW->HIGH, CONFIG_ENABLE is
-# sent, and the anchored STATUS is read; anything off the baseline is a hit.
-#
-# Candidates are CONSERVATIVE — only pins stock itself drives as outputs before
-# the FPGA handshake (stock_pre_fpga_gpio_state.md), so the MCU provably owns
-# them and there is no contention risk. PC9 (power hold), PC8/PC13 (button
-# inputs), SPI3, SWD, USART2, the DAC pins, PB8 and the EXMC/LCD bus are all
-# excluded. Every pin's config and output latch are restored as the sweep goes.
-#
-# Button-gated and run from the UI task rather than fpga_init: a bad pulse during
-# init fails the boot, and three failed boots latch the bootloader into SAFE MODE
-# (this unit has done that twice). From the UI it costs a power-cycle, and the
-# sweep can be re-run without a reflash.
-# [HISTORICAL] Exps O/Q (2026-07-28/29) — RECONFIG_N pin sweeps, button-gated.
-#              NEGATIVE, zero anchor failures.
-guest-sweep: CFLAGS += -DGUEST_BUILD -DFPGA_STOCK_FIDELITY=1 -DFPGA_USART_SILENT_SCOPE=1 -DFPGA_PIN_SWEEP_BUILD=1
-guest-sweep: LDSCRIPT = ld/at32f403a_guest.ld
-guest-sweep: clean all
 
 # Register-owner gate (ARCH round, task A0). Host-only: scans src/**/*.c for writes to
 # peripheral registers outside their owner (scripts/reg_owners.txt) and fails on any write

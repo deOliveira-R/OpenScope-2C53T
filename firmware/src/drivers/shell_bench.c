@@ -511,14 +511,14 @@ static const char *gpio_cfg_reg_name(uint8_t pin_no)
     return (pin_no < 8) ? "CRL" : "CRH";
 }
 
-static uint8_t gpio_cfg_nibble(gpio_type *port, uint8_t pin_no)
+uint8_t gpio_cfg_nibble(gpio_type *port, uint8_t pin_no)
 {
     return (uint8_t)((*gpio_cfg_reg(port, pin_no) >> ((pin_no & 7) * 4)) & 0xF);
 }
 
 /* Read-modify-write of ONLY this pin's nibble — the pattern the bench scripts
  * have been doing by hand through `mem read`/`mem write`. */
-static void gpio_cfg_nibble_set(gpio_type *port, uint8_t pin_no, uint8_t nibble)
+void gpio_cfg_nibble_set(gpio_type *port, uint8_t pin_no, uint8_t nibble)
 {
     volatile uint32_t *reg = gpio_cfg_reg(port, pin_no);
     uint32_t shift = (uint32_t)(pin_no & 7) * 4;
@@ -1320,7 +1320,7 @@ void cmd_fpga_acqbr(const char *args)
 }
 
 /* Raw SPI3 byte exchange on the shared FPGA bus (defined later in this file). */
-static uint8_t spi3_raw_xfer(uint8_t tx);
+uint8_t spi3_raw_xfer(uint8_t tx);
 
 /* `fpga scope zero` — does each channel's record sit where its 0 V is
  * expected? Trace, ground tag and measurements all use one zero, the
@@ -2166,7 +2166,7 @@ void cmd_lcd_readback(const char *args)
 }
 
 /* Inline SPI3 exchange using raw registers (usb_debug.c can't see static spi3_xfer) */
-static uint8_t spi3_raw_xfer(uint8_t tx)
+uint8_t spi3_raw_xfer(uint8_t tx)
 {
     volatile uint32_t *sts = (volatile uint32_t *)0x40003C08;  /* SPI3_STS */
     volatile uint32_t *dt  = (volatile uint32_t *)0x40003C0C;  /* SPI3_DT */
@@ -2521,7 +2521,7 @@ void cmd_spi3_opsweep(const char *args)
  * the GW1N-2) or the part is genuinely unconfigured. Either answer unblocks us.
  *
  * Gowin status-register bit names from openFPGALoader src/gowin.cpp. */
-static uint32_t spi3_gowin_read_reg(uint8_t opcode)
+uint32_t spi3_gowin_read_reg(uint8_t opcode)
 {
     /* flush byte with CS HIGH (CS is idle-high here) */
     (void)spi3_raw_xfer(0x00);
@@ -2541,7 +2541,7 @@ static uint32_t spi3_gowin_read_reg(uint8_t opcode)
 
 /* Set SPI3 baud divider on the fly (CTRL1 bits[5:3]); needs SPE off/on.
  * br: 0=/2(60MHz) .. 7=/256(~470kHz). Returns the previous CTRL1. */
-static uint32_t spi3_set_baud(uint32_t br)
+uint32_t spi3_set_baud(uint32_t br)
 {
     volatile uint32_t *ctrl1 = (volatile uint32_t *)0x40003C00;
     uint32_t prev = *ctrl1;

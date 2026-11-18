@@ -15,6 +15,17 @@
 
 #if FEATURE_BENCHSHELL
 
+/* Helpers the reverse-engineering toolkit (src/re/, FEATURE_RETOOLS) shares:
+ * raw SPI3 byte exchange, a Gowin configuration-port register read (the
+ * caller sets the clock), the SPI3 clock divider (returns the previous
+ * CTRL1), one pin's 4-bit mode field. Shell task only. */
+#include "at32f403a_407.h"
+uint8_t  spi3_raw_xfer(uint8_t tx);
+uint32_t spi3_gowin_read_reg(uint8_t opcode);
+uint32_t spi3_set_baud(uint32_t br);
+uint8_t  gpio_cfg_nibble(gpio_type *port, uint8_t pin_no);
+void     gpio_cfg_nibble_set(gpio_type *port, uint8_t pin_no, uint8_t nibble);
+
 /* The 1 s timer hook of `pinlog` (usb_debug_pinlog_tick() forwards to it). */
 void benchshell_pinlog_tick(void);
 

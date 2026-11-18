@@ -315,19 +315,6 @@ bool input_mode_switch(device_mode_t m)
 void ui_env_screenshot(void)
 {
     const QueueHandle_t dq = g_dq;
-#if defined(FPGA_PIN_SWEEP_BUILD) && FPGA_PIN_SWEEP_BUILD
-    /* Bench build: SAVE runs the RECONFIG_N candidate pin sweep instead of
-     * its normal action. Gated to a button and run from here — NOT from
-     * fpga_init — so a bad pulse costs a power-cycle rather than a failed
-     * boot; three failed boots latch the bootloader into SAFE MODE, which
-     * this unit has already done twice. Re-runnable without a reflash. */
-    if (current_mode == MODE_OSCILLOSCOPE) {
-        scope_show_popup("PIN SWEEP...");
-        fpga_reconfig_pin_sweep();
-        send_cmd(dq, DCMD_REDRAW_ALL);
-        return;
-    }
-#endif
     /* Screenshot (parity C16): stock writes 2:/Screenshot file/%d.bmp
      * and pops "Saved"/"Save failed" (ms[0xE10] 2/3). Ours writes
      * <n>.bmp into our own W25Q scratch slots (gallery_store.h), never

@@ -23,7 +23,10 @@ usb_debug.c through the preprocessor with that set's flags) and checks:
      them, docs/shell_profiles.md has the table) are in no set and no shorter
      row catches them. `fpga roll`, `fpga interleave`, `siggen` and `mask`
      stay, without their setting forms (their handlers print a usage line
-     that names the property).
+     that names the property);
+  f. profile `re` is `bench` plus the reverse-engineering toolkit's rows
+     (src/re/shell_re.h), each named "re ...", none of which runs anything in
+     `bench`.
 
 The baseline is the table of profile `bench`. A deliberate change of a command
 (a new row, a retired one, a changed help line) is made in the fixture too:
@@ -220,9 +223,22 @@ def main():
                 hit = dispatch(rows, line)
                 check(hit is None, "%s: retired %r would run %r" % (label, line, hit[0] if hit else None))
 
+    # f. the reverse-engineering toolkit (profile re): bench plus its own rows,
+    #    every one named "re ...", none reachable in bench
+    retools = table_of(a.make, "PROFILE=re")
+    only_re = set(retools) - set(bench)
+    check(set(bench) <= set(retools), "re: a bench row is missing")
+    check(only_re, "re: the toolkit brings no rows")
+    for row in sorted(only_re):
+        check(row[0].startswith("re "), "re: toolkit row %r is not named 're ...'" % row[0])
+        for line in (row[0], row[0] + " run"):
+            hit = dispatch(bench, line)
+            check(hit is None, "bench: %r would run %r" % (line, hit[0] if hit else None))
+
     helped = lambda rows: sum(1 for r in rows if r[3] != "-")
     print("shell profiles: bench %d rows (%d help entries) = baseline; full %d rows; benchshell %d; meterdebug %d"
           % (len(bench), helped(bench), len(full), len(only_bench), len(only_meter)))
+    print("shell profiles: re = bench + %d toolkit rows" % len(only_re))
     if fails:
         for f in fails:
             print("FAIL: " + f)

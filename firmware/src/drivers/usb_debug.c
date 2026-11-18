@@ -107,6 +107,7 @@
 #include "shell_internal.h" /* the accessors below, for the feature shell files */
 #include "model_exec.h"      /* `fpga roll code`: the re-apply goes through the executor */
 #include "shell_bench.h"     /* bench shell rows (FEATURE_BENCHSHELL): empty when off */
+#include "../re/shell_re.h"   /* reverse-engineering toolkit rows (FEATURE_RETOOLS): empty when off */
 #include "shell_meterdebug.h" /* meter diagnostics rows (FEATURE_METERDEBUG): empty when off */
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -4453,6 +4454,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_V("tasks", cmd_tasks, SC_EXACT,
           "tasks                           FreeRTOS tasks: priority, state, stack size and least free (words); heap\r\n"),
     BENCHSHELL_SHELL_ROWS   /* the bench shell: src/drivers/shell_bench.h, empty when the feature is off */
+    RETOOLS_SHELL_ROWS      /* the reverse-engineering toolkit: src/re/shell_re.h, empty when off */
     METERDEBUG_SHELL_ROWS   /* the meter diagnostics: src/drivers/shell_meterdebug.h, empty when off */
     { NULL, NULL, NULL, 0, NULL }   /* terminator */
 };

@@ -178,6 +178,22 @@ METERDEBUG_defs      :=
 METERDEBUG_shared    :=
 METERDEBUG_bit       := 4
 
+# ── reverse-engineering toolkit ───────────────────────────────────────
+# Commands for finding out how an unknown board works (src/re/, guide:
+# docs/re/README.md): they pulse pins and probe buses, so no product or
+# bench image has them. `make app-re` (profile re) is the bench image plus
+# these. They use the bench shell's bus helpers.
+FEATURE_LIST += RETOOLS
+RETOOLS_desc      := Reverse-engineering toolkit: pin sweep and bus probing commands
+RETOOLS_default   := 0
+RETOOLS_requires  := BENCHSHELL
+RETOOLS_conflicts :=
+RETOOLS_srcs      := src/re/shell_re.c
+RETOOLS_incs      := -Isrc/re
+RETOOLS_defs      :=
+RETOOLS_shared    :=
+RETOOLS_bit       := 5
+
 # ── profiles: what a named image contains ─────────────────────────────
 # PROFILE_<name>_with / _without change the defaults above.
 PROFILE_default_with    :=
@@ -190,11 +206,16 @@ PROFILE_bench_without   :=
 PROFILE_full_with       := stream
 PROFILE_full_without    := benchshell meterdebug
 
+# re: the bench image plus the reverse-engineering toolkit (target app-re).
+PROFILE_re_with         := stream benchshell meterdebug retools
+PROFILE_re_without      :=
+
 # Named targets and their profile (any target not listed: default).
 PROFILE_OF_app-coldtrace-meter := bench
 PROFILE_OF_app-rtt := bench
 PROFILE_OF_app-faulttest := bench
 PROFILE_OF_app-full := full
+PROFILE_OF_app-re := re
 
 ######################################################################
 # Evaluation. Nothing below is per feature.
