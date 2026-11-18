@@ -73,6 +73,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
 FIRMWARE = REPO / "firmware"
+BOARD_PROBES = REPO / "tools/re/board-probes"
 
 # The cross compiler every target needs.
 TOOLCHAIN = "arm-none-eabi-gcc"
@@ -122,9 +123,10 @@ BUILDS = (
     # hardware builds cannot.
     BuildSpec("emu", FIRMWARE, ["make", "emu"], "build-gate-emu", "firmware.bin",
               [AT32_LIB, FREERTOS]),
-    # Minimal bring-up image. Only build that compiles src/attic/hwtest.c, and
-    # the only one that does not need FreeRTOS.
-    BuildSpec("hwtest", FIRMWARE, ["make", "-f", "Makefile.hwtest"],
+    # Minimal bring-up image, one of the board probes of the reverse-engineering
+    # toolkit (tools/re/board-probes). Built here so the probes keep compiling
+    # against the vendor library; the only build that does not need FreeRTOS.
+    BuildSpec("hwtest", BOARD_PROBES, ["make"],
               "build-gate-hwtest", "hwtest.bin", [AT32_LIB]),
     # The permanent 16 KB USB HID IAP bootloader. Several other suites assert
     # against its *source text*; this is the only check that it still builds.
@@ -145,10 +147,8 @@ BUILDS = (
 #   * emu -- -DEMULATOR_BUILD compiles out the callers of several tasks,
 #     leaving the definitions unreferenced. Real diagnostics about a real
 #     (harmless) situation, not compiler noise.
-#   * hwtest -- `power_hold_init()` is dead code in an archived bring-up file
-#     (src/attic/). Left alone deliberately: attic files are kept as a record
-#     of what was run on hardware, and editing one to quiet a warning would
-#     falsify that record for no benefit.
+#   * hwtest -- `power_hold_init()` is dead code in the bring-up probe
+#     (tools/re/board-probes/hwtest.c).
 #
 # Entries are normalised: repo-relative path, no line/column numbers. Removing
 # an entry once its warning is fixed is a PASSING change -- prune freely.
@@ -157,7 +157,7 @@ WARNING_BASELINE = {
     "guest": set(),
     "bootloader": set(),
     "hwtest": {
-        "firmware/src/attic/hwtest.c: warning: 'power_hold_init' defined but not used [-Wunused-function]",
+        "tools/re/board-probes/hwtest.c: warning: 'power_hold_init' defined but not used [-Wunused-function]",
     },
     "emu": {
         "firmware/src/main.c: warning: variable 'scope_entered_frame' set but not used [-Wunused-but-set-variable]",
@@ -200,9 +200,9 @@ def normalise_warning(line: str) -> str | None:
         return None
     path = Path(raw)
     if not path.is_absolute():
-        # Compiler messages are relative to the make cwd; both are under
-        # firmware/, so resolve against each candidate root.
-        for root in (FIRMWARE, FIRMWARE / "bootloader"):
+        # Compiler messages are relative to the make cwd, so resolve against
+        # each directory a build runs in.
+        for root in (FIRMWARE, FIRMWARE / "bootloader", BOARD_PROBES):
             if (root / path).exists():
                 path = root / path
                 break
@@ -333,7 +333,7 @@ class FirmwareBuildTests(unittest.TestCase):
         self._assert_builds("emu")
 
     def test_hwtest_builds(self) -> None:
-        """`make -f Makefile.hwtest` -- the minimal bring-up image."""
+        """`make -C tools/re/board-probes` -- the minimal bring-up image."""
         self._assert_builds("hwtest")
 
     def test_bootloader_builds(self) -> None:

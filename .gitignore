@@ -32,6 +32,8 @@ firmware/stock_dispatcher/build/
 # other suites read (see that file's docstring).
 firmware/build-gate-*/
 firmware/bootloader/build-gate/
+tools/re/board-probes/build/
+tools/re/board-probes/build-gate-*/
 
 # Compiled test binaries (keep .c source, ignore executables)
 firmware/tests/test_automotive
