@@ -1187,14 +1187,12 @@ uint32_t fpga_acq_cfg_drops(void);
 /* Parity C3 (trig_policy.h). The published record's kind (trig_acq_t):
  * handed over, free-run, or free-run with two non-simultaneous channels. */
 uint8_t fpga_acq_record_kind(void);
-bool    fpga_acq_record_coherent(void);        /* false = CH1 and CH2 are two moments (#84) */
 uint8_t fpga_trigger_status(void);             /* trig_status_t: the badge and `fpga scope trigger` */
 bool    fpga_acq_single_done(void);            /* SINGLE holds its record */
 void    fpga_acq_single_rearm(void);           /* SINGLE: take the next trigger (OK, shell) */
 bool    fpga_apply_trigger_source(void);       /* reg 0x06 from scope_state (CH1 0x00, CH2 0x01) */
 uint8_t fpga_acq_trig_src_code_get(void);      /* reg 0x06 value last written */
 uint8_t fpga_acq_edge_reg_get(void);           /* reg 0x07 value last written (dsp/trig_edge_reg.h) */
-uint32_t fpga_interleave_roll_holds(void);     /* untriggered reads held while interleaving */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
 void    fpga_set_meter_mux(bool enable);
 /* The meter link: PC11 + USART2 + the poll task's serving, on or off (see
@@ -1236,9 +1234,6 @@ uint16_t fpga_acq_auto_wait_get(void);
  * edge instead of free-running across the engine's write pointer (EXP-29
  * located the seam there). Default OFF, and meant to be used WITH the
  * re-arm above — see the block comment in fpga.c. */
-void     fpga_acq_gate_set(bool on);
-bool     fpga_acq_gate_get(void);
-uint32_t fpga_acq_gate_skips(void);
 /* Apply a timebase code (SPI reg 0x01) to the hardware and record it as the
  * value in force. This is the ONLY correct way to change the sample rate:
  * writing scope_state.timebase_idx alone relabels the axis without touching
@@ -1273,8 +1268,6 @@ void     fpga_holdlog_stop(void);
 bool     fpga_holdlog_active(void);
 uint16_t fpga_holdlog_count(void);
 bool     fpga_holdlog_get(uint16_t i, fpga_holdlog_ent_t *out);
-void     fpga_acq_auto_live_set(bool on);
-bool     fpga_acq_auto_live_get(void);
 /* true when the latest committed record was un-rotated at its seam, so the
  * hardware trigger sits at index 512 (dev plan 2.3). */
 bool     fpga_acq_record_time_ordered(void);

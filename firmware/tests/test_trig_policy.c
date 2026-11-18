@@ -1,12 +1,6 @@
 /*
- * trig_policy.c: the acquisition policy (upstream #84) and the trigger status.
- *
- * [1] the whole input space (3 modes x 2^7) against a transcription of the
- *     acq task's if-chain as it stood before parity C3 (fpga.c, 2026-11-10),
- *     with the one intended change: an AUTO roll read with both channels on
- *     is published as SPLIT, not as a plain record.
- * [2] the #84 rules by name, so a failure says which rule broke.
- * [3] the badge/status.
+ * trig_policy.c: what a read of the capture core is worth and what the badge says.
+ * The whole input space is small enough to state outright.
  */
 #include <stdio.h>
 #include <string.h>
@@ -16,155 +10,71 @@ static int fails = 0;
 #define CHECK(cond, ...) do { if (cond) { printf("  PASS: "); } else { printf("  FAIL: "); fails++; } \
                               printf(__VA_ARGS__); printf("\n"); } while (0)
 
-/* The pre-C3 loop, transcribed (single_done skipped the read entirely;
- * the gate and interleave holds came first; then the AUTO budget). Returns
- * 0 hold, 1 commit triggered, 2 commit roll. */
-static int legacy(const trig_acq_in_t *in)
+static trig_acq_t d(uint8_t mode, bool triggered, bool forced, bool single_done)
 {
-    bool auto_mode = in->mode == TRIG_POL_AUTO;
-    if (in->mode == TRIG_POL_SINGLE && in->single_done) return 0;
-    if (!in->triggered) {
-        if (auto_mode && in->gate_on) return 0;
-        if (in->interleave) return 0;
-        if (!(auto_mode && (in->budget_up || in->first_read))) return 0;
-        return 2;
-    }
-    return 1;
-}
-
-static trig_acq_in_t mk(uint8_t mode, unsigned bits)
-{
-    trig_acq_in_t in;
-    memset(&in, 0, sizeof in);
-    in.mode = mode;
-    in.triggered    = (bits >> 0) & 1u;
-    in.first_read   = (bits >> 1) & 1u;
-    in.budget_up    = (bits >> 2) & 1u;
-    in.gate_on      = (bits >> 3) & 1u;
-    in.interleave   = (bits >> 4) & 1u;
-    in.two_channels = (bits >> 5) & 1u;
-    in.single_done  = (bits >> 6) & 1u;
-    return in;
+    const trig_acq_in_t in = { .mode = mode, .triggered = triggered, .forced = forced, .single_done = single_done };
+    return trig_acq_decide(&in);
 }
 
 int main(void)
 {
-    printf("[1] full input space vs the pre-C3 loop\n");
+    printf("[1] what a read is worth\n");
     {
-        int bad = 0, split = 0;
-        for (uint8_t m = 0; m < 3; m++)
-            for (unsigned b = 0; b < 128u; b++) {
-                trig_acq_in_t in = mk(m, b);
-                trig_acq_t got = trig_acq_decide(&in);
-                int want = legacy(&in);
-                int g = (got == TRIG_ACQ_HOLD) ? 0 : (got == TRIG_ACQ_TRIGGERED) ? 1 : 2;
-                if (g != want) { if (++bad <= 4) printf("    mode %u bits %02X: got %d want %d\n", m, b, g, want); }
-                if (got == TRIG_ACQ_FREERUN_SPLIT) {
-                    split++;
-                    if (!in.two_channels || in.triggered || m != TRIG_POL_AUTO) bad++;
-                }
-                if (got == TRIG_ACQ_FREERUN && in.two_channels) bad++;
-            }
-        CHECK(bad == 0, "384 cases: same hold/commit as before, SPLIT exactly on two-channel AUTO roll reads (%d split)", split);
+        CHECK(trig_acq_decide(0) == TRIG_ACQ_HOLD, "no input: hold");
+        for (uint8_t m = TRIG_POL_AUTO; m <= TRIG_POL_SINGLE; m++) {
+            CHECK(d(m, true, false, false) == TRIG_ACQ_TRIGGERED, "mode %u: a triggered record is shown", (unsigned)m);
+            CHECK(d(m, false, false, false) == TRIG_ACQ_HOLD, "mode %u: nothing held is never shown", (unsigned)m);
+        }
+        CHECK(d(TRIG_POL_AUTO, false, true, false) == TRIG_ACQ_FREERUN, "AUTO: a forced record is its untriggered picture");
+        CHECK(d(TRIG_POL_NORMAL, false, true, false) == TRIG_ACQ_HOLD, "NORMAL: a forced record left over from AUTO is not shown");
+        CHECK(d(TRIG_POL_SINGLE, false, true, false) == TRIG_ACQ_HOLD, "SINGLE: nor there");
+        CHECK(d(TRIG_POL_SINGLE, true, false, true) == TRIG_ACQ_HOLD && d(TRIG_POL_SINGLE, false, true, true) == TRIG_ACQ_HOLD,
+              "SINGLE with its record: everything is held until re-armed");
+        CHECK(d(TRIG_POL_AUTO, true, false, true) == TRIG_ACQ_TRIGGERED, "single_done means nothing outside SINGLE");
+        CHECK(TRIG_ACQ_HOLD == 0 && TRIG_ACQ_TRIGGERED == 1 && TRIG_ACQ_FREERUN == 2, "the kinds' values are the stream's: fixed");
     }
 
-    printf("[2] the #84 rules\n");
+    printf("[2] AUTO: when to ask the core for a forced record\n");
     {
-        trig_acq_in_t in = mk(TRIG_POL_AUTO, 0);
-        in.two_channels = true; in.budget_up = false;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD,
-              "two-channel AUTO, edges still occurring (budget not up): roll read held");
-        in.budget_up = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FREERUN_SPLIT && !trig_acq_coherent(TRIG_ACQ_FREERUN_SPLIT),
-              "two-channel AUTO, free-running: published, marked not coherent");
-        in.two_channels = false;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FREERUN && trig_acq_coherent(TRIG_ACQ_FREERUN),
-              "one-channel AUTO, free-running: a coherent record");
-        in.interleave = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "never merge a roll read as 250 MS/s");
-        in.interleave = false; in.triggered = true; in.two_channels = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_TRIGGERED && trig_acq_coherent(TRIG_ACQ_TRIGGERED),
-              "a handed-over record is coherent with both channels on");
-        trig_acq_in_t n = mk(TRIG_POL_NORMAL, 0);
-        n.budget_up = true; n.first_read = true;
-        CHECK(trig_acq_decide(&n) == TRIG_ACQ_HOLD, "NORMAL never shows a roll read");
-        trig_acq_in_t s = mk(TRIG_POL_SINGLE, 0);
-        s.triggered = true;
-        CHECK(trig_acq_decide(&s) == TRIG_ACQ_TRIGGERED, "SINGLE armed takes the first handed-over record");
-        s.single_done = true;
-        CHECK(trig_acq_decide(&s) == TRIG_ACQ_HOLD, "SINGLE done holds it, even against a new handover");
+        CHECK(!trig_auto_ask(TRIG_POL_AUTO, 229u, 230u), "a trigger came within the wait: do not ask");
+        CHECK(trig_auto_ask(TRIG_POL_AUTO, 230u, 230u) && trig_auto_ask(TRIG_POL_AUTO, 100000u, 230u), "none for the whole wait: ask");
+        CHECK(!trig_auto_ask(TRIG_POL_NORMAL, 100000u, 230u) && !trig_auto_ask(TRIG_POL_SINGLE, 100000u, 230u),
+              "NORMAL and SINGLE never ask");
     }
 
-    printf("[3] status / badge\n");
+    printf("[3] the first read after a hold or a SINGLE arm\n");
     {
-        CHECK(trig_status_eval(TRIG_POL_AUTO, false, false, TRIG_ACQ_TRIGGERED, 0, 500) == TRIG_ST_STOP, "stopped wins");
-        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_TRIGGERED, 100, 500) == TRIG_ST_TRIGD, "AUTO triggered, recent");
-        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_FREERUN_SPLIT, 9999, 500) == TRIG_ST_AUTO_SPLIT &&
-              strcmp(trig_status_label(TRIG_ST_AUTO_SPLIT), "Auto*") == 0 &&
-              trig_status_tone(TRIG_ST_AUTO_SPLIT) == TRIG_TONE_WARN,
-              "AUTO split free-run: \"Auto*\" in the warning tone");
-        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_FREERUN, 9999, 500) == TRIG_ST_AUTO, "AUTO coherent free-run");
-        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_TRIGGERED, 600, 500) == TRIG_ST_WAIT,
-              "AUTO holding an old triggered record (interleaved, no edges): Wait, not Trig'd");
+        CHECK(!trig_fresh_restart(false, false), "steady reading: nothing");
+        CHECK(trig_fresh_restart(true, false), "SINGLE armed: restart the capture");
+        CHECK(trig_fresh_restart(false, true), "RUN after STOP: restart the capture");
+        CHECK(trig_fresh_restart(true, true), "armed while stopped: restart");
+    }
+
+    printf("[4] the badge\n");
+    {
+        CHECK(trig_status_eval(TRIG_POL_AUTO, false, false, TRIG_ACQ_TRIGGERED, 0, 500) == TRIG_ST_STOP, "stopped: STOP, whatever came last");
+        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_TRIGGERED, 100, 500) == TRIG_ST_TRIGD, "AUTO, a recent trigger: Trig'd");
+        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_FREERUN, 100000, 500) == TRIG_ST_AUTO, "AUTO showing forced records: Auto");
+        CHECK(trig_status_eval(TRIG_POL_AUTO, true, false, TRIG_ACQ_HOLD, 0, 500) == TRIG_ST_WAIT, "AUTO, nothing published yet: Wait");
         CHECK(trig_status_eval(TRIG_POL_NORMAL, true, false, TRIG_ACQ_TRIGGERED, 100, 500) == TRIG_ST_TRIGD &&
               trig_status_eval(TRIG_POL_NORMAL, true, false, TRIG_ACQ_TRIGGERED, 900, 500) == TRIG_ST_WAIT &&
               trig_status_eval(TRIG_POL_NORMAL, true, false, TRIG_ACQ_HOLD, 0, 500) == TRIG_ST_WAIT,
-              "NORMAL: Trig'd only while handovers keep coming (it said Trig'd always before C3)");
+              "NORMAL: Trig'd only while triggered records keep coming");
+        CHECK(trig_status_eval(TRIG_POL_NORMAL, true, false, TRIG_ACQ_FREERUN, 100000, 500) == TRIG_ST_WAIT, "NORMAL after AUTO's forced record: Wait, not Auto");
         CHECK(trig_status_eval(TRIG_POL_SINGLE, true, false, TRIG_ACQ_TRIGGERED, 0, 500) == TRIG_ST_ARMED &&
-              strcmp(trig_status_label(TRIG_ST_ARMED), "Await") == 0,
-              "SINGLE armed: Await (stock's \"Await Trigger...\")");
+              strcmp(trig_status_label(TRIG_ST_ARMED), "Await") == 0, "SINGLE armed: Await");
         CHECK(trig_status_eval(TRIG_POL_SINGLE, true, true, TRIG_ACQ_TRIGGERED, 0, 500) == TRIG_ST_SINGLE_DONE &&
-              strcmp(trig_status_label(TRIG_ST_SINGLE_DONE), "STOP") == 0,
-              "SINGLE captured: STOP, as stock");
+              strcmp(trig_status_label(TRIG_ST_SINGLE_DONE), "STOP") == 0, "SINGLE captured: STOP");
+        CHECK(strcmp(trig_status_label(TRIG_ST_NOCORE), "NoCore") == 0 && strcmp(trig_status_word(TRIG_ST_NOCORE), "no-core") == 0 &&
+              trig_status_tone(TRIG_ST_NOCORE) == TRIG_TONE_WARN, "no usable core: NoCore, a warning");
         int longest = 0;
         for (int s = 0; s < TRIG_ST_COUNT; s++) {
             int n = (int)strlen(trig_status_label((trig_status_t)s));
             if (n > longest) longest = n;
+            CHECK(strcmp(trig_status_label((trig_status_t)s), "?") != 0 && strcmp(trig_status_word((trig_status_t)s), "?") != 0,
+                  "status %d has a label and a word", s);
         }
         CHECK(longest <= 6, "every label fits the 44-px badge (<= 6 chars; longest %d)", longest);
-    }
-
-    printf("AUTO with a core that holds a record on request (op 09)\n");
-    {
-        trig_acq_in_t in = { .mode = TRIG_POL_AUTO, .can_force = true };
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "roll read inside the budget: hold");
-        in.first_read = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "the first read after a settings change is still a roll read: hold");
-        in.first_read = false; in.budget_up = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FORCE, "budget up: ask the core, publish nothing");
-        in.interleave = true; in.two_channels = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FORCE, "also with interleave or two channels (it held forever / was SPLIT before)");
-        in.gate_on = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_HOLD, "stock gate: triggered records only");
-        in.gate_on = false; in.forced = true;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FREERUN, "the forced record: free-run, never SPLIT, both channels on");
-        in.budget_up = false;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_FREERUN, "the forced record is shown whatever the budget says by then");
-        in.triggered = true; in.forced = false;
-        CHECK(trig_acq_decide(&in) == TRIG_ACQ_TRIGGERED, "a triggered record stays a triggered record");
-        for (unsigned m = TRIG_POL_NORMAL; m <= TRIG_POL_SINGLE; m++) {
-            trig_acq_in_t n = { .mode = (uint8_t)m, .can_force = true, .budget_up = true, .first_read = true };
-            CHECK(trig_acq_decide(&n) == TRIG_ACQ_HOLD, "NORMAL / SINGLE never ask for a forced record");
-            n.forced = true;
-            CHECK(trig_acq_decide(&n) == TRIG_ACQ_HOLD, "NORMAL / SINGLE: a forced record left over from AUTO is not shown");
-        }
-        /* without the capability nothing changes */
-        trig_acq_in_t o = { .mode = TRIG_POL_AUTO, .budget_up = true };
-        CHECK(trig_acq_decide(&o) == TRIG_ACQ_FREERUN, "no op 09: the roll read, as before");
-        o.two_channels = true;
-        CHECK(trig_acq_decide(&o) == TRIG_ACQ_FREERUN_SPLIT, "no op 09, two channels: SPLIT, as before");
-    }
-
-    printf("the first read after a hold or a SINGLE arm\n");
-    {
-        CHECK(trig_fresh_action(true, false, false) == TRIG_FRESH_NONE, "core, steady reading: nothing");
-        CHECK(trig_fresh_action(true, true, false) == TRIG_FRESH_RESTART, "core, SINGLE armed: restart the capture");
-        CHECK(trig_fresh_action(true, false, true) == TRIG_FRESH_RESTART, "core, RUN after STOP: restart the capture");
-        CHECK(trig_fresh_action(true, true, true) == TRIG_FRESH_RESTART, "core, armed while stopped: restart");
-        CHECK(trig_fresh_action(false, true, false) == TRIG_FRESH_DROP_NEXT &&
-              trig_fresh_action(false, true, true) == TRIG_FRESH_DROP_NEXT, "another design, SINGLE armed: drop one read, as before");
-        CHECK(trig_fresh_action(false, false, true) == TRIG_FRESH_NONE &&
-              trig_fresh_action(false, false, false) == TRIG_FRESH_NONE, "another design otherwise: as before");
     }
 
     printf("\n%s\n", fails ? "FAILED" : "all passed");

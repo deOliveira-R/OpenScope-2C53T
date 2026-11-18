@@ -3504,10 +3504,6 @@ static volatile bool    acq_rearm_enable = (FPGA_ACQ_REARM_DEFAULT != 0);
  * cold-boot-to-live-trace result, and this stays opt-in until it is shown to
  * be at least as good on hardware. Runtime-toggleable so one boot, one probe
  * and one signal can produce every arm of the comparison. */
-#ifndef FPGA_ACQ_GATE_DEFAULT
-#define FPGA_ACQ_GATE_DEFAULT 0
-#endif
-static volatile bool    acq_gate_enable = (FPGA_ACQ_GATE_DEFAULT != 0);
 /* EXP-40 (2026-09-14): a settle time AFTER the re-arm write, before the next
  * read. Stock's op-01 handler is gated on `tbl[0x0804D833 + tb] + 0x32`
  * elapsed since the last arm — a TIME table (u8, ~1024/fs in 10 ms units:
@@ -3590,7 +3586,6 @@ uint8_t fpga_acq_edge_reg_get(void) { return acq_edge_reg; }
  * dsp/interleave.h) defaults to identity; a unit's own numbers come from
  * `fpga interleave cal` / `skew measure` or a saved user-cal record. */
 static volatile bool acq_il_enable = true;
-static volatile uint32_t acq_il_roll_holds = 0;   /* untriggered reads held, not merged */
 static interleave_corr_t acq_il_corr = { .gain = 1.0f, .offset = 0.0f };
 /* Self-calibration collector (parity C2, `fpga interleave cal`): while `on`,
  * every pair the acq task reads (op04 = A, op05 = B, record units) adds the
@@ -3633,15 +3628,6 @@ static volatile uint8_t  acq_read_br = 0xFF;
 static fpga_holdlog_ent_t *acq_holdlog;
 static volatile uint16_t   acq_holdlog_n;
 static volatile bool       acq_holdlog_on;
-/* EXP-72: AUTO budget measured from the last HANDOVER instead of the last
- * commit. ON (default since EXP-72): once no handover has come for a whole
- * budget, every roll read is shown (33/s at 0x10) -- what stock does with a
- * quiet input. OFF (v0.4.1 behaviour, `fpga autolive off`): AUTO commits one
- * roll read per budget (2.1/s) and discards the rest. Either way a triggering
- * input shows only handed-over records (3.4/s at 0x10, the FPGA's hold). */
-static volatile bool       acq_auto_live = true;
-void fpga_acq_auto_live_set(bool on) { acq_auto_live = on; }
-bool fpga_acq_auto_live_get(void)    { return acq_auto_live; }
 bool fpga_holdlog_start(void)
 {
     if (!acq_holdlog)
@@ -3661,7 +3647,6 @@ bool fpga_holdlog_get(uint16_t i, fpga_holdlog_ent_t *out)
     *out = acq_holdlog[i];
     return true;
 }
-static volatile uint32_t acq_gate_skips = 0;   /* reads the gate prevented */
 /* Reg 0x01 value currently in force -- the ONE variable that mirrors the
  * hardware register. 0x08 is what the arm block writes at config time; the
  * re-arm must rewrite THIS, not a constant, or it would silently undo any
@@ -3722,7 +3707,6 @@ uint32_t fpga_usart_baudr(void) { return USART2->baudr; }
 
 void fpga_acq_rearm_set(bool on)      { acq_rearm_enable = on; }
 bool fpga_acq_rearm_get(void)         { return acq_rearm_enable; }
-void fpga_acq_gate_set(bool on)       { acq_gate_enable = on; }
 void fpga_acq_rearm_wait_set(uint16_t ms) { acq_rearm_wait_ms = ms; }
 void fpga_acq_auto_wait_set(uint16_t ms)  { acq_auto_wait_ms = ms; }
 /* AUTO edge-wait budget in force. Override if set; else derived from the
@@ -3858,8 +3842,6 @@ uint8_t fpga_trigger_code_from_level(int level)
     return (uint8_t)code;
 }
 uint16_t fpga_acq_rearm_wait_get(void)  { return acq_rearm_wait_ms; }
-bool fpga_acq_gate_get(void)          { return acq_gate_enable; }
-uint32_t fpga_acq_gate_skips(void)    { return acq_gate_skips; }
 void fpga_acq_rate_idx_set(uint8_t v) { acq_rate_idx = v; }
 uint8_t fpga_acq_rate_idx_get(void)   { return acq_rate_idx; }
 
@@ -3992,7 +3974,6 @@ static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b,
 
 bool fpga_acq_record_interleaved(void) { return acq_pub_il; }
 uint8_t fpga_acq_record_kind(void)      { return acq_pub_kind; }
-bool fpga_acq_record_coherent(void)     { return trig_acq_coherent((trig_acq_t)acq_pub_kind); }
 bool fpga_acq_single_done(void)         { return acq_single_done_pub; }
 void fpga_acq_single_rearm(void)        { acq_single_arm_req++; }
 
@@ -4043,7 +4024,6 @@ bool fpga_apply_trigger_source(void)
     fpga_acq_resume();
     return true;
 }
-uint32_t fpga_interleave_roll_holds(void) { return acq_il_roll_holds; }
 /* Rate of the PUBLISHED record: the timebase table's per-converter rate,
  * doubled when the record is the two-converter merge. 0 = no rate. */
 float fpga_record_sample_rate(void)
@@ -4611,7 +4591,6 @@ static void fpga_warmtest_acq_task(void *pv)
          * is plausible; a normal AUTO free-run read is a SUCCESS, not a
          * timeout. */
         const scope_state_t *ss_acq = scope_state_get();
-        bool auto_mode = (ss_acq == NULL) || (ss_acq->trigger.mode == TRIG_AUTO);
         trigger_mode_t mode_now = (ss_acq == NULL) ? TRIG_AUTO : ss_acq->trigger.mode;
         if (mode_now != last_mode) {           /* re-selecting SINGLE re-arms it */
             single_done = false;
@@ -4671,12 +4650,9 @@ static void fpga_warmtest_acq_task(void *pv)
          * before SINGLE was armed, must not pass for a new one: bench
          * 2026-11-17, RUN after a STOP published one record from before the
          * STOP in 6 of 6 (generator off since), and so did leaving a finished
-         * SINGLE. Our core is restarted by a register write (the level, with
-         * the value it has); for other designs the SINGLE arm drops one read
-         * as before. No capability bit says "a write restarts the capture":
-         * it is how protocol 1 works, so a valid identity is the condition. */
-        switch (trig_fresh_action(true, drop_next, was_holding)) {
-        case TRIG_FRESH_RESTART: {
+         * SINGLE. The core is restarted by a register write: the level, with
+         * the value it has (trig_fresh_restart). */
+        if (trig_fresh_restart(drop_next, was_holding)) {
             fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, acq_trig_code);
             acq_fresh_restarts++;
             drop_next = false;
@@ -4687,12 +4663,6 @@ static void fpga_warmtest_acq_task(void *pv)
             last_handover_tick = t;
             last_commit_tick = t;
             last_trig_tick = t;
-            break;
-        }
-        case TRIG_FRESH_DROP_NEXT:             /* drop_next stays set until the read */
-        case TRIG_FRESH_NONE:
-        default:
-            break;
         }
         was_holding = false;
         /* EXP-53/54 (2026-09-20..22) — PC0 is a HANDOVER strobe, not a
@@ -4755,8 +4725,8 @@ static void fpga_warmtest_acq_task(void *pv)
          * already held). The hold happens at the next stored sample: wait
          * for one, and for the crossing between the two clocks. */
         bool forced_asked = false;
-        if (auto_mode && !acq_gate_enable &&
-            (uint32_t)(xTaskGetTickCount() - last_trig_tick) >= pdMS_TO_TICKS(fpga_acq_auto_wait_get())) {
+        if (trig_auto_ask((uint8_t)mode_now, (uint32_t)(xTaskGetTickCount() - last_trig_tick) * portTICK_PERIOD_MS,
+                          fpga_acq_auto_wait_get())) {
             SPI3_CS_ASSERT();
             spi3_xfer(FPGA_CORE_OP_FORCE);
             SPI3_CS_DEASSERT();
@@ -4824,53 +4794,19 @@ static void fpga_warmtest_acq_task(void *pv)
             polls_since_handover++;
             fpga.acq_poll_reads++;
         }
-        if (drop_next) {                        /* SINGLE (re-)armed: see drop_next */
-            drop_next = false;
-            continue;
-        }
-        /* What to do with this read: trig_policy.c, host-tested
-         * (tests/test_trig_policy.c; the #84 choice is in its header).
-         *   - GATE ON: AUTO never shows the roll.
-         *   - Interleave needs one moment in BOTH converters. A roll read is
-         *     not that: op04 and op05 are read ~140 us apart while the FPGA
-         *     keeps writing (same-wire test, 2026-11-10), so merging one
-         *     would publish a scrambled record as 250 MS/s. Held, as NORMAL
-         *     does; only handed-over records are merged.
-         *   - NORMAL/SINGLE (or AUTO inside its budget): the rolling buffer
-         *     is not a record. Hold the last trace, poll again.
-         *   - AUTO fallback: no handover for a whole budget -- show the
-         *     free-running buffer so a quiet or off-level input still moves,
-         *     marked SPLIT when both channels are on (two moments, #84). */
-        const bool can_force = true;
-        uint32_t since = can_force     ? (last_read_tick - last_trig_tick)
-                       : acq_auto_live ? (last_read_tick - last_handover_tick)
-                                       : (last_read_tick - last_commit_tick);
+        /* What this read is and whether it is shown: dsp/trig_policy.h. */
         const trig_acq_in_t pin = {
-            .mode         = (uint8_t)mode_now,
-            .triggered    = triggered,
-            .first_read   = first_read,
-            .budget_up    = (int32_t)since >= (int32_t)fpga_acq_auto_wait_get(),
-            .gate_on      = acq_gate_enable,
-            .interleave   = fpga_interleave_active(),
-            .two_channels = (fpga.channel_mask == 3u),
-            .single_done  = single_done,
-            .forced       = forced,
-            .can_force    = can_force,
+            .mode        = (uint8_t)mode_now,
+            .triggered   = triggered,
+            .forced      = forced,
+            .single_done = single_done,
         };
         const trig_acq_t kind = trig_acq_decide(&pin);
-        if (kind == TRIG_ACQ_FORCE) {
-            /* The budget is up and this read found no record: either the
-             * request went out just before it and the memory was not all
-             * new yet (the core keeps the request), or the budget ran out
-             * during the read. The next poll asks again. Nothing to show. */
-            if (forced_asked) acq_force_n[2]++;
-            continue;
-        }
         if (kind == TRIG_ACQ_HOLD) {
-            if (!triggered) {
-                if (auto_mode && acq_gate_enable) acq_gate_skips++;
-                else if (pin.interleave)          acq_il_roll_holds++;
-            }
+            /* Nothing held, or not for this mode. After a request for a
+             * forced record: the memory was not all new yet (the core keeps
+             * the request), or a trigger got there first. */
+            if (forced_asked && !held) acq_force_n[2]++;
             continue;
         }
         /* Capture configuration (dsp/acq_cfg.h, bench 2026-11-14): a record

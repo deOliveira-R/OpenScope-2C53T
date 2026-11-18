@@ -1,52 +1,30 @@
 /*
- * Trigger acquisition policy and trigger status (parity C3).
+ * Trigger acquisition policy and trigger status.
  *
  * Pure functions, no FreeRTOS and no fpga.h, so tests/test_trig_policy.c runs
  * the very code the acquisition task (fpga.c) and the badge (scope_ui.c) run.
  *
- * WHAT A READ IS. The FPGA writes a rolling 1024-sample buffer per channel
- * and, on a crossing of the reg-0x08 level, finishes the record and HOLDS it
- * until a read takes it; that read pulses PC0 (EXP-53/54). So a read is one of
- *   - a handed-over record (PC0 strobed): one moment, both channels, the
- *     trigger at index 512 -- coherent;
- *   - a roll read (no strobe): whatever the FPGA is writing. op04 (CH1) and
- *     op05 (CH2) are read ~140 us apart while it keeps writing (same-wire test,
- *     2026-11-10: one signal on both inputs, the two roll reads disagree), so
- *     the two channels of a roll read are two different moments (upstream
- *     issue #84).
+ * WHAT A READ IS. OpenScope's capture core writes both converters into one
+ * 1024-sample ring and HOLDS a record when a trigger completes it, or when
+ * the firmware asks for one without a trigger (op 09). A read of ops 04/05
+ * then is one of
+ *   - a triggered record: one moment, both converters, in time order, the
+ *     trigger crossing at index 512;
+ *   - a forced record: the same, without a crossing -- Auto's picture of a
+ *     signal that does not cross the level;
+ *   - nothing held: the ring is still being written and the samples read are
+ *     not a record. They are never shown.
+ * The reply header says which (drivers/fpga.c, dsp/trig_edge_reg.h).
  *
- * THE CHOICE (#84). Stock reads only strobe-held records in AUTO (PC0 gate,
- * ADDENDUM_A S3) and draws its fallback anchor when the search misses. We keep
- * OpenScope's AUTO free-run fallback, because a quiet or off-level input must
- * still move the trace, but:
- *   1. while edges occur, AUTO shows ONLY handed-over records: a roll read is
- *      held until no handover has come for a whole budget (unchanged since
- *      EXP-72 -- the budget runs from the last handover);
- *   2. a roll read is never merged into a 250 MS/s record (it would be two
- *      moments interleaved), it is held instead (2026-11-10);
- *   3. when AUTO does fall back to a roll read with BOTH channels on, the
- *      record is published as TRIG_ACQ_FREERUN_SPLIT and the badge says so
- *      ("Auto*", warning colour): the two traces are drawn, but never
- *      presented as one coherent two-channel capture. With one channel on, a
- *      roll read is a single read of a single channel and is shown as plain
- *      free-run ("Auto").
- * NORMAL and SINGLE never show a roll read (unchanged).
- *
- * With OpenScope's core (can_force) AUTO never shows a roll read either. A
- * roll read is a memory that is being written while it is read: at 125 MS/s
- * it is rewritten 12 times during one channel's read, and the two channels
- * are read one after the other. Instead, when no trigger has come for a
- * budget, the core is asked before each read to hold a record as it is; a
- * read that still finds none is TRIG_ACQ_FORCE (nothing to show). The forced
- * record arrives like a triggered one and is published as TRIG_ACQ_FREERUN:
- * 1024 successive samples, both converters at the same moments, in time
- * order -- so it is never SPLIT, and it may be merged to 250 MS/s. Only the
- * trigger crossing is missing. The core lets a trigger win for as long as
- * the request waits.
+ * THE MODES.
+ *   AUTO    shows triggered records; when none has come for the wait
+ *           (dsp/acq_timing.h) it asks the core for a forced record before
+ *           each read (trig_auto_ask). The capture stays armed between reads,
+ *           so a trigger that comes is still shown.
+ *   NORMAL  shows triggered records only.
+ *   SINGLE  shows one triggered record and holds it until re-armed.
  *
  * Mode values are scope_state.h's trigger_mode_t: 0 AUTO, 1 NORMAL, 2 SINGLE.
- * (Stock's ms[0x17] is 0 NORMAL, 1 AUTO, 2 SINGLE -- ADDENDUM_A S3; this
- * module does not use stock's numbering.)
  */
 #ifndef TRIG_POLICY_H
 #define TRIG_POLICY_H
@@ -60,64 +38,52 @@
 
 typedef struct {
     uint8_t mode;           /* TRIG_POL_* */
-    bool    triggered;      /* PC0 strobed this read: a handed-over record */
-    bool    first_read;     /* the read that started a capture (nothing to compare yet) */
-    bool    budget_up;      /* AUTO: no handover for a whole budget */
-    bool    gate_on;        /* `fpga gate on`: AUTO never shows a roll read */
-    bool    interleave;     /* the record would be the 250 MS/s two-converter merge */
-    bool    two_channels;   /* both channels on */
+    bool    triggered;      /* this read is a record a trigger completed */
+    bool    forced;         /* this read is a record held on request, without a trigger */
     bool    single_done;    /* SINGLE already holds its one record */
-    /* OpenScope's core with op 09 (CAP_FORCE). Both false: everything above, as before. */
-    bool    forced;         /* this read is a record the core held on request, without a trigger */
-    bool    can_force;      /* the core can be asked for one */
 } trig_acq_in_t;
 
+/* The values go out in the stream's record header (stream_frame.h): fixed. */
 typedef enum {
-    TRIG_ACQ_HOLD = 0,          /* do not publish: keep the trace on screen */
-    TRIG_ACQ_TRIGGERED,         /* a handed-over record (the edge filter may still drop it) */
-    TRIG_ACQ_FREERUN,           /* AUTO roll read, one channel on: coherent */
-    TRIG_ACQ_FREERUN_SPLIT,     /* AUTO roll read, both on: CH1 and CH2 are two moments */
-    TRIG_ACQ_FORCE              /* publish nothing; the core is to be asked to hold a record without a trigger (op 09) */
+    TRIG_ACQ_HOLD      = 0,     /* do not publish: keep the trace on screen */
+    TRIG_ACQ_TRIGGERED = 1,     /* a triggered record */
+    TRIG_ACQ_FREERUN   = 2      /* AUTO's forced record: no trigger in it */
 } trig_acq_t;
 
 trig_acq_t trig_acq_decide(const trig_acq_in_t *in);
 
-/* Before the first read after the task has not been reading (STOP, a SINGLE
- * record being held, roll) or after SINGLE is (re-)armed: the FPGA may hold a
- * record from before, and its hand-over would pass for a new one.
- *   core_restarts  OpenScope's core, identified: any register write restarts
- *                  its capture with a fresh pre-trigger part (cmd.sv), so one
- *                  write makes every later record newer than the write
- *   single_armed   SINGLE was (re-)armed since the last read
- *   was_holding    the task has not been reading
- * Without the core: drop the next read after a SINGLE arm, as before; after a
- * STOP nothing is done (the factory design's behaviour there is unmeasured). */
-typedef enum { TRIG_FRESH_NONE = 0, TRIG_FRESH_DROP_NEXT, TRIG_FRESH_RESTART } trig_fresh_t;
-static inline trig_fresh_t trig_fresh_action(bool core_restarts, bool single_armed, bool was_holding)
+/* AUTO: ask the core for a forced record before this read? Yes once no
+ * triggered record has come for wait_ms (and never in the other modes). */
+static inline bool trig_auto_ask(uint8_t mode, uint32_t ms_since_trigger, uint32_t wait_ms)
 {
-    if (core_restarts)
-        return (single_armed || was_holding) ? TRIG_FRESH_RESTART : TRIG_FRESH_NONE;
-    return single_armed ? TRIG_FRESH_DROP_NEXT : TRIG_FRESH_NONE;
+    return mode == TRIG_POL_AUTO && ms_since_trigger >= wait_ms;
 }
 
-/* A published record whose two channels belong to one moment. */
-static inline bool trig_acq_coherent(trig_acq_t a) { return a != TRIG_ACQ_FREERUN_SPLIT; }
+/* Before the first read after the task has not been reading (STOP, a SINGLE
+ * record being held, roll) or after SINGLE is (re-)armed: the core may hold
+ * a record from before, and its hand-over would pass for a new one. Any
+ * register write restarts the core's capture with a fresh pre-trigger part
+ * (fpga/core/rtl/cmd.sv), so one write makes every later record newer than
+ * the write. Returns whether to make that write. */
+static inline bool trig_fresh_restart(bool single_armed, bool was_holding)
+{
+    return single_armed || was_holding;
+}
 
 /* ── Trigger status (the badge, the shell) ─────────────────────────── */
 typedef enum {
     TRIG_ST_STOP = 0,       /* RUN/STOP stopped */
-    TRIG_ST_TRIGD,          /* a handed-over record, recent */
-    TRIG_ST_WAIT,           /* NORMAL (or AUTO holding): no recent trigger, trace held */
-    TRIG_ST_AUTO,           /* AUTO free-run, coherent */
-    TRIG_ST_AUTO_SPLIT,     /* AUTO free-run, two channels not simultaneous */
-    TRIG_ST_ARMED,          /* SINGLE: "Await Trigger..." (stock 0x0801C8C2) */
-    TRIG_ST_SINGLE_DONE,    /* SINGLE: captured and held (stock: STOP, 0x0802163E) */
+    TRIG_ST_TRIGD,          /* a triggered record, recent */
+    TRIG_ST_WAIT,           /* no recent trigger, trace held */
+    TRIG_ST_AUTO,           /* AUTO showing forced records */
+    TRIG_ST_ARMED,          /* SINGLE: waiting for its trigger */
+    TRIG_ST_SINGLE_DONE,    /* SINGLE: captured and held */
     TRIG_ST_NOCORE,         /* the FPGA holds no usable capture core: nothing is acquired (core_ident.h) */
     TRIG_ST_COUNT
 } trig_status_t;
 
 /* last: what the last PUBLISHED record was (TRIG_ACQ_HOLD = none yet).
- * ms_since_trig: since the last handed-over record was published.
+ * ms_since_trig: since the last triggered record was published.
  * stale_ms: after this long without one, "Trig'd" is no longer true. */
 trig_status_t trig_status_eval(uint8_t mode, bool running, bool single_done,
                                trig_acq_t last, uint32_t ms_since_trig,

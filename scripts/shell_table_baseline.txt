@@ -27,8 +27,6 @@ flash read	cmd_flash_read	0x02	flash read <addr> <len>         Read external fla
 flash wtest	cmd_flash_wtest	0x02	flash wtest <addr> CONFIRM      Non-destructive write-primitive self-test (blank 4KB sector)\r\n
 fpga acq	cmd_fpga_acq	0x00	fpga acq [mode]                 Trigger SPI3 acquisition\r\n
 fpga acqbr	cmd_fpga_acqbr	0x00	fpga acqbr [0-7|off]            SPI3 clock the acq task sets before each pair (EXP-46)\r\n
-fpga acqgate	cmd_fpga_acqgate	0x00	fpga acqgate [on|off]           Stock PRE-read data-ready gate (EXP-29) A/B toggle\r\n
-fpga autolive	cmd_fpga_autolive	0x00	fpga autolive [on|off]          AUTO: show every untriggered read (EXP-72)\r\n
 fpga autowait	cmd_fpga_autowait	0x00	fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n
 fpga busreacquire	cmd_fpga_bus_reacquire	0x01	fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n
 fpga busrelease	cmd_fpga_bus_release	0x01	fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n

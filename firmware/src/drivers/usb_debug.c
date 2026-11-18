@@ -2408,11 +2408,11 @@ static void interleave_print_status(void)
     const int32_t g4 = (int32_t)(g * 10000.0f + 0.5f);
     const int32_t o2 = (int32_t)(o * 100.0f + (o < 0 ? -0.5f : 0.5f));
     usb_debug_printf("interleave %s, %s; last record %s; B corr gain %ld/10000 offset %ld/100; "
-                     "untriggered reads held %lu (only triggered records are merged; AUTO holds like NORMAL)\r\n",
+                     "(triggered and forced records are merged)\r\n",
                      fpga_interleave_get() ? "ON" : "OFF",
                      fpga_interleave_active() ? "active (mask 1, tb <= 3)" : "not active",
                      fpga_acq_record_interleaved() ? "merged" : "single converter",
-                     (long)g4, (long)o2, (unsigned long)fpga_interleave_roll_holds());
+                     (long)g4, (long)o2);
     if (nk >= 2u) {   /* the knots override the line */
         usb_send_str("  B map, piecewise (A <- B, x100):");
         for (uint8_t i = 0; i < nk; i++)
@@ -2472,7 +2472,7 @@ static void cmd_fpga_interleave(const char *args)
 static void print_trigger_status(void)
 {
     const scope_state_t *ss = scope_state_get();
-    static const char *const kind[] = { "none", "handed-over", "freerun", "freerun-split" };
+    static const char *const kind[] = { "none", "triggered", "forced" };
     const uint8_t k = fpga_acq_record_kind();
     const trig_status_t st = (trig_status_t)fpga_trigger_status();
     usb_debug_printf("trigger mode %s edge %s source %s level %d code 0x%02X reg06 0x%02X reg07 0x%02X\r\n",
@@ -2480,9 +2480,9 @@ static void print_trigger_status(void)
                      trigger_source_labels[ss->trigger.source], (int)ss->trigger.level,
                      (unsigned)fpga_acq_trig_code_get(), (unsigned)fpga_acq_trig_src_code_get(),
                      (unsigned)fpga_acq_edge_reg_get());
-    usb_debug_printf("trigger status %s badge %s record %s coherent %s single %s\r\n",
+    usb_debug_printf("trigger status %s badge %s record %s single %s\r\n",
                      trig_status_word(st), trig_status_label(st),
-                     k < 4u ? kind[k] : "?", fpga_acq_record_coherent() ? "yes" : "no",
+                     k < 3u ? kind[k] : "?",
                      ss->trigger.mode != TRIG_SINGLE ? "-" :
                      fpga_acq_single_done() ? "captured" : "armed");
     /* What no property carries (the lines the retired `fpga scope level` and

@@ -43,12 +43,10 @@ void cmd_fpga_autowait(const char *args);
 void cmd_fpga_pairgap(const char *args);
 void cmd_fpga_postedge(const char *args);
 void cmd_fpga_pollgap(const char *args);
-void cmd_fpga_autolive(const char *args);
 void cmd_fpga_holdlog(const char *args);
 void cmd_fpga_scope_coupling(const char *args);
 void cmd_fpga_holdread(const char *args);
 void cmd_fpga_acqbr(const char *args);
-void cmd_fpga_acqgate(const char *args);
 void cmd_fpga_rate(const char *args);
 void cmd_fpga_scope_reinit(void);
 void cmd_fpga_scope_zero(const char *args);
@@ -218,8 +216,6 @@ void cmd_fpga_dbgarm(const char *args);
           "fpga scope coupling             Coupling label vs PD12/PD13 relay pins (read-only)\r\n"), \
     CMD_A("fpga pollgap", cmd_fpga_pollgap, 0, \
           "fpga pollgap [ms]               Poll cadence after the poll start (EXP-54; default 30)\r\n"), \
-    CMD_A("fpga autolive", cmd_fpga_autolive, 0, \
-          "fpga autolive [on|off]          AUTO: show every untriggered read (EXP-72)\r\n"), \
     CMD_A("fpga holdlog", cmd_fpga_holdlog, 0, \
           "fpga holdlog [on|off]           Per-handover interval log (EXP-72); no arg = dump\r\n"), \
     CMD_A("fpga holdread", cmd_fpga_holdread, 0, \
@@ -236,8 +232,6 @@ void cmd_fpga_dbgarm(const char *args);
           "fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n"), \
     CMD_A("fpga rearmwait", cmd_fpga_rearmwait, 0, \
           "fpga rearmwait [ms]             Settle after re-arm before next read (EXP-40)\r\n"), \
-    CMD_A("fpga acqgate", cmd_fpga_acqgate, 0, \
-          "fpga acqgate [on|off]           Stock PRE-read data-ready gate (EXP-29) A/B toggle\r\n"), \
     CMD_A("fpga rate", cmd_fpga_rate, 0, \
           "fpga rate [hexidx]              reg-0x01 rate index the re-arm rewrites\r\n"), \
     CMD_V("fpga scope reinit", cmd_fpga_scope_reinit, SC_EXACT, \

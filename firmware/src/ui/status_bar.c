@@ -284,8 +284,7 @@ static void slot_dot(const theme_t *th, trig_status_t st)
     uint16_t c;
     switch (st) {
     case TRIG_ST_TRIGD:      c = th->success; break;
-    case TRIG_ST_AUTO:
-    case TRIG_ST_AUTO_SPLIT: c = SB_AMBER;    break;
+    case TRIG_ST_AUTO:       c = SB_AMBER;    break;
     default:                 c = th->text_secondary; break;   /* wait, armed, stopped */
     }
     if (!slot_changed(SL_DOT, c))

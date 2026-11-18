@@ -1469,17 +1469,6 @@ void cmd_fpga_pollgap(const char *args)
                      (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads);
 }
 
-/* `fpga autolive [on|off]` -- EXP-72: AUTO shows every roll read once no
- * handover has come for a whole budget (default on; off = v0.4.1's one per
- * budget). */
-void cmd_fpga_autolive(const char *args)
-{
-    while (*args == ' ') args++;
-    if (strncmp(args, "on", 2) == 0) fpga_acq_auto_live_set(true);
-    else if (strncmp(args, "off", 3) == 0) fpga_acq_auto_live_set(false);
-    usb_debug_printf("acq AUTO live %s\r\n", fpga_acq_auto_live_get() ? "ON (every roll read once untriggered)" : "OFF (one roll read per budget)");
-}
-
 /* `fpga holdlog [on|off]` -- EXP-72: per-handover interval log, recorded by
  * the acq task (no shell traffic in the window). No argument dumps it. */
 void cmd_fpga_holdlog(const char *args)
@@ -1541,27 +1530,6 @@ void cmd_fpga_acqbr(const char *args)
     }
     if (fpga_acq_read_br_get() == 0xFF) usb_send_str("acq read clock: not set by the task (whatever is in force)\r\n");
     else usb_debug_printf("acq read clock: br=%u (/%u) set before each pair\r\n", fpga_acq_read_br_get(), 2u << fpga_acq_read_br_get());
-}
-
-/* `fpga acqgate [on|off]` — stock's PRE-read gate (EXP-29/30). Pairs with
- * `fpga rearm`; the two are load-bearing for each other. */
-void cmd_fpga_acqgate(const char *args)
-{
-    char buf[160];
-    while (*args == ' ') args++;
-    if (*args) {
-        if      (strncmp(args, "on",  2) == 0) fpga_acq_gate_set(true);
-        else if (strncmp(args, "off", 3) == 0) fpga_acq_gate_set(false);
-        else { usb_send_str("usage: fpga acqgate [on|off]\r\n"); return; }
-    }
-    snprintf(buf, sizeof(buf),
-             "acq gate %s (AUTO reads only on a data-ready edge)  skips=%lu\r\n",
-             fpga_acq_gate_get() ? "ON" : "OFF",
-             (unsigned long)fpga_acq_gate_skips());
-    usb_send_str(buf);
-    if (fpga_acq_gate_get() && !fpga_acq_rearm_get())
-        usb_send_str("  WARN: gate ON with re-arm OFF — PC0 may never arrive "
-                     "and the trace will freeze. `fpga rearm on`.\r\n");
 }
 
 /* `fpga rate [idx]` — the reg-0x01 value the re-arm rewrites. Setting it here

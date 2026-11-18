@@ -5,34 +5,17 @@ trig_acq_t trig_acq_decide(const trig_acq_in_t *in)
 {
     if (in == 0)
         return TRIG_ACQ_HOLD;
-    /* SINGLE holds its one record until re-armed (stock: STOP + snapshot
-     * after the capture, 0x0802163E). */
+    /* SINGLE holds its one record until re-armed. */
     if (in->mode == TRIG_POL_SINGLE && in->single_done)
         return TRIG_ACQ_HOLD;
     if (in->triggered)
         return TRIG_ACQ_TRIGGERED;
-    const bool is_auto0 = (in->mode == TRIG_POL_AUTO);
     /* A record the core held on request: AUTO's untriggered picture. If the
      * mode has left AUTO since the request, it is not shown. */
-    if (in->forced)
-        return is_auto0 ? TRIG_ACQ_FREERUN : TRIG_ACQ_HOLD;
-    /* With such a core a roll read is never shown: ask for a record instead,
-     * once no trigger has come for a budget. The stock gate still means
-     * "triggered records only". */
-    if (in->can_force)
-        return (is_auto0 && !in->gate_on && in->budget_up) ? TRIG_ACQ_FORCE : TRIG_ACQ_HOLD;
-
-    /* A roll read from here on. */
-    const bool is_auto = (in->mode == TRIG_POL_AUTO);
-    if (is_auto && in->gate_on)
-        return TRIG_ACQ_HOLD;           /* stock's gate: never show the roll */
-    if (in->interleave)
-        return TRIG_ACQ_HOLD;           /* never merge two moments as 250 MS/s */
-    if (!is_auto)
-        return TRIG_ACQ_HOLD;           /* NORMAL/SINGLE: the roll is not a record */
-    if (!(in->budget_up || in->first_read))
-        return TRIG_ACQ_HOLD;           /* AUTO while edges occur: handed-over only */
-    return in->two_channels ? TRIG_ACQ_FREERUN_SPLIT : TRIG_ACQ_FREERUN;
+    if (in->forced && in->mode == TRIG_POL_AUTO)
+        return TRIG_ACQ_FREERUN;
+    /* Nothing held: the samples read are not a record. */
+    return TRIG_ACQ_HOLD;
 }
 
 trig_status_t trig_status_eval(uint8_t mode, bool running, bool single_done,
@@ -46,12 +29,10 @@ trig_status_t trig_status_eval(uint8_t mode, bool running, bool single_done,
     const bool fresh = (last == TRIG_ACQ_TRIGGERED) && ms_since_trig < stale_ms;
     if (fresh)
         return TRIG_ST_TRIGD;
-    if (mode == TRIG_POL_AUTO) {
-        if (last == TRIG_ACQ_FREERUN_SPLIT) return TRIG_ST_AUTO_SPLIT;
-        if (last == TRIG_ACQ_FREERUN)       return TRIG_ST_AUTO;
-    }
-    /* NORMAL without a recent trigger, or AUTO holding (interleaved, gated,
-     * or nothing published yet): the trace on screen is not moving. */
+    if (mode == TRIG_POL_AUTO && last == TRIG_ACQ_FREERUN)
+        return TRIG_ST_AUTO;
+    /* NORMAL without a recent trigger, or AUTO with nothing published yet:
+     * the trace on screen is not moving. */
     return TRIG_ST_WAIT;
 }
 
@@ -62,7 +43,6 @@ const char *trig_status_label(trig_status_t s)
     case TRIG_ST_TRIGD:       return "Trig'd";
     case TRIG_ST_WAIT:        return "Wait";
     case TRIG_ST_AUTO:        return "Auto";
-    case TRIG_ST_AUTO_SPLIT:  return "Auto*";
     case TRIG_ST_ARMED:       return "Await";
     case TRIG_ST_SINGLE_DONE: return "STOP";
     case TRIG_ST_NOCORE:      return "NoCore";
@@ -77,7 +57,6 @@ const char *trig_status_word(trig_status_t s)
     case TRIG_ST_TRIGD:       return "triggered";
     case TRIG_ST_WAIT:        return "waiting";
     case TRIG_ST_AUTO:        return "auto-freerun";
-    case TRIG_ST_AUTO_SPLIT:  return "auto-freerun-split";
     case TRIG_ST_ARMED:       return "single-armed";
     case TRIG_ST_SINGLE_DONE: return "single-captured";
     case TRIG_ST_NOCORE:      return "no-core";

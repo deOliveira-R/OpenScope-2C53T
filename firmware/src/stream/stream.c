@@ -265,11 +265,12 @@ static bool poll_record(void)
                            : scope_timebase_seconds_per_div(cap.mask ? cap.rate_idx : ss->timebase_idx);
     r.n = FPGA_ADC_BUF_SIZE;
     const bool ordered = fpga_acq_record_time_ordered();
-    r.trig_idx = ordered ? (uint16_t)(FPGA_ADC_BUF_SIZE / 2u) : (uint16_t)SF_TRIG_NONE;
+    /* a forced record is in time order but has no trigger in it */
+    r.trig_idx = fpga_acq_record_core_ordered() ? (uint16_t)(FPGA_ADC_BUF_SIZE / 2u) : (uint16_t)SF_TRIG_NONE;
     r.flags = (uint8_t)((fpga_acq_record_interleaved() ? SF_REC_INTERLEAVED : 0u) |
                         (ordered ? SF_REC_TIME_ORDERED : 0u) |
                         ((ss->roll || fpga_roll_active()) ? SF_REC_ROLL : 0u) |
-                        (fpga_acq_record_coherent() ? SF_REC_COHERENT : 0u) |
+                        SF_REC_COHERENT |      /* every published record is one moment on both channels */
                         (ss->running ? SF_REC_RUNNING : 0u) |
                         (ss->true_scale ? SF_REC_TRUE_SCALE : 0u) |
                         (acq_cfg_equal(&cap, &now) ? 0u : SF_REC_STALE));
