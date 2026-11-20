@@ -1,0 +1,1074 @@
+/*
+ * OpenScope 2C53T - shell commands: system
+ *
+ * status, flash, CAN, USB, meter, settings, persistence, battery, signal
+ * generator, firmware loader.
+ */
+
+#include "shell_parts.h"
+
+static cfg_path_t fpga_cfg_path(void)
+{
+    if (!fpga.h2_upload_done) return CFG_PATH_NONE;
+    return (fpga.diag_spi_ctrl1 == 0xBBBBu) ? CFG_PATH_BITBANG : CFG_PATH_HWSPI;
+}
+
+static const char *fpga_cfg_path_name(cfg_path_t p)
+{
+    switch (p) {
+    case CFG_PATH_BITBANG: return "GPIO bit-bang (FPGA_CONFIG_B)";
+    case CFG_PATH_HWSPI:   return "hardware SPI3";
+    default:               return "NONE — no config sequence ran this boot";
+    }
+}
+
+static void usb_print_last_tx_frame(void)
+{
+    usb_send_str("last_tx_frame:");
+    for (int i = 0; i < FPGA_TX_FRAME_SIZE; i++) {
+        usb_debug_printf(" %02X", (unsigned)fpga.last_tx_frame[i]);
+    }
+    usb_send_str("\r\n");
+}
+
+/* For the feature shell files (shell_internal.h); usb_print_last_tx_frame() unchanged. */
+void usb_debug_sh_print_last_tx_frame(void)
+{
+    usb_print_last_tx_frame();
+}
+
+static void usb_print_recent_tx_frames(void)
+{
+    uint8_t count = fpga.tx_frame_history_count;
+
+    usb_send_str("tx_frames_recent:");
+    for (uint8_t i = 0; i < count; i++) {
+        uint8_t idx = (uint8_t)((fpga.tx_frame_history_head +
+                                 FPGA_TX_FRAME_HISTORY - count + i) %
+                                FPGA_TX_FRAME_HISTORY);
+        usb_send_str(" [");
+        for (int j = 0; j < FPGA_TX_FRAME_SIZE; j++) {
+            usb_debug_printf("%s%02X",
+                             j == 0 ? "" : " ",
+                             (unsigned)fpga.tx_frame_history[idx][j]);
+        }
+        usb_send_str("]");
+    }
+    usb_send_str("\r\n");
+}
+
+/* For the feature shell files (shell_internal.h); usb_print_recent_tx_frames() unchanged. */
+void usb_debug_sh_print_recent_tx_frames(void)
+{
+    usb_print_recent_tx_frames();
+}
+
+void cmd_status(void)
+{
+    extern volatile uint32_t uptime_seconds;
+
+    /*
+     * Keep the status header in chunks smaller than usb_debug_printf()'s
+     * 256-byte buffer. A single oversized format string silently truncates the
+     * output and can glue the following line onto "SPI3 OK", which makes live
+     * DMM evidence harder to compare across firmware builds.
+     */
+    usb_debug_printf(
+        "=== System ===\r\n"
+        "Uptime: %lus\r\n"
+        "SYSCLK: %uMHz\r\n"
+        "\r\n=== FPGA ===\r\n"
+        "Initialized: %s\r\n"
+        "SPI3 pins released: %s\r\n"
+        "TX count: %u\r\n"
+        "RX bytes: %u\r\n"
+        "Data frames: %u\r\n"
+        "Echo frames: %u\r\n"
+        "RX sync: data_start=%u echo_start=%u data_hdr=%u echo_hdr=%u bad2=%u stray=%u\r\n",
+        (unsigned long)uptime_seconds,
+        system_core_clock / 1000000,
+        fpga.initialized ? "YES" : "NO",
+        fpga.bus_released ? "YES" : "NO",
+        fpga.tx_count,
+        fpga.rx_byte_count,
+        fpga.frame_count,
+        fpga.echo_count,
+        fpga.rx_sync_data_start_count,
+        fpga.rx_sync_echo_start_count,
+        fpga.rx_sync_data_header_count,
+        fpga.rx_sync_echo_header_count,
+        fpga.rx_sync_bad_second_count,
+        fpga.rx_sync_stray_count
+    );
+    usb_debug_printf(
+        "RX gates: data_tx_busy_drop=%u echo_valid=%u echo_bad=%u\r\n",
+        fpga.rx_data_tx_busy_drop_count,
+        fpga.rx_echo_valid_count,
+        fpga.rx_echo_bad_count
+    );
+    usb_debug_printf(
+        "SPI3 OK: %u\r\n"
+        "SPI3 records refused: %u (transfers timed out: %u)\r\n"
+        "SPI3 first byte: 0x%02X\r\n",
+        fpga.spi3_ok_count,
+        fpga.spi3_total_timeouts,
+        fpga.spi3_hw_timeouts,
+        fpga.spi3_first_byte
+    );
+    /* Trigger-regime instruments (2026-08-14): PC0 falling edges = fresh
+     * data-ready events (sample twice to get a rate); acq headers are the 3
+     * MISO bytes of the last 04/05 read — stock's CH1 b2==01 = buffer valid. */
+    usb_debug_printf(
+        "PC0 edges: %lu\r\n"
+        "acq latency: %lu ms (strobe -> commit, last cycle); poll reads before it: %lu (total %lu)\r\n"
+        "acq rotation: %ld samples (seam of the last strobed record; -1 = none)\r\n"
+        "acq hdr CH1: %02X %02X %02X  CH2: %02X %02X %02X\r\n",
+        (unsigned long)fpga.pc0_edges,
+        (unsigned long)fpga.acq_last_latency_ms, (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads,
+        (long)fpga.acq_last_rot,
+        fpga.acq_hdr_ch1[0], fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2],
+        fpga.acq_hdr_ch2[0], fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]
+    );
+    /* The timebase in force (reg 0x01, sample rate, s/div) and what the boot
+     * reconcile did: `get tb.code` gives the code and the label only. */
+    timebase_print_status(false);
+    usb_print_last_tx_frame();
+    usb_print_recent_tx_frames();
+
+    /* spi3_first_byte is written only when an acquisition read is actually
+     * attempted (fpga.c ~1589 normal path, ~1718 warm-handoff 0x04 path). With
+     * no attempt it is still 0x00 from .bss, which is indistinguishable from a
+     * real 0x00 off the wire. Counters are the witness: a read attempt either
+     * succeeds (ok_count) or times out (total_timeouts). */
+    if (fpga.spi3_ok_count == 0 && fpga.spi3_total_timeouts == 0)
+        usb_send_str("SPI3 first byte: n/a (no acquisition read attempted yet)\r\n");
+    else
+        usb_debug_printf("SPI3 first byte: 0x%02X\r\n", fpga.spi3_first_byte);
+
+    /* Split FPGA diag into separate printf to avoid buffer overflow */
+    usb_debug_printf(
+        "\r\n=== FPGA Diag ===\r\n"
+        "IOMUX remap: 0x%08lX (init)\r\n"
+        "IOMUX remap5: 0x%08lX (init)\r\n"
+        "IOMUX remap LIVE: 0x%08lX\r\n"
+        "IOMUX remap5 LIVE: 0x%08lX\r\n"
+        /* 0xBBBB is not a register value — fpga_bitbang_config_sequence()
+         * stores it as a "this was the bit-bang build" marker. Printing it
+         * bare invites reading it as a real CTRL1. */
+        "SPI3 CTRL1: 0x%04lX%s  STS: 0x%04lX (both captured at SPI3 init)\r\n"
+        "PB4(MISO) IDT: %d  PC6(EN): %d  PB6(CS): %d (live pin reads)\r\n",
+        fpga.diag_remap5,
+        fpga.diag_remap7,
+        (unsigned long)IOMUX->remap,
+        (unsigned long)IOMUX->remap5,
+        fpga.diag_spi_ctrl1,
+        (fpga.diag_spi_ctrl1 == 0xBBBBu) ? " (marker: bit-bang build, not a register read)" : "",
+        fpga.diag_spi_sts,
+        (GPIOB->idt & (1 << 4)) ? 1 : 0,
+        (GPIOC->idt & (1 << 6)) ? 1 : 0,
+        (GPIOB->idt & (1 << 6)) ? 1 : 0
+    );
+
+    /* ── SPI3 handshake MISO capture ──────────────────────────────────────
+     *
+     * init_hs[0..10] is written ONLY by fpga_spi3_config_sequence() (fpga.c
+     * ~2449-2550). The bit-bang path does not touch it, and a build that runs
+     * no config path at all does not either — so on those builds G1/G2/G3 read
+     * 00 00 00 00, which is also what a dead MISO line looks like. That is the
+     * exact defect fixed for the H2 block on 2026-08-13, still open here.
+     */
+    {
+        cfg_path_t path = fpga_cfg_path();
+
+        usb_send_str("\r\n=== SPI3 Handshake (11 bytes) ===\r\n");
+        if (path == CFG_PATH_HWSPI) {
+            usb_debug_printf(
+                "G1: %02X %02X %02X %02X  G2: %02X %02X %02X\r\n"
+                "G3: %02X %02X %02X %02X\r\n",
+                fpga.init_hs[0], fpga.init_hs[1], fpga.init_hs[2], fpga.init_hs[3],
+                fpga.init_hs[4], fpga.init_hs[5], fpga.init_hs[6],
+                fpga.init_hs[7], fpga.init_hs[8], fpga.init_hs[9], fpga.init_hs[10]);
+        } else {
+            usb_debug_printf("G1/G2/G3: n/a — never captured (config path: %s)\r\n",
+                             fpga_cfg_path_name(path));
+        }
+
+    }
+
+    /* ── Config status: the field that actually says whether we configured ──
+     *
+     * 2026-08-13: this block used to print only the hardware-SPI fields below,
+     * unconditionally. Under a bit-bang build (FPGA_CONFIG_B) that path never
+     * runs, so `0x3A close status` and `0x03 scope status` sit at their
+     * zero-init values — and the shell confidently printed 00 / 00 00 00 00,
+     * the exact signature of a REFUSED config, on a device that was configured
+     * and capturing. Same family as the /2 status reads and the floating MISO:
+     * an instrument reporting on something it cannot see.
+     *
+     * cfg_status_reg[] is the Gowin STATUS register (0x41), populated by
+     * whichever config path ran. It is the authoritative answer, so it goes
+     * first and is decoded rather than left as raw hex. */
+    {
+        uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
+                      ((uint32_t)fpga.cfg_status_reg[1] << 16) |
+                      ((uint32_t)fpga.cfg_status_reg[2] << 8)  |
+                      (uint32_t)fpga.cfg_status_reg[3];
+        cfg_path_t path = fpga_cfg_path();
+
+        usb_debug_printf("\r\n=== FPGA Config ===\r\n"
+                         "path: %s\r\n", fpga_cfg_path_name(path));
+
+        if (path == CFG_PATH_NONE) {
+            /* Nothing below this line was measured. Say so and print nothing
+             * that could be mistaken for a reading — cfg_status_reg,
+             * probe_id_bit_close, h2_close_status and scope_status are all
+             * still at their .bss zeros, and probe_id_bit_close == 0 in
+             * particular would otherwise decode as "anchor matched at bit 0". */
+            usb_send_str(
+                "STATUS(0x41):  n/a — not read\r\n"
+                "IDCODE anchor: n/a — not read\r\n"
+                "H2 upload:     n/a — no bitstream sent this boot\r\n"
+                "0x3A close status: n/a\r\n"
+                "0x03 scope status: n/a\r\n"
+                "NOTE: on a warm-handoff or bus-released build the FPGA may be\r\n"
+                "      fully configured by stock; this shell simply cannot see it.\r\n");
+        } else {
+            /* ANCHOR FIRST — the project's mandatory method (CLAUDE.md, Exp J).
+             * fpga.c reads IDCODE at /256 in the SAME window as this status, so
+             * the status is only believed on a read path validated against a
+             * known answer. The shell never showed it, which left STATUS looking
+             * like a bare fact. Exp L: a part that configured successfully STOPS
+             * answering SSPI, so id_bit_close < 0 is the success-shaped reading
+             * and id_bit_close >= 0 proves the port never closed. */
+            usb_debug_printf(
+                "STATUS(0x41): %08lX  DONE_FINAL(13): %s\r\n"
+                "IDCODE anchor after close: %s\r\n",
+                (unsigned long)sr,
+                ((sr >> 13) & 1u) ? "SET — configured" : "clear — NOT configured",
+                (fpga.probe_id_bit_close < 0)
+                    ? "silent (config port closed — consistent with configured;"
+                      " a dead bus reads the same)"
+                    : "still answering 0x0120681B => port OPEN => NOT configured");
+
+            usb_debug_printf("\r\n=== H2 Bitstream Upload ===\r\n"
+                             "Bytes sent: %lu / 115638\r\n"
+                             "Upload done: %s\r\n",
+                             fpga.h2_bytes_sent,
+                             fpga.h2_upload_done ? "YES" : "NO");
+
+            /* The two hardware-SPI-only readbacks. Suppress them on the bit-bang
+             * path rather than printing zeros that read as a refusal. */
+            if (path == CFG_PATH_BITBANG) {
+                usb_send_str("0x3A close status: n/a (bit-bang path does not read it)\r\n"
+                             "0x03 scope status: n/a (bit-bang path does not read it)\r\n");
+            } else {
+                usb_debug_printf(
+                    "0x3A close status: %02X (stock: F8)\r\n"
+                    "0x03 scope status: %02X %02X %02X %02X (stock: 00 01 42 2E)\r\n",
+                    fpga.h2_close_status,
+                    fpga.scope_status[0], fpga.scope_status[1],
+                    fpga.scope_status[2], fpga.scope_status[3]);
+            }
+        }
+    }
+
+    /* Show last RX frame if valid */
+    if (fpga.rx_frame_valid) {
+        usb_debug_printf("Last RX frame:");
+        for (int i = 0; i < FPGA_RX_FRAME_SIZE; i++)
+            usb_debug_printf(" %02X", fpga.rx_frame[i]);
+        usb_send_str("\r\n");
+    }
+}
+
+void cmd_flash_jedec(void)
+{
+    uint8_t manufacturer = 0;
+    uint8_t memory_type = 0;
+    uint8_t capacity = 0;
+
+    flash_fs_error_t err = flash_fs_raw_read_jedec(&manufacturer, &memory_type, &capacity);
+    if (err != FLASH_FS_OK) {
+        usb_debug_printf("ERR: flash jedec failed (%d)\r\n", (int)err);
+        return;
+    }
+
+    usb_debug_printf("SPI flash JEDEC: %02X %02X %02X\r\n",
+                     manufacturer, memory_type, capacity);
+}
+
+void cmd_flash_read(const char *args)
+{
+    char buf[64];
+    char *saveptr = NULL;
+    char *tok;
+    uint32_t addr;
+    uint32_t len;
+    uint8_t data[256];
+
+    if (strlen(args) >= sizeof(buf)) {
+        usb_send_str("Usage: flash read <addr> <len>\r\n");
+        return;
+    }
+
+    strcpy(buf, args);
+    tok = strtok_r(buf, " \t", &saveptr);
+    if (tok == NULL || parse_int(tok, &addr) != 0) {
+        usb_send_str("Usage: flash read <addr> <len>\r\n");
+        return;
+    }
+
+    tok = strtok_r(NULL, " \t", &saveptr);
+    if (tok == NULL || parse_int(tok, &len) != 0 || len == 0 || len > sizeof(data)) {
+        usb_send_str("Usage: flash read <addr> <len>\r\n");
+        usb_send_str("  len must be 1..256\r\n");
+        return;
+    }
+
+    flash_fs_error_t err = flash_fs_raw_read_bytes(addr, data, len);
+    if (err != FLASH_FS_OK) {
+        usb_debug_printf("ERR: flash read failed (%d)\r\n", (int)err);
+        return;
+    }
+
+    usb_debug_printf("Flash read 0x%06lX (%lu bytes):\r\n", addr, len);
+    for (uint32_t i = 0; i < len; i++) {
+        if ((i % 16) == 0) {
+            usb_debug_printf("0x%06lX:", addr + i);
+        }
+        usb_debug_printf(" %02X", data[i]);
+        if ((i % 16) == 15 || i == (len - 1)) {
+            usb_send_str("\r\n");
+        }
+    }
+}
+
+void cmd_flash_dump(const char *args)
+{
+    char buf[64];
+    char *saveptr = NULL;
+    char *tok;
+    uint32_t addr;
+    uint32_t len;
+    uint8_t chunk[256];
+
+    if (strlen(args) >= sizeof(buf)) {
+        usb_send_str("Usage: flash dump <addr> <len>\r\n");
+        return;
+    }
+
+    strcpy(buf, args);
+    tok = strtok_r(buf, " \t", &saveptr);
+    if (tok == NULL || parse_int(tok, &addr) != 0) {
+        usb_send_str("Usage: flash dump <addr> <len>\r\n");
+        return;
+    }
+
+    tok = strtok_r(NULL, " \t", &saveptr);
+    if (tok == NULL || parse_int(tok, &len) != 0 || len == 0 || len > 4096) {
+        usb_send_str("Usage: flash dump <addr> <len>\r\n");
+        usb_send_str("  len must be 1..4096\r\n");
+        return;
+    }
+
+    usb_debug_printf("FLASHDUMP %lu\r\n", len);
+
+    while (len > 0) {
+        uint32_t this_len = (len > sizeof(chunk)) ? sizeof(chunk) : len;
+        flash_fs_error_t err = flash_fs_raw_read_bytes(addr, chunk, this_len);
+        if (err != FLASH_FS_OK) {
+            usb_debug_printf("\r\nERR: flash dump failed (%d)\r\n", (int)err);
+            return;
+        }
+
+        usb_send_bytes(chunk, (uint16_t)this_len);
+        addr += this_len;
+        len -= this_len;
+    }
+}
+
+/*
+ * Factory-cal self-protection (src/util/cal_backup.c).
+ *   cal status              report the MCU cal page and the W25Q backup
+ *   cal backup              copy the MCU cal page to the W25Q (safe: W25Q only)
+ *   cal restore [force] CONFIRM   write the W25Q backup back to MCU flash
+ * Restore refuses to overwrite a programmed (precious) page unless `force`.
+ */
+/* ── CAN bus analyser (CH1 = CAN_H, CH2 = CAN_L) ───────────────────────────
+ *   can decode              decode the current record, frame by frame
+ *   can stats [n]           n fresh records (default 20): per-ID counts, ACK/NAK/CRC
+ *   can screen [on|off]     readout on badge row 2, refreshed 5x per second
+ * Best timebase for decoding a 500 kbit/s bus: 0x0A (whole frame + ACK). */
+static const char *can_flags_str(uint8_t f)
+{
+    if (f & DECODE_FLAG_ERROR) return "ERR";
+    if (f & DECODE_FLAG_TRUNC) return "TRUNC";
+    if (f & DECODE_FLAG_CRC)   return "CRC-FAIL";
+    if (f & DECODE_FLAG_ACK)   return "ACK";
+    if (f & DECODE_FLAG_NAK)   return "NAK";
+    return "?";
+}
+
+static void can_print_report(const can_bus_report_t *r, uint32_t gen)
+{
+    unsigned spb100 = (unsigned)(r->spb * 100.0f + 0.5f);
+    usb_debug_printf("record gen=%lu tb=0x%02X fs=%lu S/s  rot=%ld  spb=%u.%02u  bit rate=%lu  "
+                     "recessive=%d dominant=%d (CH1-CH2 counts)\r\n",
+                     (unsigned long)gen, (unsigned)fpga_acq_rate_idx_get(),
+                     (unsigned long)(can_scope_sample_rate(fpga_acq_rate_idx_get()) + 0.5f),
+                     (long)r->rotation, spb100 / 100u, spb100 % 100u,
+                     (unsigned long)(r->bit_rate + 0.5f), (int)r->level_rec, (int)r->level_dom);
+}
+
+void cmd_can_decode(void)
+{
+    can_bus_report_t rep;
+    const decode_result_t *res = NULL;
+    uint32_t gen = 0;
+    if (!can_scope_capture(&rep, &res, &gen)) {
+        usb_send_str("can decode: no capture or no memory\r\n");
+        return;
+    }
+    if (!rep.signal) {
+        usb_send_str("can decode: no CAN signal in this record (flat or no two levels)\r\n");
+        return;
+    }
+    can_print_report(&rep, gen);
+    for (uint16_t i = 0; i < res->num_frames; i++) {
+        const decode_frame_t *f = &res->frames[i];
+        usb_debug_printf("  #%u @%lu..%lu  ID %s%0*lX  DLC %u ", (unsigned)i,
+                         (unsigned long)f->start_sample, (unsigned long)f->end_sample,
+                         (f->flags & DECODE_FLAG_EXT) ? "x" : "",
+                         (f->flags & DECODE_FLAG_EXT) ? 8 : 3, (unsigned long)f->id,
+                         (unsigned)f->data_len);
+        for (uint8_t k = 0; k < f->data_len; k++) usb_debug_printf("%02X ", f->data[k]);
+        usb_debug_printf("%s%s\r\n", (f->flags & DECODE_FLAG_RTR) ? "RTR " : "",
+                         can_flags_str(f->flags));
+    }
+    if (res->num_frames == 0) usb_send_str("  no frame start in this record\r\n");
+}
+
+void cmd_can_stats(const char *args)
+{
+    uint32_t n = 20;
+    while (args && *args == ' ') args++;
+    if (args && *args && (parse_int(args, &n) != 0 || n == 0 || n > 1000)) {
+        usb_send_str("Usage: can stats [records 1-1000]\r\n");
+        return;
+    }
+    can_bus_stats_t *st = can_scope_stats();
+    if (!st) { usb_send_str("can stats: no memory\r\n"); return; }
+    can_bus_stats_reset(st);
+    can_bus_report_t rep, last;
+    memset(&last, 0, sizeof(last));
+    uint32_t last_gen = 0xFFFFFFFFu, got = 0;
+    TickType_t t0 = xTaskGetTickCount();
+    while (got < n && (xTaskGetTickCount() - t0) < pdMS_TO_TICKS(1000u * n + 2000u)) {
+        const decode_result_t *res = NULL;
+        uint32_t gen = 0;
+        if (can_scope_capture(&rep, &res, &gen) && gen != last_gen) {
+            can_bus_stats_add(st, &rep, res);
+            last_gen = gen;
+            if (rep.signal) last = rep;
+            got++;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    }
+    char line[64];
+    can_bus_summary(st, &last, line, sizeof(line));
+    usb_debug_printf("%s\r\n", line);
+    usb_debug_printf("records %lu (idle %lu)  frames %lu  ACK %lu  NAK %lu  CRC-fail %lu  ERR %lu  "
+                     "cut-off %lu\r\n",
+                     (unsigned long)st->records, (unsigned long)st->idle, (unsigned long)st->frames,
+                     (unsigned long)st->ack, (unsigned long)st->nak, (unsigned long)st->crc,
+                     (unsigned long)st->err, (unsigned long)st->trunc);
+    for (uint8_t k = 0; k < st->nids; k++) {
+        const can_bus_id_t *e = &st->ids[k];
+        usb_debug_printf("  ID %s%0*lX  seen %lu  ACK %lu  NAK %lu  last:", e->ext ? "x" : "",
+                         e->ext ? 8 : 3, (unsigned long)e->id, (unsigned long)e->seen,
+                         (unsigned long)e->ack, (unsigned long)e->nak);
+        for (uint8_t b = 0; b < e->dlc; b++) usb_debug_printf(" %02X", e->data[b]);
+        usb_send_str("\r\n");
+    }
+    if (st->ids_dropped)
+        usb_debug_printf("  (%lu frames with IDs beyond the %u-entry table)\r\n",
+                         (unsigned long)st->ids_dropped, (unsigned)CAN_BUS_MAX_IDS);
+    if (last.signal) can_print_report(&last, last_gen);
+}
+
+void cmd_can_screen(const char *args)
+{
+    while (args && *args == ' ') args++;
+    if (args && *args) {
+        if      (strncmp(args, "on",  2) == 0) can_scope_screen_set(true);
+        else if (strncmp(args, "off", 3) == 0) can_scope_screen_set(false);
+        else { usb_send_str("Usage: can screen [on|off]\r\n"); return; }
+    }
+    usb_debug_printf("can screen %s\r\n", can_scope_screen_on() ? "ON (badge row 2)" : "OFF");
+}
+
+void cmd_meter_relays(const char *args)
+{
+    bool on;
+    if (shell_onoff_arg(args, &on)) fpga_meter_relays_set(on);
+    else if (*args) { usb_send_str("usage: meter relays [on|off]\r\n"); return; }
+    usb_debug_printf("meter relays: %s (on = meter entry moves the scope's range relays, the old"
+                     " behaviour, and the meter link follows the screen only; applies at the next"
+                     " meter entry or function change)\r\n",
+                     onoff(fpga_meter_relays_get()));
+}
+
+void cmd_meter_state(void)
+{
+    meter_reading_t r;
+    uint8_t sel = 0, f36 = 0;
+    bool m_on, active;
+    int8_t port;
+    uint32_t edges, pulses, gated, tick;
+    char hex[12 * 3 + 1];
+
+    memset(&r, 0, sizeof r);
+    if (!meter_data_snapshot(&r)) {
+        usb_send_str("meter state: no snapshot\r\n");
+        return;
+    }
+    (void)meter_stock_selector_for_submode(meter_submode, &sel, &f36);
+    usb_debug_printf("meter state: mode=%lu submode=%u (%s) stock_sel=%u F36=%u word=%04X\r\n",
+                     (uint32_t)current_mode, (unsigned)meter_submode,
+                     meter_submode_name(meter_submode), (unsigned)sel, (unsigned)f36,
+                     (unsigned)fpga_meter_stock_cmd_word_for_submode(meter_submode));
+    {
+        /* The link policy as the display task last evaluated it (main.c). */
+        bool usb_host = false, background = false, want_on = false;
+        meter_link_status(&usb_host, &background, &want_on);
+        usb_debug_printf("  link: on=%u want_on=%u policy=%s usb_host=%u background=%u soc_live=%u PC11=%u"
+                         " fast=%s keepalive=%s fast_switches=%u fallbacks=%u"
+                         " wake_ms=%u echo_ok=%u tries=%u sequences=%u data_frames=%u\r\n",
+                         fpga_meter_link_on() ? 1U : 0U, want_on ? 1U : 0U,
+                         prop_get(P(METER_LINK)) == METER_LINK_ALWAYS ? "always" : "screen",
+                         usb_host ? 1U : 0U, background ? 1U : 0U,
+                         fpga_meter_soc_live() ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
+                         onoff(fpga_meter_fast_switch_get()), onoff(fpga_meter_keepalive_get()),
+                         (unsigned)fpga.meter_fast_switch_count, (unsigned)fpga.meter_fast_fallback_count,
+                         (unsigned)fpga.meter_soc_wake_ms, (unsigned)fpga.meter_selector_confirmed,
+                         (unsigned)fpga.meter_selector_attempts, (unsigned)fpga.meter_mode_sequence_count,
+                         (unsigned)fpga.frame_count);
+    }
+    usb_debug_printf("  reading: valid=%u sub=%u class=%u status=%u(%s) text=\"%s\" unit=\"%s\" value=%d.%03d\r\n",
+                     r.valid ? 1U : 0U, (unsigned)r.submode, (unsigned)r.result_class,
+                     (unsigned)r.status_code,
+                     meter_stock_status_text((meter_stock_status_t)r.status_code),
+                     r.display_str, r.unit_suffix ? r.unit_suffix : "",
+                     (int)r.value,
+                     (int)((r.value < 0 ? -r.value : r.value) * 1000.0f) % 1000);
+    usb_debug_printf("  range: index=%u label=%s  f6=%02X f7=%02X f8=%02X  degF=%s"
+                     "  auto_fn=%u (0 none,1 DCV,2 ACV,3 Ohm,4 Cont) f2=%02X\r\n",
+                     (unsigned)r.range_index, r.range_label,
+                     (unsigned)r.dbg_frame[6], (unsigned)r.dbg_frame[7], (unsigned)r.dbg_frame[8],
+                     onoff(meter_data_fahrenheit()), (unsigned)r.auto_fn,
+                     (unsigned)r.dbg_frame[2]);
+    for (int i = 0; i < 12; i++)
+        snprintf(hex + i * 3, 4, "%02X ", (unsigned)r.dbg_frame[i]);
+    usb_debug_printf("  frame: %s\r\n", hex);
+    continuity_buzzer_soc_status(&m_on, &port, &edges, &pulses, &gated, &active, &tick);
+    usb_debug_printf("  beep: soc_edge=%s port=%c edges=%lu pulses=%lu gated_out=%lu active=%u tick_ms=%lu gate=%u\r\n",
+                     onoff(m_on), port < 0 ? '-' : (char)('A' + port), edges, pulses, gated,
+                     active ? 1U : 0U, tick,
+                     meter_stock_beep_gate_for_submode(meter_submode) ? 1U : 0U);
+    usb_debug_printf("  cal-wizard guard: refused=%u last=%04X (0x02A0 0x0503 0x0501 are never sent obeyed)\r\n",
+                     (unsigned)fpga.meter_cal_word_refused, (unsigned)fpga.meter_cal_word_last);
+}
+
+/*
+ * `fpga scope freq [n]` — run the SHIPPED frequency estimator on the live
+ * acquisition buffer, n times, and report every outcome including refusals.
+ *
+ * This exists because reading a number off the LCD cannot distinguish "the
+ * estimator is right" from "the estimator is wrong and the badge is holding a
+ * stale value". It reports the diagnostics the badge throws away: sharpness,
+ * which window was used, and the interpolated bin.
+ */
+/*
+ * `settings` — why did the boot reconcile say what it said?
+ *
+ * Added 2026-08-19 after three consecutive power cycles reported "pulled the
+ * display down to the arm block's 0x08", i.e. the restored timebase had no
+ * measured rate — including one run where the change was committed through a
+ * documented immediate-flush point (a mode switch). That is either a write
+ * that never reached flash or a load that never came back, and NOTHING ON THE
+ * DEVICE DISTINGUISHED THEM: settings_store_status_t has carried
+ * storage_bound, load_result, writes, write_failures and changes_seen since
+ * the store was written, and no caller ever read them.
+ *
+ * Same shape as the /2 SSPI reads, the floating MISO and the invented
+ * volts/div labels: a conclusion drawn from one bit, while the instrument that
+ * would have settled it already existed and was simply never wired up.
+ */
+/* reset settings CONFIRM: "Reset to defaults" on the direct route. The
+ * built-in defaults (the property table's) go over the user settings (the
+ * saved record) through the same function as the Settings row: the input
+ * task runs every setter, so the hardware follows, and writes the record
+ * (input_handler.c settings_reset_now -> settings_store_reset_to_defaults).
+ * The word CONFIRM is the confirm step. Never touched: calibration of any
+ * kind, the gallery, the logo, the firmware cache. */
+static void reset_emit(const char *line) { (void)usb_debug_printf("%s\r\n", line); }
+
+void cmd_reset_settings(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strcmp(args, "SESSION") == 0) {
+        /* Defaults for this session without saving: not offered. The store
+         * saves the live state on the next key press or screen change
+         * (settings_store.h), so "not saved" could not be kept. */
+        usb_send_str("ERR reset settings SESSION is not available: the settings store saves the live "
+                     "state on the next key press, so the defaults would be saved anyway\r\n");
+        return;
+    }
+    if (strcmp(args, "CONFIRM") != 0) {
+        usb_send_str("usage: reset settings CONFIRM\r\n"
+                     "  every setting back to its built-in default (list changed shows which), applied "
+                     "and saved\r\n"
+                     "  kept: calibration (factory, backup, cal user, il.*), gallery, logo, firmware "
+                     "cache, the screen shown\r\n");
+        return;
+    }
+    settings_reset_result_t r;
+    bool in_progress = false;
+    /* Each scope register a reset moves may wait for an acquisition park
+     * (<= ~1 s); a dozen of them is the worst case. */
+    if (!input_settings_reset_sync(20000u, &r, &in_progress)) {
+        usb_send_str(in_progress
+                     ? "TIMEOUT: the reset is still running on the input task; check with: list changed\r\n"
+                     : "TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing changed, nothing saved\r\n");
+        return;
+    }
+    model_shell_reset_report(r.status, r.changed, r.left, settings_flush_outcome_text(r.saved), reset_emit);
+}
+
+void cmd_settings(void)
+{
+    const settings_store_status_t *st = settings_store_get_status();
+    const scope_state_t *ss = scope_state_get();
+
+    if (st == NULL) {
+        usb_send_str("settings: no status\r\n");
+        return;
+    }
+
+    usb_debug_printf("storage bound : %s\r\n",
+                     st->storage_bound ? "YES" : "NO - nothing can persist");
+    usb_debug_printf("boot load     : %s\r\n",
+                     config_load_result_name(st->load_result));
+    usb_debug_printf("writes ok     : %lu\r\n", (unsigned long)st->writes);
+    usb_debug_printf("write failures: %lu\r\n", (unsigned long)st->write_failures);
+    usb_debug_printf("changes seen  : %lu\r\n", (unsigned long)st->changes_seen);
+    usb_debug_printf("live timebase : 0x%02X\r\n", (unsigned)ss->timebase_idx);
+
+    /* The store's "write failures" above conflates a refusal we chose with a
+     * failure we suffered — config.h:162 warns about exactly that lie, and on
+     * 2026-08-20 it cost a bench session: three power-cycle tests blamed the
+     * write path when the build had writes disabled. These lines make the
+     * distinction unmissable. */
+    const config_persist_stats_t *cs = config_persist_stats();
+    usb_debug_printf("writes enabled: %s\r\n",
+                     cs->writes_enabled
+                         ? "YES (SETTINGS_PERSIST_WRITES=1)"
+                         : "NO - SETTINGS_PERSIST_WRITES=0 in this build "
+                           "(default is 1 since the 2026-08-20 bench pass)");
+    usb_debug_printf("saves ok/fail/disabled: %lu/%lu/%lu  last save status: %ld\r\n",
+                     (unsigned long)cs->saves_ok,
+                     (unsigned long)cs->saves_failed,
+                     (unsigned long)cs->saves_disabled,
+                     (long)cs->last_save_status);
+    usb_send_str("(a change carries only if a later button press or an "
+                 "orderly power-off follows it - see settings_store.h)\r\n");
+}
+
+void cmd_reboot_bootloader(void)
+{
+    usb_send_str("Rebooting to bootloader...\r\n");
+    usb_delay_ms(20);
+    dfu_request_reboot();
+}
+
+
+const char *meter_layout_name(uint8_t layout)
+{
+    switch (layout) {
+    case METER_LAYOUT_BIG:    return "big";
+    case METER_LAYOUT_CHART:  return "graph";
+    case METER_LAYOUT_STATS:  return "stats";
+    case METER_LAYOUT_FUSE:   return "fuse";
+    case METER_LAYOUT_LIMITS: return "limits";
+    default:                 return "?";
+    }
+}
+
+/* For the feature shell files (shell_internal.h); meter_layout_name() unchanged. */
+const char *usb_debug_sh_meter_layout_name(uint8_t layout)
+{
+    return meter_layout_name(layout);
+}
+
+/* persist [on|off]: whether shell commands save the settings they change.
+ * Off is for bench sweeps (one settings record per changed command otherwise);
+ * RAM only, on at every boot. Key presses save as usual either way. */
+void cmd_persist(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strncmp(args, "off", 3) == 0) {
+        shell_persist_set(false);
+        usb_debug_printf("persist off: shell changes stay unsaved until 'persist on' or a key press (back on at boot)\r\n");
+        return;
+    }
+    if (strncmp(args, "on", 2) == 0) {
+        const bool was_on = shell_persist_enabled();
+        const uint32_t skipped = shell_persist_skipped();
+        shell_persist_set(true);
+        settings_flush_outcome_t o;
+        if (input_settings_flush_sync(500u, &o))
+            usb_debug_printf("persist on (%lu save requests were skipped; now %s)\r\n",
+                             was_on ? 0ul : (unsigned long)skipped, settings_flush_outcome_text(o));
+        else
+            usb_debug_printf("persist on (save request timed out; the input task will save within 100 ms)\r\n");
+        return;
+    }
+    usb_debug_printf("persist %s", shell_persist_enabled() ? "on" : "off");
+    if (!shell_persist_enabled())
+        usb_debug_printf(" (%lu save requests skipped)", (unsigned long)shell_persist_skipped());
+    usb_debug_printf("\r\n");
+}
+
+/* batt: the gauge's inputs and outputs in one line. */
+void cmd_batt(const char *args)
+{
+    (void)args;
+    usb_debug_printf("batt: raw %u mV, rest %u mV, %u%%, external %u (PC7=%u), critical %u\r\n",
+                     (unsigned)battery_raw_mv(), (unsigned)battery_read_mv(), (unsigned)battery_percent(),
+                     (unsigned)battery_is_charging(), (unsigned)((GPIOC->idt >> 7) & 1u),
+                     (unsigned)battery_is_critical());
+}
+
+void cmd_meter_auto_async(const char *args)
+{
+    meter_autoselect_status_t st;
+
+    while (args && *args == ' ') args++;
+    if (args == NULL || *args == '\0' || strcmp(args, "start") == 0) {
+        if (meter_autoselect_start(700U)) {
+            usb_send_str("meter auto started settle_ms=700\r\n");
+        } else {
+            usb_send_str("meter auto start failed\r\n");
+        }
+    } else if (strncmp(args, "start ", 6) == 0) {
+        uint32_t settle_ms;
+        if (parse_int(args + 6, &settle_ms) != 0 || settle_ms > 3000U) {
+            usb_send_str("Usage: meter auto [start [settle_ms<=3000]|status|cancel]\r\n");
+            return;
+        }
+        if (meter_autoselect_start(settle_ms)) {
+            usb_debug_printf("meter auto started settle_ms=%lu\r\n", settle_ms);
+        } else {
+            usb_send_str("meter auto start failed\r\n");
+        }
+    } else if (strcmp(args, "status") == 0) {
+        /* handled below */
+    } else if (strcmp(args, "cancel") == 0) {
+        meter_autoselect_cancel();
+        usb_send_str("meter auto cancel requested\r\n");
+    } else {
+        usb_send_str("Usage: meter auto [start [settle_ms<=3000]|status|cancel]\r\n");
+        return;
+    }
+
+    meter_autoselect_get_status(&st);
+    usb_debug_printf("meter auto state=%s current=%u (%s) index=%u/%u "
+                     "best=%u (%s) best_score=%u last_score=%u "
+                     "settle_ms=%lu wait_budget_ms=%lu cancel=%u\r\n",
+                     meter_autoselect_state_name(st.state),
+                     (unsigned)st.current_submode,
+                     meter_submode_name(st.current_submode),
+                     (unsigned)st.current_index,
+                     (unsigned)st.candidate_count,
+                     (unsigned)st.best_submode,
+                     meter_submode_name(st.best_submode),
+                     (unsigned)st.best_score,
+                     (unsigned)st.last_score,
+                     st.settle_ms,
+                     st.wait_budget_ms,
+                     st.cancel_pending ? 1U : 0U);
+}
+
+/* ── siggen — signal generator state + the registers behind it ─────────
+ * Bench check for parity G1/G3/G4: every field the stock SWD session read
+ * (TMR7 DIV/PR/CTRL1, DAC CTRL both halves, DMA2 ch4, flex select, PA5
+ * mode) printed next to what we asked for, so a GEN-lead -> CH2 capture
+ * can be tied to the programming. The settings are the gen.* properties
+ * (set gen.wave=3 gen.amp=1.5 gen.freq=2000 gen.out=on); `siggen dump`
+ * adds the cycle in the DMA buffer. */
+static void siggen_print_state(void)
+{
+    const siggen_config_t *c = siggen_get_config();
+    siggen_timing_t t, st;
+    bool run = siggen_get_timing(&t);
+    uint32_t clk = dac_output_timer_clock_hz();
+    bool st_ok = siggen_timing_stock(c->frequency_hz, clk, &st);
+
+    usb_debug_printf("siggen: %s wave=%u(%s) freq=%lu Hz amp=%u.%u V duty=%u%%\r\n",
+                     run ? "ON" : (c->output_enabled ? "OFF(freq 0)" : "OFF"),
+                     c->waveform, siggen_wave_name(c->waveform),
+                     (unsigned long)c->frequency_hz,
+                     c->amplitude_dv / 10u, c->amplitude_dv % 10u, c->duty_pct);
+    if (run)
+        usb_debug_printf("  timing: clk=%lu DIV=%u PR=%u -> %lu.%03lu Hz (stock DIV=%u PR=%u -> %lu.%03lu Hz)\r\n",
+                         (unsigned long)clk, t.div, t.pr,
+                         (unsigned long)(t.actual_mhz / 1000u), (unsigned long)(t.actual_mhz % 1000u),
+                         st.div, st.pr,
+                         (unsigned long)(st_ok ? st.actual_mhz / 1000u : 0u),
+                         (unsigned long)(st_ok ? st.actual_mhz % 1000u : 0u));
+    else
+        usb_debug_printf("  timing: clk=%lu (off)\r\n", (unsigned long)clk);
+
+    {
+        const siggen_edit_t *ed = siggen_ui_editor();
+        usb_debug_printf("  boot=%s  editor=%s digit=%u value=%lu\r\n",
+                         c->start_on ? "restore-on" : "off",
+                         ed->active ? "ACTIVE" : "idle", (unsigned)ed->digit,
+                         (unsigned long)ed->value);
+    }
+
+    uint32_t dctrl = DAC->ctrl;
+    usb_debug_printf("  TMR7: CTRL1=0x%04lX CTRL2=0x%04lX DIV=%lu PR=%lu CNT=%lu\r\n",
+                     (unsigned long)TMR7->ctrl1, (unsigned long)TMR7->ctrl2,
+                     (unsigned long)TMR7->div, (unsigned long)TMR7->pr,
+                     (unsigned long)TMR7->cval);
+    usb_debug_printf("  DAC: CTRL=0x%08lX (ch2 0x%04lX, ch1 0x%04lX) D2DTH12R=%lu D2ODT=%lu D1ODT=%lu\r\n",
+                     (unsigned long)dctrl, (unsigned long)(dctrl >> 16),
+                     (unsigned long)(dctrl & 0xFFFFu),
+                     (unsigned long)(DAC->d2dth12r & 0xFFFu),
+                     (unsigned long)(DAC->d2odt & 0xFFFu),
+                     (unsigned long)(DAC->d1odt & 0xFFFu));
+    usb_debug_printf("  DMA2 ch4: CTRL=0x%04lX DTCNT=%lu PADDR=0x%08lX MADDR=0x%08lX SRCSEL0=0x%08lX SRCSEL1=0x%08lX\r\n",
+                     (unsigned long)DMA2_CHANNEL4->ctrl, (unsigned long)DMA2_CHANNEL4->dtcnt,
+                     (unsigned long)DMA2_CHANNEL4->paddr, (unsigned long)DMA2_CHANNEL4->maddr,
+                     (unsigned long)DMA2->src_sel0, (unsigned long)DMA2->src_sel1);
+    usb_debug_printf("  PA5 CFG nibble=0x%lX (0 = analog)  buffer=0x%08lX\r\n",
+                     (unsigned long)((GPIOA->cfglr >> 20) & 0xFu),
+                     (unsigned long)(uint32_t)dac_output_get_buffer());
+    const uint16_t *cy = siggen_get_cycle();
+    uint16_t mn = 0xFFFF, mx = 0;
+    for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i++) {
+        if (cy[i] < mn) mn = cy[i];
+        if (cy[i] > mx) mx = cy[i];
+    }
+    usb_debug_printf("  cycle: [0]=%u [25]=%u [50]=%u [75]=%u min=%u max=%u\r\n",
+                     cy[0], cy[25], cy[50], cy[75], mn, mx);
+}
+
+void cmd_siggen(const char *args)
+{
+    while (*args == ' ') args++;
+    if (strcmp(args, "dump") == 0) {
+        const uint16_t *cy = siggen_get_cycle();
+        for (unsigned i = 0; i < SIGGEN_CYCLE_SAMPLES; i += 10)
+            usb_debug_printf("  %3u: %4u %4u %4u %4u %4u %4u %4u %4u %4u %4u\r\n", i,
+                             cy[i], cy[i + 1], cy[i + 2], cy[i + 3], cy[i + 4],
+                             cy[i + 5], cy[i + 6], cy[i + 7], cy[i + 8], cy[i + 9]);
+    } else if (*args) {
+        usb_send_str("usage: siggen [dump]  (no argument: state and registers)\r\n"
+                     "  the settings are properties: set gen.wave|gen.freq|gen.amp|gen.duty|gen.out|gen.bootout"
+                     " (gen.amp in volts: 1.5)\r\n");
+        return;
+    }
+    siggen_print_state();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Shell command table (2026-08-20; audit item 8.9)
+ *
+ * Replaces the ~110-entry if/strcmp dispatch chain. Each row binds ONE
+ * command to its handler, its bus-safety requirement and its help text, so
+ * the three can never drift apart again — the P0.1 fix had to hand-wrap
+ * eleven dispatch entries in spi3_shell_claim(); here that is one flag.
+ *
+ * Matching: a row matches when its name is a whole-word prefix of the line
+ * (next char is NUL/space/tab). The dispatcher picks the LONGEST matching
+ * name, so ordering in this table carries no semantics and near-miss pairs
+ * ("meter auto" / "meter autoscan", "trig" / "trig2") cannot shadow each
+ * other. Flags:
+ *   SC_EXACT    command takes no arguments; trailing text = no match
+ *               (falls through to "Unknown command", as before).
+ *   SC_NEEDARGS command requires arguments; a bare name prints the row's
+ *               help instead of running the handler — this preserves the
+ *               old chain's "trailing space required" contract and matters
+ *               because parse_int("") SUCCEEDS with 0, so a handler given
+ *               a bare name would otherwise act on the value 0.
+ *   SC_SPI3     handler drives the raw SPI3 bus: the dispatcher parks the
+ *               acquisition task around the call (audit P0.1).
+ *
+ * Adding a command = adding ONE row (CMD_A if the handler takes an args
+ * string, CMD_V if it takes void). Help is part of the row; keep the
+ * left-aligned name+argspec column at 32 chars like the rows around it.
+ * ═══════════════════════════════════════════════════════════════════ */
+/* ── fwload / fwstat / fwapply — image loading over this shell ──────────
+ * The state machine and every flash touch live in fw_loader.c; these
+ * handlers are parsing and printing only. The RX rerouting that feeds the
+ * transfer is in vUsbDebugTask below. */
+
+static const char *fwl_err_name(fw_loader_error_t e)
+{
+    switch (e) {
+    case FW_LOADER_ERR_NONE:    return "none";
+    case FW_LOADER_ERR_SIZE:    return "size (need even 8192..757760)";
+    case FW_LOADER_ERR_FLASH:   return "w25q erase/write/read";
+    case FW_LOADER_ERR_CRC:     return "crc mismatch";
+    case FW_LOADER_ERR_VECTOR:  return "vector table not app-shaped";
+    case FW_LOADER_ERR_TIMEOUT: return "rx went silent; run fwload again";
+    case FW_LOADER_ERR_NO_IMAGE: return "slot holds no valid image";
+    case FW_LOADER_ERR_NO_BUFFER: return "no scratch attached (shell task bug)";
+    }
+    return "?";
+}
+
+void fwl_print_status(void)
+{
+    static const char *names[] = { "IDLE", "RECEIVING", "STAGED", "ERROR" };
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "fwload: %s slot=%c %lu/%lu crc=%08lX err=%s\r\n"
+             "cache:  A=%lu/%08lX B=%lu/%08lX\r\n",
+             names[fw_loader_state()],
+             fw_loader_slot() ? 'b' : 'a',
+             (unsigned long)fw_loader_bytes(),
+             (unsigned long)fw_loader_expected(),
+             (unsigned long)fw_loader_crc_announced(),
+             fwl_err_name(fw_loader_error()),
+             (unsigned long)fw_loader_slot_size(0), (unsigned long)fw_loader_slot_crc(0),
+             (unsigned long)fw_loader_slot_size(1), (unsigned long)fw_loader_slot_crc(1));
+    usb_send_str(buf);
+    const fwl_breadcrumb_t *bc = fw_loader_breadcrumb_last();
+    if (bc->present)
+        usb_debug_printf("last install: %s (code %u)%s, page 0x%08lX, flash sts 0x%04X\r\n",
+                         fw_loader_breadcrumb_name(bc->code), (unsigned)bc->code,
+                         bc->spi2_stall ? ", SPI2 reclaim timed out" : "",
+                         (unsigned long)bc->addr, (unsigned)bc->sts);
+    else
+        usb_send_str("last install: no record since power-up (none, or the board lost power)\r\n");
+}
+
+void cmd_fwload(const char *args)
+{
+    char *end = NULL;
+    unsigned long size = strtoul(args, &end, 10);
+    char *end2 = NULL;
+    bool crc_bad = false;
+    unsigned long crc = 0;
+    if (end && *end) {
+        crc = strtoul(end, &end2, 16);
+        /* strtoul() leaves endptr == nptr when it converted nothing, so this
+         * separates "crc32 token is not hex" from "crc32 is literally 0" and
+         * from "no crc32 given" — all three used to print the same usage
+         * line, which sends the operator hunting a syntax error they do not
+         * have. */
+        if (end2 == end) crc_bad = true;
+    }
+    uint8_t slot = 1; /* default: slot b — "the other firmware" by custom */
+    bool slot_bad = false;
+    if (end2 != NULL) {
+        while (*end2 == ' ') end2++;
+        if (*end2 == 'a' || *end2 == 'A') slot = 0;
+        else if (*end2 == 'b' || *end2 == 'B') slot = 1;
+        else if (*end2 != '\0') slot_bad = true;
+        /* The letter must END the argument. `fwload 8192 DEADBEEF apple`
+         * matched 'a', dropped "pple" and armed the raw-byte intake — the
+         * same wedge the comment below describes, reached through the
+         * recognised-letter door instead of the unrecognised one. */
+        if (!slot_bad && *end2 != '\0') {
+            const char *tail = end2 + 1;
+            while (*tail == ' ') tail++;
+            if (*tail != '\0') slot_bad = true;
+        }
+    }
+    /* An argument that is present but is neither a nor b used to fall back to
+     * the default and arm the intake anyway: `fwload <size> <crc> c` put the
+     * shell into raw mode while the operator was still reading the reply, and
+     * the next line they typed went into the image instead of the parser.
+     * (Wedged the 2C23T port that way on 2026-08-24 — same parser, same trap.)
+     * Refusing costs nothing: cdc_flash.py never sends anything but a or b. */
+    if (crc_bad) {
+        /* Checked before slot_bad: an unparseable crc32 leaves end2 pointing at
+         * that same token, which can then be mis-blamed on the slot letter. */
+        usb_send_str("fwload: ERROR crc32 must be hex\r\n");
+        return;
+    }
+    if (slot_bad) {
+        usb_send_str("fwload: ERROR slot must be exactly a or b\r\n");
+        return;
+    }
+    if (end == args || crc == 0) {
+        usb_send_str("usage: fwload <size bytes, decimal> <crc32 hex> [a|b]\r\n"
+                     "       then stream exactly that many raw bytes\r\n");
+        return;
+    }
+    if (!fw_loader_begin((uint32_t)size, (uint32_t)crc, slot)) {
+        fwl_print_status();
+        return;
+    }
+    char buf[72];
+    snprintf(buf, sizeof(buf), "GO %lu bytes to slot %c, crc %08lX expected\r\n",
+             size, slot ? 'b' : 'a', crc);
+    usb_send_str(buf);
+}
+
+void cmd_fwstat(void)
+{
+    fwl_print_status();
+}
+
+void cmd_fwswap(const char *args)
+{
+    uint8_t slot;
+    while (*args == ' ') args++;
+    /* The token must be exactly one letter. A first-character match meant
+     * `fwswap apple` and `fwswap b0rked` both reached erase+program+system
+     * reset — the most destructive command in this shell, accepting the
+     * loosest argument in it. */
+    const char *sw_tail = (*args != '\0') ? args + 1 : args;
+    while (*sw_tail == ' ') sw_tail++;
+    if (*sw_tail != '\0') slot = 0xFF;
+    else if (*args == 'a' || *args == 'A') slot = 0;
+    else if (*args == 'b' || *args == 'B') slot = 1;
+    else slot = 0xFF;
+    if (slot == 0xFF) {
+        usb_send_str("usage: fwswap a|b   (install a cached image, no transfer)\r\n");
+        fwl_print_status();
+        return;
+    }
+    usb_send_str("verifying slot, then: erase+program+verify from RAM and\r\n"
+                 "SYSTEM RESET into the image. keep USB attached (it carries\r\n"
+                 "the rail through the reset). recovery = hold MENU through\r\n"
+                 "a pinhole reset (IAP), not MENU+Power.\r\n");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    if (!fw_loader_install_slot(slot)) {
+        fwl_print_status();
+    }
+}
+
+void cmd_fwapply(void)
+{
+    if (fw_loader_state() != FW_LOADER_STAGED) {
+        usb_send_str("nothing staged — fwload first (or fwswap a|b)\r\n");
+        fwl_print_status();
+        return;
+    }
+    usb_send_str("applying: erase+program+verify from RAM, then SYSTEM RESET\r\n"
+                 "into the new image (a clean boot, not a jump). this port\r\n"
+                 "drops now. keep USB attached — it carries the rail through\r\n"
+                 "the reset. recovery = hold MENU through a pinhole reset\r\n"
+                 "(IAP), not MENU+Power.\r\n");
+    vTaskDelay(pdMS_TO_TICKS(300));   /* let the goodbye reach the host */
+    if (!fw_loader_apply()) {
+        fwl_print_status();           /* only reached on a refused apply */
+    }
+}

@@ -63,7 +63,7 @@ STREAM_conflicts :=
 STREAM_srcs      := src/stream/stream.c src/stream/stream_frame.c
 STREAM_incs      := -Isrc/stream
 STREAM_defs      :=
-STREAM_shared    := usb_debug.o:cmd_stream|usb_debug_stream_
+STREAM_shared    := usb_cdc.o:usb_debug_stream_
 STREAM_bit       := 0
 
 # ── FFT, waterfall, split view ────────────────────────────────────────
@@ -131,7 +131,7 @@ USBDRIVE_srcs      := src/drivers/usb_composite.c src/drivers/usb_msc.c src/util
                       src/util/msc_scsi.c src/util/usb_comp_desc.c src/util/usb_mode_sm.c
 USBDRIVE_incs      :=
 USBDRIVE_defs      :=
-USBDRIVE_shared    := usb_debug.o:cmd_usb$$|usb_share|usbmode
+USBDRIVE_shared    := usb_cdc.o:cmd_usb$$|usb_share|usbmode
 USBDRIVE_bit       := 2
 
 # ── bench shell ───────────────────────────────────────────────────────

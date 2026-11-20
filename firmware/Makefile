@@ -91,7 +91,12 @@ C_SOURCES += src/drivers/meter_data.c
 C_SOURCES += src/drivers/meter_stock.c
 C_SOURCES += src/drivers/meter_auto.c
 C_SOURCES += src/drivers/meter_autoselect.c
-C_SOURCES += src/drivers/usb_debug.c
+C_SOURCES += src/drivers/usb_cdc.c
+C_SOURCES += src/drivers/shell.c
+C_SOURCES += src/drivers/shell_system.c
+C_SOURCES += src/drivers/shell_scope.c
+C_SOURCES += src/drivers/shell_cal.c
+C_SOURCES += src/drivers/shell_screen.c
 C_SOURCES += src/drivers/fw_loader.c
 C_SOURCES += src/drivers/rtt.c
 C_SOURCES += src/drivers/fault.c
@@ -412,7 +417,7 @@ endif
 # chooses what code is in the image, this one the default VALUES.
 # The stamp makes the two objects rebuild when DEFAULTS changes or goes away.
 DEFAULTS ?=
-MODEL_PROFILE_OBJS := $(BUILD_DIR)/model.o $(BUILD_DIR)/usb_debug.o
+MODEL_PROFILE_OBJS := $(BUILD_DIR)/model.o $(BUILD_DIR)/shell.o
 _defaults_now := $(strip $(DEFAULTS))
 _defaults_changed := $(shell [ -d $(BUILD_DIR) ] && [ "$$(cat $(BUILD_DIR)/defaults.stamp 2>/dev/null)" != "$(_defaults_now)" ] && echo "$(_defaults_now)" > $(BUILD_DIR)/defaults.stamp && echo changed)
 $(BUILD_DIR)/defaults.stamp: | $(BUILD_DIR)
@@ -550,7 +555,7 @@ features-ab:
 # (STREAM_SHELL_ROWS, BENCHSHELL_SHELL_ROWS, ...) are expanded or empty.
 #   make -s features-shell-table PROFILE=full
 # scripts/test_shell_profiles.py reads it per profile (make test-shell-profiles).
-SHELL_TABLE_SRC ?= src/drivers/usb_debug.c
+SHELL_TABLE_SRC ?= src/drivers/shell.c
 .PHONY: features-shell-table test-shell-profiles
 features-shell-table:
 	@$(CC) -E -P $(filter-out -MMD -MP,$(CFLAGS)) $(SHELL_TABLE_SRC)

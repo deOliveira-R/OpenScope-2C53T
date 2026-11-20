@@ -25,7 +25,8 @@ DRIVERS = Path(__file__).resolve().parent.parent / "firmware/src/drivers"
 # handlers of the bench shell and of the meter diagnostics are in their own
 # files (FEATURE_BENCHSHELL, FEATURE_METERDEBUG, FEATURE_RETOOLS). The
 # invariants hold over all of them, whatever a given image is built with.
-SRCS = [DRIVERS / n for n in ("usb_debug.c", "shell_bench.h", "shell_bench.c",
+SRCS = [DRIVERS / n for n in ("shell.c", "shell_system.c", "shell_scope.c", "shell_cal.c", "shell_screen.c",
+                              "usb_cdc.c", "shell_bench.h", "shell_bench.c",
                               "shell_meterdebug.h", "shell_meterdebug.c")]
 # The reverse-engineering toolkit (FEATURE_RETOOLS): its rows and every source
 # file of src/re/, so that a command moved there stays under invariant 4.
