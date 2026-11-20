@@ -200,7 +200,7 @@ void cmd_cal_page(const char *args)
                      (unsigned)p.m[0], g1, (unsigned)p.m[1], g2);
     usb_debug_printf("page header (stock UI state, not used): pos %d/%d mask %u tb 0x%02X\r\n",
                      (int)p.hdr_pos[0], (int)p.hdr_pos[1], (unsigned)p.hdr_mask, (unsigned)p.hdr_tb);
-    const uint8_t tb = fpga_acq_rate_idx_get(), mask = fpga.channel_mask;
+    const uint8_t tb = fpga_acq_rate_idx_get(), mask = scope_frontend_channel_mask();
     usb_debug_printf("in force: tb 0x%02X mask %u -> bank %u (tb>=5: 0; tb==4 or mask 3: 1; else 2)\r\n",
                      (unsigned)tb, (unsigned)mask, (unsigned)calpage_bank_select(tb, mask));
     print_vpos_channel(1u);

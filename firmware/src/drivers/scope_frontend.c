@@ -116,6 +116,11 @@ void fpga_scope_set_range_diag(uint8_t range_idx)
  *
  * Floating pins act as mask 1, so CH2 is lost unless these are driven.
  */
+/* The last PC1/PC2 code applied: 1 = CH1, 2 = CH2, 3 = both. */
+static volatile uint8_t applied_channel_mask;
+
+uint8_t scope_frontend_channel_mask(void) { return applied_channel_mask; }
+
 void fpga_set_channel_mask(uint8_t mask)
 {
     /* Make both pins outputs before driving them: a set/clear write to an
@@ -127,7 +132,7 @@ void fpga_set_channel_mask(uint8_t mask)
     case 2:  GPIOC->clr = (1u << 2); GPIOC->clr = (1u << 1); break;  /* CH2  */
     default: GPIOC->scr = (1u << 2); GPIOC->clr = (1u << 1); break;  /* BOTH */
     }
-    fpga.channel_mask = mask;
+    applied_channel_mask = mask;
 }
 
 volatile uint8_t fpga_scope_posture_gen;      /* fpga.h: moves when the scope's posture is back */

@@ -20,7 +20,7 @@
  *   - Senders put items (a command word, obeyed or unobeyed, or a raw
  *     frame) on usart_tx_queue. Nothing else reaches the wire.
  *   - fpga_usart_tx_task ("dvom_TX") takes one item, builds its frame in
- *     mlink.tx_frame, enables the TX interrupt and waits for the handler's
+ *     link_tx_frame, enables the TX interrupt and waits for the handler's
  *     signal that the frame is out.
  *   - USART2_IRQHandler sends the TX bytes and assembles received bytes into
  *     frames. A data frame goes to meter_rx_queue as a copied event; an echo
@@ -35,6 +35,19 @@
 #include "fpga_internal.h"
 
 meter_link_state_t mlink;
+
+/* The frame being sent and the position in it (dvom_TX fills, the USART2
+ * handler sends), and the frame being received (the handler only). */
+static volatile uint8_t link_tx_frame[FPGA_TX_FRAME_SIZE];
+static volatile uint8_t link_tx_index;
+static volatile uint8_t link_rx_buf[FPGA_RX_FRAME_SIZE];
+static volatile uint8_t link_rx_index;
+
+/* Low byte of the last frame sent obeyed: the echo check compares against
+ * this, not last_tx_frame, which the unobeyed keepalive overwrites between
+ * a command and its echo. */
+static volatile uint8_t link_last_obeyed_tx_lo;
+static volatile bool link_last_obeyed_tx_valid;
 
 /* Times of the link. None of these is a measured limit of the chip; they are
  * the values the link has run with, named so that they are in one place. */
@@ -131,8 +144,8 @@ static void fpga_meter_reset_transport(void)
     if (usart_tx_queue != NULL) xQueueReset(usart_tx_queue);
     if (meter_rx_queue != NULL) xQueueReset(meter_rx_queue);
 
-    mlink.tx_index = 0;
-    mlink.rx_index = 0;
+    link_tx_index = 0;
+    link_rx_index = 0;
     mlink.rx_frame_valid = false;
     (void)USART2->sts;
     (void)USART2->dt;
@@ -211,7 +224,7 @@ static void fpga_record_rx_raw_byte(uint8_t byte, uint8_t rx_index_before)
 
     mlink.rx_raw_history[idx] = byte;
     mlink.rx_raw_history_tx_count[idx] = mlink.tx_count;
-    mlink.rx_raw_history_tx_index[idx] = mlink.tx_index;
+    mlink.rx_raw_history_tx_index[idx] = link_tx_index;
     mlink.rx_raw_history_rx_index[idx] = rx_index_before;
     mlink.rx_raw_history_head =
         (uint8_t)((idx + 1U) % FPGA_RX_RAW_HISTORY);
@@ -346,8 +359,6 @@ static void fpga_arm_meter_first_rx_latch(
     mlink.meter_first_rx_after_transition_start = plan->start_word;
     mlink.meter_first_rx_after_transition_planned_gpio = planned_gpio;
     mlink.meter_first_rx_after_transition_actual_gpio = actual_gpio;
-    mlink.meter_first_rx_after_transition_h2_bytes = fboot.h2_bytes_sent;
-    mlink.meter_first_rx_after_transition_h2_done = fboot.h2_upload_done;
     mlink.meter_first_rx_after_transition_armed = 1;
 }
 
@@ -408,8 +419,8 @@ static void meter_build_tx_frame(uint8_t *frame, uint8_t cmd_hi, uint8_t cmd_lo,
         frame[0] = 0xAAU;
         frame[1] = 0x55U;
         /* The word the chip may echo; the echo check compares against it. */
-        mlink.last_obeyed_tx_lo = cmd_lo;
-        mlink.last_obeyed_tx_valid = true;
+        link_last_obeyed_tx_lo = cmd_lo;
+        link_last_obeyed_tx_valid = true;
     }
     frame[2] = cmd_hi;
     frame[3] = cmd_lo;
@@ -719,18 +730,18 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
 /* ═══════════════════════════════════════════════════════════════════
  * USART2 interrupt handler
  *
- *   TX: sends mlink.tx_frame (10 bytes, position in tx_index), then turns
+ *   TX: sends link_tx_frame (10 bytes, position in tx_index), then turns
  *       its own interrupt off.
  *   RX: finds a 5A A5 or AA 55 header and collects the rest of the frame
- *       in mlink.rx_buf.
+ *       in link_rx_buf.
  * ═══════════════════════════════════════════════════════════════════ */
 
 void USART2_IRQHandler(void)
 {
     /* TX: send next byte from frame buffer */
     if ((USART2->ctrl1 & USART_CTRL1_TDBEIEN) && (USART2->sts & USART_TDBE_FLAG)) {
-        if (mlink.tx_index < FPGA_TX_FRAME_SIZE) {
-            USART2->dt = mlink.tx_frame[mlink.tx_index++];
+        if (link_tx_index < FPGA_TX_FRAME_SIZE) {
+            USART2->dt = link_tx_frame[link_tx_index++];
         } else {
             /* All bytes handed to the USART: stop, and tell dvom_TX. */
             BaseType_t woken = pdFALSE;
@@ -744,12 +755,12 @@ void USART2_IRQHandler(void)
     if (USART2->sts & USART_RDBF_FLAG) {
         mlink.rx_byte_count++;
         uint8_t byte = (uint8_t)USART2->dt;
-        uint8_t rx_index_before = mlink.rx_index;
+        uint8_t rx_index_before = link_rx_index;
 
         /* Every received byte, before any header check (diagnostic ring). */
         fpga_record_rx_raw_byte(byte, rx_index_before);
 
-        if (mlink.rx_index == 0) {
+        if (link_rx_index == 0) {
             /* Looking for frame header first byte */
             if (byte == FPGA_RX_DATA_HDR_0 || byte == FPGA_RX_ECHO_HDR_0) {
                 if (byte == FPGA_RX_DATA_HDR_0) {
@@ -757,42 +768,42 @@ void USART2_IRQHandler(void)
                 } else {
                     mlink.rx_sync_echo_start_count++;
                 }
-                mlink.rx_buf[0] = byte;
-                mlink.rx_index = 1;
+                link_rx_buf[0] = byte;
+                link_rx_index = 1;
             } else {
                 mlink.rx_sync_stray_count++;
             }
-        } else if (mlink.rx_index == 1) {
+        } else if (link_rx_index == 1) {
             /* Validate header second byte */
-            if ((mlink.rx_buf[0] == FPGA_RX_DATA_HDR_0 && byte == FPGA_RX_DATA_HDR_1) ||
-                (mlink.rx_buf[0] == FPGA_RX_ECHO_HDR_0 && byte == FPGA_RX_ECHO_HDR_1)) {
-                if (mlink.rx_buf[0] == FPGA_RX_DATA_HDR_0) {
+            if ((link_rx_buf[0] == FPGA_RX_DATA_HDR_0 && byte == FPGA_RX_DATA_HDR_1) ||
+                (link_rx_buf[0] == FPGA_RX_ECHO_HDR_0 && byte == FPGA_RX_ECHO_HDR_1)) {
+                if (link_rx_buf[0] == FPGA_RX_DATA_HDR_0) {
                     mlink.rx_sync_data_header_count++;
                 } else {
                     mlink.rx_sync_echo_header_count++;
                 }
-                mlink.rx_buf[1] = byte;
-                mlink.rx_index = 2;
+                link_rx_buf[1] = byte;
+                link_rx_index = 2;
             } else {
                 /* Invalid header: start over */
                 mlink.rx_sync_bad_second_count++;
-                mlink.rx_index = 0;
+                link_rx_index = 0;
             }
         } else {
-            mlink.rx_buf[mlink.rx_index++] = byte;
+            link_rx_buf[link_rx_index++] = byte;
 
             /* Check for complete frame */
-            if (mlink.rx_buf[0] == FPGA_RX_DATA_HDR_0 &&
-                mlink.rx_index >= FPGA_RX_FRAME_SIZE) {
+            if (link_rx_buf[0] == FPGA_RX_DATA_HDR_0 &&
+                link_rx_index >= FPGA_RX_FRAME_SIZE) {
                 /*
                  * Drop a data frame that completes while a command frame is
                  * still being sent, as stock does (it checks the same TX byte
                  * index). Since a link reset sets tx_index to 0, this also
                  * drops every data frame until dvom_TX has sent one frame.
                  */
-                if (mlink.tx_index < FPGA_TX_FRAME_SIZE) {
+                if (link_tx_index < FPGA_TX_FRAME_SIZE) {
                     mlink.rx_data_tx_busy_drop_count++;
-                    mlink.rx_index = 0;
+                    link_rx_index = 0;
                     return;
                 }
 
@@ -801,9 +812,9 @@ void USART2_IRQHandler(void)
                  * before the task has parsed them. mlink.rx_frame keeps the
                  * latest for diagnostics. */
                 fpga_meter_rx_event_t event;
-                memcpy((void *)mlink.rx_frame, (const void *)mlink.rx_buf,
+                memcpy((void *)mlink.rx_frame, (const void *)link_rx_buf,
                        FPGA_RX_FRAME_SIZE);
-                memcpy(event.frame, (const void *)mlink.rx_buf,
+                memcpy(event.frame, (const void *)link_rx_buf,
                        FPGA_RX_FRAME_SIZE);
                 mlink.rx_frame_valid = true;
                 mlink.frame_count++;
@@ -826,7 +837,7 @@ void USART2_IRQHandler(void)
                 event.transition_busy = mlink.last_rx_transition_busy;
                 fpga_record_rx_data_frame();
                 fpga_capture_meter_first_rx_latch();
-                mlink.rx_index = 0;
+                link_rx_index = 0;
 
                 /* To dvom_RX, once the scheduler runs. A full queue drops the frame. */
                 if (meter_rx_queue != NULL &&
@@ -837,8 +848,8 @@ void USART2_IRQHandler(void)
                     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
                 }
 
-            } else if (mlink.rx_buf[0] == FPGA_RX_ECHO_HDR_0 &&
-                       mlink.rx_index >= FPGA_RX_ECHO_FRAME_SIZE) {
+            } else if (link_rx_buf[0] == FPGA_RX_ECHO_HDR_0 &&
+                       link_rx_index >= FPGA_RX_ECHO_FRAME_SIZE) {
                 /*
                  * Complete echo frame (10 bytes). Valid, as stock checks it,
                  * when byte[3] is the low byte of the command and byte[7] is
@@ -846,17 +857,17 @@ void USART2_IRQHandler(void)
                  * sent: unobeyed frames get no echo. A valid echo is what
                  * confirms a selector (fpga_send_selector_confirmed).
                  */
-                memcpy((void *)mlink.last_rx_echo_frame, (const void *)mlink.rx_buf,
+                memcpy((void *)mlink.last_rx_echo_frame, (const void *)link_rx_buf,
                        FPGA_RX_ECHO_FRAME_SIZE);
-                if (mlink.last_obeyed_tx_valid &&
-                    mlink.rx_buf[3] == mlink.last_obeyed_tx_lo &&
-                    mlink.rx_buf[7] == 0xAAU) {
+                if (link_last_obeyed_tx_valid &&
+                    link_rx_buf[3] == link_last_obeyed_tx_lo &&
+                    link_rx_buf[7] == 0xAAU) {
                     mlink.rx_echo_valid_count++;
                     mlink.echo_count++;
                 } else {
                     mlink.rx_echo_bad_count++;
                 }
-                mlink.rx_index = 0;
+                link_rx_index = 0;
             }
         }
     }
@@ -890,9 +901,9 @@ void fpga_usart_tx_task(void *pv)
             meter_build_tx_frame(frame, item.bytes[0], item.bytes[1],
                                  item.kind == METER_TX_WORD_OBEYED);
         }
-        mlink.tx_index = 0;
-        memcpy((void *)mlink.tx_frame, frame, FPGA_TX_FRAME_SIZE);
-        fpga_record_tx_frame((const uint8_t *)mlink.tx_frame);
+        link_tx_index = 0;
+        memcpy((void *)link_tx_frame, frame, FPGA_TX_FRAME_SIZE);
+        fpga_record_tx_frame((const uint8_t *)link_tx_frame);
 
         (void)ulTaskNotifyTake(pdTRUE, 0);              /* forget an abandoned frame's signal */
         USART2->ctrl1 |= USART_CTRL1_TDBEIEN;           /* the handler sends the 10 bytes */
@@ -1182,6 +1193,78 @@ void meter_link_create_tasks(void)
     xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
     xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
     xTaskCreate(fpga_meter_poll_task,  "meter_poll", FPGA_METER_POLL_STACK, NULL, 2, &meter_poll_handle);
+}
+
+/* `fpga diag clear`: zero the link's counters, last frames and histories. */
+void meter_link_diag_reset(void)
+{
+    taskENTER_CRITICAL();
+    mlink.tx_count = 0;
+    mlink.rx_byte_count = 0;
+    mlink.frame_count = 0;
+    mlink.echo_count = 0;
+    mlink.rx_sync_data_start_count = 0;
+    mlink.rx_sync_echo_start_count = 0;
+    mlink.rx_sync_data_header_count = 0;
+    mlink.rx_sync_echo_header_count = 0;
+    mlink.rx_sync_bad_second_count = 0;
+    mlink.rx_sync_stray_count = 0;
+    mlink.rx_data_tx_busy_drop_count = 0;
+    mlink.rx_echo_valid_count = 0;
+    mlink.rx_echo_bad_count = 0;
+    memset((void *)mlink.rx_raw_history, 0, sizeof(mlink.rx_raw_history));
+    memset((void *)mlink.rx_raw_history_tx_count, 0,
+           sizeof(mlink.rx_raw_history_tx_count));
+    memset((void *)mlink.rx_raw_history_tx_index, 0,
+           sizeof(mlink.rx_raw_history_tx_index));
+    memset((void *)mlink.rx_raw_history_rx_index, 0,
+           sizeof(mlink.rx_raw_history_rx_index));
+    mlink.rx_raw_history_head = 0;
+    mlink.rx_raw_history_count = 0;
+    mlink.rx_frame_valid = false;
+    memset((void *)mlink.rx_frame, 0, sizeof(mlink.rx_frame));
+    memset((void *)mlink.last_rx_echo_frame, 0, sizeof(mlink.last_rx_echo_frame));
+    memset((void *)mlink.last_tx_frame, 0, sizeof(mlink.last_tx_frame));
+    memset((void *)mlink.tx_frame_history, 0, sizeof(mlink.tx_frame_history));
+    memset((void *)mlink.tx_frame_history_tx_count, 0,
+           sizeof(mlink.tx_frame_history_tx_count));
+    mlink.tx_frame_history_head = 0;
+    mlink.tx_frame_history_count = 0;
+    memset((void *)mlink.tx_control_frame_history, 0,
+           sizeof(mlink.tx_control_frame_history));
+    memset((void *)mlink.tx_control_frame_history_tx_count, 0,
+           sizeof(mlink.tx_control_frame_history_tx_count));
+    mlink.tx_control_frame_history_head = 0;
+    mlink.tx_control_frame_history_count = 0;
+    memset((void *)mlink.rx_frame_history, 0, sizeof(mlink.rx_frame_history));
+    memset((void *)mlink.rx_history_frame_count, 0, sizeof(mlink.rx_history_frame_count));
+    memset((void *)mlink.rx_history_tx_count, 0, sizeof(mlink.rx_history_tx_count));
+    memset((void *)mlink.rx_history_echo_count, 0, sizeof(mlink.rx_history_echo_count));
+    memset((void *)mlink.rx_history_sequence_count, 0, sizeof(mlink.rx_history_sequence_count));
+    memset((void *)mlink.rx_history_sequence_submode, 0, sizeof(mlink.rx_history_sequence_submode));
+    memset((void *)mlink.rx_history_discard_remaining, 0, sizeof(mlink.rx_history_discard_remaining));
+    memset((void *)mlink.rx_history_transition_busy, 0, sizeof(mlink.rx_history_transition_busy));
+    mlink.rx_frame_history_head = 0;
+    mlink.rx_frame_history_count = 0;
+    memset((void *)mlink.meter_transition_history_submode, 0, sizeof(mlink.meter_transition_history_submode));
+    memset((void *)mlink.meter_transition_history_config, 0, sizeof(mlink.meter_transition_history_config));
+    memset((void *)mlink.meter_transition_history_selector, 0, sizeof(mlink.meter_transition_history_selector));
+    memset((void *)mlink.meter_transition_history_apply, 0, sizeof(mlink.meter_transition_history_apply));
+    memset((void *)mlink.meter_transition_history_bank, 0, sizeof(mlink.meter_transition_history_bank));
+    memset((void *)mlink.meter_transition_history_bank_first, 0, sizeof(mlink.meter_transition_history_bank_first));
+    memset((void *)mlink.meter_transition_history_bank_second, 0, sizeof(mlink.meter_transition_history_bank_second));
+    memset((void *)mlink.meter_transition_history_probe, 0, sizeof(mlink.meter_transition_history_probe));
+    memset((void *)mlink.meter_transition_history_start, 0, sizeof(mlink.meter_transition_history_start));
+    memset((void *)mlink.meter_transition_history_sequence_count, 0, sizeof(mlink.meter_transition_history_sequence_count));
+    memset((void *)mlink.meter_transition_history_tx_before, 0, sizeof(mlink.meter_transition_history_tx_before));
+    memset((void *)mlink.meter_transition_history_tx_after, 0, sizeof(mlink.meter_transition_history_tx_after));
+    memset((void *)mlink.meter_transition_history_frame_before, 0, sizeof(mlink.meter_transition_history_frame_before));
+    memset((void *)mlink.meter_transition_history_frame_after, 0, sizeof(mlink.meter_transition_history_frame_after));
+    memset((void *)mlink.meter_transition_history_planned_gpio, 0, sizeof(mlink.meter_transition_history_planned_gpio));
+    memset((void *)mlink.meter_transition_history_actual_gpio, 0, sizeof(mlink.meter_transition_history_actual_gpio));
+    mlink.meter_transition_history_head = 0;
+    mlink.meter_transition_history_count = 0;
+    taskEXIT_CRITICAL();
 }
 
 /* ═══════════════════════════════════════════════════════════════════

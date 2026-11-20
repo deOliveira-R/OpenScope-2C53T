@@ -10,23 +10,25 @@
 #include "re_fpga_driver.h"
 #include "../drivers/fpga_bitstream_core.h"
 
+re_fpga_state_t re_fpga;
+
 static void fpga_h2_record_body_rx(uint8_t rx_byte)
 {
     if (rx_byte == 0x00U) {
-        fboot.h2_rx_00_count++;
+        re_fpga.h2_rx_00_count++;
     } else if (rx_byte == 0xFFU) {
-        fboot.h2_rx_ff_count++;
+        re_fpga.h2_rx_ff_count++;
     } else {
-        fboot.h2_rx_other_count++;
+        re_fpga.h2_rx_other_count++;
     }
 }
 
 static void fpga_h2_record_close_rx(uint8_t rx_byte)
 {
-    uint8_t len = fboot.h2_close_rx_len;
-    if (len < sizeof(fboot.h2_close_rx)) {
-        fboot.h2_close_rx[len] = rx_byte;
-        fboot.h2_close_rx_len = (uint8_t)(len + 1U);
+    uint8_t len = re_fpga.h2_close_rx_len;
+    if (len < sizeof(re_fpga.h2_close_rx)) {
+        re_fpga.h2_close_rx[len] = rx_byte;
+        re_fpga.h2_close_rx_len = (uint8_t)(len + 1U);
     }
 }
 
@@ -260,7 +262,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     if (opt->probe_idcode) {
         spi3_set_br(7);                      /* /256 — the only valid read clock */
         spi3_read_reg8(0x11, fboot.probe_idcode);
-        spi3_read_reg8(0x00, fboot.probe_noop);
+        spi3_read_reg8(0x00, re_fpga.probe_noop);
         spi3_read_reg8(0x41, fboot.probe_status);
         spi3_read_reg8(0x13, fboot.probe_user);
 
@@ -302,13 +304,13 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     if (opt->prelude_frame_mode == 1) {
         SPI3_CS_ASSERT();
         if (!opt->omit_05) {
-            fboot.init_hs[1] = spi3_xfer(0x05);
-            fboot.init_hs[2] = spi3_xfer(0x00);
+            re_fpga.init_hs[1] = spi3_xfer(0x05);
+            re_fpga.init_hs[2] = spi3_xfer(0x00);
         }
-        fboot.init_hs[4] = spi3_xfer(0x12);
-        fboot.init_hs[5] = spi3_xfer(0x00);
-        fboot.init_hs[7] = spi3_xfer(0x15);
-        fboot.init_hs[8] = spi3_xfer(0x00);
+        re_fpga.init_hs[4] = spi3_xfer(0x12);
+        re_fpga.init_hs[5] = spi3_xfer(0x00);
+        re_fpga.init_hs[7] = spi3_xfer(0x15);
+        re_fpga.init_hs[8] = spi3_xfer(0x00);
         SPI3_CS_DEASSERT();
     } else {
         /* [1] 05 00 — skipped entirely when omit_05 is set. init_hs[1]/[2] stay
@@ -316,8 +318,8 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
          * not sent (a real 0x05 frame records the MISO bytes here). */
         if (!opt->omit_05) {
             SPI3_CS_ASSERT();
-            fboot.init_hs[1] = spi3_xfer(0x05);
-            fboot.init_hs[2] = spi3_xfer(0x00);
+            re_fpga.init_hs[1] = spi3_xfer(0x05);
+            re_fpga.init_hs[2] = spi3_xfer(0x00);
             SPI3_CS_DEASSERT();
         }
         fpga_scope_delay_ms(opt->prelude_gap_ms);
@@ -340,15 +342,15 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
 
         /* [2] 12 00 */
         SPI3_CS_ASSERT();
-        fboot.init_hs[4] = spi3_xfer(0x12);
-        fboot.init_hs[5] = spi3_xfer(0x00);
+        re_fpga.init_hs[4] = spi3_xfer(0x12);
+        re_fpga.init_hs[5] = spi3_xfer(0x00);
         SPI3_CS_DEASSERT();
         fpga_scope_delay_ms(opt->prelude_gap_ms);
 
         /* [3] 15 00 — own frame (mode 0) or held LOW into the upload (mode 2) */
         SPI3_CS_ASSERT();
-        fboot.init_hs[7] = spi3_xfer(0x15);
-        fboot.init_hs[8] = spi3_xfer(0x00);
+        re_fpga.init_hs[7] = spi3_xfer(0x15);
+        re_fpga.init_hs[8] = spi3_xfer(0x00);
         if (opt->prelude_frame_mode != 2) {
             SPI3_CS_DEASSERT();
         }
@@ -365,7 +367,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
         spi3_xfer(0x41);
         spi3_xfer(0x00); spi3_xfer(0x00); spi3_xfer(0x00);
         for (unsigned i = 0; i < 4; i++)
-            fboot.edit_mode_status[i] = spi3_xfer(0x00);
+            re_fpga.edit_mode_status[i] = spi3_xfer(0x00);
         SPI3_CS_DEASSERT();
         spi3_set_br(opt->cmd_br);        /* restore command clock */
     }
@@ -377,7 +379,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
      * of the current working theory, and worth one CS frame to rule out. */
     if (opt->probe_idcode && opt->prelude_frame_mode != 2) {
         spi3_set_br(7);                  /* /256 */
-        spi3_read_reg8(0x11, fboot.probe_idcode_post);
+        spi3_read_reg8(0x11, re_fpga.probe_idcode_post);
         spi3_set_br(opt->cmd_br);
     }
 
@@ -389,13 +391,13 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     /* [4] bitstream upload — 0x3B + full table. mode 2 continues the CS frame
      * opened by 15 00; modes 0/1 open a fresh CS frame here. */
     if (opt->prelude_frame_mode != 2) SPI3_CS_ASSERT();
-    fboot.init_hs[10] = spi3_xfer(0x3B);  /* open upload */
+    re_fpga.init_hs[10] = spi3_xfer(0x3B);  /* open upload */
     if (!opt->single_br) spi3_set_br(opt->upload_br);  /* EXP-34: keep SPE untouched */
-    fboot.h2_rx_00_count = 0;
-    fboot.h2_rx_ff_count = 0;
-    fboot.h2_rx_other_count = 0;
-    fboot.h2_close_rx_len = 0;
-    memset((void *)fboot.h2_close_rx, 0, sizeof(fboot.h2_close_rx));
+    re_fpga.h2_rx_00_count = 0;
+    re_fpga.h2_rx_ff_count = 0;
+    re_fpga.h2_rx_other_count = 0;
+    re_fpga.h2_close_rx_len = 0;
+    memset((void *)re_fpga.h2_close_rx, 0, sizeof(re_fpga.h2_close_rx));
     spi3_pump_h2_record(fpga_bitstream_core, FPGA_BITSTREAM_CORE_SIZE);
     if (!opt->single_br) spi3_set_br(opt->cmd_br);  /* EXP-34: keep SPE untouched */
     /* Trailing clocks: Gowin runs the CRC-check / DONE / wakeup on CCLK cycles
@@ -406,15 +408,14 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
         spi3_xfer(0x00);
     SPI3_CS_DEASSERT();
     fboot.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
-    fboot.h2_upload_done = 1;
     fboot.upload_len = FPGA_BITSTREAM_CORE_SIZE;
     fboot.upload_result = FPGA_UPLOAD_SENT;
 
     /* [5] 3A 00 — close/commit in its own CS-LOW frame. Stock → 0xF8. */
     SPI3_CS_ASSERT();
     fpga_h2_record_close_rx(spi3_xfer(0x3A));
-    fboot.h2_close_status = spi3_xfer(0x00);
-    fpga_h2_record_close_rx(fboot.h2_close_status);
+    re_fpga.h2_close_status = spi3_xfer(0x00);
+    fpga_h2_record_close_rx(re_fpga.h2_close_status);
     SPI3_CS_DEASSERT();
 
     /* [6] single 0x00 byte, CS LOW (stock flush frame at t=4.4484). */
@@ -500,7 +501,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
 
     if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
 
-    return fboot.h2_close_status;
+    return re_fpga.h2_close_status;
 }
 
 /* EXP-37 (2026-08-26) — LA edge-capture rig. Emits the SAME logical CONFIG_ENABLE

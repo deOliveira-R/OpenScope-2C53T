@@ -203,13 +203,13 @@ reinit_bad_token:
     if (opt.reload_3c)
         usb_send_str("reinit: sent 0x3C RELOAD before prelude\r\n");
     if (opt.probe_edit) {
-        uint32_t es = ((uint32_t)fboot.edit_mode_status[0] << 24) |
-                      ((uint32_t)fboot.edit_mode_status[1] << 16) |
-                      ((uint32_t)fboot.edit_mode_status[2] << 8) |
-                      (uint32_t)fboot.edit_mode_status[3];
+        uint32_t es = ((uint32_t)re_fpga.edit_mode_status[0] << 24) |
+                      ((uint32_t)re_fpga.edit_mode_status[1] << 16) |
+                      ((uint32_t)re_fpga.edit_mode_status[2] << 8) |
+                      (uint32_t)re_fpga.edit_mode_status[3];
         usb_debug_printf("post-0x15 STATUS@/256: %02X %02X %02X %02X (raw=%08lX)\r\n",
-                         fboot.edit_mode_status[0], fboot.edit_mode_status[1],
-                         fboot.edit_mode_status[2], fboot.edit_mode_status[3], es);
+                         re_fpga.edit_mode_status[0], re_fpga.edit_mode_status[1],
+                         re_fpga.edit_mode_status[2], re_fpga.edit_mode_status[3], es);
         usb_debug_printf("  EDIT_MODE(bit7)=%s  flags:%s%s%s%s%s%s\r\n",
                          (es & (1u << 7))  ? "YES (config-receive engaged!)" : "no (0x15 did NOT engage)",
                          (es & (1u << 0))  ? " CRC_ERR" : "",

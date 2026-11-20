@@ -71,39 +71,26 @@ void fpga_spi3_bus_reacquire(void);
 /* State of the design upload and of the SPI3 pins (fpga_boot.c writes; the shell reads). */
 typedef struct {
     volatile bool     bus_released;  /* the SPI3 pins are given up (fpga_bus_release); the acquisition task stays off the bus */
-    volatile uint8_t  init_hs[12];  /* replies during the toolkit's SPI3 upload ([11] unused) */
     volatile uint32_t h2_bytes_sent;  /* design bytes sent by the last upload */
     volatile uint32_t upload_len;  /* design bytes the last upload had to send */
     volatile uint8_t  upload_result;  /* a fpga_upload_result_t */
-    volatile uint8_t  h2_upload_done;  /* 1 = the upload sent every byte */
-    volatile uint8_t  h2_close_status;  /* byte read after the 0x3A close of the toolkit's SPI3 upload */
     volatile uint8_t  core_ident[CORE_IDENT_REPLY_LEN];  /* reply to op E2 after a load of our core (all 0: not asked) */
     volatile uint8_t  scope_status[4];  /* reply to op 03 after the upload */
     volatile uint8_t  cfg_status_reg[4];  /* configuration STATUS register (0x41) after the upload, as clocked.
                                             * Bits: 0 CRC error, 1 bad command, 2 ID verify failed,
                                             * 13 DONE, 15 READY, 16 POR. All FF = the FPGA does not drive MISO. */
-    volatile uint8_t  edit_mode_status[4];  /* STATUS read right after 0x15 (toolkit, probe_edit) */
     /* Replies of the configuration port, 8 bytes each, read at /256 (the only
      * SPI3 divider at which that port's replies are readable). probe_id_bit:
      * the bit offset at which IDCODE 0x0120681B was found, -1 = not found. */
     volatile uint8_t  probe_idcode[8];  /* 0x11 IDCODE, before the upload */
-    volatile uint8_t  probe_noop[8];  /* 0x00, the control */
     volatile uint8_t  probe_status[8];  /* 0x41 STATUS */
     volatile uint8_t  probe_user[8];  /* 0x13 USERCODE */
-    volatile uint8_t  probe_idcode_post[8];  /* 0x11 again, after 0x15 */
     volatile int8_t   probe_id_bit;
     /* IDCODE read after the last design byte and before the port is closed
      * (0x3A), so the FPGA still answers it after a good upload. Printed by
      * the bench shell only; DONE in cfg_status_reg is the result. */
     volatile uint8_t  probe_idcode_close[8];
     volatile int8_t   probe_id_bit_close;
-    /* Bytes read back during the toolkit's SPI3 upload, by value, and the
-     * bytes after its close. */
-    volatile uint32_t h2_rx_00_count;
-    volatile uint32_t h2_rx_ff_count;
-    volatile uint32_t h2_rx_other_count;
-    volatile uint8_t  h2_close_rx_len;
-    volatile uint8_t  h2_close_rx[6];
 } fpga_boot_state_t;
 
 extern fpga_boot_state_t fboot;   /* defined in fpga_boot.c */

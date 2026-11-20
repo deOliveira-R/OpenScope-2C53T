@@ -160,7 +160,6 @@ uint8_t fpga_bitbang_config_sequence(void)
         fboot.h2_bytes_sent = off;
     }
     GPIOB->scr = BB_CS;
-    fboot.h2_upload_done = (bb_outcome == 0) ? 1 : 0;
     fboot.upload_result = (bb_outcome == 0) ? FPGA_UPLOAD_SENT : FPGA_UPLOAD_SOURCE_FAILED;
 
     /* STATUS after the upload; bit 13 is DONE (the design started). */

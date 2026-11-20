@@ -27,7 +27,6 @@
 /* State of the driver as a whole. */
 typedef struct {
     volatile bool     initialized;  /* fpga_init finished */
-    volatile uint8_t  channel_mask;  /* last PC1/PC2 code applied: 1 = CH1, 2 = CH2, 3 = both */
 } fpga_state_t;
 
 extern fpga_state_t fpga;   /* defined in fpga.c */

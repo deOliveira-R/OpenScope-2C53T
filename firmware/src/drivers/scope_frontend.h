@@ -22,6 +22,7 @@ bool    fpga_apply_coupling(uint8_t ch, uint8_t coupling);   /* a coupling_t */
 /* Which channels reach the converters: a 2-bit code on PC1/PC2 (1 = CH1,
  * 2 = CH2, 3 = both). With one channel routed, both converters sample it. */
 void    fpga_set_channel_mask(uint8_t mask);
+uint8_t scope_frontend_channel_mask(void);   /* the code last applied: 1 = CH1, 2 = CH2, 3 = both */
 /* The same from the stored channel enables; false if both channels are off. */
 bool    fpga_apply_channel_enables(void);
 

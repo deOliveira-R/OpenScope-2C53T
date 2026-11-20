@@ -127,7 +127,7 @@ void scope_vpos_apply_ch(uint8_t ch, uint8_t range)
     /* Stock's bank rule on the code in force (reg 0x01) and the converter
      * routing in force (PC1/PC2 mask) — the hardware state, not the UI's
      * intent, because the bank describes how the converters are clocked. */
-    const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
+    const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), scope_frontend_channel_mask());
     const unsigned i0 = ch - 1u;
     const int pos = calpage_clamp_pos(chan(ch)->position);
     uint16_t code;
@@ -191,7 +191,7 @@ bool scope_vpos_last(uint8_t ch, uint8_t *bank, uint8_t *range, uint16_t *code)
 bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper)
 {
     if (!scope_vpos_active()) return false;
-    const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
+    const uint8_t bank = calpage_bank_select(fpga_acq_rate_idx_get(), scope_frontend_channel_mask());
     const uint8_t range = chan(1u)->vdiv_idx;
     const int8_t (*sb)[CALPAGE_BANKS][CALPAGE_RANGES] =
         (const int8_t (*)[CALPAGE_BANKS][CALPAGE_RANGES])vp.src_bank;

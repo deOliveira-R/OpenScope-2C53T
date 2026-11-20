@@ -11,6 +11,12 @@
 
 fpga_acq_state_t acq;
 
+/* The published record. Other files reach it through this file's functions,
+ * under the generation count (fpga_acq_frame_generation). */
+static volatile uint8_t acq_ch1_buf[FPGA_ADC_BUF_SIZE];
+static volatile uint8_t acq_ch2_buf[FPGA_ADC_BUF_SIZE];
+static volatile uint32_t acq_pc0_last_tick;  /* tick of the last PC0 edge */
+
 TaskHandle_t      acq_task_handle = NULL;
 
 static volatile bool data_ready = false;
@@ -36,7 +42,7 @@ static volatile bool acq_pause_ack = false;
 
 /* ── Staged and published record ─────────────────────────────────────────
  * The SPI read lands in two staging buffers (heap, allocated in
- * fpga_create_tasks), never in the published acq.ch1_buf/ch2_buf that the
+ * fpga_create_tasks), never in the published acq_ch1_buf/ch2_buf that the
  * lower-priority display task reads. An accepted record is copied over in
  * fpga_acq_frames_commit, bracketed by acq_frame_gen: odd while a commit is
  * in progress. Readers that need exact numbers re-read until the generation
@@ -56,17 +62,17 @@ uint32_t fpga_acq_frame_generation(void)
 
 static volatile uint8_t *acq_write_ch1(void)
 {
-    return acq_stage_ch1 ? acq_stage_ch1 : acq.ch1_buf;
+    return acq_stage_ch1 ? acq_stage_ch1 : acq_ch1_buf;
 }
 
 static volatile uint8_t *acq_write_ch2(void)
 {
-    return acq_stage_ch2 ? acq_stage_ch2 : acq.ch2_buf;
+    return acq_stage_ch2 ? acq_stage_ch2 : acq_ch2_buf;
 }
 
 /* Whether the staged / published record is in time order (rotated at its
  * seam). Published inside the commit's generation window, so the flag always
- * describes the record in acq.ch1_buf. The same holds for every acq_pub_*
+ * describes the record in acq_ch1_buf. The same holds for every acq_pub_*
  * below. */
 static volatile bool acq_stage_ordered = false;
 
@@ -125,8 +131,8 @@ static void fpga_acq_frames_commit(void)
     if (acq_stage_ch1 == NULL || acq_stage_ch2 == NULL)
         return;   /* in-place fallback: nothing to copy */
     acq_frame_gen++;                                   /* odd: committing */
-    memcpy((void *)acq.ch1_buf, acq_stage_ch1, FPGA_ADC_BUF_SIZE);
-    memcpy((void *)acq.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
+    memcpy((void *)acq_ch1_buf, acq_stage_ch1, FPGA_ADC_BUF_SIZE);
+    memcpy((void *)acq_ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_ordered_core = acq_stage_ordered_core;
     acq_pub_il = acq_stage_il;
@@ -292,6 +298,17 @@ bool fpga_acq_record_core_ordered(void)       { return acq_pub_ordered_core; }
 
 bool fpga_acq_design_ours(void)               { return acq_design_ours; }
 
+/* `fpga diag clear`: zero the record counters and the raw-byte samples. */
+void fpga_acq_counters_reset(void)
+{
+    taskENTER_CRITICAL();
+    acq.spi3_ok_count = 0;
+    acq.spi3_total_timeouts = 0;
+    memset((void *)acq.diag_ch1_raw, 0, sizeof(acq.diag_ch1_raw));
+    memset((void *)acq.diag_ch2_raw, 0, sizeof(acq.diag_ch2_raw));
+    taskEXIT_CRITICAL();
+}
+
 core_ident_t fpga_core_ident(void)
 {
     uint8_t r[CORE_IDENT_REPLY_LEN];
@@ -361,7 +378,7 @@ bool fpga_interleave_get(void)    { return acq_il_enable; }
 
 bool fpga_interleave_active(void)
 {
-    return acq_il_enable && fpga.channel_mask == 1u && acq_rate_idx <= 3u;
+    return acq_il_enable && scope_frontend_channel_mask() == 1u && acq_rate_idx <= 3u;
 }
 
 /* A gain/offset line also clears any knots: it is a complete level map of
@@ -575,7 +592,7 @@ void fpga_acq_cfg_snapshot(acq_cfg_t *c)
 {
     const scope_state_t *ss = scope_state_get();
     memset(c, 0, sizeof *c);
-    c->mask      = fpga.channel_mask;
+    c->mask      = scope_frontend_channel_mask();
     c->rate_idx  = acq_rate_idx;
     c->trig_code = acq_trig_code;
     c->trig_src  = acq_trig_src_code;
@@ -722,7 +739,7 @@ void EXINT0_IRQHandler(void)
 {
     exint_flag_clear(EXINT_LINE_0);
     acq.pc0_edges++;
-    acq.pc0_last_tick = xTaskGetTickCountFromISR();
+    acq_pc0_last_tick = xTaskGetTickCountFromISR();
 }
 
 /* ─── Reading one record ─────────────────────────────────────────────
@@ -1195,13 +1212,13 @@ void fpga_acq_task(void *pv)
             fpga_acq_frames_commit();
             /* Judge (or teach from) the record just committed: exactly once,
              * from the published buffers, in the only task that writes them. */
-            scope_mask_on_commit(acq.ch1_buf, acq.ch2_buf, triggered,
+            scope_mask_on_commit(acq_ch1_buf, acq_ch2_buf, triggered,
                                  acq_stage_ordered, fpga_acq_frame_generation());
             last_commit_tick = last_read_tick;
             acq.spi3_ok_count++;
             data_ready = true;
             if (triggered)
-                acq.acq_last_latency_ms = xTaskGetTickCount() - acq.pc0_last_tick;
+                acq.acq_last_latency_ms = xTaskGetTickCount() - acq_pc0_last_tick;
             if (triggered)
                 acq_last_trig_tick = last_commit_tick;
             if (mode_now == TRIG_SINGLE && triggered) {
@@ -1338,10 +1355,10 @@ bool fpga_data_ready(void)
 
 const volatile uint8_t *fpga_get_ch1_buf(void)
 {
-    return fpga.initialized ? acq.ch1_buf : NULL;
+    return fpga.initialized ? acq_ch1_buf : NULL;
 }
 
 const volatile uint8_t *fpga_get_ch2_buf(void)
 {
-    return fpga.initialized ? acq.ch2_buf : NULL;
+    return fpga.initialized ? acq_ch2_buf : NULL;
 }

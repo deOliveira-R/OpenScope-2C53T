@@ -135,83 +135,9 @@ static int parse_gpio(const char *s, gpio_type **port, uint16_t *pin)
 
 static void fpga_diag_clear(void)
 {
-    taskENTER_CRITICAL();
-    mlink.tx_count = 0;
-    mlink.rx_byte_count = 0;
-    mlink.frame_count = 0;
-    mlink.echo_count = 0;
-    mlink.rx_sync_data_start_count = 0;
-    mlink.rx_sync_echo_start_count = 0;
-    mlink.rx_sync_data_header_count = 0;
-    mlink.rx_sync_echo_header_count = 0;
-    mlink.rx_sync_bad_second_count = 0;
-    mlink.rx_sync_stray_count = 0;
-    mlink.rx_data_tx_busy_drop_count = 0;
-    mlink.rx_echo_valid_count = 0;
-    mlink.rx_echo_bad_count = 0;
-    memset((void *)mlink.rx_raw_history, 0, sizeof(mlink.rx_raw_history));
-    memset((void *)mlink.rx_raw_history_tx_count, 0,
-           sizeof(mlink.rx_raw_history_tx_count));
-    memset((void *)mlink.rx_raw_history_tx_index, 0,
-           sizeof(mlink.rx_raw_history_tx_index));
-    memset((void *)mlink.rx_raw_history_rx_index, 0,
-           sizeof(mlink.rx_raw_history_rx_index));
-    mlink.rx_raw_history_head = 0;
-    mlink.rx_raw_history_count = 0;
+    meter_link_diag_reset();
+    fpga_acq_counters_reset();
     fpga_meter_probe_tail_override = -1;
-    acq.spi3_ok_count = 0;
-    acq.spi3_total_timeouts = 0;
-    fboot.h2_rx_00_count = 0;
-    fboot.h2_rx_ff_count = 0;
-    fboot.h2_rx_other_count = 0;
-    fboot.h2_close_rx_len = 0;
-    memset((void *)fboot.h2_close_rx, 0, sizeof(fboot.h2_close_rx));
-    mlink.rx_frame_valid = false;
-    memset((void *)mlink.rx_frame, 0, sizeof(mlink.rx_frame));
-    memset((void *)mlink.last_rx_echo_frame, 0, sizeof(mlink.last_rx_echo_frame));
-    memset((void *)mlink.last_tx_frame, 0, sizeof(mlink.last_tx_frame));
-    memset((void *)mlink.tx_frame_history, 0, sizeof(mlink.tx_frame_history));
-    memset((void *)mlink.tx_frame_history_tx_count, 0,
-           sizeof(mlink.tx_frame_history_tx_count));
-    mlink.tx_frame_history_head = 0;
-    mlink.tx_frame_history_count = 0;
-    memset((void *)mlink.tx_control_frame_history, 0,
-           sizeof(mlink.tx_control_frame_history));
-    memset((void *)mlink.tx_control_frame_history_tx_count, 0,
-           sizeof(mlink.tx_control_frame_history_tx_count));
-    mlink.tx_control_frame_history_head = 0;
-    mlink.tx_control_frame_history_count = 0;
-    memset((void *)mlink.rx_frame_history, 0, sizeof(mlink.rx_frame_history));
-    memset((void *)mlink.rx_history_frame_count, 0, sizeof(mlink.rx_history_frame_count));
-    memset((void *)mlink.rx_history_tx_count, 0, sizeof(mlink.rx_history_tx_count));
-    memset((void *)mlink.rx_history_echo_count, 0, sizeof(mlink.rx_history_echo_count));
-    memset((void *)mlink.rx_history_sequence_count, 0, sizeof(mlink.rx_history_sequence_count));
-    memset((void *)mlink.rx_history_sequence_submode, 0, sizeof(mlink.rx_history_sequence_submode));
-    memset((void *)mlink.rx_history_discard_remaining, 0, sizeof(mlink.rx_history_discard_remaining));
-    memset((void *)mlink.rx_history_transition_busy, 0, sizeof(mlink.rx_history_transition_busy));
-    mlink.rx_frame_history_head = 0;
-    mlink.rx_frame_history_count = 0;
-    memset((void *)mlink.meter_transition_history_submode, 0, sizeof(mlink.meter_transition_history_submode));
-    memset((void *)mlink.meter_transition_history_config, 0, sizeof(mlink.meter_transition_history_config));
-    memset((void *)mlink.meter_transition_history_selector, 0, sizeof(mlink.meter_transition_history_selector));
-    memset((void *)mlink.meter_transition_history_apply, 0, sizeof(mlink.meter_transition_history_apply));
-    memset((void *)mlink.meter_transition_history_bank, 0, sizeof(mlink.meter_transition_history_bank));
-    memset((void *)mlink.meter_transition_history_bank_first, 0, sizeof(mlink.meter_transition_history_bank_first));
-    memset((void *)mlink.meter_transition_history_bank_second, 0, sizeof(mlink.meter_transition_history_bank_second));
-    memset((void *)mlink.meter_transition_history_probe, 0, sizeof(mlink.meter_transition_history_probe));
-    memset((void *)mlink.meter_transition_history_start, 0, sizeof(mlink.meter_transition_history_start));
-    memset((void *)mlink.meter_transition_history_sequence_count, 0, sizeof(mlink.meter_transition_history_sequence_count));
-    memset((void *)mlink.meter_transition_history_tx_before, 0, sizeof(mlink.meter_transition_history_tx_before));
-    memset((void *)mlink.meter_transition_history_tx_after, 0, sizeof(mlink.meter_transition_history_tx_after));
-    memset((void *)mlink.meter_transition_history_frame_before, 0, sizeof(mlink.meter_transition_history_frame_before));
-    memset((void *)mlink.meter_transition_history_frame_after, 0, sizeof(mlink.meter_transition_history_frame_after));
-    memset((void *)mlink.meter_transition_history_planned_gpio, 0, sizeof(mlink.meter_transition_history_planned_gpio));
-    memset((void *)mlink.meter_transition_history_actual_gpio, 0, sizeof(mlink.meter_transition_history_actual_gpio));
-    mlink.meter_transition_history_head = 0;
-    mlink.meter_transition_history_count = 0;
-    memset((void *)acq.diag_ch1_raw, 0, sizeof(acq.diag_ch1_raw));
-    memset((void *)acq.diag_ch2_raw, 0, sizeof(acq.diag_ch2_raw));
-    taskEXIT_CRITICAL();
 }
 
 /* Can a byte leave PA2 now? With the meter link off, USART2 is disabled
@@ -1235,7 +1161,7 @@ void cmd_fpga_scope_zero(const char *args)
     (void)args;
     const scope_state_t *ss = scope_state_get();
     const volatile uint8_t *bufs[2] = { fpga_get_ch1_buf(), fpga_get_ch2_buf() };
-    const uint8_t bank_now = calpage_bank_select(fpga_acq_rate_idx_get(), fpga.channel_mask);
+    const uint8_t bank_now = calpage_bank_select(fpga_acq_rate_idx_get(), scope_frontend_channel_mask());
     for (uint8_t ch = 1u; ch <= 2u; ch++) {
         const channel_state_t *cs = (ch == 1u) ? &ss->ch1 : &ss->ch2;
         const uint8_t z = scope_measure_zero_for(scope_vpos_active(), cs->position).v;

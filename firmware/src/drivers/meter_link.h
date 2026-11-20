@@ -154,16 +154,15 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
                                        uint16_t *planned_gpio,
                                        uint16_t *actual_gpio);
 
+void meter_link_diag_reset(void);   /* zero the counters, last frames and histories */
+
 /* State, counters and histories of the meter link (meter_link.c writes; the shell reads). */
 typedef struct {
     /* The latest complete data frame from the meter chip. */
     volatile uint8_t  rx_frame[FPGA_RX_FRAME_SIZE];
     volatile bool     rx_frame_valid;
-    /* The command frame being sent, and the receive state machine. */
-    volatile uint8_t  tx_frame[FPGA_TX_FRAME_SIZE];
-    volatile uint8_t  tx_index;
-    volatile uint8_t  rx_buf[FPGA_RX_FRAME_SIZE];
-    volatile uint8_t  rx_index;
+
+    /* Counters, for the shell. */
     volatile uint16_t frame_count;  /* data frames (5A A5) */
     volatile uint16_t echo_count;  /* echo frames (AA 55) */
     volatile uint16_t tx_count;  /* command frames sent */
@@ -206,11 +205,7 @@ typedef struct {
     volatile uint8_t  tx_cmd_history_head;
     volatile uint8_t  tx_cmd_history_count;
     volatile uint8_t  last_tx_frame[FPGA_TX_FRAME_SIZE];  /* last 10-byte frame sent */
-    /* Low byte of the last frame sent obeyed: the echo check compares against
-     * this, not last_tx_frame, which the unobeyed keepalive overwrites
-     * between a command and its echo. */
-    volatile uint8_t  last_obeyed_tx_lo;
-    volatile bool     last_obeyed_tx_valid;
+
     /* The last function change: ms from PC11 high to the chip's first data
      * frame (0xFFFF = timed out), selector sends until its echo, whether it
      * was confirmed, and totals of the failures. */
@@ -279,8 +274,6 @@ typedef struct {
     volatile uint8_t  meter_first_rx_after_transition_busy;
     volatile uint8_t  meter_first_rx_after_transition_discard;
     volatile uint8_t  meter_first_rx_after_transition_frame[FPGA_RX_FRAME_SIZE];
-    volatile uint32_t meter_first_rx_after_transition_h2_bytes;
-    volatile uint8_t  meter_first_rx_after_transition_h2_done;
 } meter_link_state_t;
 
 extern meter_link_state_t mlink;   /* defined in meter_link.c */

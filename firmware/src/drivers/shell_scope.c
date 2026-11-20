@@ -138,7 +138,7 @@ static long x100(float v) { return (long)(v * 100.0f + (v < 0.0f ? -0.5f : 0.5f)
 static void cmd_fpga_interleave_cal(bool piecewise)
 {
     scope_state_t *ss = scope_state_get();
-    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+    if (ss->ch2.enabled || scope_frontend_channel_mask() != 1u || !fpga_interleave_active()) {
         usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
                      "(set ch2.enabled=off; set tb.code <= 3)\r\n");
         return;
@@ -204,7 +204,7 @@ static void cmd_fpga_interleave_cal(bool piecewise)
     /* The sweep takes seconds: a CH2 long-press or a timebase change in the
      * meantime moves op05 off CH1 (or ends the merge), and the points no
      * longer describe converter B against A. */
-    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+    if (ss->ch2.enabled || scope_frontend_channel_mask() != 1u || !fpga_interleave_active()) {
         usb_send_str("interleave cal: REFUSED, channel/timebase changed during the sweep; "
                      "correction unchanged\r\n");
         return;
@@ -254,7 +254,7 @@ static void print_skew_line(const char *what, int32_t dev)
 static bool cmd_fpga_interleave_skew_measure(bool with_gain)
 {
     scope_state_t *ss = scope_state_get();
-    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active()) {
+    if (ss->ch2.enabled || scope_frontend_channel_mask() != 1u || !fpga_interleave_active()) {
         usb_send_str("refused: needs CH2 off (mask 1), timebase <= 3 and interleave ON "
                      "(set ch2.enabled=off; set tb.code <= 3)\r\n");
         return false;
@@ -318,7 +318,7 @@ static bool cmd_fpga_interleave_skew_measure(bool with_gain)
         usb_send_str("interleave skew: REFUSED, records disagree (not a steady tone); skew unchanged\r\n");
         return false;
     }
-    if (ss->ch2.enabled || fpga.channel_mask != 1u || !fpga_interleave_active() ||
+    if (ss->ch2.enabled || scope_frontend_channel_mask() != 1u || !fpga_interleave_active() ||
         fpga_interleave_skew_get() != cur) {
         usb_send_str("interleave skew: REFUSED, channel/timebase/skew changed during the measurement; "
                      "skew unchanged\r\n");

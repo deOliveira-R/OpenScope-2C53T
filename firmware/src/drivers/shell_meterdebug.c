@@ -109,19 +109,6 @@
 #include "shell_internal.h"
 #include "shell_meterdebug.h"
 
-static uint16_t count_non_ff_bytes(const uint8_t *bytes, uint8_t len)
-{
-    uint16_t count = 0;
-
-    for (uint8_t i = 0; i < len; i++) {
-        if (bytes[i] != 0xFFU) {
-            count++;
-        }
-    }
-
-    return count;
-}
-
 /* `meter hdr [on|off]` — EXP-25 (issue #15). A/B the meter TX frame header
  * between AA 55 (the default since the word table was corrected; what the
  * meter SoC requires, measured on two units) and 00 00 (what this project sent
@@ -664,8 +651,6 @@ void cmd_meter_trace(void)
     uint8_t first_rx_busy;
     uint8_t first_rx_discard;
     uint8_t first_rx_frame[FPGA_RX_FRAME_SIZE];
-    uint32_t first_rx_h2_bytes;
-    uint8_t first_rx_h2_done;
     uint8_t producer_frame[FPGA_RX_FRAME_SIZE];
     uint16_t rx_sync_data_start;
     uint16_t rx_sync_echo_start;
@@ -679,11 +664,6 @@ void cmd_meter_trace(void)
     uint16_t rxraw_tx[FPGA_RX_RAW_HISTORY];
     uint8_t rxraw_tx_index[FPGA_RX_RAW_HISTORY];
     uint8_t rxraw_rx_index[FPGA_RX_RAW_HISTORY];
-    uint32_t h2_rx_00_count;
-    uint32_t h2_rx_ff_count;
-    uint32_t h2_rx_other_count;
-    uint8_t h2_close_rx_len;
-    uint8_t h2_close_rx[sizeof(fboot.h2_close_rx)];
     const factory_cal_t *factory_cal = flash_fs_factory_cal();
 
     taskENTER_CRITICAL();
@@ -709,11 +689,6 @@ void cmd_meter_trace(void)
         rxraw_tx_index[n] = mlink.rx_raw_history_tx_index[idx];
         rxraw_rx_index[n] = mlink.rx_raw_history_rx_index[idx];
     }
-    h2_rx_00_count = fboot.h2_rx_00_count;
-    h2_rx_ff_count = fboot.h2_rx_ff_count;
-    h2_rx_other_count = fboot.h2_rx_other_count;
-    h2_close_rx_len = fboot.h2_close_rx_len;
-    memcpy(h2_close_rx, (const void *)fboot.h2_close_rx, sizeof(h2_close_rx));
     first_rx_valid = mlink.meter_first_rx_after_transition_valid;
     first_rx_armed = mlink.meter_first_rx_after_transition_armed;
     first_rx_submode = mlink.meter_first_rx_after_transition_submode;
@@ -734,8 +709,6 @@ void cmd_meter_trace(void)
     memcpy(first_rx_frame,
            (const void *)mlink.meter_first_rx_after_transition_frame,
            FPGA_RX_FRAME_SIZE);
-    first_rx_h2_bytes = mlink.meter_first_rx_after_transition_h2_bytes;
-    first_rx_h2_done = mlink.meter_first_rx_after_transition_h2_done;
     rxh_count = mlink.rx_frame_history_count;
     if (rxh_count > FPGA_RX_FRAME_HISTORY) rxh_count = FPGA_RX_FRAME_HISTORY;
     for (uint8_t n = 0; n < rxh_count; n++) {
@@ -908,7 +881,7 @@ void cmd_meter_trace(void)
                      "config=%04X selector=%04X apply=%04X probe=%04X "
                      "start=%04X "
                      "planned_gpio=%03X actual_gpio=%03X data=%u tx=%u "
-                     "echo=%u busy=%u discard=%u h2_bytes=%lu h2_done=%u frame=",
+                     "echo=%u busy=%u discard=%u frame=",
                      (unsigned)first_rx_valid,
                      (unsigned)first_rx_armed,
                      (unsigned)first_rx_submode,
@@ -924,9 +897,7 @@ void cmd_meter_trace(void)
                      first_rx_tx,
                      first_rx_echo,
                      (unsigned)first_rx_busy,
-                     (unsigned)first_rx_discard,
-                     first_rx_h2_bytes,
-                     (unsigned)first_rx_h2_done);
+                     (unsigned)first_rx_discard);
     print_volatile_frame_inline(first_rx_frame);
     usb_send_str("\r\n");
     usb_send_str("last_echo_frame=");
@@ -1012,31 +983,16 @@ void cmd_meter_trace(void)
                      gpio_level(GPIOB, 10),
                      gpio_level(GPIOB, 9),
                      gpio_level(GPIOA, 6));
-    uint16_t h2_close_nonff = count_non_ff_bytes(h2_close_rx, h2_close_rx_len);
 
-    usb_debug_printf("h2 bytes=%lu done=%u "
-                     "spi_ok=%u spi_to=%u rx00=%lu rxff=%lu rxother=%lu "
-                     "rx_nonff=%lu close_len=%u close_nonff=%u\r\n",
-                     fboot.h2_bytes_sent,
-                     fboot.h2_upload_done ? 1U : 0U,
+    usb_debug_printf("upload result=%u bytes=%lu spi_ok=%u spi_to=%u\r\n",
+                     (unsigned)fboot.upload_result,
+                     (unsigned long)fboot.h2_bytes_sent,
                      acq.spi3_ok_count,
-                     acq.spi3_total_timeouts,
-                     h2_rx_00_count,
-                     h2_rx_ff_count,
-                     h2_rx_other_count,
-                     h2_rx_00_count + h2_rx_other_count,
-                     (unsigned)h2_close_rx_len,
-                     (unsigned)h2_close_nonff);
+                     acq.spi3_total_timeouts);
     usb_debug_printf("factory_cal loaded=%u ch_size=%u channels=%u\r\n",
                      (factory_cal != NULL && factory_cal->loaded) ? 1U : 0U,
                      (unsigned)FACTORY_CAL_CHANNEL_SIZE,
                      (unsigned)FACTORY_CAL_NUM_CHANNELS);
-    usb_send_str("h2_close_rx bytes=");
-    for (uint8_t i = 0; i < h2_close_rx_len && i < sizeof(h2_close_rx); i++) {
-        usb_debug_printf("%s%02X", i == 0 ? "" : " ",
-                         (unsigned)h2_close_rx[i]);
-    }
-    usb_send_str("\r\n");
 }
 
 void cmd_meter_frontend(void)
