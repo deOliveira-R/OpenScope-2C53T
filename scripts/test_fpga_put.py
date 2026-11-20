@@ -41,6 +41,30 @@ def main():
     assert got == data, "data lines do not rebuild the payload"
     assert max(len(l) for l in lines) < 128, "line too long for the shell"
     assert list(fpga_put.command_lines(data, "t", force=True))[0].endswith(" force")
+
+    # A reply is everything up to the prompt. `fpga slot info` answers with two lines; the second
+    # arrives in a later read and must not become the reply to the next command.
+    class FakeSerial:
+        """Hands out scripted bytes one piece per read(); a command written queues its reply."""
+        def __init__(self, replies):
+            self.replies, self.pending, self.sent = replies, [], []
+        def write(self, b):
+            line = b.decode().strip()
+            if line:
+                self.sent.append(line)
+                self.pending += self.replies[line]
+        def reset_input_buffer(self):
+            pass                                  # what is still on the wire cannot be discarded
+        def read(self, n):
+            return self.pending.pop(0) if self.pending else b""
+    fake = FakeSerial({
+        "fpga slot info": [b"fpga slot info\r\nfpga slot: valid 'x' 10 B\r\n", b"",
+                           b"fpga slot: FPGA was sent: slot 'x'\r\n> \r\n> "],
+        "fpga slot put 3 0 n": [b"fpga slot put 3 0 n\r\nfpga slot: ok put 3\r\n> \r\n> "],
+    })
+    sh = fpga_put.Shell(None, stream=fake)
+    assert sh.cmd("fpga slot info") == "fpga slot: valid 'x' 10 B"
+    assert sh.cmd("fpga slot put 3 0 n") == "fpga slot: ok put 3", "a late line of the last reply was taken as this one"
     print("test_fpga_put: ok")
 
 

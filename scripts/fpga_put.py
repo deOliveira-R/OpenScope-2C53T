@@ -57,28 +57,44 @@ def default_port():
 
 
 class Shell:
-    def __init__(self, port):
-        import serial
-        self.s = serial.Serial(port, 115200, timeout=0.02)
+    def __init__(self, port, stream=None):
+        """port: a serial device; stream: an open one in its place (the host test's fake)."""
+        if stream is None:
+            import serial
+            stream = serial.Serial(port, 115200, timeout=0.02)
+        self.s = stream
         self.s.write(b"\r\n")
         time.sleep(0.2)
         self.s.reset_input_buffer()
         self.buf = b""
 
     def cmd(self, line, timeout=10.0):
-        """Send one line, return its first reply line that starts with a known prefix."""
+        """Send one line and read its whole reply, up to the prompt line the shell prints after
+        every command; return the reply's first line that starts with a known prefix.
+
+        Reading to the prompt is what ties a reply to its command. A reply can have more than one
+        line (`fpga slot info` has two) and its lines can arrive in separate reads: returning at
+        the first line left the second to be taken as the next command's reply. That turned an
+        accepted `fpga slot put` into a reported refusal after the device had erased the slot."""
         self.buf = b""
         self.s.reset_input_buffer()
         self.s.write(line.encode() + b"\r\n")
         t0 = time.time()
+        first = None
         while True:
             while b"\n" in self.buf:
                 reply, self.buf = self.buf.split(b"\n", 1)
-                reply = reply.replace(b"\r", b"").lstrip(b"> ")
-                if reply.startswith(PREFIXES):
-                    return reply.decode(errors="replace")
+                reply = reply.replace(b"\r", b"")
+                if reply.strip() == b">":               # the prompt: the reply is complete
+                    if first is not None:
+                        return first
+                    continue                            # a prompt left over from before this command
+                reply = reply.lstrip(b"> ")
+                if first is None and reply.startswith(PREFIXES):
+                    first = reply.decode(errors="replace")
             if time.time() - t0 > timeout:
-                raise SystemExit("no reply to %r within %.0f s" % (line[:40], timeout))
+                raise SystemExit("no complete reply to %r within %.0f s%s" %
+                                 (line[:40], timeout, "" if first is None else " (got %r, no prompt after it)" % first))
             self.buf += self.s.read(512)
 
 
