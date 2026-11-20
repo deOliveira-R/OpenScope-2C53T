@@ -217,16 +217,10 @@ void fpga_init(void)
  * Task Creation
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Create the queues, the record staging buffers and the four tasks. Called
- * by main() before the scheduler starts. */
+/* Create the record staging buffers and the acquisition task. Called by
+ * main() after fpga_init() and before the scheduler starts. */
 void fpga_create_tasks(void)
 {
-    /* No tasks if fpga_init() did not run (fpga.initialized is set only at
-     * its end); the rest of the firmware works without scope or meter data. */
-    if (!fpga.initialized) {
-        return;
-    }
-
     /* Staging buffers: a record is read into these and copied to the public
      * buffers in one step (fpga_acq_frames_commit). On the heap, not in BSS,
      * because the boot stack has little room above BSS. If an allocation

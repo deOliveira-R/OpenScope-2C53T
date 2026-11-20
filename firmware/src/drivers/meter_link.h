@@ -92,9 +92,10 @@ extern volatile bool fpga_meter_needs_activation;
 void    fpga_meter_relays_set(bool on);
 bool    fpga_meter_relays_get(void);
 
-/* Enable or disable USART2 as fpga_init would, and read its registers back,
- * for the shell. */
-void     fpga_usart_scope_enable(bool on);
+/* Ask for USART2 on or off (dvom_TX does it, within one frame time), and
+ * read its registers back, for the shell. */
+void     meter_link_port_set(bool on);
+#define METER_PORT_SET_WAIT_MS  25u   /* by then it is done: one frame (10.4 ms) and a tick, doubled */
 uint32_t fpga_usart_ctrl1(void);
 uint32_t fpga_usart_baudr(void);
 

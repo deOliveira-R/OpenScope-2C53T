@@ -180,7 +180,10 @@ static inline void systick_delay_ms(uint32_t ms)
 /* meter_link.c */
 /* An item of the meter link's transmit queue: a command word (bytes[0] high,
  * bytes[1] low) sent obeyed or unobeyed, or a whole frame sent as given. */
-typedef enum { METER_TX_WORD_OBEYED, METER_TX_WORD_UNOBEYED, METER_TX_RAW } meter_tx_kind_t;
+typedef enum {
+    METER_TX_WORD_OBEYED, METER_TX_WORD_UNOBEYED, METER_TX_RAW,
+    METER_TX_WAKE,    /* no frame: dvom_TX looks at the port requests (meter_link_port_set, link reset) */
+} meter_tx_kind_t;
 typedef struct {
     uint8_t kind;                       /* a meter_tx_kind_t */
     uint8_t bytes[FPGA_TX_FRAME_SIZE];
@@ -189,7 +192,6 @@ typedef struct {
 #define METER_RX_QUEUE_LEN   8u    /* data frames waiting for dvom_RX */
 /* One frame is 10 bytes of 10 bits at 9600 baud: 10.4 ms. */
 #define METER_TX_FRAME_MS          11u
-#define METER_TX_FRAME_TIMEOUT_MS  (2u * METER_TX_FRAME_MS)                    /* dvom_TX gives a frame up */
 #define METER_TX_QUEUE_WAIT_MS     (METER_TX_QUEUE_LEN * METER_TX_FRAME_MS)    /* a full queue has drained */
 bool meter_tx_raw_frame(const uint8_t *frame);
 extern QueueHandle_t     usart_tx_queue;

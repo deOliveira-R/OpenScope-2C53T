@@ -1563,14 +1563,9 @@ int main(void)
 
     if (current_mode == MODE_MULTIMETER) {
         /* Booting into the meter (Startup on Boot = Meter, or Restore after
-         * a save on the meter; startup_policy.h). fpga_init() leaves USART2
-         * parked (ctrl1 = 0, IRQ masked) and fpga_meter_reset_transport()
-         * re-arms it only with the scheduler running, so a transition from
-         * here would busy-wait ~3 s for a SoC frame and 5 x 300 ms for a
-         * selector echo that cannot arrive, and the SoC would boot into its
-         * own Auto while meter_submode says otherwise. Hand it to the poll
-         * task instead: it runs the same transition `mode meter N` runs,
-         * once the scheduler is up. */
+         * a save on the meter; startup_policy.h). Function changes run in
+         * the poll task, which starts with the scheduler: ask it for the
+         * stored function, as `mode meter N` does. */
         fpga_request_meter_mode(meter_submode);
     }
     /* Every other boot screen (scope, generator, home) needs nothing here:

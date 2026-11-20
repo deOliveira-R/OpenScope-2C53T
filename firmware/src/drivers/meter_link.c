@@ -60,11 +60,19 @@ static volatile bool link_last_obeyed_tx_valid;
 #define METER_DEBUG_MAX_DELAY_MS   5000u   /* longest delay a debug helper accepts */
 
 /* USART ctrl1 bits, as raw masks (the AT32 HAL only has MAKE_VALUE forms). */
+#define USART_CTRL1_REN       (1 << 2)   /* receiver enable */
+
+#define USART_CTRL1_TEN       (1 << 3)   /* transmitter enable */
+
 #define USART_CTRL1_RDBFIEN   (1 << 5)   /* RX buffer full interrupt enable */
 
 #define USART_CTRL1_TDBEIEN   (1 << 7)   /* TX buffer empty interrupt enable */
 
 #define USART_CTRL1_UEN       (1 << 13)  /* USART enable */
+
+/* USART2's interrupt priority: FreeRTOS calls are allowed from 5 and below
+ * in urgency (configMAX_SYSCALL_INTERRUPT_PRIORITY). */
+#define METER_USART_IRQ_PRIORITY  5u
 
 static void fpga_send_meter_mode_sequence(uint8_t submode);
 
@@ -119,31 +127,58 @@ static void fpga_meter_discard_next_frames(uint8_t count)
     meter_frame_discard_count = count;
 }
 
-static void fpga_meter_reset_transport(void)
+/* ═══════════════════════════════════════════════════════════════════
+ * USART2 belongs to dvom_TX
+ *
+ * Only dvom_TX turns USART2 on or off or resets the link, and it does so
+ * between frames, so a frame that has started always ends and dvom_TX can
+ * wait for its end without a time limit. Other tasks say what they want
+ * (port_want_on, port_reset_req) and wake dvom_TX with an empty queue item.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static volatile bool port_want_on;       /* what the link asks of USART2 */
+static volatile bool port_reset_req;     /* a link reset is asked for */
+static bool          port_is_on;         /* what USART2 is; dvom_TX's own */
+static SemaphoreHandle_t port_reset_lock;   /* one reset request at a time */
+static SemaphoreHandle_t port_reset_done;   /* given by dvom_TX after a reset */
+
+/* Wake dvom_TX to look at the requests. When the queue is full the item is
+ * not needed: dvom_TX looks before every item it takes. */
+static void meter_port_wake(void)
 {
-    uint32_t ctrl1;
+    const meter_tx_item_t wake = { .kind = METER_TX_WAKE };
+    (void)xQueueSendToFront(usart_tx_queue, &wake, 0);
+}
 
-    if (xTaskGetSchedulerState() != taskSCHEDULER_RUNNING) return;
+/* USART2 on at FPGA_USART_BAUD (its clock is half the core clock) with the
+ * receive interrupt, or off with ctrl1 = 0 and the interrupt masked. */
+static void meter_port_on(void)
+{
+    USART2->ctrl1 = 0;
+    USART2->baudr = system_core_clock / 2 / FPGA_USART_BAUD;
+    USART2->ctrl1 = USART_CTRL1_REN | USART_CTRL1_TEN | USART_CTRL1_RDBFIEN;
+    USART2->ctrl1 |= USART_CTRL1_UEN;
+    NVIC_SetPriority(USART2_IRQn, METER_USART_IRQ_PRIORITY);
+    NVIC_EnableIRQ(USART2_IRQn);
+    port_is_on = true;
+}
 
-    /*
-     * Drain and reset the link before a full transition, in stock's order:
-     * disable USART2 and its interrupts, suspend dvom_TX and dvom_RX, empty
-     * both queues and the byte indices, drop PC11 (the chip restarts), then
-     * enable USART2 again and resume the tasks. The 20 ms quiet window is
-     * conservative local policy, not a stock number. (tx_index = 0 holds back
-     * data frames until dvom_TX has sent a frame: see USART2_IRQHandler.)
-     */
-    ctrl1 = USART2->ctrl1;
-    USART2->ctrl1 = ctrl1 & ~(USART_CTRL1_UEN |
-                              USART_CTRL1_RDBFIEN |
-                              USART_CTRL1_TDBEIEN);
+static void meter_port_off(void)
+{
+    NVIC_DisableIRQ(USART2_IRQn);
+    USART2->ctrl1 = 0;
+    port_is_on = false;
+}
 
-    if (tx_task_handle != NULL) vTaskSuspend(tx_task_handle);
-    if (rx_task_handle != NULL) vTaskSuspend(rx_task_handle);
-
-    if (usart_tx_queue != NULL) xQueueReset(usart_tx_queue);
-    if (meter_rx_queue != NULL) xQueueReset(meter_rx_queue);
-
+/* The link reset, in stock's order: USART2 off, both queues and the byte
+ * positions emptied, PC11 low (the chip restarts when it rises again), a
+ * quiet time, USART2 on. link_tx_index = 0 holds data frames back until a
+ * frame has been sent (see USART2_IRQHandler). */
+static void meter_port_reset(void)
+{
+    meter_port_off();
+    xQueueReset(usart_tx_queue);
+    xQueueReset(meter_rx_queue);
     link_tx_index = 0;
     link_rx_index = 0;
     mlink.rx_frame_valid = false;
@@ -151,26 +186,48 @@ static void fpga_meter_reset_transport(void)
     (void)USART2->dt;
 
     GPIOC->clr = (1U << 11);
-    meter_soc_live_flag = false;       /* the chip restarts when PC11 rises again */
+    meter_soc_live_flag = false;
     fpga_scope_delay_ms(METER_LINK_RESET_QUIET_MS);
 
-    USART2->ctrl1 = (ctrl1 | USART_CTRL1_UEN | USART_CTRL1_RDBFIEN) &
-                    ~USART_CTRL1_TDBEIEN;
-    /*
-     * Always set RE and TE and unmask the interrupt here. With the link off,
-     * USART2 sits at ctrl1 = 0 with the interrupt masked
-     * (fpga_usart_scope_enable(false)). A transition that runs before the
-     * link-on has re-armed it would otherwise restore UEN on a dead
-     * transceiver: the TX count climbs, nothing reaches the wire, and every
-     * selector try times out (measured on unit #2: CTRL1 0x20A0 when it
-     * failed, 0x202C when good).
-     */
-    USART2->ctrl1 |= (1U << 2) | (1U << 3);   /* RE, TE */
-    NVIC_SetPriority(USART2_IRQn, 5);
-    NVIC_EnableIRQ(USART2_IRQn);
+    meter_port_on();
+}
 
-    if (rx_task_handle != NULL) vTaskResume(rx_task_handle);
-    if (tx_task_handle != NULL) vTaskResume(tx_task_handle);
+/* dvom_TX, before every item: carry out what was asked. True when the link
+ * was reset, which also discards the item in hand (it is older than the
+ * reset). */
+static bool meter_port_serve(void)
+{
+    if (port_reset_req) {
+        port_reset_req = false;
+        meter_port_reset();
+        xSemaphoreGive(port_reset_done);
+        return true;
+    }
+    if (port_want_on != port_is_on) {
+        if (port_want_on) meter_port_on();
+        else              meter_port_off();
+    }
+    return false;
+}
+
+/* Ask for USART2 on or off (link on and off, `fpga usart on|off`). Done by
+ * dvom_TX after the frame it is sending, at most one frame time later. */
+void meter_link_port_set(bool on)
+{
+    port_want_on = on;
+    meter_port_wake();
+}
+
+/* Reset the link and wait until dvom_TX has done it. Leaves USART2 on and
+ * PC11 low. Words queued after this returns follow the reset. */
+static void fpga_meter_reset_transport(void)
+{
+    xSemaphoreTake(port_reset_lock, portMAX_DELAY);
+    port_want_on = true;
+    port_reset_req = true;
+    meter_port_wake();
+    xSemaphoreTake(port_reset_done, portMAX_DELAY);
+    xSemaphoreGive(port_reset_lock);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -878,11 +935,12 @@ void USART2_IRQHandler(void)
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * dvom_TX: the only sender. Takes one item from usart_tx_queue, builds its
- * frame (a word through meter_build_tx_frame, a raw frame as given), starts
- * the interrupt-driven send and waits for the handler to say that the last
- * byte has gone to the USART. The wait is bounded, because a link reset
- * (fpga_meter_reset_transport) can abandon a frame.
+ * dvom_TX: the only sender and the only owner of USART2. Takes one item
+ * from usart_tx_queue, first carries out what was asked of the port
+ * (meter_port_serve), then builds the item's frame (a word through
+ * meter_build_tx_frame, a raw frame as given), starts the interrupt-driven
+ * send and waits for the handler to say that the last byte has gone to the
+ * USART. With USART2 off, frames are dropped, not started.
  */
 void fpga_usart_tx_task(void *pv)
 {
@@ -891,6 +949,8 @@ void fpga_usart_tx_task(void *pv)
 
     for (;;) {
         xQueueReceive(usart_tx_queue, &item, portMAX_DELAY);
+        if (meter_port_serve()) continue;
+        if (item.kind == METER_TX_WAKE || !port_is_on) continue;
 
         uint8_t frame[FPGA_TX_FRAME_SIZE];
         if (item.kind == METER_TX_RAW) {
@@ -905,9 +965,8 @@ void fpga_usart_tx_task(void *pv)
         memcpy((void *)link_tx_frame, frame, FPGA_TX_FRAME_SIZE);
         fpga_record_tx_frame((const uint8_t *)link_tx_frame);
 
-        (void)ulTaskNotifyTake(pdTRUE, 0);              /* forget an abandoned frame's signal */
         USART2->ctrl1 |= USART_CTRL1_TDBEIEN;           /* the handler sends the 10 bytes */
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(METER_TX_FRAME_TIMEOUT_MS));
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  /* until the last byte is out */
     }
 }
 
@@ -1065,7 +1124,7 @@ void fpga_set_meter_mux(bool enable)
     /* PC11 alone is not enough: fpga_init leaves USART2 disabled, so a
      * link-on must also enable USART2 and have the poll task send the
      * activation words. A link-off disables USART2 again. */
-    fpga_usart_scope_enable(enable);
+    meter_link_port_set(enable);
     if (enable) fpga_meter_needs_activation = true;
 
     /*
@@ -1130,9 +1189,7 @@ void fpga_meter_link_set(bool on)
         const bool covered = meter_link_function_covered(submode);   /* before mux(true) forgets "live" */
         meter_link_state = METER_LINK_ST_ON;      /* before the request: the poll task drops one while off */
         fpga_set_meter_mux(true);
-        /* Before the poll task exists, a request would run the whole
-         * transition here, on the display task; skip it then. */
-        if (!covered && meter_poll_handle != NULL) fpga_request_meter_mode(submode);
+        if (!covered) fpga_request_meter_mode(submode);
     } else {
         if (meter_link_state == METER_LINK_ST_OFF) return;
         meter_link_state = METER_LINK_ST_OFF;
@@ -1156,27 +1213,6 @@ void fpga_meter_screen_entered(uint8_t submode)
     fpga_request_meter_mode(submode);
 }
 
-/* Enable USART2 at FPGA_USART_BAUD (its clock is half the core clock) with
- * the RX interrupt, or disable it with ctrl1 = 0 and the interrupt masked.
- * Called by link on and off and by `fpga usart on|off`; the shell reads
- * the result back with fpga_usart_ctrl1() and fpga_usart_baudr(). */
-void fpga_usart_scope_enable(bool on)
-{
-    if (on) {
-        USART2->ctrl1 = 0;
-        USART2->baudr = system_core_clock / 2 / FPGA_USART_BAUD;
-        USART2->ctrl1 |= (1 << 2);   /* RE      */
-        USART2->ctrl1 |= (1 << 3);   /* TE      */
-        USART2->ctrl1 |= (1 << 5);   /* RDBFIEN */
-        USART2->ctrl1 |= (1 << 13);  /* UEN     */
-        NVIC_SetPriority(USART2_IRQn, 5);
-        NVIC_EnableIRQ(USART2_IRQn);
-    } else {
-        NVIC_DisableIRQ(USART2_IRQn);
-        USART2->ctrl1 = 0;
-    }
-}
-
 uint32_t fpga_usart_ctrl1(void) { return USART2->ctrl1; }
 
 uint32_t fpga_usart_baudr(void) { return USART2->baudr; }
@@ -1189,6 +1225,8 @@ uint32_t fpga_usart_baudr(void) { return USART2->baudr; }
 void meter_link_create_tasks(void)
 {
     usart_tx_queue = xQueueCreate(METER_TX_QUEUE_LEN, sizeof(meter_tx_item_t));
+    port_reset_lock = xSemaphoreCreateMutex();
+    port_reset_done = xSemaphoreCreateBinary();
     meter_rx_queue = xQueueCreate(METER_RX_QUEUE_LEN, sizeof(fpga_meter_rx_event_t));
     xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
     xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);

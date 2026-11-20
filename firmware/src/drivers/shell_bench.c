@@ -1055,8 +1055,8 @@ void cmd_fpga_usart(const char *args)
 {
     char buf[160];
     while (*args == ' ') args++;
-    if      (strncmp(args, "on",  2) == 0) fpga_usart_scope_enable(true);
-    else if (strncmp(args, "off", 3) == 0) fpga_usart_scope_enable(false);
+    if      (strncmp(args, "on",  2) == 0) { meter_link_port_set(true);  vTaskDelay(pdMS_TO_TICKS(METER_PORT_SET_WAIT_MS)); }
+    else if (strncmp(args, "off", 3) == 0) { meter_link_port_set(false); vTaskDelay(pdMS_TO_TICKS(METER_PORT_SET_WAIT_MS)); }
     else if (*args) { usb_send_str("usage: fpga usart [on|off]\r\n"); return; }
 
     uint32_t c1 = fpga_usart_ctrl1();

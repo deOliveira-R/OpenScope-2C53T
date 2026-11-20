@@ -36,9 +36,9 @@ extern fpga_state_t fpga;   /* defined in fpga.c */
  * the scheduler starts. */
 void fpga_init(void);
 
-/* Create the driver's tasks: acquisition (fpga), the meter link's transmit
- * (dvom_TX), receive (dvom_RX) and poll (meter_poll). Call after fpga_init()
- * and before the scheduler starts. */
+/* Create the acquisition task and its staging buffers. Call after
+ * fpga_init() and before the scheduler starts. (The meter link creates its
+ * own tasks: meter_link_create_tasks.) */
 void fpga_create_tasks(void);
 
 #endif /* FPGA_H */
