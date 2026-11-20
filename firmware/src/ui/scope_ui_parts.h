@@ -32,6 +32,7 @@
 #include "scope_vpos.h"
 #include "scope_roll_meas.h"
 #include "FreeRTOS.h"   /* pvPortMalloc: the X-Y snapshot buffers */
+#include "at32f403a_407.h"  /* the cycle counter (DWT) and system_core_clock, for the frame timing */
 #include "task.h"       /* xTaskGetTickCount: popup timeouts, persistence fade */
 #include "scope_trigger.h"
 #include "trig_edge.h"
@@ -45,7 +46,6 @@
 #include "fft_source.h"
 #include "fft_test_signals.h"
 #endif
-#include "at32f403a_407.h"  /* MCU registers; no scope_*.c file reads a port directly */
 #include <stdio.h>
 #include <math.h>
 #include <string.h>

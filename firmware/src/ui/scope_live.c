@@ -32,10 +32,6 @@ volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
 
 volatile uint32_t ui_scope_live_send_us;     /* of the frame's time, the part spent sending columns */
 
-/* Rows between two dotted horizontal grid lines: one division of the graticule
- * (as draw_scope_grid, scope_yt.c). */
-#define SCOPE_GRID_ROW_PITCH 26u
-
 #if FEATURE_BENCHSHELL
 /* `fpga scope livecheck <frames>`: while live_check_frames is not zero each
  * live frame also evaluates every pixel with a per-pixel rule (one chain of
@@ -89,7 +85,7 @@ void draw_scope_live_frame(void)
 
     /* 1. The window: placed on the trigger source's crossing and filled into
      * yt_cols for both channels by the same view_build() the full redraw
-     * uses (draw_demo_waveform, scope_yt.c), so the two renderers stay in
+     * uses (draw_yt_traces, scope_yt.c), so the two renderers stay in
      * phase. From here b1/b2 are the window's columns. */
     const uint32_t vb0 = DWT->CYCCNT;
     view_build(ss, b1, b2);
@@ -118,7 +114,7 @@ void draw_scope_live_frame(void)
     pm_set_t pm;
     markers_build(ss, th, &a1, &a2, band_bot, &pm);
 
-    /* What this frame drew, for the cursor readout (as draw_demo_waveform
+    /* What this frame drew, for the cursor readout (as draw_yt_traces
      * records it). */
     vband_clear();
     {
@@ -304,7 +300,7 @@ void draw_scope_live_frame(void)
                 for (uint16_t y = SCOPE_TOP; y < band_bot; y++)
                     if ((y & 1u) == 0) col[y - SCOPE_TOP] = th->grid;
             if ((x & 1u) == 0)                                  /* dotted horizontal lines */
-                for (uint16_t i = 0; i < rows; i += SCOPE_GRID_ROW_PITCH) col[i] = th->grid;
+                for (uint16_t i = 0; i < rows; i += SCOPE_DIV_PX) col[i] = th->grid;
             if (x == SCOPE_GEOM_CENTER_COL)
                 for (uint16_t i = 0; i < rows; i++) col[i] = th->grid_center;
             else
@@ -387,7 +383,7 @@ void draw_scope_live_frame(void)
                     c = th->grid_center;
                 else if (inwin &&
                          ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
-                          (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
+                          (((y - SCOPE_TOP) % SCOPE_DIV_PX) == 0 && (x & 1u) == 0)))
                     c = th->grid;
                 else {
                     c = th->background;

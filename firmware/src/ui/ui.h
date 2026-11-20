@@ -277,7 +277,7 @@ void draw_splash(void);
 
 /* scope_ui.c */
 void draw_scope_grid(void);
-void draw_demo_waveform(uint32_t frame);
+void draw_yt_traces(uint32_t frame);
 void draw_scope_screen(uint32_t frame);
 void draw_scope_live_frame(void);  /* flicker-free trace-band update; falls
                                       back to draw_scope_screen for popups/

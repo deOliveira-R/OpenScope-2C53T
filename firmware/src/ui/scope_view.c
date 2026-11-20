@@ -107,7 +107,6 @@ static struct {
     bool    valid;
 } g_cap;
 
-int chan_zero_code(const scope_state_t *ss, uint8_t ch);
 
 /* The plan for the current state: returns L (0 = general path), *ratio = R,
  * *fs_rec = the rate R was taken against (both may be NULL). Depends only on

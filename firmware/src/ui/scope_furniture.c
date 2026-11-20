@@ -132,7 +132,7 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
  *
  * Returns false, and leaves *m zeroed, unless the FPGA has actually
  * delivered samples. fpga_data_ready() is the same gate the waveform plot
- * uses (see draw_demo_waveform), so the badges and the trace always agree
+ * uses (see draw_yt_traces), so the badges and the trace always agree
  * about whether what is on screen is real.
  */
 static bool measure_live_channel(const volatile uint8_t *buf,
@@ -157,57 +157,6 @@ static bool measure_live_channel(const volatile uint8_t *buf,
             break;
     }
     return m->valid;
-}
-
-/* No float formatting: the firmware links newlib-nano without
- * -u _printf_float, so "%f" prints nothing. Tenths are assembled by hand
- * here, and in scope_cursor.c for the cursor readout. Unused: the strip
- * formats its values with scope_prm_format. */
-__attribute__((unused))
-static void fmt_tenths(char *b, size_t n, float v, const char *unit)
-{
-    if (v < 0.0f) v = 0.0f;
-    unsigned t = (unsigned)(v * 10.0f + 0.5f);
-    snprintf(b, n, "%u.%u%s", t / 10u, t % 10u, unit);
-}
-
-/*
- * Frequency with automatic Hz/kHz/MHz ranging, integer math only.
- * Same constraint as fmt_tenths: newlib-nano's "%f" prints nothing.
- */
-__attribute__((unused))
-static void fmt_hz(char *b, size_t n, float hz)
-{
-    if (hz < 0.0f) hz = 0.0f;
-    if (hz < 1000.0f) {
-        const unsigned tenths = (unsigned)(hz * 10.0f + 0.5f);
-        snprintf(b, n, "%u.%uHz", tenths / 10u, tenths % 10u);
-    } else if (hz < 1000000.0f) {
-        const unsigned hundredths = (unsigned)(hz / 10.0f + 0.5f);
-        snprintf(b, n, "%u.%02ukHz", hundredths / 100u, hundredths % 100u);
-    } else {
-        const unsigned hundredths = (unsigned)(hz / 10000.0f + 0.5f);
-        snprintf(b, n, "%u.%02uMHz", hundredths / 100u, hundredths % 100u);
-    }
-}
-
-/*
- * A duration in seconds, ranged us/ms/s. Integer math after the float scaling,
- * as above.
- */
-__attribute__((unused))
-static void fmt_seconds(char *b, size_t n, float s)
-{
-    if (s < 0.0f) s = 0.0f;
-    if (s < 1e-3f) {
-        snprintf(b, n, "%uus", (unsigned)(s * 1e6f + 0.5f));
-    } else if (s < 1.0f) {
-        const unsigned hundredths_ms = (unsigned)(s * 1e5f + 0.5f);
-        snprintf(b, n, "%u.%02ums", hundredths_ms / 100u, hundredths_ms % 100u);
-    } else {
-        const unsigned hundredths = (unsigned)(s * 100.0f + 0.5f);
-        snprintf(b, n, "%u.%02us", hundredths / 100u, hundredths % 100u);
-    }
 }
 
 /*

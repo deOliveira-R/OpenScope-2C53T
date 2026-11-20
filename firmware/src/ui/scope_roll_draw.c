@@ -183,7 +183,7 @@ void draw_roll_screen(bool full)
                                    x == (uint16_t)SCOPE_GEOM_CENTER_COL))
                     c = th->grid_center;
                 else if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
-                                   (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
+                                   (((y - SCOPE_TOP) % SCOPE_DIV_PX) == 0 && (x & 1u) == 0)))
                     c = th->grid;
                 else
                     c = th->background;

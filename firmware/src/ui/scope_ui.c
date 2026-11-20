@@ -58,10 +58,10 @@ void draw_scope_screen(uint32_t frame)
     draw_trigger_line(th, trigger_marker_y_full(ss));
 
     /* Layer 5: Waveform */
-    draw_demo_waveform(frame);
+    draw_yt_traces(frame);
 
     /* Mask strip at the bottom of the live band (the live frame paints the
-     * same rows), only when draw_demo_waveform() armed the overlay. */
+     * same rows), only when draw_yt_traces() armed the overlay. */
     draw_mask_strip(th, band_bot);
 
     /* Layer 6: Math channel overlay */
@@ -74,7 +74,7 @@ void draw_scope_screen(uint32_t frame)
      * and shapes as the live frame. */
     {
         pm_set_t pm;
-        if (fpga_data_ready()) {        /* draw_demo_waveform's own gate: yt_cols is this frame's */
+        if (fpga_data_ready()) {        /* draw_yt_traces's own gate: yt_cols is this frame's */
             autofit_t a1, a2;
             yt_fits(ss, &a1, &a2);
             markers_build(ss, th, &a1, &a2, band_bot, &pm);

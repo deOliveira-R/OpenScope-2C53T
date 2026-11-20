@@ -175,10 +175,7 @@ scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,
 
 /* ── formatting ─────────────────────────────────────────────────────────
  *
- * Magnitude only; the caller below prepends the marker and the sign. The
- * unit steps mirror fmt_seconds()/fmt_hz() in scope_furniture.c so the
- * cursor readout and the measurement badges cannot disagree about how the
- * same quantity is written.
+ * Magnitude only; the caller below prepends the marker and the sign.
  */
 
 static void fmt_seconds_mag(char *b, uint32_t n, float s)

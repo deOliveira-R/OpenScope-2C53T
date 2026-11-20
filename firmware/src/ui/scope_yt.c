@@ -24,7 +24,7 @@ void draw_scope_grid(void)
             lcd_set_pixel(x, y, th->grid);
     }
     /* Horizontal grid lines (dotted) */
-    for (y = SCOPE_TOP; y < SCOPE_BOT; y += 26) {
+    for (y = SCOPE_TOP; y < SCOPE_BOT; y += SCOPE_DIV_PX) {
         for (x = 0; x < SCOPE_GEOM_COLS; x += 2)
             lcd_set_pixel(x, y, th->grid);
     }
@@ -92,11 +92,6 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
     b->mid_counts       = 0.0f;
 }
 
-void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
-                       const volatile uint8_t *b2);
-
-void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2);
-
 /*
  * The row where the HARDWARE trigger fires, through map a.
  *
@@ -122,7 +117,7 @@ int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
 }
 
 /* Full-redraw variant: builds the window (view_build) and the trigger
- * source's map exactly as draw_demo_waveform() will (same yt_fits), so it can
+ * source's map exactly as draw_yt_traces() will (same yt_fits), so it can
  * run before the traces. */
 int16_t trigger_marker_y_full(const scope_state_t *ss)
 {
@@ -411,7 +406,7 @@ static float draw_channel(const volatile uint8_t *buf, uint16_t color,
  *   3. No record yet, ever: draw a sine (CH1) and a square (CH2) marked
  *      "DEMO", moving with frame while running and frozen while stopped.
  * Once a record has been seen, a missing one leaves the plot empty. */
-void draw_demo_waveform(uint32_t frame)
+void draw_yt_traces(uint32_t frame)
 {
     const theme_t *th = theme_get();
     const scope_state_t *ss = scope_state_get();
