@@ -382,7 +382,7 @@ static bool scope_incremental_available(const scope_state_t *s)
     /* Math and persistence (C12) are layers of the compositor too
      * (2026-11-13). A re-sampled held
      * record (zoom while paused, C14) no longer forces the full path: both
-     * renderers draw the one window view_build() fills (scope_ui.c), blank
+     * renderers draw the one window view_build() fills (scope_view.c), blank
      * columns included. */
     return scope_acquisition_ready();
 #endif
@@ -699,7 +699,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
         q.epoch            = now.layout;
         /* A live popup counts as new data so the compositor runs on
          * every 50 ms tick while it is up, and once more to erase it
-         * (its lifetime is wall-clock, scope_ui.c POPUP_MS). */
+         * (its lifetime is wall-clock, scope_popup.c POPUP_MS). */
         q.new_data         = new_data || scope_popup_active()
                              || scope_ui_take_live_request() || chg.live;
         q.incremental_ok   = scope_incremental_available(ss_anim);

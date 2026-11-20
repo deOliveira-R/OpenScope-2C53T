@@ -2,7 +2,7 @@
  * Measurement strip: where the scope's automatic measurements sit on the plot.
  *
  * Pure layout (no LCD, no FPGA, no scope state), host-tested in
- * tests/test_measure_strip.c. scope_ui.c draws what this places.
+ * tests/test_measure_strip.c. scope_furniture.c draws what this places.
  *
  * Stock V1.2.0 (photos scope/IMG_0324.jpeg, lines.jpeg): three columns over
  * the bottom of the plot, CH1's selected measurements first and then CH2's,

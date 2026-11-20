@@ -232,10 +232,10 @@ void draw_scope_live_frame(void)
         int16_t bl1 = -1, bh1 = -1, bl2 = -1, bh2 = -1;
         if (g_mask_bounds_on && MASK_BOUND_DOT(x)) {
             uint8_t lo, hi;
-            if (on1 && scope_mask_bound_at(0, (int)x, g_trig_x_actual, &lo, &hi)) {
+            if (on1 && scope_mask_bound_at(0, (int)x, g_place.trig_x, &lo, &hi)) {
                 bl1 = autofit_y(&a1, lo); bh1 = autofit_y(&a1, hi);
             }
-            if (on2 && scope_mask_bound_at(1, (int)x, g_trig_x_actual, &lo, &hi)) {
+            if (on2 && scope_mask_bound_at(1, (int)x, g_place.trig_x, &lo, &hi)) {
                 bl2 = autofit_y(&a2, lo); bh2 = autofit_y(&a2, hi);
             }
         }
@@ -245,9 +245,9 @@ void draw_scope_live_frame(void)
          * so the per-pixel shape calls (plot_markers.c) run inside their
          * boxes only. */
         const bool edge = (x < PM_TAG_W) || (x >= LCD_WIDTH - PM_TAG_W);
-        const bool tcol = g_trig_x_actual >= 0 &&
-                          (int)x + PM_TPOS_W / 2 >= (int)g_trig_x_actual &&
-                          (int)x <= (int)g_trig_x_actual + PM_TPOS_W / 2;
+        const bool tcol = g_place.trig_x >= 0 &&
+                          (int)x + PM_TPOS_W / 2 >= (int)g_place.trig_x &&
+                          (int)x <= (int)g_place.trig_x + PM_TPOS_W / 2;
 
         /* The popup is a HOLE in the band, not a layer: its glyphs are the
          * one thing this compositor cannot recompute per pixel, so a column
@@ -334,7 +334,7 @@ void draw_scope_live_frame(void)
             }
         if (tcol)                                                               /* trigger-position pointer */
             for (uint16_t y = SCOPE_TOP; y < SCOPE_TOP + PM_TPOS_H && y < band_bot; y++)
-                if (tpos_px(g_trig_x_actual, (int)x, (int)y)) col[y - SCOPE_TOP] = th->trigger;
+                if (tpos_px(g_place.trig_x, (int)x, (int)y)) col[y - SCOPE_TOP] = th->trigger;
         if (curs)                                                               /* cursor lines and labels */
             for (uint16_t y = SCOPE_TOP; y < band_bot; y++) {
                 uint16_t c;
@@ -359,7 +359,7 @@ void draw_scope_live_frame(void)
                 if (curs && cursor_layer_px(&cl, (int)x, (int)y, &c))
                     ;                                      /* cursor lines and labels */
                 else if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
-                    tpos_px(g_trig_x_actual, (int)x, (int)y))  /* trigger-position pointer */
+                    tpos_px(g_place.trig_x, (int)x, (int)y))  /* trigger-position pointer */
                     c = th->trigger;
                 else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))
                     ;                                      /* ground / trigger tags */

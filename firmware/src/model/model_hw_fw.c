@@ -3,7 +3,7 @@
  * executor (ARCH-1 M1)
  *
  * Each op CALLS the owner API (fpga.c, scope_vpos.c, scope_apply.c,
- * scope_ui.c's latch, meter_ui.c, signal_gen.c, sys_pwm.c, scope_mask.c);
+ * scope_view.c's latch, meter_ui.c, signal_gen.c, sys_pwm.c, scope_mask.c);
  * since B7 the ops are the only callers of the scope's. Nothing here is a second copy of an
  * owner's logic, and nothing writes a register (src/model/ owns no
  * peripheral: scripts/reg_owners.txt).

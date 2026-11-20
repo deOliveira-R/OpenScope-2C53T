@@ -314,7 +314,7 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
     }
 
     /* The live frame draws the cursors and the AUX row their readout, so a
-     * move is one live frame, not a clear-and-repaint (scope_ui.c). */
+     * move is one live frame, not a clear-and-repaint (scope_live.c). */
     case KA_CURSOR_MOVE:
         (void)prop_step_local(cursor_prop(G(P(VIEW_CURSEL))), dir, ORIGIN_KEY, NULL);
         scope_ui_request_live();

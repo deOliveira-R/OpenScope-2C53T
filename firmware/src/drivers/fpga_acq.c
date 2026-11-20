@@ -359,7 +359,7 @@ uint8_t fpga_acq_trig_code_get(void)      { return acq_trig_code; }
 
 /* UI trigger level (-100..100, screen pixels about mid-scale) to a reg 0x08
  * code. The renderer's convention: SCOPE_H pixels = 256 counts, SCOPE_H =
- * LCD_HEIGHT - 16 - 18 = 206 in scope_ui.c. Keep the 206 in step with it. */
+ * LCD_HEIGHT - 16 - 18 = 206 in scope_ui_parts.h. Keep the 206 in step with it. */
 uint8_t fpga_trigger_code_from_level(int level)
 {
     if (level < -100) level = -100;

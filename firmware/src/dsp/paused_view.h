@@ -16,7 +16,7 @@
  * WHAT THIS MODULE IS
  * -------------------
  * The pure arithmetic only (no hardware, no globals), so it is host-tested.
- * scope_ui.c supplies the capture rate / ranges and plots through it.
+ * scope_view.c supplies the capture rate / ranges and plots through it.
  *
  *  - "Display time per column" is 1 / fs_col, the column rate of the code
  *    now on the status bar: its sample rate (x2 merged) times the fast-code
@@ -33,7 +33,7 @@
  *    window. Ours is symmetric, stock's skewed ~0.25 sample late; they agree
  *    to ~1 % of full scale per tap (test_paused_view.c), invisible on 8 bits.
  *
- * HOW THE RENDERER USES IT (ui/scope_ui.c view_build)
+ * HOW THE RENDERER USES IT (ui/scope_view.c view_build)
  * ---------------------------------------------------
  * pv_view_plan() picks the mapping of the one Y-T window (yt_cols): L > 0 is
  * the integer fast-code zoom (scope_geom.c, trigger fitted to 1/L sample,

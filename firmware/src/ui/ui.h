@@ -229,7 +229,7 @@ int16_t scope_ui_trig_x_actual(void);
 /* Zoom while paused (C14): latch the ranges at STOP (the RUN/STOP key), for
  * the true-scale path's vertical rescale of the held record. */
 void scope_ui_paused_latch(void);
-/* The Y-T window's horizontal mapping (C5 x C14, scope_ui.c view_plan), for
+/* The Y-T window's horizontal mapping (C5 x C14, scope_view.c view_plan), for
  * the current state:
  *   view_factor  columns per record sample on the integer window (1, or the
  *                fast-code zoom 2..20 at 0x00-0x03; scope_geom.h); 0 = a held
@@ -293,7 +293,8 @@ void ui_popup_overlay_cancel(void);
 /* The renderer's software display trigger, exported for bench validation
  * (`spi3 frame`): index the drawn window starts at for the CURRENT scope
  * state; 0 = free-run (disabled / flat signal / no crossing). */
-uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf);
+uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf, int16_t *trig_x,
+                                      uint8_t *anchor, bool *exact);
 
 /* Advance the quick-change popup on the flicker-free render path, painting the
  * box once on the frame it first appears. draw_scope_live_frame() steps the

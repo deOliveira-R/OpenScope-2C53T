@@ -69,7 +69,7 @@ void draw_scope_screen(uint32_t frame)
 
     /* Layer 6b: plot-edge markers over the traces, as stock: ground tags,
      * trigger tag, and the trigger-position pointer over the column where the
-     * trigger point actually landed (g_trig_x_actual), not where it was asked
+     * trigger point actually landed (g_place.trig_x), not where it was asked
      * to land, which the soft-trigger fallback may not honour. Same builder
      * and shapes as the live frame. */
     {
@@ -83,8 +83,8 @@ void draw_scope_screen(uint32_t frame)
         }
         draw_plot_markers(&pm, th);
         for (int dy = 0; dy < PM_TPOS_H; dy++)
-            for (int x = g_trig_x_actual - PM_TPOS_W / 2; x <= g_trig_x_actual + PM_TPOS_W / 2; x++)
-                if (x >= 0 && x < LCD_WIDTH && tpos_px(g_trig_x_actual, x, SCOPE_TOP + dy))
+            for (int x = g_place.trig_x - PM_TPOS_W / 2; x <= g_place.trig_x + PM_TPOS_W / 2; x++)
+                if (x >= 0 && x < LCD_WIDTH && tpos_px(g_place.trig_x, x, SCOPE_TOP + dy))
                     lcd_set_pixel((uint16_t)x, (uint16_t)(SCOPE_TOP + dy), th->trigger);
     }
 

@@ -176,7 +176,7 @@ static void slot_timebase(const theme_t *th, const scope_state_t *ss)
         if (ss->running) {
             s_spd_running = now;
         } else if (fpga_data_ready() && s_spd_running > 0.0f && now > 0.0f) {
-            /* A held record (scope_ui.c view_held) re-sampled at another
+            /* A held record (scope_view.c view_held) re-sampled at another
              * timebase: say how far it is zoomed against the capture. */
             const float z = s_spd_running / now;
             if (z > 1.01f || z < 0.99f) {

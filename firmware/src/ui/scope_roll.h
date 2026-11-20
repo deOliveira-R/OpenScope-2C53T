@@ -39,7 +39,7 @@
  * The pure half: the step table, the FIFO, the step state machine, the
  * screen geometry and the volts of one point. No FreeRTOS, no hardware, so
  * all of it is host-tested (tests/test_scope_roll.c). The op03 read and the
- * pacing loop live in fpga.c; the drawing in scope_ui.c.
+ * pacing loop live in fpga_acq.c; the drawing in scope_roll_draw.c.
  *
  * Deliberate differences from stock, each for a stated reason:
  *  - Pacing is the RTOS tick, not TMR3: OpenScope's TMR3 already runs the
@@ -202,7 +202,7 @@ uint16_t scope_roll_age_at_column(uint16_t x, uint16_t width);
 uint16_t scope_roll_visible(const scope_roll_fifo_t *f, uint16_t width);
 
 /* Vertical transform of one band [y_top, y_bot). Two forms, the same two the
- * Y-T renderer has (scope_ui.c): FIXED = true volts/div, `256/scope_h` counts
+ * Y-T renderer has (scope_yt.c): FIXED = true volts/div, `256/scope_h` counts
  * per pixel about `center`, so the status bar's volts/div holds; FIT = the
  * band spans the visible points' own min..max (at least 16 counts, so a quiet
  * input is not blown up into noise). Results are clamped into the band. */

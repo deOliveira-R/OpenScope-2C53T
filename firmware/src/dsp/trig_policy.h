@@ -2,7 +2,7 @@
  * Trigger acquisition policy and trigger status.
  *
  * Pure functions, no FreeRTOS and no fpga.h, so tests/test_trig_policy.c runs
- * the very code the acquisition task (fpga.c) and the badge (scope_ui.c) run.
+ * the very code the acquisition task (fpga_acq.c) and the badge (scope_furniture.c) run.
  *
  * WHAT A READ IS. OpenScope's capture core writes both converters into one
  * 1024-sample ring and HOLDS a record when a trigger completes it, or when

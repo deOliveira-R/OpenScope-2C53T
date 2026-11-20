@@ -566,7 +566,7 @@ void cmd_gpio_set(const char *args)
 
 /* `fpga scope livecheck [frames]`: for the next live frames of the scope screen,
  * draw_scope_live_frame() also works out every pixel with the per-pixel rule
- * and counts the pixels where its painted column differs (scope_ui.c). The
+ * and counts the pixels where its painted column differs (scope_live.c). The
  * frames are whatever the screen shows: set up cursors, math, the mask,
  * persistence or a popup first to cover those layers. */
 #define LIVECHECK_FRAMES_DEFAULT 20u     /* about 2 s of redraws */
@@ -1706,7 +1706,8 @@ void cmd_spi3_frame(void)
 
     const scope_state_t *ss = scope_state_get();
     uint8_t src_ch = (ss && ss->trigger.source == TRIG_SRC_CH2) ? 2u : 1u;
-    uint16_t off = scope_ui_soft_trigger_offset((src_ch == 2u) ? s2 : s1);
+    int16_t tx = -1; uint8_t anchor = 0; bool exact = false;
+    uint16_t off = scope_ui_soft_trigger_offset((src_ch == 2u) ? s2 : s1, &tx, &anchor, &exact);
 
     /* L: columns per sample of the window (fast-code zoom, parity C5); the
      * window shows record positions off + x / L, x = 0..300. R: record
@@ -1718,11 +1719,11 @@ void cmd_spi3_frame(void)
                      (unsigned)(g1 == g0 && !(g0 & 1u)),
                      (unsigned)src_ch, (unsigned)off,
                      (unsigned)(ss ? (ss->soft_trigger ? 1 : 0) : 0),
-                     (int)scope_ui_trig_x_actual(), (unsigned)scope_ui_trig_anchor(),
+                     (int)tx, (unsigned)anchor,
                      (unsigned)fpga_acq_record_time_ordered(),
                      (unsigned)scope_ui_view_factor(),
                      (unsigned long)scope_ui_view_ratio(),
-                     (unsigned)scope_ui_trig_anchor_exact());
+                     (unsigned)exact);
     spi3_frame_dump("CH1", s1);
     spi3_frame_dump("CH2", s2);
 }

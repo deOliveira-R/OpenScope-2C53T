@@ -3,7 +3,7 @@
  * level tag at the right edge, the trigger-position pointer at the top.
  *
  * Pure shapes (no LCD), host-tested in tests/test_measure_strip.c. Both
- * scope_ui.c renderers (the full path and the live column compositor) ask
+ * scope_ui.c and scope_live.c renderers (the full path and the live column compositor) ask
  * plot_marker_px() for every pixel, so the two cannot draw different shapes.
  *
  * Stock (scope/IMG_0324.jpeg, lines.jpeg): ▶ in the channel colour at the left

@@ -23,7 +23,7 @@
  *
  * SECONDS PER DIVISION IS A PROPERTY OF OUR RENDERER, NOT OF THE HARDWARE
  * -----------------------------------------------------------------------
- * scope_ui.c draws one sample per screen column and rules a vertical grid line
+ * scope_yt.c draws one sample per screen column and rules a vertical grid line
  * every 25 px (stock's pitch since parity C5; it was 32 px until then, which
  * is the geometry the paragraph below measured), so a division is 25 samples
  * and s/div = 25/fs, divided by the zoom at codes 0x00-0x03. That is what our
@@ -70,9 +70,9 @@ extern "C" {
 
 /*
  * Samples per screen division — set by the renderer, not the hardware.
- * scope_ui.c: one sample per column (at zoom 1), vertical grid every 25 px,
+ * scope_yt.c: one sample per column (at zoom 1), vertical grid every 25 px,
  * stock's geometry since parity C5 (scope_geom.h; 32 px before, which made
- * every label 1.28x stock's on the same code). scope_ui.c carries a
+ * every label 1.28x stock's on the same code). scope_furniture.c carries a
  * compile-time assertion tying this to its geometry.
  */
 #define SCOPE_TIMEBASE_SAMPLES_PER_DIV   25.0f

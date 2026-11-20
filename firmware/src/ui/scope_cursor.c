@@ -176,7 +176,7 @@ scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,
 /* ── formatting ─────────────────────────────────────────────────────────
  *
  * Magnitude only; the caller below prepends the marker and the sign. The
- * unit steps mirror fmt_seconds()/fmt_volts()/fmt_hz() in scope_ui.c so the
+ * unit steps mirror fmt_seconds()/fmt_hz() in scope_furniture.c so the
  * cursor readout and the measurement badges cannot disagree about how the
  * same quantity is written.
  */

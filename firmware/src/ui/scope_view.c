@@ -325,47 +325,33 @@ int chan_zero_code(const scope_state_t *ss, uint8_t ch)
 }
 
 /* The trigger-position pointer: over the column where the trigger point
- * actually landed (g_trig_x_actual), at the top of the plot. */
+ * actually landed (g_place.trig_x), at the top of the plot. */
 bool tpos_px(int trig_x, int x, int y)
 {
     return trig_x >= 0 &&
            plot_marker_tpos_px(x - (trig_x - PM_TPOS_W / 2), y - SCOPE_TOP) == PM_PX_FILL;
 }
 
-/* How the last window was anchored: 0 none (free-run), 1 soft (the search
- * about the record's midline), 2 hardware (the level crossing near index 512
- * of a time-ordered record). Set by scope_soft_trigger_offset(). */
-uint8_t  g_trig_anchor = 0;
-
-/* Where the trigger point landed in the last computed window: a window
- * column, or -1 when free-running. Read by the trigger-position pointer, the
- * mask overlay and `spi3 frame`. Set by scope_soft_trigger_offset(). */
-int16_t  g_trig_x_actual = -1;
-
-/* The window last placed (scope_geom.h). L == 0 marks the general held-record
- * path of view_build, so L == 1 means exactly "one column per sample". */
-scope_window_t g_view;
-
-/* The last hardware anchor was the core's index, not a search. */
-static bool g_trig_anchor_exact;
+/* The placement the display draws with (scope_ui_parts.h). */
+scope_placement_t g_place = { .trig_x = -1 };
 
 /* The hardware trigger point of a time-ordered record (trig_edge_anchor_of,
  * dsp/trig_edge.h): the known index when our core ordered the record, else a
  * search near index 512. The mask test uses the same function, so it aligns
  * on the crossing the glass shows. Returns the index or -1. */
-static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *buf)
+static int hw_trigger_anchor(const scope_state_t *ss, const volatile uint8_t *buf, bool *exact)
 {
     return trig_edge_anchor_of(buf, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }),
                                ss->trigger.edge == TRIG_RISING,
-                               fpga_acq_record_core_ordered(), &g_trig_anchor_exact);
+                               fpga_acq_record_core_ordered(), exact);
 }
 
 /* Free-run window: from index 0. */
-static uint16_t view_free_run(uint8_t L)
+static uint16_t view_free_run(scope_placement_t *pl, uint8_t L)
 {
-    g_view.L  = L;
-    g_view.u0 = 0;
-    return (uint16_t)scope_geom_first_sample(&g_view);
+    pl->win.L  = L;
+    pl->win.u0 = 0;
+    return (uint16_t)scope_geom_first_sample(&pl->win);
 }
 
 /* Software display trigger: place the window so the trigger point of src_buf
@@ -380,20 +366,20 @@ static uint16_t view_free_run(uint8_t L)
  * no crossing: the level outside the signal, which is AUTO behaviour).
  *
  * Returns the record index window column 0 shows (what `spi3 frame` prints
- * as off). Leaves the window in g_view, placed at zoom L (the plan's; 1 for
- * the general held-record path, which pivots on the column left in
- * g_trig_x_actual), sets g_trig_x_actual and g_trig_anchor, and puts in
+ * as off). Fills *pl: the window placed at zoom L (the plan's; 1 for the
+ * general held-record path, which pivots on the column left in pl->trig_x),
+ * the trigger column and the anchor kind. Puts in
  * *back_q8 (may be NULL) how far before the anchor sample the crossing lies,
  * in 1/256 sample (0 when nothing was locked). */
 uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                           const volatile uint8_t *src_buf, uint8_t L,
-                                          int16_t *back_q8)
+                                          int16_t *back_q8, scope_placement_t *pl)
 {
-    g_trig_x_actual = -1;
-    g_trig_anchor = 0;
+    pl->trig_x = -1;
+    pl->anchor = VIEW_ANCHOR_NONE;
     if (back_q8) *back_q8 = 0;
     if (!ss->soft_trigger || src_buf == NULL)
-        return view_free_run(L);
+        return view_free_run(pl, L);
 
     const int32_t N = (int32_t)FPGA_ADC_BUF_SIZE;
 
@@ -416,7 +402,7 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
      *    re-finds it on its interpolated copy for the same reason,
      *    0x08021EF0). */
     if (fpga_acq_record_time_ordered()) {
-        int a = hw_trigger_anchor(ss, src_buf);
+        int a = hw_trigger_anchor(ss, src_buf, &pl->exact);
         if (a >= 1) {
             /* From the search, a >= 1 means the level is 4..251 and the clamp
              * in trig_level_rec() never acts; at the core's index the level
@@ -424,9 +410,9 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
             const int c = (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v;
             const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], c);
             if (back_q8) *back_q8 = (int16_t)back;
-            g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx, 0, N);
-            g_trig_anchor = 2;
-            return (uint16_t)scope_geom_first_sample(&g_view);
+            pl->trig_x = (int16_t)scope_geom_fit(&pl->win, L, a, back, tx, 0, N);
+            pl->anchor = VIEW_ANCHOR_HW;
+            return (uint16_t)scope_geom_first_sample(&pl->win);
         }
     }
 
@@ -443,7 +429,7 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
         if (s > mx) mx = s;
     }
     if ((int)mx - (int)mn < 8)
-        return view_free_run(L);                  /* ~flat: nothing to lock to */
+        return view_free_run(pl, L);                  /* ~flat: nothing to lock to */
 
     int thr = ((int)mn + (int)mx) / 2 + ((int)ss->trigger.level * 256) / SCOPE_H;
     if (thr < (int)mn + 1) thr = (int)mn + 1;     /* keep it inside the signal */
@@ -464,13 +450,13 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
     /* -1 is no crossing. A crossing at index lo itself is treated as none
      * too. */
     if (a <= lo)
-        return view_free_run(L);
+        return view_free_run(pl, L);
     const int32_t back = scope_geom_back_q8(src_buf[a - 1], src_buf[a], thr);
     if (back_q8) *back_q8 = (int16_t)back;
-    g_trig_x_actual = (int16_t)scope_geom_fit(&g_view, L, a, back, tx,
+    pl->trig_x = (int16_t)scope_geom_fit(&pl->win, L, a, back, tx,
                                               0, N);
-    g_trig_anchor = 1;
-    return (uint16_t)scope_geom_first_sample(&g_view);
+    pl->anchor = VIEW_ANCHOR_SOFT;
+    return (uint16_t)scope_geom_first_sample(&pl->win);
 }
 
 /* Place the window on the trigger source and fill yt_cols for BOTH channels
@@ -478,8 +464,8 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
  * caller (full redraw, live frame, trigger marker, split view), so a change
  * of renderer can never move or re-phase the trace. The mapping is
  * view_plan()'s: the integer window, or (L == 0) the general ratio of a held
- * record about the trigger column. Sets yt_cols, g_view, g_span
- * (g_view_first, g_view_end), g_trig_x_actual and g_trig_anchor. */
+ * record about the trigger column. Sets yt_cols, g_place.win, g_span
+ * (g_view_first, g_view_end), g_place.trig_x and g_place.anchor. */
 void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2)
 {
@@ -491,9 +477,9 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
     g_view_first = 0;
     g_view_end = SCOPE_GEOM_COLS;
     if (L != 0u) {
-        (void)scope_soft_trigger_offset(ss, src, L, NULL);
-        scope_geom_fill(b1, N, &g_view, yt_cols[0], SCOPE_GEOM_COLS);
-        scope_geom_fill(b2, N, &g_view, yt_cols[1], SCOPE_GEOM_COLS);
+        (void)scope_soft_trigger_offset(ss, src, L, NULL, &g_place);
+        scope_geom_fill(b1, N, &g_place.win, yt_cols[0], SCOPE_GEOM_COLS);
+        scope_geom_fill(b2, N, &g_place.win, yt_cols[1], SCOPE_GEOM_COLS);
         return;
     }
     /* General path: find and place the trigger as the one-sample-per-column
@@ -501,10 +487,10 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
      * on that sample (on the crossing itself, to 1/1000 sample, when
      * zoomed in) and scale time about it. */
     int16_t back = 0;
-    (void)scope_soft_trigger_offset(ss, src, 1u, &back);
-    const int32_t pc = (g_trig_x_actual >= 0) ? g_trig_x_actual : SCOPE_GEOM_CENTER_COL;
-    int32_t pos0 = (g_view.u0 + pc) * 1000 - pc * (int32_t)r;
-    if (r < PV_RATIO_ONE && g_trig_x_actual >= 0)
+    (void)scope_soft_trigger_offset(ss, src, 1u, &back, &g_place);
+    const int32_t pc = (g_place.trig_x >= 0) ? g_place.trig_x : SCOPE_GEOM_CENTER_COL;
+    int32_t pos0 = (g_place.win.u0 + pc) * 1000 - pc * (int32_t)r;
+    if (r < PV_RATIO_ONE && g_place.trig_x >= 0)
         pos0 -= ((int32_t)back * 1000 + 128) >> 8;
     uint16_t f = 0, e = 0;
     /* The span from a channel that has a buffer (both: same record length,
@@ -513,10 +499,10 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
     pv_fill(b2, 0, N, pos0, r, yt_cols[1], SCOPE_GEOM_COLS, b1 ? NULL : &f, b1 ? NULL : &e);
     g_view_first = f;
     g_view_end = e;
-    g_view.L = 0u;              /* not one column per sample: no mask overlay */
+    g_place.win.L = 0u;              /* not one column per sample: no mask overlay */
 }
 
-int16_t scope_ui_trig_x_actual(void) { return g_trig_x_actual; }
+int16_t scope_ui_trig_x_actual(void) { return g_place.trig_x; }
 
 /* The plan's L: the integer zoom, 0 on the general held-record path. */
 uint8_t scope_ui_view_factor(void)
@@ -524,19 +510,26 @@ uint8_t scope_ui_view_factor(void)
     return view_plan(scope_state_get(), NULL, NULL);
 }
 
-uint8_t scope_ui_trig_anchor(void)   { return g_trig_anchor; }
+uint8_t scope_ui_trig_anchor(void)   { return g_place.anchor; }
 
-bool    scope_ui_trig_anchor_exact(void) { return g_trig_anchor == 2u && g_trig_anchor_exact; }
+bool    scope_ui_trig_anchor_exact(void) { return g_place.anchor == VIEW_ANCHOR_HW && g_place.exact; }
 
-/* For bench validation (`spi3 frame`): the offset the renderer would start
- * the drawn window at for the current scope state, computed by the
- * renderer's own function so a host replica cannot pass while the screen is
- * wrong. On the general held-record path (L 0) it is the
- * one-sample-per-column window the pivot is taken from. Overwrites g_view,
- * g_trig_x_actual and g_trig_anchor as a frame would. */
-uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf)
+/* For bench validation (`spi3 frame`, shell task): the offset the display
+ * would start the drawn window at for the current scope state and this
+ * record, computed by the display's own function into a placement of its
+ * own, so the display's is not touched; the trigger column, the anchor kind
+ * (a view_anchor_t) and whether it is exact come back through the pointers.
+ * On the general held-record path the offset is the one-sample-per-column
+ * window the pivot is taken from. */
+uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf, int16_t *trig_x,
+                                      uint8_t *anchor, bool *exact)
 {
     const scope_state_t *ss = scope_state_get();
     const uint8_t L = view_plan(ss, NULL, NULL);
-    return scope_soft_trigger_offset(ss, src_buf, L ? L : 1u, NULL);
+    scope_placement_t pl = { .trig_x = -1 };
+    const uint16_t off = scope_soft_trigger_offset(ss, src_buf, L ? L : 1u, NULL, &pl);
+    *trig_x = pl.trig_x;
+    *anchor = pl.anchor;
+    *exact  = pl.anchor == VIEW_ANCHOR_HW && pl.exact;
+    return off;
 }

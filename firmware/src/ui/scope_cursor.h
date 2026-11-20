@@ -47,7 +47,7 @@
  * path (the default). An autofit band (no calibration for the range, or
  * view.truescale off) rescales every frame from the record's own min/max, so pixels-per-count is a property of the frame that
  * was drawn, not of the hardware. The renderer therefore reports the
- * transform it used (see scope_ui.c) and this module converts with THAT.
+ * transform it used (see scope_yt.c) and this module converts with THAT.
  * Assuming the fixed transform while autofit is on the screen would be a
  * plausible wrong number of exactly the kind this module exists to stop —
  * and it is what the old code did.
@@ -69,7 +69,7 @@ extern "C" {
 /*
  * One screen column is one sample. This is a property of the RENDERER —
  * draw_channel() and the live compositor plot buf[x] at column x — not
- * of the capture. scope_ui.c carries a compile-time assertion tying the two
+ * of the capture. scope_furniture.c carries a compile-time assertion tying the two
  * together, so changing the plot without changing this is a build error
  * rather than a silently wrong dt.
  */

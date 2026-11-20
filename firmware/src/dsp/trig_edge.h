@@ -31,7 +31,7 @@
  * record rotated to its start -- on a raw rotated record index 512 is not
  * the trigger.
  *
- * One copy, two callers: the display's hardware anchor (scope_ui.c) and the
+ * One copy, two callers: the display's hardware anchor (scope_view.c) and the
  * mask pass/fail test (scope_mask.c). If they ever disagreed, the mask would
  * test a different alignment from the one on the glass. */
 int trig_edge_anchor(const volatile uint8_t *rec, rec_code_t crossing, int rising);
@@ -89,7 +89,7 @@ static inline int trig_edge_anchor_of(const volatile uint8_t *rec, rec_code_t cr
  * [9]) and the old soft trigger's. Stock's strict L < s is level = L + 1.
  *
  * `level` stays a plain int: this is the generic search, used with a
- * software threshold (the record's own midline, scope_ui.c) and compared
+ * software threshold (the record's own midline, scope_view.c) and compared
  * with stock's strict test at level +/- 1, which leaves 0..255.
  *
  * Searched i in [lo, hi), clamped to [1, n - 1 - confirm]. `confirm` = the

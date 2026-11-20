@@ -92,10 +92,6 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
     b->mid_counts       = 0.0f;
 }
 
-uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
-                                          const volatile uint8_t *src_buf, uint8_t L,
-                                          int16_t *back_q8);
-
 void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2);
 
@@ -290,17 +286,17 @@ bool     g_mask_bounds_on;         /* also draw the mask bounds (mask ready) */
 static uint32_t g_mask_ov_gen;     /* the record generation the overlay paints */
 
 /* Arm the overlay for this frame, after view_build(): only on the hardware
- * anchor (g_trig_anchor == 2, the alignment the mask was taught on) with a
+ * anchor (g_place.anchor == VIEW_ANCHOR_HW, the alignment the mask was taught on) with a
  * mask present, and only for the record generation now on screen. */
 void mask_overlay_begin(void)
 {
-    /* One column per sample only (g_view.L == 1): the mask indexes record
+    /* One column per sample only (g_place.win.L == 1): the mask indexes record
      * SAMPLES by column offset from the anchor (scope_mask_column), which
      * holds only then. A zoomed window or a re-sampled held record draws the
      * trace without the overlay rather than colouring columns off the
      * samples that were judged. */
-    g_mask_ov_on = (g_trig_anchor == 2u) && g_trig_x_actual >= 0 &&
-                   g_view.L == 1u &&
+    g_mask_ov_on = (g_place.anchor == VIEW_ANCHOR_HW) && g_place.trig_x >= 0 &&
+                   g_place.win.L == 1u &&
                    scope_mask_state() != MASK_PF_EMPTY;
     /* The bounds depend on the alignment, not on which record was judged,
      * so they are not gated on the generation: gating them would blink them
@@ -313,7 +309,7 @@ void mask_overlay_begin(void)
 bool mask_px_fail(int8_t ch, int x)
 {
     return g_mask_ov_on && ch >= 0 &&
-           scope_mask_column((uint8_t)ch, x, g_trig_x_actual, g_mask_ov_gen) == SCOPE_MASK_COL_FAIL;
+           scope_mask_column((uint8_t)ch, x, g_place.trig_x, g_mask_ov_gen) == SCOPE_MASK_COL_FAIL;
 }
 
 /* Strip colour for column x from the worse of the two channels' verdicts, or
@@ -323,8 +319,8 @@ uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted)
 {
     *dotted = false;
     if (!g_mask_ov_on) return 0;
-    scope_mask_col_t a = scope_mask_column(0, x, g_trig_x_actual, g_mask_ov_gen);
-    scope_mask_col_t b = scope_mask_column(1, x, g_trig_x_actual, g_mask_ov_gen);
+    scope_mask_col_t a = scope_mask_column(0, x, g_place.trig_x, g_mask_ov_gen);
+    scope_mask_col_t b = scope_mask_column(1, x, g_place.trig_x, g_mask_ov_gen);
     scope_mask_col_t k = (a > b) ? a : b;        /* enum order = severity */
     switch (k) {
     case SCOPE_MASK_COL_PASS:       return th->success;
@@ -388,7 +384,7 @@ static float draw_channel(const volatile uint8_t *buf, uint16_t color,
         uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
         uint8_t blo, bhi;
         if (g_mask_bounds_on && mask_ch >= 0 && MASK_BOUND_DOT(x) &&
-            scope_mask_bound_at((uint8_t)mask_ch, x, g_trig_x_actual, &blo, &bhi)) {
+            scope_mask_bound_at((uint8_t)mask_ch, x, g_place.trig_x, &blo, &bhi)) {
             lcd_set_pixel(x, (uint16_t)autofit_y(a, blo), bnd_c);
             lcd_set_pixel(x, (uint16_t)autofit_y(a, bhi), bnd_c);
         }

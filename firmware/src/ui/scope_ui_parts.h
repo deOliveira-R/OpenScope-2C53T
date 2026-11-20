@@ -288,16 +288,26 @@ uint8_t yt_centre_code(void);
 int chan_zero_code(const scope_state_t *ss, uint8_t ch);
 /* The trigger-position pointer covers pixel (x, y) for trigger column trig_x. */
 bool tpos_px(int trig_x, int x, int y);
-/* How the last window was anchored: 0 none, 1 soft, 2 hardware trigger. */
-extern uint8_t  g_trig_anchor;
-/* Column where the trigger point landed in the last window, -1 if none. */
-extern int16_t  g_trig_x_actual;
-/* The last window placed (L == 0: general held-record path). */
-extern scope_window_t g_view;
-/* Place the window on the trigger in src_buf at zoom L; returns column 0's sample. */
+/* How a record is placed in the plot: the window, the column where the
+ * trigger point landed and what the placement was anchored on. */
+typedef enum {
+    VIEW_ANCHOR_NONE = 0,   /* free-running: the window starts at the record's start */
+    VIEW_ANCHOR_SOFT,       /* a search about the record's midline */
+    VIEW_ANCHOR_HW,         /* the level crossing near the trigger point of a time-ordered record */
+} view_anchor_t;
+typedef struct {
+    scope_window_t win;      /* scope_geom.h; L == 0 marks the general held-record path */
+    int16_t        trig_x;   /* window column of the trigger point, -1 when free-running */
+    uint8_t        anchor;   /* a view_anchor_t */
+    bool           exact;    /* VIEW_ANCHOR_HW from the core's index, not from a search */
+} scope_placement_t;
+/* The placement the display draws with. Only view_build() writes it. */
+extern scope_placement_t g_place;
+/* Place the window on the trigger in src_buf at zoom L, into *pl; returns
+ * column 0's sample. */
 uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                           const volatile uint8_t *src_buf, uint8_t L,
-                                          int16_t *back_q8);
+                                          int16_t *back_q8, scope_placement_t *pl);
 /* Place the window and fill yt_cols and g_span for both channels. */
 void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2);

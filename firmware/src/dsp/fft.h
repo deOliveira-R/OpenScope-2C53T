@@ -139,7 +139,7 @@ void fft_auto_configure(const int16_t *samples, uint16_t num_samples);
  * shell's `fft auto` only ask; the display task, which owns the sample
  * buffer and prepares the record the view analyses, takes the request the
  * next time it has prepared one and runs fft_auto_configure() on exactly
- * that input (scope_ui.c fft_prepare_input). Until B7 the key prepared a
+ * that input (scope_spectrum.c fft_prepare_input). Until B7 the key prepared a
  * record of its own into the same buffer from the input task. Any task may
  * ask; a request made while the FFT holds no memory is dropped. */
 void fft_auto_request(void);
