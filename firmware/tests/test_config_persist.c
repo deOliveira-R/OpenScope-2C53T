@@ -2826,11 +2826,13 @@ static void test_a_compaction_cut_inside_the_first_sectors_erase_does_not_stop_l
  * 1. The real settings record through config_save(), cut after one erase.
  *    Since v5 its slot is 68 bytes, which tiles no sector boundary in the
  *    region (4096 x k is a multiple of 68 = 4 x 17 only for k = 17), so the
- *    erase order does not matter for it: the new record that reaches the
- *    boundary straddles it, its header lies in the erased sector and its tail
- *    in the old one; the scan stops at that blank header and the append finds
- *    the slot not blank, LOG_DAMAGED, and config_save() compacts (#57's path).
- *    This part pins that it holds for the record as it is.
+ *    erase order does not matter for it. Bottom up, the new record that
+ *    reaches the boundary straddles it, its header in the erased sector and
+ *    its tail in the old one; the scan stops at that blank header and the
+ *    append finds the slot not blank, LOG_DAMAGED, and config_save()
+ *    compacts (#57's path). Top down, the new records follow the old prefix
+ *    and the log fills (FULL). This part pins that the record as it is never
+ *    resurrects, and that its refill does reach the boundary and compact.
  *
  * 2. The region layer itself, with a record slot that does tile the sector:
  *    the layout in which a bottom-up erase resurrects. Without it this test
@@ -2855,10 +2857,17 @@ _Static_assert(TILING_SLOT * TILING_SLOTS_PER_SECTOR == FLASH_REGION_SECTOR_SIZE
 #define TILING_TAG_OLD  0x01000000u
 #define TILING_TAG_CUT  0x02000000u
 #define TILING_TAG_NEW  0x03000000u
+/* A tag's base: the top byte, the bits the three bases above differ in. The
+ * low 24 bits number records within a base (at most 64 per region here). */
+#define TILING_TAG_BASE_MASK  0xFF000000u
+
+/* What fills a payload after its tag: any value that is neither 0xFF (blank)
+ * nor 0x00 serves; this suite's read-only fill is the same byte. */
+#define TILING_PAYLOAD_FILL  0x5Au
 
 static void tiling_payload(uint8_t *p, uint32_t tag)
 {
-    memset(p, 0x5A, TILING_PAYLOAD);
+    memset(p, TILING_PAYLOAD_FILL, TILING_PAYLOAD);
     memcpy(p, &tag, sizeof tag);
 }
 
@@ -2929,7 +2938,7 @@ static void check_tiling_log_never_resurrects(void)
             const uint32_t got = tiling_newest_tag();
             CHECK(got == want, "cut after %u erases: after %u saves since the cut, the boot "
                   "read %s record 0x%08X instead of the newest save 0x%08X", k, i + 1u,
-                  (got & ~0xFFFFFFu) == TILING_TAG_OLD ? "the PRE-COMPACTION" : "another",
+                  (got & TILING_TAG_BASE_MASK) == TILING_TAG_OLD ? "the PRE-COMPACTION" : "another",
                   got, want);
         }
     }

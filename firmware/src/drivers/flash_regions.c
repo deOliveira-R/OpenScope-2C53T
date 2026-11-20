@@ -558,10 +558,12 @@ flash_region_status_t flash_region_reset(flash_region_id_t id)
      * erased sector; the device boots on one of them (an older setting, never
      * a resurrected one) and appends after it, whatever the record size.
      * Today's records (settings 68 B, usercal 312 B slots) tile no sector
-     * boundary in their regions, so the slot that reaches one straddles it
-     * and compacts (LOG_DAMAGED) under either order; this order is what keeps
-     * that true for a record that does. Tested by test_config_persist.c,
-     * "a compaction cut mid-erase never resurrects old settings". */
+     * boundary in their regions, so even bottom up the new slot that reaches
+     * the boundary straddles it, the scan stops at its blank header and the
+     * caller compacts (LOG_DAMAGED). This order is what keeps a record that
+     * does tile safe (a 64-byte payload, 72 B slot: 9 x 4096 = 512 x 72).
+     * Tested by test_config_persist.c, "a compaction cut mid-erase never
+     * resurrects old settings". */
     return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);
 }
 
