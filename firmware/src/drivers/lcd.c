@@ -16,6 +16,7 @@
  */
 
 #include "lcd.h"
+#include "at32f403a_407.h"  /* DWT cycle counter for the column-write timing */
 
 #include <stdbool.h>
 
@@ -135,15 +136,25 @@ static inline void lcd_bus_delay(void) {
     while (i--) __asm volatile("nop");
 }
 
+/* The row range the panel holds from the last Row Address Set, so that a
+ * column write to the same rows need not send it again. */
+#define LCD_ROWS_UNKNOWN 0xFFFFu
+static uint16_t lcd_rows_y0 = LCD_ROWS_UNKNOWN, lcd_rows_y1;
+
 static uint8_t lcd_shadow[LCD_SHADOW_HEIGHT][LCD_SHADOW_STRIDE];
 static uint16_t lcd_shadow_page;
 static uint16_t lcd_shadow_x;
 static uint16_t lcd_shadow_w;
 static uint32_t lcd_shadow_pos;      /* pixels left in the window */
 static uint16_t lcd_shadow_cx, lcd_shadow_cy;   /* where the next one lands */
-static uint16_t lcd_shadow_last_color;
-static uint8_t lcd_shadow_last_index;
-static bool lcd_shadow_last_valid;
+/* Palette indices already worked out, by colour. A screen uses a handful of
+ * colours, and a column of the scope's plot alternates between a few of them
+ * (background, grid dots, traces): with one remembered colour the search ran
+ * about 4,000 times a live frame (measured 2026-11-20). Direct-mapped. */
+#define LCD_SHADOW_CACHE_SLOTS 16u            /* a power of two; the palette has 16 colours */
+static uint16_t lcd_shadow_cache_color[LCD_SHADOW_CACHE_SLOTS];
+static uint8_t  lcd_shadow_cache_index[LCD_SHADOW_CACHE_SLOTS];
+static uint16_t lcd_shadow_cache_valid;       /* one bit per slot */
 
 static const uint16_t lcd_shadow_palette[16] = {
     COLOR_BLACK,
@@ -164,12 +175,17 @@ static const uint16_t lcd_shadow_palette[16] = {
     COLOR_UI_BG,
 };
 
+extern volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
 static uint8_t lcd_shadow_palette_index(uint16_t color)
 {
-    if (lcd_shadow_last_valid && color == lcd_shadow_last_color) {
-        return lcd_shadow_last_index;
+    /* RGB565: fold the three fields so that colours differing in any of them
+     * tend to land in different slots. */
+    const uint8_t slot = (uint8_t)((color ^ (color >> 5) ^ (color >> 11)) & (LCD_SHADOW_CACHE_SLOTS - 1u));
+    if ((lcd_shadow_cache_valid & (1u << slot)) && color == lcd_shadow_cache_color[slot]) {
+        return lcd_shadow_cache_index[slot];
     }
 
+    lcd_perf_palette_searches++;
     uint8_t best = 0;
     uint32_t best_dist = 0xFFFFFFFFu;
     int32_t r = (int32_t)((color >> 11) & 0x1F);
@@ -192,9 +208,9 @@ static uint8_t lcd_shadow_palette_index(uint16_t color)
             if (dist == 0) break;
         }
     }
-    lcd_shadow_last_color = color;
-    lcd_shadow_last_index = best;
-    lcd_shadow_last_valid = true;
+    lcd_shadow_cache_color[slot] = color;
+    lcd_shadow_cache_index[slot] = best;
+    lcd_shadow_cache_valid |= (uint16_t)(1u << slot);
     return best;
 }
 
@@ -239,9 +255,7 @@ void lcd_shadow_clear(void)
             lcd_shadow[y][x] = 0;
         }
     }
-    lcd_shadow_last_color = 0;
-    lcd_shadow_last_index = 0;
-    lcd_shadow_last_valid = false;
+    lcd_shadow_cache_valid = 0;
 }
 
 void lcd_shadow_set_page(uint16_t y)
@@ -419,6 +433,7 @@ void lcd_init(void)
  * util/lcd_health.h). Busy-waits ~220 ms. */
 void lcd_panel_init(void)
 {
+    lcd_rows_y0 = LCD_ROWS_UNKNOWN;           /* a reset panel holds its own default */
     /* Step 2: Software reset and wake from sleep */
     lcd_write_cmd(ST7789_SLPOUT);   /* 0x11: Sleep Out */
     delay_ms(120);                   /* Firmware uses timer-based delay ~120ms */
@@ -623,6 +638,9 @@ void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
     lcd_write_data8(y_end >> 8);
     lcd_write_data8(y_end & 0xFF);
 
+    lcd_rows_y0 = y;
+    lcd_rows_y1 = y_end;
+
     /* Memory Write (0x2C): subsequent data writes go to framebuffer */
     lcd_write_cmd(ST7789_RAMWR);
 
@@ -741,6 +759,10 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count)
     }
 }
 
+/* Where a column write's time goes (`ui dump`): cycles in the window set-up,
+ * and how often the shadow had to search the palette for a colour. */
+volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
+
 void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count)
 {
     /* A stream into a window one pixel wide. Same pixels on the panel and the
@@ -752,7 +774,38 @@ void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t c
      * unit, 2026-11-20: the general stream spent about 170 us on a column of
      * 206 pixels, most of it on that bookkeeping. `lcd colcheck` compares the
      * two. */
-    lcd_set_window(x, y, 1, count);
+    /* The window, as lcd_set_window() sets it, with two differences. The
+     * rows are sent only when they are not the ones the panel holds (the
+     * columns of one frame share them). And the writes follow one another
+     * without lcd_bus_delay(): the bus timing already gives the panel its
+     * 66 ns write cycle (lcd_bus_timing_spec), as it does for the pixels,
+     * which never had a delay. Measured before: 11 delayed writes, 32 us a
+     * column, 9.6 ms of a 36 ms frame. `lcd readback` reads the panel's
+     * memory back against the shadow to check what arrived. */
+    const uint32_t w0 = DWT->CYCCNT;
+    lcd_note_drawer();
+    const uint16_t y_end = (uint16_t)(y + count - 1u);
+    if (y < lcd_watch_y1 && (uint32_t)y + count > lcd_watch_y0) lcd_watch_dirty = true;
+    *LCD_CMD_ADDR  = ST7789_CASET;
+    *LCD_DATA_ADDR = (uint16_t)(x >> 8);
+    *LCD_DATA_ADDR = (uint16_t)(x & 0xFF);
+    *LCD_DATA_ADDR = (uint16_t)(x >> 8);
+    *LCD_DATA_ADDR = (uint16_t)(x & 0xFF);
+    if (y != lcd_rows_y0 || y_end != lcd_rows_y1) {
+        *LCD_CMD_ADDR  = ST7789_RASET;
+        *LCD_DATA_ADDR = (uint16_t)(y >> 8);
+        *LCD_DATA_ADDR = (uint16_t)(y & 0xFF);
+        *LCD_DATA_ADDR = (uint16_t)(y_end >> 8);
+        *LCD_DATA_ADDR = (uint16_t)(y_end & 0xFF);
+        lcd_rows_y0 = y;
+        lcd_rows_y1 = y_end;
+    }
+    *LCD_CMD_ADDR = ST7789_RAMWR;
+    lcd_shadow_x = x;
+    lcd_shadow_w = 1;
+    lcd_shadow_cx = x;
+    lcd_shadow_cy = y;
+    lcd_perf_window_cycles += DWT->CYCCNT - w0;
     lcd_shadow_pos = 0;                       /* this call writes the whole window */
     const bool    in_x  = (x < LCD_WIDTH);
     const uint8_t shift = (x & 1U) ? 0U : 4U; /* even x: the high half of the byte */

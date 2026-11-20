@@ -3669,6 +3669,10 @@ static void cmd_ui_dump(void)
                              (unsigned long)ui_scope_live_us_max);
             extern volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
             extern volatile uint32_t ui_scope_live_send_us;
+            extern volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
+            usb_debug_printf("lcd column writes since boot: window set-up %lu ms, palette searches %lu\r\n",
+                             (unsigned long)(lcd_perf_window_cycles / (system_core_clock / 1000u)),
+                             (unsigned long)lcd_perf_palette_searches);
             usb_debug_printf("scope live frame columns: %u sent, %u unchanged and skipped; sending took %lu us\r\n",
                              (unsigned)ui_scope_live_cols_sent, (unsigned)ui_scope_live_cols_skipped,
                              (unsigned long)ui_scope_live_send_us);

@@ -706,12 +706,25 @@ void cmd_ui_livecheck(const char *args)
 /* `lcd colcheck`: lcd_write_column() against lcd_set_window() +
  * lcd_write_pixels(). The same test column is written both ways at several
  * places (even and odd x, the screen's top and bottom rows, a column that is
- * off the panel's right edge is not drawn) and the screenshot shadow is read
- * back after each. Runs on the display task; it paints over a few columns of
+ * off the panel's right edge is not drawn) and after each the screenshot shadow and the panel's
+ * own memory (RAMRD) are read back. Runs on the display task; it paints over a few columns of
  * whatever screen is up, which the next repaint of that screen restores. */
 #define COLCHECK_LEN 64u                       /* pixels in the test column */
 #define COLCHECK_TIMEOUT_MS 2000u              /* the display task serves a call once per 50 ms frame */
-typedef struct { uint32_t places, pixels, diffs; uint16_t first_x, first_y; } colcheck_t;
+typedef struct { uint32_t places, pixels, diffs, glass_diffs; uint16_t first_x, first_y, glass_x, glass_y; } colcheck_t;
+
+/* One pixel of the panel's own memory (RAMRD), as the read-back hands it out. */
+static void colcheck_glass_px(uint16_t x, uint16_t y, uint16_t rgb565, uint16_t raw, void *ctx)
+{
+    (void)x; (void)y; (void)raw;
+    *(uint16_t *)ctx = rgb565;
+}
+static uint16_t colcheck_glass_at(uint16_t x, uint16_t y)
+{
+    uint16_t v = 0;
+    lcd_readback_row(x, y, 1, LCD_RB_PACKED18, colcheck_glass_px, &v);
+    return v;
+}
 
 static uint8_t colcheck_shadow_at(uint16_t x, uint16_t y)
 {
@@ -726,6 +739,7 @@ static void colcheck_run(void *arg)
     static const uint16_t ys[] = { 0u, 31u, LCD_HEIGHT - COLCHECK_LEN };
     static uint16_t px[COLCHECK_LEN];
     static uint8_t  want[COLCHECK_LEN];
+    static uint16_t glass[COLCHECK_LEN];      /* what the panel held after the general stream */
     const uint16_t *pal = lcd_shadow_palette_get();
 
     for (uint16_t i = 0; i < COLCHECK_LEN; i++)                /* every palette colour, runs and singles */
@@ -735,7 +749,10 @@ static void colcheck_run(void *arg)
             const uint16_t x = xs[a], y = ys[b];
             lcd_set_window(x, y, 1, COLCHECK_LEN);
             lcd_write_pixels(px, COLCHECK_LEN);
-            for (uint16_t i = 0; i < COLCHECK_LEN; i++) want[i] = colcheck_shadow_at(x, (uint16_t)(y + i));
+            for (uint16_t i = 0; i < COLCHECK_LEN; i++) {
+                want[i]  = colcheck_shadow_at(x, (uint16_t)(y + i));
+                glass[i] = colcheck_glass_at(x, (uint16_t)(y + i));
+            }
             lcd_fill_rect(x, y, 1, COLCHECK_LEN, 0x0000);      /* so that a column write that does nothing shows */
             lcd_write_column(x, y, px, COLCHECK_LEN);
             r->places++;
@@ -743,6 +760,9 @@ static void colcheck_run(void *arg)
                 r->pixels++;
                 if (colcheck_shadow_at(x, (uint16_t)(y + i)) != want[i] && r->diffs++ == 0) {
                     r->first_x = x; r->first_y = (uint16_t)(y + i);
+                }
+                if (colcheck_glass_at(x, (uint16_t)(y + i)) != glass[i] && r->glass_diffs++ == 0) {
+                    r->glass_x = x; r->glass_y = (uint16_t)(y + i);
                 }
             }
         }
@@ -756,8 +776,12 @@ void cmd_lcd_colcheck(void)
         usb_send_str("lcd colcheck: the display task did not answer\r\n");
         return;
     }
-    usb_debug_printf("lcd colcheck: %lu columns, %lu pixels, %lu shadow entries differ\r\n",
-                     (unsigned long)r.places, (unsigned long)r.pixels, (unsigned long)r.diffs);
+    usb_debug_printf("lcd colcheck: %lu columns, %lu pixels, %lu shadow entries differ, "
+                     "%lu pixels differ in the panel's memory\r\n",
+                     (unsigned long)r.places, (unsigned long)r.pixels, (unsigned long)r.diffs,
+                     (unsigned long)r.glass_diffs);
+    if (r.glass_diffs)
+        usb_debug_printf("lcd colcheck: panel, first at x=%u y=%u\r\n", (unsigned)r.glass_x, (unsigned)r.glass_y);
     if (r.diffs)
         usb_debug_printf("lcd colcheck: first at x=%u y=%u\r\n", (unsigned)r.first_x, (unsigned)r.first_y);
 }
