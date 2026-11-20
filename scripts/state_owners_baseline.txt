@@ -1,3 +1,3 @@
-drivers/fpga.c	fpga_reconcile_frontend_after_arm	chN.coupling	1
-drivers/fpga.c	fpga_reconcile_timebase_after_arm	tb.code	1
-drivers/fpga.c	fpga_roll_service	view.run	1
+drivers/scope_frontend.c	fpga_reconcile_frontend_after_arm	chN.coupling	1
+drivers/fpga_acq.c	fpga_reconcile_timebase_after_arm	tb.code	1
+drivers/fpga_acq.c	fpga_roll_service	view.run	1

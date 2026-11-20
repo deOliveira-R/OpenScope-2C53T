@@ -6,10 +6,10 @@ src/model/   -
 # src/stream/ (FEATURE_STREAM) owns no peripheral either: it sends through usb_debug.c's write path.
 src/stream/  -
 # GPIO: per-port .cfg (CFGLR/CFGHR, read-modify-write) and .out (SCR/CLR/ODT). Pin ownership: src/drivers/pins.h (review).
-GPIO*.*      drivers/fpga.c drivers/button_scan.c drivers/lcd.c drivers/sys_pwm.c drivers/flash_fs.c
+GPIO*.*      drivers/fpga.c drivers/fpga_boot.c drivers/scope_frontend.c drivers/meter_link.c drivers/fpga_internal.h drivers/button_scan.c drivers/lcd.c drivers/sys_pwm.c drivers/flash_fs.c
              drivers/power.c drivers/dac.c drivers/dac_output.c drivers/scope_trigger.c drivers/battery.c drivers/continuity_buzzer.c
              drivers/usb_debug.c:usb_debug_init
-?PTR         drivers/fpga.c drivers/button_scan.c drivers/sys_pwm.c drivers/continuity_buzzer.c
+?PTR         drivers/fpga.c drivers/meter_link.c drivers/button_scan.c drivers/sys_pwm.c drivers/continuity_buzzer.c
 DAC          drivers/dac.c                         # both channels: CH1 offset (PA4) and generator (PA5)
 TMR7         drivers/dac_output.c
 DMA2         drivers/dac_output.c
@@ -19,9 +19,9 @@ TMR3         drivers/button_scan.c
 TMR10        drivers/sys_pwm.c
 TMR11        drivers/sys_pwm.c
 ADC1         drivers/battery.c
-SPI3         drivers/fpga.c
-USART2       drivers/fpga.c
-EXINT        drivers/fpga.c drivers/continuity_buzzer.c
+SPI3         drivers/fpga.c drivers/fpga_boot.c drivers/fpga_acq.c drivers/fpga_internal.h
+USART2       drivers/fpga.c drivers/meter_link.c
+EXINT        drivers/fpga.c drivers/fpga_acq.c drivers/continuity_buzzer.c
 IOMUX        drivers/fpga.c drivers/continuity_buzzer.c
 SPI2         drivers/flash_fs.c
 XMC          drivers/lcd.c

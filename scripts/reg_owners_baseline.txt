@@ -18,6 +18,13 @@ main.c	main	WDT	6
 main.c	main	XMC	4
 main.c	vApplicationMallocFailedHook	PRIMASK	1
 main.c	vApplicationStackOverflowHook	PRIMASK	1
+re/re_fpga_driver.c	fpga_edgecap_15	GPIOB.cfg	2
+re/re_fpga_driver.c	fpga_edgecap_15	GPIOB.out	2
+re/re_fpga_driver.c	fpga_spi3_config_sequence	?PTR	3
+re/re_fpga_driver.c	fpga_spi3_config_sequence	GPIOB.cfg	1
+re/re_fpga_driver.c	fpga_spi3_config_sequence	GPIOB.out	1
+re/re_fpga_driver.c	fpga_spi3_config_sequence	GPIOD.cfg	2
+re/re_fpga_driver.c	fpga_spi3_config_sequence	GPIOD.out	4
 re/re_spi3.c	cmd_spi3_gowin	SPI3	2
 re/re_spi3.c	cmd_spi3_probe	GPIOB.out	2
 re/re_spi3.c	cmd_spi3_probe	SPI3	3
