@@ -1,0 +1,234 @@
+/*
+ * OpenScope 2C53T - oscilloscope screen: cursors
+ *
+ * The cursor lines, their readout and the cursor row.
+ */
+
+#include "scope_ui_parts.h"
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Cursor measurement drawing
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* The vertical transform of the band that contains BOTH rows, as the
+ * renderer last drew it; counts_per_pixel 0 when there is none (see the
+ * delta readout in draw_cursors for why a straddle is refused). */
+static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
+{
+    scope_cursor_vmap_t vm;
+    memset(&vm, 0, sizeof(vm));
+    if (math_enabled && g_math_cur.on) {
+        /* Volts (or counts) on the math scale about the graticule centre;
+         * any other math unit leaves counts_per_pixel 0 -> pixels. */
+        vm.channel   = 0u;                 /* named "m" by draw_cursors */
+        vm.mid_known = 1u;
+        vm.mid_row   = (int16_t)SCOPE_GRID_MID_Y;
+        vm.direct         = g_math_cur.direct;
+        vm.direct_conf    = g_math_cur.conf;
+        vm.unit_per_pixel = g_math_cur.unit_per_px;
+        return vm;
+    }
+    /* Overlaid true-scale bands both contain the cursors: the active
+     * channel's is tried first. */
+    const uint8_t first = (g_vband[1].on &&
+                           g_vband[1].channel == (active_channel ? 2u : 1u)) ? 1u : 0u;
+    for (uint8_t k = 0u; k < 2u; k++) {
+        const vband_t *b = &g_vband[k ^ first];
+        if (!b->on) continue;
+        if ((int16_t)y_a < b->y_top || (int16_t)y_a > b->y_bot) continue;
+        if ((int16_t)y_b < b->y_top || (int16_t)y_b > b->y_bot) continue;
+        vm.counts_per_pixel = b->counts_per_pixel;
+        vm.channel          = b->channel;
+        vm.range_idx        = b->range_idx;
+        vm.mid_known        = b->mid_known ? 1u : 0u;
+        vm.mid_row          = b->mid_row;
+        vm.mid_counts       = b->mid_counts;
+        break;
+    }
+    return vm;
+}
+
+/* Shell/bench view of the cursors (`fpga scope cursor`): X1 X2 X1-X2 Y1 Y2
+ * Y1-Y2 and 1/|dX|, from the SAME functions the screen uses. Strings are the
+ * formatted readings, "--" where the instrument refuses. */
+void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
+                            char y1[16], char y2[16], char dy[16], float *fs_out)
+{
+    const scope_state_t *ss = scope_state_get();
+    const cursor_state_t *c = &ss->cursor;
+    const sample_rate_t fs = { column_rate_for_display(ss) };   /* columns, not samples */
+    const scope_cursor_conf_t cf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
+    const int16_t ta = scope_ui_trig_x_actual();
+    const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
+    /* The readouts carry stock's labels (0x0801CA7C: X1-X2, Y1-Y2), so they
+     * are FIRST minus SECOND: the on-screen dt/dV are second minus first
+     * (v2-v1, and h1-h2 rows = Y2-Y1) and read with the opposite sign. */
+    const cursor_order_t ord = CUR_FIRST_MINUS_SECOND;
+    scope_cursor_reading_t r;
+
+    r = scope_cursor_x_fs(fs, cf, c->v1_x, ref);      scope_cursor_format(&r, x1, 16);
+    r = scope_cursor_x_fs(fs, cf, c->v2_x, ref);      scope_cursor_format(&r, x2, 16);
+    r = scope_cursor_delta_t_fs(fs, cf, c->v1_x, c->v2_x, ord);
+    scope_cursor_format(&r, dx, 16);
+    r = scope_cursor_one_over_dt_fs(fs, cf, c->v1_x, c->v2_x, ord);
+    scope_cursor_format(&r, ix, 16);
+
+    scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
+    r = scope_cursor_y(&vm, c->h1_y);                 scope_cursor_format(&r, y1, 16);
+    r = scope_cursor_y(&vm, c->h2_y);                 scope_cursor_format(&r, y2, 16);
+    r = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y, ord);   /* Y1-Y2 */
+    scope_cursor_format(&r, dy, 16);
+    if (fs_out) *fs_out = fs.hz;
+}
+
+void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L)
+{
+    memset(L, 0, sizeof(*L));
+    const cursor_state_t *c = &ss->cursor;
+    if (c->mode == CURSOR_OFF) return;
+    if (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH) {
+        L->v = true;
+        for (uint8_t i = 0; i < 2u; i++) {
+            const bool act = (c->active == (i ? CURSOR_SEL_V2 : CURSOR_SEL_V1));
+            L->vx[i] = (int16_t)(i ? c->v2_x : c->v1_x);
+            L->vc[i] = act ? th->highlight : th->text_secondary;
+            L->vsolid[i] = act;
+            typeof(L->lab[0]) *t = &L->lab[L->nlab++];
+            t->s[0] = 'V'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
+            t->w = (int16_t)font_string_width(t->s, &font_small);
+            t->x = (int16_t)(L->vx[i] > 12 ? L->vx[i] - 10 : 0);
+            t->y = SCOPE_TOP;
+            t->c = L->vc[i];
+        }
+    }
+    if (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH) {
+        L->h = true;
+        for (uint8_t i = 0; i < 2u; i++) {
+            const bool act = (c->active == (i ? CURSOR_SEL_H2 : CURSOR_SEL_H1));
+            L->hy[i] = (int16_t)(i ? c->h2_y : c->h1_y);
+            L->hc[i] = act ? th->highlight : th->text_secondary;
+            L->hsolid[i] = act;
+            typeof(L->lab[0]) *t = &L->lab[L->nlab++];
+            t->s[0] = 'H'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
+            t->w = (int16_t)font_string_width(t->s, &font_small);
+            t->x = (int16_t)(LCD_WIDTH - 1 - t->w);
+            t->y = (int16_t)(L->hy[i] > SCOPE_TOP + 2 ? L->hy[i] - 13 : L->hy[i] + 2);
+            t->c = L->hc[i];
+        }
+    }
+}
+
+/* Labels over lines, as drawn. */
+bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
+{
+    for (uint8_t k = 0; k < L->nlab; k++) {
+        const int dx = x - L->lab[k].x, dy = y - L->lab[k].y;
+        if (dx >= 0 && dx < L->lab[k].w && dy >= 0 && dy < (int)font_small.height &&
+            font_text_px(L->lab[k].s, &font_small, dx, dy)) {
+            *c = L->lab[k].c;
+            return true;
+        }
+    }
+    for (uint8_t i = 0; i < 2u; i++) {
+        if (L->v && x == L->vx[i] && (L->vsolid[i] || (y & 7) < 4)) { *c = L->vc[i]; return true; }
+        if (L->h && y == L->hy[i] && (L->hsolid[i] || (x & 7) < 4)) { *c = L->hc[i]; return true; }
+    }
+    return false;
+}
+
+/* Full path: the same layer, painted over the live band [SCOPE_TOP, band_bot). */
+void draw_cursors(uint16_t band_bot)
+{
+    cur_layer_t L;
+    cursor_layer_build(scope_state_get(), theme_get(), &L);
+    if (!L.v && !L.h) return;
+    for (uint8_t i = 0; i < 2u; i++) {
+        if (L.v && L.vx[i] >= 0 && L.vx[i] < LCD_WIDTH)
+            for (uint16_t y = SCOPE_TOP; y < band_bot; y++)
+                if (L.vsolid[i] || (y & 7u) < 4u) lcd_set_pixel((uint16_t)L.vx[i], y, L.vc[i]);
+        if (L.h && L.hy[i] >= SCOPE_TOP && L.hy[i] < (int16_t)band_bot)
+            for (uint16_t x = 0; x < LCD_WIDTH; x++)
+                if (L.hsolid[i] || (x & 7u) < 4u) lcd_set_pixel(x, (uint16_t)L.hy[i], L.hc[i]);
+    }
+    for (uint8_t k = 0; k < L.nlab; k++)
+        if (L.lab[k].y >= SCOPE_TOP && L.lab[k].y + (int)font_small.height <= (int)band_bot)
+            font_draw_string((uint16_t)L.lab[k].x, (uint16_t)L.lab[k].y, L.lab[k].s,
+                             L.lab[k].c, L.lab[k].c, &font_small);
+}
+
+/*
+ * The cursor readout: one line in the strip's AUX row (strip_aux), off the
+ * trace and off the badges, repainted only when its text changes.
+ *
+ * Nothing here converts anything itself. The pixel deltas are turned into
+ * real units by scope_cursor.c, which reads the SAME measured tables the
+ * status bar and the measurement badges read (scope_timebase.c for the rate,
+ * scope_cal.c for the gain) and refuses to name a unit without an entry.
+ *   horizontal: dx columns at the column rate (record rate x zoom, C5/C14);
+ *   vertical:   the counts per row the renderer recorded for the band that
+ *               holds both cursors (vband_note), or the math trace's scale.
+ */
+static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
+{
+    const cursor_state_t *c = &ss->cursor;
+    char buf[24];
+    size_t k = 0;
+    out[0] = '\0';
+    if (c->mode == CURSOR_OFF) return;
+    k += (size_t)snprintf(out + k, n - k, "%s",
+                          c->mode == CURSOR_VERTICAL ? "CUR:T" :
+                          c->mode == CURSOR_HORIZONTAL ? "CUR:V" : "CUR:TV");
+    if (k < n && (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH)) {
+        const sample_rate_t cfs = { column_rate_for_display(ss) };
+        const scope_cursor_conf_t cconf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
+        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, c->v1_x, c->v2_x,
+                                                           CUR_SECOND_MINUS_FIRST);
+        scope_cursor_format(&r, buf, sizeof(buf));
+        k += (size_t)snprintf(out + k, n - k, "  dt=%s", buf);
+        if (k < n) {
+            r = scope_cursor_one_over_dt_fs(cfs, cconf, c->v1_x, c->v2_x,
+                                            CUR_SECOND_MINUS_FIRST);
+            scope_cursor_format(&r, buf, sizeof(buf));
+            k += (size_t)snprintf(out + k, n - k, "  1/dt=%s", buf);
+        }
+    }
+    if (k < n && (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH)) {
+        /* Second minus first, as dt; screen y grows downward. A delta that
+         * straddles two differently-scaled bands stays in pixels. */
+        scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
+        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y,
+                                                         CUR_SECOND_MINUS_FIRST);
+        scope_cursor_format(&dv, buf, sizeof(buf));
+        if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
+            (void)snprintf(out + k, n - k, "  dVm=%s", buf);
+        else if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS)
+            (void)snprintf(out + k, n - k, "  dV%u=%s", vm.channel, buf);
+        else
+            (void)snprintf(out + k, n - k, "  dV=%s", buf);
+    }
+}
+
+static uint32_t g_cur_row_hash;   /* hash of the text the AUX row shows now */
+
+void cursor_row_paint(const scope_state_t *ss, bool force)
+{
+    char t[64];
+    cursor_readout(ss, t, sizeof(t));
+    uint32_t h = 2166136261u;                         /* FNV-1a */
+    for (const char *p = t; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    if (!force && h == g_cur_row_hash) return;
+    g_cur_row_hash = h;
+    const theme_t *th = theme_get();
+    const uint16_t y = strip_top(ss);                 /* the AUX row */
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
+    font_draw_string(4, (uint16_t)(y + 1), t, th->highlight, th->background, &font_small);
+}
+
+/* Main loop, every tick in the time view: the row follows the cursors and
+ * the data (dV depends on the drawn scale) without a full repaint. */
+void scope_ui_cursor_row_refresh(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->cursor.mode == CURSOR_OFF || can_scope_screen_on() || ss->roll) return;
+    cursor_row_paint(ss, false);
+}

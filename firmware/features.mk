@@ -78,7 +78,7 @@ FFT_conflicts :=
 FFT_srcs      := src/dsp/fft.c src/dsp/fft_live.c src/dsp/fft_source.c src/dsp/fft_test_signals.c
 FFT_incs      :=
 FFT_defs      :=
-FFT_shared    := scope_ui.o:fft_|waterfall|draw_split main.o:fft_|waterfall arm_bitreversal2.o:.
+FFT_shared    := scope_spectrum.o:. scope_waterfall.o:. scope_ui.o:fft_|waterfall|draw_split main.o:fft_|waterfall arm_bitreversal2.o:.
 FFT_bit       := 1
 CMSIS_DSP = CMSIS-DSP
 ifneq ($(wildcard $(CMSIS_DSP)/Include/arm_math.h),)

@@ -1,0 +1,516 @@
+/*
+ * OpenScope 2C53T - oscilloscope screen: furniture
+ *
+ * What surrounds the plot: run/stop, the measurement strip and its badges,
+ * the mask slot, the CAN row, the held frequency.
+ */
+
+#include "scope_ui_parts.h"
+
+/* The measurement strip between full frames. The live frame never touches
+ * it, and plain Y-T has no full frames in a steady state, so without this
+ * the badges (Freq included) kept whatever the last full frame showed. The
+ * cells are repainted in place (draw_strip_cell boxed), never blanked. The
+ * measurement passes are tear-checked against the acquisition's generation
+ * (measure_live_channel, freq_held), as in the full path that already runs
+ * them from this task; the 2026-08-14 acquisition stall predates that. */
+void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh);
+
+void scope_ui_strip_refresh(void)
+{
+    const scope_state_t *ss = scope_state_get();
+    if (ss->roll || !fpga_data_ready()) return;
+    draw_measurement_badges(ss, theme_get(), true);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Run/Stop indicator (SCOPE_PLOT_STOP_BOX; R1-B's bar tab replaces it)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+void draw_run_stop(const scope_state_t *ss, const theme_t *th)
+{
+#if SCOPE_PLOT_STOP_BOX
+    if (!ss->running) {
+        lcd_fill_rect(STOP_BOX_X, STOP_BOX_Y, STOP_BOX_W, STOP_BOX_H, th->warning);
+        font_draw_string_center(LCD_WIDTH / 2, STOP_BOX_Y + 2, "STOP",
+                                th->text_primary, th->warning, &font_small);
+    }
+#else
+    (void)ss; (void)th;
+#endif
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Measurement strip (measure_strip.h)
+ * ═══════════════════════════════════════════════════════════════════ */
+
+/* The full-width AUX row (above the measurement rows) is reserved while the
+ * CAN analyser's line, the cursor readout or the mask pass/fail readout has
+ * something to say; it shows the first of them, in that order. */
+static bool strip_aux(void)
+{
+    return can_scope_screen_on() || scope_state_get()->cursor.mode != CURSOR_OFF ||
+           scope_mask_state() != MASK_PF_EMPTY;
+}
+
+void cursor_row_paint(const scope_state_t *ss, bool force);
+
+/* Every user of the strip's geometry (the live band, the roll band, the mask
+ * strip, the cursor readout, the AUX row) reads this one function, so they
+ * cannot disagree about where the strip starts. */
+uint16_t strip_top(const scope_state_t *ss)
+{
+    return measure_strip_top(meas_select_get(0), ss->ch1.enabled,
+                             meas_select_get(1), ss->ch2.enabled,
+                             ss->prm_hidden, strip_aux(), STRIP_BOTTOM);
+}
+
+void strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
+{
+    measure_strip_layout(meas_select_get(0), ss->ch1.enabled,
+                         meas_select_get(1), ss->ch2.enabled,
+                         ss->prm_hidden, strip_aux(), STRIP_BOTTOM, L);
+}
+
+/* One cell: label left in the dimmed channel colour, value right in the
+ * channel colour (text_secondary "--" when refused). measure_strip_place()
+ * guarantees the two never overlap; when they would not fit it keeps the
+ * value only (the host test shows no stock label/value pair gets there). */
+static void draw_strip_cell(const mstrip_cell_t *c, const scope_prm_t *p,
+                            const theme_t *th, bool boxed)
+{
+    char buf[16];
+    const uint16_t chc = c->ch ? th->ch2 : th->ch1;
+    uint16_t vc = chc;
+    if (p == NULL || p->unit == SCOPE_PRM_UNIT_NONE) {
+        snprintf(buf, sizeof(buf), "--");   /* cannot measure it today */
+        vc = th->text_secondary;
+    } else {
+        scope_prm_format(p, buf, sizeof(buf));
+    }
+    const char *label = scope_prm_label(c->prm);
+    uint16_t lx, vx;
+    const bool both = measure_strip_place(c->x, font_string_width(label, &font_small),
+                                          font_string_width(buf, &font_small), &lx, &vx);
+    if (both)
+        font_draw_string(lx, (uint16_t)(c->y + 1), label,
+                         measure_strip_dim(chc, th->background), th->background, &font_small);
+    if (!boxed) {
+        font_draw_string(vx, (uint16_t)(c->y + 1), buf, vc, th->background, &font_small);
+        return;
+    }
+    /* In-place update: the value's whole box is painted (glyphs, gaps and
+     * the rest of the box), so a shorter value leaves nothing behind and the
+     * row is never blanked first. */
+    const uint16_t end = (uint16_t)(c->x + MSTRIP_CELL_W - MSTRIP_PAD);
+    const uint16_t bx = both ? vx : (uint16_t)(c->x + MSTRIP_PAD);
+    if (end > bx)
+        font_draw_string_box(bx, (uint16_t)(c->y + 1), (uint16_t)(end - bx), buf, vc,
+                             th->background, &font_small,
+                             both ? FONT_ALIGN_LEFT : FONT_ALIGN_RIGHT);
+}
+
+/* Paint the measurement rows: clear them (full width, so the live band and
+ * the strip meet on one row edge), then every cell. p[ch] NULL = no record. */
+void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
+                             const scope_params_t *p2, const theme_t *th, bool refresh)
+{
+    if (L->rows == 0u)
+        return;
+    const uint16_t y0 = (uint16_t)(L->bottom - L->rows * MSTRIP_ROW_H);
+    if (!refresh)
+        lcd_fill_rect(0, y0, LCD_WIDTH, (uint16_t)(L->rows * MSTRIP_ROW_H), th->background);
+    for (unsigned k = 0; k < L->n; k++) {
+        const mstrip_cell_t *c = &L->cell[k];
+        const scope_params_t *pp = c->ch ? p2 : p1;
+        draw_strip_cell(c, pp ? &pp->v[c->prm] : NULL, th, refresh);
+    }
+}
+
+/*
+ * Measure one channel's live capture record.
+ *
+ * Returns false — and leaves *m zeroed — unless the FPGA has actually
+ * delivered samples. fpga_data_ready() is the same gate the waveform plot
+ * uses (see draw_demo_waveform), so the badges and the trace can never
+ * disagree about whether what is on screen is real.
+ */
+static bool measure_live_channel(const volatile uint8_t *buf,
+                                 scope_measure_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    if (!fpga_data_ready() || buf == NULL)
+        return false;
+
+    /* Tear-checked read (audit 2026-08-20, P0.2). fpga.c now stages each
+     * capture and commits it in a ~10 µs window bracketed by the frame
+     * generation counter (odd = commit in progress); a commit landing inside
+     * our analysis pass would splice two frames through every statistic, so
+     * re-run the pass when the generation moved. Commits arrive at ≤ ~34 Hz,
+     * so the second attempt virtually always stands; after three, accept the
+     * torn result (pre-fix behavior) rather than spin. The volatile cast is
+     * safe because the generation check is what detects concurrent writes. */
+    for (int attempt = 0; attempt < 3; attempt++) {
+        uint32_t g0 = fpga_acq_frame_generation();
+        scope_measure_record((const uint8_t *)buf, FPGA_ADC_BUF_SIZE, m);
+        if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
+            break;
+    }
+    return m->valid;
+}
+
+/* No float formatting: the firmware links newlib-nano without
+ * -u _printf_float, so "%f" prints nothing. Tenths are assembled by hand
+ * here, and in scope_cursor.c for the cursor readout. */
+__attribute__((unused))   /* the C6 params format via scope_prm_format */
+static void fmt_tenths(char *b, size_t n, float v, const char *unit)
+{
+    if (v < 0.0f) v = 0.0f;
+    unsigned t = (unsigned)(v * 10.0f + 0.5f);
+    snprintf(b, n, "%u.%u%s", t / 10u, t % 10u, unit);
+}
+
+/*
+ * Frequency with automatic Hz/kHz/MHz ranging, integer math only.
+ * Same constraint as fmt_volts: newlib-nano's "%f" prints nothing.
+ */
+__attribute__((unused))
+static void fmt_hz(char *b, size_t n, float hz)
+{
+    if (hz < 0.0f) hz = 0.0f;
+    if (hz < 1000.0f) {
+        const unsigned tenths = (unsigned)(hz * 10.0f + 0.5f);
+        snprintf(b, n, "%u.%uHz", tenths / 10u, tenths % 10u);
+    } else if (hz < 1000000.0f) {
+        const unsigned hundredths = (unsigned)(hz / 10.0f + 0.5f);
+        snprintf(b, n, "%u.%02ukHz", hundredths / 100u, hundredths % 100u);
+    } else {
+        const unsigned hundredths = (unsigned)(hz / 10000.0f + 0.5f);
+        snprintf(b, n, "%u.%02uMHz", hundredths / 100u, hundredths % 100u);
+    }
+}
+
+/*
+ * A duration in seconds, ranged us/ms/s. Integer math, as above.
+ */
+__attribute__((unused))
+static void fmt_seconds(char *b, size_t n, float s)
+{
+    if (s < 0.0f) s = 0.0f;
+    if (s < 1e-3f) {
+        snprintf(b, n, "%uus", (unsigned)(s * 1e6f + 0.5f));
+    } else if (s < 1.0f) {
+        const unsigned hundredths_ms = (unsigned)(s * 1e5f + 0.5f);
+        snprintf(b, n, "%u.%02ums", hundredths_ms / 100u, hundredths_ms % 100u);
+    } else {
+        const unsigned hundredths = (unsigned)(s * 100.0f + 0.5f);
+        snprintf(b, n, "%u.%02us", hundredths / 100u, hundredths % 100u);
+    }
+}
+
+/*
+ * Vertical calibration now lives in scope_cal.c, per CHANNEL as well as per
+ * range, because the two channels have different frontends and measure
+ * different gains on the same range index.
+ *
+ * WITHDRAWN 2026-08-18 — what used to be here was a two-case switch:
+ *     case 2: 1.0f/347.0f   ("20mV/div")
+ *     case 8: 1.0f/154.0f   ("2V/div")
+ * The five-amplitude sweep of 2026-08-17 contradicts both. Range 2 rails on
+ * both channels and yields no span at all; range 8 measures 279 mV/count, not
+ * 6.49. The full provenance and the reason the replacement is tiered rather
+ * than a flat table is in scope_cal.h.
+ *
+ * The volts/div label is the range's nominal value; true scale draws one
+ * SCOPE_DIV_PX-row division as scope_cal_codes_per_div() codes (yt_vmap.h),
+ * so the grid means what the label says. The renderer and the map must agree
+ * on the division height.
+ */
+_Static_assert(SCOPE_DIV_PX == YT_VMAP_DIV_PX,
+               "grid pitch no longer matches the true-scale map's division");
+
+/* The cal table is indexed by the frontend range index, so its length and
+ * the UI's range count are the same quantity counted twice. */
+_Static_assert(SCOPE_CAL_RANGE_COUNT == VDIV_COUNT,
+               "scope_cal range table length must match VDIV_COUNT");
+
+/* The horizontal counterpart: one sample per screen column at zoom 1,
+ * vertical grid every SCOPE_GEOM_DIV_PX (25, stock's) px, so a division is 25
+ * samples; at codes 0x00-0x03 the zoom divides it (scope_timebase_view_label).
+ * If either changes, the seconds/div label and every frequency silently start
+ * meaning something else. */
+_Static_assert(SCOPE_TIMEBASE_SAMPLES_PER_DIV == (float)SCOPE_GEOM_DIV_PX,
+               "grid pitch no longer matches SCOPE_TIMEBASE_SAMPLES_PER_DIV");
+
+_Static_assert(SCOPE_GEOM_COLS <= LCD_WIDTH, "the Y-T window must fit the glass");
+
+_Static_assert(SCOPE_TIMEBASE_CODE_COUNT == TIMEBASE_COUNT,
+               "timebase rate table length must match TIMEBASE_COUNT");
+
+/* The cursor readout converts a pixel delta into a time with this and the
+ * rate it is handed. Since the window can be zoomed -- the fast-code zoom
+ * (C5) and the re-sampled held record (C14) -- that rate is the COLUMN rate,
+ * 1000 x record rate / R (column_rate_for_display), so one pixel stays one
+ * unit of the rate passed in. Handing the cursor the record rate while the
+ * plot is zoomed would silently rescale every dt by the zoom. */
+_Static_assert(SCOPE_CURSOR_SAMPLES_PER_PIXEL == 1.0f,
+               "the cursor is fed the column rate, one column per unit — "
+               "cursor dt and 1/dt would be wrong");
+
+/*
+ * Mask readout: the strip's AUX row (measure_strip.h), reserved while a mask
+ * exists. Below the live band, so the compositor never paints over it,
+ * and refreshed on its own epoch from main.c (scope_ui_mask_slot_refresh) --
+ * the measurement badges' "stale until the next full repaint" is exactly the
+ * defect a pass/fail counter must not have. A SKIP is shown as such: a
+ * frozen PASS count over records that are no longer being judged would be
+ * the project's signature stable-plausible-wrong number.
+ */
+#define MASK_SLOT_X 4u
+
+static const char *mask_skip_short(mask_pf_reason_t r)
+{
+    switch (r) {
+    case MASK_PF_R_STALE:       return "stale";
+    case MASK_PF_R_UNTRIGGERED: return "free-run";
+    case MASK_PF_R_NOT_ORDERED: return "no seam";
+    case MASK_PF_R_NO_ANCHOR:   return "no trig";
+    case MASK_PF_R_SETTINGS:    return "settings";
+    case MASK_PF_R_SPAN:        return "span";
+    case MASK_PF_R_CLIPPED:     return "clipped";
+    default:                    return "?";
+    }
+}
+
+static void draw_mask_slot(const theme_t *th)
+{
+    scope_mask_summary_t m;
+    scope_mask_summary(&m);
+    char b[32];
+    uint16_t c = th->text_secondary;
+    const uint16_t x = MASK_SLOT_X, y = strip_top(scope_state_get());   /* the AUX row */
+
+    if (m.state == MASK_PF_TEACHING) {
+        if (m.teach_last_reject != MASK_PF_R_OK)
+            snprintf(b, sizeof(b), "MASK teach %u/%u %s", (unsigned)m.teach_got,
+                     (unsigned)m.teach_target, mask_skip_short(m.teach_last_reject));
+        else
+            snprintf(b, sizeof(b), "MASK teach %u/%u", (unsigned)m.teach_got,
+                     (unsigned)m.teach_target);
+        c = th->highlight;
+    } else if (m.hold) {
+        snprintf(b, sizeof(b), "FAIL %lu/%lu HOLD-OK", (unsigned long)m.failed,
+                 (unsigned long)m.tested);
+        c = th->warning;
+    } else if (m.last.verdict == MASK_PF_V_SKIP) {
+        snprintf(b, sizeof(b), "MASK skip: %s", mask_skip_short(m.last.reason));
+        c = th->highlight;
+    } else if (m.tested == 0u) {
+        snprintf(b, sizeof(b), "MASK ready");
+        c = th->success;
+    } else {
+        snprintf(b, sizeof(b), "P%lu F%lu", (unsigned long)m.passed,
+                 (unsigned long)m.failed);
+        c = (m.last.verdict == MASK_PF_V_FAIL) ? th->warning : th->success;
+    }
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
+    font_draw_string(x, y + 1, b, c, th->background, &font_small);
+}
+
+/* CAN readout: the strip's AUX row while `can screen on` (it wins the row
+ * over the mask readout, as it won badge row 2 before). Below the live band
+ * like the mask slot, refreshed from main.c at 5 Hz. Green = every frame
+ * acknowledged with a good CRC; warning colour = NAK, CRC failure or bus error. */
+void scope_ui_can_row_refresh(void)
+{
+    const theme_t *th = theme_get();
+    char line[56];
+    int ok = can_scope_screen_line(line, sizeof(line));
+    const uint16_t y = strip_top(scope_state_get());          /* the AUX row */
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
+    font_draw_string(4, (uint16_t)(y + 1), line,
+                     ok ? th->success : th->warning, th->background, &font_small);
+}
+
+void scope_ui_mask_slot_refresh(void)
+{
+    if (can_scope_screen_on() || scope_state_get()->cursor.mode != CURSOR_OFF)
+        return;                                  /* the CAN line / cursor readout owns the AUX row */
+    if (scope_mask_state() == MASK_PF_EMPTY) {
+        /* Mask just cleared: the AUX row is released. Blank the row it had
+         * (the top row a strip WITH aux would have); the live band extends
+         * over it on its next frame, the next full repaint redraws the grid. */
+        const scope_state_t *ss = scope_state_get();
+        const uint16_t y = measure_strip_top(meas_select_get(0), ss->ch1.enabled,
+                                             meas_select_get(1), ss->ch2.enabled,
+                                             ss->prm_hidden, true, STRIP_BOTTOM);
+        lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, theme_get()->background);
+    } else {
+        draw_mask_slot(theme_get());
+    }
+}
+
+/*
+ * Measurement strip (was: the measurement badges).
+ *
+ * Until 2026-08-13 this function printed the string literals "1.00kHz",
+ * "707mV", "50.0%" and "1.00ms" — four numbers that had never touched an
+ * ADC sample, on a screen a user reads as measurements. They are gone.
+ *
+ * What is printed now is measured from the live record, in the units this
+ * instrument can actually defend (see scope_measure.h):
+ *
+ *   Vpp / Vrms   VOLTS wherever scope_cal.c has a bench-measured
+ *                volts-per-count for that CHANNEL on that range: ranges 4-9,
+ *                with 5/6/7 cross-validated three ways and 4/8/9 provisional.
+ *                Ranges 0-3 rail on both channels and have no gain at all, so
+ *                they still show honest ADC COUNTS ("Ncnt") rather than a
+ *                plausible-but-invented voltage.
+ *   Duty         a pure ratio; invariant under any affine counts->volts
+ *                mapping, so it is already correct and stays correct once
+ *                calibration lands. Asserted in tests/test_scope_measure.c.
+ *   Freq         Hz from the SPECTRAL estimator (scope_freq.c) on measured
+ *                timebase codes; declines rather than guess, with a short
+ *                hold (see below). "--" on unmeasured codes.
+ *   Per          SECONDS as 1/Freq while the spectral estimate stands;
+ *                otherwise SAMPLES between mid-level crossings, never
+ *                converted, because that crossing period is 5-50% out
+ *                (EXP-13) and a bad number in real units reads as true.
+ *
+ * The wiring is Vpp = pp * k, Vrms = ac_rms * k, with k from
+ * scope_cal_volts_per_count(ch, vdiv_idx), k == 0 meaning "show counts";
+ * Hz needs the measured rate table in scope_timebase.c (EXP-17/18) and the
+ * reg-0x01 code actually in force. `fpga scope measure` prints these same
+ * quantities raw for the bench, from the same sources, so what EXP-19
+ * validates is what the screen shows.
+ */
+/* Freq for one channel, from the spectral estimator, HELD across a short run
+ * of refusals. `need` false (no Freq/Peri cell for that channel) skips the
+ * estimate and forgets the hold, so a later selection never shows an old
+ * reading. */
+/*
+ * Freq — spectral, not edge-counted, and it declines rather than guess.
+ *
+ * History, because it is the whole justification for the shape of this:
+ * Freq = fs / period_samples was wired up on 2026-08-18 and removed the
+ * same evening, measuring +1.6% to +112% against a known drive (EXP-13).
+ * The sample rate was never the problem; the rising-crossing period
+ * estimator found spurious crossings.
+ *
+ * EXP-16 then showed it was not the estimator either. Edge counting,
+ * autocorrelation and a spectral peak all failed on the SAME bench records
+ * and all succeeded on the same others: roughly a fifth to a half of
+ * capture records are TORN, with their spectral energy smeared over ~6
+ * bins. One record scored 0.380 coherence whole and 0.999 over its last
+ * half. Tearing does not track signal amplitude, so it cannot be screened
+ * out in advance — it has to be detected per record, which is exactly what
+ * scope_freq does. Against 72 bench captures it answers 54% of the time,
+ * is within 3.4% when it does, and is never wrong.
+ *
+ * The reading is HELD across a short run of refusals so the badge does not
+ * strobe at the tearing rate; after FREQ_HOLD_FRAMES consecutive refusals
+ * it blanks, because a stale number with no expiry is just a wrong number
+ * that used to be right.
+ */
+static float freq_held(uint8_t ch, bool need, bool have,
+                       const volatile uint8_t *buf, float fs)
+{
+    static float    freq_hz[2];
+    static uint16_t freq_stale[2];
+    if (ch > 1u)
+        return 0.0f;
+    if (!need) {
+        freq_hz[ch] = 0.0f;
+        freq_stale[ch] = FREQ_HOLD_FRAMES;
+        return 0.0f;
+    }
+    /* The acquisition buffer is `volatile` because the acq task fills it;
+     * the estimator only reads, and its coherence gate refuses torn
+     * records anyway — so an MCU-side tear was never able to produce a
+     * WRONG number here, only a refusal. The generation retry (P0.2)
+     * recovers those refusals: a commit landing mid-estimate re-runs the
+     * estimate on the settled frame instead of burning a hold frame. */
+    _Static_assert(FPGA_ADC_BUF_SIZE == SCOPE_FREQ_MAX_N,
+                   "estimator window must match the capture buffer");
+    scope_freq_t fr;
+    bool fe = false;
+    if (have && buf != NULL) {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            uint32_t g0 = fpga_acq_frame_generation();
+            fe = scope_freq_estimate((const uint8_t *)buf, FPGA_ADC_BUF_SIZE, fs, &fr);
+            if ((g0 & 1u) == 0u && fpga_acq_frame_generation() == g0)
+                break;
+        }
+    }
+    if (fe) {
+        freq_hz[ch] = fr.hz;
+        freq_stale[ch] = 0u;
+    } else if (freq_stale[ch] < FREQ_HOLD_FRAMES) {
+        freq_stale[ch]++;
+    } else {
+        freq_hz[ch] = 0.0f;
+    }
+    return freq_hz[ch];
+}
+
+float   rec_vpc(const scope_state_t *ss, uint8_t ch);
+
+uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
+
+/* refresh: in place (boxed cells, no row clear, AUX row untouched), for the
+ * steady-state update between full frames (scope_ui_strip_refresh). */
+void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
+{
+    mstrip_layout_t L;
+    strip_layout(ss, &L);   /* long PRM (prm_hidden) = no rows; the AUX row stays */
+
+    if (L.rows > 0u) {
+        /* Which channels have cells, and whether any of them is time-based on
+         * the spectral estimate (Freq, Peri). */
+        bool cells[2] = { false, false }, need_f[2] = { false, false };
+        for (unsigned k = 0; k < L.n; k++) {
+            cells[L.cell[k].ch] = true;
+            if (L.cell[k].prm == SCOPE_PRM_FREQ || L.cell[k].prm == SCOPE_PRM_PERI)
+                need_f[L.cell[k].ch] = true;
+        }
+        scope_measure_t m1, m2;
+        const volatile uint8_t *b1 = fpga_get_ch1_buf(), *b2 = fpga_get_ch2_buf();
+        const bool have1 = cells[0] && fpga_acq_record_has_ch(0u) && measure_live_channel(b1, &m1);
+        const bool have2 = cells[1] && fpga_acq_record_has_ch(1u) && measure_live_channel(b2, &m2);
+
+        /* The 12 measurements (C6), per channel. All arithmetic is in
+         * scope_params_compute(): time uses the PUBLISHED record's rate
+         * (doubled when interleaved), volts the scope_cal gain with k == 0
+         * meaning counts, 0 V the channel's scope_measure_zero_for(). Freq/Per
+         * come from the spectral estimate above, with its hold; below four
+         * periods from the checked crossing period of a whole record, else
+         * "--" (scope_params_compute). A channel with no record refuses
+         * all twelve ("--"). */
+        const float rec_fs = record_rate_for_display(ss);
+        scope_params_t p1, p2;
+        scope_prm_ctx_t ctx;
+        ctx.sample_rate.hz  = rec_fs;
+        ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
+        ctx.volts_per_count.vpc = rec_vpc(ss, 0u);
+        ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
+        ctx.zero_count.v    = rec_zero(ss, 0u);
+        scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
+        ctx.volts_per_count.vpc = rec_vpc(ss, 1u);
+        ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
+        ctx.zero_count.v    = rec_zero(ss, 1u);
+        scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
+
+        draw_strip_cells(&L, &p1, &p2, th, refresh);
+    }
+
+    /* The AUX row: the CAN analyser's line, else the cursor readout, else
+     * the mask readout. */
+    if (L.aux && !refresh) {
+        if (can_scope_screen_on())
+            scope_ui_can_row_refresh();
+        else if (ss->cursor.mode != CURSOR_OFF)
+            cursor_row_paint(ss, true);
+        else
+            draw_mask_slot(th);
+    }
+}
