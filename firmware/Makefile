@@ -319,6 +319,11 @@ CFLAGS += -Wall -Wextra -Wno-unused-parameter -Wundef
 CFLAGS += -fdata-sections -ffunction-sections
 CFLAGS += -std=gnu11
 CFLAGS += -Os -g
+# Header dependencies: the compiler writes build/<name>.d beside each object
+# (-MMD; -MP adds a phony target per header so a deleted header does not stop
+# the build), included at the end of this file. Without them a change made
+# only in a header left every object that includes it as it was.
+CFLAGS += -MMD -MP
 
 # Assembler flags
 ASFLAGS = $(MCU) $(C_DEFS) $(C_INCLUDES)
@@ -427,6 +432,8 @@ endif
 
 $(BUILD_DIR)/%.o: %.c Makefile features.mk | $(BUILD_DIR)
 	$(CC) -c $(CFLAGS) $< -o $@
+
+-include $(wildcard $(BUILD_DIR)/*.d)
 
 $(BUILD_DIR)/%.o: %.S Makefile features.mk | $(BUILD_DIR)
 	$(AS) -c $(ASFLAGS) $< -o $@
