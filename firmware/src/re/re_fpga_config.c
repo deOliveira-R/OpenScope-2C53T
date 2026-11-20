@@ -25,6 +25,7 @@
 #include "shell_internal.h"
 #include "shell_bench.h"     /* the bench shell's bus helpers */
 #include "shell_re.h"
+#include "re_fpga_driver.h"
 
 /* EXPERIMENTAL (experimental/esp32-bringup) — UNTESTED. Hand the SPI3 bus to
  * an external SSPI master (ESP32) on the back-side test pads. Re-flash to undo. */

@@ -1286,7 +1286,7 @@ int main(void)
      * posture as EARLY as possible (right after the GPIO clocks) to minimise
      * the float window. Round 1 left these floating through ~2 s of init, which
      * knocked the FPGA out of continuous-capture; we caught one buffer then it
-     * went idle. Restore PC6(SPI-en)=HIGH, PB11(active)=HIGH, PC11(meter mux)=LOW
+     * went idle. Restore PC6 (FPGA supply) high, PB11 (CH2 range relay) high, PC11(meter mux)=LOW
      * (scope posture) before anything else. See docs/fpga_warm_handoff_test.md. */
     GPIOC->cfglr = (GPIOC->cfglr & ~(0xFu << 24)) | (0x3u << 24); /* PC6 PP 50MHz */
     GPIOC->scr   = (1u << 6);                                     /* PC6 HIGH */
@@ -1443,7 +1443,7 @@ int main(void)
     /* Initialize FPGA communication (USART2 + SPI3 + boot sequence).
      * Must happen after clock init and GPIO clocks are enabled.
      * Sends boot commands, configures SPI3 Mode 3, performs handshake,
-     * sets PB11 HIGH (FPGA active mode) and PC6 HIGH (SPI enable). */
+     * sets PB11 high (a CH2 range relay) and PC6 high (the FPGA's supply). */
     /* Initialize USB CDC debug shell (HICK 48MHz clock + CDC class).
      * Must happen after clock init. Enables USB pull-up so device
      * appears on the bus immediately — the debug task handles data

@@ -1,175 +1,82 @@
 /*
- * OpenScope 2C53T - FPGA Communication Driver
+ * OpenScope 2C53T - FPGA driver: bring-up, tasks and shared state
  *
- * Dual-channel interface to the Gowin GW1N-UV2 FPGA:
- *   - USART2 (9600 baud): Command/control channel (PA2=TX, PA3=RX)
- *   - SPI3   (60MHz):     Bulk ADC data channel (PB3/4/5, PB6=CS)
+ * The FPGA (Gowin GW1N-UV2) runs our capture core, uploaded at every boot
+ * and read over SPI3 (PB3 SCK, PB4 MISO, PB5 MOSI, PB6 chip select; PC6 is
+ * the FPGA's supply enable). The parts of the driver have their own headers,
+ * all included here:
  *
- * Control pins:
- *   - PC6:  FPGA SPI enable (must be HIGH for SPI3 to work)
- *   - PB11: FPGA active mode (must be HIGH during acquisition)
- *
- * Based on RE analysis of stock firmware:
- *   - reverse_engineering/analysis_v120/FPGA_TASK_ANALYSIS.md
- *   - reverse_engineering/analysis_v120/FPGA_BOOT_SEQUENCE.md
+ *   fpga_boot.h       design upload and reload
+ *   fpga_acq.h        records from the core, its registers, interleave, roll
+ *   scope_frontend.h  range relays, coupling, converter routing
+ *   meter_link.h      the meter chip on USART2 (not part of the FPGA)
  */
 
 #ifndef FPGA_H
 #define FPGA_H
 
-/* Build-variant switch (Makefile target CFLAGS); 0 unless a target sets it.
- * main.c tests it before its own default, so the default lives here too. */
-
 #include <stdint.h>
 #include <stdbool.h>
-#include "fpga_meter_plan.h"
-#include "../dsp/interleave_cal.h"
-#include "../ui/scope_roll.h"
-#include "../dsp/acq_cfg.h"
-#include "../dsp/core_ident.h"
-#include "../dsp/core_status.h"
 #include "FreeRTOS.h"
 #include "queue.h"
+#include "fpga_boot.h"
+#include "fpga_acq.h"
+#include "scope_frontend.h"
+#include "meter_link.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * ADC Buffer Sizes
- * ═══════════════════════════════════════════════════════════════════ */
-
-#define FPGA_ADC_BUF_SIZE     1024   /* Normal mode: 512 sample pairs */
-
-/* ═══════════════════════════════════════════════════════════════════
- * USART Protocol Constants
- * ═══════════════════════════════════════════════════════════════════ */
-
-#define FPGA_USART_BAUD       9600
-#define FPGA_TX_FRAME_SIZE    10
-#define FPGA_TX_FRAME_HISTORY 16
-#define FPGA_RX_FRAME_SIZE    12
-#define FPGA_RX_FRAME_HISTORY 8
-#define FPGA_RX_RAW_HISTORY   32
-#define FPGA_METER_TRANSITION_HISTORY 4
-
-/* RX frame headers */
-#define FPGA_RX_DATA_HDR_0    0x5A   /* Data frame: 0x5A 0xA5 */
-#define FPGA_RX_DATA_HDR_1    0xA5
-#define FPGA_RX_ECHO_HDR_0    0xAA   /* Echo frame: 0xAA 0x55 */
-#define FPGA_RX_ECHO_HDR_1    0x55
-#define FPGA_RX_ECHO_FRAME_SIZE 10
-
-/* ═══════════════════════════════════════════════════════════════════
- * FPGA Command Codes (USART TX)
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* Bytes 1/2/6/7/8 are stock post-H2 SPI3 trigger bytes, not USART commands. */
-
-/* Runtime commands */
-#define FPGA_CMD_RESET        0x00
-#define FPGA_CMD_SCOPE_CH     0x01   /* Scope channel config */
-#define FPGA_CMD_METER_START  0x09   /* Legacy name. Obeyed, 0x0509 puts the SoC's
-                                      * display into a non-measurement state ("EF");
-                                      * sent unobeyed it is keepalive traffic. */
-#define FPGA_CMD_METER_NOPROBE 0x0A  /* Legacy name for the "PC7-low tail". 0x050A is
-                                      * the SoC's CAPACITANCE selector (issue #15);
-                                      * never send it obeyed outside a transition. */
-
-/* Scope configuration commands (case 0 of mode init dispatcher FUN_0800b908).
- * Sent as a sequence when entering oscilloscope mode: 0x0B-0x11.
- * Each dispatches through the FPGA command table to a config writer that
- * encodes channel coupling/BW, voltage range, trigger, and timebase. */
-#define FPGA_CMD_SCOPE_CFG_0B 0x0B   /* Scope config: CH1 coupling/range */
-#define FPGA_CMD_SCOPE_CFG_0C 0x0C   /* Scope config: CH2 coupling/range */
-#define FPGA_CMD_SCOPE_CFG_0D 0x0D   /* Scope config: trigger threshold */
-#define FPGA_CMD_SCOPE_CFG_0E 0x0E   /* Scope config: trigger mode/edge */
-#define FPGA_CMD_SCOPE_CFG_0F 0x0F   /* Scope config: timebase prescaler */
-#define FPGA_CMD_SCOPE_CFG_10 0x10   /* Scope config: timebase period */
-#define FPGA_CMD_SCOPE_CFG_11 0x11   /* Scope config: timebase mode */
-
-/* Legacy "meter variant" names. Measured (issue #15): these are function
- * selectors of the meter SoC, not variant setup. The canonical per-submode
- * table is stock_meter_word_low_for_submode[] in fpga_meter_plan.c. */
-#define FPGA_CMD_METER_VAR_12 0x12   /* Temperature */
-#define FPGA_CMD_METER_VAR_13 0x13   /* LIVE (NCV screen; frame is the text "L1uE") */
-#define FPGA_CMD_METER_VAR_14 0x14   /* Auto -- the SoC's own autorange-everything */
-
-/* Scope channel command family 0x1A..0x1E. Stock scope xrefs use these as
- * channel gain/offset/coupling commands. The DMM boot dispatcher also queues
- * the same byte values through 0x20002D6C, but that is a byte-dispatch surface,
- * not the raw 0x20002D74 DVOM wire queue. That proves command sequencing only;
- * it is not a recovered DMM range-selector, low-DCV calibration source, or
- * runtime ms[0x02]/ms[0x03] mux writer. */
-#define FPGA_CMD_CH1_GAIN     0x1A   /* CH1 gain / stock command-bank byte */
-#define FPGA_CMD_CH1_OFFSET   0x1B   /* CH1 offset / stock command-bank byte */
-#define FPGA_CMD_CH2_GAIN     0x1C   /* CH2 gain / stock command-bank byte */
-#define FPGA_CMD_CH2_OFFSET   0x1D   /* CH2 offset / stock command-bank byte */
-#define FPGA_CMD_COUPLING     0x1E   /* Coupling/BW / stock command-bank byte */
-
-/* Frequency counter (system_mode 4) */
-#define FPGA_CMD_FREQ_CFG     0x1F   /* Freq counter config */
-#define FPGA_CMD_FREQ_20      0x20   /* Freq counter param */
-#define FPGA_CMD_FREQ_21      0x21   /* Freq counter param */
-
-/* Continuity/Diode (system_mode 8) */
-#define FPGA_CMD_CONT_DIODE   0x2C   /* Continuity/diode mode */
-
-/* ═══════════════════════════════════════════════════════════════════
- * FPGA State
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* ADC calibration constants (from stock firmware VFP registers) */
-#define FPGA_ADC_OFFSET       (-28.0f)   /* s16: Hardware DC offset */
-#define FPGA_ADC_MAX          255.0f     /* s24: Maximum clamp */
-#define FPGA_ADC_MIN          0.0f       /* s26: Minimum clamp */
-
+/* State and diagnostics of the driver's parts in one structure, read by the
+ * shell's status commands. Each part writes its own fields. */
 typedef struct {
-    /* ADC sample buffers (written by acquisition task, read by display) */
-    volatile uint8_t ch1_buf[FPGA_ADC_BUF_SIZE];
-    volatile uint8_t ch2_buf[FPGA_ADC_BUF_SIZE];
+    /* The published record (fpga_acq.c writes, the display reads; see
+     * fpga_acq_frame_generation). */
+    volatile uint8_t  ch1_buf[FPGA_ADC_BUF_SIZE];
+    volatile uint8_t  ch2_buf[FPGA_ADC_BUF_SIZE];
 
-    /* USART RX frame (latest complete frame from FPGA) */
-    volatile uint8_t rx_frame[FPGA_RX_FRAME_SIZE];
-    volatile bool    rx_frame_valid;
+    /* ── meter link (meter_link.c) ──────────────────────────────────── */
 
-    /* USART TX frame buffer */
-    volatile uint8_t tx_frame[FPGA_TX_FRAME_SIZE];
-    volatile uint8_t tx_index;
+    /* The latest complete data frame from the meter chip. */
+    volatile uint8_t  rx_frame[FPGA_RX_FRAME_SIZE];
+    volatile bool     rx_frame_valid;
 
-    /* RX state machine */
-    volatile uint8_t rx_buf[FPGA_RX_FRAME_SIZE];
-    volatile uint8_t rx_index;
+    /* The command frame being sent, and the receive state machine. */
+    volatile uint8_t  tx_frame[FPGA_TX_FRAME_SIZE];
+    volatile uint8_t  tx_index;
+    volatile uint8_t  rx_buf[FPGA_RX_FRAME_SIZE];
+    volatile uint8_t  rx_index;
 
-    /* Status */
-    volatile bool    initialized;      /* Boot sequence complete */
-    volatile bool    spi3_active;      /* SPI3 acquisition running */
-    volatile bool    bus_released;     /* SPI3 bus handed to external SSPI
-                                        * master (ESP32) via fpga_bus_release();
-                                        * acq task stays off the bus while set */
-    volatile uint16_t frame_count;     /* Data frame counter (0x5A 0xA5) */
-    volatile uint8_t  channel_mask;  /* Last applied PC1/PC2 code: 1=CH1 2=CH2 3=BOTH */
-    volatile uint16_t echo_count;     /* Echo frame counter (0xAA 0x55) */
-    volatile uint16_t tx_count;       /* TX commands sent */
-    volatile uint16_t rx_byte_count;  /* Raw RX bytes received */
-    volatile uint16_t rx_sync_data_start_count; /* Saw 0x5A as RX frame byte 0 */
-    volatile uint16_t rx_sync_echo_start_count; /* Saw 0xAA as RX frame byte 0 */
-    volatile uint16_t rx_sync_data_header_count; /* Completed 0x5A 0xA5 header */
-    volatile uint16_t rx_sync_echo_header_count; /* Completed 0xAA 0x55 header */
-    volatile uint16_t rx_sync_bad_second_count; /* Header byte 1 rejected */
-    volatile uint16_t rx_sync_stray_count;      /* Byte ignored while unsynced */
-    volatile uint16_t rx_data_tx_busy_drop_count; /* Data frames dropped before TX byte pump completed */
-    volatile uint16_t rx_echo_valid_count;      /* Echo frames passing stock byte[3]/byte[7] checks */
-    volatile uint16_t rx_echo_bad_count;        /* Echo frames failing stock byte[3]/byte[7] checks */
+    /* ── driver status ─────────────────────────────────────────────── */
+    volatile bool     initialized;  /* fpga_init finished */
+    volatile bool     spi3_active;  /* the acquisition task may use SPI3 */
+    volatile bool     bus_released;  /* the SPI3 pins are given up (fpga_bus_release); the acquisition task stays off the bus */
+
+    /* ── meter link counters and histories, for the shell ──────────── */
+    volatile uint16_t frame_count;  /* data frames (5A A5) */
+    volatile uint8_t  channel_mask;  /* last PC1/PC2 code applied: 1 = CH1, 2 = CH2, 3 = both */
+    volatile uint16_t echo_count;  /* echo frames (AA 55) */
+    volatile uint16_t tx_count;  /* command frames sent */
+    volatile uint16_t rx_byte_count;  /* bytes received */
+    volatile uint16_t rx_sync_data_start_count;  /* saw 0x5A as byte 0 */
+    volatile uint16_t rx_sync_echo_start_count;  /* saw 0xAA as byte 0 */
+    volatile uint16_t rx_sync_data_header_count;  /* completed 5A A5 */
+    volatile uint16_t rx_sync_echo_header_count;  /* completed AA 55 */
+    volatile uint16_t rx_sync_bad_second_count;  /* second header byte rejected */
+    volatile uint16_t rx_sync_stray_count;  /* byte ignored while not in a frame */
+    volatile uint16_t rx_data_tx_busy_drop_count;  /* data frames dropped while a command frame was going out */
+    volatile uint16_t rx_echo_valid_count;  /* echoes that match the command sent */
+    volatile uint16_t rx_echo_bad_count;  /* echoes that do not */
     volatile uint8_t  rx_raw_history[FPGA_RX_RAW_HISTORY];
     volatile uint16_t rx_raw_history_tx_count[FPGA_RX_RAW_HISTORY];
     volatile uint8_t  rx_raw_history_tx_index[FPGA_RX_RAW_HISTORY];
     volatile uint8_t  rx_raw_history_rx_index[FPGA_RX_RAW_HISTORY];
     volatile uint8_t  rx_raw_history_head;
     volatile uint8_t  rx_raw_history_count;
-    volatile uint16_t last_rx_frame_count; /* Data-frame count when latest frame arrived */
-    volatile uint16_t last_rx_tx_count;    /* TX count visible at latest data-frame arrival */
-    volatile uint16_t last_rx_echo_count;  /* Echo count visible at latest data-frame arrival */
-    volatile uint16_t last_rx_mode_sequence_count; /* DMM selector sequence visible at RX arrival */
-    volatile uint8_t  last_rx_mode_sequence_submode; /* DMM sequence submode visible at RX arrival */
-    volatile uint8_t  last_rx_discard_remaining; /* Transition discard budget at RX arrival */
-    volatile uint8_t  last_rx_transition_busy;   /* Meter transition gate state at RX arrival */
+    volatile uint16_t last_rx_frame_count;  /* the counters as they were when the latest data frame arrived */
+    volatile uint16_t last_rx_tx_count;
+    volatile uint16_t last_rx_echo_count;
+    volatile uint16_t last_rx_mode_sequence_count;
+    volatile uint8_t  last_rx_mode_sequence_submode;
+    volatile uint8_t  last_rx_discard_remaining;
+    volatile uint8_t  last_rx_transition_busy;
     volatile uint8_t  rx_frame_history[FPGA_RX_FRAME_HISTORY][FPGA_RX_FRAME_SIZE];
     volatile uint16_t rx_history_frame_count[FPGA_RX_FRAME_HISTORY];
     volatile uint16_t rx_history_tx_count[FPGA_RX_FRAME_HISTORY];
@@ -181,30 +88,30 @@ typedef struct {
     volatile uint8_t  rx_frame_history_head;
     volatile uint8_t  rx_frame_history_count;
     volatile uint8_t  last_rx_echo_frame[FPGA_RX_ECHO_FRAME_SIZE];
-    volatile uint8_t  tx_cmd_hi_history[16]; /* Last sent USART command high bytes */
-    volatile uint8_t  tx_cmd_lo_history[16]; /* Last sent USART command low bytes */
-    volatile uint8_t  tx_cmd_history_head;   /* Next history slot */
-    volatile uint8_t  tx_cmd_history_count;  /* Valid history entries */
-    volatile uint8_t  last_tx_frame[FPGA_TX_FRAME_SIZE]; /* Last full 10-byte USART frame sent */
-    /* Low byte of the last frame sent with OBEY set — i.e. the last frame the
-     * meter could actually have acted on. The echo validator MUST compare
-     * against this and not last_tx_frame[3]: the 4 Hz unobeyed keepalive
-     * overwrites last_tx_frame inside the ~250 ms window between a command and
-     * its echo, which made good echoes fail validation (EXP-27). */
+    volatile uint8_t  tx_cmd_hi_history[16];
+    volatile uint8_t  tx_cmd_lo_history[16];
+    volatile uint8_t  tx_cmd_history_head;
+    volatile uint8_t  tx_cmd_history_count;
+    volatile uint8_t  last_tx_frame[FPGA_TX_FRAME_SIZE];  /* last 10-byte frame sent */
+
+    /* Low byte of the last frame sent obeyed: the echo check compares against
+     * this, not last_tx_frame, which the unobeyed keepalive overwrites
+     * between a command and its echo. */
     volatile uint8_t  last_obeyed_tx_lo;
     volatile bool     last_obeyed_tx_valid;
-    /* Last meter transition (EXP-205): ms from PC11 back up to the SoC's first
-     * data frame (0xFFFF = timed out), selector sends until its echo, whether
-     * it was confirmed, and how many transitions ended unconfirmed. */
+
+    /* The last function change: ms from PC11 high to the chip's first data
+     * frame (0xFFFF = timed out), selector sends until its echo, whether it
+     * was confirmed, and totals of the failures. */
     volatile uint16_t meter_soc_wake_ms;
     volatile uint8_t  meter_selector_attempts;
     volatile uint8_t  meter_selector_confirmed;
     volatile uint16_t meter_selector_unconfirmed_total;
     volatile uint16_t meter_soc_wake_timeouts;
-    /* M1 fast function switching: switches done with one word and no SoC
-     * restart, fast attempts whose selector echo never came (those fell back
-     * to the full transition), and obeyed frames refused because the word is
-     * one of the hidden calibration wizard's (meter_word_is_cal_wizard). */
+
+    /* Function changes done with one word, fast attempts that fell back to
+     * the full sequence, and obeyed frames refused because the word belongs
+     * to the chip's calibration procedure (meter_word_is_cal_wizard). */
     volatile uint16_t meter_fast_switch_count;
     volatile uint16_t meter_fast_fallback_count;
     volatile uint16_t meter_cal_word_refused;
@@ -218,8 +125,7 @@ typedef struct {
     volatile uint8_t  tx_control_frame_history_head;
     volatile uint8_t  tx_control_frame_history_count;
 
-    /* DMM mode-sequence diagnostics. Polling quickly overwrites tx_recent
-     * with 0x0509, so keep the last explicit mode switch separately. */
+    /* The words of the last function change, and a short history of changes. */
     volatile uint16_t meter_mode_sequence_count;
     volatile uint8_t  meter_mode_sequence_submode;
     volatile uint16_t meter_mode_config_word;
@@ -246,13 +152,8 @@ typedef struct {
     volatile uint8_t  meter_transition_history_head;
     volatile uint8_t  meter_transition_history_count;
 
-    /* First producer frame after the latest DMM transition.
-     *
-     * This is a frozen diagnostic record for the low-DCV producer fault: it
-     * captures the first stock-visible 12-byte DMM frame after the frontend and
-     * USART sequence were applied. It must not feed decoder math, range
-     * selection, or calibration decisions.
-     */
+    /* The first data frame after the latest function change, with the state
+     * it arrived in. Diagnostic only: nothing decodes from it. */
     volatile uint8_t  meter_first_rx_after_transition_armed;
     volatile uint8_t  meter_first_rx_after_transition_valid;
     volatile uint8_t  meter_first_rx_after_transition_submode;
@@ -273,735 +174,74 @@ typedef struct {
     volatile uint32_t meter_first_rx_after_transition_h2_bytes;
     volatile uint8_t  meter_first_rx_after_transition_h2_done;
 
-    /* SPI3 acquisition diagnostics */
-    volatile uint16_t spi3_ok_count;       /* Successful acquisitions */
-    volatile uint16_t spi3_timeout_count;  /* Consecutive timeouts (resets on success) */
-    volatile uint16_t spi3_total_timeouts; /* Lifetime timeout count */
-    volatile uint16_t spi3_hw_timeouts;    /* Lifetime spi3_xfer poll expiries — each one
-                                              means a returned byte was fabricated 0xFF,
-                                              not bus data (audit 2026-08-20, P0.3) */
-    volatile uint8_t  spi3_first_byte;     /* First byte from last probe */
+    /* ── acquisition (fpga_acq.c) ──────────────────────────────────── */
+    volatile uint16_t spi3_ok_count;  /* records read */
+    volatile uint16_t spi3_timeout_count;  /* timeouts in a row (0 after a record) */
+    volatile uint16_t spi3_total_timeouts;  /* timeouts since boot */
+    volatile uint16_t spi3_hw_timeouts;  /* SPI3 byte transfers that timed out since boot; each returned 0xFF instead of bus data */
+    volatile uint8_t  spi3_first_byte;  /* first byte of the last probe */
+    volatile uint8_t  diag_ch1_raw[4];  /* first 4 bytes of the last CH1 read */
+    volatile uint8_t  diag_ch2_raw[4];  /* first 4 bytes of the last CH2 read */
 
-    /* Raw sample diagnostics (first 4 bytes of each channel, updated each read) */
-    volatile uint8_t  diag_ch1_raw[4];     /* First 4 raw CH1 bytes (before cal) */
-    volatile uint8_t  diag_ch2_raw[4];     /* First 4 raw CH2 bytes (before cal) */
+    /* ── bring-up and upload ───────────────────────────────────────── */
+    volatile uint8_t  init_hs[12];  /* replies during the toolkit's SPI3 upload ([11] unused) */
+    volatile uint32_t diag_remap5;  /* IOMUX remap5 (SPI3 pins) after init */
+    volatile uint32_t diag_remap7;  /* IOMUX remap7 (JTAG pins) after init */
+    volatile uint32_t diag_spi_ctrl1;  /* SPI3 CTRL1 after init */
+    volatile uint32_t diag_spi_sts;  /* SPI3 STS after init */
+    volatile uint32_t h2_bytes_sent;  /* design bytes sent by the last upload */
+    volatile uint8_t  h2_upload_done;  /* 1 = the upload sent every byte */
+    volatile uint8_t  h2_close_status;  /* byte read after the 0x3A close of the toolkit's SPI3 upload */
+    volatile uint8_t  core_ident[CORE_IDENT_REPLY_LEN];  /* reply to op E2 after a load of our core (all 0: not asked) */
+    volatile uint8_t  scope_status[4];  /* reply to op 03 after the upload */
+    volatile uint8_t  acq_hdr_ch1[3];  /* the 3 header bytes of the last op 04 reply */
+    volatile uint8_t  acq_hdr_ch2[3];  /* the same of the last op 05 reply */
+    volatile uint32_t pc0_last_tick;  /* tick of the last PC0 edge */
+    volatile int32_t  acq_last_rot;  /* rotation applied to the last published record, -1 = none */
+    volatile uint32_t acq_last_latency_ms;  /* PC0 edge to publication of the last held record */
+    volatile uint32_t acq_poll_reads;  /* reads that found no held record, total */
+    volatile uint32_t acq_polls_last;  /* such reads before the last held record */
+    volatile uint32_t pc0_edges;  /* falling edges of PC0 (record ready), counted in EXINT0 */
+    volatile uint8_t  cfg_status_reg[4];  /* configuration STATUS register (0x41) after the upload, as clocked.
+                                            * Bits: 0 CRC error, 1 bad command, 2 ID verify failed,
+                                            * 13 DONE, 15 READY, 16 POR. All FF = the FPGA does not drive MISO. */
+    volatile uint8_t  edit_mode_status[4];  /* STATUS read right after 0x15 (toolkit, probe_edit) */
 
-    /* REMOVED 2026-08-13: bb_idle / bb_cs / bb_byte / bb_marker.
-     *
-     * They held the results of an early manual-MISO bit-bang probe that was
-     * deleted from fpga_init long ago ("Bit-bang test REMOVED — it was
-     * disrupting the GMUX pin connection", fpga.c Step 10). Nothing has
-     * written them since, but `status` kept printing them with their original
-     * legend — including "cs=00" annotated as "0 = FPGA responds!". A reader
-     * saw a confident zero for a probe that has not existed for months.
-     * Structurally-unpopulated fields do not get to render as measurements;
-     * with no writer left, the honest form is no field at all.
-     * (Unrelated to fpga_bitbang_config_sequence(), which is live.) */
+    /* Replies of the configuration port, 8 bytes each, read at /256 (the only
+     * SPI3 divider at which that port's replies are readable). probe_id_bit:
+     * the bit offset at which IDCODE 0x0120681B was found, -1 = not found. */
+    volatile uint8_t  probe_idcode[8];  /* 0x11 IDCODE, before the upload */
+    volatile uint8_t  probe_noop[8];  /* 0x00, the control */
+    volatile uint8_t  probe_status[8];  /* 0x41 STATUS */
+    volatile uint8_t  probe_user[8];  /* 0x13 USERCODE */
+    volatile uint8_t  probe_idcode_post[8];  /* 0x11 again, after 0x15 */
+    volatile int8_t   probe_id_bit;
 
-    /* Init handshake diagnostic (captured during fpga_init) */
-    volatile uint8_t  init_hs[12];         /* Handshake response bytes: [0..10] written
-                                            * ONLY by fpga_spi3_config_sequence()
-                                            * (the toolkit's `fpga reinit`); [11] unused. */
-    volatile uint32_t diag_remap5;         /* IOMUX remap5 (spi3_gmux) */
-    volatile uint32_t diag_remap7;         /* IOMUX remap7 (swjtag_gmux) */
-    volatile uint32_t diag_spi_ctrl1;      /* SPI3 CTRL1 after init */
-    volatile uint32_t diag_spi_sts;        /* SPI3 STS after init */
-
-    /* H2 SPI3 bitstream upload diagnostics. h2_bytes_sent/upload_done prove only
-     * that local firmware streamed the stock 115638-byte table; the FPGA has no
-     * recovered ACK/apply signal, so this is not proof the table was accepted,
-     * applied, or a DMM calibration source. */
-    volatile uint32_t h2_bytes_sent;       /* Bytes uploaded (should be 115638) */
-    volatile uint8_t  h2_upload_done;      /* 1 = TX completed without error */
-    volatile uint8_t  h2_close_status;     /* MISO byte after 0x3A close (stock: 0xF8) */
-    volatile uint8_t  core_ident[CORE_IDENT_REPLY_LEN];   /* reply to op E2 after a load of our core (all 0: not asked) */
-    volatile uint8_t  scope_status[4];     /* MISO from post-upload 0x03 read
-                                            * (stock boot: 00 01 42 2E — issue-#18 capture)
-                                            * ⚠ all-zeros on healthy armed boots too —
-                                            * NOT an arm indicator (2026-08-14). */
-    volatile uint8_t  acq_hdr_ch1[3];      /* 3 MISO header bytes of the last 0x04 read.
-                                            * June-capture re-read (2026-08-14): stock's
-                                            * b2==0x01 is a buffer-valid flag — set on
-                                            * 143/174 CH1 windows, NEVER on CH2. */
-    volatile uint8_t  acq_hdr_ch2[3];      /* Same for the last 0x05 read */
-    volatile uint32_t pc0_last_tick;       /* tick of the last PC0 edge (EXP-50 latency) */
-    volatile int32_t  acq_last_rot;        /* rotation L applied to the last committed record, -1 = none */
-    volatile uint32_t acq_last_latency_ms; /* edge -> commit of the held record, last cycle */
-    volatile uint32_t acq_poll_reads;      /* EXP-54: reads that found the rolling buffer (no strobe), total */
-    volatile uint32_t acq_polls_last;      /* EXP-54: such reads before the last handover */
-    volatile uint32_t pc0_edges;           /* PC0 (data-ready) falling edges via EXINT0.
-                                            * One per fresh ready event — the instrument
-                                            * for engine cycle rate per trigger regime,
-                                            * and the pacing source for the acq task. */
-    volatile uint8_t  cfg_status_reg[4];   /* Gowin STATUS_REGISTER (opcode 0x41),
-                                            * big-endian as clocked. The authoritative
-                                            * config status. Bits (openFPGALoader
-                                            * gowin.cpp): 0=CRC_ERROR 1=BAD_COMMAND
-                                            * 2=ID_VERIFY_FAILED 13=DONE_FINAL 15=READY
-                                            * 16=POR. All-0xFF = FPGA not driving MISO
-                                            * (never entered config-receive). Separates
-                                            * wire-problem from config-entry problem.
-                                            * See sibling_loader_config_diff.md. */
-    volatile uint8_t  edit_mode_status[4]; /* STATUS (0x41) read at /256 IMMEDIATELY
-                                            * after 0x15 CONFIG_ENABLE (probe_edit knob).
-                                            * SYSTEM_EDIT_MODE is bit 7 of the ASSEMBLED
-                                            * word = bit 7 of [3], not of [0]. NOTE: as of
-                                            * Exp I (2026-07-28) this value is known to be
-                                            * a phase-slice of a free-running MISO pattern,
-                                            * NOT a register read. Kept for continuity. */
-
-    /* ── Exp J: ANCHORED opcode-discrimination probe (2026-07-28) ──────────
-     * The first measurement in this project with a known correct answer.
-     * Exp I showed every prior status read was a phase-slice of the free-running
-     * 0xC8100001 pattern the FPGA emits from its running NV design; with no
-     * ground truth, a stable wrong number was indistinguishable from a right one.
-     *
-     * Each probe clocks 8 bytes (not 4) so a repeating 4-byte pattern is visible
-     * as data rather than inferred. All reads at /256 — the only valid SSPI read
-     * clock (fpga.c:1564). Populated only when opts.probe_idcode = 1. */
-    volatile uint8_t  probe_idcode[8];     /* 0x11 READ_IDCODE, before the prelude */
-    volatile uint8_t  probe_noop[8];       /* 0x00 no-op — the control */
-    volatile uint8_t  probe_status[8];     /* 0x41 STATUS */
-    volatile uint8_t  probe_user[8];       /* 0x13 USERCODE */
-    volatile uint8_t  probe_idcode_post[8];/* 0x11 again, AFTER 0x15 CONFIG_ENABLE */
-    volatile int8_t   probe_id_bit;        /* bit offset 0..32 where 0x0120681B was
-                                            * found in probe_idcode, else -1. Searched
-                                            * across ALL bit offsets deliberately: every
-                                            * artifact this project has hit (garbage at
-                                            * /2, floating MISO, SWD byte-rotation) shows
-                                            * up as a phase shift, so an exact-match test
-                                            * would report absent when it is merely
-                                            * misaligned. */
-
-    /* ── Post-0x3A anchor (Exp L follow-up, 2026-07-28) ────────────────────
-     * IDCODE read at /256 immediately BEFORE cfg_status_reg, in the same window,
-     * so the post-upload status is only believed on a validated read path.
-     * Unlike the other probe_* fields this runs on EVERY build, because an
-     * unanchored cfg_status_reg is exactly the kind of reading this project has
-     * repeatedly mistaken for a measurement.
-     *
-     * It is also a direct configured/not-configured test. Exp L: once stock has
-     * configured the FPGA successfully, the SSPI config port CLOSES and 0x11
-     * returns zeros — the port belongs to the user design from then on. So:
-     *   probe_id_bit_close >= 0  => config port still OPEN after our full
-     *                               115,638-byte upload and 0x3A close, i.e. we
-     *                               are definitively NOT configured.
-     *   probe_id_bit_close == -1 => the port stopped answering. Consistent with
-     *                               configuration having completed — but NOT
-     *                               proof of it, since a dead bus reads the same.
-     *                               Corroborate with DONE and a live trace. */
+    /* IDCODE read after the upload. Once a design runs, the configuration
+     * port stops answering, so a match here (probe_id_bit_close >= 0) means
+     * the FPGA is NOT configured; -1 is consistent with configured. */
     volatile uint8_t  probe_idcode_close[8];
     volatile int8_t   probe_id_bit_close;
 
-
-
-    /* Stock post-H2 SPI3 queue diagnostics. These counters prove only local
-     * enqueue/execution of the stock trigger bytes; they are not FPGA ACK or
-     * DMM calibration acceptance evidence. */
+    /* Bytes read back during the toolkit's SPI3 upload, by value, and the
+     * bytes after its close. */
     volatile uint32_t h2_rx_00_count;
     volatile uint32_t h2_rx_ff_count;
     volatile uint32_t h2_rx_other_count;
     volatile uint8_t  h2_close_rx_len;
     volatile uint8_t  h2_close_rx[6];
-
-    /* Experimental stock runtime shadow for scope-mode bench work.
-     * These are NOT the original firmware RAM locations. They are a small
-     * explicit mirror we can inspect and stage from the shell while testing
-     * stock-like right-panel and packed-state flows. */
-
 } fpga_state_t;
 
-/* Global FPGA state (defined in fpga.c) */
-extern fpga_state_t fpga;
+extern fpga_state_t fpga;   /* defined in fpga.c */
 
-/* Tunable knobs for the SPI3 config handshake (prelude + bitstream upload +
- * close + scope-config). Exposed so the debug shell can sweep them live via
- * `fpga reinit` without reflashing — chasing why our upload activates the
- * FPGA slave but never reaches stock's configured state (0x3A close F8,
- * 0x03 status 00 01 42 2E). See SPI3_STOCK_BOOT_CAPTURE_ANALYSIS.md. */
-typedef struct {
-    uint32_t upload_br;       /* SPI3 baud divider for the 0x3B bulk phase (0=/2) */
-    uint32_t prelude_gap_ms;  /* gap after each 05/12/15 prelude frame (stock ~100) */
-    uint32_t post_close_ms;   /* delay after 0x3A close before scope-config (stock ~600) */
-    uint8_t  arm_pb11;        /* 1 = drive PB11 HIGH before the handshake */
-    /* Optional FPGA reset pulse BEFORE the handshake — the step rosenrot00's
-     * working 2C23T loader does (RESET LOW 10ms → HIGH 1ms) that our 2C53T
-     * sequence lacks. The 2C53T reset line is unknown (PC8 is our POWER btn),
-     * so this is sweepable: reset_port 1..5 = A..E, 0 = no pulse. */
-    uint8_t  reset_port;      /* 0=none, 1=A,2=B,3=C,4=D,5=E */
-    uint8_t  reset_pin;       /* 0..15 */
-    uint16_t reset_low_ms;    /* LOW duration (rosenrot uses 10) */
-    /* Prelude framing sweep — how the 05/12/15 CONFIG_ENABLE prelude is split
-     * across chip-select frames relative to the 0x3B upload. Our baseline
-     * (mode 0) is wire-faithful to the stock capture; modes 1/2 are deviations
-     * to test whether the FPGA needs a different framing to enter SSPI receive
-     * mode. See SPI3_STOCK_BOOT_CAPTURE_ANALYSIS.md / issue #18. */
-    uint8_t  prelude_frame_mode; /* 0=split (stock: 05|12|15|3B), 1=combined
-                                  *   (05 12 15 in one CS frame, then 3B),
-                                  *   2=merge (05|12|15+3B share one CS frame) */
-    uint32_t pre_upload_gap_ms;  /* delay between the prelude and the 0x3B open
-                                  *   (stock ~8us → 0; lets the FPGA digest
-                                  *   CONFIG_ENABLE before data starts) */
-    uint32_t cmd_br;             /* SPI3 baud divider for the COMMAND phase —
-                                  *   prelude (05/12/15), 0x3A close, 0x03 status
-                                  *   reads (0=/2 default). The SSPI read path is
-                                  *   clock-limited: IDCODE reads as garbage at /2
-                                  *   but clean at /256, so the close/status bytes
-                                  *   we sample at /2 may be unreliable and the
-                                  *   CONFIG_ENABLE prelude may not land. Sweep
-                                  *   this to send + read the handshake slowly. */
-    /* Strap-hold sweep (2026-06-13 whole-binary GPIO audit). Port-D pins that
-     * stock drives on scope-mode entry but our firmware never touches — held
-     * (NOT pulsed) through the ENTIRE handshake, matching stock. PD2 is the
-     * prime suspect (asserted beside fpga_queue sends in the decompile; the old
-     * RECONFIG pulse-test doesn't clear a HELD level). PD12/PD13 are driven in
-     * the meter_state channel loop. See unmapped_mcu_fpga_pin_candidates.md §4a. */
-    uint8_t  strap_pd2;       /* PD2:       0=untouched, 1=hold HIGH, 2=hold LOW */
-    uint8_t  strap_pd1213;    /* PD12+PD13: 0=untouched, 1=hold HIGH, 2=hold LOW */
-    /* Trailing clocks after the last bitstream byte, before 0x3A close. Gowin
-     * runs the CRC-check / DONE / wakeup on CCLK cycles AFTER the final config
-     * byte; our sequence sent ZERO. rosenrot00's working 2C23T SPI loader clocks
-     * ~200 dummy 0x00 here (fpga.c:342-344). Sweepable: 0 (stock-faithful per the
-     * capture) / 64 / 200 / 512. See sibling_loader_config_diff.md. */
-    uint16_t trailing_clocks;
-    /* DIAGNOSTIC knobs (default 0 = sequence byte-unchanged). */
-    uint8_t  probe_edit;      /* 1 = after 0x15 CONFIG_ENABLE, read STATUS(0x41) at
-                               *     /256 into fpga.edit_mode_status[] — does bit7
-                               *     SYSTEM_EDIT_MODE engage? (the precise wall test) */
-    uint8_t  reload_3c;       /* 1 = send Gowin RELOAD (0x3C) at /256 before the
-                               *     prelude — software reconfig trigger; does it
-                               *     clear GWVLD/FLASH_LOCK and let CONFIG_ENABLE land? */
-    uint8_t  probe_idcode;    /* 1 = Exp J anchored opcode-discrimination probe: read
-                               *     0x11/0x00/0x41/0x13 at /256 (8 bytes each) BEFORE
-                               *     the prelude, and 0x11 again after CONFIG_ENABLE.
-                               *     Known answer: IDCODE = 0x0120681B. Adds CS frames
-                               *     ahead of the config attempt, so keep it off for
-                               *     stock-faithful runs. */
-    uint8_t  prelude_reads;   /* Build A (2026-08-13): 1 = insert the maksidze/Stlkv
-                               *     V0.4 "richer prelude" reads 0x11 IDCODE / 0x13
-                               *     USERCODE / 0x41 STATUS at /256 in their own CS
-                               *     frames BETWEEN 0x05 ERASE_SRAM and 0x12 INIT_ADDR
-                               *     — i.e. immediately before CONFIG_ENABLE, the
-                               *     position Stlkv's working cold-start loader uses.
-                               *     Stores into probe_idcode/_user/_status and sets
-                               *     probe_id_bit (the anchor). Requires
-                               *     prelude_frame_mode 0 (split). See issue #18. */
-    uint8_t  omit_05;         /* 1 = skip the 0x05 ERASE_SRAM frame entirely, so the
-                               *     prelude is 0x12 INIT_ADDR → 0x15 CONFIG_ENABLE.
-                               *
-                               *     Breaks the confound in our own A/B (issue #18,
-                               *     2026-08-13): the bit-bang loader that CONFIGURES
-                               *     also omits 0x05, while the hardware-SPI loader
-                               *     that FAILS sends it — so "bit-bang vs AF" and
-                               *     "no-0x05 vs 0x05" have never been separated.
-                               *     maksidze's /64 stock capture already proved slow
-                               *     hardware SPI can configure a GW1N, so clock rate
-                               *     is excluded and the prelude is the live suspect.
-                               *     If this configures on the hardware-SPI path, the
-                               *     answer is the prelude, not the bit-bang — and we
-                               *     get a config path ~100x faster than bit-banging
-                               *     115,638 bytes. Applies to all prelude_frame_modes. */
-    uint8_t  single_br;       /* 1 = NEVER call spi3_set_br() during the config
-                               *     transaction (prelude → upload → close), so SPE
-                               *     is toggled ZERO times between fpga_init and the
-                               *     0x3A close — exactly like stock, which sets BR
-                               *     once at init and never touches it again. The
-                               *     sequence runs at whatever divider the caller
-                               *     already programmed (fpga_init leaves /2). Our
-                               *     normal path toggles SPE via spi3_set_br() BEFORE
-                               *     the prelude (fpga.c:4280) — a pre-0x15 glitch
-                               *     stock never produces (EXP-34). Post-0x15
-                               *     measurement reads (probe_edit, 0x41 STATUS) still
-                               *     switch to /256; they are downstream of the wall
-                               *     and cannot retro-cause it. */
-} fpga_cfg_seq_opts_t;
-
-/* Run the full SPI3 config handshake. Returns the 0x3A close status byte
- * (stock: 0xF8). Fills fpga.init_hs[], fpga.h2_close_status, fpga.scope_status[]. */
-uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt);
-
-/* GPIO bit-bang SSPI config (2C23T-V0.4 transplant, FPGA_CONFIG_B). Owns
- * PB3/4/5/6 as GPIO for the handshake, then restores PB3/4/5 to SPI3 AF.
- * Returns cfg_status_reg[3]; populates fpga.cfg_status_reg[] (post-upload STATUS)
- * and fpga.probe_id_bit_close. Only defined under FPGA_CONFIG_B. */
-uint8_t fpga_bitbang_config_sequence(void);
-
-/* Runtime reload (FPGA_CONFIG_B only): power-cycle the FPGA with PC6, then
- * upload either the compiled-in design (fn == NULL) or `len` bytes from fn.
- * fn fills buf with n bytes of the payload at offset off; false aborts. */
-typedef bool (*fpga_payload_fn)(void *ctx, uint32_t off, uint8_t *buf, uint32_t n);
-typedef enum {
-    FPGA_RELOAD_OK = 0,        /* design loaded, DONE set                          */
-    FPGA_RELOAD_NOT_EMPTY,     /* the FPGA did not power down; nothing was sent    */
-    FPGA_RELOAD_SRC_FAIL,      /* the source failed mid-upload; the FPGA is empty  */
-    FPGA_RELOAD_NOT_DONE,      /* upload sent, DONE not set; the FPGA is empty     */
-    FPGA_RELOAD_BAD_ARG,
-    FPGA_RELOAD_UNSUPPORTED,   /* this build's upload variant cannot check         */
-} fpga_reload_status_t;
-typedef struct {
-    uint32_t idcode_before;    /* configuration port answer before the upload */
-    uint32_t status;           /* STATUS (0x41) after the upload              */
-    uint32_t sent;             /* payload bytes sent                          */
-} fpga_reload_report_t;
-#define FPGA_RELOAD_OFF_MS  1000u   /* PC6 low; 1 s is the bench-proven value */
-#define FPGA_RELOAD_ON_MS    200u   /* supply back before the first config command */
-fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
-                                 fpga_reload_report_t *rep);
-
-/* Name of the slot design the boot upload sent, or NULL when it sent the
- * compiled-in design (FPGA_CONFIG_B only). */
-const char *fpga_boot_design(void);
-/* What the boot found on the FPGA: 0 empty (cold boot), 1 a running design, removed
- * through PC6 and replaced, 2 a running design that stayed (nothing uploaded). */
-uint8_t fpga_boot_live(void);
-
-/* ═══════════════════════════════════════════════════════════════════
- * API
- * ═══════════════════════════════════════════════════════════════════ */
-
-/*
- * Initialize FPGA communication hardware:
- *   - USART2 at 9600 baud (PA2=TX, PA3=RX)
- *   - SPI3 Mode 3 (PB3=SCK, PB4=MISO, PB5=MOSI, PB6=CS)
- *   - Control pins (PC6=SPI enable, PB11=active mode)
- *   - AFIO remap to free PB3/4/5 from JTAG
- *   - Send boot command sequence to FPGA
- *   - Perform SPI3 handshake
- *
- * Must be called after clock init and before FreeRTOS scheduler start.
- * Requires CRM_GPIOA/B/C and CRM_IOMUX clocks already enabled.
- */
+/* Bring up SPI3, USART2 and the control pins, upload the design, identify
+ * the core and write its registers. Call after the clocks are set and before
+ * the scheduler starts. */
 void fpga_init(void);
 
-/*
- * Create the FreeRTOS tasks of this driver:
- *   - acquisition task (fpga): reads records from the core over SPI3
- *   - USART TX task (dvom_TX): formats and sends command frames to the meter chip
- *   - USART RX task (dvom_RX): processes the meter chip's frames
- *   - meter poll task (meter_poll): meter function changes and the keepalive
- *
- * Must be called after fpga_init() and before vTaskStartScheduler().
- */
+/* Create the driver's tasks: acquisition (fpga), the meter link's transmit
+ * (dvom_TX), receive (dvom_RX) and poll (meter_poll). Call after fpga_init()
+ * and before the scheduler starts. */
 void fpga_create_tasks(void);
-
-/*
- * Send a command to the FPGA via USART2 TX queue.
- * cmd_high: command high byte (usually 0x00 for single-byte commands)
- * cmd_low:  command low byte (the actual command code)
- *
- * Non-blocking: returns pdTRUE on success, pdFALSE if queue full.
- */
-BaseType_t fpga_send_cmd(uint8_t cmd_high, uint8_t cmd_low);
-
-/*
- * True when the dvom_TX drain task exists this boot.
- *
- * fpga_send_cmd() only ENQUEUES; the bytes reach PA2 when fpga_usart_tx_task
- * pops them. Several bench builds (FPGA_USART_SILENT_SCOPE, warm-handoff,
- * bus-released) deliberately create no such task, so the queue fills and
- * nothing is ever transmitted while every caller sees pdTRUE. Any diagnostic
- * that reports a send must consult this first — exp(02) on 2026-08-16 was
- * recorded VOID because it did not.
- */
-bool fpga_usart_tx_task_exists(void);
-
-/* Meter TX frame header (EXP-25, issue #15). Default true = AA 55, the header
- * the meter SoC requires (measured on two units). False = 00 00, the header
- * every measurement before 2026-09-12 was taken with; kept as the bench's
- * negative control (`meter hdr off`). */
-/* usart_tx_queue item: bits 0-7 cmd_lo, 8-15 cmd_hi, bit 16 = OBEY.
- * OBEY set   means "a command to the meter SoC": AA 55 while the header is on.
- * OBEY clear means "send this frame with the 00 00 header the meter ignores".
- * That is not a hack — EXP-25 measured that the meter emits data frames in
- * response to USART TRAFFIC, not to commands it accepts (header off, zero
- * echoes, data still 6/s; transmit stopped, data 0/s). So the 4 Hz keepalive
- * only has to make noise, and it must NOT be obeyed, or every poll re-triggers
- * a measurement and autorange — audible as continuous relay clicking. */
-#define FPGA_TX_OBEY_BIT  (1U << 16)
-
-void fpga_meter_tx_header_set(bool aa55);
-bool fpga_meter_tx_header_get(void);
-
-/* M1: switch the meter function the way stock does, with ONE word
- * (AA 55 05 xx 00 00 00 00 00 cs) and no PC11 drop, no frontend GPIO writes and
- * no SoC reboot (stock moves no pin on a function change, and the SoC takes the
- * word within a frame). Used only while the SoC is already up in meter mode;
- * the first entry and any failed fast switch still run the full transition.
- * Default on. `meter fast off` restores the old PC11 + 1.38 s path. */
-void fpga_meter_fast_switch_set(bool on);
-bool fpga_meter_fast_switch_get(void);
-/* The 4 Hz unobeyed keepalive of the meter poll task. Default ON: EXP-25
- * measured data frames stopping when OpenScope stopped transmitting, while
- * stock transmits nothing periodically. `meter keepalive off` is the bench A/B
- * to find out whether the fast path makes it unnecessary. */
-void fpga_meter_keepalive_set(bool on);
-bool fpga_meter_keepalive_get(void);
-/* True while a fast switch is possible (PC11 high, SoC woke and answered). */
-bool fpga_meter_soc_live(void);
-
-/* Queue a frame UNOBEYED: 00 00 header regardless of the header setting. For
- * traffic that has always gone out 00 00 and must stay bit-identical now that
- * obeyed frames are real (legacy scope/siggen/config words, diagnostics that
- * replay stock's byte stream without meaning to switch the meter). */
-BaseType_t fpga_send_cmd_unobeyed(uint8_t cmd_high, uint8_t cmd_low);
-
-/* Keepalive send: solicits a data frame without being obeyed. */
-BaseType_t fpga_send_cmd_keepalive(uint8_t cmd_high, uint8_t cmd_low);
-
-/*
- * Send one 2-byte command frame with the POLLED byte-level path, bypassing
- * the TX queue and the drain task entirely. Blocking (10 bytes at 9600 baud
- * plus TDC wait, ~11 ms) and safe to call with no scheduler.
- *
- * Note this still requires USART2 to be ENABLED (CTRL1 UEN/TE) — on a silent
- * build see fpga_usart_scope_enable(true).
- */
-void fpga_send_cmd_direct(uint8_t cmd_high, uint8_t cmd_low);
-
-/*
- * Check if valid ADC data is available.
- * Returns true after at least one successful SPI3 acquisition.
- */
-bool fpga_data_ready(void);
-
-/*
- * Get pointers to the ADC sample buffers.
- * Returns NULL if FPGA not initialized.
- */
-const volatile uint8_t *fpga_get_ch1_buf(void);
-const volatile uint8_t *fpga_get_ch2_buf(void);
-
-/* Frame generation for tear-checked reads of the ch1/ch2 buffers (audit
- * 2026-08-20, P0.2). Even = stable, odd = commit in progress. A consumer
- * that needs exact numbers (measurements, freq estimation) reads gen,
- * consumes, re-reads: unchanged-and-even means no commit landed mid-read.
- * The commit window is two 1 KB memcpys (~10 µs), so one retry almost
- * always suffices; bound the loop anyway. Stuck at 0 = staging alloc
- * failed and writes are in-place (pre-fix behavior). */
-uint32_t fpga_acq_frame_generation(void);
-
-extern volatile int16_t  fpga_meter_probe_tail_override;
-extern volatile uint8_t  meter_frame_discard_count;
-extern volatile uint32_t meter_transition_frame_skip_count;
-
-bool fpga_meter_transition_busy(void);
-/* A function change asked of the meter poll task (fpga_request_meter_mode)
- * is still waiting to be taken up. */
-bool fpga_meter_mode_request_pending(void);
-
-/*
- * Release the SPI3 bus to an external SSPI master (ESP32) soldered to the
- * back-side SPI3 test pads. Tri-states PB3/PB5/PB6, keeps PC6/PB11 staged,
- * leaves PC9 power hold untouched. EXPERIMENTAL — see experimental/
- * esp32-bringup branch (tools/esp32_sspi_bringup/). Re-flash to undo.
- */
-void fpga_bus_release(void);
-
-/*
- * Re-acquire the SPI3 bus after fpga_bus_release() (H7, 2026-08-26).
- * Restores PB3(SCK)/PB5(MOSI) to SPI3 AF, PB4(MISO) to input pull-up (stock's
- * defined idle level), PB6(CS) to GPIO output HIGH, re-programs CTRL1/CTRL2/SPE,
- * stages PC6 HIGH, and clears fpga.bus_released. Lets a guest-bringup boot (which
- * leaves the FPGA config port pristine + CDC alive) hand the bus back to the MCU
- * so `fpga reinit` can drive the failing hardware-SPI prelude on demand.
- */
-void fpga_spi3_bus_reacquire(void);
-
-/* EXP-37: LA edge-capture. Emits `reps` (0 => 16) identical 0x15 CONFIG_ENABLE
- * frames over AF hardware-SPI3 (/256), a 60ms gap, then `reps` over GPIO bit-bang
- * — same pins/rate/frame, drive type the only variable. Isolated frames; does NOT
- * configure. Arm sigrok (D0=SCK/D1=MISO/D2=MOSI/D3=CS) before calling.
- * FPGA_CONFIG_B builds only — the bit-bang half is compiled out elsewhere. */
-void fpga_edgecap_15(uint8_t reps);
-
-/*
- * Cooperative acquisition pause (Step 0b, bench plan 2026-08-14).
- *
- * Parks the continuous warm-handoff/coldtrace acquisition task BETWEEN CS
- * frames so a debug-shell probe can own the SPI3 bus. This is deliberately
- * NOT vTaskSuspend (which the config sequences use — they reset the engine
- * afterwards anyway): a suspend can land mid-1026-byte window, and a
- * half-clocked frame leaves the core and the reader out of step.
- *
- * fpga_acq_pause() returns true once the task acknowledges it is parked
- * (immediately true in builds without the continuous task); false on a ~1 s
- * timeout, in which case the bus is NOT safe to touch. Balance every pause
- * with fpga_acq_resume().
- */
-bool fpga_acq_pause(void);
-void fpga_acq_resume(void);
-
-/* Bench gain-cal hook: apply scope frontend range <n> (0..VDIV_COUNT-1) with
- * DC coupling forced, for per-range gain characterisation from the shell. */
-void fpga_scope_set_range_diag(uint8_t range_idx);
-void fpga_scope_set_range_diag_ch(uint8_t ch, uint8_t range_idx);
-
-/*
- * Configure FPGA for a specific meter submode.
- * Sends the stock DMM raw UART word selected from the recovered
- * 0x080BB3FC meter-mode table, then re-arms measurement polling.
- *
- * Call when the meter submode changes (LEFT/RIGHT buttons).
- */
-void fpga_set_meter_mode(uint8_t submode);
-
-/*
- * Return the stock DMM raw-command selector that fpga_set_meter_mode() applies.
- * This is read-only debug metadata for USB harnesses and tests; it does not
- * touch GPIO or send FPGA commands.
- */
-fpga_meter_selector_t fpga_meter_expected_selectors(uint8_t submode);
-
-/*
- * Re-apply the known-good meter frontend baseline and meter command
- * sequence for the requested submode. Intended for live bench recovery
- * from the USB debug shell after scope experiments.
- */
-void fpga_meter_reinit(uint8_t submode);
-
-/*
- * Diagnostic-only DMM mux-arm override.
- *
- * Applies a recovered stock FUN_080018A4/FUN_08001A58 GPIO projection for
- * explicit ms[0x02]/ms[0x03] candidates and reports planned/actual GPIO masks.
- * This is for controlled live tracing of the unresolved low-DCV producer-frame
- * fault. It is not a production range selector and must not feed decoder math.
- */
-bool fpga_debug_apply_meter_mux_arms(uint8_t portc_porte_mux,
-                                     uint8_t porta_portb_mux,
-                                     uint16_t *planned_gpio,
-                                     uint16_t *actual_gpio);
-
-/*
- * Diagnostic-only DMM boot-order replay.
- *
- * Applies the current submode frontend, then sends the stock boot/wake command
- * order 0x0508, 0x0509, 0x0507/0x050A, selector. This is a controlled
- * producer-path probe for the unresolved low-DCV frame fault, not a production
- * mode transition or a decoder correction.
- */
-bool fpga_debug_send_meter_boot_order(uint8_t submode, uint32_t delay_ms,
-                                      uint16_t *planned_gpio,
-                                      uint16_t *actual_gpio);
-
-/*
- * Diagnostic-only PC11 meter-MUX timing probe.
- *
- * Holds PC11 low while applying the planned submode mux projection, waits,
- * raises PC11, waits again, then sends the unchanged stock-like submode command
- * sequence. This probes analog gate timing around the producer-frame fault; it
- * must not become a decoder/multiplier or production range heuristic.
- */
-bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
-                                       uint32_t low_ms,
-                                       uint32_t high_ms,
-                                       uint16_t *planned_gpio,
-                                       uint16_t *actual_gpio);
-
-/*
- * Send a raw 10-byte USART2 frame to the FPGA (bypasses queue).
- * Used by the USB debug shell for interactive protocol exploration.
- * frame must point to exactly 10 bytes.
- */
-void fpga_send_raw_frame(const uint8_t *frame);
-
-/* A stock word to the meter SoC, OBEYED: with the AA 55 header on, a 0x05xx
- * word sent here switches the meter SoC's function (a meter transition's
- * selector). */
-void fpga_wire_send_word(uint16_t word, uint32_t delay_ms);
-/* USART2 late bring-up — see the block comment in fpga.c. `fpga usart on`
- * enables it the way fpga_init would and reports CTRL1/BAUDR back so the
- * precondition is verified, not assumed. */
-void     fpga_usart_scope_enable(bool on);
-uint32_t fpga_usart_ctrl1(void);
-uint32_t fpga_usart_baudr(void);
-
-/* Per-mode GPIO posture — see the block comment in fpga.c. The channel mask
- * (1=CH1, 2=CH2, 3=BOTH) is a 2-bit code on PC1/PC2, NOT just SPI3 op 0x02;
- * leaving those pins floating routes CH1 into both converters. */
-void    fpga_set_channel_mask(uint8_t mask);
-/* Channel enables -> converter routing; false if both channels are off. */
-bool    fpga_apply_channel_enables(void);
-/* Single-channel 250 MS/s interleave (dsp/interleave.h). */
-void    fpga_interleave_set(bool on);
-bool    fpga_interleave_get(void);
-bool    fpga_interleave_active(void);          /* enabled, mask 1, timebase <= 3 */
-void    fpga_interleave_corr_set(float gain, float offset);
-void    fpga_interleave_corr_get(float *gain, float *offset);
-/* Piecewise level map (1/100 record unit, ascending; n = 0 clears) and the
- * timing skew (B's deviation from half a converter period, ppm of a period;
- * 0 = off). The setters refuse invalid values and change nothing then. */
-bool    fpga_interleave_knots_set(uint8_t n, const int16_t *a, const int16_t *b);
-uint8_t fpga_interleave_knots_get(int16_t *a, int16_t *b);   /* a, b: IL_KNOTS_MAX each */
-bool    fpga_interleave_skew_set(int32_t ppm);
-int32_t fpga_interleave_skew_get(void);
-/* Self-calibration collector (fpga interleave cal). begin() drops `skip`
- * records then starts averaging the acq task's A/B centre windows; collect()
- * waits for `records` of them (false on timeout) and stops. */
-void    fpga_ilcal_begin(uint8_t skip);
-bool    fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *out);
-bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge */
-/* The capture configuration (dsp/acq_cfg.h). snapshot: in force now (any
- * task). record_cfg: the published record's, copied with it in the commit
- * (read it inside a generation check). has_ch: the published record holds
- * channel ch's own samples (0 = CH1); with one channel routed, the other
- * buffer is the second converter's copy of it. drops: records refused
- * because the configuration had not settled over their window. */
-void     fpga_acq_cfg_snapshot(acq_cfg_t *c);
-void     fpga_acq_record_cfg(acq_cfg_t *out);
-const acq_cfg_t *fpga_acq_record_cfg_ptr(void);   /* the renderer's per-sample read */
-/* Settle margin of the admission rule: 0 = ACQ_CFG_SETTLE_MS, 0xFFFF = rule
- * off (every record admitted, as before), else ms. `fpga cfgsettle`. */
-void     fpga_acq_cfg_settle_set(uint16_t cmd);
-uint16_t fpga_acq_cfg_settle_get(void);
-bool     fpga_acq_record_has_ch(uint8_t ch);
-uint32_t fpga_acq_cfg_drops(void);
-/* Parity C3 (trig_policy.h). The published record's kind (trig_acq_t):
- * handed over, free-run, or free-run with two non-simultaneous channels. */
-uint8_t fpga_acq_record_kind(void);
-uint8_t fpga_trigger_status(void);             /* trig_status_t: the badge and `fpga scope trigger` */
-bool    fpga_acq_single_done(void);            /* SINGLE holds its record */
-void    fpga_acq_single_rearm(void);           /* SINGLE: take the next trigger (OK, shell) */
-bool    fpga_apply_trigger_source(void);       /* reg 0x06 from scope_state (CH1 0x00, CH2 0x01) */
-uint8_t fpga_acq_trig_src_code_get(void);      /* reg 0x06 value last written */
-uint8_t fpga_acq_edge_reg_get(void);           /* reg 0x07 value last written (dsp/trig_edge_reg.h) */
-float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
-void    fpga_set_meter_mux(bool enable);
-/* The meter link: PC11 + USART2 + the poll task's serving, on or off (see
- * fpga.c). fpga_meter_link_set() is the display task's (the one context that
- * evaluates meter_link_want_on); it does nothing when the state is already
- * the one asked for, so a live link is never restarted. */
-void    fpga_meter_link_set(bool on);
-bool    fpga_meter_link_on(void);
-bool    fpga_meter_link_background_capable(void);
-/* Meter screen entered (input task): request the stored function unless the
- * link is already on and running it. */
-void    fpga_meter_screen_entered(uint8_t submode);
-extern volatile bool fpga_meter_needs_activation;
-/* The scope's front-end posture: fpga_scope_posture_gen moves each time the
- * scope's posture is put back (fpga_set_meter_mux(false) in a
- * FPGA_METER_SUBMODES build, fpga_scope_reinit() elsewhere), and
- * fpga_meter_holds_fe() is true from fpga_set_meter_mux(true) until then.
- * Read only: the model re-sends the scope's SPI3 registers stored while the
- * front end was not live once the generation moves (model_hw_fw.c). */
-extern volatile uint8_t fpga_scope_posture_gen;
-bool    fpga_meter_holds_fe(void);
-/* Whether meter entry projects the stock "mux" states onto the scope's range
- * relay pins (PC12, PE4..6, PA15, PA10, PB10, PB11, PB9, PA6). Default off:
- * the meter SoC does not depend on them (bench 2026-11-14), and leaving them
- * keeps the scope capturing while the meter runs. On = the old behaviour. */
-void    fpga_meter_relays_set(bool on);
-bool    fpga_meter_relays_get(void);
-
-/* AUTO-mode edge-wait budget before the free-run fallback read (EXP-42); 0 = compiled default. */
-void     fpga_acq_auto_wait_set(uint16_t ms);
-uint16_t fpga_acq_auto_wait_get(void);
-
-/* Apply a timebase code (SPI reg 0x01) to the hardware and record it as the
- * value in force. This is the ONLY correct way to change the sample rate:
- * writing scope_state.timebase_idx alone relabels the axis without touching
- * the FPGA, which is exactly the divergence found on 2026-08-19.
- *
- * Returns false if the acquisition task would not park, in which case NOTHING
- * was written and the previous rate is still in force. */
-bool    fpga_apply_timebase(uint8_t code);
-
-/* Trigger sibling (EXP-41): write the digital trigger level, reg 0x08, from
- * the UI's -100..100 and record the code in force. Same park contract. */
-bool    fpga_apply_trigger_level(int level);
-uint8_t fpga_trigger_code_from_level(int level);
-uint8_t fpga_acq_trig_code_get(void);
-bool    fpga_acq_auto_wait_is_override(void);
-uint16_t fpga_acq_post_edge_get(void);          /* the wait after a record before the next poll (dsp/acq_timing.h) */
-void     fpga_acq_poll_gap_set(uint16_t ms);   /* EXP-54: poll cadence, ms (0 -> 30) */
-uint16_t fpga_acq_poll_gap_get(void);
-/* Ask the meter poll task to switch the meter chip to `submode` (returns at
- * once; the newest request wins). fpga_set_meter_mode() is the blocking form. */
-void     fpga_request_meter_mode(uint8_t submode);
-/* true when the latest committed record was un-rotated at its seam, so the
- * hardware trigger sits at index 512 (dev plan 2.3). */
-bool     fpga_acq_record_time_ordered(void);
-bool     fpga_acq_record_core_ordered(void);   /* ...and its start came from the core's header: trigger exactly at 512 */
-bool     fpga_acq_design_ours(void);           /* the running FPGA design is our core (trig_edge_reg.h) */
-bool     fpga_acq_core_ok(void);               /* the FPGA holds our core, identified and complete; else nothing is acquired */
-uint32_t fpga_acq_kind_count(unsigned i);      /* records by the op 05 header: 0 held, 1 not held, 2 held without a PC0 edge, 3 PC0 edge but not held */
-uint32_t fpga_acq_force_count(unsigned i);     /* AUTO without a trigger, op 09: 0 requests, 1 forced records read, 2 reads that found the record not ready */
-uint32_t fpga_acq_fresh_restarts(void);        /* core captures restarted on RUN / SINGLE arm so no stale record is shown */
-/* The core's status block (op E0), read about once a second while records are read (core_status.h). */
-typedef struct {
-    core_status_t last;       /* the last valid reply (valid = false: none yet) */
-    uint32_t polls;           /* replies read */
-    uint32_t bad;             /* replies that were not a status block */
-    uint32_t unlocked;        /* replies with the PLL not locked */
-    uint32_t fixed[4];        /* registers rewritten: timebase, source, level, edge */
-    bool     check_on;        /* rewrite a register that differs from the firmware's copy twice running */
-} fpga_core_watch_t;
-fpga_core_watch_t fpga_core_watch(void);
-uint32_t fpga_acq_reg_writes_refused(void);   /* setting changes not sent: no usable core */
-void     fpga_core_watch_fix_set(bool on);     /* off for bench scripts that write registers behind the firmware */
-core_ident_t fpga_core_ident(void);            /* what the core said about itself when it was loaded (core_ident.h) */
-uint32_t fpga_acq_seam_count(unsigned i);      /* held records: 0 ordered by the header's seam, 1 without a seam */
-/* EXP-52: un-rotate the record so index 0 is the trigger crossing. The FPGA's
- * capture memory is read from address 0; the write pointer starts at the
- * arming read and reaches L at the crossing, so the readout is rotated by L
- * = latency x fs. `offset` is a calibration term in samples added to L. */
-void     fpga_acq_unrotate_set(bool on);
-bool     fpga_acq_unrotate_get(void);
-void     fpga_acq_read_br_set(uint8_t br);
-uint8_t  fpga_acq_read_br_get(void);
-
-/* Vertical sibling of fpga_apply_timebase (EXP-19): drive channel ch's
- * (1 or 2) frontend relay bank to range idx. The caller owns updating
- * scope_state's vdiv_idx, same split as the timebase pair. Returns false on
- * a bad argument; relays are then untouched. */
-bool    fpga_apply_vdiv(uint8_t ch, uint8_t idx);
-
-/* What the boot-time timebase reconcile did: 0 = never ran (the arm path in
- * this build does not call it — that was a real bug on 2026-08-19), 1 = pushed
- * the display's persisted code to the FPGA, 2 = pulled the display down to the
- * 0x08 the arm block writes. */
-uint8_t fpga_timebase_reconcile_action(void);
-
-/* Make the display's timebase and SPI reg 0x01 agree. Called from the FPGA arm
- * paths and — authoritatively — from main() right after settings_store_init(),
- * which restores timebase_idx and would otherwise silently undo the arm-path
- * call. Pre-scheduler only: takes no lock. */
-void    fpga_reconcile_timebase_after_arm(void);
-void    fpga_reconcile_frontend_after_arm(void);
-/* Drive one channel's AC/DC coupling relay (PD12 CH1 / PD13 CH2, HIGH = DC)
- * and verify it by readback. false = not applied (GND, or the pin is not a
- * GPIO output in this build) -- the caller must not relabel. */
-bool    fpga_apply_coupling(uint8_t ch, uint8_t coupling);   /* a coupling_t */
-void    fpga_reconcile_trigger_after_arm(void);
-uint8_t fpga_trigger_reconcile_code(void);
-
-uint8_t fpga_acq_rate_idx_get(void);
-
-/* ── Roll mode (parity C11; ui/scope_roll.h has the stock evidence) ──────
- * Apply scope_state's roll / roll_step to the hardware: park the acquisition
- * task, write reg 0x01 (roll: stock's byte 0x14 + step, or the shell
- * override; leaving roll: the Y-T timebase_idx), clear the FIFO and switch
- * the acquisition task between the 04/05 record poll and the paced op-0x03
- * point read. Same contract as fpga_apply_timebase(): false = the task would
- * not park and NOTHING was written. The point reader exists only in the
- * live-capture (FPGA_WARM_HANDOFF_TEST) builds; elsewhere the FIFO stays
- * empty. */
-bool    fpga_apply_roll(void);
-bool    fpga_roll_active(void);                  /* the acq task is on the op03 path */
-const scope_roll_fifo_t *fpga_roll_fifo(void);   /* written by the acq task only */
-/* Force the reg-0x01 byte written on entering roll (e.g. 0x14, the only
- * code with a measured rate) instead of stock's 0x14 + step; -1 = stock. */
-void    fpga_roll_code_override_set(int code);
-int     fpga_roll_code_override_get(void);
-typedef struct {
-    uint32_t reads;        /* op03 frames that pushed a point */
-    uint32_t rejects;      /* op03 frames refused (SPI3 timeout inside) */
-    uint32_t late;         /* ticks resynchronised after falling a period behind */
-    uint8_t  code;         /* reg-0x01 byte written by the last fpga_apply_roll() */
-    uint8_t  step;         /* roll step in force */
-    uint32_t trig_hits;    /* roll-trigger crossings found (NORMAL/SINGLE) */
-    uint8_t  rx[5];        /* last op03 frame as received: [op, b1, CH1, b3, CH2] */
-} fpga_roll_stats_t;
-void    fpga_roll_stats_get(fpga_roll_stats_t *out);
 
 #endif /* FPGA_H */

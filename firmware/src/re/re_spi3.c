@@ -29,6 +29,7 @@
 #include "shell_internal.h"
 #include "shell_bench.h"     /* the bench shell's bus helpers */
 #include "shell_re.h"
+#include "re_fpga_driver.h"
 
 /* SPI3 claim/release is handled by the dispatcher via SC_SPI3. */
 void cmd_spi3_probe(void)

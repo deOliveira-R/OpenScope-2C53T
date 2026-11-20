@@ -22,6 +22,7 @@
 #include "shell_internal.h"
 #include "shell_bench.h"     /* the bench shell's bus helpers */
 #include "shell_re.h"
+#include "re_fpga_driver.h"
 
 /* pinlog [start]. Once a second (usb_debug_pinlog_tick, from the
  * 1 s timer) store every GPIO port's input word and the last battery ADC

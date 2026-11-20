@@ -7,6 +7,7 @@
  */
 
 #include "../drivers/fpga_internal.h"
+#include "re_fpga_driver.h"
 #include "../drivers/fpga_bitstream_core.h"
 
 static void fpga_h2_record_body_rx(uint8_t rx_byte)
