@@ -216,6 +216,9 @@ void delay_ms(uint32_t ms)
  * the gate works, and they need to be reachable from a debugger or a
  * future overlay without recompiling. */
 volatile uint32_t ui_scope_full_draws  = 0;
+/* Time of the last live trace redraw and the longest one, microseconds (DWT
+ * cycle counter, started by fault.c at boot); `ui dump` prints them. */
+volatile uint32_t ui_scope_live_us_last, ui_scope_live_us_max;
 volatile uint32_t ui_scope_live_draws  = 0;
 volatile uint32_t ui_redraw_all_count  = 0;   /* DCMD_REDRAW_ALL handled (any mode) */
 volatile uint32_t ui_scope_skipped     = 0;
@@ -575,7 +578,11 @@ static void scope_render(uint32_t frame, redraw_action_t action)
 #ifndef EMULATOR_BUILD
     if (action == REDRAW_INCREMENTAL) {
         ui_scope_live_draws++;
+        const uint32_t c0 = DWT->CYCCNT;
         draw_scope_live_frame();
+        const uint32_t us = (DWT->CYCCNT - c0) / (system_core_clock / 1000000u);
+        ui_scope_live_us_last = us;
+        if (us > ui_scope_live_us_max) ui_scope_live_us_max = us;
         scope_popup_overlay_tick();
         return;
     }

@@ -3662,6 +3662,12 @@ static void cmd_ui_dump(void)
         usb_debug_printf("draws scope_full=%lu scope_live=%lu redraw_all=%lu\r\n",
                          (unsigned long)ui_scope_full_draws, (unsigned long)ui_scope_live_draws,
                          (unsigned long)ui_redraw_all_count);
+        {
+            extern volatile uint32_t ui_scope_live_us_last, ui_scope_live_us_max, ui_scope_view_us_last;
+            usb_debug_printf("scope live frame: last %lu us (view_build %lu us), longest %lu us\r\n",
+                             (unsigned long)ui_scope_live_us_last, (unsigned long)ui_scope_view_us_last,
+                             (unsigned long)ui_scope_live_us_max);
+        }
         usb_debug_printf("lcd foreign_calls=%lu\r\n", (unsigned long)lcd_foreign_calls);
 #if FEATURE_FFT
         static const char *const wfs[] = { "never drawn", "drawn", "no FFT", "waiting for capture",

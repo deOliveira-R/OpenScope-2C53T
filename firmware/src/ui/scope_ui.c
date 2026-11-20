@@ -2671,6 +2671,9 @@ void draw_scope_screen(uint32_t frame)
  * is active or cursors are on, and button DCMDs still force full redraws,
  * so those layers refresh exactly when they can change.
  * ═══════════════════════════════════════════════════════════════════ */
+/* Time view_build() took in the last live frame, microseconds (`ui dump`). */
+volatile uint32_t ui_scope_view_us_last;
+
 void draw_scope_live_frame(void)
 {
     const theme_t *th = theme_get();
@@ -2685,7 +2688,9 @@ void draw_scope_live_frame(void)
      * to the trigger source's crossing, using the same helper and offset as the
      * full path (draw_demo_waveform) so the two renderers stay in phase. Both
      * channels shift by the same amount to stay time-aligned. */
+    const uint32_t vb0 = DWT->CYCCNT;
     view_build(ss, b1, b2);
+    ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
     b1 = yt_cols[0];
     b2 = yt_cols[1];
     mask_overlay_begin();          /* per-column mask colours, see draw_mask_strip */
