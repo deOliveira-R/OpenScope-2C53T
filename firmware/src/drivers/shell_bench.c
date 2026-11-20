@@ -213,7 +213,6 @@ static void fpga_diag_clear(void)
     fpga.meter_transition_history_count = 0;
     memset((void *)fpga.diag_ch1_raw, 0, sizeof(fpga.diag_ch1_raw));
     memset((void *)fpga.diag_ch2_raw, 0, sizeof(fpga.diag_ch2_raw));
-    fpga.diag_data_varies = 0;
     taskEXIT_CRITICAL();
 }
 

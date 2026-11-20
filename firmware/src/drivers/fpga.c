@@ -675,10 +675,6 @@ static void fpga_arm_meter_first_rx_latch(
     fpga.meter_first_rx_after_transition_actual_gpio = actual_gpio;
     fpga.meter_first_rx_after_transition_h2_bytes = fpga.h2_bytes_sent;
     fpga.meter_first_rx_after_transition_h2_done = fpga.h2_upload_done;
-    fpga.meter_first_rx_after_transition_h2_post_run_count =
-        fpga.post_h2_spi3_boot_run_count;
-    fpga.meter_first_rx_after_transition_h2_post_mask =
-        fpga.post_h2_spi3_boot_mask;
     fpga.meter_first_rx_after_transition_armed = 1;
 }
 
@@ -2640,7 +2636,6 @@ void EXINT0_IRQHandler(void)
     exint_flag_clear(EXINT_LINE_0);
     fpga.pc0_edges++;
     fpga.pc0_last_tick = xTaskGetTickCountFromISR();
-    fpga.pc0_last_cyc  = DWT->CYCCNT;
 }
 
 /* ─── Reading one record (2026-08-12) ────────────────────────────────
@@ -3123,7 +3118,6 @@ static void fpga_acq_task(void *pv)
          * one is committed atomically in fpga_acq_frames_commit(). */
         volatile uint8_t *w1 = acq_write_ch1();
         volatile uint8_t *w2 = acq_write_ch2();
-        fpga.arm_read_cyc = DWT->CYCCNT;
         uint8_t s1 = fpga_acq_read_channel(FPGA_CORE_OP_REC_A, w1);
         uint8_t s2 = fpga_acq_read_channel(FPGA_CORE_OP_REC_B, w2);
         last_read_tick = xTaskGetTickCount();
@@ -3341,41 +3335,6 @@ static int8_t spi3_find_idcode(const volatile uint8_t *b8)
             return (int8_t)s;
     }
     return -1;
-}
-
-/* Assemble the 8-byte reply and take the 32-bit window at bit offset s. */
-static uint32_t spi3_win32(const volatile uint8_t *b8, int8_t s)
-{
-    uint64_t w = 0;
-    for (unsigned i = 0; i < 8; i++)
-        w = (w << 8) | b8[i];
-    return (uint32_t)((w >> (32 - s)) & 0xFFFFFFFFu);
-}
-
-/* One checkpoint of the step-resolved trace: anchor on the IDCODE, then read
- * STATUS through the same alignment. Both at /256; the command clock is restored
- * on the way out so the sequence continues exactly as it would have.
- *
- * If the anchor fails the STATUS value is DISCARDED and 0xFFFFFFFF is stored.
- * Keeping an unvalidated number here would reintroduce the exact failure mode
- * that produced "80 01 C8 10 = READY POR" and survived six weeks on it.
- *
- * MUST be called only at a CS-frame boundary — it opens its own frames. */
-static void cfg_trace_capture(const fpga_cfg_seq_opts_t *opt, unsigned idx)
-{
-    if (!opt->cfg_trace || idx >= FPGA_CFG_TRACE_N)
-        return;
-
-    volatile uint8_t idb[8], stb[8];
-
-    spi3_set_br(7);                       /* /256 — the only valid read clock */
-    spi3_read_reg8(0x11, idb);
-    int8_t off = spi3_find_idcode(idb);
-    spi3_read_reg8(0x41, stb);
-    spi3_set_br(opt->cmd_br);
-
-    fpga.cfg_trace_anchor[idx] = off;
-    fpga.cfg_trace[idx] = (off >= 0) ? spi3_win32(stb, off) : 0xFFFFFFFFu;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3990,12 +3949,7 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
      * and 0 is a VALID bit offset (perfectly aligned), so leaving these at 0
      * would report a successful match on a probe that never ran. */
     fpga.probe_id_bit       = -1;
-    fpga.probe_id_bit_post  = -1;
     fpga.probe_id_bit_close = -1;
-    for (unsigned i = 0; i < FPGA_CFG_TRACE_N; i++) {
-        fpga.cfg_trace[i]        = 0xFFFFFFFFu;  /* "not measured", same as anchor-fail */
-        fpga.cfg_trace_anchor[i] = -1;
-    }
 
     /* Keep the acquisition task off the SPI3 bus during the handshake.
      * No-op pre-RTOS; essential when replayed live via `fpga reinit`. */
@@ -4115,16 +4069,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
 
         fpga.probe_id_bit = spi3_find_idcode(fpga.probe_idcode);
 
-        uint8_t same = 1;
-        for (unsigned i = 0; i < 8; i++)
-            if (fpga.probe_idcode[i] != fpga.probe_noop[i]) { same = 0; break; }
-        fpga.probe_all_same = same;
-
-        uint8_t rep = 1;
-        for (unsigned i = 0; i < 4; i++)
-            if (fpga.probe_idcode[i] != fpga.probe_idcode[i + 4]) { rep = 0; break; }
-        fpga.probe_repeats = rep;
-
         spi3_set_br(opt->cmd_br);
     }
 
@@ -4151,7 +4095,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     SPI3_CS_DEASSERT();
     fpga_scope_delay_ms(opt->prelude_gap_ms);   /* stock waits ~100ms → 0x05 */
 
-    cfg_trace_capture(opt, 0);   /* T0: pristine, before any config command */
 
     /* [1-3] CONFIG_ENABLE prelude — 05 00 / 12 00 / 15 00.
      * Framing per opt->prelude_frame_mode (sweep knob; 0 = stock-faithful):
@@ -4180,7 +4123,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
             fpga.init_hs[2] = spi3_xfer(0x00);
             SPI3_CS_DEASSERT();
         }
-        cfg_trace_capture(opt, 1);   /* T1: after ERASE_SRAM (or in place of it) */
         fpga_scope_delay_ms(opt->prelude_gap_ms);
 
         /* [1b] Build A (2026-08-13): the maksidze/Stlkv V0.4 "richer prelude"
@@ -4204,7 +4146,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
         fpga.init_hs[4] = spi3_xfer(0x12);
         fpga.init_hs[5] = spi3_xfer(0x00);
         SPI3_CS_DEASSERT();
-        cfg_trace_capture(opt, 2);   /* T2: after INIT_ADDR */
         fpga_scope_delay_ms(opt->prelude_gap_ms);
 
         /* [3] 15 00 — own frame (mode 0) or held LOW into the upload (mode 2) */
@@ -4213,7 +4154,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
         fpga.init_hs[8] = spi3_xfer(0x00);
         if (opt->prelude_frame_mode != 2) {
             SPI3_CS_DEASSERT();
-            cfg_trace_capture(opt, 3);   /* T3: after CONFIG_ENABLE */
         }
     }
 
@@ -4241,7 +4181,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     if (opt->probe_idcode && opt->prelude_frame_mode != 2) {
         spi3_set_br(7);                  /* /256 */
         spi3_read_reg8(0x11, fpga.probe_idcode_post);
-        fpga.probe_id_bit_post = spi3_find_idcode(fpga.probe_idcode_post);
         spi3_set_br(opt->cmd_br);
     }
 
@@ -4271,7 +4210,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     SPI3_CS_DEASSERT();
     fpga.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
     fpga.h2_upload_done = 1;
-    cfg_trace_capture(opt, 4);   /* T4: full bitstream sent, before the 3A close */
 
     /* [5] 3A 00 — close/commit in its own CS-LOW frame. Stock → 0xF8. */
     SPI3_CS_ASSERT();
@@ -4279,7 +4217,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     fpga.h2_close_status = spi3_xfer(0x00);
     fpga_h2_record_close_rx(fpga.h2_close_status);
     SPI3_CS_DEASSERT();
-    cfg_trace_capture(opt, 5);   /* T5: after CONFIG_DISABLE / close */
 
     /* [6] single 0x00 byte, CS LOW (stock flush frame at t=4.4484). */
     SPI3_CS_ASSERT();

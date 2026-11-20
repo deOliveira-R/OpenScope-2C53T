@@ -834,12 +834,7 @@ static void cmd_status(void)
      * no config path at all does not either — so on those builds G1/G2/G3 read
      * 00 00 00 00, which is also what a dead MISO line looks like. That is the
      * exact defect fixed for the H2 block on 2026-08-13, still open here.
-     *
-     * init_hs[11] ("Probe") is separate: it is written in fpga_init() Step 10
-     * (fpga.c ~3493), which runs on the hardware-SPI AND bit-bang boots but is
-     * skipped by the warm-handoff / bus-released early return. diag_probe_valid
-     * is set on the same line, so it is reported on its own witness rather than
-     * being lumped in with the handshake bytes. */
+     */
     {
         cfg_path_t path = fpga_cfg_path();
 
@@ -856,10 +851,6 @@ static void cmd_status(void)
                              fpga_cfg_path_name(path));
         }
 
-        if (fpga.diag_probe_valid)
-            usb_debug_printf("Probe (post-init 0xFF): %02X\r\n", fpga.init_hs[11]);
-        else
-            usb_send_str("Probe (post-init 0xFF): n/a — fpga_init Step 10 did not run\r\n");
     }
 
     /* ── Config status: the field that actually says whether we configured ──
@@ -936,28 +927,6 @@ static void cmd_status(void)
                     fpga.scope_status[0], fpga.scope_status[1],
                     fpga.scope_status[2], fpga.scope_status[3]);
             }
-        }
-
-        usb_debug_printf(
-            "post-H2 SPI3 boot: enq=%u run=%u drop=%u mask=0x%02X\r\n",
-            fpga.post_h2_spi3_boot_enqueued,
-            fpga.post_h2_spi3_boot_run_count,
-            fpga.post_h2_spi3_boot_dropped,
-            fpga.post_h2_spi3_boot_mask);
-        for (uint8_t i = 0; i < FPGA_POST_H2_TRIGGER_HISTORY; i++) {
-            uint8_t len = fpga.post_h2_spi3_rx_len[i];
-            usb_debug_printf("post-H2 rx[%u]: trigger=%02X len=%u bytes=",
-                             (unsigned)i,
-                             (unsigned)fpga.post_h2_spi3_trigger[i],
-                             (unsigned)len);
-            uint8_t shown = len;
-            if (shown > FPGA_POST_H2_RX_HISTORY) shown = FPGA_POST_H2_RX_HISTORY;
-            for (uint8_t j = 0; j < shown; j++) {
-                usb_debug_printf("%s%02X", j == 0 ? "" : " ",
-                                 (unsigned)fpga.post_h2_spi3_rx[i][j]);
-            }
-            if (len > FPGA_POST_H2_RX_HISTORY) usb_send_str(" ...");
-            usb_send_str("\r\n");
         }
     }
 

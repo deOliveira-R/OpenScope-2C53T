@@ -123,23 +123,6 @@ static uint16_t count_non_ff_bytes(const uint8_t *bytes, uint8_t len)
     return count;
 }
 
-static uint16_t count_post_h2_non_ff_snapshot(
-    uint8_t rx_len[FPGA_POST_H2_TRIGGER_HISTORY],
-    uint8_t rx[FPGA_POST_H2_TRIGGER_HISTORY][FPGA_POST_H2_RX_HISTORY])
-{
-    uint16_t count = 0;
-
-    for (uint8_t i = 0; i < FPGA_POST_H2_TRIGGER_HISTORY; i++) {
-        uint8_t shown = rx_len[i];
-        if (shown > FPGA_POST_H2_RX_HISTORY) {
-            shown = FPGA_POST_H2_RX_HISTORY;
-        }
-        count = (uint16_t)(count + count_non_ff_bytes(rx[i], shown));
-    }
-
-    return count;
-}
-
 /* `meter hdr [on|off]` — EXP-25 (issue #15). A/B the meter TX frame header
  * between AA 55 (the default since the word table was corrected; what the
  * meter SoC requires, measured on two units) and 00 00 (what this project sent
@@ -700,8 +683,6 @@ void cmd_meter_trace(void)
     uint8_t first_rx_frame[FPGA_RX_FRAME_SIZE];
     uint32_t first_rx_h2_bytes;
     uint8_t first_rx_h2_done;
-    uint8_t first_rx_h2_post_run;
-    uint8_t first_rx_h2_post_mask;
     uint8_t producer_frame[FPGA_RX_FRAME_SIZE];
     uint16_t rx_sync_data_start;
     uint16_t rx_sync_echo_start;
@@ -715,9 +696,6 @@ void cmd_meter_trace(void)
     uint16_t rxraw_tx[FPGA_RX_RAW_HISTORY];
     uint8_t rxraw_tx_index[FPGA_RX_RAW_HISTORY];
     uint8_t rxraw_rx_index[FPGA_RX_RAW_HISTORY];
-    uint8_t post_h2_trigger[FPGA_POST_H2_TRIGGER_HISTORY];
-    uint8_t post_h2_rx_len[FPGA_POST_H2_TRIGGER_HISTORY];
-    uint8_t post_h2_rx[FPGA_POST_H2_TRIGGER_HISTORY][FPGA_POST_H2_RX_HISTORY];
     uint32_t h2_rx_00_count;
     uint32_t h2_rx_ff_count;
     uint32_t h2_rx_other_count;
@@ -748,12 +726,6 @@ void cmd_meter_trace(void)
         rxraw_tx_index[n] = fpga.rx_raw_history_tx_index[idx];
         rxraw_rx_index[n] = fpga.rx_raw_history_rx_index[idx];
     }
-    memcpy(post_h2_trigger, (const void *)fpga.post_h2_spi3_trigger,
-           sizeof(post_h2_trigger));
-    memcpy(post_h2_rx_len, (const void *)fpga.post_h2_spi3_rx_len,
-           sizeof(post_h2_rx_len));
-    memcpy(post_h2_rx, (const void *)fpga.post_h2_spi3_rx,
-           sizeof(post_h2_rx));
     h2_rx_00_count = fpga.h2_rx_00_count;
     h2_rx_ff_count = fpga.h2_rx_ff_count;
     h2_rx_other_count = fpga.h2_rx_other_count;
@@ -781,8 +753,6 @@ void cmd_meter_trace(void)
            FPGA_RX_FRAME_SIZE);
     first_rx_h2_bytes = fpga.meter_first_rx_after_transition_h2_bytes;
     first_rx_h2_done = fpga.meter_first_rx_after_transition_h2_done;
-    first_rx_h2_post_run = fpga.meter_first_rx_after_transition_h2_post_run_count;
-    first_rx_h2_post_mask = fpga.meter_first_rx_after_transition_h2_post_mask;
     rxh_count = fpga.rx_frame_history_count;
     if (rxh_count > FPGA_RX_FRAME_HISTORY) rxh_count = FPGA_RX_FRAME_HISTORY;
     for (uint8_t n = 0; n < rxh_count; n++) {
@@ -955,8 +925,7 @@ void cmd_meter_trace(void)
                      "config=%04X selector=%04X apply=%04X probe=%04X "
                      "start=%04X "
                      "planned_gpio=%03X actual_gpio=%03X data=%u tx=%u "
-                     "echo=%u busy=%u discard=%u h2_bytes=%lu h2_done=%u "
-                     "h2_post_run=%u h2_post_mask=%02X frame=",
+                     "echo=%u busy=%u discard=%u h2_bytes=%lu h2_done=%u frame=",
                      (unsigned)first_rx_valid,
                      (unsigned)first_rx_armed,
                      (unsigned)first_rx_submode,
@@ -974,9 +943,7 @@ void cmd_meter_trace(void)
                      (unsigned)first_rx_busy,
                      (unsigned)first_rx_discard,
                      first_rx_h2_bytes,
-                     (unsigned)first_rx_h2_done,
-                     (unsigned)first_rx_h2_post_run,
-                     (unsigned)first_rx_h2_post_mask);
+                     (unsigned)first_rx_h2_done);
     print_volatile_frame_inline(first_rx_frame);
     usb_send_str("\r\n");
     usb_send_str("last_echo_frame=");
@@ -1063,20 +1030,12 @@ void cmd_meter_trace(void)
                      gpio_level(GPIOB, 9),
                      gpio_level(GPIOA, 6));
     uint16_t h2_close_nonff = count_non_ff_bytes(h2_close_rx, h2_close_rx_len);
-    uint16_t post_h2_nonff =
-        count_post_h2_non_ff_snapshot(post_h2_rx_len, post_h2_rx);
 
-    usb_debug_printf("h2 bytes=%lu done=%u post_enq=%u post_run=%u "
-                     "post_drop=%u post_mask=%02X post_rx_nonff=%u "
+    usb_debug_printf("h2 bytes=%lu done=%u "
                      "spi_ok=%u spi_to=%u rx00=%lu rxff=%lu rxother=%lu "
                      "rx_nonff=%lu close_len=%u close_nonff=%u\r\n",
                      fpga.h2_bytes_sent,
                      fpga.h2_upload_done ? 1U : 0U,
-                     (unsigned)fpga.post_h2_spi3_boot_enqueued,
-                     (unsigned)fpga.post_h2_spi3_boot_run_count,
-                     (unsigned)fpga.post_h2_spi3_boot_dropped,
-                     (unsigned)fpga.post_h2_spi3_boot_mask,
-                     (unsigned)post_h2_nonff,
                      fpga.spi3_ok_count,
                      fpga.spi3_total_timeouts,
                      h2_rx_00_count,
@@ -1095,21 +1054,6 @@ void cmd_meter_trace(void)
                          (unsigned)h2_close_rx[i]);
     }
     usb_send_str("\r\n");
-    for (uint8_t i = 0; i < FPGA_POST_H2_TRIGGER_HISTORY; i++) {
-        uint8_t len = post_h2_rx_len[i];
-        uint8_t shown = len;
-        if (shown > FPGA_POST_H2_RX_HISTORY) shown = FPGA_POST_H2_RX_HISTORY;
-        usb_debug_printf("h2_post_rx n=%u trigger=%02X len=%u bytes=",
-                         (unsigned)i,
-                         (unsigned)post_h2_trigger[i],
-                         (unsigned)len);
-        for (uint8_t j = 0; j < shown; j++) {
-            usb_debug_printf("%s%02X", j == 0 ? "" : " ",
-                             (unsigned)post_h2_rx[i][j]);
-        }
-        if (len > FPGA_POST_H2_RX_HISTORY) usb_send_str(" ...");
-        usb_send_str("\r\n");
-    }
 }
 
 void cmd_meter_frontend(void)
@@ -1567,7 +1511,7 @@ void cmd_meter_adc_snapshot(void)
                      fpga_meter_adc_enqueue_attempts,
                      fpga_meter_adc_enqueue_success,
                      fpga_meter_adc_enqueue_drops);
-    usb_debug_printf("adc_diag trans=%lu not_v=%lu gen=%lu last_gen=%lu first=%02X busy=%u discard=%u probing=%u to=%lu total_to=%lu ch=%u\r\n",
+    usb_debug_printf("adc_diag trans=%lu not_v=%lu gen=%lu last_gen=%lu first=%02X busy=%u discard=%u to=%lu total_to=%lu ch=%u\r\n",
                      fpga_meter_adc_transition_skips,
                      fpga_meter_adc_not_voltage_skips,
                      fpga_meter_adc_reset_generation,
@@ -1575,7 +1519,6 @@ void cmd_meter_adc_snapshot(void)
                      (unsigned)fpga_meter_adc_first_sample_after_reset,
                      fpga_meter_transition_busy() ? 1U : 0U,
                      (unsigned)meter_frame_discard_count,
-                     fpga.spi3_probing ? 1U : 0U,
                      (unsigned long)fpga.spi3_timeout_count,
                      (unsigned long)fpga.spi3_total_timeouts,
                      (unsigned)active_channel);
@@ -1633,7 +1576,7 @@ static void cmd_meter_wave(void)
                      (unsigned)fpga_meter_adc_last_sample,
                      (unsigned)fpga_meter_adc_min_sample,
                      (unsigned)fpga_meter_adc_max_sample);
-    usb_debug_printf("adc_diag trans=%lu not_v=%lu gen=%lu last_gen=%lu first=%02X busy=%u discard=%u probing=%u to=%lu total_to=%lu ch=%u\r\n",
+    usb_debug_printf("adc_diag trans=%lu not_v=%lu gen=%lu last_gen=%lu first=%02X busy=%u discard=%u to=%lu total_to=%lu ch=%u\r\n",
                      fpga_meter_adc_transition_skips,
                      fpga_meter_adc_not_voltage_skips,
                      fpga_meter_adc_reset_generation,
@@ -1641,7 +1584,6 @@ static void cmd_meter_wave(void)
                      (unsigned)fpga_meter_adc_first_sample_after_reset,
                      fpga_meter_transition_busy() ? 1U : 0U,
                      (unsigned)meter_frame_discard_count,
-                     fpga.spi3_probing ? 1U : 0U,
                      (unsigned long)fpga.spi3_timeout_count,
                      (unsigned long)fpga.spi3_total_timeouts,
                      (unsigned)active_channel);

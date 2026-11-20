@@ -36,7 +36,6 @@
  * ═══════════════════════════════════════════════════════════════════ */
 
 #define FPGA_ADC_BUF_SIZE     1024   /* Normal mode: 512 sample pairs */
-#define FPGA_ROLL_BUF_SIZE    300    /* Roll mode: circular buffer */
 
 /* ═══════════════════════════════════════════════════════════════════
  * USART Protocol Constants
@@ -49,8 +48,6 @@
 #define FPGA_RX_FRAME_HISTORY 8
 #define FPGA_RX_RAW_HISTORY   32
 #define FPGA_METER_TRANSITION_HISTORY 4
-#define FPGA_POST_H2_TRIGGER_HISTORY 5
-#define FPGA_POST_H2_RX_HISTORY 8
 
 /* RX frame headers */
 #define FPGA_RX_DATA_HDR_0    0x5A   /* Data frame: 0x5A 0xA5 */
@@ -127,12 +124,6 @@ typedef struct {
     /* ADC sample buffers (written by acquisition task, read by display) */
     volatile uint8_t ch1_buf[FPGA_ADC_BUF_SIZE];
     volatile uint8_t ch2_buf[FPGA_ADC_BUF_SIZE];
-
-    /* Roll mode circular buffers */
-    volatile uint8_t roll_ch1[FPGA_ROLL_BUF_SIZE];
-    volatile uint8_t roll_ch2[FPGA_ROLL_BUF_SIZE];
-    volatile uint16_t roll_write_idx;
-    volatile uint16_t roll_count;
 
     /* USART RX frame (latest complete frame from FPGA) */
     volatile uint8_t rx_frame[FPGA_RX_FRAME_SIZE];
@@ -281,11 +272,6 @@ typedef struct {
     volatile uint8_t  meter_first_rx_after_transition_frame[FPGA_RX_FRAME_SIZE];
     volatile uint32_t meter_first_rx_after_transition_h2_bytes;
     volatile uint8_t  meter_first_rx_after_transition_h2_done;
-    volatile uint8_t  meter_first_rx_after_transition_h2_post_run_count;
-    volatile uint8_t  meter_first_rx_after_transition_h2_post_mask;
-
-    /* Acquisition mode (set by mode switch, read by acq task) */
-    volatile uint8_t acq_mode;         /* fpga_acq_mode_t */
 
     /* SPI3 acquisition diagnostics */
     volatile uint16_t spi3_ok_count;       /* Successful acquisitions */
@@ -295,12 +281,10 @@ typedef struct {
                                               means a returned byte was fabricated 0xFF,
                                               not bus data (audit 2026-08-20, P0.3) */
     volatile uint8_t  spi3_first_byte;     /* First byte from last probe */
-    volatile bool     spi3_probing;        /* Currently attempting acquisition */
 
     /* Raw sample diagnostics (first 4 bytes of each channel, updated each read) */
     volatile uint8_t  diag_ch1_raw[4];     /* First 4 raw CH1 bytes (before cal) */
     volatile uint8_t  diag_ch2_raw[4];     /* First 4 raw CH2 bytes (before cal) */
-    volatile uint8_t  diag_data_varies;    /* 1 if data varies within read, 0 if constant */
 
     /* REMOVED 2026-08-13: bb_idle / bb_cs / bb_byte / bb_marker.
      *
@@ -315,16 +299,9 @@ typedef struct {
      * (Unrelated to fpga_bitbang_config_sequence(), which is live.) */
 
     /* Init handshake diagnostic (captured during fpga_init) */
-    volatile uint8_t  init_hs[12];         /* Handshake response bytes (11 used + probe).
-                                            * [0..10] written ONLY by
-                                            * fpga_spi3_config_sequence(); [11] by
-                                            * fpga_init Step 10 — see diag_probe_valid. */
-    volatile uint8_t  diag_probe_valid;    /* 1 = init_hs[11] was actually measured.
-                                            * fpga_init Step 10 is skipped by the
-                                            * warm-handoff / bus-released early
-                                            * returns, and 0x00 is a legal MISO byte,
-                                            * so the shell needs a separate witness to
-                                            * tell "read a zero" from "never read". */
+    volatile uint8_t  init_hs[12];         /* Handshake response bytes: [0..10] written
+                                            * ONLY by fpga_spi3_config_sequence()
+                                            * (the toolkit's `fpga reinit`); [11] unused. */
     volatile uint32_t diag_remap5;         /* IOMUX remap5 (spi3_gmux) */
     volatile uint32_t diag_remap7;         /* IOMUX remap7 (swjtag_gmux) */
     volatile uint32_t diag_spi_ctrl1;      /* SPI3 CTRL1 after init */
@@ -348,10 +325,7 @@ typedef struct {
                                             * 143/174 CH1 windows, NEVER on CH2. */
     volatile uint8_t  acq_hdr_ch2[3];      /* Same for the last 0x05 read */
     volatile uint32_t pc0_last_tick;       /* tick of the last PC0 edge (EXP-50 latency) */
-    volatile uint32_t pc0_last_cyc;        /* DWT cycle count at the last PC0 edge (EXP-52) */
-    volatile uint32_t arm_read_cyc;        /* DWT cycle count at the start of the last 0x04 read */
     volatile int32_t  acq_last_rot;        /* rotation L applied to the last committed record, -1 = none */
-    volatile uint32_t acq_last_lat_us;     /* arming read -> PC0 edge, microseconds, last cycle */
     volatile uint32_t acq_last_latency_ms; /* edge -> commit of the held record, last cycle */
     volatile uint32_t acq_poll_reads;      /* EXP-54: reads that found the rolling buffer (no strobe), total */
     volatile uint32_t acq_polls_last;      /* EXP-54: such reads before the last handover */
@@ -398,11 +372,6 @@ typedef struct {
                                             * up as a phase shift, so an exact-match test
                                             * would report absent when it is merely
                                             * misaligned. */
-    volatile int8_t   probe_id_bit_post;   /* same search over probe_idcode_post */
-    volatile uint8_t  probe_all_same;      /* 1 = 0x11 and 0x00 returned identical bytes
-                                            * => the FPGA is not decoding opcodes */
-    volatile uint8_t  probe_repeats;       /* 1 = first 4 bytes == last 4 bytes of the
-                                            * 0x11 read => free-running fixed pattern */
 
     /* ── Post-0x3A anchor (Exp L follow-up, 2026-07-28) ────────────────────
      * IDCODE read at /256 immediately BEFORE cfg_status_reg, in the same window,
@@ -424,28 +393,6 @@ typedef struct {
     volatile uint8_t  probe_idcode_close[8];
     volatile int8_t   probe_id_bit_close;
 
-    /* ── Step-resolved config-status trace (2026-07-28) ────────────────────
-     * The whole sequence measured one checkpoint at a time, each anchored on the
-     * IDCODE so a reading is only kept if the read path proved itself first.
-     * Captures sit at CS-frame BOUNDARIES only — never inside a frame, and never
-     * between the 0x3B open and its data, which would break the upload frame.
-     *
-     *   0  pristine, before the 05 prelude
-     *   1  after 05 00   (ERASE_SRAM)
-     *   2  after 12 00   (INIT_ADDR)
-     *   3  after 15 00   (CONFIG_ENABLE)
-     *   4  after the full 115,638-byte upload, before 3A
-     *   5  after 3A 00   (CONFIG_DISABLE / close)
-     *
-     * cfg_trace[i] is anchor-corrected. 0xFFFFFFFF means the anchor FAILED at
-     * that checkpoint and the value is not to be believed — the same refusal the
-     * SWD script makes, rather than storing a plausible-looking number.
-     *
-     * If all six are identical the part ignores every config command while still
-     * answering reads, which localises the failure without further guessing. */
-#define FPGA_CFG_TRACE_N 6
-    volatile uint32_t cfg_trace[FPGA_CFG_TRACE_N];
-    volatile int8_t   cfg_trace_anchor[FPGA_CFG_TRACE_N];
 
 
     /* Stock post-H2 SPI3 queue diagnostics. These counters prove only local
@@ -456,13 +403,6 @@ typedef struct {
     volatile uint32_t h2_rx_other_count;
     volatile uint8_t  h2_close_rx_len;
     volatile uint8_t  h2_close_rx[6];
-    volatile uint8_t  post_h2_spi3_boot_enqueued;
-    volatile uint8_t  post_h2_spi3_boot_run_count;
-    volatile uint8_t  post_h2_spi3_boot_dropped;
-    volatile uint8_t  post_h2_spi3_boot_mask;
-    volatile uint8_t  post_h2_spi3_trigger[FPGA_POST_H2_TRIGGER_HISTORY];
-    volatile uint8_t  post_h2_spi3_rx_len[FPGA_POST_H2_TRIGGER_HISTORY];
-    volatile uint8_t  post_h2_spi3_rx[FPGA_POST_H2_TRIGGER_HISTORY][FPGA_POST_H2_RX_HISTORY];
 
     /* Experimental stock runtime shadow for scope-mode bench work.
      * These are NOT the original firmware RAM locations. They are a small
@@ -531,11 +471,6 @@ typedef struct {
     uint8_t  reload_3c;       /* 1 = send Gowin RELOAD (0x3C) at /256 before the
                                *     prelude — software reconfig trigger; does it
                                *     clear GWVLD/FLASH_LOCK and let CONFIG_ENABLE land? */
-    uint8_t  cfg_trace;       /* 1 = capture the anchored step-resolved status trace
-                               *     at all six CS-frame boundaries (see cfg_trace[]).
-                               *     Adds read frames between the prelude steps, so
-                               *     keep it off for stock-faithful runs. Requires
-                               *     prelude_frame_mode 0 (split) for steps 1-3. */
     uint8_t  probe_idcode;    /* 1 = Exp J anchored opcode-discrimination probe: read
                                *     0x11/0x00/0x41/0x13 at /256 (8 bytes each) BEFORE
                                *     the prelude, and 0x11 again after CONFIG_ENABLE.
