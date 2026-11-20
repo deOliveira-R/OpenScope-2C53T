@@ -100,7 +100,6 @@ C_SOURCES += src/ui/scope_roll.c
 C_SOURCES += src/ui/scope_roll_meas.c
 C_SOURCES += src/ui/scope_geom.c
 C_SOURCES += src/dsp/sinc_interp.c
-C_SOURCES += src/ui/meter_voltage_wave.c
 C_SOURCES += src/dsp/math_channel.c
 C_SOURCES += src/dsp/paused_view.c
 # src/dsp/bode.c (host test: make test-bode) and src/tasks/component_test.c are
@@ -550,7 +549,7 @@ features-ab:
 SHELL_TABLE_SRC ?= src/drivers/usb_debug.c
 .PHONY: features-shell-table test-shell-profiles
 features-shell-table:
-	@$(CC) -E -P $(CFLAGS) $(SHELL_TABLE_SRC)
+	@$(CC) -E -P $(filter-out -MMD -MP,$(CFLAGS)) $(SHELL_TABLE_SRC)
 test-shell-profiles:
 	python3 -I ../scripts/test_shell_profiles.py --make "$(MAKE)"
 
@@ -648,12 +647,6 @@ $(BUILD_DIR)/test_meter_auto: tests/test_meter_auto.c src/drivers/meter_auto.c s
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/drivers $< src/drivers/meter_auto.c src/drivers/fpga_meter_plan.c -lm -o $@
 
 test-meter-auto: $(BUILD_DIR)/test_meter_auto
-	$<
-
-$(BUILD_DIR)/test_meter_voltage_wave: tests/test_meter_voltage_wave.c src/ui/meter_voltage_wave.c src/ui/meter_voltage_wave.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< src/ui/meter_voltage_wave.c -lm -o $@
-
-test-meter-voltage-wave: $(BUILD_DIR)/test_meter_voltage_wave
 	$<
 
 $(BUILD_DIR)/test_fpga_meter_plan: tests/test_fpga_meter_plan.c src/drivers/fpga_meter_plan.c src/drivers/fpga_meter_plan.h | $(BUILD_DIR)
@@ -876,7 +869,7 @@ test-meter-stock: $(BUILD_DIR)/test_meter_stock
 test-stock-meter-literals:
 	python3 ../scripts/test_stock_meter_literals.py
 
-test-meter: test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-meter-stock test-stock-meter-literals
+test-meter: test-meter-data test-meter-auto test-fpga-meter-plan test-meter-stock test-stock-meter-literals
 
 # Typed units (src/util/units.h). test-units: conversions, clamps, rounding,
 # cursor sign, fmt_fixed/parse_fixed. test-units-negative: the same header must
@@ -1331,7 +1324,7 @@ test-shmem-layout: $(BUILD_DIR)/test_shmem_layout $(BUILD_DIR)/test_shmem_layout
 	$(BUILD_DIR)/test_shmem_layout
 	$(BUILD_DIR)/test_shmem_layout_cmsis
 
-.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all emu test-meter-data test-meter-auto test-meter-voltage-wave test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-caldump guest-coldtrace-la guest-coldtrace-meter test-key-model test-can-bus test-interleave-cal
+.PHONY: all clean disasm size renode soak-test soak-quick flash flash-dfu bootloader flash-bootloader flash-all emu test-meter-data test-meter-auto test-fpga-meter-plan test-stock-meter-literals test-meter test-scope-measure test-scope-cal test-scope-timebase test-scope-freq test-redraw-gate test-fft-live test-trig-edge test-interleave test-mask-pf test-siggen test-fuse test-config-persist guest-caldump guest-coldtrace-la guest-coldtrace-meter test-key-model test-can-bus test-interleave-cal
 # Stock calibration page (parity C4): decode, the S12 validation rules, bank
 # substitution and the offset-DAC formula against stock's live SWD readings
 # on unit #2 (tests/fixtures/calpage_unit2.h), unit #1's clean page

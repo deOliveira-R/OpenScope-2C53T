@@ -84,7 +84,6 @@
 #include "../ui/settings_screen.h"   /* `ui dump`: the Settings page and rows */
 #include "../util/shell_persist.h"
 #include "../util/lcd_health.h"
-#include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
 #include "shared_mem.h"
 #include "../util/gallery_store.h"
@@ -3537,13 +3536,6 @@ const char *usb_debug_sh_meter_layout_name(uint8_t layout)
 {
     return meter_layout_name(layout);
 }
-
-/* The meter wave snapshot lives in the shell's bus scratch: both belong to
- * the shell task, which runs one command at a time, and `meter wave` is the
- * only user of the snapshot. Saves its ~930 B of static RAM (the warm-handoff
- * bench build with the CAN analyser overflowed RAM by 48 B). */
-_Static_assert(sizeof(meter_voltage_wave_snapshot_t) <= sizeof(shell_bus_scratch),
-               "meter wave snapshot must fit the shell bus scratch");
 
 /* persist [on|off]: whether shell commands save the settings they change.
  * Off is for bench sweeps (one settings record per changed command otherwise);

@@ -41,7 +41,6 @@
 #include "../ui/scope_state.h"
 #include "../ui/scope_timebase.h"
 #include "../ui/scope_mask.h"
-#include "../ui/meter_voltage_wave.h"
 #include "at32f403a_407.h"
 #include "FreeRTOS.h"
 #include "task.h"
@@ -83,28 +82,7 @@ static void fpga_send_meter_mode_sequence(uint8_t submode);
 
 fpga_state_t fpga;
 
-volatile bool     fpga_meter_adc_sampler_enabled;
-volatile bool     fpga_meter_adc_use_preacq;
-volatile int16_t  fpga_meter_adc_selector_override = -1;
-volatile int16_t  fpga_meter_adc_preacq_override = -1;
 volatile int16_t  fpga_meter_probe_tail_override = -1;
-volatile uint32_t fpga_meter_adc_enqueue_attempts;
-volatile uint32_t fpga_meter_adc_enqueue_success;
-volatile uint32_t fpga_meter_adc_enqueue_drops;
-volatile uint32_t fpga_meter_adc_samples;
-volatile uint32_t fpga_meter_adc_ff_samples;
-volatile uint32_t fpga_meter_adc_zero_samples;
-volatile uint32_t fpga_meter_adc_transition_skips;
-volatile uint32_t fpga_meter_adc_not_voltage_skips;
-volatile uint32_t fpga_meter_adc_reset_generation;
-volatile uint32_t fpga_meter_adc_last_reset_generation;
-volatile uint8_t  fpga_meter_adc_last_preacq;
-volatile uint8_t  fpga_meter_adc_last_preacq_rx;
-volatile uint8_t  fpga_meter_adc_last_selector;
-volatile uint8_t  fpga_meter_adc_last_sample;
-volatile uint8_t  fpga_meter_adc_first_sample_after_reset;
-volatile uint8_t  fpga_meter_adc_min_sample = 255;
-volatile uint8_t  fpga_meter_adc_max_sample;
 
 /* FreeRTOS handles */
 static QueueHandle_t     usart_tx_queue  = NULL;  /* 32-bit: hi|lo + OBEY bit16 */
@@ -131,36 +109,6 @@ static QueueHandle_t meter_rx_queue = NULL;  /* Complete immutable 12-byte data 
 static TaskHandle_t      acq_task_handle = NULL;
 static TaskHandle_t      tx_task_handle  = NULL;
 static TaskHandle_t      rx_task_handle  = NULL;
-
-/* Track whether we've received at least one valid acquisition */
-/* Acquisition refresh cadence, ms.
- *
- * ⚠ CORRECTED 2026-08-14 EVENING — the morning version of this note (and its
- * bench measurements) was CONFOUNDED and its claims are withdrawn. See
- * analysis_v120/trigger_regime_findings_2026-08-14.md for the full evidence.
- *   - "only recovery is a true FPGA power cycle / pinhole reset does not fix
- *     it" — REFUTED. The freeze is a live, instantly-reversible READOUT
- *     REGIME, not a latched engine state: it begins when the input signal
- *     crosses the DAC1 trigger reference and ends the moment it stops, same
- *     boot, no reset of anything.
- *   - "30 ms wedges, 150 ms is safe" — CONFOUNDED. The same freeze reproduced
- *     at 150 ms with an active signal, and full-speed ~137 reads/s ran clean
- *     for tens of thousands of frames with a quiet input. The controlling
- *     variable in every recorded observation is trigger activity, not
- *     cadence. Re-measure with signal state controlled before trusting any
- *     cadence number.
- * FURTHER CORRECTED 2026-08-14 (Addendum 4): the raw buffer free-runs and holds
- * a COHERENT waveform whether or not anything triggers — a direct 0x04 poll of a
- * 30 Hz sine shows ~13 clean cycles across the 1024-sample buffer with PC0 never
- * pulsing. So the "unwritten words read FF / needs a per-capture re-arm" model is
- * wrong: FF was a railed ADC, and a smooth display needs only free-run POLLING,
- * not a re-arm. The acquisition task now branches on the scope trigger mode —
- * AUTO free-run polls, NORMAL/SINGLE wait for a real edge and hold on none — see
- * FPGA_AUTO_CADENCE_MS / FPGA_AUTO_TRIG_WAIT_MS / FPGA_NORMAL_TRIG_WAIT_MS below.
- * FPGA_PROBE_CADENCE_MS is retired (no longer referenced). */
-#ifndef FPGA_PROBE_CADENCE_MS
-#define FPGA_PROBE_CADENCE_MS 150u   /* retired; kept only to not break overrides */
-#endif
 
 /* Auto/free-run acquisition (2026-08-14, analysis_v120/
  * trigger_regime_findings_2026-08-14.md Addendum 4). The raw capture buffer
@@ -213,27 +161,6 @@ volatile uint32_t meter_transition_frame_skip_count;
 static void fpga_scope_delay_ms(uint32_t ms);
 static uint8_t fpga_probe_cmd_byte(void);
 
-void fpga_meter_adc_diag_reset(void)
-{
-    fpga_meter_adc_enqueue_attempts = 0;
-    fpga_meter_adc_enqueue_success = 0;
-    fpga_meter_adc_enqueue_drops = 0;
-    fpga_meter_adc_samples = 0;
-    fpga_meter_adc_ff_samples = 0;
-    fpga_meter_adc_zero_samples = 0;
-    fpga_meter_adc_transition_skips = 0;
-    fpga_meter_adc_not_voltage_skips = 0;
-    fpga_meter_adc_reset_generation++;
-    fpga_meter_adc_last_reset_generation = 0;
-    fpga_meter_adc_last_preacq = 0;
-    fpga_meter_adc_last_preacq_rx = 0;
-    fpga_meter_adc_last_selector = 0;
-    fpga_meter_adc_last_sample = 0;
-    fpga_meter_adc_first_sample_after_reset = 0;
-    fpga_meter_adc_min_sample = 255;
-    fpga_meter_adc_max_sample = 0;
-}
-
 bool fpga_meter_transition_busy(void)
 {
     return meter_transition_busy;
@@ -280,7 +207,6 @@ static void fpga_meter_reset_transport(void)
 
     if (usart_tx_queue != NULL) xQueueReset(usart_tx_queue);
     if (meter_rx_queue != NULL) xQueueReset(meter_rx_queue);
-    fpga_meter_adc_reset_generation++;
 
     fpga.tx_index = 0;
     fpga.rx_index = 0;

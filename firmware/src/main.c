@@ -42,7 +42,6 @@ extern void system_clock_config(void);
 #include "fpga.h"
 #include "meter_autoselect.h"
 #include "meter_data.h"
-#include "meter_voltage_wave.h"
 #include "flash_fs.h"
 #include "settings_store.h"
 #include "startup_policy.h"
@@ -1422,7 +1421,6 @@ int main(void)
 
     /* Initialize meter data parser */
     meter_data_init();
-    meter_voltage_wave_init();
     /* The saved startup mode and last screen are not known yet (they are in
      * the settings record, restored below): a placeholder for now, the
      * built-in default with no last screen (Home; the scope in a scope-only

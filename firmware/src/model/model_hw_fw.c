@@ -42,7 +42,6 @@
 #include "watchdog.h"
 #include "meter_autoselect.h"
 #include "meter_data.h"
-#include "meter_voltage_wave.h"
 #include "gallery_ui.h"
 #include "screen.h"
 #include "screen.h"
@@ -345,7 +344,6 @@ static bool op_meter_func(uint8_t submode, bool keep_autoselect)
     CTX();
     if (keep_autoselect) {
         meter_reset_minmaxavg();
-        meter_voltage_wave_reset();
     } else {
         if (meter_autoselect_is_running()) meter_autoselect_cancel();
         meter_reset_minmaxavg();

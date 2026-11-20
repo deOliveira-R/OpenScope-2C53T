@@ -680,32 +680,10 @@ const volatile uint8_t *fpga_get_ch2_buf(void);
  * failed and writes are in-place (pre-fix behavior). */
 uint32_t fpga_acq_frame_generation(void);
 
-extern volatile bool     fpga_meter_adc_sampler_enabled;
-extern volatile bool     fpga_meter_adc_use_preacq;
-extern volatile int16_t  fpga_meter_adc_selector_override;
-extern volatile int16_t  fpga_meter_adc_preacq_override;
 extern volatile int16_t  fpga_meter_probe_tail_override;
-extern volatile uint32_t fpga_meter_adc_enqueue_attempts;
-extern volatile uint32_t fpga_meter_adc_enqueue_success;
-extern volatile uint32_t fpga_meter_adc_enqueue_drops;
-extern volatile uint32_t fpga_meter_adc_samples;
-extern volatile uint32_t fpga_meter_adc_ff_samples;
-extern volatile uint32_t fpga_meter_adc_zero_samples;
-extern volatile uint32_t fpga_meter_adc_transition_skips;
-extern volatile uint32_t fpga_meter_adc_not_voltage_skips;
-extern volatile uint32_t fpga_meter_adc_reset_generation;
-extern volatile uint32_t fpga_meter_adc_last_reset_generation;
-extern volatile uint8_t  fpga_meter_adc_last_preacq;
-extern volatile uint8_t  fpga_meter_adc_last_preacq_rx;
-extern volatile uint8_t  fpga_meter_adc_last_selector;
-extern volatile uint8_t  fpga_meter_adc_last_sample;
-extern volatile uint8_t  fpga_meter_adc_first_sample_after_reset;
-extern volatile uint8_t  fpga_meter_adc_min_sample;
-extern volatile uint8_t  fpga_meter_adc_max_sample;
 extern volatile uint8_t  meter_frame_discard_count;
 extern volatile uint32_t meter_transition_frame_skip_count;
 
-void fpga_meter_adc_diag_reset(void);
 bool fpga_meter_transition_busy(void);
 /* A function change asked of the meter poll task (fpga_request_meter_mode)
  * is still waiting to be taken up. */
@@ -743,9 +721,7 @@ void fpga_edgecap_15(uint8_t reps);
  * frames so a debug-shell probe can own the SPI3 bus. This is deliberately
  * NOT vTaskSuspend (which the config sequences use — they reset the engine
  * afterwards anyway): a suspend can land mid-1026-byte window, and a
- * half-clocked frame is the same desync class as the 30 ms cadence finding
- * (fpga.c FPGA_PROBE_CADENCE_MS note), which needed a true FPGA power cycle
- * to clear.
+ * half-clocked frame leaves the core and the reader out of step.
  *
  * fpga_acq_pause() returns true once the task acknowledges it is parked
  * (immediately true in builds without the continuous task); false on a ~1 s

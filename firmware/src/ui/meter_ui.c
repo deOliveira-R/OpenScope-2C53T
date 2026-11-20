@@ -34,7 +34,6 @@
 #include "FreeRTOS.h"
 #include <stdio.h>
 #include "fpga.h"
-#include "meter_voltage_wave.h"
 #include "shared_mem.h"
 #include "at32f403a_407.h"
 #include <string.h>

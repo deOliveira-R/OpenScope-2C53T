@@ -164,8 +164,8 @@ BENCHSHELL_bit       := 3
 # src/drivers/shell_meterdebug.c, rows: shell_meterdebug.h. The meter itself
 # does not need them (`meter state/func/relays/degf/auto` are core).
 # A/B 2026-11-14 (app-coldtrace-meter): 23,560 B flash, 560 B RAM
-# (shell_meterdebug.o 19.5 KB; rows and help text 2.3 KB; the waveform
-# sampler's diagnostics in meter_voltage_wave.o and fpga.o 2.0 KB, 512 B RAM).
+# (shell_meterdebug.o 19.5 KB; rows and help text 2.3 KB), measured before the
+# waveform sampler's commands were removed (2026-11-20: 5.6 KB less).
 # Both off (profile full, 2026-11-18): 55,640 B flash, 824 B RAM less than bench.
 FEATURE_LIST += METERDEBUG
 METERDEBUG_desc      := Meter link diagnostics in the shell (trace and dump and stream)

@@ -89,7 +89,6 @@
 #include "../tasks/input_handler.h"
 #include "../util/shell_persist.h"
 #include "../util/lcd_health.h"
-#include "../ui/meter_voltage_wave.h"
 #include "../ui/gallery_ui.h"
 #include "shared_mem.h"
 #include "../util/gallery_store.h"

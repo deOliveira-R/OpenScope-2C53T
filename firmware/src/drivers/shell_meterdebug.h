@@ -30,8 +30,6 @@ void cmd_meter_mux_arms(const char *args);
 void cmd_meter_boot_sequence(const char *args);
 void cmd_meter_pc11_timing(const char *args);
 void cmd_meter_stream(const char *args);
-void cmd_meter_adc_snapshot(void);
-void cmd_meter_wave_args(const char *args);
 
 #define METERDEBUG_SHELL_ROWS \
     CMD_A("meter hdr", cmd_meter_hdr, 0, \
@@ -64,10 +62,6 @@ void cmd_meter_wave_args(const char *args);
           "meter mux-stream [count] [ms]   Stream DMM frames plus frontend GPIOs\r\n"), \
     CMD_A("meter stream", cmd_meter_stream, 0, \
           "meter stream [count] [delay_ms] Print compact DMM frame stream\r\n"), \
-    CMD_V("meter adc-snapshot", cmd_meter_adc_snapshot, SC_EXACT, \
-          "meter adc-snapshot              Show read-only DMM waveform sampler state\r\n"), \
-    CMD_A("meter wave", cmd_meter_wave_args, 0, \
-          "meter wave                      Show DMM voltage waveform sample stats\r\n" "meter wave reset                Reset DMM waveform diagnostics\r\n" "meter wave sampler [on|off]     Enable/disable experimental SPI3 sampler\r\n" "meter wave path [direct|preacq] Get/set DMM waveform SPI path\r\n" "meter wave selector [auto|N]    DMM wave selector byte\r\n" "meter wave preacq [auto|N]      DMM wave pre-acq byte\r\n"),
 
 #else  /* !FEATURE_METERDEBUG: not in this build */
 
