@@ -2,9 +2,8 @@
  * Plot-edge markers: channel ground (0 V) tags at the left edge, the trigger
  * level tag at the right edge, the trigger-position pointer at the top.
  *
- * Pure shapes (no LCD), host-tested in tests/test_measure_strip.c. Both
- * scope_ui.c and scope_live.c renderers (the full path and the live column compositor) ask
- * plot_marker_px() for every pixel, so the two cannot draw different shapes.
+ * Pure shapes (no LCD), host-tested in tests/test_measure_strip.c. The Y-T
+ * plot (scope_yt.c) asks plot_marker_px() for every pixel of a tag.
  *
  * Stock (scope/IMG_0324.jpeg, lines.jpeg): ▶ in the channel colour at the left
  * edge on the channel's ground, ◀ in green at the right edge on the trigger

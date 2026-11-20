@@ -1,6 +1,6 @@
 /*
- * The Y-T vertical transform (src/ui/yt_vmap.h), as scope_ui.c builds it
- * for both renderers (full path and live compositor) and every consumer.
+ * The Y-T vertical transform (src/ui/yt_vmap.h), as scope_yt_frame.c builds
+ * it for the plot and every other consumer.
  *
  * [1] true scale (stock geometry): 0 V at position 0 on the centre grid line,
  *     one 26 px division = the range's nominal volts/div (codes/div from the
@@ -193,9 +193,9 @@ int main(void)
 
     printf("[6] every map kind, every code pair: the draw spans stay on the plot\n");
     {
-        /* draw_channel's column: rows lo..hi between the previous and this
-         * code; the compositor's lo..hi+1. Saturated codes (0, 255), noise
-         * windows and empty-looking bands included. */
+        /* A trace column: rows lo..hi between the previous and this code
+         * (the plot adds the row under hi, clipped by its strip). Saturated
+         * codes (0, 255), noise windows and empty-looking bands included. */
         yt_vmap_t maps[8];
         int nm = 0;
         yt_vmap_true(&maps[nm++], TOP, BOT, GMID, 0, ZERO, cpd);

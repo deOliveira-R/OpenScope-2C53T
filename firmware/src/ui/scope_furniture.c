@@ -1,7 +1,7 @@
 /*
  * OpenScope 2C53T - oscilloscope screen: furniture
  *
- * What surrounds the plot: run/stop, the measurement strip and its badges,
+ * What surrounds the plot: the measurement strip and its badges,
  * the mask slot, the CAN row, the held frequency.
  */
 
@@ -21,22 +21,6 @@ void scope_ui_strip_refresh(void)
     const scope_state_t *ss = scope_state_get();
     if (ss->roll || !fpga_data_ready()) return;
     draw_measurement_badges(ss, theme_get(), true);
-}
-
-/* ═══ Run/Stop indicator (drawn only when SCOPE_PLOT_STOP_BOX is set) ═══ */
-
-/* Draw a STOP box over the plot while acquisition is stopped. */
-void draw_run_stop(const scope_state_t *ss, const theme_t *th)
-{
-#if SCOPE_PLOT_STOP_BOX
-    if (!ss->running) {
-        lcd_fill_rect(STOP_BOX_X, STOP_BOX_Y, STOP_BOX_W, STOP_BOX_H, th->warning);
-        font_draw_string_center(LCD_WIDTH / 2, STOP_BOX_Y + 2, "STOP",
-                                th->text_primary, th->warning, &font_small);
-    }
-#else
-    (void)ss; (void)th;
-#endif
 }
 
 /* ═══ Measurement strip (geometry in measure_strip.h) ═══ */
@@ -132,7 +116,7 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
  *
  * Returns false, and leaves *m zeroed, unless the FPGA has actually
  * delivered samples. fpga_data_ready() is the same gate the waveform plot
- * uses (see draw_yt_traces), so the badges and the trace always agree
+ * uses (yt_prepare, scope_yt.c), so the badges and the trace always agree
  * about whether what is on screen is real.
  */
 static bool measure_live_channel(const volatile uint8_t *buf,

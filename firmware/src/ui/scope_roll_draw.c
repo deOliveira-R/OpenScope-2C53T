@@ -9,10 +9,10 @@
 /* ═══ Roll view (state and FIFO in scope_roll.h) ═══
  *
  * The 301-point roll FIFO is drawn right to left, newest at the right edge
- * (as the factory firmware does). It uses the same column compositor as
- * draw_scope_live_frame (each pixel's final colour streamed once per column,
- * so a point arriving every 2 ms never blanks the band), fed from a snapshot
- * of the FIFO instead of the 1024-sample record:
+ * (as the factory firmware does). Each pixel's final colour is streamed once
+ * per column, so a point arriving every 2 ms never blanks the band (its own
+ * loop, not yet the canvas the Y-T plot uses), fed from a snapshot of the
+ * FIFO instead of the 1024-sample record:
  *  - column x shows the point of age scope_roll_age_at_column(x, 301): one
  *    point per column, 25 points per 25 px division, the whole 301-point
  *    FIFO on the glass, so the label (50 ms..20 s) is what one grid
@@ -26,7 +26,7 @@
  *    The roll trigger runs in the acquisition task (fpga_acq.c,
  *    scope_roll_trig_step in scope_roll.h).
  * `full` adds the decorations the compositor cannot recompute per pixel
- * (labels, STOP, popup); the band itself is identical either way.
+ * (labels, popup); the band itself is identical either way.
  */
 /* ui_draw_scratch (declared in scope_ui_parts.h, defined in scope_ui.c) is
  * storage shared between the views; its roll member holds the FIFO copy. */
@@ -78,12 +78,12 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
 
 /*
  * Draw the roll view: the scrolling traces, grid, fill counter, badges and
- * (when `full`) the STOP box and popup. Reads the roll FIFO snapshot; changes
+ * (when `full`) the popup. Reads the roll FIFO snapshot; changes
  * roll_snap, popup_hole_last and, when the popup has ended, popup_on.
  *
  * Steps: snapshot the FIFO, build the vertical map per channel (true scale or
  * fitted to the visible points), then stream the plot column by column with
- * holes for the popup, the fill label and the STOP box, then the label,
+ * holes for the popup and the fill label, then the label,
  * badges and furniture.
  */
 void draw_roll_screen(bool full)
@@ -117,7 +117,7 @@ void draw_roll_screen(bool full)
 
     const uint16_t band_bot = strip_top(ss);
 
-    /* Popup hole: as in the live compositor, the box is never painted over. */
+    /* Popup hole: as in the Y-T plot, the box is never painted over. */
     bool     hole     = popup_live();
     uint16_t hole_top = POPUP_Y;
     uint16_t hole_bot = POPUP_Y + POPUP_H;
@@ -153,16 +153,10 @@ void draw_roll_screen(bool full)
 
         uint16_t seg_top[2], seg_bot[2];
         uint8_t  nseg = 1;
-        /* The fill label (top left) and the STOP badge (top centre) are
-         * holes too, repainted opaque below, so they do not strobe. */
+        /* The fill label (top left) is a hole too, repainted opaque below,
+         * so it does not strobe. */
         const bool in_label = (x < ROLL_LABEL_W);
-#if SCOPE_PLOT_STOP_BOX
-        const bool in_stop = !ss->running && x >= STOP_BOX_X && x < STOP_BOX_X + STOP_BOX_W;
-#else
-        const bool in_stop = false;
-#endif
-        seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) :
-                     in_stop  ? (uint16_t)(STOP_BOX_Y + STOP_BOX_H) : (uint16_t)SCOPE_TOP;
+        seg_top[0] = in_label ? (uint16_t)(SCOPE_TOP + ROLL_LABEL_H) : (uint16_t)SCOPE_TOP;
         seg_bot[0] = band_bot;           /* the strip repaints itself, as in Y-T */
         if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
             seg_bot[0] = hole_top;
@@ -206,7 +200,5 @@ void draw_roll_screen(bool full)
     draw_roll_badges(ss, th, nvis, full);
     if (!full)
         return;
-    draw_run_stop(ss, th);
-    if (hole) draw_popup_box(th);      /* the same decision the band was painted with */
-    else      popup_on = false;
+    draw_popup(th);
 }

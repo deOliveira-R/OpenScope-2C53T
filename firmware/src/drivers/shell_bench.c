@@ -564,9 +564,9 @@ void cmd_gpio_set(const char *args)
                      (port->idt & pin) ? 1u : 0u);
 }
 
-/* `fpga scope livecheck [frames]`: for the next live frames of the scope screen,
- * draw_scope_live_frame() also works out every pixel with the per-pixel rule
- * and counts the pixels where its painted column differs (scope_live.c). The
+/* `fpga scope livecheck [frames]`: for the next frames of the Y-T plot,
+ * scope_yt_draw() also works out every pixel with the per-pixel rule and
+ * counts the pixels where its painted column differs (scope_yt.c). The
  * frames are whatever the screen shows: set up cursors, math, the mask,
  * persistence or a popup first to cover those layers. */
 #define LIVECHECK_FRAMES_DEFAULT 20u     /* about 2 s of redraws */

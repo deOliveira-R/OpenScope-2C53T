@@ -1,724 +1,584 @@
 /*
- * OpenScope 2C53T - oscilloscope screen: Y-T elements
+ * OpenScope 2C53T - oscilloscope screen: the Y-T display type
  *
- * The elements of the voltage-against-time plot: grid, trigger line,
- * markers, mask overlay, traces, persistence, math, and the demo waveform.
+ * Voltage against time (docs/design/display_architecture.md). One frame is
+ * built once from the sources (yt_prepare) and then painted column by column
+ * through the canvas (ui/canvas.h): each element of yt_elements writes the
+ * pixels it owns into the column's strip, lowest layer first. A full redraw
+ * and a live update are the same frame; the full one sends every column, the
+ * live one only the columns that changed.
+ *
+ * What a frame is built from is in scope_view.c (the window of the record)
+ * and scope_yt_frame.c (the maps, the tags, the mask overlay, persistence,
+ * math).
  */
 
 #include "scope_ui_parts.h"
+#include "canvas.h"
 
-/* ── Grid ── */
+/* Columns sent and skipped by the last frame (`ui dump`). */
+volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
 
-/* Full redraw: the dotted graticule and the solid centre cross, in the
- * stock geometry (scope_geom.h): 12 divisions of 25 columns over columns
- * 0..300, centre at column 150, a horizontal line every 26 rows. Columns
- * 301..319 carry no grid; the trigger-level tag sits there. */
-void draw_scope_grid(void)
+volatile uint32_t ui_scope_live_send_us;     /* of the frame's time, the part spent sending columns */
+
+#if FEATURE_BENCHSHELL
+/* `fpga scope livecheck <frames>`: while live_check_frames is not zero each
+ * frame of a record also evaluates every pixel with a per-pixel rule (one
+ * chain of tests in z-order, yt_check_column) and counts the pixels where
+ * the painted column differs from it; the first difference is kept. */
+volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
+
+volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
+
+#endif
+/* Time view_build() took in the last frame of a record, microseconds (`ui dump`). */
+volatile uint32_t ui_scope_view_us_last;
+
+/* ── Geometry of the elements that only Y-T has ── */
+
+/* The trigger-level line keeps this many rows clear of the plot's top and
+ * bottom edge, so a level off the plot still shows as a line at the edge. */
+#define TRIG_LINE_MARGIN_TOP   2
+#define TRIG_LINE_MARGIN_BOT   3
+
+/* It stops this many columns short of the right edge, where the
+ * trigger-level tag (plot_markers.h) points at it. */
+#define TRIG_LINE_RIGHT_GAP    6u
+
+/* Its dots: a column carries one when (x & mask) == 0. Every 2nd column
+ * while UP/DOWN move the level, so the user sees which control the arrows
+ * own; every 4th otherwise. */
+#define TRIG_LINE_DOTS_FOCUS   1u
+#define TRIG_LINE_DOTS         3u
+
+/* The math trace's zero tick: this many columns of the centre line, from the
+ * left edge. */
+#define MATH_ZERO_TICK_W       6u
+
+/* The demo picture, shown until the first record has arrived: a sine on CH1
+ * and a square on CH2, in rows about the channel's position (the pixel
+ * convention, no volts). Its sizes are decoration. */
+#define DEMO_STEPS             64u     /* phase steps in a period (the sine table's length) */
+#define DEMO_STEPS_PER_COLUMN  4u      /* 16 columns a period */
+#define DEMO_SINE_AMP_ROWS     40      /* amplitude at range 0 ... */
+#define DEMO_SINE_AMP_PER_RANGE 2      /* ... less this for each range above it ... */
+#define DEMO_SINE_AMP_MIN      10      /* ... and never less than this */
+#define DEMO_SQUARE_OFFSET     50      /* the square sits this many rows under the middle */
+#define DEMO_SQUARE_AMP_ROWS   25
+#define DEMO_LABEL_X           4
+#define DEMO_LABEL_Y           (SCOPE_TOP + 14)
+
+/* ── One frame ── */
+
+/* A frame's inputs, built once (yt_prepare) and read by every element for
+ * every column. p1, p2 and mp carry the previous column's rows from one
+ * column to the next, for the connecting spans. */
+typedef struct {
+    const theme_t          *th;
+    const scope_state_t    *ss;
+    bool         record;                    /* a record is shown (else nothing, or the demo) */
+    bool         demo;                      /* no record has ever arrived: the demo picture */
+    uint32_t     demo_phase;
+    const volatile uint8_t *b1, *b2;        /* the window's columns (yt_cols) */
+    uint16_t     band_bot;                  /* the band's end: the measurement strip's top */
+    autofit_t    a1, a2;                    /* the two maps (yt_fits); off without a record */
+    pm_set_t     pm;                        /* the edge tags */
+    cur_layer_t  cl;                        /* the cursor layer */
+    bool         curs;                      /* it has something to draw */
+    math_frame_t mf;
+    bool         mth;                       /* math is on */
+    int16_t      mlab_w;                    /* width of its label, pixels */
+    const uint8_t *pbuf;                    /* persistence intensities, or NULL */
+    uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below SCOPE_MID_Y */
+    int16_t      trig_y;                    /* the trigger line's row */
+    uint16_t     trig_dots;                 /* its dot mask */
+    int16_t      p1, p2, mp;
+} yt_frame_t;
+
+/* What one column shows, worked out once (yt_column) and read by the
+ * elements. Index 0 is CH1, 1 is CH2. */
+typedef struct {
+    bool     inwin;                 /* inside the graticule's 301 columns */
+    bool     trace;                 /* the window has a sample for this column */
+    bool     on[2];                 /* the channel is drawn here */
+    int16_t  y[2];                  /* its row */
+    int16_t  lo[2], hi[2];          /* the rows its trace covers */
+    int16_t  from[2];               /* the previous column's row, -1 at the first: the persistence feed */
+    uint16_t color[2];              /* the channel's, or the warning colour where it fails the mask */
+    int16_t  bound_lo[2], bound_hi[2];   /* rows of the mask bounds, -1: none */
+    uint16_t strip_color;           /* the mask verdict strip's colour here, 0: none */
+    bool     strip_dotted;          /* ... on every other pixel only */
+    int16_t  mlo, mhi;              /* the math trace's rows; mhi < mlo: none */
+    bool     edge;                  /* a column that can carry an edge tag */
+    bool     tcol;                  /* ... the trigger-position pointer */
+    bool     mcol;                  /* ... the math label */
+} yt_col_t;
+
+/* Build the frame: read the sources once and work out everything that does
+ * not depend on the column.
+ *   1. With a record: the window (view_build), the mask overlay, the maps
+ *      (yt_fits) and their scales for the cursor readout (vband_note).
+ *      Without one: maps off, so the tags and the trigger line fall back to
+ *      the pixel convention; the demo picture only if no record has ever
+ *      arrived, so a stall in acquisition never shows a made-up waveform.
+ *   2. The edge tags, the cursor layer, the math frame, persistence decay
+ *      and colours, the trigger line's row.
+ * Changes: yt_cols and the view globals, the cursor readout's scales
+ * (vband, g_math_cur), the mask overlay, persistence (decay), the latch that
+ * says a record has been seen. frame: the display's frame counter, the
+ * demo's phase. */
+static void yt_prepare(yt_frame_t *f, uint32_t frame)
 {
-    const theme_t *th = theme_get();
-    uint16_t x, y;
-
-    /* Vertical grid lines (dotted) */
-    for (x = 0; x < SCOPE_GEOM_COLS; x += SCOPE_GEOM_DIV_PX) {
-        for (y = SCOPE_TOP; y < SCOPE_BOT; y += 2)
-            lcd_set_pixel(x, y, th->grid);
-    }
-    /* Horizontal grid lines (dotted) */
-    for (y = SCOPE_TOP; y < SCOPE_BOT; y += SCOPE_DIV_PX) {
-        for (x = 0; x < SCOPE_GEOM_COLS; x += 2)
-            lcd_set_pixel(x, y, th->grid);
-    }
-
-    /* Center crosshair (solid) */
-    for (x = 0; x < SCOPE_GEOM_COLS; x++)
-        lcd_set_pixel(x, SCOPE_GRID_MID_Y, th->grid_center);
-    for (y = SCOPE_TOP; y < SCOPE_BOT; y++)
-        lcd_set_pixel(SCOPE_GEOM_CENTER_COL, y, th->grid_center);
-}
-
-/* ── Trigger level line ── */
-
-/* Full redraw: the dotted line across the plot at row trig_y, clamped inside
- * the plot. Denser while UP/DOWN adjust the level, so the user sees which
- * control the arrows own. The tags at the plot edges are drawn by
- * draw_plot_markers() further down this file. */
-void draw_trigger_line(const theme_t *th, int16_t trig_y)
-{
-    if (trig_y < SCOPE_TOP + 2) trig_y = SCOPE_TOP + 2;
-    if (trig_y > SCOPE_BOT - 3) trig_y = SCOPE_BOT - 3;
-    for (uint16_t x = 0; x < LCD_WIDTH - 6; x += (scope_trig_level_focus ? 2u : 4u))
-        lcd_set_pixel(x, (uint16_t)trig_y, th->trigger);
-}
-
-/* The vertical transform of each plotted band as drawn this frame, filled by
- * vband_note(); the cursor readout (scope_cursor_draw.c) converts rows with
- * it. Slot 0 is the first band plotted, slot 1 the second. */
-vband_t g_vband[2];
-
-/* The math trace's own scale, as drawn this frame (math_prepare): the
- * cursors read it instead of the channel bands while the math trace is on,
- * since it spans the whole plot over them. */
-g_math_cur_t g_math_cur;
-
-/* Forget every recorded scale, so a band not plotted this frame leaves the
- * cursors reporting pixels. */
-void vband_clear(void)
-{
-    g_vband[0].on = false;
-    g_vband[1].on = false;
-    g_math_cur.on = false;
-}
-
-/* Record in g_vband[slot] the map a band was drawn with: channel 1/2, its
- * range, the map a, and the counts one row is worth (0 = nothing plotted).
- * True scale anchors the channel's 0 V code to a row, so absolute Y is known
- * (mid_counts = 0 at the ground tag's row); autofit re-anchors every frame
- * and leaves it unknown. */
-void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
-                       const autofit_t *a, float counts_per_pixel)
-{
-    if (slot > 1u) return;
-    vband_t *b = &g_vband[slot];
-    b->on               = (counts_per_pixel > 0.0f);
-    b->y_top            = a->y_top;
-    b->y_bot            = a->y_bot;
-    b->counts_per_pixel = counts_per_pixel;
-    b->channel          = channel;
-    b->range_idx        = range_idx;
-    b->mid_known        = b->on && a->fx_ch >= 0;
-    b->mid_row          = b->mid_known
-        ? (int16_t)autofit_y_raw(a, rec_zero(scope_state_get(), (uint8_t)(channel - 1u)))
-        : 0;
-    b->mid_counts       = 0.0f;
-}
-
-/*
- * The row where the HARDWARE trigger fires, through map a.
- *
- * The FPGA compares the ADC against reg 0x08, but the record carries
- * ADC - ADC_REC_OFFSET (28, measured on the unit and equal to stock's ADC
- * offset), so trig_level_rec() turns the register code into a record code.
- * That code goes through the SAME map the trigger-source trace is drawn
- * with, so the line sits on the trace where NORMAL would fire. Outside the
- * band it clamps to the band edge (autofit_y), which reads as "level above /
- * below the signal". In true scale the map is the fixed one (yt_vmap.h), so
- * the line sits at the level's place on the graticule.
- *
- * The code is the one fpga_acq.c records as written (fpga_acq_trig_code_get),
- * not recomputed from the UI level: report the wire, not the intent.
- * a NULL or off (no data): the pixel convention, level in rows above
- * SCOPE_MID_Y.
- */
-int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
-{
-    if (a == NULL || !a->on)
-        return (int16_t)(SCOPE_MID_Y - ss->trigger.level);
-    return autofit_y(a, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
-}
-
-/* Full-redraw variant: builds the window (view_build) and the trigger
- * source's map exactly as draw_yt_traces() will (same yt_fits), so it can
- * run before the traces. */
-int16_t trigger_marker_y_full(const scope_state_t *ss)
-{
+    const theme_t *const th = f->th = theme_get();
+    const scope_state_t *const ss = f->ss = scope_state_get();
     const volatile uint8_t *b1 = fpga_get_ch1_buf();
     const volatile uint8_t *b2 = fpga_get_ch2_buf();
-    if (!fpga_data_ready() || b1 == NULL || b2 == NULL)
-        return trigger_marker_y(ss, NULL);
-    view_build(ss, b1, b2);
-    autofit_t a1, a2;
-    yt_fits(ss, &a1, &a2);
-    return trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &a2 : &a1);
-}
+    f->record = fpga_data_ready() && b1 != NULL && b2 != NULL;
 
-/* The two Y-T maps, the only place that decides them (from the window
- * view_build() last filled into yt_cols). True scale where the range has a
- * calibrated volts/div, over the full plot; autofit elsewhere (an
- * uncalibrated range, or view.truescale off), split into halves when both
- * channels autofit (yt_vmap_split). A channel not drawn gets a map with
- * on == false. While running it also latches the ranges of the record on
- * screen (scope_ui_paused_latch). */
-void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
-{
-    autofit_t *a[2] = { a1, a2 };
-    /* A channel is drawn only when the published record holds its own
-     * samples (fpga_acq_record_has_ch, fpga_acq.c): right after CH2 is
-     * switched back on, the record on screen was captured with CH1 alone and
-     * its CH2 buffer is the second converter's copy of CH1. The band appears
-     * with the first record captured with it. */
-    const bool en[2] = { ss->ch1.enabled && fpga_acq_record_has_ch(0u),
-                         ss->ch2.enabled && fpga_acq_record_has_ch(1u) };
-    const bool fx[2] = {
-        en[0] && ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
-        en[1] && ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx) };
-    const bool split = yt_vmap_split(en[0], en[1], fx[0], fx[1]);
-    /* While running, keep the ranges of the record on screen latched, so a
-     * stop by any route (key, view.run, shell) rescales from the right one. */
-    if (ss->running)
-        scope_ui_paused_latch();
-    for (uint8_t ch = 0; ch < 2u; ch++) {
-        *a[ch] = (autofit_t){ .fx_ch = -1, .span = YT_VMAP_MIN_SPAN };
-        if (fx[ch]) {
-            const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
-            yt_vmap_true(a[ch], SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, (int8_t)ch,
-                         yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
-        } else if (en[ch]) {
-            int16_t t, b;
-            yt_vmap_band(SCOPE_TOP, SCOPE_BOT, split, ch, &t, &b);
-            autofit_prep(a[ch], yt_cols[ch], t, b, (int8_t)ch);
-        }
-    }
-}
+    /* The band stops at the measurement strip's top, which moves with the
+     * selection (strip_top, scope_furniture.c). The strip paints itself. */
+    f->band_bot = strip_top(ss);
 
-/* Place one tag for level row inside band [top, bot) at column x0: pointing
- * horiz with its label when the row is on the band, up or down on the band
- * edge (no label) when it is off. Off when the band is shorter than a tag. */
-static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
-                    int x0, pm_label_t label, uint16_t color)
-{
-    t->on = (bot - top) >= PM_TAG_H;
-    if (!t->on)
-        return;
-    int y0;
-    t->dir   = plot_marker_place(row, top, bot, horiz, &y0);
-    t->label = (t->dir == horiz) ? label : PM_LABEL_NONE;
-    t->x0    = (int16_t)x0;
-    t->y0    = (int16_t)y0;
-    t->color = color;
-}
-
-/* Build the plot-edge tag set m for both renderers: a ground tag per enabled
- * channel at the left edge, the trigger-level tag at the right edge.
- * a1/a2: the maps as drawn (NULL = no record: the demo/no-data convention,
- * position and level in pixels about SCOPE_MID_Y). band_bot: the
- * measurement strip's top. */
-void markers_build(const scope_state_t *ss, const theme_t *th,
-                          const autofit_t *a1, const autofit_t *a2,
-                          int band_bot, pm_set_t *m)
-{
-    memset(m, 0, sizeof(*m));
-    const uint8_t act = active_channel ? 1u : 0u;
-    for (uint8_t ch = 0; ch < 2u; ch++) {
-        const channel_state_t *c = ch ? &ss->ch2 : &ss->ch1;
-        pm_tag_t *t = &m->t[(ch == act) ? 1 : 2];
-        if (!c->enabled)
-            continue;
-        const autofit_t *a = ch ? a2 : a1;
-        int top = SCOPE_TOP, bot = band_bot, row;
-        if (a != NULL && a->on) {
-            top = a->y_top;
-            if (a->y_bot < bot) bot = a->y_bot;
-            row = autofit_y_raw(a, rec_zero(ss, ch));
-        } else {
-            row = SCOPE_MID_Y - c->position;
-        }
-        tag_put(t, row, top, bot, PM_POINT_RIGHT, 0,
-                ch ? PM_LABEL_2 : PM_LABEL_1, ch ? th->ch2 : th->ch1);
-    }
-
-    /* Trigger level: the record code where the hardware fires
-     * (trigger_marker_y), on the trigger source's band. */
-    const autofit_t *src = (ss->trigger.source == TRIG_SRC_CH2) ? a2 : a1;
-    int top = SCOPE_TOP, bot = band_bot, row;
-    if (src != NULL && src->on) {
-        row = autofit_y_raw(src, (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
-        top = src->y_top;
-        if (src->y_bot < bot) bot = src->y_bot;
-    } else {
-        row = SCOPE_MID_Y - ss->trigger.level;
-    }
-    tag_put(&m->t[0], row, top, bot, PM_POINT_LEFT, LCD_WIDTH - PM_TAG_W,
-            PM_LABEL_T, th->trigger);
-}
-
-/* Live frame: the colour of the tag set at pixel (x, y) into *c, or false.
- * Tags are tried in priority order; a knock-out pixel takes bg. */
-bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
-                              uint16_t *c)
-{
-    for (int i = 0; i < 3; i++) {
-        const pm_tag_t *t = &m->t[i];
-        if (!t->on || x < t->x0 || x >= t->x0 + PM_TAG_W ||
-            y < t->y0 || y >= t->y0 + PM_TAG_H)
-            continue;
-        const pm_px_t p = plot_marker_px(t->dir, t->label, x - t->x0, y - t->y0);
-        if (p == PM_PX_NONE)
-            continue;
-        *c = (p == PM_PX_KNOCK) ? bg : t->color;
-        return true;
-    }
-    return false;
-}
-
-/* Full redraw: paint the tag set, lowest priority first, so the result
- * matches markers_px. */
-void draw_plot_markers(const pm_set_t *m, const theme_t *th)
-{
-    for (int i = 2; i >= 0; i--) {
-        const pm_tag_t *t = &m->t[i];
-        if (!t->on)
-            continue;
-        for (int dy = 0; dy < PM_TAG_H; dy++)
-            for (int dx = 0; dx < PM_TAG_W; dx++) {
-                const pm_px_t p = plot_marker_px(t->dir, t->label, dx, dy);
-                if (p != PM_PX_NONE)
-                    lcd_set_pixel((uint16_t)(t->x0 + dx), (uint16_t)(t->y0 + dy),
-                                  (p == PM_PX_KNOCK) ? th->background : t->color);
-            }
-    }
-}
-
-/* ── Mask overlay ──
- * Paints the pass/fail verdict the acquisition task recorded (scope_mask.c);
- * no analysis on the display path. Failing trace columns take th->warning,
- * the mask bounds are dotted over the trace, and a MASK_STRIP_H-row strip at
- * the bottom of the live band shows each column's verdict. */
-
-static bool     g_mask_ov_on;      /* overlay armed for this frame */
-
-bool     g_mask_bounds_on;         /* also draw the mask bounds (mask ready) */
-
-static uint32_t g_mask_ov_gen;     /* the record generation the overlay paints */
-
-/* Arm the overlay for this frame, after view_build(): only on the hardware
- * anchor (g_place.anchor == VIEW_ANCHOR_HW, the alignment the mask was taught on) with a
- * mask present, and only for the record generation now on screen. */
-void mask_overlay_begin(void)
-{
-    /* One column per sample only (g_place.win.L == 1): the mask indexes record
-     * SAMPLES by column offset from the anchor (scope_mask_column), which
-     * holds only then. A zoomed window or a re-sampled held record draws the
-     * trace without the overlay rather than colouring columns off the
-     * samples that were judged. */
-    g_mask_ov_on = (g_place.anchor == VIEW_ANCHOR_HW) && g_place.trig_x >= 0 &&
-                   g_place.win.L == 1u &&
-                   scope_mask_state() != MASK_PF_EMPTY;
-    /* The bounds depend on the alignment, not on which record was judged,
-     * so they are not gated on the generation: gating them would blink them
-     * off for the frame between a commit and its verdict. */
-    g_mask_bounds_on = g_mask_ov_on && scope_mask_state() == MASK_PF_READY;
-    g_mask_ov_gen = fpga_acq_frame_generation();
-}
-
-/* True when channel ch (0/1, or -1 for none) failed the mask at column x. */
-bool mask_px_fail(int8_t ch, int x)
-{
-    return g_mask_ov_on && ch >= 0 &&
-           scope_mask_column((uint8_t)ch, x, g_place.trig_x, g_mask_ov_gen) == SCOPE_MASK_COL_FAIL;
-}
-
-/* Strip colour for column x from the worse of the two channels' verdicts, or
- * 0 for none; *dotted = paint every other pixel. Green pass, red fail, dotted
- * red the record failed elsewhere, dotted amber refused (SKIP), amber teach. */
-uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted)
-{
-    *dotted = false;
-    if (!g_mask_ov_on) return 0;
-    scope_mask_col_t a = scope_mask_column(0, x, g_place.trig_x, g_mask_ov_gen);
-    scope_mask_col_t b = scope_mask_column(1, x, g_place.trig_x, g_mask_ov_gen);
-    scope_mask_col_t k = (a > b) ? a : b;        /* enum order = severity */
-    switch (k) {
-    case SCOPE_MASK_COL_PASS:       return th->success;
-    case SCOPE_MASK_COL_FAIL:       return th->warning;
-    case SCOPE_MASK_COL_FAIL_FRAME: *dotted = true; return th->warning;
-    case SCOPE_MASK_COL_SKIP:       *dotted = true; return th->highlight;
-    case SCOPE_MASK_COL_TEACH:      return th->highlight;
-    default:                        return 0;
-    }
-}
-
-/* Full redraw: the strip on the MASK_STRIP_H rows above band_bot (the live
- * frame paints the same rows per pixel). */
-void draw_mask_strip(const theme_t *th, uint16_t band_bot)
-{
-    if (!g_mask_ov_on) return;
-    for (int x = 0; x < LCD_WIDTH; x++) {
-        bool dotted;
-        uint16_t c = mask_strip_color(x, th, &dotted);
-        if (!c) continue;
-        for (uint16_t y = band_bot - MASK_STRIP_H; y < band_bot; y++)
-            if (!dotted || ((x + y) & 1u) == 0u)
-                lcd_set_pixel((uint16_t)x, y, c);
-    }
-}
-
-/* ── Traces ── */
-
-bool     g_math_live;    /* a real record was drawn this frame (yt_cols valid) */
-
-/* Add one trace column to the persistence buffer: rows prev_y..y at column x
- * (prev_y < 0: first column). The channel renderers call it as they draw, so
- * a ghost is exactly where the trace was, through whichever map drew it,
- * and needs no per-column storage (RAM is tight). */
-void persist_note(uint16_t x, int16_t prev_y, int16_t y)
-{
-    if (persist_enabled && persist_is_initialized())
-        persist_add_column(x, prev_y < 0 ? -1 : (int)prev_y - SCOPE_TOP,
-                           (int)y - SCOPE_TOP);
-}
-
-/* Full redraw: draw one channel's window buf (yt_cols) through its map a
- * (yt_fits) over [g_view_first, g_view_end), joining consecutive columns
- * with a vertical span. Also feeds persistence, colours mask-failing columns
- * and dots the mask bounds (mask_ch: 0/1, or -1 for no mask). Returns the
- * ADC counts one screen row is worth, for the cursor readout.
- *
- * True scale puts the graticule in stock's geometry: 0 V at position 0 on
- * the centre line, one 26-row division = the range's nominal volts/div
- * (scope_cal_codes_per_div codes). An offset shifts the trace and may clip
- * it at the plot edge, as on any scope at a fixed volts/div. */
-static float draw_channel(const volatile uint8_t *buf, uint16_t color,
-                          const autofit_t *a, int8_t mask_ch)
-{
-    const uint16_t fail_c = theme_get()->warning;
-    const uint16_t bnd_c  = theme_get()->text_secondary;
-    int16_t prev_y = -1;
-    for (uint16_t x = g_view_first; x < g_view_end; x++) {   /* blank columns stay blank */
-        int16_t y = autofit_y(a, buf[x]);
-        persist_note(x, prev_y, y);
-        uint16_t cc = mask_px_fail(mask_ch, x) ? fail_c : color;
-        uint8_t blo, bhi;
-        if (g_mask_bounds_on && mask_ch >= 0 && MASK_BOUND_DOT(x) &&
-            scope_mask_bound_at((uint8_t)mask_ch, x, g_place.trig_x, &blo, &bhi)) {
-            lcd_set_pixel(x, (uint16_t)autofit_y(a, blo), bnd_c);
-            lcd_set_pixel(x, (uint16_t)autofit_y(a, bhi), bnd_c);
-        }
-        if (prev_y >= 0) {                  /* connect prev..cur vertically */
-            int16_t lo = prev_y < y ? prev_y : y;
-            int16_t hi = prev_y < y ? y : prev_y;
-            for (int16_t v = lo; v <= hi; v++)
-                lcd_set_pixel(x, (uint16_t)v, cc);
-        } else {
-            lcd_set_pixel(x, (uint16_t)y, cc);
-        }
-        prev_y = y;
-    }
-    return yt_vmap_counts_per_px(a);
-}
-
-/* Full redraw: the Y-T traces. Despite the name, this draws the real record
- * whenever one is ready; the synthetic demo is only the fallback before the
- * first record.
- *   1. Forget last frame's scales and mask overlay.
- *   2. Record ready: build the window (view_build, trigger-aligned, into
- *      yt_cols), arm the mask overlay, choose the maps (yt_fits), draw each
- *      enabled channel and record its scale for the cursors (vband_note).
- *   3. No record yet, ever: draw a sine (CH1) and a square (CH2) marked
- *      "DEMO", moving with frame while running and frozen while stopped.
- * Once a record has been seen, a missing one leaves the plot empty. */
-void draw_yt_traces(uint32_t frame)
-{
-    const theme_t *th = theme_get();
-    const scope_state_t *ss = scope_state_get();
-
-    /* Forget last frame's vertical scales before anything is drawn. A band
-     * that is not plotted this frame (no capture, channel off, or the demo
-     * waveform, whose amplitude is decorative) must leave the cursor with NO
-     * transform, so it reports pixels instead of converting through a scale
-     * that belongs to a trace no longer on the screen. */
+    /* Forget last frame's vertical scales: a band that is not plotted this
+     * frame must leave the cursors reporting pixels, not converting through
+     * the scale of a trace that is no longer on the screen. */
     vband_clear();
-    g_mask_ov_on = false;          /* re-armed by mask_overlay_begin() on live data */
-    g_math_live = false;
 
-    /* The demo's phase: frozen at the last running frame while stopped. */
-    static uint32_t frozen_frame = 0;
-    if (ss->running) {
-        frozen_frame = frame;
-    }
-    uint32_t draw_frame = ss->running ? frame : frozen_frame;
-
-    if (fpga_data_ready()) {
-        /* Latch: once a record has been seen, the demo fallback is off for
-         * good. */
+    if (f->record) {
         scope_mark_acquisition_ready();
-
-        const volatile uint8_t *ch1_buf = fpga_get_ch1_buf();
-        const volatile uint8_t *ch2_buf = fpga_get_ch2_buf();
-
-        bool c1 = ss->ch1.enabled && ch1_buf != NULL;
-        bool c2 = ss->ch2.enabled && ch2_buf != NULL;
-
-        /* The window: both channels start at the same trigger-aligned
-         * column, so the trace holds still and the channels stay
-         * time-aligned. A zoomed or re-sampled held record is placed here
-         * too; the result goes into yt_cols once per frame. */
-        view_build(ss, ch1_buf, ch2_buf);
+        /* The window: placed on the trigger source's crossing and filled into
+         * yt_cols for both channels, so the trace holds still and the
+         * channels stay time-aligned. A zoomed or re-sampled held record is
+         * placed here too. */
+        const uint32_t vb0 = DWT->CYCCNT;
+        view_build(ss, b1, b2);
+        ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
         mask_overlay_begin();
-        const volatile uint8_t *b1 = (ch1_buf != NULL) ? yt_cols[0] : NULL;
-        const volatile uint8_t *b2 = (ch2_buf != NULL) ? yt_cols[1] : NULL;
-        /* The math trace reads the same window: it must be drawn from
-         * exactly what the traces were. */
-        g_math_live = true;
-
-        /* One map per channel (yt_fits); the map each band is drawn with is
-         * recorded for the cursor readout (vband_note). */
-        autofit_t a1, a2;
-        yt_fits(ss, &a1, &a2);
+        g_math_live = true;            /* yt_cols is this frame's window */
+        /* The maps run against SCOPE_BOT though the band ends at band_bot:
+         * the strip covers the plot's last rows, it does not rescale it. */
+        yt_fits(ss, &f->a1, &f->a2);
         uint8_t slot = 0;
-        if (c1 && a1.on) {
-            vband_note(slot, 1u, ss->ch1.vdiv_idx, &a1, draw_channel(b1, th->ch1, &a1, 0));
-            slot++;
+        if (f->a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f->a1, yt_vmap_counts_per_px(&f->a1));
+        if (f->a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f->a2, yt_vmap_counts_per_px(&f->a2));
+    } else {
+        mask_overlay_off();
+        g_math_live = false;
+        yt_fits_none(&f->a1, &f->a2);
+    }
+    f->b1 = yt_cols[0];
+    f->b2 = yt_cols[1];
+
+    /* The demo's phase moves with the frame counter while running and holds
+     * at the last running frame while stopped. */
+    static uint32_t demo_frozen;
+    if (ss->running) demo_frozen = frame;
+    f->demo = !f->record && !scope_acquisition_ready();
+    f->demo_phase = demo_frozen;
+
+    /* The tags, on the same maps. */
+    markers_build(ss, th, &f->a1, &f->a2, f->band_bot, &f->pm);
+
+    cursor_layer_build(ss, th, &f->cl);
+    f->curs = f->cl.v || f->cl.h;
+
+    /* Math: one row per column, its label as per-pixel text. After
+     * vband_clear, which also forgets the math scale math_prepare sets. */
+    f->mth = math_enabled;
+    if (f->mth) math_prepare(ss, &f->mf);
+    f->mlab_w = f->mth ? (int16_t)font_string_width(f->mf.label, &font_small) : 0;
+
+    /* Persistence: the ghosts are read from the shared-pool buffer
+     * (PERSIST_WIDTH x PERSIST_HEIGHT intensities, not .bss), decayed once
+     * per frame; this frame's traces are added to it column by column after
+     * the column's ghosts were read (yt_paint_column). */
+    f->pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
+    if (f->pbuf) persist_frame_decay();
+    f->pbase_top = persist_base(ss, th, SCOPE_TOP);
+    f->pbase_bot = persist_base(ss, th, (uint16_t)(SCOPE_BOT - 1));
+
+    /* The trigger line: on the trigger source's map, at the record code
+     * where the hardware fires (trigger_marker_y). */
+    f->trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &f->a2 : &f->a1);
+    if (f->trig_y < SCOPE_TOP + TRIG_LINE_MARGIN_TOP) f->trig_y = SCOPE_TOP + TRIG_LINE_MARGIN_TOP;
+    if (f->trig_y > SCOPE_BOT - TRIG_LINE_MARGIN_BOT) f->trig_y = SCOPE_BOT - TRIG_LINE_MARGIN_BOT;
+    f->trig_dots = scope_trig_level_focus ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
+
+    f->p1 = f->p2 = f->mp = 0;
+}
+
+/* Work out column x into c, and advance the frame's previous-column rows. */
+static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
+{
+    const theme_t *const th = f->th;
+
+    /* The trace lives in the graticule's 301 columns (scope_geom.h); right of
+     * them a column carries only the trigger line, the tags, the cursors and
+     * background. Inside, a re-sampled held record may not reach every
+     * column: [g_view_first, g_view_end) is what view_build filled. */
+    c->inwin = (x < SCOPE_GEOM_COLS);
+    c->trace = f->record && x >= g_view_first && x < g_view_end;
+    const bool joined = (x > g_view_first);     /* no span from a blank column */
+
+    /* A trace covers its row and the next one, plus the span to the previous
+     * column's row, so a flat trace is two rows thick and a steep edge draws
+     * as a connected vertical. */
+    const autofit_t *const a[2] = { &f->a1, &f->a2 };
+    const volatile uint8_t *const b[2] = { f->b1, f->b2 };
+    int16_t *const prev[2] = { &f->p1, &f->p2 };
+    const uint16_t ch_color[2] = { th->ch1, th->ch2 };
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        c->on[ch] = a[ch]->on && c->trace;
+        const int16_t y = c->on[ch] ? autofit_y(a[ch], b[ch][x]) : (int16_t)SCOPE_MID_Y;
+        c->y[ch] = y;
+        c->lo[ch] = y;
+        c->hi[ch] = (int16_t)(y + 1);
+        c->from[ch] = joined ? *prev[ch] : -1;
+        if (joined) {
+            if (*prev[ch] < c->lo[ch]) c->lo[ch] = *prev[ch];
+            if (*prev[ch] > c->hi[ch]) c->hi[ch] = *prev[ch];
         }
-        if (c2 && a2.on)
-            vband_note(slot, 2u, ss->ch2.vdiv_idx, &a2, draw_channel(b2, th->ch2, &a2, 1));
-        return;
+        *prev[ch] = y;
+
+        /* Mask overlay: the trace takes the warning colour where it is
+         * outside the mask; the bounds are dotted (every other column),
+         * through the channel's own map. */
+        c->color[ch] = mask_px_fail((int8_t)ch, (int)x) ? th->warning : ch_color[ch];
+        c->bound_lo[ch] = c->bound_hi[ch] = -1;
+        uint8_t lo, hi;
+        if (g_mask_bounds_on && MASK_BOUND_DOT(x) && c->on[ch] &&
+            scope_mask_bound_at(ch, (int)x, g_place.trig_x, &lo, &hi)) {
+            c->bound_lo[ch] = autofit_y(a[ch], lo);
+            c->bound_hi[ch] = autofit_y(a[ch], hi);
+        }
     }
 
-    /* Fallback: the synthetic demo waveform, only while acquisition has
-     * NEVER produced a record. After that the plot stays empty instead, so
-     * a stall in acquisition never shows a fake waveform. */
-    if (scope_acquisition_ready()) {
-        return;
+    /* The verdicts are written by the acquisition task: read once per
+     * column, here, so everything that uses one sees the same. */
+    c->strip_dotted = false;
+    c->strip_color = mask_strip_color((int)x, th, &c->strip_dotted);
+
+    /* Math: this column's row and the span from the previous one. */
+    c->mlo = -1;
+    c->mhi = -2;
+    if (f->mth && f->mf.ok && c->trace) {
+        const int16_t r = math_row(&f->mf, x);
+        c->mlo = c->mhi = r;
+        if (joined) {
+            if (f->mp < c->mlo) c->mlo = f->mp;
+            if (f->mp > c->mhi) c->mhi = f->mp;
+        }
+        f->mp = r;
     }
 
-    /* Mark the trace as synthetic ON the trace. The badge legend says the
-     * same thing at the bottom of the screen, but the waveform is what
-     * catches the eye and it is the thing that is not real. */
-    font_draw_string(4, SCOPE_TOP + 14, "DEMO", th->warning, th->warning,
-                     &font_small);
+    /* Only the edge columns can carry a tag, only the PM_TPOS_W columns
+     * round the trigger point the pointer, only the label's columns the math
+     * label: their per-pixel shape tests run inside these boxes only. */
+    c->edge = (x < PM_TAG_W) || (x >= LCD_WIDTH - PM_TAG_W);
+    c->tcol = g_place.trig_x >= 0 &&
+              (int)x + PM_TPOS_W / 2 >= (int)g_place.trig_x &&
+              (int)x <= (int)g_place.trig_x + PM_TPOS_W / 2;
+    c->mcol = f->mth && (int)x >= (int)MATH_LABEL_X && (int)x < (int)MATH_LABEL_X + f->mlab_w;
+}
 
-    static const int8_t sin_lut[64] = {
+/* The colour of a persistence ghost of intensity in (not zero) at screen row
+ * y, or bg when it scales to black. */
+static inline uint16_t yt_ghost(uint8_t in, uint16_t y, uint16_t base_top, uint16_t base_bot, uint16_t bg)
+{
+    const uint16_t g = persist_scale_rgb565((y < SCOPE_MID_Y) ? base_top : base_bot, in);
+    return (g != 0x0000) ? g : bg;
+}
+
+/* ── The elements ──
+ * Each paints what it owns of column x into strip s (rows s->lo up to, not
+ * including, s->hi) and leaves every other pixel alone. yt_elements lists
+ * them lowest layer first, so a later one covers an earlier one. */
+
+typedef void (*yt_element_fn)(const yt_frame_t *f, const yt_col_t *c, uint16_t x,
+                              const canvas_strip_t *s);
+
+/* Background and persistence ghosts: every pixel of the strip. */
+static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    const uint16_t rows = (uint16_t)(s->hi - s->lo);
+    const uint16_t bg = f->th->background;
+    uint16_t *const px = s->px;
+    if (!f->pbuf) {
+        for (uint16_t i = 0; i < rows; i++) px[i] = bg;
+        return;
+    }
+    /* The frame's values in locals: the strip is written through a pointer
+     * the compiler must assume could point at them. */
+    const uint8_t *in = &f->pbuf[(s->lo - SCOPE_TOP) * PERSIST_WIDTH + x];
+    const uint16_t base_top = f->pbase_top, base_bot = f->pbase_bot;
+    for (uint16_t i = 0; i < rows; i++, in += PERSIST_WIDTH)
+        px[i] = *in ? yt_ghost(*in, (uint16_t)(s->lo + i), base_top, base_bot, bg) : bg;
+}
+
+/* The graticule (scope_geom.h): dotted lines every division, a solid centre
+ * cross. Columns right of the graticule carry none. */
+static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    if (!c->inwin) return;
+    const theme_t *const th = f->th;
+    if (scope_geom_vgrid((int)x))                           /* dotted vertical line: every other row */
+        for (int y = SCOPE_TOP; y < s->hi; y++)
+            if ((y & 1) == 0) strip_put(s, y, th->grid);
+    if ((x & 1u) == 0)                                      /* dotted horizontal lines: every other column */
+        for (int y = SCOPE_TOP; y < s->hi; y += SCOPE_DIV_PX) strip_put(s, y, th->grid);
+    if (x == SCOPE_GEOM_CENTER_COL)
+        strip_span(s, s->lo, s->hi - 1, th->grid_center);
+    else
+        strip_put(s, SCOPE_GRID_MID_Y, th->grid_center);
+}
+
+/* The trigger level, a dotted line across the plot. */
+static void el_trigger_line(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    if ((x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
+        strip_put(s, f->trig_y, f->th->trigger);
+}
+
+/* The mask's bounds, under the traces. */
+static void el_mask_bounds(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)x;
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        if (c->bound_lo[ch] >= 0) strip_put(s, c->bound_lo[ch], f->th->text_secondary);
+        if (c->bound_hi[ch] >= 0) strip_put(s, c->bound_hi[ch], f->th->text_secondary);
+    }
+}
+
+/* The traces: CH1, then CH2 over it. */
+static void el_traces(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)f; (void)x;
+    for (uint8_t ch = 0; ch < 2u; ch++)
+        if (c->on[ch]) strip_span(s, c->lo[ch], c->hi[ch], c->color[ch]);
+}
+
+/* The demo picture and its "DEMO" mark, in the warning colour beside the
+ * trace: the waveform is what catches the eye and it is the thing that is
+ * not real. */
+static void el_demo(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    if (!f->demo) return;
+    static const int8_t sine_percent[DEMO_STEPS] = {
          0, 10, 19, 29, 38, 47, 56, 63, 71, 77, 83, 88, 92, 96, 98, 99,
         100, 99, 98, 96, 92, 88, 83, 77, 71, 63, 56, 47, 38, 29, 19, 10,
          0,-10,-19,-29,-38,-47,-56,-63,-71,-77,-83,-88,-92,-96,-98,-99,
        -100,-99,-98,-96,-92,-88,-83,-77,-71,-63,-56,-47,-38,-29,-19,-10,
     };
+    const theme_t *const th = f->th;
+    const scope_state_t *const ss = f->ss;
+    static const char label[] = "DEMO";
+    const int lx = (int)x - DEMO_LABEL_X;
+    if (lx >= 0 && lx < (int)font_string_width(label, &font_small))
+        for (int dy = 0; dy < (int)font_small.height; dy++)
+            if (font_text_px(label, &font_small, lx, dy))
+                strip_put(s, DEMO_LABEL_Y + dy, th->warning);
 
-    /* CH1: sine wave, smaller at higher range indices */
-    if (ss->ch1.enabled) {
-        int16_t ch1_center = SCOPE_MID_Y - ss->ch1.position;
-        int16_t amplitude = 40 - (int16_t)(ss->ch1.vdiv_idx * 2);
-        if (amplitude < 10) amplitude = 10;
-
-        for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-            uint8_t idx = (uint8_t)((x * 4 + draw_frame) & 0x3F);
-            int16_t y = ch1_center - (sin_lut[idx] * amplitude / 100);
-            if (y >= SCOPE_TOP && y < SCOPE_BOT) {
-                lcd_set_pixel(x, (uint16_t)y, th->ch1);
-                if (y + 1 < SCOPE_BOT)
-                    lcd_set_pixel(x, (uint16_t)(y + 1), th->ch1);
-            }
-        }
+    const uint8_t phase = (uint8_t)((x * DEMO_STEPS_PER_COLUMN + f->demo_phase) % DEMO_STEPS);
+    if (ss->ch1.enabled) {              /* a sine, smaller at higher range indexes */
+        int amp = DEMO_SINE_AMP_ROWS - (int)ss->ch1.vdiv_idx * DEMO_SINE_AMP_PER_RANGE;
+        if (amp < DEMO_SINE_AMP_MIN) amp = DEMO_SINE_AMP_MIN;
+        const int y = SCOPE_MID_Y - ss->ch1.position - sine_percent[phase] * amp / 100;
+        if (y >= s->lo) strip_span(s, y, y + 1, th->ch1);
     }
-
-    /* CH2: square wave */
-    if (ss->ch2.enabled) {
-        int16_t ch2_center = SCOPE_MID_Y + 50 - ss->ch2.position;
-
-        for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-            uint8_t phase = (uint8_t)((x * 4 + draw_frame) & 0x3F);
-            int16_t y = ch2_center + (phase < 32 ? -25 : 25);
-            if (y >= SCOPE_TOP && y < SCOPE_BOT)
-                lcd_set_pixel(x, (uint16_t)y, th->ch2);
-
-            /* Vertical edges */
-            if (x > 0) {
-                uint8_t prev = (uint8_t)(((x - 1) * 4 + draw_frame) & 0x3F);
-                if ((prev < 32) != (phase < 32)) {
-                    int16_t y1 = ch2_center - 25;
-                    int16_t y2 = ch2_center + 25;
-                    for (int16_t yy = y1; yy <= y2; yy++) {
-                        if (yy >= SCOPE_TOP && yy < SCOPE_BOT)
-                            lcd_set_pixel(x, (uint16_t)yy, th->ch2);
-                    }
-                }
-            }
+    if (ss->ch2.enabled) {              /* a square, its edges joined */
+        const int mid = SCOPE_MID_Y + DEMO_SQUARE_OFFSET - ss->ch2.position;
+        const bool high = phase < DEMO_STEPS / 2u;
+        strip_put(s, mid + (high ? -DEMO_SQUARE_AMP_ROWS : DEMO_SQUARE_AMP_ROWS), th->ch2);
+        if (x > 0) {
+            const uint8_t before = (uint8_t)(((x - 1u) * DEMO_STEPS_PER_COLUMN + f->demo_phase) % DEMO_STEPS);
+            if ((before < DEMO_STEPS / 2u) != high)
+                strip_span(s, mid - DEMO_SQUARE_AMP_ROWS, mid + DEMO_SQUARE_AMP_ROWS, th->ch2);
         }
     }
 }
 
-/* ── Persistence overlay ──
- * The bottom layer shows what earlier frames left in the buffer, BEFORE this
- * frame's trace goes on top; the channel renderers add this frame's trace as
- * they draw it (persist_note), for the next frames. The fade runs on wall
- * time (persist_decay_ms), so 500 ms / 1 s mean that whatever the frame
- * rate. One buffer holds both channels, so a ghost's colour comes from its
- * row (persist_base). */
-
-/* Before the ghosts are read, every frame and in either renderer: clear
- * them if the signal-to-screen mapping moved (persist_follow_geometry: one
- * place that sees keys, shell sets, autoset and loads alike), then fade by
- * the wall time since the last call. */
-void persist_frame_decay(void)
+/* The mask verdict of this column: MASK_STRIP_H rows at the band's bottom. */
+static void el_mask_strip(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
-    const scope_state_t *gss = scope_state_get();
-#if FEATURE_FFT
-    const uint8_t gview = (uint8_t)scope_view;
-#else
-    const uint8_t gview = 0u;
+    (void)f;
+    if (!c->strip_color) return;
+    for (int y = s->hi - (int)MASK_STRIP_H; y < s->hi; y++)
+        if (!c->strip_dotted || ((x + (unsigned)y) & 1u) == 0u) strip_put(s, y, c->strip_color);
+}
+
+/* The math trace, its zero tick at the left edge and its label. */
+static void el_math(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    if (!f->mth) return;
+    const uint16_t color = f->th->warning;
+    if (f->mf.ok && x < MATH_ZERO_TICK_W) strip_put(s, SCOPE_GRID_MID_Y, color);
+    if (c->mhi >= c->mlo) strip_span(s, c->mlo, c->mhi, color);
+    if (c->mcol)
+        for (int dy = 0; dy < (int)font_small.height; dy++)
+            if (font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, dy))
+                strip_put(s, SCOPE_TOP + dy, color);
+}
+
+/* The ground tags (left edge) and the trigger-level tag (right edge). */
+static void el_tags(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    if (!c->edge) return;
+    for (int y = s->lo; y < s->hi; y++) {
+        uint16_t color;
+        if (markers_px(&f->pm, (int)x, y, f->th->background, &color)) strip_put(s, y, color);
+    }
+}
+
+/* The pointer over the column where the trigger point landed
+ * (g_place.trig_x), which the soft-trigger fallback may put elsewhere than
+ * it was asked. */
+static void el_trigger_pointer(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    if (!c->tcol) return;
+    for (int y = SCOPE_TOP; y < SCOPE_TOP + PM_TPOS_H; y++)
+        if (tpos_px(g_place.trig_x, (int)x, y)) strip_put(s, y, f->th->trigger);
+}
+
+/* Cursor lines and their labels, over everything (the readout is in the
+ * measurement strip's AUX row). */
+static void el_cursors(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    if (!f->curs) return;
+    for (int y = s->lo; y < s->hi; y++) {
+        uint16_t color;
+        if (cursor_layer_px(&f->cl, (int)x, y, &color)) strip_put(s, y, color);
+    }
+}
+
+/* What Y-T draws, lowest layer first. */
+static const yt_element_fn yt_elements[] = {
+    el_ground,
+    el_grid,
+    el_trigger_line,
+    el_mask_bounds,
+    el_traces,
+    el_demo,
+    el_mask_strip,
+    el_math,
+    el_tags,
+    el_trigger_pointer,
+    el_cursors,
+};
+
+#if FEATURE_BENCHSHELL
+/* `fpga scope livecheck`: every pixel of column x against the per-pixel
+ * rule, one chain of tests from the top layer down in the elements' order.
+ * It checks that the elements, each painting only the rows it can occupy,
+ * give what the rule gives; the rule is written here a second time on
+ * purpose. Counts the pixels that differ; draws nothing. The demo picture is
+ * not part of the rule (called for a record only). */
+static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    const theme_t *const th = f->th;
+    const uint16_t mstrip = c->strip_color;
+    const bool mdot = c->strip_dotted;
+    for (uint16_t y = (uint16_t)s->lo; y < (uint16_t)s->hi; y++) {
+        uint16_t want;
+        if (f->curs && cursor_layer_px(&f->cl, (int)x, (int)y, &want))
+            ;                                      /* cursor lines and labels */
+        else if (c->tcol && y < SCOPE_TOP + PM_TPOS_H && tpos_px(g_place.trig_x, (int)x, (int)y))
+            want = th->trigger;                    /* trigger-position pointer */
+        else if (c->edge && markers_px(&f->pm, (int)x, (int)y, th->background, &want))
+            ;                                      /* ground / trigger tags */
+        else if (c->mcol && y < SCOPE_TOP + font_small.height &&
+                 font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - SCOPE_TOP))
+            want = th->warning;                    /* math label */
+        else if ((int16_t)y >= c->mlo && (int16_t)y <= c->mhi)
+            want = th->warning;                    /* math trace */
+        else if (f->mth && f->mf.ok && x < MATH_ZERO_TICK_W && y == SCOPE_GRID_MID_Y)
+            want = th->warning;                    /* math zero tick */
+        else if (mstrip && y >= (uint16_t)s->hi - MASK_STRIP_H && (!mdot || ((x + y) & 1u) == 0u))
+            want = mstrip;
+        else if (c->on[1] && (int16_t)y >= c->lo[1] && (int16_t)y <= c->hi[1])
+            want = c->color[1];
+        else if (c->on[0] && (int16_t)y >= c->lo[0] && (int16_t)y <= c->hi[0])
+            want = c->color[0];
+        else if ((int16_t)y == c->bound_lo[0] || (int16_t)y == c->bound_hi[0] ||
+                 (int16_t)y == c->bound_lo[1] || (int16_t)y == c->bound_hi[1])
+            want = th->text_secondary;
+        else if ((int16_t)y == f->trig_y && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
+            want = th->trigger;
+        else if (c->inwin && (y == SCOPE_GRID_MID_Y || x == SCOPE_GEOM_CENTER_COL))
+            want = th->grid_center;
+        else if (c->inwin &&
+                 ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
+                  (((y - SCOPE_TOP) % SCOPE_DIV_PX) == 0 && (x & 1u) == 0)))
+            want = th->grid;
+        else {
+            const uint8_t in = f->pbuf ? f->pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x] : 0u;
+            want = in ? yt_ghost(in, y, f->pbase_top, f->pbase_bot, th->background) : th->background;
+        }
+        const uint16_t got = s->px[y - (uint16_t)s->lo];
+        live_check_pixels++;
+        if (want != got && live_check_diffs++ == 0) {
+            live_check_first_x = x; live_check_first_y = y;
+            live_check_first_want = want; live_check_first_got = got;
+        }
+    }
+}
 #endif
-    (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss)),
-                                  gss->running);
-    static uint32_t last_tick;
-    static bool     have_tick;
-    uint32_t now = (uint32_t)xTaskGetTickCount() * (1000u / configTICK_RATE_HZ);
-    persist_decay_ms(have_tick ? (uint32_t)(now - last_tick) : 0u);
-    last_tick = now;
-    have_tick = true;
+
+/* Paint column x of the band into s: the canvas's paint function. */
+static void yt_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    yt_frame_t *const f = ctx;
+    yt_col_t c;
+    yt_column(f, x, &c);
+    for (unsigned i = 0; i < sizeof(yt_elements) / sizeof(yt_elements[0]); i++)
+        yt_elements[i](f, &c, x, s);
+#if FEATURE_BENCHSHELL
+    if (live_check_frames && f->record) yt_check_column(f, &c, x, s);
+#endif
+    /* Feed persistence with this column's traces, now that its ghosts have
+     * been read: a ghost is where the trace was, through the map that drew
+     * it. */
+    if (f->pbuf && c.trace)
+        for (uint8_t ch = 0; ch < 2u; ch++)
+            if (c.on[ch]) persist_note(x, c.from[ch], c.y[ch]);
 }
 
-/* A ghost's base colour at screen row y: the enabled channel's when only one
- * is on; with both on, by band (CH1 above SCOPE_MID_Y, CH2 below) when the
- * bands are split, neutral when they overlap (one buffer cannot say whose a
- * ghost is). */
-uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y)
+/* Draw the Y-T plot: one canvas frame in column strips over the band
+ * (SCOPE_TOP down to the measurement strip's top), all LCD_WIDTH columns.
+ * all: send every column (a full redraw); otherwise only the columns whose
+ * pixels changed. The glass never shows a blank band either way. The popup
+ * box is a hole of the frame, not a layer: its glyphs are the one thing the
+ * elements cannot recompute per pixel, so the canvas steps around it, and
+ * when the popup ends the hole closes and the next frame paints the band
+ * back. Not drawn here: the measurement strip and the popup box itself.
+ * Changes: what yt_prepare changes, the persistence buffer (feed),
+ * popup_hole_last and the `ui dump` counters. */
+void scope_yt_draw(bool all, uint32_t frame)
 {
-    if (!(ss->ch1.enabled && ss->ch2.enabled))
-        return ss->ch1.enabled ? th->ch1 : th->ch2;
-    const bool split = yt_vmap_split(true, true,
-        ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
-        ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx));
-    if (!split) return th->text_secondary;
-    return (y < SCOPE_MID_Y) ? th->ch1 : th->ch2;
-}
+    yt_frame_t f;
+    yt_prepare(&f, frame);
 
-/* Full redraw: fade the buffer, then paint every non-zero ghost at its
- * intensity of persist_base's colour. Nothing when persistence is off. */
-void draw_persistence_overlay(void)
-{
-    if (!persist_enabled || !persist_is_initialized()) return;
-    persist_frame_decay();
+    const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
+    const bool hole = popup_live() && POPUP_Y < f.band_bot && POPUP_Y + POPUP_H > SCOPE_TOP;
+    popup_hole_last = hole;         /* the box has rows inside the band and was left alone */
 
-    const theme_t *th = theme_get();
-    const scope_state_t *ss = scope_state_get();
-    const uint8_t *buf = persist_get_buffer();
-    if (!buf) return;
+    const canvas_frame_t cf = {
+        .rect = { 0, SCOPE_TOP, LCD_WIDTH, (uint16_t)(f.band_bot - SCOPE_TOP) },
+        .holes = &popup, .nholes = hole ? 1u : 0u,
+        .all = all,
+        .paint = yt_paint_column, .ctx = &f,
+    };
+    const uint32_t send0 = lcd_perf_column_cycles;
+    const uint16_t cols_sent = canvas_draw_columns(&cf);
 
-    for (uint16_t y = 0; y < PERSIST_HEIGHT; y++) {
-        const uint16_t base = persist_base(ss, th, (uint16_t)(y + SCOPE_TOP));
-        for (uint16_t x = 0; x < PERSIST_WIDTH; x++) {
-            uint8_t intensity = buf[y * PERSIST_WIDTH + x];
-            if (intensity > 0) {
-                uint16_t color = persist_scale_rgb565(base, intensity);
-                if (color != 0x0000)
-                    lcd_set_pixel(x, y + SCOPE_TOP, color);
-            }
-        }
-    }
-}
+    ui_scope_live_cols_sent = cols_sent;
+    ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
+    ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);
 
-/* ── Math trace ──
- * Reads the same 301-column window the traces were drawn from (yt_cols).
- * Volts where the range is calibrated, counts where not. Drawn about the
- * graticule centre on its OWN scale (a 1-2-5 step per division chosen from
- * the result, shown in the label): A*B and A/B share no graticule with A
- * and B. */
-
-/* Prepare one frame of the math trace into mf, for both renderers:
- *   1. ok only with a record drawn this frame and the op's inputs on;
- *      otherwise only the "--" label.
- *   2. the inputs' scales (rec_zero, rec_vpc) and the result's unit;
- *   3. the peak over the window, the 1-2-5 step that fits it, never finer
- *      than the source channel's own division;
- *   4. the cursors' view of that scale (g_math_cur) and the label. */
-void math_prepare(const scope_state_t *ss, math_frame_t *mf)
-{
-    memset(mf, 0, sizeof(*mf));
-    mf->op = ((math_op_t)math_op < MATH_COUNT) ? (math_op_t)math_op : MATH_ADD;
-    const math_op_t op = mf->op;
-    const volatile uint8_t *s1 = fpga_get_ch1_buf();
-    const volatile uint8_t *s2 = fpga_get_ch2_buf();
-    mf->ok = g_math_live
-        && (!math_op_uses_a(op) || (ss->ch1.enabled && s1 != NULL))
-        && (!math_op_uses_b(op) || (ss->ch2.enabled && fpga_acq_record_has_ch(1u) && s2 != NULL));
-    if (!mf->ok) {
-        /* No record, or a channel the op reads is off: say so, draw nothing. */
-        snprintf(mf->label, sizeof(mf->label), "M:%s --", math_channel_name(op));
-        return;
-    }
-    mf->in.zero_a = rec_zero(ss, 0u);
-    mf->in.zero_b = rec_zero(ss, 1u);
-    mf->in.k_a = rec_vpc(ss, 0u);
-    mf->in.k_b = rec_vpc(ss, 1u);
-    const math_unit_t unit = math_unit_for(op, &mf->in);
-
-    /* The peak over the window, in 64-column chunks (no 301-float scratch). */
-    enum { CH = 64 };
-    uint8_t a[CH], b[CH];
-    float v[CH];
-    float peak = 0.0f;
-    for (uint16_t x0 = g_view_first; x0 < g_view_end; x0 += CH) {
-        const uint16_t nc = (g_view_end - x0 < CH) ? (uint16_t)(g_view_end - x0) : CH;
-        for (uint16_t i = 0; i < nc; i++) {
-            a[i] = yt_cols[0][x0 + i];
-            b[i] = yt_cols[1][x0 + i];
-        }
-        math_compute(op, a, b, nc, &mf->in, v);
-        const float pk = math_peak(v, nc);
-        if (pk > peak) peak = pk;
-    }
-
-    /* Scale choice keeps its last step while it still fits (no flicker). */
-    static int scale_idx = -1;
-    static uint8_t scale_key = 0xFFu;
-    const uint8_t key = (uint8_t)(op | ((uint8_t)unit << 4));
-    if (key != scale_key) { scale_idx = -1; scale_key = key; }
-    scale_idx = math_scale_pick(peak, scale_idx);
-    /* Never finer than the source channel's own division, so ADC noise on a
-     * quiet result (A-B of one signal) stays a flat line, not a full screen. */
-    const int floor_idx = math_scale_floor_idx(
-        math_step_floor(op, &mf->in, SCOPE_CAL_COUNTS_PER_DIV));
-    if (scale_idx < floor_idx) scale_idx = floor_idx;
-    mf->step = math_scale_value(scale_idx);
-
-    /* The cursors' view of this scale: `step` per SCOPE_DIV_PX rows. */
-    g_math_cur.on = true;
-    g_math_cur.direct = (unit == MATH_UNIT_VOLTS)  ? SCOPE_CURSOR_DIRECT_VOLTS
-                      : (unit == MATH_UNIT_COUNTS) ? SCOPE_CURSOR_DIRECT_COUNTS
-                                                   : SCOPE_CURSOR_DIRECT_NONE;
-    g_math_cur.unit_per_px = mf->step / (float)SCOPE_DIV_PX;
-    {
-        scope_cursor_conf_t c = SCOPE_CURSOR_MEASURED;
-        if (math_op_uses_a(op)) {
-            scope_cursor_conf_t ca = scope_cursor_cal_conf(1u, ss->ch1.vdiv_idx);
-            if (ca < c) c = ca;
-        }
-        if (math_op_uses_b(op)) {
-            scope_cursor_conf_t cb = scope_cursor_cal_conf(2u, ss->ch2.vdiv_idx);
-            if (cb < c) c = cb;
-        }
-        g_math_cur.conf = c;
-    }
-    char sc[16];
-    math_scale_label(scale_idx, unit, sc, sizeof(sc));
-    snprintf(mf->label, sizeof(mf->label), "M:%s %s", math_channel_name(op), sc);
-}
-
-/* The math trace's row at column x (within [g_view_first, g_view_end)). */
-int16_t math_row(const math_frame_t *mf, uint16_t x)
-{
-    const uint8_t a = yt_cols[0][x], b = yt_cols[1][x];
-    float v;
-    int16_t row;
-    math_compute(mf->op, &a, &b, 1u, &mf->in, &v);
-    math_to_rows(&v, 1u, mf->step, SCOPE_DIV_PX, SCOPE_GRID_MID_Y, SCOPE_TOP, SCOPE_BOT, &row);
-    return row;
-}
-
-/* Full redraw: the math trace (joined columns), its zero tick at the left
- * edge and its label, all in th->warning. Nothing when math is off. */
-void draw_math_waveform(void)
-{
-    if (!math_enabled) return;
-    const theme_t *th = theme_get();
-    math_frame_t mf;
-    math_prepare(scope_state_get(), &mf);
-    if (mf.ok) {
-        int16_t prev = -1;
-        for (uint16_t x = g_view_first; x < g_view_end; x++) {
-            const int16_t r = math_row(&mf, x);
-            int16_t lo = r, hi = r;
-            if (prev >= 0) {
-                if (prev < lo) lo = prev;
-                if (prev > hi) hi = prev;
-            }
-            for (int16_t y = lo; y <= hi; y++)
-                lcd_set_pixel(x, (uint16_t)y, th->warning);
-            prev = r;
-        }
-        /* Zero marker of the math trace: a tick at the left edge. */
-        for (uint16_t x = 0; x < 6; x++)
-            lcd_set_pixel(x, SCOPE_GRID_MID_Y, th->warning);
-    }
-    font_draw_string(MATH_LABEL_X, SCOPE_TOP, mf.label, th->warning, th->warning, &font_small);
+#if FEATURE_BENCHSHELL
+    if (live_check_frames) live_check_frames--;
+#endif
 }

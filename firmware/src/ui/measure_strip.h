@@ -86,7 +86,7 @@ extern const uint8_t mstrip_show_priority[MSTRIP_PRM_COUNT];
 uint16_t measure_strip_shown(uint16_t mask);
 
 /* The `top` measure_strip_layout() would return, without filling cells: what
- * the live compositor calls every frame. */
+ * the plot asks for every frame (where its band ends). */
 uint16_t measure_strip_top(uint16_t mask1, bool en1, uint16_t mask2, bool en2,
                            bool hidden, bool aux, uint16_t bottom);
 

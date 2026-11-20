@@ -68,7 +68,7 @@ extern "C" {
 
 /*
  * One screen column is one sample. This is a property of the RENDERER —
- * draw_channel() and the live compositor plot buf[x] at column x — not
+ * the Y-T plot draws buf[x] at column x (yt_column, scope_yt.c) — not
  * of the capture. scope_furniture.c carries a compile-time assertion tying the two
  * together, so changing the plot without changing this is a build error
  * rather than a silently wrong dt.

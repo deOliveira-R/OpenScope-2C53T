@@ -1,16 +1,20 @@
 # Display architecture
 
-Status: agreed design, not yet implemented (2026-11-20). The live Y-T trace
-already works the way the canvas below describes (`draw_scope_live_frame`
-in `firmware/src/ui/scope_live.c`); everything else still has its own renderer.
+Status: agreed design (2026-11-20). Steps 1 and 2 of the order of work are
+done: the canvas (`firmware/src/ui/canvas.c`) and Y-T as the first display
+type (`firmware/src/ui/scope_yt.c`), whose full redraw and live update are
+the same frame. Every other view still has its own renderer.
 
 ## Why
 
-Each view of the scope (Y-T, roll, X-Y, spectrum, split, waterfall) has its
-own drawing code, and the Y-T view has two (a full redraw and a live update).
-They compose pixels in different ways, so they can disagree, a speed-up of one
-does not help the others (a live Y-T frame takes 35 ms, a full redraw 200 to
-290 ms), and a new view starts from a copy of an old one. Other instruments
+Each view of the scope (Y-T, roll, X-Y, spectrum, split, waterfall) had its
+own drawing code, and the Y-T view had two (a full redraw and a live update).
+They composed pixels in different ways, so they could disagree (measured on
+the unit before step 2: the full redraw drew a flat trace one row thick and
+the live update two; they ordered the mask bounds and two crossing cursors
+differently), a speed-up of one did not help the others (a live Y-T frame
+took 35 ms, a full redraw 200 to 290 ms), and a new view starts from a copy
+of an old one. Other instruments
 that want a trace (the CAN scope, a meter trend) cannot reuse a view at all.
 
 ## The parts
@@ -117,12 +121,18 @@ another instrument gets a view without copying it.
 ## Order of work
 
 Each step keeps the picture the same and is checked pixel by pixel against
-the code it replaces (as `fpga scope livecheck` does today).
+the code it replaces (`fpga scope livecheck` on the unit; the plot read back
+from the screenshot copy after a full redraw and after a live update).
 
-1. Canvas, column strips: lift the draw cycle (strip buffer, hash, send,
-   hole, screenshot copy) out of `draw_scope_live_frame`.
-2. Y-T as the first display type, its elements against axes; the full redraw
-   becomes the canvas with every strip changed.
+1. Done. Canvas, column strips: the draw cycle (strip buffer, hash, send,
+   holes) lifted out of the live Y-T frame. Checked by
+   `firmware/tests/test_canvas.c` against a model of the glass.
+2. Done. Y-T as the first display type: a frame built once, a list of
+   elements painted in order into each column strip; the full redraw is the
+   canvas with every strip sent (67 ms where it took 215 to 250 ms, and the
+   plot is no longer blanked first). Where the two old renderers disagreed
+   the live update's rule was kept. Its elements still read the Y-T maps
+   directly; axes as an interface come with the second type (step 5).
 3. Clipping roles in the trace element; the record's clip flag in the stream.
 4. Cursors as span elements (today one test per pixel, 80 to 89 ms a frame).
 5. Roll, then the spectrum (cursors on frequency and level come with it).

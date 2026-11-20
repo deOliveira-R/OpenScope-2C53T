@@ -2,9 +2,9 @@
  * OpenScope 2C53T - shared between the files of the oscilloscope screen
  *
  * The layout constants, shared types and cross-file symbols of scope_ui.c
- * and the scope_*.c drawing files (scope_view, scope_yt, scope_cursor_draw,
- * scope_live, scope_xy, scope_roll_draw, scope_spectrum, scope_waterfall,
- * scope_furniture, scope_popup). Nothing else includes this; the public
+ * and the scope_*.c drawing files (scope_view, scope_yt, scope_yt_frame,
+ * scope_cursor_draw, scope_xy, scope_roll_draw, scope_spectrum,
+ * scope_waterfall, scope_furniture, scope_popup). Nothing else includes this; the public
  * interface is ui.h.
  */
 #ifndef SCOPE_UI_PARTS_H
@@ -66,22 +66,6 @@
 /* The graticule's centre line: the 4th of the lines ruled every SCOPE_DIV_PX
  * rows from SCOPE_TOP. True scale puts 0 V (position 0) on it. */
 #define SCOPE_GRID_MID_Y (SCOPE_TOP + 4 * SCOPE_DIV_PX)
-
-#ifndef SCOPE_PLOT_STOP_BOX
-/* The red STOP box on the plot (top centre), on by default. The status
- * bar's RUN/STOP/ARM tab also shows the state, so -DSCOPE_PLOT_STOP_BOX=0
- * builds without the box. */
-#define SCOPE_PLOT_STOP_BOX 1
-
-#endif
-/* The STOP box's size and place. */
-#define STOP_BOX_W      40
-
-#define STOP_BOX_H      16
-
-#define STOP_BOX_X      ((LCD_WIDTH - STOP_BOX_W) / 2)
-
-#define STOP_BOX_Y      (SCOPE_TOP + PM_TPOS_H + 1)   /* under the trigger-position pointer */
 
 /* Bottom of the measurement strip (measure_strip.h anchors its rows there). */
 #define STRIP_BOTTOM    SCOPE_BOT
@@ -166,13 +150,12 @@ typedef struct { pm_tag_t t[3]; } pm_set_t;
  * map, dotted: only on the columns where this is true. */
 #define MASK_BOUND_DOT(x) (((x) & 1u) == 0u)
 
-/* Height of the mask verdict strip at the bottom of the live band, rows. */
+/* Height of the mask verdict strip at the bottom of the band, rows. */
 #define MASK_STRIP_H 3u
 
-/* The cursor layer, as both renderers draw it: dashed lines over the live
- * band (the selected one solid) and their V1/V2/H1/H2 labels, transparent
- * text. Built once per frame (cursor_layer_build); cursor_layer_px() is the
- * live frame's per-pixel form, draw_cursors() the full redraw's. */
+/* The cursor layer: dashed lines over the band (the selected one solid) and
+ * their V1/V2/H1/H2 labels, transparent text. Built once per frame
+ * (cursor_layer_build) and read per pixel (cursor_layer_px). */
 typedef struct {
     bool     v, h;
     int16_t  vx[2], hy[2];
@@ -182,10 +165,9 @@ typedef struct {
     struct { int16_t x, y, w; char s[3]; uint16_t c; } lab[4];
 } cur_layer_t;
 
-/* ── Math trace (stock's 8 ops on the records; scope_yt.c) ── */
+/* ── Math trace (stock's 8 ops on the records; scope_yt_frame.c) ── */
 
-/* One frame of the math trace, shared by the full redraw and the live frame
- * (math_prepare): the inputs, the 1-2-5 step per division chosen from this
+/* One frame of the math trace (math_prepare): the inputs, the 1-2-5 step per division chosen from this
  * window, and the label. */
 typedef struct {
     bool       ok;
@@ -238,18 +220,17 @@ extern ui_draw_scratch_t ui_draw_scratch;
 /* scope_popup.c */
 /* A plot popup is set (stays set until a frame is drawn without the box). */
 extern bool     popup_on;
-/* The last live frame left the popup's rectangle untouched (a hole). */
+/* The last frame left the popup's rectangle untouched (a hole). */
 extern bool     popup_hole_last;
 /* The plot popup is set and its time has not run out. */
 bool popup_live(void);
 /* Paint the popup box with its text. */
 void draw_popup_box(const theme_t *th);
-/* Full redraw: paint the box while the popup lives, end it once expired. */
+/* After a full frame: paint the box if the frame kept its hole, else end
+ * the popup. */
 void draw_popup(const theme_t *th);
 
 /* scope_furniture.c */
-/* The STOP box over the plot while stopped (when SCOPE_PLOT_STOP_BOX). */
-void draw_run_stop(const scope_state_t *ss, const theme_t *th);
 /* Top row of the measurement strip: the live band ends here. */
 uint16_t strip_top(const scope_state_t *ss);
 /* The measurement strip's rows and cells for the current state. */
@@ -313,8 +294,11 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2);
 
 /* scope_yt.c */
-/* Full redraw: the dotted trigger-level line at row trig_y. */
-void draw_trigger_line(const theme_t *th, int16_t trig_y);
+/* Draw the Y-T plot through the canvas: every column (all) or only the
+ * columns that changed. frame: the display's frame counter. */
+void scope_yt_draw(bool all, uint32_t frame);
+
+/* scope_yt_frame.c */
 /* Each plotted band's vertical transform this frame, for the cursors. */
 extern vband_t g_vband[2];
 /* The math trace's scale as the cursors read it. */
@@ -333,10 +317,10 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
                        const autofit_t *a, float counts_per_pixel);
 /* Row of the hardware trigger level through map a. */
 int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a);
-/* trigger_marker_y on the trigger source's map, building the window first. */
-int16_t trigger_marker_y_full(const scope_state_t *ss);
 /* The two Y-T maps for the window in yt_cols. */
 void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2);
+/* Both maps off: nothing is plotted. */
+void yt_fits_none(autofit_t *a1, autofit_t *a2);
 /* Build the plot-edge tag set m from the maps as drawn. */
 void markers_build(const scope_state_t *ss, const theme_t *th,
                           const autofit_t *a1, const autofit_t *a2,
@@ -344,19 +328,17 @@ void markers_build(const scope_state_t *ss, const theme_t *th,
 /* Colour of tag set m at pixel (x, y), or false. */
 bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
                               uint16_t *c);
-/* Full redraw: paint tag set m. */
-void draw_plot_markers(const pm_set_t *m, const theme_t *th);
 /* Draw the mask bounds over the traces this frame. */
 extern bool     g_mask_bounds_on;
 /* Arm the mask overlay for this frame (after view_build). */
 void mask_overlay_begin(void);
+/* No mask overlay this frame. */
+void mask_overlay_off(void);
 /* Channel ch failed the mask at column x. */
 bool mask_px_fail(int8_t ch, int x);
 /* Mask strip colour of column x, or 0; *dotted for every other pixel. */
 uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted);
-/* Full redraw: the mask strip above band_bot. */
-void draw_mask_strip(const theme_t *th, uint16_t band_bot);
-/* A record was drawn this frame, so yt_cols is valid for the math trace. */
+/* A record is drawn this frame, so yt_cols is valid for the math trace. */
 extern bool     g_math_live;
 /* Add trace rows prev_y..y at column x to the persistence buffer. */
 void persist_note(uint16_t x, int16_t prev_y, int16_t y);
@@ -364,22 +346,16 @@ void persist_note(uint16_t x, int16_t prev_y, int16_t y);
 void persist_frame_decay(void);
 /* A ghost's base colour at screen row y. */
 uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y);
-/* Full redraw: fade and paint the persistence buffer. */
-void draw_persistence_overlay(void);
 /* Prepare this frame's math trace: inputs, scale, label, cursor scale. */
 void math_prepare(const scope_state_t *ss, math_frame_t *mf);
 /* Row of the math trace at column x. */
 int16_t math_row(const math_frame_t *mf, uint16_t x);
-/* Full redraw: the math trace, its zero tick and label. */
-void draw_math_waveform(void);
 
 /* scope_cursor_draw.c */
 /* Build the cursor layer L from the cursor state. */
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L);
 /* Colour of cursor layer L at pixel (x, y), or false. */
 bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c);
-/* Full redraw: cursor lines and labels over [SCOPE_TOP, band_bot). */
-void draw_cursors(uint16_t band_bot);
 /* Repaint the cursor readout row when its text changed, or when force. */
 void cursor_row_paint(const scope_state_t *ss, bool force);
 

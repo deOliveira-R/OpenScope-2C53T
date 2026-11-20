@@ -48,9 +48,8 @@
  * fft.avg / fft.maxhold are stored-only by design until an FFT pane exists.
  *
  * DISPLAY (display task). draw / tick / epoch are the scope's paint module
- * (scope_view_*, main.c in the firmware): the per-column compositor, the
- * heartbeat and the redraw gate, moved behind the screen's hooks as they
- * were. scope_screen_epochs() says what changed for it: see there.
+ * (scope_view_*, main.c in the firmware): the full and live frames, the
+ * heartbeat and the redraw gate, behind the screen's hooks. scope_screen_epochs() says what changed for it: see there.
  *
  * `ui screen`: no describe() of its own; focus=, ach=, run=, view= are the
  * properties ui.focus, ui.ach, view.run, view.mode, as before.
@@ -100,8 +99,8 @@ uint32_t scope_screen_cursor_epoch(void);
  *   whole   another kind of view: the whole screen once (as a key's change);
  *   layout  the layout part moved: the redraw gate repaints the view in full
  *           (its epoch is `layout`);
- *   live    a soft change or a cursor line, where the per-column compositor
- *           serves the view: one live frame (and the strip's cells at once
+ *   live    a soft change or a cursor line, where a live frame serves the
+ *           view: one live frame (and the strip's cells at once
  *           when `strip`);
  *   force   a soft change where it does not (the other views, no record
  *           yet, the emulator): the view in full, as before B7.

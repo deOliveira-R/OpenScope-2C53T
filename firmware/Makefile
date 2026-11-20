@@ -38,8 +38,8 @@ C_SOURCES += src/ui/scope_popup.c
 C_SOURCES += src/ui/scope_furniture.c
 C_SOURCES += src/ui/scope_view.c
 C_SOURCES += src/ui/scope_yt.c
+C_SOURCES += src/ui/scope_yt_frame.c
 C_SOURCES += src/ui/scope_cursor_draw.c
-C_SOURCES += src/ui/scope_live.c
 C_SOURCES += src/ui/canvas.c
 C_SOURCES += src/ui/scope_xy.c
 C_SOURCES += src/ui/scope_roll_draw.c
@@ -328,9 +328,6 @@ MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
 # C defines
 C_DEFS  = -DAT32F403AVGT7
 C_DEFS += $(FEATURE_DEFS)
-# UI round 1: the status bar's RUN/STOP/ARM tab (R1-B) replaces the red STOP
-# box on the plot (R1-C, scope_ui.c).
-C_DEFS += -DSCOPE_PLOT_STOP_BOX=0
 
 # Compiler flags
 CFLAGS  = $(MCU) $(C_DEFS) $(C_INCLUDES)
@@ -1413,7 +1410,7 @@ $(BUILD_DIR)/test_icons: tests/test_icons.c src/ui/icons.c src/ui/icons.h src/ui
 		src/ui/icons.c src/dsp/siggen_wave.c src/fonts/font_small.c -o $@
 
 # Fonts: struct integrity, widths, clipping, and font_text_px() (the
-# per-pixel text the live compositors use) == what font_draw_string() sets.
+# per-pixel text the plot's elements use) == what font_draw_string() sets.
 $(BUILD_DIR)/test_font: tests/test_font.c src/fonts/font.c src/fonts/font.h \
                         src/fonts/font_small.c src/fonts/font_medium.c \
                         src/fonts/font_large.c src/fonts/font_xlarge.c | $(BUILD_DIR)

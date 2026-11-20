@@ -187,29 +187,28 @@ void delay_ms(uint32_t ms)
  * Cadences below are in display-task ticks (50 ms each).
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Floor between data-driven FULL repaints. The live compositor
- * (draw_scope_live_frame) is exempt — it never blanks — so this only
- * throttles the paths that do clear: FFT, split, waterfall, cursors-on,
- * and the pre-data demo state. 4 ticks = 5 Hz. */
+/* Floor between data-driven FULL repaints: frames that send every pixel,
+ * where a live frame sends only what changed. It throttles the views without
+ * a live frame (in the emulator, all of them) and the pre-data demo state.
+ * 4 ticks = 5 Hz. */
 #define SCOPE_FULL_MIN_FRAMES   4
 
 /* Cadence while the screen is genuinely a function of `frame`: the
  * synthetic demo waveform before the first real sample, and the
- * persistence overlay (which decays once per draw). Unchanged from the
- * pre-B2 tick so the demo animation looks the same. */
+ * persistence ghosts (which decay once per draw). */
 #define SCOPE_ANIM_TICK_FRAMES  20
 
-/* Idle heartbeat, split by whether the heartbeat blanks the screen: a
- * repaint when nothing the epoch sees has changed, so a frozen display can
- * be told from a hung task.
+/* Idle heartbeat, split by what the heartbeat costs: a repaint when nothing
+ * the epoch sees has changed, so a frozen display can be told from a hung
+ * task.
  *
- * When the flicker-free compositor (draw_scope_live_frame) is available the
- * heartbeat costs no blank and stays at 1 s. When it is not, the heartbeat
- * is a full clear-and-repaint, which flashed a settled screen once a second:
- * that one is backed off to 5 s. */
-#define SCOPE_IDLE_LIVE_FRAMES  20    /* 1 s, flicker-free */
+ * Where a live frame serves the view (draw_scope_live_frame) the heartbeat
+ * sends only what changed, usually nothing, and stays at 1 s. Where it does
+ * not, the heartbeat is a full repaint of the view: that one is backed off
+ * to 5 s. */
+#define SCOPE_IDLE_LIVE_FRAMES  20    /* 1 s, a live frame */
 #define SCOPE_STRIP_REFRESH_FRAMES 10 /* 500 ms: measurement cells in place */
-#define SCOPE_IDLE_FULL_FRAMES  100   /* 5 s, blanks — back it off */
+#define SCOPE_IDLE_FULL_FRAMES  100   /* 5 s, a full repaint */
 
 /* Draw accounting. Non-static on purpose: these are the evidence that
  * the gate works, and they need to be reachable from a debugger or a
@@ -359,31 +358,22 @@ static bool s_roll_view(void)
     return scope_state_get()->roll;
 }
 
-/* Can this frame be served by the flicker-free column compositor?
- * It draws the trace band only, so anything living outside that band or
- * layered on top (popup, cursors) forces the full path. */
+/* Is there a live frame for what the scope shows now: one that sends only
+ * what changed? */
 static bool scope_incremental_available(const scope_state_t *s)
 {
 #ifdef EMULATOR_BUILD
     (void)s;
-    return false;   /* draw_scope_live_frame reads FPGA buffers */
+    return false;   /* the emulator has no records: every view is drawn in full */
 #else
 #if FEATURE_FFT
-    /* FFT, split, waterfall and X-Y compose every pixel (no blank phase). */
+    /* FFT, split, waterfall and X-Y compose every pixel of each frame. */
     if (scope_view != SCOPE_VIEW_TIME) return true;
 #endif
-    /* Roll: its compositor needs no record and draws no cursors. */
+    /* Roll needs no record. */
     if (s->roll) return true;
-    /* A popup no longer disqualifies the compositor. It used to, and that is
-     * what made every timebase change blank the whole screen ten times over:
-     * the popup pinned the renderer to the full clear-then-redraw for its
-     * entire life. draw_scope_live_frame() now steps around the popup box.
-     * Cursors are a layer of the compositor (2026-11-13). */
-    /* Math and persistence (C12) are layers of the compositor too
-     * (2026-11-13). A re-sampled held
-     * record (zoom while paused, C14) no longer forces the full path: both
-     * renderers draw the one window view_build() fills (scope_view.c), blank
-     * columns included. */
+    /* Y-T: once a record has arrived. Before that the demo picture moves
+     * with the frame counter and is drawn in full at the animation rate. */
     return scope_acquisition_ready();
 #endif
 }
@@ -588,7 +578,7 @@ static void scope_render(uint32_t frame, redraw_action_t action)
     if (action == REDRAW_INCREMENTAL) {
         ui_scope_live_draws++;
         const uint32_t c0 = DWT->CYCCNT;
-        draw_scope_live_frame();
+        draw_scope_live_frame(frame);
         const uint32_t us = (DWT->CYCCNT - c0) / (system_core_clock / 1000000u);
         ui_scope_live_us_last = us;
         if (us > ui_scope_live_us_max) ui_scope_live_us_max = us;
@@ -673,22 +663,13 @@ redraw_action_t scope_view_tick(uint32_t frame)
          * (until 2026-11-13 this block was inside the running test
          * and a popup raised while stopped stayed up for good).
          *
-         * Previously: popup OR new SPI3 data OR an unconditional
-         * 1 s tick. The 1 s arm repainted a settled screen once a
-         * second forever, and the data arm ran the full
-         * clear-and-repaint at the capture rate in every view the
-         * live compositor cannot serve — the flash observed on
-         * the bench 2026-08-12.
-         *
-         * Now: redraw_gate_step() picks between skipping, the
-         * flicker-free compositor (unthrottled, so the live trace
-         * still updates at the capture rate) and a rate-capped
-         * full repaint, using an epoch over everything the screen
-         * renders. Rendering pass note (2026-08-12) still holds:
-         * the full clear-then-redraw path stays for popups (they
-         * overwrite the band and need erasing afterward), cursors
-         * (drawn only by the full path), the demo/pre-data state,
-         * and all button-driven DCMD redraws. */
+         * redraw_gate_step() picks between skipping, a live frame
+         * (unthrottled, so the trace updates at the capture rate)
+         * and a rate-capped full repaint, using an epoch over
+         * everything the screen renders. A full repaint is what a
+         * change of layout, a view without a live frame, the
+         * pre-data demo state and every button-driven DCMD redraw
+         * get. */
         static uint16_t last_spi3_ok = 0;
         uint16_t spi3_now = acq.spi3_ok_count;
         bool new_data = (spi3_now != last_spi3_ok);

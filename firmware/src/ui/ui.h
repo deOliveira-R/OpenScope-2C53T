@@ -276,12 +276,14 @@ extern fft_result_t     fft_result;
 void draw_splash(void);
 
 /* scope_ui.c */
-void draw_scope_grid(void);
-void draw_yt_traces(uint32_t frame);
+/* The Y-T screen. Both draw the plot through the same cycle and never blank
+ * it; frame is the display's frame counter.
+ *   draw_scope_screen      every column of the plot, the measurement strip
+ *                          and the popup box: after anything else drew
+ *                          there, or a change of layout.
+ *   draw_scope_live_frame  only the columns of the plot that changed. */
 void draw_scope_screen(uint32_t frame);
-void draw_scope_live_frame(void);  /* flicker-free trace-band update; falls
-                                      back to draw_scope_screen for popups/
-                                      cursors (see main.c scope branch) */
+void draw_scope_live_frame(uint32_t frame);
 void scope_show_popup(const char *text);
 bool scope_popup_active(void);
 /* Popups raised outside the scope (softkey UI P0). The display task calls
@@ -296,11 +298,10 @@ void ui_popup_overlay_cancel(void);
 uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf, int16_t *trig_x,
                                       uint8_t *anchor, bool *exact);
 
-/* Advance the quick-change popup on the flicker-free render path, painting the
- * box once on the frame it first appears. draw_scope_live_frame() steps the
- * trace band around the popup rectangle, so the box is never repainted while
- * it is up and the band restores itself once the countdown ends. Only the
- * incremental path needs this; the full path's draw_popup() does both jobs. */
+/* Advance the quick-change popup after a live frame, painting the box once
+ * on the frame it first appears. The plot steps around the popup rectangle,
+ * so the box is never repainted while it is up and the band restores itself
+ * once the countdown ends. draw_scope_screen() paints the box itself. */
 void scope_popup_overlay_tick(void);
 #if FEATURE_FFT
 /* The other views compose every pixel and never blank; `full` adds what

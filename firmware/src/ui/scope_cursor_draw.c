@@ -78,7 +78,23 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     if (fs_out) *fs_out = fs.hz;
 }
 
-/* Build the cursor layer L from the cursor state, for both renderers: the
+/* The line of a cursor that is not selected is dashed: CURSOR_DASH_LEN
+ * pixels on, as many off, along the line. */
+#define CURSOR_DASH_LEN     4
+#define CURSOR_DASH_ON(at)  (((at) & (2 * CURSOR_DASH_LEN - 1)) < CURSOR_DASH_LEN)
+
+/* Where a cursor's label sits. V1/V2: at the top of the plot, starting
+ * CURSOR_VLABEL_LEFT columns left of the line, or at column 0 when the line
+ * is within CURSOR_VLABEL_MIN_X of the left edge. H1/H2: against the right
+ * edge, its top CURSOR_HLABEL_ABOVE rows above the line (the font's 12 rows
+ * and one clear), or CURSOR_HLABEL_BELOW under it when the line is within
+ * CURSOR_HLABEL_BELOW rows of the plot's top. */
+#define CURSOR_VLABEL_LEFT   10
+#define CURSOR_VLABEL_MIN_X  12
+#define CURSOR_HLABEL_ABOVE  13
+#define CURSOR_HLABEL_BELOW  2
+
+/* Build the cursor layer L from the cursor state: the
  * vertical lines with V1/V2 labels at the top, the horizontal lines with
  * H1/H2 labels at the right edge. The selected cursor is solid and
  * highlighted, the other dashed. Empty when cursors are off. */
@@ -97,7 +113,7 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t 
             typeof(L->lab[0]) *t = &L->lab[L->nlab++];
             t->s[0] = 'V'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
             t->w = (int16_t)font_string_width(t->s, &font_small);
-            t->x = (int16_t)(L->vx[i] > 12 ? L->vx[i] - 10 : 0);
+            t->x = (int16_t)(L->vx[i] > CURSOR_VLABEL_MIN_X ? L->vx[i] - CURSOR_VLABEL_LEFT : 0);
             t->y = SCOPE_TOP;
             t->c = L->vc[i];
         }
@@ -113,14 +129,15 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t 
             t->s[0] = 'H'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
             t->w = (int16_t)font_string_width(t->s, &font_small);
             t->x = (int16_t)(LCD_WIDTH - 1 - t->w);
-            t->y = (int16_t)(L->hy[i] > SCOPE_TOP + 2 ? L->hy[i] - 13 : L->hy[i] + 2);
+            t->y = (int16_t)(L->hy[i] > SCOPE_TOP + CURSOR_HLABEL_BELOW ? L->hy[i] - CURSOR_HLABEL_ABOVE
+                                                                        : L->hy[i] + CURSOR_HLABEL_BELOW);
             t->c = L->hc[i];
         }
     }
 }
 
-/* Live frame: the layer's colour at pixel (x, y) into *c, or false. Labels
- * win over lines, as in draw_cursors; dashes are 4 on, 4 off. */
+/* The layer's colour at pixel (x, y) into *c, or false. Labels win over
+ * lines; where two lines cross, V1, H1, V2, H2 in that order. */
 bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
 {
     for (uint8_t k = 0; k < L->nlab; k++) {
@@ -132,31 +149,10 @@ bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
         }
     }
     for (uint8_t i = 0; i < 2u; i++) {
-        if (L->v && x == L->vx[i] && (L->vsolid[i] || (y & 7) < 4)) { *c = L->vc[i]; return true; }
-        if (L->h && y == L->hy[i] && (L->hsolid[i] || (x & 7) < 4)) { *c = L->hc[i]; return true; }
+        if (L->v && x == L->vx[i] && (L->vsolid[i] || CURSOR_DASH_ON(y))) { *c = L->vc[i]; return true; }
+        if (L->h && y == L->hy[i] && (L->hsolid[i] || CURSOR_DASH_ON(x))) { *c = L->hc[i]; return true; }
     }
     return false;
-}
-
-/* Full redraw: the same layer, painted over the live band
- * [SCOPE_TOP, band_bot); a label is drawn only when it fits in the band. */
-void draw_cursors(uint16_t band_bot)
-{
-    cur_layer_t L;
-    cursor_layer_build(scope_state_get(), theme_get(), &L);
-    if (!L.v && !L.h) return;
-    for (uint8_t i = 0; i < 2u; i++) {
-        if (L.v && L.vx[i] >= 0 && L.vx[i] < LCD_WIDTH)
-            for (uint16_t y = SCOPE_TOP; y < band_bot; y++)
-                if (L.vsolid[i] || (y & 7u) < 4u) lcd_set_pixel((uint16_t)L.vx[i], y, L.vc[i]);
-        if (L.h && L.hy[i] >= SCOPE_TOP && L.hy[i] < (int16_t)band_bot)
-            for (uint16_t x = 0; x < LCD_WIDTH; x++)
-                if (L.hsolid[i] || (x & 7u) < 4u) lcd_set_pixel(x, (uint16_t)L.hy[i], L.hc[i]);
-    }
-    for (uint8_t k = 0; k < L.nlab; k++)
-        if (L.lab[k].y >= SCOPE_TOP && L.lab[k].y + (int)font_small.height <= (int)band_bot)
-            font_draw_string((uint16_t)L.lab[k].x, (uint16_t)L.lab[k].y, L.lab[k].s,
-                             L.lab[k].c, L.lab[k].c, &font_small);
 }
 
 /*

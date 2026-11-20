@@ -1,8 +1,8 @@
 /*
  * Vertical transform of the Y-T plot: ADC record code -> screen row.
  *
- * One map per channel, built once per frame by scope_yt.c (yt_fits) and read
- * by every consumer: the trace in both renderers, the mask bounds, the
+ * One map per channel, built once per frame by scope_yt_frame.c (yt_fits) and
+ * read by every consumer: the trace, the mask bounds, the
  * persistence feed, the ground / trigger tags, the trigger line and the
  * cursor scale. Two kinds, one formula:
  *

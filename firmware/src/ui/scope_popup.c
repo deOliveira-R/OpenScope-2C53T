@@ -16,12 +16,12 @@ bool     popup_on;
 
 static uint32_t popup_until;
 
-bool     popup_hole_last;  /* the last compositor frame kept the box */
+bool     popup_hole_last;  /* the last frame of the plot kept a hole for the box */
 
-/* Has the box been painted for THIS popup? The incremental path paints it
- * once and then leaves it alone (see draw_scope_live_frame's hole); the full
- * path repaints it every frame anyway. Without this flag every live frame
- * would repaint the box and the text would strobe at the capture rate. */
+/* Has the box been painted for THIS popup? A live frame paints it once and
+ * then leaves it alone (the plot keeps a hole for it, scope_yt_draw); a full
+ * redraw repaints it. Without this flag every live frame would repaint the
+ * box and the text would strobe at the capture rate. */
 static bool popup_painted = false;
 
 #define POPUP_MS 500u
@@ -145,16 +145,14 @@ void draw_popup_box(const theme_t *th)
     popup_painted = true;
 }
 
-/* Full-frame path: paint the box while the popup lives; once it has expired
- * this frame is drawn without it and the popup ends. */
+/* After a full frame of the plot (Y-T or roll): paint the box if the frame
+ * kept its hole (popup_hole_last, the decision the plot was painted with);
+ * otherwise the plot was drawn without it and the popup ends. */
 void draw_popup(const theme_t *th)
 {
     if (!popup_on) return;
-    if (!popup_live()) {          /* expired: this full frame drew without it */
-        popup_on = false;
-        return;
-    }
-    draw_popup_box(th);
+    if (popup_hole_last) draw_popup_box(th);
+    else                 popup_on = false;
 }
 
 /* Popup upkeep for the FFT / split / waterfall / X-Y views. Their frames
@@ -168,9 +166,9 @@ void scope_popup_view_tick(void)
 }
 
 /*
- * Popup upkeep for the live Y-T path. The compositor treats the popup
- * rectangle as a hole (the one layer it cannot recompute per pixel, because
- * of the glyphs). The box is painted exactly once, and the band underneath is
+ * Popup upkeep after a live Y-T frame. The plot treats the popup rectangle
+ * as a hole (the one thing it cannot recompute per pixel, because of the
+ * glyphs). The box is painted exactly once, and the band underneath is
  * repainted on the first frame after the countdown expires. No full redraw is
  * needed at either end, so the popup does not make the trace flicker.
  * popup_hole_last tells whether the last frame kept the hole.
