@@ -26,7 +26,7 @@
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* bit0 = path select, bit1 = PE4/PB11, bit2 = PE5/PB10, bit3 = PE6/PA10 */
-static const uint8_t fpga_relay_tbl[10] = {
+static const uint8_t fpga_relay_tbl[VDIV_COUNT] = {
     0x0B, /* 0: path H  b1 H  b2 L  b3 H */
     0x0F, /* 1: path H  b1 H  b2 H  b3 H */
     0x05, /* 2: path H  b1 L  b2 H  b3 L */
@@ -47,7 +47,7 @@ static void fpga_set_ch1_frontend_range(uint8_t range_idx)
 {
     uint8_t b;
 
-    if (range_idx >= 10) range_idx = 9;
+    if (range_idx >= VDIV_COUNT) range_idx = VDIV_COUNT - 1;
     b = fpga_relay_tbl[range_idx];
 
     if (b & 0x01) GPIOC->scr = (1U << 12); else GPIOC->clr = (1U << 12); /* PC12 */
@@ -60,7 +60,7 @@ static void fpga_set_ch2_frontend_range(uint8_t range_idx)
 {
     uint8_t b;
 
-    if (range_idx >= 10) range_idx = 9;
+    if (range_idx >= VDIV_COUNT) range_idx = VDIV_COUNT - 1;
     b = fpga_relay_tbl[range_idx];
 
     if (b & 0x01) GPIOA->scr = (1U << 15); else GPIOA->clr = (1U << 15); /* PA15 */
@@ -69,23 +69,25 @@ static void fpga_set_ch2_frontend_range(uint8_t range_idx)
     if (b & 0x08) GPIOA->scr = (1U << 10); else GPIOA->clr = (1U << 10); /* PA10 */
 }
 
-/* Set the converter routing, then both channels' relays from their own
- * volts/div indices. */
-void fpga_set_scope_frontend_ranges(const scope_state_t *ss)
+/* The converter routing for the stored channel enables: 3 = both, 2 = CH2
+ * only, 1 = CH1 only. With neither on (the enable setter does not allow it)
+ * CH1 is routed. */
+static uint8_t channel_mask_from_enables(const scope_state_t *ss)
 {
-    /* Channel mask first: it decides which channel feeds each converter, so
-     * the ranges only make sense after it. */
-    {
-        bool c1 = (ss == NULL) || ss->ch1.enabled;
-        bool c2 = (ss != NULL) && ss->ch2.enabled;
-        fpga_set_channel_mask((c1 && c2) ? 3u : (c2 ? 2u : 1u));
-    }
+    if (ss->ch1.enabled && ss->ch2.enabled) return 3u;
+    return ss->ch2.enabled ? 2u : 1u;
+}
 
-    uint8_t r1 = (ss->ch1.vdiv_idx < VDIV_COUNT) ? ss->ch1.vdiv_idx : (VDIV_COUNT - 1);
-    uint8_t r2 = (ss->ch2.vdiv_idx < VDIV_COUNT) ? ss->ch2.vdiv_idx : (VDIV_COUNT - 1);
+/* Set the converter routing, then both channels' relays, from the stored
+ * settings. The routing comes first: it decides which channel feeds each
+ * converter. */
+void fpga_set_scope_frontend_ranges(void)
+{
+    const scope_state_t *ss = scope_state_get();
 
-    fpga_set_ch1_frontend_range(r1);
-    fpga_set_ch2_frontend_range(r2);
+    fpga_set_channel_mask(channel_mask_from_enables(ss));
+    fpga_set_ch1_frontend_range(ss->ch1.vdiv_idx);
+    fpga_set_ch2_frontend_range(ss->ch2.vdiv_idx);
 }
 
 /* Set the relays of one channel to a range index (ch 0 = CH1, 1 = CH2, any
@@ -93,8 +95,6 @@ void fpga_set_scope_frontend_ranges(const scope_state_t *ss)
  * fpga_apply_vdiv() and by the shell's `fpga scope range <0-9> <1|2|both>`. */
 void fpga_scope_set_range_diag_ch(uint8_t ch, uint8_t range_idx)
 {
-    if (range_idx >= VDIV_COUNT) range_idx = VDIV_COUNT - 1;
-
     if (ch == 0)      fpga_set_ch1_frontend_range(range_idx);
     else if (ch == 1) fpga_set_ch2_frontend_range(range_idx);
     else            { fpga_set_ch1_frontend_range(range_idx);
@@ -142,7 +142,7 @@ bool fpga_apply_channel_enables(void)
     const scope_state_t *ss = scope_state_get();
     if (!ss->ch1.enabled && !ss->ch2.enabled)
         return false;
-    fpga_set_channel_mask((ss->ch1.enabled && ss->ch2.enabled) ? 3u : (ss->ch2.enabled ? 2u : 1u));
+    fpga_set_channel_mask(channel_mask_from_enables(ss));
     /* The offset references depend on the calibration bank, and the bank
      * depends on the mask (stock: both channels on use bank 1 at timebase
      * index 3 or lower, one channel uses bank 2), so re-apply them. */
@@ -174,7 +174,7 @@ bool fpga_apply_vdiv(uint8_t ch, uint8_t idx)
 void fpga_reconcile_frontend_after_arm(void)
 {
     scope_state_t *ss = scope_state_get();
-    fpga_set_scope_frontend_ranges(ss);
+    fpga_set_scope_frontend_ranges();
     /* fpga_init() drives both coupling relays to DC. A restored GND has no
      * hardware path (see fpga_apply_coupling) and becomes DC, so the label
      * never claims a state the relay is not in. */

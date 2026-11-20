@@ -160,7 +160,6 @@ static void fpga_diag_clear(void)
     fpga.rx_raw_history_count = 0;
     fpga_meter_probe_tail_override = -1;
     fpga.spi3_ok_count = 0;
-    fpga.spi3_timeout_count = 0;
     fpga.spi3_total_timeouts = 0;
     fpga.h2_rx_00_count = 0;
     fpga.h2_rx_ff_count = 0;

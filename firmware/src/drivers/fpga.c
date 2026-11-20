@@ -303,7 +303,7 @@ void fpga_init(void)
     gpio_init(GPIOD, &gpio_cfg);
     GPIOD->scr = (1U << 12) | (1U << 13);   /* both channels DC-coupled */
 
-    fpga_set_scope_frontend_ranges(scope_state_get());
+    fpga_set_scope_frontend_ranges();
 
     fpga.initialized = true;
 }

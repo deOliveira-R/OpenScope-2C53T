@@ -206,12 +206,6 @@ bool scope_vpos_ch1_raw(uint16_t code)
     return true;
 }
 
-void scope_vpos_recover(void)
-{
-    if (scope_vpos_active()) scope_vpos_apply();
-    else                     scope_trigger_dac_raw(VPOS_LEGACY_DAC1);
-}
-
 bool scope_vpos_page_pair(uint8_t ch, uint8_t bank, uint8_t range,
                           uint16_t *base, uint16_t *upper)
 {

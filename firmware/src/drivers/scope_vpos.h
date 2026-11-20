@@ -75,10 +75,6 @@ bool scope_vpos_ch1_endpoints(uint16_t *base, uint16_t *upper);
  * two channels' registers apart. */
 bool scope_vpos_ch1_raw(uint16_t code);
 
-/* Acquisition dry-spell recovery (fpga.c): re-apply the calibrated codes, or
- * the legacy DAC1 mid-scale arm when inactive. */
-void scope_vpos_recover(void);
-
 /* ── Baseline correction (parity C10, src/drivers/scope_selfcal_run.c) ──
  * RAM-only deltas on the page's endpoint pair per (ch 1/2, bank, range),
  * applied by every write above. Nothing here touches flash; persistence

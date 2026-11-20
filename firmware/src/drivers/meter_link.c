@@ -1091,7 +1091,7 @@ void fpga_set_meter_mux(bool enable)
      */
     if (!enable) {
         GPIOB->scr = PB11_MASK;   /* PB11 HIGH: FPGA active */
-        fpga_set_scope_frontend_ranges(scope_state_get());
+        fpga_set_scope_frontend_ranges();
         /* The posture is the scope's again. If a scope setting was stored
          * while the meter held the front end, the model now re-sends SPI3
          * registers 0x01/0x06/0x08 (model_hw_fw.c). Nothing is written here,

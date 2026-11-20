@@ -765,10 +765,10 @@ static void cmd_status(void)
     );
     usb_debug_printf(
         "SPI3 OK: %u\r\n"
-        "SPI3 timeouts: %u (total %u, hw poll expiries %u)\r\n"
+        "SPI3 records refused: %u (transfers timed out: %u)\r\n"
         "SPI3 first byte: 0x%02X\r\n",
         fpga.spi3_ok_count,
-        fpga.spi3_timeout_count, fpga.spi3_total_timeouts,
+        fpga.spi3_total_timeouts,
         fpga.spi3_hw_timeouts,
         fpga.spi3_first_byte
     );

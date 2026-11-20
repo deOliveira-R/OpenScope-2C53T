@@ -759,8 +759,8 @@ void EXINT0_IRQHandler(void)
  * kept in fpga.acq_hdr_ch1/ch2; then 1024 samples from memory address 0.
  * Each sample is stored as raw + FPGA_ADC_OFFSET, clamped to 0..255.
  * Keep the frame whole: a 2-byte frame starting 0x05 would match the Gowin
- * configuration port's ERASE_SRAM command. Returns reply byte 0. */
-static uint8_t fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
+ * configuration port's ERASE_SRAM command. */
+static void fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
 {
     SPI3_CS_ASSERT();
     uint8_t s0 = spi3_xfer(opcode);        /* reply byte 0: 0x80 from a live core */
@@ -786,7 +786,6 @@ static uint8_t fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
         buf[i] = (uint8_t)cal;
     }
     SPI3_CS_DEASSERT();
-    return s0;
 }
 
 /* ─── Roll point reader ──────────────────────────────────────────────
@@ -854,7 +853,6 @@ static void fpga_roll_service(void)
                          scope_roll_record_code((adc_raw_t){ rx[4] }));
     acq_roll_stats.reads++;
     fpga.spi3_ok_count++;                /* the display's new-data signal */
-    fpga.spi3_timeout_count = 0;
 
     /* Roll trigger, as stock's (scope_roll.h): once the FIFO is full and the
      * mode is not AUTO, one crossing check at its centre after every point.
@@ -1148,8 +1146,8 @@ void fpga_acq_task(void *pv)
         uint16_t hw_to_before = fpga.spi3_hw_timeouts;
         volatile uint8_t *w1 = acq_write_ch1();
         volatile uint8_t *w2 = acq_write_ch2();
-        uint8_t s1 = fpga_acq_read_channel(FPGA_CORE_OP_REC_A, w1);
-        uint8_t s2 = fpga_acq_read_channel(FPGA_CORE_OP_REC_B, w2);
+        fpga_acq_read_channel(FPGA_CORE_OP_REC_A, w1);
+        fpga_acq_read_channel(FPGA_CORE_OP_REC_B, w2);
         last_read_tick = xTaskGetTickCount();
         fpga_acq_cfg_snapshot(&cfg_now);                 /* ...and after it */
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, last_read_tick * portTICK_PERIOD_MS);
@@ -1211,17 +1209,9 @@ void fpga_acq_task(void *pv)
             acq_cfg_drops++;
             continue;
         }
-        /* Validity gate, reached only by a held record. A dead bus (0xFF
-         * everywhere) is already refused above: its header carries no seam.
-         * Accept when either reply starts with the core's 0x80 or the CH1
-         * samples vary, and only when no SPI3 hardware timeout fired during
-         * the two reads (a timeout fabricates 0xFF bytes). */
-        bool marker = (s1 == FPGA_CORE_REPLY_FIRST) || (s2 == FPGA_CORE_REPLY_FIRST);
-        bool varies = false;
-        for (int i = 1; i < 1024; i++) {
-            if (w1[i] != w1[0]) { varies = true; break; }
-        }
-        if ((marker || varies) && fpga.spi3_hw_timeouts == hw_to_before) {
+        /* A record is used only when no SPI3 transfer timed out during its
+         * two reads: a timed-out transfer returns 0xFF instead of bus data. */
+        if (fpga.spi3_hw_timeouts == hw_to_before) {
             fpga.acq_last_rot = fpga_acq_unrotate_staging(held);
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
             /* a forced record is in time order but has no trigger at 512 */
@@ -1238,7 +1228,6 @@ void fpga_acq_task(void *pv)
                                  acq_stage_ordered, fpga_acq_frame_generation());
             last_commit_tick = last_read_tick;
             fpga.spi3_ok_count++;
-            fpga.spi3_timeout_count = 0;
             data_ready = true;
             if (triggered)
                 fpga.acq_last_latency_ms = xTaskGetTickCount() - fpga.pc0_last_tick;
@@ -1249,14 +1238,7 @@ void fpga_acq_task(void *pv)
                 acq_single_done_pub = true;
             }
         } else {
-            fpga.spi3_total_timeouts++;    /* rejected frame: shows in TO: */
-            /* After 32 rejected records with no commit between, re-apply the
-             * vertical offset references: the calibrated codes, or DAC1
-             * mid-scale without a usable cal page (scope_vpos_recover). */
-            if (++fpga.spi3_timeout_count >= 32) {
-                scope_vpos_recover();
-                fpga.spi3_timeout_count = 0;
-            }
+            fpga.spi3_total_timeouts++;
         }
 
         /* A short yield between passes. */

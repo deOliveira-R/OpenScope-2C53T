@@ -187,7 +187,7 @@ extern volatile uint8_t acq_edge_reg;
 void fpga_acq_task(void *pv);
 
 /* scope_frontend.c */
-void fpga_set_scope_frontend_ranges(const scope_state_t *ss);
+void fpga_set_scope_frontend_ranges(void);
 
 /* fpga_boot.c */
 void bb_cmd16(uint8_t hi, uint8_t lo);

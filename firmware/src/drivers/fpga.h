@@ -176,8 +176,7 @@ typedef struct {
 
     /* ── acquisition (fpga_acq.c) ──────────────────────────────────── */
     volatile uint16_t spi3_ok_count;  /* records read */
-    volatile uint16_t spi3_timeout_count;  /* timeouts in a row (0 after a record) */
-    volatile uint16_t spi3_total_timeouts;  /* timeouts since boot */
+    volatile uint16_t spi3_total_timeouts;  /* records refused since boot: a transfer timed out during the read */
     volatile uint16_t spi3_hw_timeouts;  /* SPI3 byte transfers that timed out since boot; each returned 0xFF instead of bus data */
     volatile uint8_t  spi3_first_byte;  /* first byte of the last probe */
     volatile uint8_t  diag_ch1_raw[4];  /* first 4 bytes of the last CH1 read */
