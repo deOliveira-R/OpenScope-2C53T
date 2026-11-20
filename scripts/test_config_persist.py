@@ -207,7 +207,10 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation(
         # #58: bottom-up, a cut leaves old records on the new log's grid past
-        # sector 0, and they come back once new saves refill it.
+        # the erased sectors, and they come back once new saves refill them.
+        # Only when the record slot tiles a sector: the settings record's
+        # 68-byte slot (v5) does not, so the C test provokes it with a
+        # sector-tiling record of its own (its part 2).
         name="top-down erase of an append region in flash_region_reset()",
         file="src/drivers/flash_regions.c",
         old="    return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);\n",

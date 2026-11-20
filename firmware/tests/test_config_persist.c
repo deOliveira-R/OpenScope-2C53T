@@ -2806,16 +2806,138 @@ static void test_a_compaction_cut_inside_the_first_sectors_erase_does_not_stop_l
 /* #58: a compaction cut after it erased some, not all, of the region
  * later resurrects the PRE-compaction settings as the newest record.
  *
- * The region is erased sector by sector from offset 0 (flash_regions.c
- * erase_checked()). Cut after sector 0: the device boots on defaults (the
- * documented cost) and new records fill sector 0 from offset 0. Once they fill
- * it, log_scan() walks straight on into sector 1, which still holds the old,
- * CRC-valid records, laid out on the same 64-byte grid — and the newest of
+ * The log has no sequence number: log_scan() takes the LAST CRC-valid record
+ * it reaches as the newest, and it walks from offset 0 until a header does
+ * not parse. So the danger is a new record followed, in the scan, by an old
+ * one. Erased bottom up (sector 0 first, the order before the fix), a cut
+ * after k sector erases leaves sectors 0..k-1 blank and sectors k.. still
+ * holding the old log. New saves refill the blank sectors from offset 0. When
+ * the record slot tiles a sector (the v4 record's 64-byte slot did: 64 x 64 =
+ * 4096), a new record ends exactly on the boundary k x 4096, where an OLD
+ * header starts; the scan walks on through the old log and the newest of
  * THOSE wins. The device boots on settings from before the compaction, over
- * 64 newer saves. (The next save then finds the log full and compacts, which
- * hides the symptom again until the next boot-before-save.) */
+ * every newer save. (The next save finds the log full and compacts, which
+ * hides the symptom again until the next boot-before-save.) Erased top down
+ * (flash_region_reset() since the fix), the old records left by a cut are a
+ * prefix of the log, and new saves land after them, never before them.
+ *
+ * Two parts.
+ *
+ * 1. The real settings record through config_save(), cut after one erase.
+ *    Since v5 its slot is 68 bytes, which tiles no sector boundary in the
+ *    region (4096 x k is a multiple of 68 = 4 x 17 only for k = 17), so the
+ *    erase order does not matter for it: the new record that reaches the
+ *    boundary straddles it, its header lies in the erased sector and its tail
+ *    in the old one; the scan stops at that blank header and the append finds
+ *    the slot not blank, LOG_DAMAGED, and config_save() compacts (#57's path).
+ *    This part pins that it holds for the record as it is.
+ *
+ * 2. The region layer itself, with a record slot that does tile the sector:
+ *    the layout in which a bottom-up erase resurrects. Without it this test
+ *    could not tell the erase orders apart once the settings record stopped
+ *    tiling the sector (v5, 2026-11-12), and the mutation runner
+ *    (scripts/test_config_persist.py) found the order untested. Every cut
+ *    position of the compaction is swept. */
+
+/* Part 2's record: a slot of a quarter sector, so 4 slots tile a sector. Any
+ * tiling slot shows the fault; a large one keeps the sweep cheap (64 records
+ * fill the 64 KB region) while its payload still fits FLASH_REGION_RECORD_MAX
+ * (1016 <= 1024). */
+#define TILING_SLOTS_PER_SECTOR  4u
+#define TILING_SLOT              (FLASH_REGION_SECTOR_SIZE / TILING_SLOTS_PER_SECTOR)
+#define TILING_PAYLOAD           (TILING_SLOT - REC_HDR_SIZE)
+_Static_assert(TILING_SLOT * TILING_SLOTS_PER_SECTOR == FLASH_REGION_SECTOR_SIZE &&
+               TILING_PAYLOAD % 4u == 0u && TILING_PAYLOAD <= FLASH_REGION_RECORD_MAX,
+               "part 2's record slot must tile a sector exactly (no padding, no remainder)");
+
+/* Tags that tell part 2's records apart: the old log, the save the cut
+ * interrupts, and the saves after the cut, each numbered from its base. */
+#define TILING_TAG_OLD  0x01000000u
+#define TILING_TAG_CUT  0x02000000u
+#define TILING_TAG_NEW  0x03000000u
+
+static void tiling_payload(uint8_t *p, uint32_t tag)
+{
+    memset(p, 0x5A, TILING_PAYLOAD);
+    memcpy(p, &tag, sizeof tag);
+}
+
+/* One save with config_save()'s policy (config.c): append; when the log takes
+ * no more (FULL, or LOG_DAMAGED), reset the region and append again. */
+static flash_region_status_t tiling_save(uint32_t tag)
+{
+    uint8_t p[TILING_PAYLOAD];
+    tiling_payload(p, tag);
+    flash_region_status_t st = flash_region_append(FLASH_REGION_SETTINGS, p, TILING_PAYLOAD);
+    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
+        st = flash_region_reset(FLASH_REGION_SETTINGS);
+        if (st == FLASH_REGION_OK) {
+            st = flash_region_append(FLASH_REGION_SETTINGS, p, TILING_PAYLOAD);
+        }
+    }
+    return st;
+}
+
+/* Tag of the newest record the boot would read, or 0 when none reads. */
+static uint32_t tiling_newest_tag(void)
+{
+    uint8_t p[TILING_PAYLOAD];
+    uint32_t len = 0, tag = 0;
+    if (flash_region_read_latest(FLASH_REGION_SETTINGS, p, sizeof p, &len) != FLASH_REGION_OK ||
+        len != TILING_PAYLOAD) {
+        return 0u;
+    }
+    memcpy(&tag, p, sizeof tag);
+    return tag;
+}
+
+static void check_tiling_log_never_resurrects(void)
+{
+    const flash_region_t *set = flash_region_get(FLASH_REGION_SETTINGS);
+    const uint32_t sectors = set->length / FLASH_REGION_SECTOR_SIZE;
+    const uint32_t capacity = set->length / TILING_SLOT;
+
+    /* k = 0 is a cut before any erase (the old log is untouched, tested above)
+     * and k = sectors a compaction that finished: every cut in between. */
+    for (uint32_t k = 1; k < sectors && !current_failed; k++) {
+        fresh_device();
+        uint8_t p[TILING_PAYLOAD];
+        uint32_t off = 0;
+        for (uint32_t i = 0; i < capacity; i++) {        /* a full old log */
+            tiling_payload(p, TILING_TAG_OLD + i);
+            off = forge_record(off, p, (uint16_t)TILING_PAYLOAD, crc32_of(p, TILING_PAYLOAD));
+        }
+        CHECK(off == set->length, "the old log does not fill the region exactly");
+
+        const uint32_t erases0 = model.erases;
+        model_cut_power_after(UINT32_MAX, k);
+        CHECK(tiling_save(TILING_TAG_CUT) != FLASH_REGION_OK,
+              "cut after %u erases: the compaction reported success", k);
+        CHECK(model.erases - erases0 == k, "cut after %u erases: %u erases completed",
+              k, model.erases - erases0);
+        power_cycle();
+
+        /* The k blank sectors hold k x TILING_SLOTS_PER_SECTOR records: one
+         * more save than that has crossed the boundary into the old log in
+         * the bottom-up layout, and compacted in either layout. */
+        const uint32_t saves = k * TILING_SLOTS_PER_SECTOR + 1u;
+        for (uint32_t i = 0; i < saves && !current_failed; i++) {
+            const uint32_t want = TILING_TAG_NEW + i;
+            CHECK(tiling_save(want) == FLASH_REGION_OK,
+                  "cut after %u erases: save %u after the cut failed", k, i + 1u);
+            power_cycle();
+            const uint32_t got = tiling_newest_tag();
+            CHECK(got == want, "cut after %u erases: after %u saves since the cut, the boot "
+                  "read %s record 0x%08X instead of the newest save 0x%08X", k, i + 1u,
+                  (got & ~0xFFFFFFu) == TILING_TAG_OLD ? "the PRE-COMPACTION" : "another",
+                  got, want);
+        }
+    }
+}
+
 static void test_a_compaction_cut_mid_erase_never_resurrects_old_settings(void)
 {
+    /* Part 1: the settings record as it is. */
     fresh_device();
     device_config_t old_newest = fill_log();
 
@@ -2824,7 +2946,13 @@ static void test_a_compaction_cut_mid_erase_never_resurrects_old_settings(void)
     CHECK(!config_save(&next), "the cut compaction reported success");
     power_cycle();
 
+    /* Two saves more than whole records fit the one erased sector: the
+     * refill reaches the end of the space the cut left and compacts exactly
+     * once (on a full log, or on the slot that straddles into old data,
+     * LOG_DAMAGED), whichever end of the region was erased. Checked below, so
+     * a refill too short to reach the boundary cannot pass vacuously. */
     const uint32_t per_sector = FLASH_REGION_SECTOR_SIZE / REC_SLOT;
+    const uint32_t compactions0 = config_persist_stats()->compactions;
     device_config_t cfg;
     config_init_defaults(&cfg);
     for (uint32_t i = 0; i < per_sector + 2u && !current_failed; i++) {
@@ -2844,6 +2972,12 @@ static void test_a_compaction_cut_mid_erase_never_resurrects_old_settings(void)
               loaded.scope_ch1_vdiv, loaded.scope_trigger_level,
               cfg.scope_ch1_vdiv, cfg.scope_trigger_level);
     }
+    CHECK(config_persist_stats()->compactions - compactions0 == 1u,
+          "the saves after the cut compacted %u times, expected once",
+          config_persist_stats()->compactions - compactions0);
+
+    /* Part 2: the record layout that tells the erase orders apart. */
+    check_tiling_log_never_resurrects();
 }
 
 /* ═══════════════════════════════════════════════════════════════════

@@ -547,13 +547,21 @@ flash_region_status_t flash_region_reset(flash_region_id_t id)
         g_stats.erases_refused++;
         return FLASH_REGION_ERR_BAD_ARG;
     }
-    /* An append log is erased top down (issue #58). Bottom up, a power cut after
-     * sector 0 left sectors 1.. holding old CRC-valid records on the new log's
-     * 64-byte grid: new saves refilled sector 0, the scan walked on into sector
-     * 1, and the boot after the 64th save loaded settings from before the
-     * compaction. Top down, a cut leaves the old records as a prefix ending at
-     * the first erased sector; the device boots on one of them (an older
-     * setting, never a resurrected one) and appends after it. */
+    /* An append log is erased top down (issue #58). The log has no sequence
+     * number: log_scan() takes the last CRC-valid record it walks to as the
+     * newest. Bottom up, a power cut after k sector erases leaves sectors k..
+     * holding the old log; new saves refill the erased sectors from offset 0,
+     * and when the record slot tiles a sector (the 64-byte v4 slot did) a new
+     * record ends exactly where an old header starts, the scan walks on into
+     * the old log, and the boot loads settings from before the compaction.
+     * Top down, a cut leaves the old records as a prefix ending at the first
+     * erased sector; the device boots on one of them (an older setting, never
+     * a resurrected one) and appends after it, whatever the record size.
+     * Today's records (settings 68 B, usercal 312 B slots) tile no sector
+     * boundary in their regions, so the slot that reaches one straddles it
+     * and compacts (LOG_DAMAGED) under either order; this order is what keeps
+     * that true for a record that does. Tested by test_config_persist.c,
+     * "a compaction cut mid-erase never resurrects old settings". */
     return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);
 }
 
