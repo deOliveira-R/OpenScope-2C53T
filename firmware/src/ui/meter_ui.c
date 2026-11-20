@@ -1617,7 +1617,9 @@ void draw_meter_screen(void)
     bool in_place = (meter_layout == METER_LAYOUT_BIG || meter_layout == METER_LAYOUT_LIMITS ||
                      meter_layout == METER_LAYOUT_FUSE);
     if (full_clear) {
-        lcd_fill_rect(0, METER_TOP, LCD_WIDTH, METER_BOTTOM - METER_TOP, clear_bg);
+        /* From the status bar down: the two rows between it and METER_TOP
+         * are the meter's too. */
+        lcd_fill_rect(0, SB_H, LCD_WIDTH, METER_BOTTOM - SB_H, clear_bg);
         meter_screen_full_clear_count++;
     } else if (in_place) {
         /* Big and Limits repaint every pixel of their area in place. */

@@ -284,6 +284,8 @@ void draw_splash(void);
  *   draw_scope_live_frame  only the columns of the plot that changed. */
 void draw_scope_screen(uint32_t frame);
 void draw_scope_live_frame(uint32_t frame);
+/* The rows between the status bar and the plot, in every scope view. */
+void scope_ui_paint_margin(void);
 void scope_show_popup(const char *text);
 bool scope_popup_active(void);
 /* Popups raised outside the scope (softkey UI P0). The display task calls

@@ -518,21 +518,26 @@ static void scope_render(uint32_t frame, redraw_action_t action);
 /* DCMD_REDRAW_ALL: the hard invalidate. NEVER GATED, deliberately: an epoch
  * comparison cannot see what a layer or a shell command left on the LCD.
  * A screen that wants a cheap, gate-able repaint is sent
- * DCMD_DRAW_ACTIVE + its id instead. */
+ * DCMD_DRAW_ACTIVE + its id instead.
+ *
+ * Nothing is cleared first: the screen is three bands and each is painted
+ * in full by its owner, whatever the glass held. The status bar owns rows
+ * [0, SB_H). The body, from SB_H down to the bottom band, is the page's or
+ * the base screen's. The bottom band is the info bar's (scope, settings,
+ * home), the meter's softkey bar, or the generator page's own. A screen
+ * whose full paint leaves a pixel of its band unpainted shows whatever was
+ * there before. */
 static void redraw_all(uint32_t frame)
 {
     ui_redraw_all_count++;
-    lcd_clear(COLOR_BLACK);
     status_bar_invalidate();
     draw_status_bar();
     draw_info_bar();
     g_info_bar_epoch = info_bar_epoch();
     const screen_t *const page = page_layer();
     if (page != NULL) {
-        /* The page covers y 16..223; both bars stay visible. Also what
-         * repaints the page after the gallery or an LCD-health reinit: the
-         * LCD was cleared under it, so the page repaints its background
-         * too. */
+        /* The page covers the body; both bars stay visible. Also what
+         * repaints the page after the gallery or an LCD-health reinit. */
         layer_paint(page, SCR_PAINT_FULL, frame);
         g_screen_painted = true;
         return;
@@ -602,6 +607,7 @@ static void scope_render(uint32_t frame, redraw_action_t action)
 void scope_view_draw(scr_paint_t how, uint32_t frame)
 {
     if (how == SCR_PAINT_UPDATE) return;
+    scope_ui_paint_margin();
     scope_render(frame, REDRAW_FULL);
     scope_gate_painted(frame);
 }

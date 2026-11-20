@@ -24,6 +24,13 @@ bool scope_ui_take_live_request(void)
     return r;
 }
 
+/* The rows between the status bar and the plot belong to the scope screen:
+ * a full paint of any of its views starts with them. */
+void scope_ui_paint_margin(void)
+{
+    lcd_fill_rect(0, SB_H, LCD_WIDTH, SCOPE_TOP - SB_H, theme_get()->background);
+}
+
 /* Display-task scratch shared by draw paths that never run at once: the roll
  * view's FIFO copy (~610 B), the FFT waterfall's one-row pixel line (640 B)
  * and the Y-T window (2 x 301 B: what each column of each channel shows,

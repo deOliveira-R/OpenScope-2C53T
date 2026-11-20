@@ -24,7 +24,9 @@ void siggen_ui_draw(void)
 {
     const siggen_edit_t editor = *siggen_ui_editor();   /* one look at the cursor per paint */
     const theme_t *th = theme_get();
-    lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
+    /* The page owns everything under the status bar, the bottom band too:
+     * the generator has no info bar (draw_info_bar paints nothing here). */
+    lcd_fill_rect(0, SB_H, LCD_WIDTH, LCD_HEIGHT - SB_H, th->background);
 
     const siggen_config_t *cfg = siggen_get_config();
     const uint16_t *cycle = siggen_get_cycle();
