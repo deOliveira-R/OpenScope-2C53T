@@ -33,23 +33,6 @@
 fpga_state_t fpga;
 
 /* ═══════════════════════════════════════════════════════════════════
- * SPI3 IRQ handler (stub)
- *
- * SPI3 is polled. fpga_init() enables the SPI3 interrupt in the NVIC, as
- * stock does, but no SPI3 interrupt source (CTRL2 bits 5-7), so it should
- * never fire; if it does, this clears the flags so it cannot repeat forever.
- * ═══════════════════════════════════════════════════════════════════ */
-
-void SPI3_I2S3EXT_IRQHandler(void)
-{
-    /* Reading STS then DT clears pending RXNE/TXE/OVR flags */
-    volatile uint32_t sts = FPGA_SPI->sts;
-    volatile uint32_t dr  = FPGA_SPI->dt;
-    (void)sts;
-    (void)dr;
-}
-
-/* ═══════════════════════════════════════════════════════════════════
  * Initialization
  * ═══════════════════════════════════════════════════════════════════ */
 
@@ -110,7 +93,6 @@ void fpga_init(void)
      * scope boot, so PA2/PA3 stay quiet until the meter link starts. */
     USART2->baudr = system_core_clock / 2 / FPGA_USART_BAUD;  /* APB1 = HCLK/2 */
     USART2->ctrl1 = 0;
-    (void)0;
 
     /* ---------------------------------------------------------------
      * Step 3: SPI3 and PC6.
@@ -123,9 +105,6 @@ void fpga_init(void)
     /* The SPI3 pins and the peripheral (fpga_boot.c owns their states). */
     spi3_pins_peripheral();
 
-    /* SPI3 interrupt enabled in the NVIC as stock does; see the stub handler
-     * above. */
-    NVIC_EnableIRQ(SPI3_I2S3EXT_IRQn);
 
     /* PC6 = FPGA supply enable, push-pull HIGH. main() already drove it HIGH
      * at its start; this sets it up again through the driver. */
@@ -280,12 +259,11 @@ void fpga_create_tasks(void)
     }
 
     /* The acquisition task: reads records from the core over SPI3. */
-    xTaskCreate(fpga_acq_task, "fpga", 256, NULL, 3, &acq_task_handle);
+    xTaskCreate(fpga_acq_task, "fpga", FPGA_ACQ_STACK, NULL, 3, &acq_task_handle);
     /* The meter tasks. Each is gated on the meter link (meter_link_serving),
      * so with the link off USART2 is quiet, and with it on only the meter's
      * own words go out. */
     xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
     xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
-    /* 192 words: meter function changes (fpga_set_meter_mode) run on this task. */
-    xTaskCreate(fpga_meter_poll_task,  "meter_poll", 192, NULL, 2, &meter_poll_handle);
+    xTaskCreate(fpga_meter_poll_task,  "meter_poll", FPGA_METER_POLL_STACK, NULL, 2, &meter_poll_handle);
 }

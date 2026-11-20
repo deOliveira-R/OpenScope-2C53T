@@ -11,31 +11,7 @@
 
 TaskHandle_t      acq_task_handle = NULL;
 
-/* FPGA_AUTO_TRIG_WAIT_MS: the floor of AUTO's wait for a trigger before it
- * asks the core for a forced record, and the wait when the sample rate is not
- * known (fpga_acq_auto_wait_get). FPGA_AUTO_CADENCE_MS and
- * FPGA_NORMAL_TRIG_WAIT_MS are not used by the code. */
-#ifndef FPGA_AUTO_CADENCE_MS
-
-#define FPGA_AUTO_CADENCE_MS 30u
-
-#endif
-
-#ifndef FPGA_AUTO_TRIG_WAIT_MS
-
-#define FPGA_AUTO_TRIG_WAIT_MS ACQ_AUTO_MIN_MS      /* dsp/acq_timing.h; a build may set another floor */
-
-#endif
-
-#ifndef FPGA_NORMAL_TRIG_WAIT_MS
-
-#define FPGA_NORMAL_TRIG_WAIT_MS 300u
-
-#endif
-
 static volatile bool data_ready = false;
-
-void fpga_scope_delay_ms(uint32_t ms);
 
 void fpga_scope_delay_ms(uint32_t ms)
 {
@@ -99,7 +75,6 @@ static volatile bool acq_stage_ordered_core = false;
 
 static volatile bool acq_pub_ordered_core = false;
 
-static bool acq_rot_from_hdr = false;        /* set by fpga_acq_unrotate_staging() */
 
 /* Single-channel 250 MS/s (dsp/interleave.h): the staged / published CH1
  * record is the merge of both converters. Published with the record, like
@@ -263,7 +238,6 @@ static volatile uint16_t acq_poll_gap_ms = ACQ_POLL_GAP_MS;   /* dsp/acq_timing.
 
 static volatile bool     acq_unrotate = true;    /* put held records in time order; `fpga unrotate off` keeps them raw */
 
-static volatile int16_t  acq_unrotate_offset = 0;
 
 /* Held records put in time order by the seam in the core's reply header
  * (`fpga unrotate`): [0] ordered, [1] a held record without a seam (never
@@ -285,11 +259,11 @@ void fpga_acq_auto_wait_set(uint16_t ms)  { acq_auto_wait_ms = ms; }
 /* AUTO's wait for a trigger in force: the shell override if set, else
  * derived from the timebase in force (a few fills plus a margin, clamped;
  * the numbers and their origins are in dsp/acq_timing.h). A code with no
- * known rate gets FPGA_AUTO_TRIG_WAIT_MS. */
+ * known rate gets ACQ_AUTO_MIN_MS (dsp/acq_timing.h). */
 uint16_t fpga_acq_auto_wait_get(void)
 {
     if (acq_auto_wait_ms) return acq_auto_wait_ms;
-    return acq_time_auto_wait_ms(scope_timebase_sample_rate(acq_rate_idx), (uint16_t)FPGA_AUTO_TRIG_WAIT_MS);
+    return acq_time_auto_wait_ms(scope_timebase_sample_rate(acq_rate_idx), (uint16_t)ACQ_AUTO_MIN_MS);
 }
 
 bool fpga_acq_auto_wait_is_override(void) { return acq_auto_wait_ms != 0; }
@@ -336,7 +310,6 @@ uint32_t fpga_acq_seam_count(unsigned i)      { return i < 2u ? acq_seam_n[i] : 
  * (`fpga unrotate off`) the seam is returned but not applied. */
 static int32_t fpga_acq_unrotate_staging(bool triggered)
 {
-    acq_rot_from_hdr = false;
     if (!triggered) return -1;
     volatile uint8_t *bufs[2] = { acq_write_ch1(), acq_write_ch2() };
     uint32_t k = 0;
@@ -351,7 +324,6 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
     }
     k = (uint32_t)hs;
     acq_seam_n[0]++;
-    acq_rot_from_hdr = true;
     if (!acq_unrotate) return (int32_t)k;        /* reported (status), not applied */
     if (k == 0) return 0;
     /* In place: index 0 becomes the old index k. */
@@ -570,7 +542,6 @@ float fpga_record_sample_rate(void)
     return acq_pub_il ? 2.0f * fs : fs;
 }
 
-void fpga_reconcile_timebase_after_arm(void);                 /* below */
 
 /* One CS-framed register write to the core: opcode byte, value byte, the
  * same frame as the boot arm burst (fpga_boot.c). Callers hold the bus: the
@@ -1215,7 +1186,7 @@ void fpga_acq_task(void *pv)
             fpga.acq_last_rot = fpga_acq_unrotate_staging(held);
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
             /* a forced record is in time order but has no trigger at 512 */
-            acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr && !forced;
+            acq_stage_ordered_core = acq_stage_ordered && !forced;
             acq_stage_il = held && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
             acq_stage_kind = (uint8_t)kind;
             if (acq_stage_il)

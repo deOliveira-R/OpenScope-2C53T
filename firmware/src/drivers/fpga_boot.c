@@ -459,7 +459,7 @@ void spi3_pins_peripheral(void)
     gpio_init(GPIOB, &g);
 
     FPGA_SPI->ctrl1 = SPI3_CTRL1_MODE3_MASTER;
-    FPGA_SPI->ctrl2 = SPI3_CTRL2_DMA_REQUESTS;
+    FPGA_SPI->ctrl2 = 0;
     FPGA_SPI->ctrl1 |= SPI3_CTRL1_ENABLE;
 }
 

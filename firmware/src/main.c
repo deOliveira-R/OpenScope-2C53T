@@ -292,10 +292,7 @@ static uint32_t info_bar_epoch(void)
  * held for a second (a re-enumeration must not reach PC11: every rise
  * restarts the meter SoC, ~1.4 s).
  *
- * Two things outside the policy function clamp its inputs:
- *   - an image whose scope side talks on USART2 cannot keep the meter under
- *     another screen (fpga_meter_link_background_capable): there the link
- *     follows the screen, as it always did, and meter.link has no effect;
+ * One thing outside the policy function clamps its inputs:
  *   - `meter relays on` (the old relay projection, kept for A/B) makes the
  *     meter take the scope's range relays, so it also gets the old link:
  *     with the screen only. The same while a projection is still in place
@@ -312,8 +309,7 @@ static void meter_link_service(void)
     const uint32_t now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
     const bool usb = meter_link_debounce(&g_meter_link.usb, usb_debug_connected(), now_ms,
                                          METER_LINK_USB_HOLD_MS);
-    const bool background = fpga_meter_link_background_capable() && !fpga_meter_relays_get() &&
-                            !fpga_meter_holds_fe();
+    const bool background = !fpga_meter_relays_get() && !fpga_meter_holds_fe();
     const meter_link_policy_t policy =
         background ? (meter_link_policy_t)prop_get(P(METER_LINK)) : METER_LINK_SCREEN;
     const bool want = meter_link_want_on(current_mode == MODE_MULTIMETER, background && usb, policy);

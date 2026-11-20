@@ -34,6 +34,16 @@
 
 #include "fpga_internal.h"
 
+/* Times of the link. None of these is a measured limit of the chip; they are
+ * the values the link has run with, named so that they are in one place. */
+#define METER_KEEPALIVE_PERIOD_MS   250u   /* the unobeyed keepalive: 4 per second */
+#define METER_LINK_RESET_QUIET_MS    20u   /* PC11 low and USART2 off during a link reset */
+#define METER_FRONTEND_SETTLE_MS     20u   /* after the relay pins are written, before the wake words */
+#define METER_WAKE_WORD_GAP_MS       10u   /* after each wake word */
+#define METER_WAKE_END_GAP_MS        20u   /* after the last wake word of a transition */
+#define METER_ACTIVATION_END_GAP_MS  50u   /* after the last wake word of a link-on */
+#define METER_DEBUG_MAX_DELAY_MS   5000u   /* longest delay a debug helper accepts */
+
 /* USART ctrl1 bits, as raw masks (the AT32 HAL only has MAKE_VALUE forms). */
 #define USART_CTRL1_RDBFIEN   (1 << 5)   /* RX buffer full interrupt enable */
 
@@ -127,7 +137,7 @@ static void fpga_meter_reset_transport(void)
 
     GPIOC->clr = (1U << 11);
     meter_soc_live_flag = false;       /* the chip restarts when PC11 rises again */
-    fpga_scope_delay_ms(20);
+    fpga_scope_delay_ms(METER_LINK_RESET_QUIET_MS);
 
     USART2->ctrl1 = (ctrl1 | USART_CTRL1_UEN | USART_CTRL1_RDBFIEN) &
                     ~USART_CTRL1_TDBEIEN;
@@ -573,21 +583,26 @@ static void fpga_set_meter_frontend_for_submode(uint8_t submode)
     if (meter_moves_relays) fpga_apply_meter_mux_gpio_state(&mux_state);
 }
 
-/* The wake words a reinit sends right after its link reset. */
+/* Stock's wake words in stock's order: 0x0508 (configure), 0x0509 (start)
+ * and the probe word, all unobeyed (see fpga_timed_send_cmd). The one place
+ * they are sent; returns the probe word's low byte. */
+static uint8_t meter_send_wake_words(void)
+{
+    const uint8_t probe_cmd = fpga_probe_cmd_byte();
+
+    fpga_timed_send_cmd(0x05, 0x08, METER_WAKE_WORD_GAP_MS);
+    fpga_timed_send_cmd(0x05, FPGA_CMD_METER_START, METER_WAKE_WORD_GAP_MS);
+    fpga_timed_send_cmd(0x05, probe_cmd, METER_WAKE_WORD_GAP_MS);
+    return probe_cmd;
+}
+
+/* What a reinit sends right after its link reset: the wake words, then 0x0514. */
 static void fpga_send_meter_wake_preamble(void)
 {
-    uint8_t probe_cmd = fpga_probe_cmd_byte();
-
     fpga_set_meter_frontend_for_submode(0);
-    fpga_scope_delay_ms(20);
-
-    /* Stock's wake words in stock's order: 0x0508 (configure), 0x0509
-     * (start), the probe word and 0x0514, all unobeyed (see
-     * fpga_timed_send_cmd). */
-    fpga_timed_send_cmd(0x05, 0x08, 10);
-    fpga_timed_send_cmd(0x05, FPGA_CMD_METER_START, 10);
-    fpga_timed_send_cmd(0x05, probe_cmd, 10);
-    fpga_timed_send_cmd(0x05, FPGA_CMD_METER_VAR_14, 20);
+    fpga_scope_delay_ms(METER_FRONTEND_SETTLE_MS);
+    (void)meter_send_wake_words();
+    fpga_timed_send_cmd(0x05, FPGA_CMD_METER_VAR_14, METER_WAKE_END_GAP_MS);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -606,8 +621,8 @@ bool fpga_debug_send_meter_boot_order(uint8_t submode, uint32_t delay_ms,
     if (!fpga.initialized || !fpga_meter_submode_is_valid(submode)) {
         return false;
     }
-    if (delay_ms > 5000U) {
-        delay_ms = 5000U;
+    if (delay_ms > METER_DEBUG_MAX_DELAY_MS) {
+        delay_ms = METER_DEBUG_MAX_DELAY_MS;
     }
 
     plan = fpga_meter_transition_plan_for_submode(submode);
@@ -636,9 +651,7 @@ bool fpga_debug_send_meter_boot_order(uint8_t submode, uint32_t delay_ms,
     fpga.meter_mode_probe_word = (uint16_t)(0x0500U | probe_cmd);
     fpga.meter_mode_start_word = 0x0509U;
 
-    fpga_timed_send_cmd(0x05, 0x08, 10);
-    fpga_timed_send_cmd(0x05, FPGA_CMD_METER_START, 10);
-    fpga_timed_send_cmd(0x05, probe_cmd, 10);
+    (void)meter_send_wake_words();
     fpga_wire_send_word(plan.selector_word, delay_ms);
     fpga_meter_discard_next_frames(plan.discard_frames);
 
@@ -657,7 +670,7 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
     if (!fpga.initialized || !fpga_meter_submode_is_valid(submode)) {
         return false;
     }
-    if (low_ms > 5000U || high_ms > 5000U) {
+    if (low_ms > METER_DEBUG_MAX_DELAY_MS || high_ms > METER_DEBUG_MAX_DELAY_MS) {
         return false;
     }
 
@@ -671,9 +684,8 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
      * normal word sequence. Unlike a real transition it does not wait for
      * the chip to wake. */
     meter_data_invalidate(submode);
-    fpga_meter_reset_transport();
+    fpga_meter_reset_transport();          /* leaves PC11 low */
 
-    GPIOC->clr = (1U << 11);
     meter_soc_live_flag = false;   /* PC11 edge outside a finished transition */
     GPIOB->scr = PB11_MASK;
     GPIOC->scr = PC6_MASK;
@@ -965,13 +977,11 @@ void fpga_request_meter_mode(uint8_t submode)
  * screen is shown: a key's request (input_mode_switch, input task) arrives
  * one frame before the display task turns the link on, and the meter screen
  * always wants the link (meter_link_policy.h). */
-bool fpga_meter_link_background_capable(void);
-
 static bool meter_link_serving(void)
 {
     extern volatile device_mode_t current_mode;  /* from ui.h via main.c */
     return current_mode == MODE_MULTIMETER ||
-           (meter_link_state == METER_LINK_ST_ON && fpga_meter_link_background_capable());
+           meter_link_state == METER_LINK_ST_ON;
 }
 
 void fpga_meter_poll_task(void *pv)
@@ -980,7 +990,7 @@ void fpga_meter_poll_task(void *pv)
     extern volatile uint8_t meter_submode;
 
     for (;;) {
-        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(250));  /* 4 Hz, or a request */
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(METER_KEEPALIVE_PERIOD_MS));  /* or a request */
         int16_t req = meter_mode_request;
         if (req >= 0 && fpga.initialized) {
             meter_mode_request = -1;
@@ -1002,10 +1012,8 @@ void fpga_meter_poll_task(void *pv)
                  * normally follow the link-on's transition, so they must be
                  * unobeyed (see fpga_timed_send_cmd). */
                 fpga_meter_needs_activation = false;
-                fpga_timed_send_cmd(0x05, 0x08, METER_ACTIVATION_GAP_MS);
-                fpga_timed_send_cmd(0x05, FPGA_CMD_METER_START, METER_ACTIVATION_GAP_MS);
-                fpga_timed_send_cmd(0x05, fpga_probe_cmd_byte(), METER_ACTIVATION_GAP_MS);
-                fpga_timed_send_cmd(0x05, FPGA_CMD_METER_VAR_14, METER_ACTIVATION_END_MS);
+                (void)meter_send_wake_words();
+                fpga_timed_send_cmd(0x05, FPGA_CMD_METER_VAR_14, METER_ACTIVATION_END_GAP_MS);
             }
             if (meter_keepalive_enabled)
                 fpga_send_meter_poll_sequence(meter_submode);
@@ -1089,13 +1097,6 @@ void fpga_set_meter_mux(bool enable)
  * The first evaluation after boot always runs one of the two.
  */
 bool fpga_meter_link_on(void) { return meter_link_state == METER_LINK_ST_ON; }
-
-/* Whether the meter may keep running under another screen. Always true: no
- * scope code sends on USART2 (fpga.c leaves it to the meter link). */
-bool fpga_meter_link_background_capable(void)
-{
-    return true;
-}
 
 /* True when nothing needs asking: a request is waiting (the newest wins), or
  * the chip runs this function or is being switched to it. */
@@ -1219,7 +1220,7 @@ static void fpga_meter_wait_for_soc(uint16_t frame_before)
         if (waited + FPGA_METER_SOC_WAKE_POLL_MS >= FPGA_METER_SOC_WAKE_TIMEOUT_MS) {
             fpga.meter_soc_wake_timeouts++;
         }
-        if (since_keepalive >= 250u) {
+        if (since_keepalive >= METER_KEEPALIVE_PERIOD_MS) {
             (void)fpga_send_cmd_unobeyed(0x05, FPGA_CMD_METER_START);
             since_keepalive = 0;
         }

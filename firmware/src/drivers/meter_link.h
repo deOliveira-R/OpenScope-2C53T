@@ -73,7 +73,6 @@ extern volatile int16_t  fpga_meter_probe_tail_override;
  * restarted. */
 void    fpga_meter_link_set(bool on);
 bool    fpga_meter_link_on(void);
-bool    fpga_meter_link_background_capable(void);   /* always true: the link can run under any screen */
 /* PC11 and the meter's use of the front end, without the rest. */
 void    fpga_set_meter_mux(bool enable);
 /* True from fpga_set_meter_mux(true) until the scope's front-end settings

@@ -54,11 +54,9 @@
 
 /* SPI3 CTRL1: master (bit 2), mode 3 (CPOL bit 1, CPHA bit 0), software
  * chip select held inactive (bits 9 and 8), divider /2, 8 bits, MSB first.
- * CTRL2: the two DMA request enables, as stock sets them; no DMA channel is
- * configured, so they have no effect. */
+ * CTRL2 is 0: transfers are polled, no interrupt and no DMA request. */
 #define SPI3_CTRL1_MODE3_MASTER  ((1u << 0) | (1u << 1) | (1u << 2) | (1u << 8) | (1u << 9))
 #define SPI3_CTRL1_ENABLE        (1u << 6)
-#define SPI3_CTRL2_DMA_REQUESTS  0x03u
 
 /* The three states of the SPI3 pins (fpga_boot.c). */
 void spi3_pins_peripheral(void);
@@ -87,8 +85,11 @@ typedef struct {
  * visiting every screen: dvom_RX had 9 words left of 128 and dvom_TX 13 of
  * 64. Both doubled, which costs 192 words of heap. */
 #define FPGA_DVOM_TX_STACK 128
-
 #define FPGA_DVOM_RX_STACK 256
+/* The acquisition task, and the poll task (meter function changes run on
+ * it). Chosen, not measured to their limit; `tasks` shows what is left. */
+#define FPGA_ACQ_STACK        256
+#define FPGA_METER_POLL_STACK 192
 
 /* ═══════════════════════════════════════════════════════════════════
  * SPI3 Low-Level Transfer
@@ -189,9 +190,6 @@ typedef struct {
 #define METER_TX_FRAME_MS          11u
 #define METER_TX_FRAME_TIMEOUT_MS  (2u * METER_TX_FRAME_MS)                    /* dvom_TX gives a frame up */
 #define METER_TX_QUEUE_WAIT_MS     (METER_TX_QUEUE_LEN * METER_TX_FRAME_MS)    /* a full queue has drained */
-/* Gaps after the activation words (after the last one, longer), as stock leaves them. */
-#define METER_ACTIVATION_GAP_MS    10u
-#define METER_ACTIVATION_END_MS    50u
 bool meter_tx_raw_frame(const uint8_t *frame);
 extern QueueHandle_t     usart_tx_queue;
 extern QueueHandle_t meter_rx_queue;
