@@ -176,6 +176,10 @@ static const uint16_t lcd_shadow_palette[16] = {
 };
 
 extern volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
+
+/* Cycles spent in lcd_write_column() since boot: a painter that sends columns
+ * reads it before and after a frame to know what the sending cost. */
+volatile uint32_t lcd_perf_column_cycles;
 static uint8_t lcd_shadow_palette_index(uint16_t color)
 {
     /* RGB565: fold the three fields so that colours differing in any of them
@@ -763,6 +767,10 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count)
  * and how often the shadow had to search the palette for a colour. */
 volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
 
+/* Cycles spent in lcd_write_column() since boot: a painter that sends columns
+ * reads it before and after a frame to know what the sending cost. */
+volatile uint32_t lcd_perf_column_cycles;
+
 void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count)
 {
     /* A stream into a window one pixel wide. Same pixels on the panel and the
@@ -819,6 +827,7 @@ void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t c
             *cell = (uint8_t)((*cell & keep) | (uint8_t)(lcd_shadow_palette_index(p) << shift));
         }
     }
+    lcd_perf_column_cycles += DWT->CYCCNT - w0;
 }
 
 void lcd_clear(uint16_t color)

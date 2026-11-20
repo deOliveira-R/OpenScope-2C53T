@@ -40,6 +40,7 @@ C_SOURCES += src/ui/scope_view.c
 C_SOURCES += src/ui/scope_yt.c
 C_SOURCES += src/ui/scope_cursor_draw.c
 C_SOURCES += src/ui/scope_live.c
+C_SOURCES += src/ui/canvas.c
 C_SOURCES += src/ui/scope_xy.c
 C_SOURCES += src/ui/scope_roll_draw.c
 C_SOURCES += src/ui/scope_spectrum.c
@@ -772,6 +773,15 @@ $(BUILD_DIR)/test_scope_geom: tests/test_scope_geom.c src/ui/scope_geom.c src/ui
 
 .PHONY: test-scope-geom
 test-scope-geom: $(BUILD_DIR)/test_scope_geom
+	$<
+
+# The canvas draw cycle (ui/canvas.c) against a model of the glass: what is
+# sent, what is skipped, holes, and incremental == full.
+$(BUILD_DIR)/test_canvas: tests/test_canvas.c src/ui/canvas.c src/ui/canvas.h src/drivers/lcd.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui -Isrc/drivers $< src/ui/canvas.c -o $@
+
+.PHONY: test-canvas
+test-canvas: $(BUILD_DIR)/test_canvas
 	$<
 
 # The Y-T vertical transform (yt_vmap.h): true scale (stock geometry: 0 V at

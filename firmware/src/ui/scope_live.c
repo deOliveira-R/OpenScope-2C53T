@@ -6,26 +6,7 @@
  */
 
 #include "scope_ui_parts.h"
-
-/* One column of the live band, painted before it is sent. */
-static uint16_t s_live_col[LCD_HEIGHT];
-
-/* What each column of the band held when it was last sent: a 32-bit FNV-1a
- * hash of its 16-bit pixels. A column whose new pixels hash the same is not
- * sent again; with a steady trace that is most of them. The hashes are
- * trusted only while nobody else has drawn on the band's rows
- * (lcd_watch_take) and the popup hole is as open or closed as it was. Two
- * different columns hashing alike would leave the old one on the glass until
- * it changes again (one chance in 2^32 for each change). */
-static uint32_t s_live_hash[LCD_WIDTH];
-
-static bool     s_live_hash_valid;   /* s_live_hash describes the glass */
-
-static bool     s_live_hole_was;     /* the last frame kept the popup hole */
-
-#define LIVE_HASH_SEED   2166136261u     /* FNV-1a offset basis */
-
-#define LIVE_HASH_PRIME  16777619u       /* FNV-1a prime */
+#include "canvas.h"
 
 /* Columns sent and skipped by the last live frame (`ui dump`). */
 volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
@@ -45,138 +26,45 @@ volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want,
 /* Time view_build() took in the last live frame, microseconds (`ui dump`). */
 volatile uint32_t ui_scope_view_us_last;
 
-/* The live Y-T frame: the canvas draw cycle with column strips over the
- * plot band (SCOPE_TOP down to the measurement strip's top), for every one of
- * the LCD_WIDTH columns. Each column's final pixels are composed in
- * s_live_col and sent in one column write, so the glass never shows a blank
- * band (draw_scope_screen, scope_ui.c, clears it and repaints). It must give the
- * pixels the full redraw gives for the same elements: same window
- * (view_build), same maps (yt_fits), same tags (markers_build), same cursor
- * layer. Called by main.c's scope_render for an incremental redraw of the
- * Y-T view with a record; the measurement strip and the popup box are not
- * drawn here. Expects the channel buffers to exist (returns otherwise).
- * Changes: yt_cols and the view globals, the persistence buffer, the cursor
- * readout's bands (vband), popup_hole_last, the hash memory and the
- * `ui dump` counters.
- *
- * Outline:
- *   1. Build the window (view_build) and arm the mask overlay and math.
- *   2. Per frame: band bottom, the two maps, the edge tags, the vbands, the
- *      cursor layer, the math frame, persistence decay and colour bases,
- *      the trigger row, the popup hole, whether the column hashes are
- *      still trusted.
- *   3. Per column x:
- *      a. derive: trace rows and spans to the previous column, math span,
- *         mask colours and bounds, tag and pointer columns, the segments
- *         around the popup hole;
- *      b. paint s_live_col, lowest layer first;
- *      c. (bench shell) livecheck against the per-pixel rule;
- *      d. hash; send the segments if the hash changed;
- *      e. feed this column's traces to persistence.
- *   4. Publish the counters; mark the hashes trusted. */
-void draw_scope_live_frame(void)
-{
-    const theme_t *th = theme_get();
-    const scope_state_t *ss = scope_state_get();
-    const volatile uint8_t *b1 = fpga_get_ch1_buf();
-    const volatile uint8_t *b2 = fpga_get_ch2_buf();
-
-    if (!b1 || !b2) return;
-
-    /* 1. The window: placed on the trigger source's crossing and filled into
-     * yt_cols for both channels by the same view_build() the full redraw
-     * uses (draw_yt_traces, scope_yt.c), so the two renderers stay in
-     * phase. From here b1/b2 are the window's columns. */
-    const uint32_t vb0 = DWT->CYCCNT;
-    view_build(ss, b1, b2);
-    ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
-    b1 = yt_cols[0];
-    b2 = yt_cols[1];
-    mask_overlay_begin();          /* per-column mask colours, see draw_mask_strip */
-    g_math_live = true;            /* yt_cols is this frame's window */
-
-    /* 2. Per frame. The band stops at the measurement strip's top, which
-     * moves with the selection (strip_top, scope_furniture.c). The strip
-     * repaints itself; streaming over it would fight it at frame rate. */
-    const uint16_t band_bot = strip_top(ss);
-
-
-    /* The maps exactly as the full redraw builds them (yt_fits: true scale
-     * or autofit, the band split), so a change of renderer never moves the
-     * trace. They run against SCOPE_BOT even though this function only
-     * paints down to band_bot: the full redraw draws the trace under the
-     * strip and paints the badges on top, so matching its geometry means
-     * matching its y_bot, not its visible extent. */
-    autofit_t a1, a2;
-    yt_fits(ss, &a1, &a2);           /* b1/b2 ARE yt_cols: the one prep */
-
-    /* The tags, on the same maps. */
-    pm_set_t pm;
-    markers_build(ss, th, &a1, &a2, band_bot, &pm);
-
-    /* What this frame drew, for the cursor readout (as draw_yt_traces
-     * records it). */
-    vband_clear();
-    {
-        uint8_t slot = 0;
-        if (a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &a1, yt_vmap_counts_per_px(&a1));
-        if (a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &a2, yt_vmap_counts_per_px(&a2));
-    }
-
-    /* Cursors: one more layer of the column composition. */
-    cur_layer_t cl;
-    cursor_layer_build(ss, th, &cl);
-    const bool curs = cl.v || cl.h;
-
-    /* Math trace: the same frame helpers as the full redraw, one row per
-     * column, its label as per-pixel text. */
+/* One live frame's inputs, built once (yt_frame_prepare) and read by the
+ * paint function for every column. p1, p2 and mp carry the previous column's
+ * rows, for the connecting spans. */
+typedef struct {
+    const theme_t          *th;
+    const scope_state_t    *ss;
+    const volatile uint8_t *b1, *b2;        /* the window's columns (yt_cols) */
+    uint16_t     band_bot;                  /* the band's end: the measurement strip's top */
+    autofit_t    a1, a2;                    /* the two maps (yt_fits) */
+    pm_set_t     pm;                        /* the edge tags */
+    cur_layer_t  cl;                        /* the cursor layer */
+    bool         curs;                      /* it has something to draw */
     math_frame_t mf;
-    const bool mth = math_enabled;
-    if (mth) math_prepare(ss, &mf);
-    const int16_t mlab_w = mth ? (int16_t)font_string_width(mf.label, &font_small) : 0;
-    int16_t mp = 0;
-
-    /* Persistence: the ghosts are read from the shared-pool buffer
-     * (PERSIST_WIDTH x PERSIST_HEIGHT intensities, not .bss) under the grid,
-     * decayed once per frame, and this frame's traces are added to it column
-     * by column after the column is sent, as draw_channel() (scope_yt.c)
-     * feeds it in the full redraw. */
-    const uint8_t *pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
-    if (pbuf) persist_frame_decay();
-    const uint16_t pbase_top = persist_base(ss, th, SCOPE_TOP);
-    const uint16_t pbase_bot = persist_base(ss, th, (uint16_t)(SCOPE_BOT - 1));
-
-    /* Trigger dotted line, placed and clamped as draw_trigger_line
-     * (scope_yt.c) places it: on the trigger source's map, at the record code
-     * where the hardware fires; every 2nd column while the level has focus,
-     * every 4th otherwise. */
-    int16_t trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &a2 : &a1);
-    if (trig_y < SCOPE_TOP + 2) trig_y = SCOPE_TOP + 2;
-    if (trig_y > SCOPE_BOT - 3) trig_y = SCOPE_BOT - 3;
-    const uint16_t trig_step = scope_trig_level_focus ? 1u : 3u;   /* dot mask */
-
-    int16_t p1 = 0, p2 = 0;  /* previous column's y, for the connecting span */
-
-    /* Popup hole, clamped into the band so a move of either rectangle cannot
-     * produce an inverted or out-of-band window. */
-    bool     hole     = popup_live();
-    uint16_t hole_top = POPUP_Y;
-    uint16_t hole_bot = POPUP_Y + POPUP_H;
-    if (hole_top < SCOPE_TOP) hole_top = SCOPE_TOP;
-    if (hole_bot > band_bot)  hole_bot = band_bot;
-    if (hole_top >= hole_bot) hole = false;
-    popup_hole_last = hole;
-
-    /* May the hashes of the last frame be trusted? Not after anybody else
-     * drew on these rows, nor when the popup hole opened or closed. */
-    lcd_watch_rows(SCOPE_TOP, band_bot);
-    if (lcd_watch_take() || hole != s_live_hole_was) s_live_hash_valid = false;
-    s_live_hole_was = hole;
-    uint16_t cols_sent = 0;
-    uint32_t send_cycles = 0;        /* time inside the panel writes, for `ui dump` */
-
-    /* 3. Per column, over the whole LCD width. */
-    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+    bool         mth;                       /* math is on */
+    int16_t      mlab_w;                    /* width of its label, pixels */
+    const uint8_t *pbuf;                    /* persistence intensities, or NULL */
+    uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below SCOPE_MID_Y */
+    int16_t      trig_y;                    /* the trigger line's row */
+    uint16_t     trig_step;                 /* its dot mask */
+    int16_t      p1, p2, mp;
+} yt_frame_t;
+/* Paint column x of the band into s: the canvas's paint function. */
+static void yt_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    yt_frame_t *const f = ctx;
+    const theme_t *const th = f->th;
+    const volatile uint8_t *const b1 = f->b1, *const b2 = f->b2;
+    const uint16_t band_bot = f->band_bot;
+    const bool curs = f->curs;
+    const bool mth = f->mth;
+    const int16_t mlab_w = f->mlab_w;
+    const uint8_t *const pbuf = f->pbuf;
+    const uint16_t pbase_top = f->pbase_top, pbase_bot = f->pbase_bot;
+    const int16_t trig_y = f->trig_y;
+    const uint16_t trig_step = f->trig_step;
+    int16_t p1 = f->p1, p2 = f->p2, mp = f->mp;
+    const uint16_t rows = (uint16_t)(band_bot - SCOPE_TOP);
+    uint16_t *const col = s->px;
+    {
         /* 3a. The trace lives in the 301-column window (scope_geom.h); right
          * of it the column carries only the trigger line, the tags, the
          * cursors and background. Inside it, a re-sampled held record may not
@@ -184,10 +72,10 @@ void draw_scope_live_frame(void)
          * filled. */
         const bool inwin = (x < SCOPE_GEOM_COLS);
         const bool trace = (x >= g_view_first && x < g_view_end);
-        const bool on1 = a1.on && trace, on2 = a2.on && trace;
+        const bool on1 = f->a1.on && trace, on2 = f->a2.on && trace;
         /* One transform, shared with the full redraw (yt_fits). */
-        int16_t y1 = on1 ? autofit_y(&a1, b1[x]) : (int16_t)SCOPE_MID_Y;
-        int16_t y2 = on2 ? autofit_y(&a2, b2[x]) : (int16_t)SCOPE_MID_Y;
+        int16_t y1 = on1 ? autofit_y(&f->a1, b1[x]) : (int16_t)SCOPE_MID_Y;
+        int16_t y2 = on2 ? autofit_y(&f->a2, b2[x]) : (int16_t)SCOPE_MID_Y;
 
         /* Rows y and y+1, plus the span to the previous column's row, so
          * steep edges draw as connected verticals. draw_channel (scope_yt.c)
@@ -206,8 +94,8 @@ void draw_scope_live_frame(void)
 
         /* Math: this column's row and the span from the previous one. */
         int16_t mlo = -1, mhi = -2;
-        if (mth && mf.ok && trace) {
-            const int16_t r = math_row(&mf, x);
+        if (mth && f->mf.ok && trace) {
+            const int16_t r = math_row(&f->mf, x);
             mlo = mhi = r;
             if (x > g_view_first) {
                 if (mp < mlo) mlo = mp;
@@ -229,10 +117,10 @@ void draw_scope_live_frame(void)
         if (g_mask_bounds_on && MASK_BOUND_DOT(x)) {
             uint8_t lo, hi;
             if (on1 && scope_mask_bound_at(0, (int)x, g_place.trig_x, &lo, &hi)) {
-                bl1 = autofit_y(&a1, lo); bh1 = autofit_y(&a1, hi);
+                bl1 = autofit_y(&f->a1, lo); bh1 = autofit_y(&f->a1, hi);
             }
             if (on2 && scope_mask_bound_at(1, (int)x, g_place.trig_x, &lo, &hi)) {
-                bl2 = autofit_y(&a2, lo); bh2 = autofit_y(&a2, hi);
+                bl2 = autofit_y(&f->a2, lo); bh2 = autofit_y(&f->a2, hi);
             }
         }
 
@@ -245,22 +133,6 @@ void draw_scope_live_frame(void)
                           (int)x + PM_TPOS_W / 2 >= (int)g_place.trig_x &&
                           (int)x <= (int)g_place.trig_x + PM_TPOS_W / 2;
 
-        /* The popup is a HOLE in the band, not a layer: its glyphs are the
-         * one thing this compositor cannot recompute per pixel, so a column
-         * under it is sent as two segments that step around the box. When
-         * the popup ends the hole closes and the next live frame paints the
-         * band back over it, with no full repaint at either end. */
-        uint16_t seg_top[2], seg_bot[2];
-        uint8_t  nseg = 1;
-        seg_top[0] = SCOPE_TOP;
-        seg_bot[0] = band_bot;
-        if (hole && x >= POPUP_X && x < POPUP_X + POPUP_W) {
-            seg_bot[0] = hole_top;
-            seg_top[1] = hole_bot;
-            seg_bot[1] = band_bot;
-            nseg = 2;
-        }
-
         /* 3b. Paint the column into s_live_col, lowest layer first, so that
          * each later layer overwrites the ones under it. The order is the
          * z-order of the full redraw read from the bottom: background and
@@ -271,8 +143,6 @@ void draw_scope_live_frame(void)
          * touches only the rows it can occupy, which is what makes the frame
          * cheap compared with a chain of tests at every pixel (the livecheck
          * rule below). Index i of s_live_col is screen row SCOPE_TOP + i. */
-        const uint16_t rows = (uint16_t)(band_bot - SCOPE_TOP);
-        uint16_t *const col = s_live_col;
 #define LIVE_ROW_OK(yy)   ((int)(yy) >= (int)SCOPE_TOP && (int)(yy) < (int)band_bot)
 #define LIVE_PUT(yy, cc)  do { if (LIVE_ROW_OK(yy)) col[(int)(yy) - (int)SCOPE_TOP] = (cc); } while (0)
 #define LIVE_SPAN(lo, hi, cc) do { \
@@ -317,16 +187,16 @@ void draw_scope_live_frame(void)
             for (int y = (int)band_bot - (int)MASK_STRIP_H; y < (int)band_bot; y++)
                 if (LIVE_ROW_OK(y) && (!mdot || ((x + (unsigned)y) & 1u) == 0u))
                     col[y - (int)SCOPE_TOP] = mstrip;
-        if (mth && mf.ok && x < 6u) LIVE_PUT(SCOPE_GRID_MID_Y, th->warning);   /* math zero tick */
+        if (mth && f->mf.ok && x < 6u) LIVE_PUT(SCOPE_GRID_MID_Y, th->warning);   /* math zero tick */
         if (mhi >= mlo) LIVE_SPAN(mlo, mhi, th->warning);                       /* math trace */
         if (mcol)                                                               /* math label */
             for (uint16_t y = SCOPE_TOP; y < SCOPE_TOP + font_small.height && y < band_bot; y++)
-                if (font_text_px(mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - SCOPE_TOP))
+                if (font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - SCOPE_TOP))
                     col[y - SCOPE_TOP] = th->warning;
         if (edge)                                                               /* ground / trigger tags */
             for (uint16_t y = SCOPE_TOP; y < band_bot; y++) {
                 uint16_t c;
-                if (markers_px(&pm, (int)x, (int)y, th->background, &c)) col[y - SCOPE_TOP] = c;
+                if (markers_px(&f->pm, (int)x, (int)y, th->background, &c)) col[y - SCOPE_TOP] = c;
             }
         if (tcol)                                                               /* trigger-position pointer */
             for (uint16_t y = SCOPE_TOP; y < SCOPE_TOP + PM_TPOS_H && y < band_bot; y++)
@@ -334,7 +204,7 @@ void draw_scope_live_frame(void)
         if (curs)                                                               /* cursor lines and labels */
             for (uint16_t y = SCOPE_TOP; y < band_bot; y++) {
                 uint16_t c;
-                if (cursor_layer_px(&cl, (int)x, (int)y, &c)) col[y - SCOPE_TOP] = c;
+                if (cursor_layer_px(&f->cl, (int)x, (int)y, &c)) col[y - SCOPE_TOP] = c;
             }
 #undef LIVE_SPAN
 #undef LIVE_PUT
@@ -352,20 +222,20 @@ void draw_scope_live_frame(void)
                 /* Top layer first: cursors over everything, CH2 over CH1,
                  * traces over mask bounds over the trigger line over the
                  * grid. */
-                if (curs && cursor_layer_px(&cl, (int)x, (int)y, &c))
+                if (curs && cursor_layer_px(&f->cl, (int)x, (int)y, &c))
                     ;                                      /* cursor lines and labels */
                 else if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
                     tpos_px(g_place.trig_x, (int)x, (int)y))  /* trigger-position pointer */
                     c = th->trigger;
-                else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))
+                else if (edge && markers_px(&f->pm, (int)x, (int)y, th->background, &c))
                     ;                                      /* ground / trigger tags */
                 else if (mcol && y < SCOPE_TOP + font_small.height &&
-                         font_text_px(mf.label, &font_small, (int)x - (int)MATH_LABEL_X,
+                         font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X,
                                       (int)y - SCOPE_TOP))
                     c = th->warning;                       /* math label */
                 else if ((int16_t)y >= mlo && (int16_t)y <= mhi)
                     c = th->warning;                       /* math trace */
-                else if (mth && mf.ok && x < 6u && y == SCOPE_GRID_MID_Y)
+                else if (mth && f->mf.ok && x < 6u && y == SCOPE_GRID_MID_Y)
                     c = th->warning;                       /* math zero tick */
                 else if (mstrip && y >= band_bot - MASK_STRIP_H &&
                          (!mdot || ((x + y) & 1u) == 0u))
@@ -407,34 +277,141 @@ void draw_scope_live_frame(void)
         }
 #endif
 
-        /* 3d. Hash the column; send it (around the popup hole) only when the
-         * hash differs from what the glass holds or the hashes are not
-         * trusted. 3e. Then feed persistence. */
-        uint32_t hash = LIVE_HASH_SEED;
-        for (uint16_t i = 0; i < rows; i++) hash = (hash ^ col[i]) * LIVE_HASH_PRIME;
-        if (!s_live_hash_valid || hash != s_live_hash[x]) {
-            s_live_hash[x] = hash;
-            cols_sent++;
-            const uint32_t s0 = DWT->CYCCNT;
-            for (uint8_t sg = 0; sg < nseg; sg++) {
-                if (seg_bot[sg] <= seg_top[sg]) continue;
-                lcd_write_column(x, seg_top[sg], &col[seg_top[sg] - SCOPE_TOP],
-                                 (uint16_t)(seg_bot[sg] - seg_top[sg]));
-            }
-            send_cycles += DWT->CYCCNT - s0;
-        }
+        /* 3e. Feed persistence, after this column's ghosts were read. */
         if (pbuf && trace) {
             if (on1) persist_note(x, pp1, y1);
             if (on2) persist_note(x, pp2, y2);
         }
     }
+    f->p1 = p1; f->p2 = p2; f->mp = mp;
+}
+/* The live Y-T frame: one canvas frame in column strips over the plot band
+ * (SCOPE_TOP down to the measurement strip's top), for every one of the
+ * LCD_WIDTH columns. Each column's final pixels are composed by
+ * yt_paint_column and sent by the canvas only when they changed, so the
+ * glass never shows a blank band (draw_scope_screen, scope_ui.c, clears it
+ * and repaints). Called by main.c's scope_render for an incremental redraw
+ * of the Y-T view with a record; the measurement strip and the popup box are
+ * not drawn here. Expects the channel buffers to exist (returns otherwise).
+ * Changes: yt_cols and the view globals, the persistence buffer, the cursor
+ * readout's bands (vband), popup_hole_last and the `ui dump` counters.
+ *
+ * Outline:
+ *   1. Build the window (view_build) and arm the mask overlay and math.
+ *   2. Per frame: band bottom, the two maps, the edge tags, the vbands, the
+ *      cursor layer, the math frame, persistence decay and colour bases,
+ *      the trigger row, the popup hole.
+ *   3. The canvas cycle; per column x (yt_paint_column):
+ *      a. derive: trace rows and spans to the previous column, math span,
+ *         mask colours and bounds, tag and pointer columns;
+ *      b. paint the strip, lowest layer first;
+ *      c. (bench shell) livecheck against the per-pixel rule;
+ *      e. feed this column's traces to persistence.
+ *   4. Publish the counters. */
+void draw_scope_live_frame(void)
+{
+    yt_frame_t f;
+    f.th = theme_get();
+    f.ss = scope_state_get();
+    const theme_t *const th = f.th;
+    const scope_state_t *const ss = f.ss;
+    const volatile uint8_t *b1 = fpga_get_ch1_buf();
+    const volatile uint8_t *b2 = fpga_get_ch2_buf();
 
-    /* 4. Clear the watch marks this frame's own writes left, so the next
-     * frame sees only other painters'; the hashes now describe the glass. */
-    (void)lcd_watch_take();
-    s_live_hash_valid = true;
+    if (!b1 || !b2) return;
+
+    /* 1. The window: placed on the trigger source's crossing and filled into
+     * yt_cols for both channels by the same view_build() the full redraw
+     * uses (draw_yt_traces, scope_yt.c), so the two renderers stay in
+     * phase. From here b1/b2 are the window's columns. */
+    const uint32_t vb0 = DWT->CYCCNT;
+    view_build(ss, b1, b2);
+    ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
+    f.b1 = yt_cols[0];
+    f.b2 = yt_cols[1];
+    mask_overlay_begin();          /* per-column mask colours, see draw_mask_strip */
+    g_math_live = true;            /* yt_cols is this frame's window */
+
+    /* 2. Per frame. The band stops at the measurement strip's top, which
+     * moves with the selection (strip_top, scope_furniture.c). The strip
+     * repaints itself; streaming over it would fight it at frame rate. */
+    f.band_bot = strip_top(ss);
+
+    /* The maps exactly as the full redraw builds them (yt_fits: true scale
+     * or autofit, the band split), so a change of renderer never moves the
+     * trace. They run against SCOPE_BOT even though this function only
+     * paints down to band_bot: the full redraw draws the trace under the
+     * strip and paints the badges on top, so matching its geometry means
+     * matching its y_bot, not its visible extent. */
+    yt_fits(ss, &f.a1, &f.a2);
+
+    /* The tags, on the same maps. */
+    markers_build(ss, th, &f.a1, &f.a2, f.band_bot, &f.pm);
+
+    /* What this frame drew, for the cursor readout (as draw_yt_traces
+     * records it). */
+    vband_clear();
+    {
+        uint8_t slot = 0;
+        if (f.a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f.a1, yt_vmap_counts_per_px(&f.a1));
+        if (f.a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f.a2, yt_vmap_counts_per_px(&f.a2));
+    }
+
+    /* Cursors: one more layer of the column composition. */
+    cursor_layer_build(ss, th, &f.cl);
+    f.curs = f.cl.v || f.cl.h;
+
+    /* Math trace: the same frame helpers as the full redraw, one row per
+     * column, its label as per-pixel text. */
+    f.mth = math_enabled;
+    if (f.mth) math_prepare(ss, &f.mf);
+    f.mlab_w = f.mth ? (int16_t)font_string_width(f.mf.label, &font_small) : 0;
+    f.mp = 0;
+
+    /* Persistence: the ghosts are read from the shared-pool buffer
+     * (PERSIST_WIDTH x PERSIST_HEIGHT intensities, not .bss) under the grid,
+     * decayed once per frame, and this frame's traces are added to it column
+     * by column after the column is painted, as draw_channel() (scope_yt.c)
+     * feeds it in the full redraw. */
+    f.pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
+    if (f.pbuf) persist_frame_decay();
+    f.pbase_top = persist_base(ss, th, SCOPE_TOP);
+    f.pbase_bot = persist_base(ss, th, (uint16_t)(SCOPE_BOT - 1));
+
+    /* Trigger dotted line, placed and clamped as draw_trigger_line
+     * (scope_yt.c) places it: on the trigger source's map, at the record code
+     * where the hardware fires; every 2nd column while the level has focus,
+     * every 4th otherwise. */
+    f.trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &f.a2 : &f.a1);
+    if (f.trig_y < SCOPE_TOP + 2) f.trig_y = SCOPE_TOP + 2;
+    if (f.trig_y > SCOPE_BOT - 3) f.trig_y = SCOPE_BOT - 3;
+    f.trig_step = scope_trig_level_focus ? 1u : 3u;   /* dot mask */
+
+    f.p1 = 0;
+    f.p2 = 0;
+
+    /* The popup is a HOLE in the band, not a layer: its glyphs are the one
+     * thing this compositor cannot recompute per pixel, so the canvas steps
+     * around the box. When the popup ends the hole closes and the next live
+     * frame paints the band back over it, with no full repaint at either
+     * end. popup_hole_last: the box has rows inside the band. */
+    const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
+    const bool hole = popup_live() && POPUP_Y < f.band_bot && POPUP_Y + POPUP_H > SCOPE_TOP;
+    popup_hole_last = hole;
+
+    /* 3. The cycle, over the whole LCD width. */
+    const canvas_frame_t frame = {
+        .rect = { 0, SCOPE_TOP, LCD_WIDTH, (uint16_t)(f.band_bot - SCOPE_TOP) },
+        .holes = &popup, .nholes = hole ? 1u : 0u,
+        .all = false,
+        .paint = yt_paint_column, .ctx = &f,
+    };
+    const uint32_t send0 = lcd_perf_column_cycles;
+    const uint16_t cols_sent = canvas_draw_columns(&frame);
+
+    /* 4. */
     ui_scope_live_cols_sent = cols_sent;
-    ui_scope_live_send_us = send_cycles / (system_core_clock / 1000000u);
+    ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
     ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);
 
 #if FEATURE_BENCHSHELL

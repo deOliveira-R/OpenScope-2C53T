@@ -244,6 +244,9 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count);
  * lcd_set_window(x, y, 1, count) + lcd_write_pixels(pixels, count), with the
  * screenshot shadow's bookkeeping done once for the column. */
 void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count);
+/* Cycles spent in lcd_write_column() since boot (wraps): read before and
+ * after a frame for what its column writes cost. */
+extern volatile uint32_t lcd_perf_column_cycles;
 
 /* Text rendering (using embedded 8x16 font) */
 void lcd_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg);
