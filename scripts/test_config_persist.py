@@ -33,6 +33,7 @@ operation it was meant to interrupt — must turn the test red too.
 from __future__ import annotations
 
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -45,22 +46,18 @@ FW = REPO / "firmware"
 TEST_REL = "tests/test_config_persist.c"
 TEST_C = FW / TEST_REL
 
-# Must match CONFIG_PERSIST_SRCS / CONFIG_PERSIST_CC in firmware/Makefile.
-SRCS = (
-    "src/util/config.c",
-    "src/util/settings_store.c",
-    "src/drivers/flash_regions.c",
-    "src/ui/theme.c",
-    "src/ui/scope_state.c",
-    "src/ui/scope_roll.c",
-    "src/ui/scope_cal.c",
-    "src/ui/scope_timebase.c",
-    "src/dsp/signal_gen.c",
-    "src/dsp/siggen_wave.c",
-    "src/util/sys_prefs.c",
-)
-INCLUDES = ("src/util", "src/drivers", "src/ui", "src/dsp")
-CFLAGS = ["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1"]
+# The source list and the compiler line come from firmware/Makefile
+# (`make print-config-persist`: CONFIG_PERSIST_SRCS, CONFIG_PERSIST_CC), so
+# this runner compiles exactly what `make test-config-persist` compiles. A
+# copy of the two lists kept here went stale as sources were added there.
+def _makefile_recipe() -> tuple[tuple[str, ...], list[str]]:
+    out = subprocess.run(["make", "-s", "--no-print-directory", "print-config-persist"],
+                         cwd=FW, capture_output=True, text=True, check=True).stdout
+    rows = dict(line.split(" ", 1) for line in out.splitlines() if " " in line)
+    return tuple(rows["srcs"].split()), shlex.split(rows["cc"])
+
+
+SRCS, CC = _makefile_recipe()
 
 BUILDS = {
     "main": ["-DSETTINGS_PERSIST_WRITES=1"],
@@ -87,11 +84,9 @@ def build_and_run(build: str, workdir: Path,
             sources.append(str(FW / rel))
 
     binary = workdir / f"test_config_persist_{build}"
-    cmd = ["gcc", *CFLAGS, *BUILDS[build]]
-    for inc in INCLUDES:
-        cmd += ["-I", str(FW / inc)]
-    cmd += [str(test_c), *sources, "-o", str(binary)]
-    built = subprocess.run(cmd, capture_output=True, text=True)
+    # cwd = firmware/: the Makefile's -I paths are relative to it.
+    cmd = [*CC, *BUILDS[build], str(test_c), *sources, "-o", str(binary)]
+    built = subprocess.run(cmd, cwd=FW, capture_output=True, text=True)
     if built.returncode != 0:
         return built
     return subprocess.run([str(binary)], capture_output=True, text=True)
@@ -220,10 +215,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         expect_fail=("a compaction cut mid-erase never resurrects old settings",),
     ),
     Mutation(
-        name="meter_layout restore in settings_store_apply()",
-        file="src/util/settings_store.c",
-        old="    meter_layout  = clamp_idx(cfg->meter_layout, METER_LAYOUT_COUNT, METER_LAYOUT_FULL);\n",
-        new="    (void)0;  /* mutant: meter_layout not restored */\n",
+        # The record's fields are restored by the table in model_persist_v5.c;
+        # without its row a field is not carried from the record to the unit.
+        name="meter_layout row of the persistence table",
+        file="src/model/model_persist_v5.c",
+        old='    ROW(PROP_ID_METER_LAYOUT, meter_layout,         V5_U8,        V5_LOAD_DEFAULT,  0, 0, METER_LAYOUT_COUNT - 1),\n',
+        new="    /* mutant: meter_layout not restored */\n",
         expect_fail=("changes survive power cycles across compaction",),
     ),
     # ── the test's own fault injection ──────────────────────────────────

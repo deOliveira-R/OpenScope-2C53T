@@ -380,7 +380,7 @@ vpath %.S $(sort $(dir $(ASM_SOURCES)))
 # Goals that build no image (tests, checks, the feature tools) never touch it.
 IMAGE_STAMP = $(BUILD_DIR)/image.stamp
 IMAGE_STAMP_TEXT = $(IMAGE_ID) / watchdog $(WATCHDOG)
-NO_IMAGE_GOALS = clean test-% check-% features features-% bootloader flash-bootloader
+NO_IMAGE_GOALS = clean test-% check-% features features-% bootloader flash-bootloader print-%
 ifeq ($(filter clean,$(MAKECMDGOALS)),)
 ifneq ($(if $(MAKECMDGOALS),$(filter-out $(NO_IMAGE_GOALS),$(MAKECMDGOALS)),all),)
 ifneq ($(strip $(shell cat $(IMAGE_STAMP) 2>/dev/null)),$(strip $(IMAGE_STAMP_TEXT)))
@@ -843,6 +843,14 @@ $(BUILD_DIR)/test_config_persist: $(CONFIG_PERSIST_DEPS) | $(BUILD_DIR)
 
 $(BUILD_DIR)/test_config_persist_nowrite: $(CONFIG_PERSIST_DEPS) | $(BUILD_DIR)
 	$(CONFIG_PERSIST_CC) -DSETTINGS_PERSIST_WRITES=0 $< $(CONFIG_PERSIST_SRCS) -o $@
+
+# For scripts/test_config_persist.py: its mutation tests compile these same
+# sources with one file replaced, so it asks for the lists instead of
+# keeping a copy.
+.PHONY: print-config-persist
+print-config-persist:
+	@echo 'srcs $(CONFIG_PERSIST_SRCS)'
+	@echo 'cc $(CONFIG_PERSIST_CC)'
 
 test-config-persist: $(BUILD_DIR)/test_config_persist $(BUILD_DIR)/test_config_persist_nowrite
 	$(BUILD_DIR)/test_config_persist
