@@ -2,7 +2,7 @@
 
 Status: agreed design, not yet implemented (2026-11-20). The live Y-T trace
 already works the way the canvas below describes (`draw_scope_live_frame`
-in `firmware/src/ui/scope_ui.c`); everything else still has its own renderer.
+in `firmware/src/ui/scope_live.c`); everything else still has its own renderer.
 
 ## Why
 

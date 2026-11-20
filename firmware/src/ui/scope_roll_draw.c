@@ -6,43 +6,43 @@
 
 #include "scope_ui_parts.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * Roll view (parity C11, scope_roll.h)
+/* ═══ Roll view (state and FIFO in scope_roll.h) ═══
  *
- * Stock draws its 301-point roll FIFO right-to-left, newest at the right
- * edge (0x0801B6D2, Update Log V1.1.0). This is the same column compositor
- * as draw_scope_live_frame (each pixel's final colour streamed once per
- * column, so a point arriving every 2 ms never blanks the band), fed from
- * a snapshot of the FIFO instead of the 1024-sample record:
- *  - column x shows the point of age scope_roll_age_at_column(x, 301): 25
- *    points per 25 px division (one point per column, the whole 301-point FIFO
- *    on the glass), so the stock label (50 ms..20 s) is what one grid
+ * The 301-point roll FIFO is drawn right to left, newest at the right edge
+ * (as the factory firmware does). It uses the same column compositor as
+ * draw_scope_live_frame (each pixel's final colour streamed once per column,
+ * so a point arriving every 2 ms never blanks the band), fed from a snapshot
+ * of the FIFO instead of the 1024-sample record:
+ *  - column x shows the point of age scope_roll_age_at_column(x, 301): one
+ *    point per column, 25 points per 25 px division, the whole 301-point
+ *    FIFO on the glass, so the label (50 ms..20 s) is what one grid
  *    division means;
  *  - the vertical transform is the Y-T one: true volts/div about mid-scale
- *    when `fpga scope graticule true` and the range is calibrated, else the
- *    visible points' own min..max. Codes are drawn raw, as the Y-T record
- *    is; the unit's g = (m-28)/150 sits in the volts/div label;
+ *    when true scale is on (ss->true_scale) and the range is calibrated, else
+ *    the visible points' own min..max. Codes are drawn raw, as the Y-T
+ *    record is; the unit's g = (m-28)/150 sits in the volts/div label;
  *  - the 12 measurements are the badges (draw_roll_badges), on the roll point
- *    rate; no cursors or trigger line (they describe the record). Stock's
- *    roll trigger runs in the roll service (fpga.c, scope_roll.h).
+ *    rate; there are no cursors or trigger line (they describe the record).
+ *    The roll trigger runs in the acquisition task (fpga_acq.c,
+ *    scope_roll_trig_step in scope_roll.h).
  * `full` adds the decorations the compositor cannot recompute per pixel
  * (labels, STOP, popup); the band itself is identical either way.
- * ═══════════════════════════════════════════════════════════════════ */
-/* ui_draw_scratch (the roll FIFO copy) is defined with the Y-T window it
- * shares storage with, above the Y-T maps (autofit_t). */
+ */
+/* ui_draw_scratch (declared in scope_ui_parts.h, defined in scope_ui.c) is
+ * storage shared between the views; its roll member holds the FIFO copy. */
 #define roll_snap      (ui_draw_scratch.roll)
 
 #define ROLL_LABEL_W 96u                /* "ROLL 301/301" in font_small */
 
 #define ROLL_LABEL_H 16u
 
-/* The 12 measurements over the roll FIFO (scope_roll_meas.h): the same badge
- * slots, order and units as the Y-T badges (draw_measurement_badges), the time
- * base being the roll point rate. Zero and scale are per channel, exactly the
- * Y-T inputs: scope_measure_zero_for(position) and scope_cal gain. `roll_snap`
- * is linearised here, after the trace has been drawn from it. Repainted when
- * `full` or every ROLL_BADGE_EVERY new points, so a 2 ms roll does not
- * repaint the badges at frame rate. */
+/* Repaint the 12 measurements over the roll FIFO (scope_roll_meas.h): the same
+ * badge slots, order and units as the Y-T badges (draw_measurement_badges),
+ * the time base being the roll point rate. Zero and scale are per channel,
+ * exactly the Y-T inputs: scope_measure_zero_for(position) and scope_cal
+ * gain. `roll_snap` is linearised here, after the trace has been drawn from
+ * it. Repainted when `full` or every ROLL_BADGE_EVERY new points, so a 2 ms
+ * roll does not repaint the badges at frame rate. nvis = visible points. */
 #define ROLL_BADGE_EVERY 8u
 
 static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
@@ -76,6 +76,16 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
     draw_strip_cells(&L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th, !full);
 }
 
+/*
+ * Draw the roll view: the scrolling traces, grid, fill counter, badges and
+ * (when `full`) the STOP box and popup. Reads the roll FIFO snapshot; changes
+ * roll_snap, popup_hole_last and, when the popup has ended, popup_on.
+ *
+ * Steps: snapshot the FIFO, build the vertical map per channel (true scale or
+ * fitted to the visible points), then stream the plot column by column with
+ * holes for the popup, the fill label and the STOP box, then the label,
+ * badges and furniture.
+ */
 void draw_roll_screen(bool full)
 {
     const theme_t *th = theme_get();
@@ -93,8 +103,8 @@ void draw_roll_screen(bool full)
         m2.y_top = SCOPE_MID_Y + 1;
     }
     bool on1 = en1, on2 = en2;
-    /* True scale: the Y-T map itself (yt_vmap.h), so a switch between the
-     * views never moves the trace. */
+    /* True scale uses the Y-T map itself (yt_vmap.h), so a switch between the
+     * views does not move the trace. */
     yt_vmap_t t1, t2;
     if (fx1)
         yt_vmap_true(&t1, SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, 0, yt_centre_code(),
@@ -107,7 +117,7 @@ void draw_roll_screen(bool full)
 
     const uint16_t band_bot = strip_top(ss);
 
-    /* Popup hole: as the live compositor, never paint over the box. */
+    /* Popup hole: as in the live compositor, the box is never painted over. */
     bool     hole     = popup_live();
     uint16_t hole_top = POPUP_Y;
     uint16_t hole_bot = POPUP_Y + POPUP_H;
@@ -118,8 +128,8 @@ void draw_roll_screen(bool full)
 
     int16_t p1 = -1, p2 = -1;
     for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-        /* C5 geometry: the 301-column window, one point per column (25 per
-         * 25 px division); right of it only the furniture and background. */
+        /* The 301-column window, one point per column (25 per 25 px
+         * division); right of it only the furniture and background. */
         const bool inwin = (x < SCOPE_GEOM_COLS);
         const uint16_t age = scope_roll_age_at_column(x, SCOPE_GEOM_COLS);
         uint8_t v;
@@ -144,7 +154,7 @@ void draw_roll_screen(bool full)
         uint16_t seg_top[2], seg_bot[2];
         uint8_t  nseg = 1;
         /* The fill label (top left) and the STOP badge (top centre) are
-         * holes too, repainted opaque below, so they never strobe. */
+         * holes too, repainted opaque below, so they do not strobe. */
         const bool in_label = (x < ROLL_LABEL_W);
 #if SCOPE_PLOT_STOP_BOX
         const bool in_stop = !ss->running && x >= STOP_BOX_X && x < STOP_BOX_X + STOP_BOX_W;
@@ -190,8 +200,7 @@ void draw_roll_screen(bool full)
         lcd_fill_rect(0, SCOPE_TOP, ROLL_LABEL_W, ROLL_LABEL_H, th->background);
     /* Boxed: the whole label box is painted every time. font_draw_string()
      * paints glyph cells only, so the spaces of "ROLL   0/301" and the gaps
-     * between glyphs kept the previous count's pixels (the "drawn twice"
-     * header seen on entering roll). */
+     * between glyphs would keep the previous count's pixels. */
     font_draw_string_box(4, SCOPE_TOP + 2, (uint16_t)(ROLL_LABEL_W - 4), buf,
                          th->highlight, th->background, &font_small, FONT_ALIGN_LEFT);
     draw_roll_badges(ss, th, nvis, full);

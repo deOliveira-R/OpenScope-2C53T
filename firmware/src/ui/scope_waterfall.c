@@ -9,14 +9,15 @@
 #if FEATURE_FFT
 /* Waterfall
  *
- * The 20 KB history buffer lives in the shared pool as a sub-tenant of the
- * FFT region (see SHMEM_FFT_WATERFALL_OFFSET) rather than in .bss. It cannot
- * be a pool owner of its own: this function calls fft_process(), so it only
- * ever runs while SHMEM_OWNER_FFT holds the pool, and claiming it separately
- * would evict the FFT it depends on.
+ * The 20 KB history buffer (WATERFALL_ROWS x WATERFALL_COLS bytes) lives in
+ * the shared pool as a sub-tenant of the FFT region (see
+ * SHMEM_FFT_WATERFALL_OFFSET) rather than in .bss. It cannot be a pool owner
+ * of its own: draw_waterfall_screen() calls fft_process(), so it only ever
+ * runs while SHMEM_OWNER_FFT holds the pool, and claiming the pool
+ * separately would evict the FFT it depends on.
  *
- * Only waterfall_row_idx, the generation counter and one assembled screen
- * line stay static — 645 bytes instead of 20,480.
+ * Only waterfall_row_idx and the pool generation counter are static here.
+ * The one assembled screen line is in ui_draw_scratch.
  */
 #define WATERFALL_ROWS  SHMEM_FFT_WATERFALL_ROWS
 
@@ -26,19 +27,19 @@ static uint8_t waterfall_row_idx = 0;
 
 static uint32_t waterfall_pool_generation = 0;
 
-/* The row blit below sets one window across the full plot width per history
- * row and streams into it, so a history row must be exactly one screen line
- * wide. */
+/* The blit in draw_waterfall_screen() sets one window across the full plot
+ * width per screen line and streams into it, so a history row must be exactly
+ * one screen line wide. */
 _Static_assert(WATERFALL_COLS == LCD_WIDTH,
                "waterfall row blit assumes one history column per screen pixel");
 
 /*
- * One assembled screen line, 640 bytes. Colours are converted once per
- * history row and pushed row_height times, instead of being recomputed for
- * every sub-row. It is deliberately NOT the 20 KB history buffer's problem:
- * that lives in the shared pool (see shared_mem.h) precisely because it is
- * large, whereas one line is small enough that the pool's ownership
- * lifetime rules would cost more than they save.
+ * One assembled screen line, 640 bytes (WATERFALL_COLS RGB565 pixels). Colours
+ * are converted once per history row and pushed row_height times, instead of
+ * being recomputed for every screen line of the row. It is kept outside the
+ * 20 KB history buffer: that lives in the shared pool (see shared_mem.h)
+ * because it is large, whereas one line is small enough that the pool's
+ * ownership rules would cost more than they save.
  */
 #define waterfall_line (ui_draw_scratch.waterfall)   /* shared, see ui_draw_scratch */
 
@@ -46,12 +47,9 @@ _Static_assert(WATERFALL_COLS == LCD_WIDTH,
  * Intensity -> colour, with a BLACK floor.
  *
  * intensity 0 = at/above the display reference, 255 = at/below the floor
- * (reference - db_range). The old ramp ended at pure blue, so the noise
- * floor painted the plot solid blue and only the very top 20% of the scale
- * was red; combined with the reference bug (see fft_display_ref) that made
- * the whole plot one flat colour. This one runs black -> blue -> cyan ->
- * yellow -> red in four equal 64-step segments, which is the conventional
- * spectrogram ordering and puts "nothing here" at black.
+ * (reference - db_range). The ramp runs black -> blue -> cyan -> yellow ->
+ * red in four equal 64-step segments, the conventional spectrogram ordering,
+ * and puts "nothing here" (the noise floor) at black.
  */
 static uint16_t intensity_to_color(uint8_t intensity)
 {
@@ -64,7 +62,8 @@ static uint16_t intensity_to_color(uint8_t intensity)
     return RGB565(255, (uint8_t)(255 - t), 0);                      /* yellow->red  */
 }
 
-/* What the last waterfall frame did, for `ui dump` (scope_ui_waterfall_status). */
+/* What the last waterfall frame did, for the shell screen diagnostic
+ * (scope_ui_waterfall_status). */
 static uint8_t g_wf_status;   /* WF_ST_* */
 
 enum { WF_ST_NEVER = 0, WF_ST_DRAWN, WF_ST_NO_FFT, WF_ST_WAITING, WF_ST_NOT_OWNER };
@@ -73,6 +72,13 @@ uint8_t scope_ui_waterfall_status(void) { return g_wf_status; }
 
 uint8_t scope_ui_waterfall_row(void)    { return waterfall_row_idx; }
 
+/* The waterfall view: one new spectrum row per call, scrolled through a
+ * history of WATERFALL_ROWS rows, newest at the top.
+ * Steps: get the input (fft_prepare_input) and transform it; resolve the
+ * history buffer in the pool and reset it when the pool owner or the source
+ * changed; store the new row as intensities (0 = at the reference, 255 = at
+ * the floor); blit the whole plot line by line. Draws a message instead when
+ * there is no input. Sets g_wf_status. */
 void draw_waterfall_screen(void)
 {
     const fft_config_t *cfg = fft_get_config();
@@ -97,8 +103,8 @@ void draw_waterfall_screen(void)
     fft_process(sbuf, nsamp, &fft_result);
 
     /* Resolve the history buffer out of the FFT's pool tenancy. Returns NULL
-     * if FFT no longer owns the pool, in which case there is nothing valid to
-     * draw into — bail rather than scribble over another owner's data. This is
+     * if FFT does not own the pool, in which case there is nothing valid to
+     * draw into: return rather than write over another owner's data. This is
      * a stricter check than the fft_get_sample_buf() guard above, which only
      * proves the FFT was initialised at some point. */
     uint8_t *wf_pool = shared_mem_get(SHMEM_OWNER_FFT);
@@ -118,9 +124,7 @@ void draw_waterfall_screen(void)
      * to the top of the ramp (red = at the display reference), so zeroed rows
      * would render as maximum signal. 0xFF is the other end of the ramp
      * (black = reference - db_range = the noise floor), which is what "no data
-     * yet" should look like. Bench 2026-08-13: with the zero fill, entering
-     * WFALL painted the whole plot red and the history grew downward
-     * through it. */
+     * yet" looks like. */
     uint32_t pool_generation = shared_mem_transition_count();
     if (pool_generation != waterfall_pool_generation || waterfall_restart) {
         /* waterfall_restart: the source changed (fft_history_track), so the
@@ -157,42 +161,29 @@ void draw_waterfall_screen(void)
 
     /* ── Blit ───────────────────────────────────────────────────────
      *
-     * This used to clear the whole plot and then draw every pixel column as
-     * its own 1 x row_height lcd_fill_rect: 20,481 fill_rects and therefore
-     * 20,481 lcd_set_window() calls per frame, each one 3 commands + 8 byte
-     * writes with a bus delay after every single one — ~225,000 delayed bus
-     * transactions to paint 61,440 pixels. Bench 2026-08-13: the plot
-     * visibly rastered left-to-right, top-to-bottom over seconds.
+     * The plot is not cleared first. Every screen line of the plot is written
+     * once: a history row is converted once into waterfall_line and streamed
+     * row_height times, one window and one lcd_write_pixels() call per screen
+     * line. The residual lines under the block (SCOPE_H is not a multiple of
+     * WATERFALL_ROWS: 14 lines at 206/64) are written black, or with the axis
+     * labels.
      *
-     * Now: one window per history row, and each row is converted once into
-     * waterfall_line and streamed row_height times. 65 set_windows and 192
-     * lcd_write_pixels() calls per frame, with the same pixels at the same
-     * coordinates.
+     * One window for the WHOLE block would need far fewer set_windows, but the
+     * window is global driver state and vInputTask runs at priority 4 against
+     * the display task's 1: its power-off countdown overlay (the POWER loop in
+     * tasks/input_handler.c) calls lcd_fill_rect() and so re-points the window
+     * from under a stream in progress. A window per line bounds that to one
+     * corrupted line for one frame.
      *
-     * One window for the WHOLE block would cost 2 set_windows instead of 65,
-     * but the window is global driver state and vInputTask runs at priority 4
-     * against the display task's 1: its power-off countdown overlay
-     * (input_handler.c) calls lcd_fill_rect() and so re-points the window
-     * from under a stream in progress. Per-row windows bound that to one
-     * corrupted row for one frame — the same blast radius the per-column
-     * version had — for ~700 extra bus transactions out of 66,000.
-     *
-     * The clear is gone too: the block covers every pixel it draws over, so
-     * the only part of the plot that still needs clearing is the residual
-     * strip left when SCOPE_H is not a multiple of WATERFALL_ROWS (14 rows
-     * at the current 206/64). That halves the pixel writes as well.
-     *
-     * Why not scroll-and-append, which would be O(1 row)? The history
-     * scrolls by exactly one row per frame, so 63 of 64 rows are unchanged
-     * in CONTENT — but they all MOVE, and with no framebuffer on this side
-     * of the bus there is nothing to shift; the ST7789's own vertical
-     * scroll works on panel rows, which MADCTL = 0xA0 (MV = 1) maps to
-     * screen COLUMNS, i.e. it would scroll the waterfall sideways. An
-     * O(1)-per-frame waterfall needs either a RAM framebuffer (the shared
-     * pool is already spoken for by the FFT here) or a different history
-     * layout that lets the newest row wrap in place instead of the image
-     * scrolling — which changes what is drawn, so it is a design decision,
-     * not a speedup. */
+     * Why not scroll-and-append, which would be O(1 row)? The history scrolls
+     * by exactly one row per frame, so 63 of 64 rows are unchanged in content,
+     * but they all MOVE, and with no framebuffer on this side of the bus there
+     * is nothing to shift. The ST7789's own vertical scroll works on panel
+     * rows, which MADCTL = 0xA0 (MV = 1) maps to screen COLUMNS, i.e. it would
+     * scroll the waterfall sideways. An O(1)-per-frame waterfall needs either
+     * a RAM framebuffer (the shared pool is already used by the FFT) or a
+     * different history layout that lets the newest row wrap in place instead
+     * of the image scrolling. That changes what is drawn. */
     uint16_t row_height = SCOPE_H / WATERFALL_ROWS;
     if (row_height < 1) row_height = 1;
 

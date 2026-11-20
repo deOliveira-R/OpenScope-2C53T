@@ -9,33 +9,26 @@
 
 #if FEATURE_FFT
 /* ═══════════════════════════════════════════════════════════════════
- * FFT views (unchanged — reference scope_state for consistency)
+ * FFT views: the spectrum, its source and reference level
  * ═══════════════════════════════════════════════════════════════════ */
 /* ── Display reference auto-ranging ─────────────────────────────────
  *
  * fft_process() reports magnitude in dB relative to ONE ADC COUNT
- * (20*log10(|X| * 2/N), |X| in counts) — not dBFS. A full-scale signal
- * therefore peaks near 20*log10(32767) = 90 dB, and the configured default
- * ref_level_db = 0.0 puts the top of the display ~90 dB BELOW the signal:
- * every populated bin clamps to normalized = 0, i.e. the top colour of the
- * ramp. Measured on the host with the same synthetic 1 kHz square the UI
- * feeds itself (scratch probe, 2026-08-13): peak = 84.4 dB, and 318 of the
- * 320 waterfall columns land in the RED band. That is the "hot red field
- * with thin nulls" seen on the bench the same day.
+ * (20*log10(|X| * 2/N), |X| in counts), not dBFS. A full-scale signal
+ * therefore peaks near 20*log10(32767) = 90 dB. A fixed reference of 0 dB
+ * would put the top of the display about 90 dB below the signal, and every
+ * populated bin would clamp to normalized = 0, the top colour of the ramp.
  *
- * Fix: track the observed peak instead of hard-coding a magic 90. The
- * reference follows frame_max + headroom, moving up immediately (so a
- * growing signal never clips against the top) and easing down slowly
- * through a dead band (so a jittering peak does not make the colours
- * breathe). cfg->ref_level_db is preserved as a USER TRIM applied on top,
- * which keeps fft_adjust_ref_level() meaningful.
+ * So the reference tracks the observed peak. It follows frame_max + headroom,
+ * moving up immediately (so a growing signal never clips against the top)
+ * and easing down slowly through a dead band (so a jittering peak does not
+ * make the colours breathe). cfg->ref_level_db is a user trim applied on
+ * top of it; fft_adjust_ref_level() changes that trim.
  *
- * Known limit, stated rather than hidden: this ranges off the peak only. A
- * spectrum with no dynamic range (broadband noise and nothing else) has its
- * mean within ~10-15 dB of its peak and will still render as a flat, fairly
- * hot field. That is a true statement about such a signal; distinguishing it
- * would need a floor estimator as well, which is not warranted until real
- * captured data (rather than the synthetic square below) drives this view.
+ * Limit: this ranges off the peak only. A spectrum with no dynamic range
+ * (broadband noise and nothing else) has its mean within about 10-15 dB of
+ * its peak and renders as a flat, fairly hot field. Telling it apart would
+ * need a floor estimator as well.
  */
 #define FFT_REF_HEADROOM_DB   6.0f   /* keep the peak just below the top    */
 
@@ -49,35 +42,28 @@ static bool  fft_ref_primed  = false;
 
 /* ── Where the spectrum views get their samples ──────────────────────
  *
- * Until 2026-08-13 every FFT view — spectrum, split and waterfall — called
- * test_signal_generate() unconditionally and analysed a synthetic 1 kHz
- * square. Cold-boot capture started working that same day and none of them
- * lit up, because none of them was ever connected to the ADC. Worse, the
- * views did not say so: a user could not tell the spectrum of their probe
- * from the spectrum of a constant compiled into the firmware.
+ * Every FFT view (spectrum, split, waterfall) analyses the live record when
+ * there is one, and the view is LABELLED with what it got, so a user can
+ * tell the spectrum of the probe from a built-in demo signal. The record is
+ * the ACTIVE channel's (the one MOVE selects, ui.ach): dsp/fft_source.h
+ * decides the buffer, the rate and the label, and says "CH2 is off" instead
+ * of a spectrum when that channel is off. The gate is the trace's
+ * (fpga_data_ready()), and the tear-check is the measurement badges' (the
+ * frame generation counter).
  *
- * Since then: the live record if there is one, and the view is LABELLED
- * with what it got. The record is the ACTIVE channel's (the one MOVE selects,
- * ui.ach): dsp/fft_source.h decides the buffer, the rate and the label, and
- * says "CH2 is off" instead of a spectrum when that channel is off. Same gate as the trace (fpga_data_ready()), same
- * tear-check as the measurement badges (frame generation counter).
- *
- * 2026-09-15 (FFT-live S1):
- *  - The whole record goes into the transform (1024 samples),
- *    windowed over the record rather than over the transform length
- *    (fft.c FFT_WINDOW_AT).
- *  - The frequency axis is REAL on measured timebase codes: the rate comes
- *    from scope_timebase_sample_rate() for the code in force, and is
- *    refused (0 -> bins, "--") when the code is unmeasured OR when the
- *    display's code and the FPGA's reg-0x01 code disagree — the same rule
- *    `fpga scope freq` applies. A confident wrong number is the failure
- *    mode this project keeps finding; "--" is not.
- *  - In the live-capture builds (FPGA_WARM_HANDOFF_TEST) the synthetic
- *    source is compiled OUT: with no capture yet the views say so and draw
- *    nothing, so the demo signal is unreachable there by construction
- *    (spec S1). Plain `guest` and `emu` keep the demo, labelled DEMO.
+ *  - The whole record goes into the transform (1024 samples), windowed over
+ *    the record rather than over the transform length (fft.c FFT_WINDOW_AT).
+ *  - The frequency axis is real only on measured timebase codes: the rate
+ *    comes from scope_timebase_sample_rate() for the code in force, and is
+ *    refused (rate 0: the axis shows bins, "--") when the code is unmeasured
+ *    or when the display's code and the FPGA's reg-0x01 code disagree. This
+ *    is the rule `fpga scope freq` applies. A missing number is better than
+ *    a confident wrong one.
+ *  - The synthetic demo source exists only in the emulator build (see
+ *    FFT_DEMO_REACHABLE). On hardware, with no capture yet, the views say so
+ *    and draw nothing.
  */
-static uint16_t g_fft_last_n;                /* record samples the last live spectrum analysed (`ui dump`) */
+static uint16_t g_fft_last_n;                /* record samples the last live spectrum analysed (shell screen diagnostic) */
 
 uint16_t scope_ui_fft_last_n(void) { return g_fft_last_n; }
 
@@ -121,9 +107,9 @@ static void fft_source_now(fft_source_t *sel)
 /* Averaging, max-hold, the tracked reference and the waterfall rows are
  * history of ONE source. When the source changes (MOVE to the other
  * channel, the channel switched off, live <-> demo) they are dropped before
- * the next transform, on this task (the one that runs fft_process), so two
- * channels are never mixed. No fft_config_t field is touched: the scope's
- * redraw epoch mixes those. */
+ * the next transform, on the task that runs fft_process, so two channels are
+ * never mixed. No fft_config_t field is touched: the scope's redraw epoch
+ * mixes those. */
 static uint8_t fft_hist_key = 0xFFu;       /* fft_source_key(), 3 = demo */
 
 bool    waterfall_restart;
@@ -142,8 +128,12 @@ static const volatile uint8_t *fft_source_buf(const fft_source_t *sel)
     return sel->buf ? fpga_get_ch2_buf() : fpga_get_ch1_buf();
 }
 
-/* *sel says which channel (and why not, in sel->note, when the answer is
- * FFT_SRC_NONE because of the channel). */
+/* Fill sbuf with the samples to transform and report their count (*n_out) and
+ * sample rate (*fs_out). Returns FFT_SRC_LIVE for the live record,
+ * FFT_SRC_DEMO for the demo signal (emulator build only), FFT_SRC_NONE for
+ * nothing to show. *sel says which channel, and why not in sel->note when
+ * the answer is FFT_SRC_NONE because of the channel. Changes the FFT sample
+ * rate, the history key and the FFT AUTO request. */
 fft_src_t fft_prepare_input(int16_t *sbuf, uint16_t *n_out,
                                    float *fs_out, fft_source_t *sel)
 {
@@ -224,11 +214,12 @@ float fft_display_ref(const fft_config_t *cfg, const float *data,
 }
 
 /* Left margin of the spectrum for its dB scale, so the numbers never sit on
- * the bars (they did, at x = 2, over the lowest bins). */
+ * the bars. */
 #define FFT_LMARGIN  22u
 
-/* The spectrum in [y_top, y_top + height): every pixel composed per column
- * and streamed, never blanked first (the FFT views' 3-4 Hz flash). */
+/* A one-line message (msg) in [y_top, y_top + height) over black: every pixel
+ * is composed per column and streamed, never blanked first, so the region
+ * does not flash. */
 void fft_note_compose(uint16_t y_top, uint16_t height, const char *msg)
 {
     const uint16_t y_bot = (uint16_t)(y_top + height);
@@ -249,6 +240,11 @@ void fft_note_compose(uint16_t y_top, uint16_t height, const char *msg)
  * bars use cyan, so the bands stay distinct. */
 #define FFT_BAR_LOW_CH2  0x0410u
 
+/* The spectrum in [y_top, y_top + height): every pixel composed per column
+ * and streamed, never blanked first. Takes the input from fft_prepare_input(),
+ * runs fft_process(), then draws dB grid and labels, peak carets with their
+ * harmonic tags, the source and peak header, the frequency axis ends, the bars
+ * and the max-hold dots. When there is nothing to show it draws a message. */
 static void fft_region_compose(uint16_t y_top, uint16_t height)
 {
     const fft_config_t *cfg = fft_get_config();
@@ -282,9 +278,9 @@ static void fft_region_compose(uint16_t y_top, uint16_t height)
     uint16_t zoom_span = (uint16_t)(zoom_end - zoom_start);
     if (zoom_span == 0) zoom_span = 1;
     const uint16_t W = (uint16_t)(LCD_WIDTH - FFT_LMARGIN);
-    /* Same auto-ranged reference the waterfall uses: with the configured
-     * ref_level_db = 0 every bar pinned to full height, because the dB scale
-     * is relative to one count, not to full scale. See fft_display_ref(). */
+    /* The same auto-ranged reference the waterfall uses. The dB scale is
+     * relative to one count, not to full scale, so a fixed 0 dB reference
+     * would pin every bar to full height. See fft_display_ref(). */
     const float ref_db = fft_display_ref(cfg, draw_data, zoom_start, zoom_end);
     const float range_db = cfg->db_range;
 
@@ -398,6 +394,7 @@ static void fft_region_compose(uint16_t y_top, uint16_t height)
     }
 }
 
+/* The full-screen spectrum view. full: also paint the 2-row black margins. */
 void draw_fft_screen(bool full)
 {
     if (full) {                     /* the 2-row margins above and below */
@@ -407,11 +404,15 @@ void draw_fft_screen(bool full)
     fft_region_compose(SCOPE_TOP + 2, SCOPE_H - 4);
 }
 
-/* Split view: the Y-T window on top (half-height divisions, 13 px, in the
- * same stock geometry: one division = the range's volts/div), the spectrum
- * below. Both composed per column. */
+/* Height of one division of the split view's Y-T half, in pixels: half the
+ * height of a full-view division, one division still being the range's
+ * volts/div. */
 #define SPLIT_DIV_PX  13
 
+/* Split view: the Y-T window on top (8 divisions of SPLIT_DIV_PX), the
+ * spectrum below. Both composed per column. Needs the live record for the
+ * traces ("no record" otherwise). full: also paint the bottom margin row.
+ * The frame argument is unused. */
 void draw_split_screen(uint32_t frame, bool full)
 {
     (void)frame;

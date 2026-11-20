@@ -6,13 +6,10 @@
 
 #include "scope_ui_parts.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * Cursor measurement drawing
- * ═══════════════════════════════════════════════════════════════════ */
-
-/* The vertical transform of the band that contains BOTH rows, as the
- * renderer last drew it; counts_per_pixel 0 when there is none (see the
- * delta readout in draw_cursors for why a straddle is refused). */
+/* The vertical transform for cursor rows y_a and y_b, as the renderer last
+ * drew it: the math trace's scale while math is on, otherwise the band that
+ * contains BOTH rows (g_vband). counts_per_pixel 0 when there is none, so a
+ * delta that straddles two differently-scaled bands stays in pixels. */
 static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
 {
     scope_cursor_vmap_t vm;
@@ -20,7 +17,7 @@ static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
     if (math_enabled && g_math_cur.on) {
         /* Volts (or counts) on the math scale about the graticule centre;
          * any other math unit leaves counts_per_pixel 0 -> pixels. */
-        vm.channel   = 0u;                 /* named "m" by draw_cursors */
+        vm.channel   = 0u;                 /* named "m" by cursor_readout */
         vm.mid_known = 1u;
         vm.mid_row   = (int16_t)SCOPE_GRID_MID_Y;
         vm.direct         = g_math_cur.direct;
@@ -60,9 +57,9 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     const scope_cursor_conf_t cf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
     const int16_t ta = scope_ui_trig_x_actual();
     const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
-    /* The readouts carry stock's labels (0x0801CA7C: X1-X2, Y1-Y2), so they
-     * are FIRST minus SECOND: the on-screen dt/dV are second minus first
-     * (v2-v1, and h1-h2 rows = Y2-Y1) and read with the opposite sign. */
+    /* The readouts carry stock's labels (X1-X2, Y1-Y2), so they are FIRST
+     * minus SECOND: the on-screen dt/dV are second minus first (v2-v1, and
+     * h1-h2 rows = Y2-Y1) and read with the opposite sign. */
     const cursor_order_t ord = CUR_FIRST_MINUS_SECOND;
     scope_cursor_reading_t r;
 
@@ -81,6 +78,10 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     if (fs_out) *fs_out = fs.hz;
 }
 
+/* Build the cursor layer L from the cursor state, for both renderers: the
+ * vertical lines with V1/V2 labels at the top, the horizontal lines with
+ * H1/H2 labels at the right edge. The selected cursor is solid and
+ * highlighted, the other dashed. Empty when cursors are off. */
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L)
 {
     memset(L, 0, sizeof(*L));
@@ -118,7 +119,8 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t 
     }
 }
 
-/* Labels over lines, as drawn. */
+/* Live frame: the layer's colour at pixel (x, y) into *c, or false. Labels
+ * win over lines, as in draw_cursors; dashes are 4 on, 4 off. */
 bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
 {
     for (uint8_t k = 0; k < L->nlab; k++) {
@@ -136,7 +138,8 @@ bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
     return false;
 }
 
-/* Full path: the same layer, painted over the live band [SCOPE_TOP, band_bot). */
+/* Full redraw: the same layer, painted over the live band
+ * [SCOPE_TOP, band_bot); a label is drawn only when it fits in the band. */
 void draw_cursors(uint16_t band_bot)
 {
     cur_layer_t L;
@@ -157,14 +160,15 @@ void draw_cursors(uint16_t band_bot)
 }
 
 /*
- * The cursor readout: one line in the strip's AUX row (strip_aux), off the
- * trace and off the badges, repainted only when its text changes.
+ * The cursor readout text into out (n bytes): mode, then dt and 1/dt, then
+ * dV, as the mode has them. It is shown on one line in the measurement
+ * strip's AUX row (cursor_row_paint), off the trace and off the badges.
  *
  * Nothing here converts anything itself. The pixel deltas are turned into
  * real units by scope_cursor.c, which reads the SAME measured tables the
  * status bar and the measurement badges read (scope_timebase.c for the rate,
  * scope_cal.c for the gain) and refuses to name a unit without an entry.
- *   horizontal: dx columns at the column rate (record rate x zoom, C5/C14);
+ *   horizontal: dx columns at the column rate (record rate x zoom);
  *   vertical:   the counts per row the renderer recorded for the band that
  *               holds both cursors (vband_note), or the math trace's scale.
  */
@@ -210,6 +214,8 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
 
 static uint32_t g_cur_row_hash;   /* hash of the text the AUX row shows now */
 
+/* Repaint the AUX row with the cursor readout when its text changed (by
+ * hash), or always when force is set. */
 void cursor_row_paint(const scope_state_t *ss, bool force)
 {
     char t[64];

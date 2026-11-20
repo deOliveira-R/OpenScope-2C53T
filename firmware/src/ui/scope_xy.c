@@ -6,6 +6,11 @@
 
 #include "scope_ui_parts.h"
 
+/* Text laid out in column order: ctext_add records a string with its
+ * position and colours (used by the spectrum and waterfall views), and
+ * ctext_px answers which pixel a streamed column takes from it. Strings that
+ * are empty or that do not fit in the set (CTEXT_MAX, CTEXT_LEN) are dropped.
+ * opaque: the glyph box is filled with bg, else only the glyph pixels count. */
 void ctext_add(ctext_set_t *T, int x, int y, const char *s,
                       uint16_t fg, uint16_t bg, bool opaque)
 {
@@ -21,6 +26,8 @@ void ctext_add(ctext_set_t *T, int x, int y, const char *s,
     e->opaque = opaque;
 }
 
+/* The colour of the text pixel at (x, y), written to *c; false when no string
+ * covers that pixel (the caller then draws its own background). */
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c)
 {
     for (uint8_t k = 0; k < T->n; k++) {
@@ -49,11 +56,14 @@ static void xy_line_persist(int x0, int y0, int x1, int y1)
     }
 }
 
-/* One channel's X-Y axis: code -> pixels from the centre, true scale where
- * the range has a volts/div (26 px per division, 0 V at position 0 on the
- * axis, as the Y-T plot), else autoscaled to the record. */
+/* One channel's X-Y axis: code -> pixels from the centre. True scale where
+ * the range has a calibrated volts/div (SCOPE_DIV_PX per division, 0 V at
+ * position 0 on the axis, as in the Y-T plot); otherwise autoscaled to the
+ * record's min and max (minimum span 8 codes). */
 typedef struct { bool fixed; int c0; float px_per_code; } xy_axis_t;
 
+/* Fill *a for channel ch (0 = CH1, 1 = CH2); mn/mx are the record's extremes
+ * and half is the plot half-extent in pixels used by the autoscale. */
 static void xy_axis(const scope_state_t *ss, uint8_t ch, uint8_t mn, uint8_t mx,
                     int half, xy_axis_t *a)
 {
@@ -72,6 +82,15 @@ static void xy_axis(const scope_state_t *ss, uint8_t ch, uint8_t mn, uint8_t mx,
     }
 }
 
+/*
+ * Draw the X-Y view: CH1 on X, CH2 on Y, in a square at the centre of the
+ * glass. Streams the whole square column by column, so there is no blank
+ * phase. `full` also paints the side margins and the title text.
+ *
+ * Steps: snapshot both records (re-copied when the frame generation moved),
+ * find each axis scale, join consecutive samples with lines into the
+ * persistence buffer, then stream the square from the buffer over a graticule.
+ */
 void draw_xy_screen(bool full)
 {
     const theme_t *th = theme_get();
@@ -81,10 +100,10 @@ void draw_xy_screen(bool full)
     const uint16_t y0   = SCOPE_TOP;               /* 18 */
     const int cxr = side / 2, cyr = SCOPE_GRID_MID_Y - SCOPE_TOP;   /* centre in the square */
 
-    /* The phosphor trail lives in the shared persistence buffer, claimed and
-     * cleared when the view is entered (scope_apply.c scope_view_select, on
-     * the input task): nothing is initialised here. Without the buffer the
-     * square says "no signal". */
+    /* The phosphor trail lives in the shared persistence buffer, which
+     * scope_view_select (tasks/scope_apply.c) claims and clears when the view
+     * is entered, on the input task. Nothing is initialised here. Without the
+     * buffer the square says "no signal". */
 
     if (full) {                                    /* margins and title, once */
         lcd_fill_rect(0, SCOPE_TOP, x0, SCOPE_H, th->background);
@@ -99,8 +118,8 @@ void draw_xy_screen(bool full)
     const volatile uint8_t *yb = fpga_get_ch2_buf();
     bool have = fpga_data_ready() && xb != NULL && yb != NULL && persist_is_initialized();
 
-    /* Snapshot buffers on the FreeRTOS heap, not in .bss (#29); allocated on
-     * the first frame with data and kept. */
+    /* Snapshot buffers on the FreeRTOS heap, not in .bss; allocated on the
+     * first frame with data and kept. */
     static uint8_t *xy_xs, *xy_ys;
     if (have && (xy_xs == NULL || xy_ys == NULL)) {
         if (xy_xs == NULL) xy_xs = pvPortMalloc(FPGA_ADC_BUF_SIZE);
@@ -145,9 +164,9 @@ void draw_xy_screen(bool full)
         }
     }
 
-    /* Stream the square: the trail over a graticule of 26 px divisions about
-     * the centre (0 V at position 0 on both axes in true scale), no blank
-     * phase. A "no signal" note is composed into it, not drawn over it. */
+    /* Stream the square: the trail over a graticule of SCOPE_DIV_PX divisions
+     * about the centre (0 V at position 0 on both axes in true scale), no
+     * blank phase. A "no signal" note is composed into it, not drawn over it. */
     static const char nosig[] = "no signal";
     const int nsx = cxr - 30, nsy = cyr - 16;      /* in the square */
     const uint8_t *pb = persist_get_buffer();

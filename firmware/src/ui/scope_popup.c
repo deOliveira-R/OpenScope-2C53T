@@ -6,9 +6,7 @@
 
 #include "scope_ui_parts.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * Quick-change popup state (shared with main.c via extern)
- * ═══════════════════════════════════════════════════════════════════ */
+/* ═══ Quick-change popup state (popup_on is shared with the other scope files, see scope_ui_parts.h) ═══ */
 
 static char popup_text[32] = "";
 
@@ -22,23 +20,22 @@ bool     popup_hole_last;  /* the last compositor frame kept the box */
 
 /* Has the box been painted for THIS popup? The incremental path paints it
  * once and then leaves it alone (see draw_scope_live_frame's hole); the full
- * path repaints it every frame anyway. Without this, every live frame would
- * repaint the box and the text would strobe at the capture rate. */
+ * path repaints it every frame anyway. Without this flag every live frame
+ * would repaint the box and the text would strobe at the capture rate. */
 static bool popup_painted = false;
 
 #define POPUP_MS 500u
 
+/* True while the scope popup is set and its POPUP_MS has not run out. */
 bool popup_live(void)
 {
     return popup_on && (int32_t)(xTaskGetTickCount() - popup_until) < 0;
 }
 
-/* Popups outside the scope (2026-10-06, softkey UI P0; findings F15, F20).
- * The scope's popup is counted in scope frames, and only the scope renderer
- * counted them -- so a popup raised in the meter, siggen or settings never
- * appeared there, and turned up stale on the next scope visit. Outside the
- * scope it is now a tick-timed overlay the display task services, sized to
- * its text instead of a fixed 200 px box. */
+/* Popups outside the scope. The scope's popup rides on the scope renderer,
+ * which is the only place that draws it. Anywhere else (meter, siggen,
+ * settings) the popup is a tick-timed overlay that the display task
+ * services (ui_popup_overlay_service), sized to its text. */
 #define POPUP_OVERLAY_MS 1200u
 
 static bool     ov_pending;
@@ -47,6 +44,9 @@ static bool     ov_drawn;
 
 static uint32_t ov_until;
 
+/* Show a popup with `text` (truncated to fit popup_text). In the scope it
+ * becomes the plot popup (popup_on, POPUP_MS); on any other screen, and over
+ * the Oscilloscope Settings page, it becomes the overlay (POPUP_OVERLAY_MS). */
 void scope_show_popup(const char *text)
 {
     int i = 0;
@@ -55,9 +55,9 @@ void scope_show_popup(const char *text)
         i++;
     }
     popup_text[i] = '\0';
-    /* The scope's own popup rides on the plot; over the Oscilloscope Settings
-     * page there is no plot being drawn, so it takes the overlay path the
-     * other screens use (main.c services it while the page is up). */
+    /* The scope's own popup rides on the plot. Over the Oscilloscope Settings
+     * page no plot is drawn, so it takes the overlay path the other screens
+     * use (main.c services it while the page is up). */
     if (current_mode == MODE_OSCILLOSCOPE && !screen_is_open(SCR_OSC_MENU)) {
         popup_on = true;
         popup_until = xTaskGetTickCount() + pdMS_TO_TICKS(POPUP_MS);
@@ -70,6 +70,8 @@ void scope_show_popup(const char *text)
     }
 }
 
+/* Paint the overlay box centred on the glass, sized to the text (large font,
+ * medium if the text would not fit), with a one-pixel border. */
 static void draw_overlay_box(void)
 {
     const theme_t *th = theme_get();
@@ -91,6 +93,9 @@ static void draw_overlay_box(void)
     lcd_fill_rect(x + 1, y + 6 + f->height, w - 2, (uint16_t)(h - 7 - f->height), th->background);
 }
 
+/* Called by the display task each pass. Returns 0 for nothing to do, 1 when
+ * the box was (re)painted (first time, or the screen was repainted under it),
+ * 2 when the overlay has expired and the caller must repaint the screen. */
 int ui_popup_overlay_service(bool screen_repainted)
 {
     if (!ov_pending) return 0;
@@ -107,21 +112,22 @@ int ui_popup_overlay_service(bool screen_repainted)
     return 0;
 }
 
+/* Drop a pending overlay without repainting. */
 void ui_popup_overlay_cancel(void)
 {
     ov_pending = false;
     ov_drawn = false;
 }
 
+/* True while the plot popup is set, including the frame that erases it. */
 bool scope_popup_active(void)
 {
     return popup_on;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Quick-change popup overlay
- * ═══════════════════════════════════════════════════════════════════ */
+/* ═══ Plot popup ═══ */
 
+/* Paint the 200 px popup box with its text and mark it painted. */
 void draw_popup_box(const theme_t *th)
 {
     /* Dark box with border */
@@ -139,6 +145,8 @@ void draw_popup_box(const theme_t *th)
     popup_painted = true;
 }
 
+/* Full-frame path: paint the box while the popup lives; once it has expired
+ * this frame is drawn without it and the popup ends. */
 void draw_popup(const theme_t *th)
 {
     if (!popup_on) return;
@@ -149,24 +157,9 @@ void draw_popup(const theme_t *th)
     draw_popup_box(th);
 }
 
-/*
- * Popup upkeep for the flicker-free path.
- *
- * Until 2026-08-19 an active popup set `q.force`, which pinned the renderer
- * to the full clear-then-redraw for the popup's whole ~500 ms life — so the
- * cost of showing a two-word box was ten full-screen blanks, and the box
- * itself strobed along with the trace. The popup was not flickering despite
- * the redraw; it was causing it.
- *
- * Now the compositor treats the popup rectangle as a hole (it is the one
- * layer it cannot recompute per pixel, because of the glyphs), paints the box
- * exactly once, and repaints the band underneath on the first frame after the
- * countdown expires. No full redraw is needed at either end.
- */
-/* The FFT / split / waterfall / X-Y views: their frames compose the plot
- * with no hole for the box, so the box is put back over each frame while it
- * lives, and the popup ends when it expires (it used to stay "active" in
- * these views for good, as nothing there counted it down). */
+/* Popup upkeep for the FFT / split / waterfall / X-Y views. Their frames
+ * compose the plot with no hole for the box, so the box is put back over
+ * each frame while it lives. The popup ends when it expires. */
 void scope_popup_view_tick(void)
 {
     if (!popup_on) return;
@@ -174,6 +167,14 @@ void scope_popup_view_tick(void)
     else popup_on = false;
 }
 
+/*
+ * Popup upkeep for the live Y-T path. The compositor treats the popup
+ * rectangle as a hole (the one layer it cannot recompute per pixel, because
+ * of the glyphs). The box is painted exactly once, and the band underneath is
+ * repainted on the first frame after the countdown expires. No full redraw is
+ * needed at either end, so the popup does not make the trace flicker.
+ * popup_hole_last tells whether the last frame kept the hole.
+ */
 void scope_popup_overlay_tick(void)
 {
     if (!popup_on) return;

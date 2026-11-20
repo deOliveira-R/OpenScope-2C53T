@@ -7,18 +7,17 @@
 
 #include "scope_ui_parts.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * Grid
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Grid ── */
 
+/* Full redraw: the dotted graticule and the solid centre cross, in the
+ * stock geometry (scope_geom.h): 12 divisions of 25 columns over columns
+ * 0..300, centre at column 150, a horizontal line every 26 rows. Columns
+ * 301..319 carry no grid; the trigger-level tag sits there. */
 void draw_scope_grid(void)
 {
     const theme_t *th = theme_get();
     uint16_t x, y;
 
-    /* Stock's graticule (parity C5, scope_geom.h): 12 divisions of 25 px
-     * over window columns 0..300, centre at column 150. Columns 301..319
-     * stay clear for the trigger-level arrow and badge. */
     /* Vertical grid lines (dotted) */
     for (x = 0; x < SCOPE_GEOM_COLS; x += SCOPE_GEOM_DIV_PX) {
         for (y = SCOPE_TOP; y < SCOPE_BOT; y += 2)
@@ -37,13 +36,12 @@ void draw_scope_grid(void)
         lcd_set_pixel(SCOPE_GEOM_CENTER_COL, y, th->grid_center);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Trigger level line
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Trigger level line ── */
 
-/* The dotted line across the plot at the trigger level; denser while UP/DOWN
- * are adjusting it, so the user can see which control the arrows own. The
- * tags at the plot edges are drawn by draw_plot_markers() below. */
+/* Full redraw: the dotted line across the plot at row trig_y, clamped inside
+ * the plot. Denser while UP/DOWN adjust the level, so the user sees which
+ * control the arrows own. The tags at the plot edges are drawn by
+ * draw_plot_markers() further down this file. */
 void draw_trigger_line(const theme_t *th, int16_t trig_y)
 {
     if (trig_y < SCOPE_TOP + 2) trig_y = SCOPE_TOP + 2;
@@ -52,13 +50,18 @@ void draw_trigger_line(const theme_t *th, int16_t trig_y)
         lcd_set_pixel(x, (uint16_t)trig_y, th->trigger);
 }
 
+/* The vertical transform of each plotted band as drawn this frame, filled by
+ * vband_note(); the cursor readout (scope_cursor_draw.c) converts rows with
+ * it. Slot 0 is the first band plotted, slot 1 the second. */
 vband_t g_vband[2];
 
-/* The math trace's own scale, as drawn this frame (draw_math_waveform): the
- * cursors read it instead of the channel bands while the overlay is up, since
- * it spans the whole glass over them. */
+/* The math trace's own scale, as drawn this frame (math_prepare): the
+ * cursors read it instead of the channel bands while the math trace is on,
+ * since it spans the whole plot over them. */
 g_math_cur_t g_math_cur;
 
+/* Forget every recorded scale, so a band not plotted this frame leaves the
+ * cursors reporting pixels. */
 void vband_clear(void)
 {
     g_vband[0].on = false;
@@ -66,9 +69,11 @@ void vband_clear(void)
     g_math_cur.on = false;
 }
 
-/* channel 1/2, a: the map the band was drawn with. True scale anchors the
- * channel's 0 V code to a row, so absolute Y is known (mid_counts = 0 at the
- * ground tag's row); autofit re-anchors per frame and leaves it unknown. */
+/* Record in g_vband[slot] the map a band was drawn with: channel 1/2, its
+ * range, the map a, and the counts one row is worth (0 = nothing plotted).
+ * True scale anchors the channel's 0 V code to a row, so absolute Y is known
+ * (mid_counts = 0 at the ground tag's row); autofit re-anchors every frame
+ * and leaves it unknown. */
 void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
                        const autofit_t *a, float counts_per_pixel)
 {
@@ -87,25 +92,6 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
     b->mid_counts       = 0.0f;
 }
 
-/*
- * Where the HARDWARE trigger fires, on the glass.
- *
- * The FPGA compares the ADC against reg 0x08 but the record carries ADC - 28,
- * so the crossing that fires sits at (code - 28) in record units: measured on
- * ranges 5 and 7 at six levels (EXP-55/56, median 28) and the same constant
- * as stock's ADC offset (ADC_REC_OFFSET). That record code is mapped through the SAME
- * map the trigger-source trace is drawn with, so the line sits on the
- * trace where NORMAL would fire. Outside the band it clamps to the band edge
- * (autofit_y's clamp), which on screen reads as "level is above / below the
- * signal" -- in autofit exactly the case where NORMAL holds.
- *
- * The code is the one fpga.c records as written (fpga_acq_trig_code_get),
- * not recomputed from the UI level: report the wire, not the intent.
- *
- * In true scale the same code goes through the fixed map (yt_vmap.h), so
- * the line sits at the trigger level's place on the graticule. A band with
- * no data falls back to the old pixel convention.
- */
 uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                           const volatile uint8_t *src_buf, uint8_t L,
                                           int16_t *back_q8);
@@ -115,6 +101,23 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
 
 void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2);
 
+/*
+ * The row where the HARDWARE trigger fires, through map a.
+ *
+ * The FPGA compares the ADC against reg 0x08, but the record carries
+ * ADC - ADC_REC_OFFSET (28, measured on the unit and equal to stock's ADC
+ * offset), so trig_level_rec() turns the register code into a record code.
+ * That code goes through the SAME map the trigger-source trace is drawn
+ * with, so the line sits on the trace where NORMAL would fire. Outside the
+ * band it clamps to the band edge (autofit_y), which reads as "level above /
+ * below the signal". In true scale the map is the fixed one (yt_vmap.h), so
+ * the line sits at the level's place on the graticule.
+ *
+ * The code is the one fpga_acq.c records as written (fpga_acq_trig_code_get),
+ * not recomputed from the UI level: report the wire, not the intent.
+ * a NULL or off (no data): the pixel convention, level in rows above
+ * SCOPE_MID_Y.
+ */
 int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
 {
     if (a == NULL || !a->on)
@@ -122,8 +125,9 @@ int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
     return autofit_y(a, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
 }
 
-/* Full-path variant: the trigger source's map exactly as
- * draw_demo_waveform() will build it (same window, same yt_fits). */
+/* Full-redraw variant: builds the window (view_build) and the trigger
+ * source's map exactly as draw_demo_waveform() will (same yt_fits), so it can
+ * run before the traces. */
 int16_t trigger_marker_y_full(const scope_state_t *ss)
 {
     const volatile uint8_t *b1 = fpga_get_ch1_buf();
@@ -138,16 +142,19 @@ int16_t trigger_marker_y_full(const scope_state_t *ss)
 
 /* The two Y-T maps, the only place that decides them (from the window
  * view_build() last filled into yt_cols). True scale where the range has a
- * real volts/div, over the full plot; autofit elsewhere (a NONE range, or
- * view.truescale off), split into halves when both channels autofit. */
+ * calibrated volts/div, over the full plot; autofit elsewhere (an
+ * uncalibrated range, or view.truescale off), split into halves when both
+ * channels autofit (yt_vmap_split). A channel not drawn gets a map with
+ * on == false. While running it also latches the ranges of the record on
+ * screen (scope_ui_paused_latch). */
 void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
 {
     autofit_t *a[2] = { a1, a2 };
     /* A channel is drawn only when the published record holds its own
-     * samples (fpga_acq_record_has_ch, dsp/acq_cfg.h): right after CH2 is
+     * samples (fpga_acq_record_has_ch, fpga_acq.c): right after CH2 is
      * switched back on, the record on screen was captured with CH1 alone and
-     * its CH2 buffer is the second converter's copy of CH1 (bench
-     * 2026-11-14). The band appears with the first record captured with it. */
+     * its CH2 buffer is the second converter's copy of CH1. The band appears
+     * with the first record captured with it. */
     const bool en[2] = { ss->ch1.enabled && fpga_acq_record_has_ch(0u),
                          ss->ch2.enabled && fpga_acq_record_has_ch(1u) };
     const bool fx[2] = {
@@ -172,6 +179,9 @@ void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
     }
 }
 
+/* Place one tag for level row inside band [top, bot) at column x0: pointing
+ * horiz with its label when the row is on the band, up or down on the band
+ * edge (no label) when it is off. Off when the band is shorter than a tag. */
 static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
                     int x0, pm_label_t label, uint16_t color)
 {
@@ -186,8 +196,11 @@ static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
     t->color = color;
 }
 
-/* a1/a2: the maps as drawn (NULL = no record: the demo/no-data convention,
- * position and level in pixels about the centre). band_bot: the strip's top. */
+/* Build the plot-edge tag set m for both renderers: a ground tag per enabled
+ * channel at the left edge, the trigger-level tag at the right edge.
+ * a1/a2: the maps as drawn (NULL = no record: the demo/no-data convention,
+ * position and level in pixels about SCOPE_MID_Y). band_bot: the
+ * measurement strip's top. */
 void markers_build(const scope_state_t *ss, const theme_t *th,
                           const autofit_t *a1, const autofit_t *a2,
                           int band_bot, pm_set_t *m)
@@ -227,7 +240,8 @@ void markers_build(const scope_state_t *ss, const theme_t *th,
             PM_LABEL_T, th->trigger);
 }
 
-/* Pixel colour of the marker set at (x, y), or false: tags in priority order. */
+/* Live frame: the colour of the tag set at pixel (x, y) into *c, or false.
+ * Tags are tried in priority order; a knock-out pixel takes bg. */
 bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
                               uint16_t *c)
 {
@@ -245,8 +259,8 @@ bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
     return false;
 }
 
-/* Full path: paint the set (lowest priority first, so the order matches
- * markers_px). */
+/* Full redraw: paint the tag set, lowest priority first, so the result
+ * matches markers_px. */
 void draw_plot_markers(const pm_set_t *m, const theme_t *th)
 {
     for (int i = 2; i >= 0; i--) {
@@ -263,19 +277,28 @@ void draw_plot_markers(const pm_set_t *m, const theme_t *th)
     }
 }
 
-static bool     g_mask_ov_on;
+/* ── Mask overlay ──
+ * Paints the pass/fail verdict the acquisition task recorded (scope_mask.c);
+ * no analysis on the display path. Failing trace columns take th->warning,
+ * the mask bounds are dotted over the trace, and a MASK_STRIP_H-row strip at
+ * the bottom of the live band shows each column's verdict. */
 
-bool     g_mask_bounds_on;
+static bool     g_mask_ov_on;      /* overlay armed for this frame */
 
-static uint32_t g_mask_ov_gen;
+bool     g_mask_bounds_on;         /* also draw the mask bounds (mask ready) */
 
+static uint32_t g_mask_ov_gen;     /* the record generation the overlay paints */
+
+/* Arm the overlay for this frame, after view_build(): only on the hardware
+ * anchor (g_trig_anchor == 2, the alignment the mask was taught on) with a
+ * mask present, and only for the record generation now on screen. */
 void mask_overlay_begin(void)
 {
-    /* One column per sample only (R == 1000): the mask indexes record
+    /* One column per sample only (g_view.L == 1): the mask indexes record
      * SAMPLES by column offset from the anchor (scope_mask_column), which
-     * holds only then. A zoomed fast code (C5) or a re-sampled held record
-     * (C14) draws the trace without the overlay rather than colouring columns
-     * off the samples that were judged. */
+     * holds only then. A zoomed window or a re-sampled held record draws the
+     * trace without the overlay rather than colouring columns off the
+     * samples that were judged. */
     g_mask_ov_on = (g_trig_anchor == 2u) && g_trig_x_actual >= 0 &&
                    g_view.L == 1u &&
                    scope_mask_state() != MASK_PF_EMPTY;
@@ -286,13 +309,16 @@ void mask_overlay_begin(void)
     g_mask_ov_gen = fpga_acq_frame_generation();
 }
 
+/* True when channel ch (0/1, or -1 for none) failed the mask at column x. */
 bool mask_px_fail(int8_t ch, int x)
 {
     return g_mask_ov_on && ch >= 0 &&
            scope_mask_column((uint8_t)ch, x, g_trig_x_actual, g_mask_ov_gen) == SCOPE_MASK_COL_FAIL;
 }
 
-/* Strip colour for column x, or 0 for none; *dotted = paint every other px. */
+/* Strip colour for column x from the worse of the two channels' verdicts, or
+ * 0 for none; *dotted = paint every other pixel. Green pass, red fail, dotted
+ * red the record failed elsewhere, dotted amber refused (SKIP), amber teach. */
 uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted)
 {
     *dotted = false;
@@ -310,7 +336,8 @@ uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted)
     }
 }
 
-/* Full-path strip (the compositor paints the same rows per pixel). */
+/* Full redraw: the strip on the MASK_STRIP_H rows above band_bot (the live
+ * frame paints the same rows per pixel). */
 void draw_mask_strip(const theme_t *th, uint16_t band_bot)
 {
     if (!g_mask_ov_on) return;
@@ -324,13 +351,14 @@ void draw_mask_strip(const theme_t *th, uint16_t band_bot)
     }
 }
 
-/* Persistence (C12) is fed from the channel renderers as they draw each
- * column, so a ghost is exactly where the trace was, through whichever
- * map (true scale or autofit) drew it, and costs no per-column storage (RAM
- * is tight). prev_y < 0: first column. */
+/* ── Traces ── */
 
 bool     g_math_live;    /* a real record was drawn this frame (yt_cols valid) */
 
+/* Add one trace column to the persistence buffer: rows prev_y..y at column x
+ * (prev_y < 0: first column). The channel renderers call it as they draw, so
+ * a ghost is exactly where the trace was, through whichever map drew it,
+ * and needs no per-column storage (RAM is tight). */
 void persist_note(uint16_t x, int16_t prev_y, int16_t y)
 {
     if (persist_enabled && persist_is_initialized())
@@ -338,13 +366,16 @@ void persist_note(uint16_t x, int16_t prev_y, int16_t y)
                            (int)y - SCOPE_TOP);
 }
 
-/* Draw one channel through its map (yt_fits). Returns the ADC counts one
- * screen row is worth, for the cursor readout.
+/* Full redraw: draw one channel's window buf (yt_cols) through its map a
+ * (yt_fits) over [g_view_first, g_view_end), joining consecutive columns
+ * with a vertical span. Also feeds persistence, colours mask-failing columns
+ * and dots the mask bounds (mask_ch: 0/1, or -1 for no mask). Returns the
+ * ADC counts one screen row is worth, for the cursor readout.
  *
- * True scale is the graticule-honesty path (M3), in stock's geometry: 0 V
- * at position 0 on the centre line, one 26 px division = the range's nominal
- * volts/div (scope_cal_codes_per_div codes). An offset shifts the trace and
- * may clip it at the plot edge, as on any scope at a fixed volts/div. */
+ * True scale puts the graticule in stock's geometry: 0 V at position 0 on
+ * the centre line, one 26-row division = the range's nominal volts/div
+ * (scope_cal_codes_per_div codes). An offset shifts the trace and may clip
+ * it at the plot edge, as on any scope at a fixed volts/div. */
 static float draw_channel(const volatile uint8_t *buf, uint16_t color,
                           const autofit_t *a, int8_t mask_ch)
 {
@@ -374,64 +405,62 @@ static float draw_channel(const volatile uint8_t *buf, uint16_t color,
     return yt_vmap_counts_per_px(a);
 }
 
+/* Full redraw: the Y-T traces. Despite the name, this draws the real record
+ * whenever one is ready; the synthetic demo is only the fallback before the
+ * first record.
+ *   1. Forget last frame's scales and mask overlay.
+ *   2. Record ready: build the window (view_build, trigger-aligned, into
+ *      yt_cols), arm the mask overlay, choose the maps (yt_fits), draw each
+ *      enabled channel and record its scale for the cursors (vband_note).
+ *   3. No record yet, ever: draw a sine (CH1) and a square (CH2) marked
+ *      "DEMO", moving with frame while running and frozen while stopped.
+ * Once a record has been seen, a missing one leaves the plot empty. */
 void draw_demo_waveform(uint32_t frame)
 {
     const theme_t *th = theme_get();
     const scope_state_t *ss = scope_state_get();
 
     /* Forget last frame's vertical scales before anything is drawn. A band
-     * that is not plotted this frame — no capture, channel off, or the demo
-     * waveform below, whose amplitude is decorative — must leave the cursor
-     * with NO transform, so it reports pixels instead of converting through a
-     * scale that belongs to a trace no longer on the screen. */
+     * that is not plotted this frame (no capture, channel off, or the demo
+     * waveform, whose amplitude is decorative) must leave the cursor with NO
+     * transform, so it reports pixels instead of converting through a scale
+     * that belongs to a trace no longer on the screen. */
     vband_clear();
     g_mask_ov_on = false;          /* re-armed by mask_overlay_begin() on live data */
     g_math_live = false;
 
-    /* Freeze waveform when stopped — hold the last running frame */
+    /* The demo's phase: frozen at the last running frame while stopped. */
     static uint32_t frozen_frame = 0;
     if (ss->running) {
         frozen_frame = frame;
     }
     uint32_t draw_frame = ss->running ? frame : frozen_frame;
 
-    /*
-     * If FPGA has delivered real ADC data, render from the sample buffers.
-     * Each buffer holds 512 samples (normal mode) as unsigned 8-bit values
-     * centered around 128 (after ADC offset calibration).
-     * We map the 0-255 range into the waveform display area.
-     */
     if (fpga_data_ready()) {
-        /* Latch: once we've ever seen real ADC data, disable the
-         * synthetic demo fallback permanently. */
+        /* Latch: once a record has been seen, the demo fallback is off for
+         * good. */
         scope_mark_acquisition_ready();
 
         const volatile uint8_t *ch1_buf = fpga_get_ch1_buf();
         const volatile uint8_t *ch2_buf = fpga_get_ch2_buf();
 
-        /* Re-triggering DISABLED — see note in demo waveform fallback.
-         * TODO: re-enable once SPI3 protocol is confirmed working. */
-
-        /* One map per channel (yt_fits): true scale over the full plot, or
-         * autofit, split into halves when both channels autofit. */
         bool c1 = ss->ch1.enabled && ch1_buf != NULL;
         bool c2 = ss->ch2.enabled && ch2_buf != NULL;
 
-        /* Software trigger: find the phase on the trigger SOURCE channel and
-         * shift both channels' render windows by the same offset, so the trace
-         * stops free-running (dancing) while staying time-aligned. The window
-         * (the fast-code zoom, C5, or the re-sampled held record, C14) is
-         * built once into yt_cols. */
+        /* The window: both channels start at the same trigger-aligned
+         * column, so the trace holds still and the channels stay
+         * time-aligned. A zoomed or re-sampled held record is placed here
+         * too; the result goes into yt_cols once per frame. */
         view_build(ss, ch1_buf, ch2_buf);
         mask_overlay_begin();
         const volatile uint8_t *b1 = (ch1_buf != NULL) ? yt_cols[0] : NULL;
         const volatile uint8_t *b2 = (ch2_buf != NULL) ? yt_cols[1] : NULL;
-        /* The same window and channel set for the math trace and persistence
-         * (C12): they must be drawn from exactly what the traces were. */
+        /* The math trace reads the same window: it must be drawn from
+         * exactly what the traces were. */
         g_math_live = true;
 
-        /* The map each band is drawn with is recorded for the cursor
-         * readout — see vband_note(). */
+        /* One map per channel (yt_fits); the map each band is drawn with is
+         * recorded for the cursor readout (vband_note). */
         autofit_t a1, a2;
         yt_fits(ss, &a1, &a2);
         uint8_t slot = 0;
@@ -444,19 +473,12 @@ void draw_demo_waveform(uint32_t frame)
         return;
     }
 
-    /* ── Fallback: synthetic demo waveform (no FPGA data yet) ──────
-     *
-     * Only rendered if acquisition has NEVER produced real data. Once
-     * the latch flips, we leave the grid empty instead — otherwise a
-     * transient FPGA stall would flash fake waveforms on top of a
-     * stopped trace, which is worse than an empty screen. */
+    /* Fallback: the synthetic demo waveform, only while acquisition has
+     * NEVER produced a record. After that the plot stays empty instead, so
+     * a stall in acquisition never shows a fake waveform. */
     if (scope_acquisition_ready()) {
         return;
     }
-
-    /* SPI3 acquisition triggers are now fired from main.c display loop
-     * with 500ms warmup delay and early-abort safety. See main.c and
-     * fpga_acquisition_task() for the crash-protection logic. */
 
     /* Mark the trace as synthetic ON the trace. The badge legend says the
      * same thing at the bottom of the screen, but the waveform is what
@@ -471,7 +493,7 @@ void draw_demo_waveform(uint32_t frame)
        -100,-99,-98,-96,-92,-88,-83,-77,-71,-63,-56,-47,-38,-29,-19,-10,
     };
 
-    /* CH1: sine wave — scale based on vdiv index */
+    /* CH1: sine wave, smaller at higher range indices */
     if (ss->ch1.enabled) {
         int16_t ch1_center = SCOPE_MID_Y - ss->ch1.position;
         int16_t amplitude = 40 - (int16_t)(ss->ch1.vdiv_idx * 2);
@@ -514,22 +536,18 @@ void draw_demo_waveform(uint32_t frame)
     }
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Persistence overlay (C12: live traces)
- *
- * Layer 1 draws what earlier frames left in the buffer, BEFORE this frame's
- * trace goes on top; the channel renderers add this frame's trace to the
- * buffer as they draw it (persist_note), for the next frames. The
- * fade runs on wall time (persist_decay_ms), so 500 ms / 1 s mean that
- * whatever the frame rate. Dual-channel mode splits the glass into a CH1 band
- * above and a CH2 band below SCOPE_MID_Y, so a ghost's row says whose it is
- * and takes that channel's theme colour.
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Persistence overlay ──
+ * The bottom layer shows what earlier frames left in the buffer, BEFORE this
+ * frame's trace goes on top; the channel renderers add this frame's trace as
+ * they draw it (persist_note), for the next frames. The fade runs on wall
+ * time (persist_decay_ms), so 500 ms / 1 s mean that whatever the frame
+ * rate. One buffer holds both channels, so a ghost's colour comes from its
+ * row (persist_base). */
 
 /* Before the ghosts are read, every frame and in either renderer: clear
- * them if the signal-to-screen mapping moved (persistence.h geometry guard:
- * one place that sees keys, shell sets, autoset and loads alike), then fade
- * by the wall time since the last frame. */
+ * them if the signal-to-screen mapping moved (persist_follow_geometry: one
+ * place that sees keys, shell sets, autoset and loads alike), then fade by
+ * the wall time since the last call. */
 void persist_frame_decay(void)
 {
     const scope_state_t *gss = scope_state_get();
@@ -548,9 +566,10 @@ void persist_frame_decay(void)
     have_tick = true;
 }
 
-/* A ghost's colour at screen row y: the channel's own, by band when the two
- * channels are split, neutral when they are overlaid (one buffer cannot say
- * whose a ghost is). */
+/* A ghost's base colour at screen row y: the enabled channel's when only one
+ * is on; with both on, by band (CH1 above SCOPE_MID_Y, CH2 below) when the
+ * bands are split, neutral when they overlap (one buffer cannot say whose a
+ * ghost is). */
 uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y)
 {
     if (!(ss->ch1.enabled && ss->ch2.enabled))
@@ -562,6 +581,8 @@ uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y)
     return (y < SCOPE_MID_Y) ? th->ch1 : th->ch2;
 }
 
+/* Full redraw: fade the buffer, then paint every non-zero ghost at its
+ * intensity of persist_base's colour. Nothing when persistence is off. */
 void draw_persistence_overlay(void)
 {
     if (!persist_enabled || !persist_is_initialized()) return;
@@ -585,6 +606,20 @@ void draw_persistence_overlay(void)
     }
 }
 
+/* ── Math trace ──
+ * Reads the same 301-column window the traces were drawn from (yt_cols).
+ * Volts where the range is calibrated, counts where not. Drawn about the
+ * graticule centre on its OWN scale (a 1-2-5 step per division chosen from
+ * the result, shown in the label): A*B and A/B share no graticule with A
+ * and B. */
+
+/* Prepare one frame of the math trace into mf, for both renderers:
+ *   1. ok only with a record drawn this frame and the op's inputs on;
+ *      otherwise only the "--" label.
+ *   2. the inputs' scales (rec_zero, rec_vpc) and the result's unit;
+ *   3. the peak over the window, the 1-2-5 step that fits it, never finer
+ *      than the source channel's own division;
+ *   4. the cursors' view of that scale (g_math_cur) and the label. */
 void math_prepare(const scope_state_t *ss, math_frame_t *mf)
 {
     memset(mf, 0, sizeof(*mf));
@@ -669,6 +704,8 @@ int16_t math_row(const math_frame_t *mf, uint16_t x)
     return row;
 }
 
+/* Full redraw: the math trace (joined columns), its zero tick at the left
+ * edge and its label, all in th->warning. Nothing when math is off. */
 void draw_math_waveform(void)
 {
     if (!math_enabled) return;
