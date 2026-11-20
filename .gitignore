@@ -61,11 +61,9 @@ emulator/lcd_viewer
 # way to build there -- and such a symlink is machine-specific and must never
 # be committed.
 firmware/FreeRTOS/
-firmware/gd32f30x_lib/
 firmware/at32f403a_lib/
 firmware/at32f403a_gcc/
 firmware/FreeRTOS
-firmware/gd32f30x_lib
 firmware/at32f403a_lib
 firmware/at32f403a_gcc
 
