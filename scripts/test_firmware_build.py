@@ -161,7 +161,6 @@ WARNING_BASELINE = {
         "tools/re/board-probes/hwtest.c: warning: 'power_hold_init' defined but not used [-Wunused-function]",
     },
     "emu": {
-        "firmware/src/main.c: warning: variable 'scope_entered_frame' set but not used [-Wunused-but-set-variable]",
         "firmware/src/drivers/continuity_buzzer.c: warning: 'buzzer_task' defined but not used [-Wunused-function]",
         "firmware/src/drivers/continuity_buzzer.c: warning: 'buzzer_task_handle' defined but not used [-Wunused-variable]",
         "firmware/src/drivers/meter_autoselect.c: warning: 'vMeterAutoselectTask' defined but not used [-Wunused-function]",

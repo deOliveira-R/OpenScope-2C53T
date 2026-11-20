@@ -424,8 +424,10 @@ static void list_changed(const char *pat, model_emit_fn emit)
         const char *keep = prop_reset_keeps(p);
         value_text(p, prop_get(p), now, sizeof now);
         value_text(p, prop_default(p), def, sizeof def);
-        snprintf(line, sizeof line, "%-17s %-22s default %s%s%s%s", p->name, now, def,
-                 keep ? "  (reset keeps it: " : "", keep ? keep : "", keep ? ")" : "");
+        const int n = snprintf(line, sizeof line, "%-17s %-22s default %s%s%s%s", p->name, now, def,
+                               keep ? "  (reset keeps it: " : "", keep ? keep : "", keep ? ")" : "");
+        if (n >= (int)sizeof line)                    /* longer than the buffer: cut, and say so */
+            memcpy(line + sizeof line - sizeof "...", "...", sizeof "...");
         emit(line);
         hits++;
         if (keep) kept++;

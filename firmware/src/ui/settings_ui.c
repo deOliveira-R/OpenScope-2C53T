@@ -85,7 +85,10 @@ static void draw_menu_item(int i, int scroll_offset, int selected_idx,
 void settings_ui_draw_sound(uint8_t sub)
 {
     const theme_t *th = theme_get();
-    char vol[8], bri[8];
+    /* Room for any unsigned in decimal (10 digits), a '%', and the NUL: the
+     * values are 0..10 and 25..100, but the compiler sizes for the type. */
+    enum { SET_SOUND_TEXT_LEN = 12 };
+    char vol[SET_SOUND_TEXT_LEN], bri[SET_SOUND_TEXT_LEN];
 
     lcd_fill_rect(0, 16, LCD_WIDTH, LCD_HEIGHT - 32, th->background);
     font_draw_string_center(LCD_WIDTH / 2, 20, "Sound and Light",

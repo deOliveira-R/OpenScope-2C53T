@@ -2853,7 +2853,6 @@ static bool fpga_core_watch_poll(void)
 static void fpga_acq_task(void *pv)
 {
     (void)pv;
-    uint32_t edges_consumed = 0;   /* pc0_edges value at our last pair read */
     /* EXP-43 (2026-09-14): a READ is what starts a capture (EXP-41), so a
      * triggered mode that waits for an edge before its first read waits
      * forever — NORMAL froze at level 0 on the bench with zero edges and
@@ -3144,7 +3143,6 @@ static void fpga_acq_task(void *pv)
         if (forced) { triggered = false; acq_force_n[1]++; }
         if (triggered) last_trig_tick = last_read_tick;
         acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
-        edges_consumed = fpga.pc0_edges;
         bool first_read = !capture_in_flight;
         capture_in_flight = true;
         if (held || first_read) {
