@@ -197,6 +197,15 @@ image) has taken the MCU off the bus. It tries a handshake in seconds where a fi
 minutes. It has not been run on hardware. Board data: the opcodes and the
 wiring table in its README.
 
+When the MCU's own firmware cannot be trusted to drive the configuration
+port the same way twice, a second MCU can stand in for it: any small board
+with free SPI and GPIO pins, wired to the FPGA's configuration pins with the
+unit's MCU held in reset, replays a candidate sequence at a chosen clock rate
+and reports the status register after each step. Do not use a development
+FPGA board as the stand-in target without checking its package: a Tang Nano
+9K (GW1NR-9 in QN88) cannot be configured over SSPI at all, because that
+package does not bond the dedicated SSPI clock and data-in pins.
+
 Where the bitstream is: the factory firmware of the 2C53T sends it over SPI
 at every boot. The emulator trace of step 6 shows the upload as a long run of
 writes to the SPI data register; the address the loop reads from is the
@@ -363,10 +372,6 @@ Build knobs for bench work on the configuration path:
 |---|---|
 | [re_guide.md](re_guide.md) | Ghidra project settings, headless scripts, where to start in the image |
 | [reference_projects.md](reference_projects.md) | Other projects and forums on FNIRSI instruments |
-| [firmware_analysis.md](firmware_analysis.md) | Factory firmware versions and structure |
-| [function_map.md](function_map.md) | Named functions and variables of the factory firmware |
-| [freertos_tasks.md](freertos_tasks.md), [rtos_analysis.md](rtos_analysis.md) | The factory firmware's RTOS and tasks |
-| [acq_seam_root_cause.md](acq_seam_root_cause.md) | Analysis of the record seam of the factory FPGA design |
 | [parity2_static.md](parity2_static.md) | Static reading of several factory features |
 
 The analysis output of the factory firmware is under `reverse_engineering/`.

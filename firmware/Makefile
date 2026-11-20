@@ -1624,9 +1624,6 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 # is flashed through its IAP drive: main.c moves VTOR and skips the watchdog
 # when GUEST_BUILD is defined. An app-* image has the HID-bootloader layout.
 #
-# Full writeups: CLAUDE.md,
-# reverse_engineering/analysis_v120/expE_swd_state_diff_2026-07-28.md,
-# docs/build_a_config_entry_test.md, docs/fpga_warm_handoff_test.md.
 # ═══════════════════════════════════════════════════════════════════════════
 
 # [LIVE] guest-caldump — READ-ONLY diagnostic. Reports MCU flash

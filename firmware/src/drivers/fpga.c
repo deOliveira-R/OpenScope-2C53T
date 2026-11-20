@@ -3005,7 +3005,7 @@ static void fpga_acq_task(void *pv)
         /* STOP holds the published record (stock: ms[0x2E] = 0 at 0x0800BE5E,
          * and a stopped timebase/range key re-renders instead of re-arming,
          * 0x0800B6AA; docs/re/parity2_static.md section 3). Before this the
-         * task never tested `running` (trigger-modes.md D7): AUTO kept
+         * task never tested `running`: AUTO kept
          * committing free-run reads and NORMAL every handover, so a key press
          * while STOPPED drew a NEW record, and after a timebase key the next
          * commit relabelled acq_pub_idx -- the zoom-while-paused view (C14)
@@ -4575,9 +4575,7 @@ void fpga_init(void)
      *
      * The H2 blob is the Gowin FPGA bitstream, not a cal table — same
      * 0x3B/0x3A bracket, size ±1 byte, and 160-byte frame structure as
-     * the working rosenrot00/OpenScope-2C23T HW4 loader. See
-     * analysis_v120/h2_extracted/h2_is_gowin_bitstream_2c23t_evidence.md
-     * and docs/fpga_bitstream_replay_plan.md.
+     * the working rosenrot00/OpenScope-2C23T HW4 loader.
      *
      * Every stock byte is a full-duplex polled exchange (wait TXE →
      * write → wait RXNE → read); spi3_xfer matches that exactly, and

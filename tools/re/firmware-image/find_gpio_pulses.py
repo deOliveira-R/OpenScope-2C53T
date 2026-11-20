@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hunt stock firmware for a RECONFIG_N-style GPIO pulse before CONFIG_ENABLE.
 
-Background: apicula (docs/CONFIG_ENTRY_REPLY_FROM_APICULA.md) says a running,
+Background: the apicula project's documentation of the GW1N says a running,
 auto-booted GW1N only re-enters configuration after RECONFIG_N goes low (>=25ns)
 or a power cycle. Exp N (2026-07-28) measured exactly that behaviour on our own
 bench: every SSPI read command answers correctly while not one config command

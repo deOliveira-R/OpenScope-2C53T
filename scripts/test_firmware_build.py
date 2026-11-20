@@ -41,8 +41,8 @@ unchanged files, which would quietly hollow out the warning ratchet.
 
 THE WARNING RATCHET, AND WHY IT IS NOT "ZERO WARNINGS"
 -----------------------------------------------------
-`docs/dev_plan_2026-08-13.md` ground rule 5 claimed `guest` "must stay
-warning-clean". It never was, and `emu` is further from it -- see
+An early plan claimed the `guest` build "must stay warning-clean". It never
+was, and `emu` is further from it -- see
 WARNING_BASELINE below for the measured truth. A hard zero-warning gate
 adopted today would have exactly two outcomes, both bad: unrelated files get
 edited by whoever trips it next, or somebody silences the category with
