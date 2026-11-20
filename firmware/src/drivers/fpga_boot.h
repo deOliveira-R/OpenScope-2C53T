@@ -18,6 +18,19 @@
  * all four in fpga.cfg_status_reg[]. */
 uint8_t fpga_bitbang_config_sequence(void);
 
+/* The configuration STATUS register (0x41) as read after the last upload,
+ * first byte clocked in the top byte, and its DONE bit (the design started). */
+uint32_t fpga_cfg_status(void);
+#define GOWIN_STATUS_DONE_BIT  13u
+
+/* How the last design upload ended (fpga.upload_result, shown by `status`). */
+typedef enum {
+    FPGA_UPLOAD_NOT_RUN = 0,     /* no upload was attempted since boot */
+    FPGA_UPLOAD_SENT,            /* every byte of the design was sent */
+    FPGA_UPLOAD_NOT_EMPTY,       /* nothing sent: the FPGA did not answer its IDCODE, so it runs a design */
+    FPGA_UPLOAD_SOURCE_FAILED,   /* the design's source stopped part-way: the FPGA is empty */
+} fpga_upload_result_t;
+
 /* Reload while running: switch the FPGA's supply off and on with PC6, then
  * upload the compiled-in design (fn == NULL) or `len` bytes that fn supplies.
  * fn fills buf with n bytes of the design at offset off; false aborts. */

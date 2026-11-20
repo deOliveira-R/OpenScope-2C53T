@@ -1634,15 +1634,12 @@ void cmd_fpga_configbb(void)
 {
     usb_send_str("bit-bang SSPI config (05-less V0.4 framing) — firing...\r\n");
     (void)fpga_bitbang_config_sequence();
-    uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
-                  ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-                  ((uint32_t)fpga.cfg_status_reg[2] << 8) |
-                  (uint32_t)fpga.cfg_status_reg[3];
+    uint32_t sr = fpga_cfg_status();
     usb_debug_printf("post-upload STATUS(0x41): %02X %02X %02X %02X (raw=%08lX)\r\n",
                      fpga.cfg_status_reg[0], fpga.cfg_status_reg[1],
                      fpga.cfg_status_reg[2], fpga.cfg_status_reg[3], sr);
     usb_debug_printf("  DONE_FINAL(bit13)=%s  flags:%s%s%s%s\r\n",
-                     (sr & (1u << 13)) ? "YES -- CONFIG TOOK" : "no -- the wall",
+                     (sr & (1u << GOWIN_STATUS_DONE_BIT)) ? "YES -- CONFIG TOOK" : "no -- the wall",
                      (sr & (1u << 0))  ? " CRC_ERR" : "",
                      (sr & (1u << 2))  ? " ID_FAIL" : "",
                      (sr & (1u << 12)) ? " GWVLD"   : "",

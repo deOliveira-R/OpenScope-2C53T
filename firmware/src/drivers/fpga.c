@@ -115,15 +115,6 @@ void fpga_init(void)
     gpio_init(GPIOC, &gpio_cfg);
     GPIOC->scr = PC6_MASK;
 
-    /* Register snapshot for the `status` command. The field names do not
-     * match the registers read: diag_remap5 holds IOMUX->remap and
-     * diag_remap7 holds IOMUX->remap5 (SPI3_GMUX). diag_spi_ctrl1 is
-     * overwritten by the upload with its 0xBBBB marker. */
-    fpga.diag_remap5 = IOMUX->remap;   /* STM32-compatible remap */
-    fpga.diag_remap7 = IOMUX->remap5;  /* AT32 GMUX remap5: SPI3_GMUX lives here */
-    fpga.diag_spi_ctrl1 = FPGA_SPI->ctrl1;
-    fpga.diag_spi_sts = FPGA_SPI->sts;
-
     /* Stock waits about 100 ms after enabling SPI3 before it talks to the
      * FPGA. */
     systick_delay_ms(100);

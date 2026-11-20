@@ -177,17 +177,14 @@ typedef struct {
     volatile uint16_t spi3_ok_count;  /* records read */
     volatile uint16_t spi3_total_timeouts;  /* records refused since boot: a transfer timed out during the read */
     volatile uint16_t spi3_hw_timeouts;  /* SPI3 byte transfers that timed out since boot; each returned 0xFF instead of bus data */
-    volatile uint8_t  spi3_first_byte;  /* first byte of the last probe */
     volatile uint8_t  diag_ch1_raw[4];  /* first 4 bytes of the last CH1 read */
     volatile uint8_t  diag_ch2_raw[4];  /* first 4 bytes of the last CH2 read */
 
     /* ── bring-up and upload ───────────────────────────────────────── */
     volatile uint8_t  init_hs[12];  /* replies during the toolkit's SPI3 upload ([11] unused) */
-    volatile uint32_t diag_remap5;  /* IOMUX remap5 (SPI3 pins) after init */
-    volatile uint32_t diag_remap7;  /* IOMUX remap7 (JTAG pins) after init */
-    volatile uint32_t diag_spi_ctrl1;  /* SPI3 CTRL1 after init */
-    volatile uint32_t diag_spi_sts;  /* SPI3 STS after init */
     volatile uint32_t h2_bytes_sent;  /* design bytes sent by the last upload */
+    volatile uint32_t upload_len;  /* design bytes the last upload had to send */
+    volatile uint8_t  upload_result;  /* a fpga_upload_result_t */
     volatile uint8_t  h2_upload_done;  /* 1 = the upload sent every byte */
     volatile uint8_t  h2_close_status;  /* byte read after the 0x3A close of the toolkit's SPI3 upload */
     volatile uint8_t  core_ident[CORE_IDENT_REPLY_LEN];  /* reply to op E2 after a load of our core (all 0: not asked) */
@@ -215,9 +212,9 @@ typedef struct {
     volatile uint8_t  probe_idcode_post[8];  /* 0x11 again, after 0x15 */
     volatile int8_t   probe_id_bit;
 
-    /* IDCODE read after the upload. Once a design runs, the configuration
-     * port stops answering, so a match here (probe_id_bit_close >= 0) means
-     * the FPGA is NOT configured; -1 is consistent with configured. */
+    /* IDCODE read after the last design byte and before the port is closed
+     * (0x3A), so the FPGA still answers it after a good upload. Printed by
+     * the bench shell only; DONE in cfg_status_reg is the result. */
     volatile uint8_t  probe_idcode_close[8];
     volatile int8_t   probe_id_bit_close;
 

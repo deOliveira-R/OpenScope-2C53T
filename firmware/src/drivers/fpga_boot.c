@@ -90,6 +90,12 @@ static bool            bb_arm_live;      /* outcome 1: still run the arm writes 
  * writes and identify the core. Suspends the acquisition task while it runs.
  * Returns the last byte of the post-upload STATUS, or 0 when it stopped
  * before the control writes; the outcome is left in bb_outcome. */
+uint32_t fpga_cfg_status(void)
+{
+    return ((uint32_t)fpga.cfg_status_reg[0] << 24) | ((uint32_t)fpga.cfg_status_reg[1] << 16) |
+           ((uint32_t)fpga.cfg_status_reg[2] << 8)  |  (uint32_t)fpga.cfg_status_reg[3];
+}
+
 uint8_t fpga_bitbang_config_sequence(void)
 {
     gpio_init_type gpio_cfg;
@@ -97,7 +103,8 @@ uint8_t fpga_bitbang_config_sequence(void)
 
     fpga.probe_id_bit       = -1;
     fpga.probe_id_bit_close = -1;
-    fpga.diag_spi_ctrl1     = 0xBBBBu;   /* not a register value: tells `status` the bit-bang path ran */
+    fpga.upload_len         = (bb_src_fn == NULL) ? FPGA_BITSTREAM_CORE_SIZE : bb_src_len;
+    fpga.h2_bytes_sent      = 0;
 
     int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
@@ -121,6 +128,7 @@ uint8_t fpga_bitbang_config_sequence(void)
     bb_outcome = 0;
     if (bb_require_empty && fpga.probe_id_bit != 0) {
         bb_outcome = 1;
+        fpga.upload_result = FPGA_UPLOAD_NOT_EMPTY;
         goto bb_restore_pins;
     }
 
@@ -151,6 +159,7 @@ uint8_t fpga_bitbang_config_sequence(void)
     }
     GPIOB->scr = BB_CS;
     fpga.h2_upload_done = (bb_outcome == 0) ? 1 : 0;
+    fpga.upload_result = (bb_outcome == 0) ? FPGA_UPLOAD_SENT : FPGA_UPLOAD_SOURCE_FAILED;
 
     /* STATUS after the upload; bit 13 is DONE (the design started). */
     bb_read_reg32(0x41, (uint8_t *)fpga.cfg_status_reg);
@@ -214,7 +223,7 @@ bb_restore_pins:
          * is unknown). */
         acq_edge_reg = 0x00;
         acq_design_ours = trig_edge_reg_loaded_by_us(bb_outcome == 0,
-                                                    (fpga.cfg_status_reg[2] & 0x20u) != 0u);
+                                                    ((fpga_cfg_status() >> GOWIN_STATUS_DONE_BIT) & 1u) != 0u);
         /* Ask our core which build it is (op E2; the E-range is never sent to
          * a design that is not ours). A core older than D5 answers zeros. */
         for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) fpga.core_ident[i] = 0u;
@@ -277,8 +286,7 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
     bb_require_empty = false;
     bb_outcome = 0;
 
-    const uint32_t status = ((uint32_t)fpga.cfg_status_reg[0] << 24) | ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-                            ((uint32_t)fpga.cfg_status_reg[2] << 8)  |  (uint32_t)fpga.cfg_status_reg[3];
+    const uint32_t status = fpga_cfg_status();
     if (rep) {
         rep->idcode_before = ((uint32_t)fpga.probe_idcode[0] << 24) | ((uint32_t)fpga.probe_idcode[1] << 16) |
                              ((uint32_t)fpga.probe_idcode[2] << 8)  |  (uint32_t)fpga.probe_idcode[3];

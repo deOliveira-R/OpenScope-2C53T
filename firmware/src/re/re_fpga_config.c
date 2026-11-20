@@ -180,10 +180,7 @@ reinit_bad_token:
      *   all-FF  -> FPGA not driving MISO (never entered config-receive)
      *   CRC/IDV -> bytes reached the config engine (wire/content problem)
      *   DONE    -> config actually took. */
-    uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
-                  ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-                  ((uint32_t)fpga.cfg_status_reg[2] << 8) |
-                  (uint32_t)fpga.cfg_status_reg[3];
+    uint32_t sr = fpga_cfg_status();
     usb_debug_printf("0x41 STATUS: %02X %02X %02X %02X (raw=%08lX)\r\n",
                      fpga.cfg_status_reg[0], fpga.cfg_status_reg[1],
                      fpga.cfg_status_reg[2], fpga.cfg_status_reg[3], sr);
@@ -196,7 +193,7 @@ reinit_bad_token:
                          (sr & (1u << 1))  ? " BAD_CMD"   : "",
                          (sr & (1u << 2))  ? " ID_FAIL"   : "",
                          (sr & (1u << 12)) ? " GWVLD"     : "",
-                         (sr & (1u << 13)) ? " DONE"      : "",
+                         (sr & (1u << GOWIN_STATUS_DONE_BIT)) ? " DONE"      : "",
                          (sr & (1u << 15)) ? " READY"     : "",
                          (sr & (1u << 16)) ? " POR"       : "");
     }

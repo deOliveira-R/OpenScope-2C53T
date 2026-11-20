@@ -162,7 +162,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
 
     (void)FPGA_SPI->dt;                  /* Discard any stale RX data */
-    fpga.diag_spi_sts = FPGA_SPI->sts;   /* STS before handshake */
 
     /* Optional FPGA reset pulse (rosenrot00's working 2C23T loader does this;
      * our 2C53T sequence lacks it). Configure the chosen pin as push-pull
@@ -238,13 +237,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
      * (fpga_init leaves /2 = stock's rate) with SPE untouched through 0x15. */
     if (!opt->single_br) spi3_set_br(opt->cmd_br);
 
-    /* Re-capture SPI3 CTRL1 HERE, at the config-frame clock (S1 overlay field).
-     * fpga_init captured it at Step-4 init time (always the /2 default), so a
-     * cmd_br=7 build still read S1:0347 — misleading (the overlay legend claims
-     * S1 shows the config clock). Now S1 reflects the ACTUAL prelude/upload BR:
-     * 0347 = /2, 037F = /256. Bench 2026-08-13: Build A read S1:0347 pre-fix
-     * because of this capture-point bug, NOT because /256 failed to apply. */
-    fpga.diag_spi_ctrl1 = FPGA_SPI->ctrl1;
 
     /* [0-] Exp J (probe_idcode): ANCHORED opcode-discrimination probe, run on a
      * pristine bus BEFORE the prelude — the FPGA is running its NV design and we
@@ -415,6 +407,8 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
     SPI3_CS_DEASSERT();
     fpga.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
     fpga.h2_upload_done = 1;
+    fpga.upload_len = FPGA_BITSTREAM_CORE_SIZE;
+    fpga.upload_result = FPGA_UPLOAD_SENT;
 
     /* [5] 3A 00 — close/commit in its own CS-LOW frame. Stock → 0xF8. */
     SPI3_CS_ASSERT();

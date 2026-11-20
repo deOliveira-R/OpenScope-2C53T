@@ -7,25 +7,6 @@
 
 #include "shell_parts.h"
 
-/* Which FPGA configuration path completed this boot, for `status`. NONE when
- * no upload finished (h2_upload_done clear). The bit-bang path stores the
- * marker 0xBBBB in diag_spi_ctrl1 (fpga_boot.c); any other value is taken as
- * the hardware SPI3 path. */
-static cfg_path_t fpga_cfg_path(void)
-{
-    if (!fpga.h2_upload_done) return CFG_PATH_NONE;
-    return (fpga.diag_spi_ctrl1 == 0xBBBBu) ? CFG_PATH_BITBANG : CFG_PATH_HWSPI;
-}
-
-static const char *fpga_cfg_path_name(cfg_path_t p)
-{
-    switch (p) {
-    case CFG_PATH_BITBANG: return "GPIO bit-bang (FPGA_CONFIG_B)";
-    case CFG_PATH_HWSPI:   return "hardware SPI3";
-    default:               return "NONE — no config sequence ran this boot";
-    }
-}
-
 /* Print the last command frame sent to the FPGA, in hex. */
 static void usb_print_last_tx_frame(void)
 {
@@ -69,16 +50,41 @@ void usb_debug_sh_print_recent_tx_frames(void)
     usb_print_recent_tx_frames();
 }
 
+/* What the last design upload did, in words. */
+static const char *upload_result_name(uint8_t r)
+{
+    switch ((fpga_upload_result_t)r) {
+    case FPGA_UPLOAD_SENT:          return "sent";
+    case FPGA_UPLOAD_NOT_EMPTY:     return "nothing sent: the FPGA already ran a design";
+    case FPGA_UPLOAD_SOURCE_FAILED: return "source failed part-way: the FPGA is empty";
+    default:                        return "not run";
+    }
+}
+
+/* The configuration port's replies around the last upload. Only an upload
+ * that got as far as sending reads them, so nothing is printed otherwise. */
+static void status_print_upload(void)
+{
+    const uint32_t sr = fpga_cfg_status();
+
+    usb_debug_printf("Upload: %s (%lu of %lu bytes)\r\n",
+                     upload_result_name(fpga.upload_result),
+                     (unsigned long)fpga.h2_bytes_sent, (unsigned long)fpga.upload_len);
+    if (fpga.upload_result != FPGA_UPLOAD_SENT &&
+        fpga.upload_result != FPGA_UPLOAD_SOURCE_FAILED)
+        return;
+    usb_debug_printf("STATUS (0x41) after upload: %08lX  DONE (bit %u): %s\r\n",
+                     (unsigned long)sr, (unsigned)GOWIN_STATUS_DONE_BIT,
+                     ((sr >> GOWIN_STATUS_DONE_BIT) & 1u) ? "set (the design started)" : "clear");
+}
+
+/* `status`: uptime and clock, then one section per part of the driver: the
+ * FPGA and its last upload, the acquisition, the meter link. Each printf
+ * stays below usb_debug_printf's buffer. */
 void cmd_status(void)
 {
     extern volatile uint32_t uptime_seconds;
 
-    /*
-     * Keep the status header in chunks smaller than usb_debug_printf()'s
-     * 256-byte buffer. A single oversized format string silently truncates the
-     * output and can glue the following line onto "SPI3 OK", which makes live
-     * DMM evidence harder to compare across firmware builds.
-     */
     usb_debug_printf(
         "=== System ===\r\n"
         "Uptime: %lus\r\n"
@@ -86,15 +92,52 @@ void cmd_status(void)
         "\r\n=== FPGA ===\r\n"
         "Initialized: %s\r\n"
         "SPI3 pins released: %s\r\n"
+        "SPI3 CTRL1: 0x%04lX  PB4 (MISO): %d  PC6 (supply): %d  PB6 (CS): %d\r\n",
+        (unsigned long)uptime_seconds,
+        system_core_clock / 1000000,
+        fpga.initialized ? "YES" : "NO",
+        fpga.bus_released ? "YES" : "NO",
+        (unsigned long)SPI3->ctrl1,
+        (GPIOB->idt & (1 << 4)) ? 1 : 0,
+        (GPIOC->idt & (1 << 6)) ? 1 : 0,
+        (GPIOB->idt & (1 << 6)) ? 1 : 0
+    );
+    status_print_upload();
+    usb_debug_printf("Core status (op 03) after the load: %02X %02X %02X %02X\r\n",
+                     fpga.scope_status[0], fpga.scope_status[1],
+                     fpga.scope_status[2], fpga.scope_status[3]);
+
+    usb_debug_printf(
+        "\r\n=== Acquisition ===\r\n"
+        "SPI3 OK: %u\r\n"
+        "SPI3 records refused: %u (transfers timed out: %u)\r\n",
+        fpga.spi3_ok_count,
+        fpga.spi3_total_timeouts,
+        fpga.spi3_hw_timeouts
+    );
+    /* PC0 edges: record pairs started by the core (read twice for a rate).
+     * acq hdr: the 3 bytes before the samples of the last op 04 and 05 reply. */
+    usb_debug_printf(
+        "PC0 edges: %lu\r\n"
+        "acq latency: %lu ms (strobe -> commit, last cycle); poll reads before it: %lu (total %lu)\r\n"
+        "acq rotation: %ld samples (seam of the last strobed record; -1 = none)\r\n"
+        "acq hdr CH1: %02X %02X %02X  CH2: %02X %02X %02X\r\n",
+        (unsigned long)fpga.pc0_edges,
+        (unsigned long)fpga.acq_last_latency_ms, (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads,
+        (long)fpga.acq_last_rot,
+        fpga.acq_hdr_ch1[0], fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2],
+        fpga.acq_hdr_ch2[0], fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]
+    );
+    /* The timebase in force: register 0x01, sample rate, s/div. */
+    timebase_print_status(false);
+
+    usb_debug_printf(
+        "\r\n=== Meter link ===\r\n"
         "TX count: %u\r\n"
         "RX bytes: %u\r\n"
         "Data frames: %u\r\n"
         "Echo frames: %u\r\n"
         "RX sync: data_start=%u echo_start=%u data_hdr=%u echo_hdr=%u bad2=%u stray=%u\r\n",
-        (unsigned long)uptime_seconds,
-        system_core_clock / 1000000,
-        fpga.initialized ? "YES" : "NO",
-        fpga.bus_released ? "YES" : "NO",
         fpga.tx_count,
         fpga.rx_byte_count,
         fpga.frame_count,
@@ -112,173 +155,8 @@ void cmd_status(void)
         fpga.rx_echo_valid_count,
         fpga.rx_echo_bad_count
     );
-    usb_debug_printf(
-        "SPI3 OK: %u\r\n"
-        "SPI3 records refused: %u (transfers timed out: %u)\r\n"
-        "SPI3 first byte: 0x%02X\r\n",
-        fpga.spi3_ok_count,
-        fpga.spi3_total_timeouts,
-        fpga.spi3_hw_timeouts,
-        fpga.spi3_first_byte
-    );
-    /* Trigger-regime instruments (2026-08-14): PC0 falling edges = fresh
-     * data-ready events (sample twice to get a rate); acq headers are the 3
-     * MISO bytes of the last 04/05 read — stock's CH1 b2==01 = buffer valid. */
-    usb_debug_printf(
-        "PC0 edges: %lu\r\n"
-        "acq latency: %lu ms (strobe -> commit, last cycle); poll reads before it: %lu (total %lu)\r\n"
-        "acq rotation: %ld samples (seam of the last strobed record; -1 = none)\r\n"
-        "acq hdr CH1: %02X %02X %02X  CH2: %02X %02X %02X\r\n",
-        (unsigned long)fpga.pc0_edges,
-        (unsigned long)fpga.acq_last_latency_ms, (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads,
-        (long)fpga.acq_last_rot,
-        fpga.acq_hdr_ch1[0], fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2],
-        fpga.acq_hdr_ch2[0], fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]
-    );
-    /* The timebase in force (reg 0x01, sample rate, s/div) and what the boot
-     * reconcile did: `get tb.code` gives the code and the label only. */
-    timebase_print_status(false);
     usb_print_last_tx_frame();
     usb_print_recent_tx_frames();
-
-    /* spi3_first_byte is written only when an acquisition read is actually
-     * attempted (fpga.c ~1589 normal path, ~1718 warm-handoff 0x04 path). With
-     * no attempt it is still 0x00 from .bss, which is indistinguishable from a
-     * real 0x00 off the wire. Counters are the witness: a read attempt either
-     * succeeds (ok_count) or times out (total_timeouts). */
-    if (fpga.spi3_ok_count == 0 && fpga.spi3_total_timeouts == 0)
-        usb_send_str("SPI3 first byte: n/a (no acquisition read attempted yet)\r\n");
-    else
-        usb_debug_printf("SPI3 first byte: 0x%02X\r\n", fpga.spi3_first_byte);
-
-    /* Split FPGA diag into separate printf to avoid buffer overflow */
-    usb_debug_printf(
-        "\r\n=== FPGA Diag ===\r\n"
-        "IOMUX remap: 0x%08lX (init)\r\n"
-        "IOMUX remap5: 0x%08lX (init)\r\n"
-        "IOMUX remap LIVE: 0x%08lX\r\n"
-        "IOMUX remap5 LIVE: 0x%08lX\r\n"
-        /* 0xBBBB is not a register value — fpga_bitbang_config_sequence()
-         * stores it as a "this was the bit-bang build" marker. Printing it
-         * bare invites reading it as a real CTRL1. */
-        "SPI3 CTRL1: 0x%04lX%s  STS: 0x%04lX (both captured at SPI3 init)\r\n"
-        "PB4(MISO) IDT: %d  PC6(EN): %d  PB6(CS): %d (live pin reads)\r\n",
-        fpga.diag_remap5,
-        fpga.diag_remap7,
-        (unsigned long)IOMUX->remap,
-        (unsigned long)IOMUX->remap5,
-        fpga.diag_spi_ctrl1,
-        (fpga.diag_spi_ctrl1 == 0xBBBBu) ? " (marker: bit-bang build, not a register read)" : "",
-        fpga.diag_spi_sts,
-        (GPIOB->idt & (1 << 4)) ? 1 : 0,
-        (GPIOC->idt & (1 << 6)) ? 1 : 0,
-        (GPIOB->idt & (1 << 6)) ? 1 : 0
-    );
-
-    /* ── SPI3 handshake MISO capture ──────────────────────────────────────
-     *
-     * init_hs[0..10] is written ONLY by fpga_spi3_config_sequence() (fpga.c
-     * ~2449-2550). The bit-bang path does not touch it, and a build that runs
-     * no config path at all does not either — so on those builds G1/G2/G3 read
-     * 00 00 00 00, which is also what a dead MISO line looks like. That is the
-     * exact defect fixed for the H2 block on 2026-08-13, still open here.
-     */
-    {
-        cfg_path_t path = fpga_cfg_path();
-
-        usb_send_str("\r\n=== SPI3 Handshake (11 bytes) ===\r\n");
-        if (path == CFG_PATH_HWSPI) {
-            usb_debug_printf(
-                "G1: %02X %02X %02X %02X  G2: %02X %02X %02X\r\n"
-                "G3: %02X %02X %02X %02X\r\n",
-                fpga.init_hs[0], fpga.init_hs[1], fpga.init_hs[2], fpga.init_hs[3],
-                fpga.init_hs[4], fpga.init_hs[5], fpga.init_hs[6],
-                fpga.init_hs[7], fpga.init_hs[8], fpga.init_hs[9], fpga.init_hs[10]);
-        } else {
-            usb_debug_printf("G1/G2/G3: n/a — never captured (config path: %s)\r\n",
-                             fpga_cfg_path_name(path));
-        }
-
-    }
-
-    /* ── Config status: the field that actually says whether we configured ──
-     *
-     * 2026-08-13: this block used to print only the hardware-SPI fields below,
-     * unconditionally. Under a bit-bang build (FPGA_CONFIG_B) that path never
-     * runs, so `0x3A close status` and `0x03 scope status` sit at their
-     * zero-init values — and the shell confidently printed 00 / 00 00 00 00,
-     * the exact signature of a REFUSED config, on a device that was configured
-     * and capturing. Same family as the /2 status reads and the floating MISO:
-     * an instrument reporting on something it cannot see.
-     *
-     * cfg_status_reg[] is the Gowin STATUS register (0x41), populated by
-     * whichever config path ran. It is the authoritative answer, so it goes
-     * first and is decoded rather than left as raw hex. */
-    {
-        uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
-                      ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-                      ((uint32_t)fpga.cfg_status_reg[2] << 8)  |
-                      (uint32_t)fpga.cfg_status_reg[3];
-        cfg_path_t path = fpga_cfg_path();
-
-        usb_debug_printf("\r\n=== FPGA Config ===\r\n"
-                         "path: %s\r\n", fpga_cfg_path_name(path));
-
-        if (path == CFG_PATH_NONE) {
-            /* Nothing below this line was measured. Say so and print nothing
-             * that could be mistaken for a reading — cfg_status_reg,
-             * probe_id_bit_close, h2_close_status and scope_status are all
-             * still at their .bss zeros, and probe_id_bit_close == 0 in
-             * particular would otherwise decode as "anchor matched at bit 0". */
-            usb_send_str(
-                "STATUS(0x41):  n/a — not read\r\n"
-                "IDCODE anchor: n/a — not read\r\n"
-                "H2 upload:     n/a — no bitstream sent this boot\r\n"
-                "0x3A close status: n/a\r\n"
-                "0x03 scope status: n/a\r\n"
-                "NOTE: on a warm-handoff or bus-released build the FPGA may be\r\n"
-                "      fully configured by stock; this shell simply cannot see it.\r\n");
-        } else {
-            /* ANCHOR FIRST — the project's mandatory method (CLAUDE.md, Exp J).
-             * fpga.c reads IDCODE at /256 in the SAME window as this status, so
-             * the status is only believed on a read path validated against a
-             * known answer. The shell never showed it, which left STATUS looking
-             * like a bare fact. Exp L: a part that configured successfully STOPS
-             * answering SSPI, so id_bit_close < 0 is the success-shaped reading
-             * and id_bit_close >= 0 proves the port never closed. */
-            usb_debug_printf(
-                "STATUS(0x41): %08lX  DONE_FINAL(13): %s\r\n"
-                "IDCODE anchor after close: %s\r\n",
-                (unsigned long)sr,
-                ((sr >> 13) & 1u) ? "SET — configured" : "clear — NOT configured",
-                (fpga.probe_id_bit_close < 0)
-                    ? "silent (config port closed — consistent with configured;"
-                      " a dead bus reads the same)"
-                    : "still answering 0x0120681B => port OPEN => NOT configured");
-
-            usb_debug_printf("\r\n=== H2 Bitstream Upload ===\r\n"
-                             "Bytes sent: %lu / 115638\r\n"
-                             "Upload done: %s\r\n",
-                             fpga.h2_bytes_sent,
-                             fpga.h2_upload_done ? "YES" : "NO");
-
-            /* The two hardware-SPI-only readbacks. Suppress them on the bit-bang
-             * path rather than printing zeros that read as a refusal. */
-            if (path == CFG_PATH_BITBANG) {
-                usb_send_str("0x3A close status: n/a (bit-bang path does not read it)\r\n"
-                             "0x03 scope status: n/a (bit-bang path does not read it)\r\n");
-            } else {
-                usb_debug_printf(
-                    "0x3A close status: %02X (stock: F8)\r\n"
-                    "0x03 scope status: %02X %02X %02X %02X (stock: 00 01 42 2E)\r\n",
-                    fpga.h2_close_status,
-                    fpga.scope_status[0], fpga.scope_status[1],
-                    fpga.scope_status[2], fpga.scope_status[3]);
-            }
-        }
-    }
-
-    /* Show last RX frame if valid */
     if (fpga.rx_frame_valid) {
         usb_debug_printf("Last RX frame:");
         for (int i = 0; i < FPGA_RX_FRAME_SIZE; i++)
@@ -286,6 +164,7 @@ void cmd_status(void)
         usb_send_str("\r\n");
     }
 }
+
 
 void cmd_flash_jedec(void)
 {

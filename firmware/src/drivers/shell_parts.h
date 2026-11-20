@@ -101,26 +101,6 @@
 #include "../re/shell_re.h"   /* reverse-engineering toolkit rows (FEATURE_RETOOLS): empty when off */
 #include "shell_meterdebug.h" /* meter diagnostics rows (FEATURE_METERDEBUG): empty when off */
 
-/* Which FPGA configuration path completed an upload this boot. `status`
- * reports configuration fields only for the path that wrote them; a field
- * no path wrote holds its zero-init value, which looks like a reading.
- * Decided from two fields of `fpga`, in order (shell_system.c):
- *   h2_upload_done  1 when an upload sent every byte: set by the bit-bang
- *                   upload (fpga_boot.c) and by the hardware-SPI3 upload
- *                   (re/re_fpga_driver.c). Clear: no upload completed (for
- *                   example the part already ran a design and nothing was
- *                   sent), so no configuration result is reported.
- *   diag_spi_ctrl1  0xBBBB is a marker the bit-bang upload stores, not a
- *                   register value. The hardware-SPI3 path leaves the real
- *                   SPI3 CTRL1 there.
- * `fpga reinit` (reverse-engineering toolkit) re-runs the hardware-SPI3
- * path and rewrites both fields, so the label follows it. */
-typedef enum {
-    CFG_PATH_NONE = 0,   /* no upload completed this boot */
-    CFG_PATH_BITBANG,    /* fpga_bitbang_config_sequence() (fpga_boot.c) */
-    CFG_PATH_HWSPI,      /* fpga_spi3_config_sequence() (re/re_fpga_driver.c) */
-} cfg_path_t;
-
 /* usb_cdc.c */
 extern usbd_core_type usb_core_dev;
 #if USB_MSC

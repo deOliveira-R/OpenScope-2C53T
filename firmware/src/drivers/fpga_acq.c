@@ -742,8 +742,6 @@ static void fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
                                                  : fpga.acq_hdr_ch2;
         hdr[0] = s0; hdr[1] = h1; hdr[2] = h2;
     }
-    if (opcode == FPGA_CORE_OP_REC_A)
-        fpga.spi3_first_byte = s0;         /* shown by the debug status */
 
     for (int i = 0; i < 1024; i++) {
         uint8_t raw = spi3_xfer(0xFF);
