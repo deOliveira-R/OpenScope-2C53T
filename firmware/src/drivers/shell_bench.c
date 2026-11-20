@@ -665,6 +665,44 @@ void cmd_gpio_set(const char *args)
                      (port->idt & pin) ? 1u : 0u);
 }
 
+/* `fpga scope livecheck [frames]`: for the next live frames of the scope screen,
+ * draw_scope_live_frame() also works out every pixel with the per-pixel rule
+ * and counts the pixels where its painted column differs (scope_ui.c). The
+ * frames are whatever the screen shows: set up cursors, math, the mask,
+ * persistence or a popup first to cover those layers. */
+#define LIVECHECK_FRAMES_DEFAULT 20u     /* about 2 s of redraws */
+#define LIVECHECK_FRAMES_MAX     500u
+#define LIVECHECK_POLL_MS        50u     /* one display tick */
+#define LIVECHECK_TIMEOUT_MS     20000u  /* the scope screen may not be up: do not wait for ever */
+void cmd_ui_livecheck(const char *args)
+{
+    extern volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
+    extern volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
+    uint32_t frames = LIVECHECK_FRAMES_DEFAULT;
+
+    if (args && *args) {
+        if (parse_int(args, &frames) != 0 || frames == 0u || frames > LIVECHECK_FRAMES_MAX) {
+            usb_debug_printf("Usage: fpga scope livecheck [frames 1..%u]\r\n", (unsigned)LIVECHECK_FRAMES_MAX);
+            return;
+        }
+    }
+    live_check_pixels = 0; live_check_diffs = 0;
+    live_check_frames = frames;
+    for (uint32_t waited = 0; live_check_frames != 0u && waited < LIVECHECK_TIMEOUT_MS; waited += LIVECHECK_POLL_MS)
+        vTaskDelay(pdMS_TO_TICKS(LIVECHECK_POLL_MS));
+    const uint32_t left = live_check_frames;
+    live_check_frames = 0;
+    usb_debug_printf("livecheck: %lu of %lu frames, %lu pixels compared, %lu differ\r\n",
+                     (unsigned long)(frames - left), (unsigned long)frames,
+                     (unsigned long)live_check_pixels, (unsigned long)live_check_diffs);
+    if (live_check_diffs)
+        usb_debug_printf("livecheck: first at x=%u y=%u: rule %04X, painted %04X\r\n",
+                         (unsigned)live_check_first_x, (unsigned)live_check_first_y,
+                         (unsigned)live_check_first_want, (unsigned)live_check_first_got);
+    if (left == frames)
+        usb_send_str("livecheck: no live frame was drawn (is the scope screen up and running?)\r\n");
+}
+
 void cmd_buzzer_test(const char *args)
 {
     uint32_t duration = 750;

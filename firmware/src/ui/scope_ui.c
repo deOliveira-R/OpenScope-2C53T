@@ -2671,6 +2671,20 @@ void draw_scope_screen(uint32_t frame)
  * is active or cursors are on, and button DCMDs still force full redraws,
  * so those layers refresh exactly when they can change.
  * ═══════════════════════════════════════════════════════════════════ */
+/* One column of the live band, painted before it is sent (draw_scope_live_frame). */
+static uint16_t s_live_col[LCD_HEIGHT];
+
+/* Rows between two dotted horizontal grid lines: one division of the graticule. */
+#define SCOPE_GRID_ROW_PITCH 26u
+
+#if FEATURE_BENCHSHELL
+/* `fpga scope livecheck <frames>`: while live_check_frames is not zero each live frame
+ * also evaluates the per-pixel rule and counts the pixels where the painted
+ * column differs from it. */
+volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
+volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
+#endif
+
 /* Time view_build() took in the last live frame, microseconds (`ui dump`). */
 volatile uint32_t ui_scope_view_us_last;
 
@@ -2859,66 +2873,163 @@ void draw_scope_live_frame(void)
             nseg = 2;
         }
 
-        for (uint8_t sg = 0; sg < nseg; sg++) {
-        if (seg_bot[sg] <= seg_top[sg]) continue;
-        lcd_set_window(x, seg_top[sg], 1, (uint16_t)(seg_bot[sg] - seg_top[sg]));
-        for (uint16_t y = seg_top[sg]; y < seg_bot[sg]; y++) {
-            uint16_t c;
-            /* Z-order matches the full path: cursors over everything, CH2
-             * painted after CH1 there, so CH2 wins here; trace over trigger
-             * line over grid. */
-            if (curs && cursor_layer_px(&cl, (int)x, (int)y, &c))
-                ;                                      /* cursor lines and labels */
-            else if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
-                tpos_px(g_trig_x_actual, (int)x, (int)y))  /* trigger-position pointer */
-                c = th->trigger;
-            else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))
-                ;                                      /* ground / trigger tags */
-            else if (mcol && y < SCOPE_TOP + font_small.height &&
-                     font_text_px(mf.label, &font_small, (int)x - (int)MATH_LABEL_X,
-                                  (int)y - SCOPE_TOP))
-                c = th->warning;                       /* math label */
-            else if ((int16_t)y >= mlo && (int16_t)y <= mhi)
-                c = th->warning;                       /* math trace */
-            else if (mth && mf.ok && x < 6u && y == SCOPE_GRID_MID_Y)
-                c = th->warning;                       /* math zero tick */
-            else if (mstrip && y >= band_bot - MASK_STRIP_H &&
-                     (!mdot || ((x + y) & 1u) == 0u))
-                c = mstrip;
-            else if (on2 && (int16_t)y >= lo2 && (int16_t)y <= hi2)
-                c = tc2;
-            else if (on1 && (int16_t)y >= lo1 && (int16_t)y <= hi1)
-                c = tc1;
-            else if ((int16_t)y == bl1 || (int16_t)y == bh1 ||
-                     (int16_t)y == bl2 || (int16_t)y == bh2)
-                c = th->text_secondary;
-            else if ((int16_t)y == trig_y && (x & trig_step) == 0 && x < LCD_WIDTH - 6)
-                c = th->trigger;
-            else if (inwin && (y == SCOPE_GRID_MID_Y || x == SCOPE_GEOM_CENTER_COL))
-                c = th->grid_center;
-            else if (inwin &&
-                     ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
-                      (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
-                c = th->grid;
-            else {
-                c = th->background;
-                if (pbuf) {
-                    const uint8_t in = pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x];
-                    if (in) {
-                        const uint16_t g = persist_scale_rgb565(
-                            (y < SCOPE_MID_Y) ? pbase_top : pbase_bot, in);
-                        if (g != 0x0000) c = g;
+        /* Paint the column into s_live_col, lowest layer first, so that each
+         * later layer overwrites the ones under it. The order is the z-order
+         * of the full path read from the bottom: background and persistence
+         * ghosts, grid, centre lines, trigger line, mask bounds, CH1, CH2
+         * (painted after CH1 there, so it wins here), mask strip, math, the
+         * edge tags, the trigger-position pointer, cursors over everything.
+         * Each layer touches only the rows it can occupy; until 2026-11-20
+         * every pixel walked the whole chain of tests (about 330 CPU cycles
+         * a pixel, 81-96 ms a frame measured on the unit). */
+        const uint16_t rows = (uint16_t)(band_bot - SCOPE_TOP);
+        uint16_t *const col = s_live_col;
+#define LIVE_ROW_OK(yy)   ((int)(yy) >= (int)SCOPE_TOP && (int)(yy) < (int)band_bot)
+#define LIVE_PUT(yy, cc)  do { if (LIVE_ROW_OK(yy)) col[(int)(yy) - (int)SCOPE_TOP] = (cc); } while (0)
+#define LIVE_SPAN(lo, hi, cc) do { \
+            int s_ = (int)(lo), e_ = (int)(hi); \
+            if (s_ < (int)SCOPE_TOP) s_ = (int)SCOPE_TOP; \
+            if (e_ > (int)band_bot - 1) e_ = (int)band_bot - 1; \
+            for (int y_ = s_; y_ <= e_; y_++) col[y_ - (int)SCOPE_TOP] = (cc); \
+        } while (0)
+        if (!pbuf) {
+            for (uint16_t i = 0; i < rows; i++) col[i] = th->background;
+        } else {
+            for (uint16_t i = 0; i < rows; i++) {
+                uint16_t c = th->background;
+                const uint8_t in = pbuf[i * PERSIST_WIDTH + x];
+                if (in) {
+                    const uint16_t g = persist_scale_rgb565(
+                        ((uint16_t)(SCOPE_TOP + i) < SCOPE_MID_Y) ? pbase_top : pbase_bot, in);
+                    if (g != 0x0000) c = g;
+                }
+                col[i] = c;
+            }
+        }
+        if (inwin) {
+            if (scope_geom_vgrid((int)x))                       /* dotted vertical line */
+                for (uint16_t y = SCOPE_TOP; y < band_bot; y++)
+                    if ((y & 1u) == 0) col[y - SCOPE_TOP] = th->grid;
+            if ((x & 1u) == 0)                                  /* dotted horizontal lines */
+                for (uint16_t i = 0; i < rows; i += SCOPE_GRID_ROW_PITCH) col[i] = th->grid;
+            if (x == SCOPE_GEOM_CENTER_COL)
+                for (uint16_t i = 0; i < rows; i++) col[i] = th->grid_center;
+            else
+                LIVE_PUT(SCOPE_GRID_MID_Y, th->grid_center);
+        }
+        if ((x & trig_step) == 0 && x < LCD_WIDTH - 6) LIVE_PUT(trig_y, th->trigger);
+        if (bl1 >= 0) LIVE_PUT(bl1, th->text_secondary);
+        if (bh1 >= 0) LIVE_PUT(bh1, th->text_secondary);
+        if (bl2 >= 0) LIVE_PUT(bl2, th->text_secondary);
+        if (bh2 >= 0) LIVE_PUT(bh2, th->text_secondary);
+        if (on1) LIVE_SPAN(lo1, hi1, tc1);
+        if (on2) LIVE_SPAN(lo2, hi2, tc2);
+        if (mstrip)
+            for (int y = (int)band_bot - (int)MASK_STRIP_H; y < (int)band_bot; y++)
+                if (LIVE_ROW_OK(y) && (!mdot || ((x + (unsigned)y) & 1u) == 0u))
+                    col[y - (int)SCOPE_TOP] = mstrip;
+        if (mth && mf.ok && x < 6u) LIVE_PUT(SCOPE_GRID_MID_Y, th->warning);   /* math zero tick */
+        if (mhi >= mlo) LIVE_SPAN(mlo, mhi, th->warning);                       /* math trace */
+        if (mcol)                                                               /* math label */
+            for (uint16_t y = SCOPE_TOP; y < SCOPE_TOP + font_small.height && y < band_bot; y++)
+                if (font_text_px(mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - SCOPE_TOP))
+                    col[y - SCOPE_TOP] = th->warning;
+        if (edge)                                                               /* ground / trigger tags */
+            for (uint16_t y = SCOPE_TOP; y < band_bot; y++) {
+                uint16_t c;
+                if (markers_px(&pm, (int)x, (int)y, th->background, &c)) col[y - SCOPE_TOP] = c;
+            }
+        if (tcol)                                                               /* trigger-position pointer */
+            for (uint16_t y = SCOPE_TOP; y < SCOPE_TOP + PM_TPOS_H && y < band_bot; y++)
+                if (tpos_px(g_trig_x_actual, (int)x, (int)y)) col[y - SCOPE_TOP] = th->trigger;
+        if (curs)                                                               /* cursor lines and labels */
+            for (uint16_t y = SCOPE_TOP; y < band_bot; y++) {
+                uint16_t c;
+                if (cursor_layer_px(&cl, (int)x, (int)y, &c)) col[y - SCOPE_TOP] = c;
+            }
+#undef LIVE_SPAN
+#undef LIVE_PUT
+#undef LIVE_ROW_OK
+
+#if FEATURE_BENCHSHELL
+        /* `fpga scope livecheck`: every pixel of the column against the rule the
+         * column painter replaced, written as one chain of tests in z-order.
+         * Counts the pixels that differ; draws nothing. */
+        if (live_check_frames) {
+            for (uint16_t y = SCOPE_TOP; y < band_bot; y++) {
+                uint16_t c;
+                /* Z-order matches the full path: cursors over everything, CH2
+                 * painted after CH1 there, so CH2 wins here; trace over trigger
+                 * line over grid. */
+                if (curs && cursor_layer_px(&cl, (int)x, (int)y, &c))
+                    ;                                      /* cursor lines and labels */
+                else if (tcol && y < SCOPE_TOP + PM_TPOS_H &&
+                    tpos_px(g_trig_x_actual, (int)x, (int)y))  /* trigger-position pointer */
+                    c = th->trigger;
+                else if (edge && markers_px(&pm, (int)x, (int)y, th->background, &c))
+                    ;                                      /* ground / trigger tags */
+                else if (mcol && y < SCOPE_TOP + font_small.height &&
+                         font_text_px(mf.label, &font_small, (int)x - (int)MATH_LABEL_X,
+                                      (int)y - SCOPE_TOP))
+                    c = th->warning;                       /* math label */
+                else if ((int16_t)y >= mlo && (int16_t)y <= mhi)
+                    c = th->warning;                       /* math trace */
+                else if (mth && mf.ok && x < 6u && y == SCOPE_GRID_MID_Y)
+                    c = th->warning;                       /* math zero tick */
+                else if (mstrip && y >= band_bot - MASK_STRIP_H &&
+                         (!mdot || ((x + y) & 1u) == 0u))
+                    c = mstrip;
+                else if (on2 && (int16_t)y >= lo2 && (int16_t)y <= hi2)
+                    c = tc2;
+                else if (on1 && (int16_t)y >= lo1 && (int16_t)y <= hi1)
+                    c = tc1;
+                else if ((int16_t)y == bl1 || (int16_t)y == bh1 ||
+                         (int16_t)y == bl2 || (int16_t)y == bh2)
+                    c = th->text_secondary;
+                else if ((int16_t)y == trig_y && (x & trig_step) == 0 && x < LCD_WIDTH - 6)
+                    c = th->trigger;
+                else if (inwin && (y == SCOPE_GRID_MID_Y || x == SCOPE_GEOM_CENTER_COL))
+                    c = th->grid_center;
+                else if (inwin &&
+                         ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
+                          (((y - SCOPE_TOP) % 26u) == 0 && (x & 1u) == 0)))
+                    c = th->grid;
+                else {
+                    c = th->background;
+                    if (pbuf) {
+                        const uint8_t in = pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x];
+                        if (in) {
+                            const uint16_t g = persist_scale_rgb565(
+                                (y < SCOPE_MID_Y) ? pbase_top : pbase_bot, in);
+                            if (g != 0x0000) c = g;
+                        }
+                    }
+                }
+                live_check_pixels++;
+                if (c != col[y - SCOPE_TOP]) {
+                    if (live_check_diffs++ == 0) {
+                        live_check_first_x = x; live_check_first_y = y;
+                        live_check_first_want = c; live_check_first_got = col[y - SCOPE_TOP];
                     }
                 }
             }
-            lcd_write_data(c);
         }
+#endif
+
+        for (uint8_t sg = 0; sg < nseg; sg++) {
+            if (seg_bot[sg] <= seg_top[sg]) continue;
+            lcd_set_window(x, seg_top[sg], 1, (uint16_t)(seg_bot[sg] - seg_top[sg]));
+            lcd_write_pixels(&col[seg_top[sg] - SCOPE_TOP], (uint32_t)(seg_bot[sg] - seg_top[sg]));
         }
         if (pbuf && trace) {
             if (on1) persist_note(x, pp1, y1);
             if (on2) persist_note(x, pp2, y2);
         }
     }
+
+#if FEATURE_BENCHSHELL
+    if (live_check_frames) live_check_frames--;
+#endif
 
     /* ⚠ Measurement badges are NOT refreshed here — REVERTED 2026-08-14.
      * DO NOT REINSTATE WITHOUT READING THIS.

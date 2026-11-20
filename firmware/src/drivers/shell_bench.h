@@ -51,6 +51,7 @@ void cmd_bench_restore(void);
 void cmd_gpio_mode(const char *args);
 void cmd_gpio_set(const char *args);
 void cmd_buzzer_test(const char *args);
+void cmd_ui_livecheck(const char *args);
 void cmd_gpio_read(const char *args);
 void cmd_gpio_scan(void);
 void cmd_mem_read(const char *args);
@@ -97,6 +98,8 @@ void cmd_spi3_seq(const char *args);
           "gpio read <port><pin>           Read GPIO pin\r\n"), \
     CMD_V("gpio scan", cmd_gpio_scan, SC_EXACT, \
           "gpio scan                       Scan FPGA-related pins\r\n"), \
+    CMD_A("fpga scope livecheck", cmd_ui_livecheck, 0, \
+          "fpga scope livecheck [frames]   Live trace redraw: every pixel against the per-pixel rule\r\n"), \
     CMD_A("buzzer test", cmd_buzzer_test, 0, \
           "buzzer test [ms]                Force continuity buzzer briefly\r\n"), \
     CMD_A("mem read", cmd_mem_read, SC_NEEDARGS, \
