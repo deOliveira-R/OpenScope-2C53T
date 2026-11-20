@@ -8,8 +8,8 @@
  *               1 CDC data (0x81 / 0x01)   } addresses and class code the
  *                                          } CDC-only build had
  *               2 MSC, SCSI transparent, bulk-only (0x83 / 0x03)
- * VID:PID stays 2E3C:5740 (scripts/iap_flash.py, flash_preflight.py and
- * openscope_live_debug.py key "app running" on it); bcdDevice goes 2.00 ->
+ * VID:PID stays 2E3C:5740 (scripts/iap_flash.py and flash_preflight.py key
+ * "app running" on it); bcdDevice goes 2.00 ->
  * 2.01 so a host that caches descriptors per VID/PID/revision (Windows) sees
  * a new device instead of the old CDC-only configuration. The serial string
  * is computed from the MCU UID exactly as the AT32 CDC descriptor does, so
