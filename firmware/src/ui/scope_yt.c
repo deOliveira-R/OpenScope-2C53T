@@ -41,8 +41,9 @@ volatile uint32_t ui_scope_view_us_last;
 #define TRIG_LINE_MARGIN_TOP   2
 #define TRIG_LINE_MARGIN_BOT   3
 
-/* It stops this many columns short of the right edge, where the
- * trigger-level tag (plot_markers.h) points at it. */
+/* It stops this many columns short of the right edge. Inherited from the
+ * first renderer; the trigger-level tag (plot_markers.h, PM_TAG_W columns at
+ * the right edge) is painted over the line's end either way. */
 #define TRIG_LINE_RIGHT_GAP    6u
 
 /* Its dots: a column carries one when (x & mask) == 0. Every 2nd column
@@ -220,9 +221,9 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
     c->trace = f->record && x >= g_view_first && x < g_view_end;
     const bool joined = (x > g_view_first);     /* no span from a blank column */
 
-    /* A trace covers its row and the next one, plus the span to the previous
-     * column's row, so a flat trace is two rows thick and a steep edge draws
-     * as a connected vertical. */
+    /* A trace covers SCOPE_TRACE_ROWS rows from its sample's row down, plus
+     * the span to the previous column's row, so a steep edge draws as a
+     * connected vertical. */
     const autofit_t *const a[2] = { &f->a1, &f->a2 };
     const volatile uint8_t *const b[2] = { f->b1, f->b2 };
     int16_t *const prev[2] = { &f->p1, &f->p2 };
@@ -232,7 +233,7 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
         const int16_t y = c->on[ch] ? autofit_y(a[ch], b[ch][x]) : (int16_t)SCOPE_MID_Y;
         c->y[ch] = y;
         c->lo[ch] = y;
-        c->hi[ch] = (int16_t)(y + 1);
+        c->hi[ch] = (int16_t)(y + SCOPE_TRACE_ROWS - 1);
         c->from[ch] = joined ? *prev[ch] : -1;
         if (joined) {
             if (*prev[ch] < c->lo[ch]) c->lo[ch] = *prev[ch];
@@ -386,7 +387,7 @@ static void el_demo(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
         int amp = DEMO_SINE_AMP_ROWS - (int)ss->ch1.vdiv_idx * DEMO_SINE_AMP_PER_RANGE;
         if (amp < DEMO_SINE_AMP_MIN) amp = DEMO_SINE_AMP_MIN;
         const int y = SCOPE_MID_Y - ss->ch1.position - sine_percent[phase] * amp / 100;
-        if (y >= s->lo) strip_span(s, y, y + 1, th->ch1);
+        if (y >= s->lo) strip_span(s, y, y + SCOPE_TRACE_ROWS - 1, th->ch1);
     }
     if (ss->ch2.enabled) {              /* a square, its edges joined */
         const int mid = SCOPE_MID_Y + DEMO_SQUARE_OFFSET - ss->ch2.position;

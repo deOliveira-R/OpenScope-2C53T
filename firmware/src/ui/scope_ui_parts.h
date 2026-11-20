@@ -63,6 +63,10 @@
 
 #define SCOPE_DIV_PX    26      /* graticule division, rows (grid + math scale) */
 
+/* A trace is this many rows thick: the sample's row and the rows under it
+ * (Y-T, roll and the demo picture). */
+#define SCOPE_TRACE_ROWS 2
+
 /* The graticule's centre line: the 4th of the lines ruled every SCOPE_DIV_PX
  * rows from SCOPE_TOP. True scale puts 0 V (position 0) on it. */
 #define SCOPE_GRID_MID_Y (SCOPE_TOP + 4 * SCOPE_DIV_PX)

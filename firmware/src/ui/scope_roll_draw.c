@@ -136,7 +136,7 @@ void draw_roll_screen(bool full)
         int16_t lo1 = -1, hi1 = -2, lo2 = -1, hi2 = -2;
         if (on1 && inwin && scope_roll_fifo_get(&roll_snap, 0u, age, &v)) {
             int16_t y = fx1 ? yt_vmap_clip(&t1, yt_vmap_raw(&t1, v)) : scope_roll_y(&m1, v);
-            lo1 = y; hi1 = (int16_t)(y + 1);
+            lo1 = y; hi1 = (int16_t)(y + SCOPE_TRACE_ROWS - 1);
             if (p1 >= 0) { if (p1 < lo1) lo1 = p1; if (p1 > hi1) hi1 = p1; }
             p1 = y;
         } else {
@@ -144,7 +144,7 @@ void draw_roll_screen(bool full)
         }
         if (on2 && inwin && scope_roll_fifo_get(&roll_snap, 1u, age, &v)) {
             int16_t y = fx2 ? yt_vmap_clip(&t2, yt_vmap_raw(&t2, v)) : scope_roll_y(&m2, v);
-            lo2 = y; hi2 = (int16_t)(y + 1);
+            lo2 = y; hi2 = (int16_t)(y + SCOPE_TRACE_ROWS - 1);
             if (p2 >= 0) { if (p2 < lo2) lo2 = p2; if (p2 > hi2) hi2 = p2; }
             p2 = y;
         } else {
