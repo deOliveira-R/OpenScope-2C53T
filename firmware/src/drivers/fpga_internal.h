@@ -40,25 +40,25 @@
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * SPI3 register access.
- * AT32F403A SPI3 is at APB1 + 0x3C00 (same address as GD32's SPI2/STM32 SPI3).
- * PB3/PB4/PB5 map here after JTAG remap. SPI4 is a DIFFERENT peripheral
- * at APB1 + 0x4000 — do not confuse them.
+ * SPI3, the bus to the FPGA, at 0x40003C00 (APB1 + 0x3C00). PB3/PB4/PB5 reach
+ * it once JTAG is turned off. SPI4 (APB1 + 0x4000) is a different peripheral.
  */
 #define FPGA_SPI       ((spi_type *)SPI3_BASE)
 
-/* GPIO bit operations */
-#define PB6_MASK        (1 << 6)   /* SPI3 CS */
+/* GPIO bit masks */
+#define PB6_MASK        (1 << 6)   /* SPI3 CS, software-driven, active LOW */
 
-#define PB11_MASK       (1 << 11)  /* FPGA active mode */
+#define PB11_MASK       (1 << 11)  /* CH2 range relay, bit 1 (scope_frontend.c) */
 
-#define PC6_MASK        (1 << 6)   /* FPGA SPI enable */
+#define PC6_MASK        (1 << 6)   /* FPGA supply enable: LOW switches the FPGA off */
 
 /* CS control macros */
 #define SPI3_CS_ASSERT()    (GPIOB->clr = PB6_MASK)   /* PB6 LOW */
 
 #define SPI3_CS_DEASSERT()  (GPIOB->scr = PB6_MASK)   /* PB6 HIGH */
 
+/* One received meter frame and its counters, passed from the USART2 receive
+ * interrupt to fpga_usart_rx_task through meter_rx_queue. */
 typedef struct {
     uint8_t frame[FPGA_RX_FRAME_SIZE];
     uint32_t frame_count;
@@ -71,9 +71,8 @@ typedef struct {
 } fpga_meter_rx_event_t;
 
 /* Stack depths in words. Measured on unit #2 with `tasks` (2026-11-14) after
- * a key walk over every screen: dvom_RX had 9 words left of 128 and dvom_TX
- * 13 of 64 (the frame decode and the transition code run on them). Doubled;
- * 192 words of heap. */
+ * visiting every screen: dvom_RX had 9 words left of 128 and dvom_TX 13 of
+ * 64. Both doubled, which costs 192 words of heap. */
 #define FPGA_DVOM_TX_STACK 128
 
 #define FPGA_DVOM_RX_STACK 256
@@ -83,19 +82,14 @@ typedef struct {
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * Full-duplex SPI3 byte exchange.
- * Sends tx_byte, returns the byte received simultaneously.
- * Matches stock firmware's optimized TXE/RXNE polling pattern.
+ * Full-duplex SPI3 byte exchange, polled: wait for TX empty, write, wait for
+ * RX full, read. Returns the byte received while tx_byte went out.
  *
- * On poll expiry this returns 0xFF — indistinguishable from a genuine
- * all-ones byte, which is the project's signature defect shape (a stable
- * plausible wrong number). It cannot return a status without changing every
- * call site, so instead each expiry bumps fpga.spi3_hw_timeouts; bulk readers
- * snapshot that counter around their read loop and refuse to publish a frame
- * whose bytes were partly fabricated (audit 2026-08-20, P0.3). In practice
- * the flags are MCU-side (master clocks regardless of the FPGA), so expiries
- * mean the SPI peripheral itself is wedged/disabled — rare, and exactly when
- * a confident flat trace would be the worst possible output.
+ * On a poll timeout it returns 0xFF, which looks like a real byte. So each
+ * timeout also increments fpga.spi3_hw_timeouts; bulk readers compare that
+ * counter before and after a read and drop a record with made-up bytes. The
+ * flags depend only on the MCU (the master clocks whatever the FPGA does), so
+ * a timeout means the SPI peripheral itself is disabled or stuck.
  */
 static inline uint8_t spi3_xfer(uint8_t tx_byte)
 {
@@ -120,7 +114,7 @@ static inline uint8_t spi3_xfer(uint8_t tx_byte)
  * around the change. br: 0 = /2 (60 MHz, what fpga_init() programs),
  * 1 = /4 ... 7 = /256. The FPGA's configuration port answers correctly only
  * at a slow clock (its IDCODE reads as garbage at /2 and clean at /256), so
- * reads of that port use 7. */
+ * reads of that port use 7. The control writes after an upload also use 7. */
 static inline void spi3_set_br(uint32_t br)
 {
     FPGA_SPI->ctrl1 &= ~(1u << 6);              /* SPE = 0 */
@@ -129,13 +123,13 @@ static inline void spi3_set_br(uint32_t br)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * SysTick Delay (pre-RTOS, matches stock firmware timing)
+ * SysTick busy-wait delays, for boot before the scheduler starts.
+ * They reprogram SysTick and stop it, so they must not run once FreeRTOS
+ * owns SysTick; fpga_scope_delay_ms() picks the right delay for either case.
  * ═══════════════════════════════════════════════════════════════════ */
 
 static inline void systick_delay_us(uint32_t us)
 {
-    /* Use SysTick for precise microsecond delays.
-     * Stock firmware uses this between boot phases. */
     uint32_t ticks = (system_core_clock / 1000000) * us;
     SysTick->LOAD = ticks - 1;
     SysTick->VAL = 0;
@@ -152,22 +146,14 @@ static inline void systick_delay_ms(uint32_t ms)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Build B (2026-08-13, `make guest-configB`) — true bit-bang transplant
- * of the maksidze/Stlkv 2C23T-V0.4 loader that cold-started the 2C53T FPGA
- * on issue #18 (STATUS 0x00039020 → 0x0003F460, DONE_FINAL set, 4/4 boots).
- *
- * Ported byte-for-byte from Stlkv/OpenScope-2C23T-2C53T-port `2c53t-port`
- * (src/fpga.c fpga53_v04_configure): GPIO-mode PB3/4/5/6 (NOT SPI3 AF),
- * mode-3 MSB-first, and the V0.4 framing —
- *   IDCODE(0x11) → USERCODE(0x13) → STATUS(0x41) → INIT_ADDR(0x12 00)
- *   → CONFIG_ENABLE(0x15 00) → CS-LOW 0x3B + full payload → STATUS → 0x3A.
- * NOTE the V0.4 sequence has NO 0x05 ERASE_SRAM prelude (unlike our
- * hardware-SPI sequence) and NO reset pulse (the 2C53T reset pin maps to
- * the POWER button). This is the last remaining variable after Build A:
- * GPIO-mode/bit-bang clocking vs hardware-SPI AF. If A held and B breaks
- * the wall, GPIO-vs-AF is the answer; if both hold, the difference is off
- * our pins entirely. Reads land in the same fpga.* fields Build A uses, so
- * the LCD overlay verdict is identical: CFG line D1 = DONE_FINAL.
+ * Bit-bang pins of the design upload (fpga_boot.c). The SPI3 pins, used
+ * as plain GPIO, mode 3, MSB first. The sequence, after the loader by
+ * Stlkv (OpenScope-2C23T-2C53T-port):
+ *   IDCODE 0x11, USERCODE 0x13, STATUS 0x41, INIT_ADDR 0x12 00,
+ *   CONFIG_ENABLE 0x15 00, 0x3B plus the whole design in one CS-low
+ *   frame, STATUS, CONFIG_DISABLE 0x3A 00.
+ * There is no reset pulse: on the 2C53T the FPGA's reset pin is wired to
+ * the POWER button.
  * ═══════════════════════════════════════════════════════════════════ */
 #define BB_SCK   (1u << 3)   /* PB3 */
 

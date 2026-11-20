@@ -1,30 +1,24 @@
 /*
  * OpenScope 2C53T - FPGA design upload
  *
- * The configuration sequence on the SPI3 pins as GPIO, the design slot,
- * reload, and the release of the bus. Split out of fpga.c; shared items:
- * fpga_internal.h.
+ * The design upload: the FPGA configuration sequence bit-banged on the SPI3
+ * pins, the boot choice between the compiled-in design and the flash slot,
+ * runtime reload, and the release and re-acquisition of the SPI3 bus.
+ * Shared items: fpga_internal.h.
  */
 
 #include "fpga_internal.h"
 #include "fpga_bitstream_core.h"
 
-/* One mode-3 byte: CLK falls, drive MOSI, CLK rises, sample MISO. MSB first.
- * No explicit delay — the GPIO write latency IS the slow/gapped clock that
- * distinguishes this from hardware SPI3 (the whole point of the A/B). */
 #ifndef FPGA_BB_HALF_DELAY
 
 #define FPGA_BB_HALF_DELAY 0   /* nops per SCK half-period; 0 = as fast as GPIO writes go */
 
 #endif
 
-/* Logic-analyzer builds (`make guest-coldtrace-la`, issue #18 2026-08-15):
- * maksidze's Saleae tops out at 24 MS/s and the undelayed loop clocks faster
- * than that resolves (his 1508.zip bit-bang captures came back aliased).
- * FPGA_BB_HALF_DELAY=60 gives a ~1-2 MHz SCK — trivially resolvable — at the
- * cost of ~1 s extra config time. Config entry is not timing-sensitive
- * (Exp B2 / the whole bit-bang-vs-AF story), so this should not change the
- * outcome; if it does, that is itself a finding. */
+/* Optional slowdown of the bit-bang clock. `make guest-coldtrace-la` sets
+ * FPGA_BB_HALF_DELAY=60, about 1-2 MHz SCK, so a 24 MS/s logic analyzer can
+ * resolve it; the upload then takes about 1 s longer. */
 static inline void bb_half_delay(void)
 {
 #if FPGA_BB_HALF_DELAY > 0
@@ -32,6 +26,8 @@ static inline void bb_half_delay(void)
 #endif
 }
 
+/* One mode-3 byte, MSB first: SCK falls, MOSI is driven, SCK rises, MISO is
+ * sampled. Returns the byte read. */
 static uint8_t bb_xfer(uint8_t value)
 {
     uint8_t result = 0;
@@ -73,11 +69,11 @@ void bb_cmd16(uint8_t hi, uint8_t lo)
     GPIOB->scr = BB_CS;
 }
 
-/* fpga_reload() support (2026-11-15). The bit-bang upload below normally sends
- * the compiled-in design, exactly as before. fpga_reload() can hand it another
- * payload source (the flash slot) and ask it to send NOTHING unless the FPGA
- * first answers its IDCODE on the configuration port, i.e. is really empty.
- * At boot all three are zero/false and the path is the unchanged one. */
+/* Options of the next fpga_bitbang_config_sequence() call, set by its callers
+ * (fpga_boot_upload_once, fpga_reload) and cleared after it. By default it
+ * sends the compiled-in design. A caller can give another payload source
+ * (the flash slot), and can ask it to send nothing unless the FPGA first
+ * answers its IDCODE on the configuration port, which means it is empty. */
 static fpga_payload_fn bb_src_fn;        /* NULL: the compiled-in design */
 
 static void           *bb_src_ctx;
@@ -90,6 +86,10 @@ static uint8_t         bb_outcome;       /* 0 ok, 1 not empty (nothing sent), 2 
 
 static bool            bb_arm_live;      /* outcome 1: still run the arm writes (a design is running and stays) */
 
+/* Upload a design over the configuration port, then send the core's control
+ * writes and identify the core. Suspends the acquisition task while it runs.
+ * Returns the last byte of the post-upload STATUS, or 0 when it stopped
+ * before the control writes; the outcome is left in bb_outcome. */
 uint8_t fpga_bitbang_config_sequence(void)
 {
     gpio_init_type gpio_cfg;
@@ -97,14 +97,14 @@ uint8_t fpga_bitbang_config_sequence(void)
 
     fpga.probe_id_bit       = -1;
     fpga.probe_id_bit_close = -1;
-    fpga.diag_spi_ctrl1     = 0xBBBBu;   /* S1 marker: this was the bit-bang build */
+    fpga.diag_spi_ctrl1     = 0xBBBBu;   /* not a register value: tells `status` the bit-bang path ran */
 
     int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
 
-    /* Switch PB3(SCK)/PB5(MOSI)/PB6(CS) to GPIO push-pull outputs, PB4(MISO)
-     * to floating input — exactly Stlkv's setup. Pre-load idle levels first
-     * (CLK HIGH, CS HIGH, MOSI LOW = mode-3 idle) to avoid a config glitch. */
+    /* PB3 (SCK), PB5 (MOSI), PB6 (CS) become GPIO push-pull outputs, PB4
+     * (MISO) a floating input. The idle levels (SCK HIGH, CS HIGH, MOSI LOW:
+     * mode-3 idle) are loaded first, so the pins do not glitch. */
     GPIOB->scr = BB_SCK | BB_CS;
     GPIOB->clr = BB_MOSI;
     gpio_cfg.gpio_pins = BB_SCK | BB_MOSI | BB_CS;
@@ -114,21 +114,22 @@ uint8_t fpga_bitbang_config_sequence(void)
     gpio_init(GPIOB, &gpio_cfg);
     gpio_cfg.gpio_pins = BB_MISO;
     gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
-    gpio_cfg.gpio_pull = GPIO_PULL_NONE;   /* floating, as Stlkv's transplant */
+    gpio_cfg.gpio_pull = GPIO_PULL_NONE;   /* floating */
     gpio_init(GPIOB, &gpio_cfg);
 
-    /* Prelude reads (populate the anchor + overlay). */
+    /* Read IDCODE, USERCODE and STATUS before the upload (shown by `status`). */
     bb_read_reg32(0x11, (uint8_t *)fpga.probe_idcode);
     bb_read_reg32(0x13, (uint8_t *)fpga.probe_user);
     bb_read_reg32(0x41, (uint8_t *)fpga.probe_status);
-    /* Cleanly-framed 4-byte read: IDCODE is aligned at bit 0 when it matches. */
+    /* 0x0120681B is the FPGA's IDCODE: only an empty (unconfigured) part
+     * answers it on this port. */
     if (fpga.probe_idcode[0] == 0x01 && fpga.probe_idcode[1] == 0x20 &&
         fpga.probe_idcode[2] == 0x68 && fpga.probe_idcode[3] == 0x1B)
         fpga.probe_id_bit = 0;
 
-    /* fpga_reload(): a part that does not answer its IDCODE here still runs a
-     * design (its SSPI pins are user I/O). Sending the upload would only feed
-     * 115 KB of stray bytes to that design's own SPI port: send nothing. */
+    /* A part that does not answer its IDCODE still runs a design, and these
+     * pins are that design's own SPI port. An upload would only feed it about
+     * 115 KB of stray bytes, so send nothing when asked to require empty. */
     bb_outcome = 0;
     if (bb_require_empty && fpga.probe_id_bit != 0) {
         bb_outcome = 1;
@@ -138,7 +139,7 @@ uint8_t fpga_bitbang_config_sequence(void)
     bb_cmd16(0x12, 0x00);   /* INIT_ADDR */
     bb_cmd16(0x15, 0x00);   /* CONFIG_ENABLE */
 
-    /* 0x3B + full payload in one CS-LOW frame. */
+    /* 0x3B and the whole design in one CS-low frame. */
     (void)bb_xfer(0);
     GPIOB->clr = BB_CS;
     (void)bb_xfer(0x3B);
@@ -163,10 +164,10 @@ uint8_t fpga_bitbang_config_sequence(void)
     GPIOB->scr = BB_CS;
     fpga.h2_upload_done = (bb_outcome == 0) ? 1 : 0;
 
-    /* Post-upload STATUS — this drives CFG + the D (DONE_FINAL) overlay flag. */
+    /* STATUS after the upload; bit 13 is DONE (the design started). */
     bb_read_reg32(0x41, (uint8_t *)fpga.cfg_status_reg);
-    /* Post-config IDCODE anchor (Exp L: a configured part stops answering, so
-     * an all-zero / mismatched read here is the SUCCESS signature). */
+    /* IDCODE again: a configured part stops answering, so a mismatch here is
+     * the expected result of a good upload. */
     bb_read_reg32(0x11, (uint8_t *)fpga.probe_idcode_close);
     if (fpga.probe_idcode_close[0] == 0x01 && fpga.probe_idcode_close[1] == 0x20 &&
         fpga.probe_idcode_close[2] == 0x68 && fpga.probe_idcode_close[3] == 0x1B)
@@ -176,8 +177,9 @@ uint8_t fpga_bitbang_config_sequence(void)
     fpga_scope_delay_ms(100);
 
 bb_restore_pins:
-    /* Restore PB3/4/5 to SPI3 AF so the acquisition task can read 0x04/0x05
-     * over hardware SPI3 if config took. PB6 stays GPIO (software CS). */
+    /* PB3 and PB5 back to the SPI3 alternate function, so the acquisition
+     * task reads records over hardware SPI3. PB4 stays a floating input and
+     * PB6 a GPIO (software CS). */
     gpio_cfg.gpio_pins = BB_SCK | BB_MOSI;
     gpio_cfg.gpio_mode = GPIO_MODE_MUX;
     gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
@@ -202,15 +204,13 @@ bb_restore_pins:
         return 0;
     }
 
-    /* Engine-arm attempt (bench plan item 4) — Build B breaks the config wall
-     * (DONE_FINAL set) but the capture engine starts UNARMED (one buffer then
-     * halt). Replicate stock's post-config shape: ~600 ms gap, then the five
-     * runtime control writes, then a 0x03 status read. Per the #18 netlist
-     * answer the arm bit is committed by one of these addresses (candidate
-     * 0x08→0xAD); watch SS byte 1 for 01 = armed, and the demo trace for
-     * disappearance. Runs over hardware SPI3 (AF restored just above): a
-     * configured part's SSPI pins are now the user design's runtime control SPI.
-     * SSPI reads are valid only at a slow clock, so read 0x03 at /256. */
+    /* Arm writes: after a 600 ms wait (stock's gap after its upload), five
+     * register writes to the core (timebase, reg 0x02, trigger source CH1,
+     * edge, trigger level 0xAD), then a read of the live status (0x03).
+     * Over hardware SPI3 at /256; on a configured part these pins are the
+     * design's own control port. The timebase is put back right after; the
+     * trigger level and source are put back by main() at boot and by
+     * fpga_reload() at runtime. */
     fpga_scope_delay_ms(600);
     spi3_set_br(7);                      /* /256 */
     {
@@ -230,9 +230,10 @@ bb_restore_pins:
         for (unsigned i = 0; i < 4; i++)
             fpga.scope_status[i] = spi3_xfer(0xFF);
         SPI3_CS_DEASSERT();
-        /* The burst wrote 07 00. Whether the edge register may be used from
-         * here on: only on our own core, and only when this upload was ours
-         * and ended with DONE (a design that stayed is unknown). */
+        /* The burst wrote 07 00 (edge: either direction). The edge register
+         * may be used from here on only on our own core: this upload must
+         * have been ours and must have ended with DONE (a design that stayed
+         * is unknown). */
         acq_edge_reg = 0x00;
         acq_design_ours = trig_edge_reg_loaded_by_us(bb_outcome == 0,
                                                     (fpga.cfg_status_reg[2] & 0x20u) != 0u);
@@ -260,12 +261,12 @@ bb_restore_pins:
 }
 
 /*
- * Reload the FPGA at runtime (bench 2026-11-15, unit #2).
+ * Reload the FPGA at runtime.
  *
- * PC6 switches the FPGA's supply: low for a second, the part comes back empty
- * and answers its IDCODE on the configuration port; the bit-bang upload then
- * loads a design as at boot. Proven sequence: SPI lines released (Hi-Z), PC6
- * low 1 s, PC6 high, lines back, upload.
+ * PC6 switches the FPGA's supply: after 1 s low the part comes back empty and
+ * answers its IDCODE on the configuration port, and the bit-bang upload loads
+ * a design as at boot. Sequence (measured on unit #2, 2026-11-15): SPI lines
+ * released (Hi-Z), PC6 low 1 s, PC6 high, lines back, upload.
  *
  * A design whose inputs have their clamp diodes on (the stock design; the
  * vendor tool's default) keeps the FPGA alive through the ADC outputs with PC6
@@ -283,8 +284,8 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
     int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
 
-    /* fpga_bus_release() also drives PB11 high (an old guess at its role). On
-     * this firmware PB11 is a CH2 front-end line: put its level back after. */
+    /* fpga_bus_release() also drives PB11 high. PB11 is a CH2 range relay
+     * line, so put its level back afterwards. */
     const bool pb11_was_high = (GPIOB->odt & PB11_MASK) != 0u;
     fpga_bus_release();                  /* PB3/PB5/PB6 Hi-Z, SPI3 off, acq gated */
     if (!pb11_was_high) GPIOB->clr = PB11_MASK;
@@ -313,10 +314,11 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
     if (outcome == 1) return FPGA_RELOAD_NOT_EMPTY;
     if (outcome == 2) return FPGA_RELOAD_SRC_FAIL;
     if (!(status & (1u << 13))) return FPGA_RELOAD_NOT_DONE;
-    /* The arm burst left reg 0x08 at 0xAD and reg 0x06 at CH1; the timebase
-     * was put back above. Hand the trigger level and source back to the scope
-     * state too (at boot main() does this after the settings are restored),
-     * or the design fires at a level and on a channel the UI does not show. */
+    /* The arm writes left reg 0x08 at 0xAD and reg 0x06 at CH1; the timebase
+     * was already put back. Put the trigger level and source back from the
+     * scope state too (at boot main() does this after the settings are
+     * restored), or the core triggers at a level and on a channel the UI does
+     * not show. */
     if (sched_running) {
         (void)fpga_apply_trigger_level(scope_state_get()->trigger.level);
         (void)fpga_apply_trigger_source();
@@ -326,10 +328,10 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
 
 /*
  * Boot upload. Normally the compiled-in design. When the flash slot holds a
- * VALID design with its boot flag set (`fpga slot boot on`) and its payload
- * CRC holds, that design is uploaded instead: a development design then
- * survives a power cycle of the unit. The region layer is not bound this early
- * in boot, so the slot is READ through the raw flash primitive at the region's
+ * valid design with its boot flag set (`fpga slot boot on`) and its payload
+ * CRC holds, that design is uploaded instead, so a development design
+ * survives a power cycle. The flash region layer is not bound this early in
+ * boot, so the slot is read through the raw flash primitive at the region's
  * address (reads only). Anything wrong with the slot: the compiled-in design.
  */
 static uint8_t  fpga_boot_from_slot;
@@ -436,81 +438,61 @@ uint8_t fpga_boot_live(void)
     return fpga_boot_live_state;
 }
 
+/* Name of the slot design uploaded at boot, or NULL for the compiled-in one. */
 const char *fpga_boot_design(void)
 {
     return fpga_boot_from_slot ? fpga_boot_slot_name : NULL;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * SPI3 bus release — hand the bus to an external SSPI master (ESP32)
+ * SPI3 bus release and re-acquisition
  * ═══════════════════════════════════════════════════════════════════
  *
- * EXPERIMENTAL — UNTESTED ON HARDWARE (2026-06-14). See the experimental/
- * esp32-bringup branch README (tools/esp32_sspi_bringup/).
+ * fpga_bus_release() lets go of the lines the MCU drives (PB3 SCK, PB5 MOSI,
+ * PB6 CS): SPI3 off, all three floating inputs (Hi-Z). Two uses: fpga_reload()
+ * before it switches the FPGA's supply off (no back-feed through the lines),
+ * and the toolkit's `fpga busrelease`, which hands the bus to an external SPI
+ * master on the SPI3 test pads. PB4 (MISO) is driven by the FPGA and is
+ * already an input, so it is left alone. The MCU keeps PC6 HIGH (FPGA
+ * supply) and also drives PB11 HIGH.
  *
- * Purpose: make the MCU let go of the SPI3 lines (PB3 SCK, PB5 MOSI, PB6 CS)
- * so an external 3.3 V SPI master soldered to the back-side SPI3 test pads
- * (maksidze's #18 pad map) can drive the Gowin SSPI config interface itself —
- * at a controlled slow clock — WITHOUT bus contention, and without the
- * build → flash → pinhole-reset loop. The MCU keeps the board alive (PC9
- * power hold is untouched) and stages the FPGA enables, then yields the bus.
- *
- * Why this lets the ESP32 win the bus:
- *   - SPI3 is point-to-point (one master). Two masters driving SCK/MOSI/CS at
- *     once = contention = garbage. So we MUST tri-state our driven lines.
- *   - PB4 (MISO) is FPGA→MCU; it's already an input — the ESP32 also only
- *     reads it, so no contention there. Left as-is.
- *   - PB3 (SCK) and PB5 (MOSI) were AF push-pull outputs; PB6 (CS) was a GPIO
- *     output. All three become floating inputs (true Hi-Z) here.
- *
- * Staging held for the FPGA (not on the ESP32's 4 pads, so the MCU owns them):
- *   - PC6 = HIGH  (FPGA SPI enable)
- *   - PB11 = HIGH (FPGA active mode)
- *
- * The acquisition task checks fpga.bus_released and stays off the bus while
- * this is set (see fpga_acquisition_task). Re-flash to undo (no un-release
- * command on purpose — the bench operator power-cycles or reflashes). */
+ * While fpga.bus_released is set, fpga_acq_task stays off the bus.
+ * fpga_spi3_bus_reacquire() takes the bus back. */
 void fpga_bus_release(void)
 {
     gpio_init_type gpio_cfg;
 
-    /* Latch the flag first so the acq task bails before re-touching SPI3. */
+    /* Set the flag first so the acquisition task stops touching SPI3. */
     fpga.bus_released = true;
     fpga.spi3_active = false;
 
     /* Disable the SPI3 peripheral so it stops driving SCK/MOSI. */
     FPGA_SPI->ctrl1 &= ~(1u << 6);   /* SPE = 0 */
 
-    /* Tri-state the MCU-driven SPI3 lines: PB3 (SCK), PB5 (MOSI), PB6 (CS).
-     * Floating input = Hi-Z, so the ESP32 owns these nets. */
+    /* PB3 (SCK), PB5 (MOSI), PB6 (CS) to floating inputs (Hi-Z). */
     gpio_default_para_init(&gpio_cfg);
     gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
     gpio_cfg.gpio_pull = GPIO_PULL_NONE;
     gpio_cfg.gpio_pins = GPIO_PINS_3 | GPIO_PINS_5 | GPIO_PINS_6;
     gpio_init(GPIOB, &gpio_cfg);
 
-    /* PB4 (MISO) is already a floating input — leave it; both we and the
-     * ESP32 only ever read it, the FPGA drives it. */
-
-    /* Stage the FPGA enables the MCU still owns (not on the ESP32 pads). */
+    /* PB11 and PC6 as push-pull outputs, both HIGH. */
     gpio_default_para_init(&gpio_cfg);
     gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
     gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
     gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_cfg.gpio_pins = GPIO_PINS_11;          /* PB11 = active mode */
+    gpio_cfg.gpio_pins = GPIO_PINS_11;          /* PB11 = CH2 range relay bit 1 */
     gpio_init(GPIOB, &gpio_cfg);
     GPIOB->scr = PB11_MASK;                      /* PB11 HIGH */
 
-    gpio_cfg.gpio_pins = GPIO_PINS_6;            /* PC6 = SPI enable */
+    gpio_cfg.gpio_pins = GPIO_PINS_6;            /* PC6 = FPGA supply enable */
     gpio_init(GPIOC, &gpio_cfg);
     GPIOC->scr = PC6_MASK;                       /* PC6 HIGH */
 }
 
-/* Re-acquire the SPI3 bus the MCU released in fpga_bus_release() — a faithful
- * mirror of the fpga_init() SPI3 pin+peripheral block (fpga.c ~4740-4966), so a
- * guest-bringup boot (config port left pristine, no acq flooding, CDC alive) can
- * hand the bus back and let `fpga reinit` drive the failing hardware-SPI prelude
- * on demand for an LA capture (H7). No-op if the bus was never released. */
+/* Take the SPI3 bus back after fpga_bus_release(): the same pin and
+ * peripheral setup as fpga_init(), then clear fpga.bus_released. It always
+ * reconfigures, whether or not the bus was released. */
 void fpga_spi3_bus_reacquire(void)
 {
     gpio_init_type gpio_cfg;
@@ -518,15 +500,15 @@ void fpga_spi3_bus_reacquire(void)
 
     crm_periph_clock_enable(CRM_SPI3_PERIPH_CLOCK, TRUE);
 
-    /* PB3 = SPI3_SCK: AF push-pull, 10MHz slew (matches stock, H6). */
+    /* PB3 = SPI3_SCK: AF push-pull, the same drive setting as stock. */
     gpio_cfg.gpio_pins = GPIO_PINS_3;
     gpio_cfg.gpio_mode = GPIO_MODE_MUX;
     gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
     gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
     gpio_init(GPIOB, &gpio_cfg);
 
-    /* PB4 = SPI3_MISO: input PULL-UP — stock's defined idle level (Exp E), so an
-     * undriven line reads a clean 0xFF instead of floating noise on the capture. */
+    /* PB4 = SPI3_MISO: input with pull-up, as stock, so an undriven line
+     * reads 0xFF. */
     gpio_cfg.gpio_pins = GPIO_PINS_4;
     gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
     gpio_cfg.gpio_pull = GPIO_PULL_UP;
@@ -548,7 +530,7 @@ void fpga_spi3_bus_reacquire(void)
     gpio_init(GPIOB, &gpio_cfg);
     SPI3_CS_DEASSERT();
 
-    /* PC6 = FPGA SPI enable HIGH (bus_release already staged it, re-assert). */
+    /* PC6 = FPGA supply enable, HIGH (fpga_bus_release left it HIGH). */
     gpio_cfg.gpio_pins = GPIO_PINS_6;
     gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
     gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
@@ -556,7 +538,7 @@ void fpga_spi3_bus_reacquire(void)
     gpio_init(GPIOC, &gpio_cfg);
     GPIOC->scr = PC6_MASK;
 
-    /* SPI3 CTRL1/CTRL2/SPE — identical to fpga_init (mode 3, master, /2, SW CS). */
+    /* SPI3 CTRL1, CTRL2 and enable, as in fpga_init (mode 3, master, /2, software CS). */
     FPGA_SPI->ctrl1 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 8) | (1 << 9);
     FPGA_SPI->ctrl2 = 0x03;
     FPGA_SPI->ctrl1 |= (1 << 6);   /* SPE = 1 */

@@ -1,35 +1,20 @@
 /*
  * OpenScope 2C53T - acquisition from the capture core (SPI3)
  *
- * The acquisition task, the staged and published record, the core's
- * registers (timebase, trigger), interleave and roll. Split out of fpga.c;
- * shared items: fpga_internal.h.
+ * The acquisition task and the record it publishes; the core's registers it
+ * keeps (timebase, trigger level, source and edge); single-channel
+ * interleave; roll mode; the pause handshake other SPI3 users take.
+ * Shared items: fpga_internal.h.
  */
 
 #include "fpga_internal.h"
 
 TaskHandle_t      acq_task_handle = NULL;
 
-/* Auto/free-run acquisition (2026-08-14, analysis_v120/
- * trigger_regime_findings_2026-08-14.md Addendum 4). The raw capture buffer
- * (BSRAM_0/3, read via 0x04/0x05) free-runs at the sample clock regardless of
- * trigger state, and a direct poll returns a COHERENT waveform (bench: a 30 Hz
- * sine shows ~13 clean cycles across the 1024-sample buffer with PC0 never
- * pulsing). So a continuously-updating display is a READ-PACING choice, not a
- * fabric feature: in AUTO mode we free-run poll 0x04/0x05 rather than waiting
- * for a trigger edge that a quiet or below-threshold input never produces.
- *
- *   FPGA_AUTO_CADENCE_MS   free-run poll period in AUTO mode (~30 Hz). The
- *                          display's own ~50 ms frame loop is the real cap;
- *                          faster only costs SPI time (~275 us/pair at /2).
- *   FPGA_AUTO_TRIG_WAIT_MS how long AUTO waits for a real trigger edge before
- *                          falling through to a free-run read — small, so a
- *                          triggered capture is preferred WHEN available (a
- *                          stable trace) but the display never stalls without
- *                          one. This is exactly analog-scope "auto" behaviour.
- *   FPGA_NORMAL_TRIG_WAIT_MS  NORMAL/SINGLE edge-wait budget per iteration; on
- *                          timeout the loop HOLDS the last trace (no free-run
- *                          overwrite), which is correct triggered-mode behaviour. */
+/* FPGA_AUTO_TRIG_WAIT_MS: the floor of AUTO's wait for a trigger before it
+ * asks the core for a forced record, and the wait when the sample rate is not
+ * known (fpga_acq_auto_wait_get). FPGA_AUTO_CADENCE_MS and
+ * FPGA_NORMAL_TRIG_WAIT_MS are not used by the code. */
 #ifndef FPGA_AUTO_CADENCE_MS
 
 #define FPGA_AUTO_CADENCE_MS 30u
@@ -38,7 +23,7 @@ TaskHandle_t      acq_task_handle = NULL;
 
 #ifndef FPGA_AUTO_TRIG_WAIT_MS
 
-#define FPGA_AUTO_TRIG_WAIT_MS ACQ_AUTO_MIN_MS      /* dsp/acq_timing.h; a build may give another floor */
+#define FPGA_AUTO_TRIG_WAIT_MS ACQ_AUTO_MIN_MS      /* dsp/acq_timing.h; a build may set another floor */
 
 #endif
 
@@ -63,29 +48,23 @@ void fpga_scope_delay_ms(uint32_t ms)
     }
 }
 
-/* Cooperative pause handshake of the acquisition task. Protocol (see
- * fpga_acq_pause): requester sets req, clears ack, then waits for a FRESH
- * ack — the task raises ack only at its park point, never inside a CS frame,
- * and re-raises it every parked cycle so a stale ack from a previous pause
- * can never satisfy a new request. */
+/* Pause handshake of the acquisition task (fpga_acq_pause). The requester
+ * sets req, clears ack, then waits for a fresh ack. The task raises ack only
+ * at its park point, never inside a CS frame, and raises it again on every
+ * parked cycle. */
 static volatile bool acq_pause_req = false;
 
 static volatile bool acq_pause_ack = false;
 
-/* ── Torn-frame fix (audit 2026-08-20, P0.2) ─────────────────────────────
- * ch1_buf/ch2_buf used to be written IN PLACE, byte-by-byte, over the whole
- * SPI read (~275 µs at /2, tens of ms at slow clocks) while the lower-
- * priority display task read them — a preempting capture spliced two frames
- * through every badge, freq estimate and rendered trace. Now the SPI read
- * lands in heap staging (allocated in fpga_create_tasks; heap not BSS — the
- * main-stack headroom over BSS is ~2 KB, see flash_fs.c's identical note)
- * and is committed by two memcpys (~10 µs) bracketed by acq_frame_gen:
- * odd = commit in progress. Readers that need exact numbers re-read until
- * the generation is even and unchanged; the renderer accepts the residual
- * ~10 µs window as a rare one-frame cosmetic. Side benefit: REJECTED frames
- * (validity gate, hw-timeout refusal) no longer touch the published buffers
- * at all. If staging allocation ever failed, writes fall back in place —
- * old behavior, generation counter simply never advances. */
+/* ── Staged and published record ─────────────────────────────────────────
+ * The SPI read lands in two staging buffers (heap, allocated in
+ * fpga_create_tasks), never in the published fpga.ch1_buf/ch2_buf that the
+ * lower-priority display task reads. An accepted record is copied over in
+ * fpga_acq_frames_commit, bracketed by acq_frame_gen: odd while a commit is
+ * in progress. Readers that need exact numbers re-read until the generation
+ * is even and unchanged. A rejected read never touches the published
+ * buffers. If the staging allocation failed, reads land in the published
+ * buffers directly and the generation never moves. */
 static volatile uint32_t acq_frame_gen = 0;
 
 uint8_t *acq_stage_ch1 = NULL;
@@ -107,16 +86,15 @@ static volatile uint8_t *acq_write_ch2(void)
     return acq_stage_ch2 ? acq_stage_ch2 : fpga.ch2_buf;
 }
 
-/* Whether the STAGED / PUBLISHED record is time-ordered (un-rotated at its
- * seam, trigger at 512). Published inside the commit's seqlock window so the
- * flag always describes the record in fpga.ch1_buf -- v18 read the flag of
- * the newest commit against a frame one commit older (2026-09-23). */
+/* Whether the staged / published record is in time order (rotated at its
+ * seam). Published inside the commit's generation window, so the flag always
+ * describes the record in fpga.ch1_buf. The same holds for every acq_pub_*
+ * below. */
 static volatile bool acq_stage_ordered = false;
 
 static volatile bool acq_pub_ordered = false;
 
-/* ...and the seam came from the core's reply header, not from a search in the
- * samples: the trigger is then at index 512 by construction (trig_edge.h). */
+/* ...and is a triggered record: its trigger crossing is at index 512. */
 static volatile bool acq_stage_ordered_core = false;
 
 static volatile bool acq_pub_ordered_core = false;
@@ -130,24 +108,21 @@ static volatile bool acq_stage_il = false;
 
 static volatile bool acq_pub_il = false;
 
-/* The reg-0x01 code the published record was captured at (0xFF: none yet, the
- * in-place fallback never commits). acq_rate_idx moves the moment a timebase
- * key is pressed, even STOPPED, while the held record keeps its own rate:
- * the zoom-while-paused view (C14, ui/scope_ui.c) and the measurement badges
- * must read the record's rate, not the selector's. */
+/* The reg 0x01 code the published record was captured at (0xFF: none yet).
+ * acq_rate_idx follows the timebase keys even when stopped; the paused zoom
+ * view and the measurements must use the held record's own rate. */
 static volatile uint8_t acq_pub_idx = 0xFF;
 
 static volatile uint8_t acq_rate_idx;       /* defined (initialised) below */
 
-/* What the published record is (trig_policy.h, parity C3): handed over,
- * free-run, or free-run with two non-simultaneous channels (#84). Staged and
- * published with the frame, like the two flags above, so the badge can never
- * describe a different record from the one on the glass. */
+/* What the published record is (trig_acq_t, trig_policy.h): triggered, or
+ * AUTO's forced record. Staged and published with the record, so the badge
+ * always describes the record on screen. */
 static volatile uint8_t  acq_stage_kind = TRIG_ACQ_HOLD;
 
 static volatile uint8_t  acq_pub_kind = TRIG_ACQ_HOLD;
 
-static volatile uint32_t acq_last_trig_tick = 0;     /* tick a handed-over record was published */
+static volatile uint32_t acq_last_trig_tick = 0;     /* tick the last triggered record was published */
 
 /* SINGLE one-shot: the acq task's single_done, published, and the re-arm
  * request the UI raises (OK / the shell), consumed by the task. */
@@ -155,11 +130,9 @@ static volatile bool     acq_single_done_pub = false;
 
 static volatile uint32_t acq_single_arm_req = 0;
 
-/* The capture configuration (dsp/acq_cfg.h) of the STAGED record, set by
- * the acquisition task when it admits a read, and of the PUBLISHED one,
- * copied in the commit's seqlock window like the flags above. Mask 0 = no
- * record committed yet (or the in-place fallback, which never commits):
- * every channel counts as present, as before this existed. 2 x 22 B .bss. */
+/* The capture configuration (dsp/acq_cfg.h) of the staged record, set when
+ * the task admits a read, and of the published one. Mask 0 = no record
+ * committed yet: every channel then counts as present. */
 static acq_cfg_t acq_stage_cfg;
 
 static acq_cfg_t acq_pub_cfg;
@@ -186,35 +159,26 @@ static void fpga_acq_frames_commit(void)
     acq_frame_gen++;                                   /* even: stable */
 }
 
-/* NOTE: deliberately OUTSIDE the FPGA_WARM_HANDOFF_TEST guard below: the debug
- * shell references these in every build. The guarded part is only the
- * acquisition task's USE of them. */
-/* EXP-41/42 (2026-09-14): the AUTO edge-wait budget, runtime-settable. PC0
- * is a real data-ready line: a READ starts a capture, the capture completes
- * when the ADC crosses the reg-0x08 trigger level, and completion pulses PC0
- * once (idle produces nothing; a reg-01 write produces nothing). The compiled
- * 25 ms budget is shorter than the capture at every code slower than 0x0E
- * (82 ms at 0x10), so the AUTO fallback always read mid-capture — the seam.
- * `fpga autowait <ms>`; 0 = the compiled default. */
+/* AUTO's wait for a trigger, set from the shell (`fpga autowait <ms>`).
+ * 0 = derived from the timebase (fpga_acq_auto_wait_get). */
 static volatile uint16_t acq_auto_wait_ms = 0;
 
-/* The digital trigger level in force: SPI3 reg 0x08, an unsigned ADC code.
- * The boot arm burst writes stock's captured 0xAD (173); every bench signal
- * since 2026-08 peaked near 160, so PC0 "never fired" for a month (EXP-41).
- * fpga_reconcile_trigger_after_arm() hands the register to the UI level
- * right after the arm; fpga_apply_trigger_level() is the ONLY runtime path. */
+/* The trigger level in force: reg 0x08, a raw ADC code. The boot arm burst
+ * writes 0xAD (the value captured from stock), above most signals;
+ * fpga_reconcile_trigger_after_arm() then sets the UI's level. At runtime
+ * fpga_apply_trigger_level() changes it; the core watch and the task's
+ * capture restart only write the same value again. */
 static volatile uint8_t acq_trig_code = 0xAD;
 
-/* EXP-47: a reg-0x08 or reg-0x01 write drops the capture in flight (NORMAL
- * stayed frozen after level +100 -> 0). The apply entry points raise this;
- * the acq task clears capture_in_flight on it and re-primes. */
+/* Every register write drops the core's capture in flight. The apply entry
+ * points raise this; the task then clears capture_in_flight and restarts the
+ * configuration's settle window. */
 volatile bool acq_reprime_req = false;
 
-/* Trigger edge register 0x07 (dsp/trig_edge_reg.h). acq_design_ours: the
- * design running now is our core (set where an upload ends, below);
- * acq_edge_reg: the value the register holds (every arm burst writes 0x00).
- * The acquisition task writes the register when the two disagree, so the edge
- * follows the UI and comes back by itself after any arm burst. */
+/* acq_design_ours: the design running now was loaded by this firmware (set
+ * by the upload in fpga_boot.c). acq_edge_reg: what edge register 0x07 holds
+ * (every arm burst writes 0x00); the task rewrites it whenever it differs
+ * from the UI's edge (dsp/trig_edge_reg.h). */
 volatile bool    acq_design_ours = false;
 
 /* The design in the FPGA is OpenScope's capture core: this firmware loaded
@@ -229,9 +193,8 @@ bool fpga_acq_core_ok(void) { return acq_core_ok; }
  * [2] held but no PC0 edge seen, [3] PC0 edge but not held. */
 static volatile uint32_t acq_kind_n[4];
 
-/* The core's own account of its registers and PLL (op E0, dsp/core_status.h),
- * read by the acquisition task between pairs. A register that differs from
- * the firmware's copy in two successive readings is rewritten. */
+/* The core watch: its status block (op E0, dsp/core_status.h), read between
+ * pairs by fpga_core_watch_poll(). */
 static fpga_core_watch_t acq_core_watch = { .check_on = true };
 
 static uint8_t           acq_core_watch_prev_diff;
@@ -247,7 +210,7 @@ static volatile uint32_t acq_force_n[3];
 
 uint32_t fpga_acq_force_count(unsigned i) { return i < 3u ? acq_force_n[i] : 0u; }
 
-static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_action) */
+static volatile uint32_t acq_fresh_restarts;     /* captures restarted before a first read (trig_fresh_restart) */
 
 uint32_t fpga_acq_fresh_restarts(void) { return acq_fresh_restarts; }
 
@@ -272,21 +235,21 @@ volatile uint8_t acq_edge_reg    = 0x00;
 
 uint8_t fpga_acq_edge_reg_get(void) { return acq_edge_reg; }
 
-/* Single-channel interleave (2026-11-10, bench B4 on unit #2): with mask 1
- * both converters sample CH1 half a sample apart; at timebase <= 3 (stock's
- * gate, 0x080252B2) the acq task merges them into a 250 MS/s record. Runtime
- * switch, default ON. Converter-B correction (level map + timing skew,
- * dsp/interleave.h) defaults to identity; a unit's own numbers come from
- * `fpga interleave cal` / `skew measure` or a saved user-cal record. */
+/* Single-channel interleave: with channel mask 1 both converters sample CH1
+ * half a sample apart, and at timebase codes <= 3 (stock's gate) the task
+ * merges them into one 250 MS/s record. Runtime switch, default on. The
+ * converter-B correction (level map and timing skew, dsp/interleave.h)
+ * starts as identity; a unit's own numbers come from `fpga interleave cal`,
+ * `skew measure` or a saved user-cal record. */
 static volatile bool acq_il_enable = true;
 
 static interleave_corr_t acq_il_corr = { .gain = 1.0f, .offset = 0.0f };
 
-/* Self-calibration collector (parity C2, `fpga interleave cal`): while `on`,
- * every pair the acq task reads (op04 = A, op05 = B, record units) adds the
- * means of its centre 512 samples (the window the merge uses). DC only: the
- * same-moment requirement of a merge does not apply to a flat input, so
- * untriggered roll reads count too. Shell side owns the DAC and the timing. */
+/* Self-calibration collector for `fpga interleave cal`. While `on`, every
+ * pair the task reads (op 04 = converter A, op 05 = B, record units) adds
+ * the means of its centre 512 samples, the window the merge uses. DC only:
+ * a flat input needs no common moment, so reads that found no held record
+ * count too. The shell side owns the DAC and the timing. */
 static struct {
     volatile bool on;
     volatile uint8_t skip;          /* records to drop after begin (pipeline) */
@@ -298,7 +261,7 @@ static struct {
 
 static volatile uint16_t acq_poll_gap_ms = ACQ_POLL_GAP_MS;   /* dsp/acq_timing.h; `fpga pollgap` overrides */
 
-static volatile bool     acq_unrotate = true;    /* 2026-09-22: seam-based (dev plan 2.3); `fpga unrotate off` for the raw record */
+static volatile bool     acq_unrotate = true;    /* put held records in time order; `fpga unrotate off` keeps them raw */
 
 static volatile int16_t  acq_unrotate_offset = 0;
 
@@ -307,37 +270,25 @@ static volatile int16_t  acq_unrotate_offset = 0;
  * expected: the op 05 header of a pair always carries it). */
 static volatile uint32_t acq_seam_n[2];
 
-/* EXP-46 (2026-09-14): an explicit SPI3 clock for the task's reads (0..7 =
- * /2../256; 0xFF = leave whatever is set). `fpga acqbr`. */
+/* An explicit SPI3 clock for the task's reads (0..7 = /2 to /256; 0xFF =
+ * leave whatever is set). `fpga acqbr`. */
 static volatile uint8_t  acq_read_br = 0xFF;
 
-/* Reg 0x01 value currently in force -- the ONE variable that mirrors the
- * hardware register. 0x08 is what the arm block writes at config time.
- *
- * 2026-08-19: that comment described an intent the code never implemented.
- * The UI's timebase button wrote scope_state.timebase_idx and nothing else;
- * this variable was reachable only from `fpga rate`. So the firmware carried
- * TWO notions of "current timebase" -- one that labelled the axis and one
- * that drove the hardware -- and they were observed diverging on a stock
- * boot (0x0A on the display, 0x08 in the register). It stayed invisible only
- * because both codes are in the uncalibrated band, so the label read "--".
- * Once scope_timebase.c gave the labels real measured rates, the same bug
- * would have printed a confident, wrong s/div. fpga_apply_timebase() below
- * is now the single entry point, and the button calls it. */
+/* The reg 0x01 code in force: the one variable that mirrors the hardware
+ * register, set where the register is written (fpga_apply_timebase,
+ * fpga_apply_roll, the reconcile after an arm burst). 0x08 is what the arm
+ * burst writes. */
 static volatile uint8_t acq_rate_idx     = 0x08;
 
 void fpga_acq_auto_wait_set(uint16_t ms)  { acq_auto_wait_ms = ms; }
 
-/* AUTO edge-wait budget in force. Override if set; else derived from the
- * timebase in force: 4x the 1024-sample fill at that rate (EXP-42: edges per
- * pair saturate by ~3.6x at 0x10), clamped to [compiled 25 ms, 1000 ms] —
- * codes slower than ~0x12 fall back to free-run reads past the cap rather
- * than freezing AUTO for seconds. Unmeasured codes (rate 0) get the compiled
- * value. */
+/* AUTO's wait for a trigger in force: the shell override if set, else
+ * derived from the timebase in force (a few fills plus a margin, clamped;
+ * the numbers and their origins are in dsp/acq_timing.h). A code with no
+ * known rate gets FPGA_AUTO_TRIG_WAIT_MS. */
 uint16_t fpga_acq_auto_wait_get(void)
 {
     if (acq_auto_wait_ms) return acq_auto_wait_ms;
-    /* The numbers and their origins: dsp/acq_timing.h. */
     return acq_time_auto_wait_ms(scope_timebase_sample_rate(acq_rate_idx), (uint16_t)FPGA_AUTO_TRIG_WAIT_MS);
 }
 
@@ -374,34 +325,23 @@ core_ident_t fpga_core_ident(void)
 
 uint32_t fpga_acq_seam_count(unsigned i)      { return i < 2u ? acq_seam_n[i] : 0u; }
 
-/* Un-rotate a strobed record into time order (dev plan 2.3, 2026-09-22).
+/* Put a held record into time order. The core's ring is read out from
+ * address 0, so the oldest sample sits at the seam s (the write pointer when
+ * the record was held) and a trigger crossing 512 samples after it. The core
+ * reports s in the reply header of the two reads. Both channels share it and
+ * are rotated left by s: index 0 becomes the oldest sample and the trigger
+ * lands at index 512. Reads with no held record are left alone.
  *
- * The committed record is one continuous 1024-sample segment rotated so its
- * seam sits at the FPGA's write pointer, with the trigger 512 samples after
- * the seam (EXP-53/54). The pointer is not recoverable from MCU timestamps
- * (EXP-53 postscript: PC0 strobes 6-9 us after the read, so the EXP-52
- * latency model this replaces measured nothing); the core names it in the
- * reply header of the two reads (below). Both channels share the pointer, so
- * both are rotated by it. After this, index 0 is the oldest sample and the
- * trigger is at index 512.
- *
- * Reads that are not a held record are left alone: the rolling buffer has
- * no trigger at 512 to put anywhere.
- *
- * Returns the rotation applied (0..1023), or -1 when none was. */
+ * Returns the seam (0..1023), or -1 when there is none. With unrotation off
+ * (`fpga unrotate off`) the seam is returned but not applied. */
 static int32_t fpga_acq_unrotate_staging(bool triggered)
 {
     acq_rot_from_hdr = false;
     if (!triggered) return -1;
     volatile uint8_t *bufs[2] = { acq_write_ch1(), acq_write_ch2() };
     uint32_t k = 0;
-    /* Our core (v3 on) says where the seam is, in the reply header of the two
-     * reads just made. The op 05 header first: it always carries the pair's
-     * pointer, the op 04 one is withheld when the record was held only as
-     * that frame began. A record with no step at its seam (a whole number of
-     * periods, a square, DC) is then ordered like any other; the search in
-     * the samples could not order those (bench 2026-11-16: 9 of the 13
-     * generator waveforms). */
+    /* The op 05 header first: it always carries the pair's seam. The op 04
+     * one is withheld when the record was held only after that frame began. */
     int hs = trig_seam_from_hdr(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0)
         hs = trig_seam_from_hdr(fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
@@ -414,8 +354,7 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
     acq_rot_from_hdr = true;
     if (!acq_unrotate) return (int32_t)k;        /* reported (status), not applied */
     if (k == 0) return 0;
-    /* In place, no staging buffer (this used a 1 KB static tmp[]; RAM diet
-     * 2026-11-11). Same result: index 0 becomes the old index k. */
+    /* In place: index 0 becomes the old index k. */
     for (int c = 0; c < 2; c++)
         trig_edge_rotate_left(bufs[c], FPGA_ADC_BUF_SIZE, k);
     return (int32_t)k;
@@ -427,9 +366,9 @@ uint8_t fpga_acq_read_br_get(void)      { return acq_read_br; }
 
 uint8_t fpga_acq_trig_code_get(void)      { return acq_trig_code; }
 
-/* UI trigger level (-100..100, screen pixels about mid-scale, the renderer's
- * own convention: SCOPE_H px == 256 counts, SCOPE_H = LCD_HEIGHT-16-18 = 206
- * in scope_ui.c) -> reg 0x08 code. Keep the 206 in step with scope_ui.c. */
+/* UI trigger level (-100..100, screen pixels about mid-scale) to a reg 0x08
+ * code. The renderer's convention: SCOPE_H pixels = 256 counts, SCOPE_H =
+ * LCD_HEIGHT - 16 - 18 = 206 in scope_ui.c. Keep the 206 in step with it. */
 uint8_t fpga_trigger_code_from_level(int level)
 {
     if (level < -100) level = -100;
@@ -451,9 +390,9 @@ bool fpga_interleave_active(void)
     return acq_il_enable && fpga.channel_mask == 1u && acq_rate_idx <= 3u;
 }
 
-/* The line also drops any knots: it is a complete level map of its own
- * (il.knots = 0, a v1 user-cal record, `cal user clear`). The
- * skew is independent and stays. */
+/* A gain/offset line also clears any knots: it is a complete level map of
+ * its own (a v1 user-cal record, `cal user clear`). The skew is separate and
+ * stays. */
 void fpga_interleave_corr_set(float gain, float offset)
 {
     interleave_corr_set_knots(&acq_il_corr, 0, NULL, NULL);
@@ -486,6 +425,8 @@ void fpga_interleave_corr_get(float *gain, float *offset)
     if (offset) *offset = acq_il_corr.offset;
 }
 
+/* Start the collector; the first `skip` records (reads already under way)
+ * are dropped. */
 void fpga_ilcal_begin(uint8_t skip)
 {
     acq_ilcal.on = false;
@@ -498,6 +439,8 @@ void fpga_ilcal_begin(uint8_t skip)
     acq_ilcal.on = true;
 }
 
+/* Wait up to timeout_ms for `records` records, stop the collector and
+ * report. False when too few came. */
 bool fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *out)
 {
     const TickType_t t0 = xTaskGetTickCount();
@@ -519,21 +462,16 @@ bool fpga_ilcal_collect(uint8_t records, uint32_t timeout_ms, il_cal_point_t *ou
     return true;
 }
 
-/* Called by the acq task right after the op04/op05 reads; `ok` = no SPI3
- * hardware timeout during them. Cheap when off. */
-/* One converter's window, robust to isolated glitch samples: on unit #2 a
- * quiet input at tb <= 3 reads +-5 counts plus interference bursts (10-40
- * samples of wild values, ~5 % of a record; bench 2026-11-11), which a plain
- * peak-to-peak counted as "not flat" and refused the whole cal. Pass 1 takes the mean; pass 2 drops samples
- * more than ILCAL_GLITCH counts from it and measures mean, spread and the
- * rails on the rest. More than ILCAL_GLITCH_MAX dropped samples is not a
- * glitch any more: the spread is reported as 255 (not flat). */
+/* One converter's window, robust to isolated glitch samples. On unit #2 a
+ * quiet input at timebase codes <= 3 reads +-5 counts plus interference
+ * bursts of 10-40 samples (about 5 % of a record; bench 2026-11-11), which a
+ * plain peak-to-peak would call not flat. Pass 1 takes the mean; pass 2
+ * drops samples more than ILCAL_GLITCH counts from it and measures mean,
+ * spread and rails on the rest. More than ILCAL_GLITCH_MAX dropped samples
+ * is a signal, not glitches: the spread is then reported as 255 (not flat). */
 #define ILCAL_GLITCH      24
 
-#define ILCAL_GLITCH_MAX  77u   /* of 512: 15 %. Unit #2 at tb <= 3 shows interference
-
-                                 * BURSTS of 10-40 samples covering ~5 % of a record
-                                 * (bench 2026-11-11); a real signal leaves far more
+#define ILCAL_GLITCH_MAX  77u   /* of 512: 15 %. A real signal leaves far more
                                  * than 15 % outside +-24 codes of its mean. */
 static void ilcal_window(const volatile uint8_t *w, float *mean, uint8_t *spread, bool *clip)
 {
@@ -558,6 +496,8 @@ static void ilcal_window(const volatile uint8_t *w, float *mean, uint8_t *spread
     *clip   = (n == 0) || mn == 0 || mx >= rail_hi;
 }
 
+/* Called by the task right after the op 04 / op 05 reads; `ok` = no SPI3
+ * hardware timeout during them. Cheap when off. */
 static void acq_ilcal_feed(const volatile uint8_t *a, const volatile uint8_t *b, bool ok)
 {
     if (!acq_ilcal.on || !ok) return;
@@ -586,9 +526,9 @@ bool fpga_acq_single_done(void)         { return acq_single_done_pub; }
 void fpga_acq_single_rearm(void)        { acq_single_arm_req++; }
 
 /* The trigger status the badge and the shell show (trig_policy.h). "Trig'd"
- * holds for two handover cycles: the FPGA hands a record over at most once
- * per fill + ~200 ms hold (EXP-72), so a shorter window would flicker
- * between handovers at the slow codes. */
+ * holds while the last triggered record is younger than
+ * acq_time_trigd_stale_ms (dsp/acq_timing.h), so it does not flicker between
+ * records at slow timebases. */
 uint8_t fpga_trigger_status(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -600,12 +540,8 @@ uint8_t fpga_trigger_status(void)
                                      xTaskGetTickCount() - acq_last_trig_tick, stale);
 }
 
-/* Trigger source -> SPI3 reg 0x06 (parity C3). Only the boot arm wrote it
- * (0x00), so CH2 as the source moved the soft trigger and the label while the
- * FPGA kept firing on CH1. Stock sends op06 = ms[0x16] on every source change
- * (0x0800C890, 0x0800C96C) and after a channel switch-off (0x080235E8);
- * EXP-72 saw 0x01 (or 0xFF) move the trigger to CH2 (zero handovers with CH2
- * undriven). Like reg 0x08, the write drops the capture in flight. */
+/* Trigger source: reg 0x06, 0 = CH1, 1 = CH2. Like every register write it
+ * drops the capture in flight. */
 static void fpga_scope_write_reg(uint8_t reg, uint8_t val);   /* defined below */
 
 static volatile uint8_t acq_trig_src_code = 0x00;
@@ -634,26 +570,11 @@ float fpga_record_sample_rate(void)
     return acq_pub_il ? 2.0f * fs : fs;
 }
 
-/* See fpga.h. Push a timebase code to the hardware NOW and record it as the
- * value in force, so the axis label and the sample rate cannot disagree.
- *
- * Parking the acquisition task first is the same discipline every shell
- * command that touches SPI3 uses -- an interleaved CS frame corrupts both
- * transfers. If the task will not park we skip the register write and report
- * failure rather than risk the bus; the caller keeps the old rate, which is
- * honest, where a torn write would leave the hardware at an unknown rate the
- * label could not describe. */
 void fpga_reconcile_timebase_after_arm(void);                 /* below */
 
-/* One CS-framed scope-engine register write: opcode byte, value byte.
- * Same shape as the five arm writes (fpga.c, FPGA_CONFIG_B_ARM block) — these
- * are runtime opcodes on the configured user design, NOT Gowin config-port
- * opcodes, and are bench-proven safe against a live design.
- * Defined OUTSIDE the FPGA_WARM_HANDOFF_TEST block deliberately: its callers
- * (fpga_apply_timebase below) exist in every build, and in non-warmtest
- * builds only reach it behind fpga_acq_pause(), whose constant-false stub
- * dead-codes the call — leaving the definition inside the block produced a
- * "used but never defined" warning on app/emu/guest builds. */
+/* One CS-framed register write to the core: opcode byte, value byte, the
+ * same frame as the boot arm burst (fpga_boot.c). Callers hold the bus: the
+ * task itself, or code that parked it with fpga_acq_pause(). */
 static void fpga_scope_write_reg(uint8_t reg, uint8_t val)
 {
     /* The opcodes are our core's. A design that is not a usable core of ours
@@ -666,8 +587,8 @@ static void fpga_scope_write_reg(uint8_t reg, uint8_t val)
     SPI3_CS_DEASSERT();
 }
 
-/* Roll mode state (C11). acq_roll_on is the acquisition task's path switch;
- * it changes only inside a park (fpga_apply_roll / fpga_apply_timebase), so
+/* Roll mode state. acq_roll_on is the acquisition task's path switch; it
+ * changes only inside a park (fpga_apply_roll, fpga_apply_timebase), so
  * the task never sees a reg-0x01 code and a read path that disagree. */
 static scope_roll_fifo_t acq_roll_fifo;
 
@@ -706,6 +627,7 @@ void fpga_acq_cfg_settle_set(uint16_t cmd) { acq_cfg_settle_cmd = cmd; }
 
 uint16_t fpga_acq_cfg_settle_get(void)     { return acq_cfg_settle_cmd; }
 
+/* Whether the published record holds channel ch (0 = CH1, 1 = CH2). */
 bool fpga_acq_record_has_ch(uint8_t ch)
 {
     return acq_pub_cfg.mask == 0u ? ch <= 1u : acq_cfg_has_ch(&acq_pub_cfg, ch);
@@ -719,6 +641,9 @@ static int               acq_roll_code_override = -1;
 
 static volatile fpga_roll_stats_t acq_roll_stats;
 
+/* Write a timebase code to the core now and record it as the code in force. The task is parked first: a CS frame interleaved with its
+ * reads corrupts both. If it will not park, nothing is written and false is
+ * returned; the old code stays in force and the label still matches it. */
 bool fpga_apply_timebase(uint8_t code)
 {
     if (!fpga_acq_pause())
@@ -726,25 +651,22 @@ bool fpga_apply_timebase(uint8_t code)
     fpga_scope_write_reg(FPGA_CORE_OP_TIMEBASE, code);
     acq_rate_idx = code;
     acq_roll_on = false;          /* a Y-T code is in force: back to records */
-    /* The timebase picks the calibration bank (>= 5 -> 0, 4 -> 1, <= 3 ->
-     * 1 or 2 by mask): crossing 4/5 moves the offset references. DAC/TMR13
-     * writes only, no SPI3, so inside or outside the park is equivalent. */
+    /* The timebase picks the calibration bank (calpage_bank_select: code
+     * >= 5 bank 0; 4 bank 1; <= 3 bank 1 with both channels, else 2), so
+     * crossing 4/5 moves the offset references. DAC and timer writes only,
+     * no SPI3, so inside or outside the park is equivalent. */
     scope_vpos_apply();
     acq_reprime_req = true;
     fpga_acq_resume();
     return true;
 }
 
-/* See fpga.h. Stock's timebase-change routine (0x0800B6B2..0x0800B798) does
- * the same three things for tb >= 0x14: arms the pacing timer, resets the
- * point counter (ms[0xDB4] = 301) and queues op01, whose handler
- * (0x0803E54C) writes ms[0x2D] = 0x14..0x1C to reg 0x01 unmodified. What the
- * FPGA does with 0x15..0x1C is unmeasured (0x14 = 500 S/s is, EXP-18); op03
- * reads a live point either way, so the shell can force 0x14 for an A/B.
- *
- * The FIFO is cleared on every step change. Stock keeps its points and
- * draws them at the new spacing; a trace whose left part claims the old
- * time per point is a confident wrong axis, so we start empty instead. */
+/* Roll on: write the roll step's timebase code (stock's codes
+ * 0x14..0x1C, scope_roll.h; our core runs every code above 0x14 as 0x14)
+ * unless the shell overrides it. Roll off: the Y-T code. Roll points are
+ * op 03 live reads paced by the firmware, so the code does not set their
+ * spacing. The point FIFO is cleared on every change: points taken at the
+ * old spacing would be drawn against the new time axis. */
 bool fpga_apply_roll(void)
 {
     scope_state_t *ss = scope_state_get();
@@ -766,8 +688,8 @@ bool fpga_apply_roll(void)
     acq_roll_stats.step = step;
     scope_roll_fifo_reset(&acq_roll_fifo);
     acq_roll_on = on;
-    /* Stock's bank rule is on ms[0x2D] (>= 5 -> bank 0, SYNTHESIS 1.2), so
-     * a roll code keeps the offset references of the slow Y-T codes. */
+    /* The calibration bank follows the code (>= 5: bank 0), so a roll code
+     * keeps the offset references of the slow Y-T codes. */
     scope_vpos_apply();
     acq_reprime_req = true;
     fpga_acq_resume();
@@ -801,11 +723,10 @@ void fpga_roll_stats_get(fpga_roll_stats_t *out)
     taskEXIT_CRITICAL();
 }
 
-/* Trigger sibling of fpga_apply_timebase (EXP-41, 2026-09-14): write the
- * digital trigger level (reg 0x08, unsigned ADC code) and record what is in
- * force. The level is the UI's -100..100; the code is what the FPGA compares
- * the ADC against to complete a capture and pulse PC0. Returns false if the
- * acquisition task would not park, in which case nothing was written. */
+/* Write the trigger level (reg 0x08, a raw ADC code made from
+ * the UI's -100..100) and record it as in force. The core compares each
+ * stored sample of the source converter against it. Returns false, with
+ * nothing written, if the task would not park. */
 bool fpga_apply_trigger_level(int level)
 {
     uint8_t code = fpga_trigger_code_from_level(level);
@@ -818,13 +739,12 @@ bool fpga_apply_trigger_level(int level)
     return true;
 }
 
-/* (Pause-handshake flags acq_pause_req/ack live above fpga_acq_publish now —
- * shared by both acquisition tasks since 2026-08-20, audit P0.1.) */
-
-/* PC0 (FPGA data-ready, active LOW) falling-edge counter. A polled level
- * read cannot see a short deassert pulse, which is exactly what made every
- * prior PC0 observation regime-blind; EXINT0 catches edges of any width.
- * No FreeRTOS calls here, so any NVIC priority is safe. */
+/* PC0 falling-edge counter. The core drives PC0 low for about 8 us when a
+ * held record starts going out (FPGA_CORE_READY_PULSE_CYCLES); a polled read
+ * could miss that, EXINT0 does not. The task uses it only for bench
+ * statistics (acq_kind_n, the latency). Its one FreeRTOS call is a FromISR one,
+ * so the priority (6, set in fpga.c) must stay within FreeRTOS's limit for
+ * such calls. */
 void EXINT0_IRQHandler(void)
 {
     exint_flag_clear(EXINT_LINE_0);
@@ -832,59 +752,27 @@ void EXINT0_IRQHandler(void)
     fpga.pc0_last_tick = xTaskGetTickCountFromISR();
 }
 
-/* ─── Reading one record (2026-08-12) ────────────────────────────────
- * The real per-channel read protocol from the issue-#18 stock capture,
- * bench-proven on this board by Stlkv's port: PC0 data-ready (active LOW),
- * then ONE 1026-byte CS-LOW window per channel — the opcode byte (0x04=CH1,
- * 0x05=CH2) plus ONE dummy byte, then 1024 samples.
- *
- * CORRECTED 2026-08-15 from stock's own dispatch (handlers 0x0803E5A4 for
- * op 0x04 and 0x0803E68C for op 0x05, decoded in
- * analysis_v120/spi3_runtime_dispatch_2026-08-15.md): stock discards exactly
- * TWO bytes — the opcode echo and one dummy — then captures 1024 samples into
- * state[0x5B0 + 0..1023] (CH1) / [1024..2047] (CH2). We had been discarding
- * three and keeping 1023, so every sample array was shifted one byte late and
- * one sample short. The old third "header" byte was in fact sample[0]; the
- * status line showed it as 0x7C/0x79, i.e. mid-scale sample values, never the
- * 0x01 "buffer-valid flag" it had been read as. Strictly read-only
- * on the FPGA: scope-engine opcodes only, never the Gowin config port
- * (0x11/0x41 there desynchronise a configured part — Exp L). Feeds the same
- * buffers/flags the scope UI already consumes, so success shows on the LCD:
- * the synthetic demo trace disappears on the first real frame (scope_ui.c
- * latch), and spi3_ok_count drives redraws (main.c new-data detector).
- *
- * NOTE the 0x05 hazard: as a 2-byte CS frame, 0x05 would be byte-identical
- * to the config prelude's ERASE_SRAM step. The 1026-byte frame shape is what
- * makes it a CH2 read — do not "shorten" this window. */
-/*
- * CORRECTED AGAIN 2026-09-22 (EXP-58): the record starts at the THIRD byte
- * after the opcode, not the second. Reading held records twice over (2,060
- * bytes) on unit #1, the byte at wire index 2 + 1024n (n = 1, 2) continued
- * smoothly from the byte BEFORE it (residual 0-3 counts, 12/12, same as an
- * interior control byte) and broke into the byte AFTER it (8-35 counts): each
- * 1024-byte block ends at wire 2 + 1024n. So wire byte 2 is the tail of a
- * previous block -- a stale byte -- and the record is wire 3..1026. With the
- * 2-byte discard, "sample 0" was that stale byte (a stray value in 13/20
- * records) and the true last sample was never read. The 2026-08-15 change to
- * stock's 2-byte discard matched stock's CODE; at our read timing the first
- * byte out is stale. The window is now 1027 bytes: opcode, dummy, stale, then
- * 1024 samples. Longer windows (1043, 2063 bytes) caused no fault in EXP-58.
- */
+/* ─── Reading one record ─────────────────────────────────────────────
+ * One CS-low frame per converter, 1027 bytes (the core's cmd.sv): while the
+ * opcode goes out (0x04 = converter A, 0x05 = B) the core sends reply byte 0,
+ * 0x80 on every reply (FPGA_CORE_REPLY_FIRST); bytes 1-2 are the seam header,
+ * kept in fpga.acq_hdr_ch1/ch2; then 1024 samples from memory address 0.
+ * Each sample is stored as raw + FPGA_ADC_OFFSET, clamped to 0..255.
+ * Keep the frame whole: a 2-byte frame starting 0x05 would match the Gowin
+ * configuration port's ERASE_SRAM command. Returns reply byte 0. */
 static uint8_t fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
 {
     SPI3_CS_ASSERT();
-    uint8_t s0 = spi3_xfer(opcode);        /* MISO during opcode: 0x80 marker
-                                              expected in the first window
-                                              after data-ready (Stlkv) */
-    uint8_t h1 = spi3_xfer(0xFF);          /* the dummy byte stock discards */
-    uint8_t h2 = spi3_xfer(0xFF);          /* EXP-58: stale, end of a previous block */
+    uint8_t s0 = spi3_xfer(opcode);        /* reply byte 0: 0x80 from a live core */
+    uint8_t h1 = spi3_xfer(0xFF);          /* byte 1: seam flags and bits 9:8 */
+    uint8_t h2 = spi3_xfer(0xFF);          /* byte 2: seam bits 7:0 */
     {
         volatile uint8_t *hdr = (opcode == FPGA_CORE_OP_REC_A) ? fpga.acq_hdr_ch1
                                                  : fpga.acq_hdr_ch2;
         hdr[0] = s0; hdr[1] = h1; hdr[2] = h2;
     }
     if (opcode == FPGA_CORE_OP_REC_A)
-        fpga.spi3_first_byte = s0;         /* debug overlay "1:" field */
+        fpga.spi3_first_byte = s0;         /* shown by the debug status */
 
     for (int i = 0; i < 1024; i++) {
         uint8_t raw = spi3_xfer(0xFF);
@@ -901,21 +789,17 @@ static uint8_t fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
     return s0;
 }
 
-/* ─── Roll point reader (parity C11) ────────────────────────────────────
- * One op-0x03 frame per point, paced from the RTOS tick. Stock's TMR3 ISR
- * (0x0802E71C) queues op03 once per (ARR + 1)/10 kHz; the handler
- * (0x0803E9F2..0x0803EB38) clocks four 0xFF after the opcode and keeps
- * received byte 2 (CH1) and byte 4 (CH2). Our TMR3 is the key scan, so the
- * cadence comes from the tick instead (scope_roll.h: every stock period is a
- * whole number of ms). All five received bytes are kept for the shell, so
- * the bench can confirm which slots are live.
+/* ─── Roll point reader ──────────────────────────────────────────────
+ * One op 03 frame per point: reply byte 2 is converter A now, byte 4 is B
+ * (fpga_core_regs.h). Paced from the RTOS tick at the roll step's period
+ * (scope_roll.h; every stock period is a whole number of ms). All five reply
+ * bytes are kept for the shell.
  *
- * Returns to the task loop at least every 10 ms so the park point above
- * still acks within fpga_acq_pause()'s budget at 800 ms per point. STOP
- * (ss->running false) reads nothing and freezes the FIFO, as stock's ISR
- * does on ms[0x2C]. A tick that falls more than a period behind (a park, a
- * STOP) resynchronises instead of bursting points that were never sampled
- * on time. */
+ * Returns to the task loop at least every 10 ms, so the park point still
+ * acks within fpga_acq_pause()'s budget at 800 ms per point. STOP
+ * (ss->running false) reads nothing and freezes the FIFO. A tick that falls
+ * more than a period behind (a park, a STOP) resynchronises instead of
+ * bursting points that were never sampled on time. */
 static uint32_t roll_next_tick;
 
 static bool     roll_tick_armed = false;
@@ -972,18 +856,15 @@ static void fpga_roll_service(void)
     fpga.spi3_ok_count++;                /* the display's new-data signal */
     fpga.spi3_timeout_count = 0;
 
-    /* Stock's roll trigger (0x0803EC2E..0x0803ED18, scope_roll.h): once the
-     * FIFO is full and the mode is not AUTO, one crossing check in the middle
-     * of it after every point. SINGLE stops (RUN = 0) and the full FIFO is the
-     * frozen frame, the crossing at its centre; the OK key re-arms through the
-     * Y-T path's own `!running` test. NORMAL empties the FIFO (stock's 32-bit
-     * store at 0x08040000 zeroes the width ms[0xDB6]): the trace refills from
-     * the right and the check re-arms 301 points later.
-     * The level is the register in force (acq_trig_code, raw) lifted into the
-     * record domain like every other comparison against a record; the source
-     * and edge are the trigger settings. The column shift is 0: our trigger
-     * column (ss->trig_x) places the Y-T trigger point and has no roll
-     * meaning. */
+    /* Roll trigger, as stock's (scope_roll.h): once the FIFO is full and the
+     * mode is not AUTO, one crossing check at its centre after every point.
+     * SINGLE stops (running = false) and the full FIFO is the frozen frame;
+     * the OK key re-arms through the Y-T path's own `!running` test. NORMAL
+     * empties the FIFO: the trace refills from the right and the check
+     * re-arms 301 points later. The level is the register in force (raw)
+     * lifted into the record domain, like every comparison against a record.
+     * The column shift is 0: ss->trig_x places the Y-T trigger point and has
+     * no roll meaning. */
     acq_single_done_pub = false;         /* running again = armed */
     {
         scope_state_t *sw = scope_state_get();
@@ -1008,12 +889,13 @@ static void fpga_roll_service(void)
     }
 }
 
-/* The acquisition task's capture-configuration tracker (dsp/acq_cfg.h):
- * static, not on the task's 256-word stack. 36 B. */
+/* The task's capture-configuration tracker (dsp/acq_cfg.h): static, not on
+ * the task's 256-word stack. */
 static acq_cfg_track_t s_acq_cfg_trk;
 
-/* One reading of the core's status block, in the acquisition task. Returns
- * true when a register was rewritten (the write restarted the capture). */
+/* One reading of the core's status block (op E0), in the task. A register
+ * that differs from the firmware's copy in two successive valid readings is
+ * rewritten. Returns true when one was (the write restarted the capture). */
 static bool fpga_core_watch_poll(void)
 {
     uint8_t r[CORE_STATUS_REPLY_LEN];
@@ -1045,37 +927,47 @@ static bool fpga_core_watch_poll(void)
     return true;
 }
 
+/* The acquisition task. Each pass, in order:
+ *   1. idle while the FPGA is not up, a pause is asked (the park point), no
+ *      usable core is loaded, or a failed mask record is held;
+ *   2. roll mode: read one paced op 03 point instead of a record;
+ *   3. follow the trigger mode and edge; note writes that dropped the capture;
+ *   4. read nothing while SINGLE holds its record or the scope is stopped;
+ *      on reading again, restart the capture so an old record cannot pass;
+ *   5. wait one fill after the last hand-over, then poll every acq_poll_gap_ms;
+ *   6. now and then read the core's status block; in AUTO with no trigger
+ *      for a while, ask for a forced record (op 09);
+ *   7. read the pair (op 04, op 05); the op 05 header says whether it is a
+ *      held record, and whether it was forced;
+ *   8. show it or not (trig_policy.h); drop it if the configuration had not
+ *      settled (acq_cfg.h);
+ *   9. check it, put it in time order, merge it for interleave, commit it. */
 void fpga_acq_task(void *pv)
 {
     (void)pv;
-    /* EXP-43 (2026-09-14): a READ is what starts a capture (EXP-41), so a
-     * triggered mode that waits for an edge before its first read waits
-     * forever — NORMAL froze at level 0 on the bench with zero edges and
-     * zero reads. capture_in_flight says whether a read has started a
-     * capture that has not yet been consumed; when it is false in
-     * NORMAL/SINGLE we do a PRIMING read (staging only, never published) to
-     * start one. single_done implements SINGLE: one triggered record, then
-     * hold until the mode is re-selected. */
+    /* capture_in_flight: the core's capture has been running since
+     * last_handover_tick (a read or a restart), so no new record can be held
+     * before one fill after it. False at start and after a register write
+     * dropped the capture: the next read then goes out at once.
+     * single_done: SINGLE has its one record and holds it until re-armed. */
     bool capture_in_flight = false;
     bool single_done = false;
-    uint32_t last_handover_tick = 0;   /* EXP-54: tick of the last PC0-strobed read */
+    uint32_t last_handover_tick = 0;   /* last hand-over, first read or restart */
     uint32_t last_read_tick = 0;
     uint32_t last_commit_tick = 0;
     uint32_t polls_since_handover = 0;
     trigger_mode_t last_mode = TRIG_AUTO;
     uint32_t single_arm_seen = acq_single_arm_req;
-    /* The next read's record is dropped, whatever it is: set when SINGLE is
-     * (re-)armed. While we were not reading the FPGA may have finished and
-     * be HOLDING a record from a crossing before the arm; its handover would
-     * pass for the one-shot. Stock's SINGLE path reads the write pointer
-     * instead (op09/0A, 0x080215EE); dropping one read is our equivalent. */
+    /* Set when SINGLE is (re-)armed: the core may still hold a record from a
+     * crossing before the arm, so the capture is restarted before the next
+     * read (trig_fresh_restart). */
     bool drop_next = false;
-    /* The task has not been reading records (STOP, a SINGLE record held,
-     * roll): what the FPGA holds by now is from before (trig_fresh_action). */
+    /* The task has not been reading records (no core, STOP, a SINGLE record
+     * held, roll): what the core holds now is old (trig_fresh_restart). */
     bool was_holding = false;
     uint32_t core_watch_tick = xTaskGetTickCount();
-    /* op 09 (CAP_FORCE): the last triggered record or restart, from which
-     * AUTO's budget runs; a request is out; when it was sent. */
+    /* The last triggered record or restart: AUTO's wait for a trigger runs
+     * from here. */
     uint32_t last_trig_tick = xTaskGetTickCount();
     for (;;) {
         if (!fpga.initialized || fpga.bus_released) {
@@ -1103,15 +995,15 @@ void fpga_acq_task(void *pv)
         /* Mask pass/fail (docs/specs/scope/mask-pass-fail.md): apply posted
          * requests here, in the one task that mutates the mask; and while a
          * failed record is held (stop-on-fail) read nothing, so the failing
-         * record stays in the buffers -- the same hold SINGLE uses. */
+         * record stays in the buffers, the same hold SINGLE uses. */
         scope_mask_service();
         if (scope_mask_hold_active()) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
 
-        /* Roll (C11): paced op03 points instead of the 04/05 record poll.
-         * Nothing below applies -- no record, no handover, no re-arm. */
+        /* Roll: paced op 03 points instead of the op 04/05 record poll.
+         * Nothing below applies: no record, no hand-over, no re-arm. */
         if (acq_roll_on) {
             fpga_roll_service();
             was_holding = true;
@@ -1119,43 +1011,6 @@ void fpga_acq_task(void *pv)
         }
         roll_tick_armed = false;
 
-        /* EDGE-PACED ready wait — rewritten 2026-08-14 after the June-capture
-         * re-read (analysis_v120/trigger_regime_findings_2026-08-14.md).
-         *
-         * Stock's runtime never reads on a LEVEL: it waits out a fresh
-         * data-ready event per 04/05 pair (median 18 ms, zero partial
-         * buffers in 348 windows) and sends nothing else — the paced read
-         * pair itself completes the capture cycle. The old level-gated loop
-         * here re-read whenever PC0 sat low, which works in the free-run
-         * regime (quiet input) and collects stale/partial buffers the moment
-         * real trigger crossings begin. Pace on EXINT0 falling edges instead:
-         * proceed only when a data-ready edge has fired since our last pair.
-         *
-         * The probe-read fallback below stays, for two reasons: a STOPPED
-         * engine emits no edges (the 2026-08-12 hard-gate deadlock lesson),
-         * and if free-run turns out not to pulse PC0 per cycle (unmeasured —
-         * the pc0_edges counter in `status` now answers this on the bench),
-         * this build degrades to ~4 probe pairs/s instead of deadlocking. */
-        /* Ready-wait policy branches on the scope trigger mode (Addendum 4).
-         *
-         *   AUTO   — free-run display. Wait only a short budget for a real
-         *            trigger edge (so a triggered, stable capture is used WHEN
-         *            available), then read the free-running buffer anyway. The
-         *            buffer holds a coherent waveform regardless of triggering,
-         *            so this updates smoothly on any input, including a quiet or
-         *            below-threshold one that never pulses PC0.
-         *   NORMAL — triggered display. Wait a longer budget for an edge; on
-         *   /SINGLE  timeout, HOLD the last trace (skip the read) rather than
-         *            overwriting it with an untriggered free-run buffer. That is
-         *            the correct behaviour: no trigger => trace frozen.
-         *
-         * DAC1 (PA4) is the vertical OFFSET (Addendum 1), not a trigger
-         * comparator reference, so it must NOT be slammed to mid on every
-         * free-run poll — that would override the UI vertical-position control.
-         * The defensive re-arm is now gated on a genuine dry spell (many
-         * consecutive rejected reads), the only case where a dropped reference
-         * is plausible; a normal AUTO free-run read is a SUCCESS, not a
-         * timeout. */
         const scope_state_t *ss_acq = scope_state_get();
         trigger_mode_t mode_now = (ss_acq == NULL) ? TRIG_AUTO : ss_acq->trigger.mode;
         if (mode_now != last_mode) {           /* re-selecting SINGLE re-arms it */
@@ -1197,33 +1052,27 @@ void fpga_acq_task(void *pv)
             vTaskDelay(pdMS_TO_TICKS(10));     /* hold the one record */
             continue;
         }
-        /* STOP holds the published record (stock: ms[0x2E] = 0 at 0x0800BE5E,
-         * and a stopped timebase/range key re-renders instead of re-arming,
-         * 0x0800B6AA; docs/re/parity2_static.md section 3). Before this the
-         * task never tested `running` (trigger-modes.md D7): AUTO kept
-         * committing free-run reads and NORMAL every handover, so a key press
-         * while STOPPED drew a NEW record, and after a timebase key the next
-         * commit relabelled acq_pub_idx -- the zoom-while-paused view (C14)
-         * collapsed to ratio 1000 within one poll. Read nothing, like the
-         * SINGLE hold above: reg 0x01 may still follow the keys, the held
-         * record and its rate stay. Autoset/baseline set `running` first. */
+        /* STOP holds the published record, as stock does: read nothing, like
+         * the SINGLE hold above. Reg 0x01 may still follow the timebase keys;
+         * the held record and its rate (acq_pub_idx) stay, so the paused
+         * zoom view keeps its scale. Autoset and baseline set `running`
+         * first. */
         if (ss_acq != NULL && !ss_acq->running) {
             was_holding = true;
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
-        /* Reading (again). A record the FPGA captured while nobody read, or
-         * before SINGLE was armed, must not pass for a new one: bench
-         * 2026-11-17, RUN after a STOP published one record from before the
-         * STOP in 6 of 6 (generator off since), and so did leaving a finished
-         * SINGLE. The core is restarted by a register write: the level, with
-         * the value it has (trig_fresh_restart). */
+        /* Reading again. A record the core held while nobody read, or before
+         * SINGLE was armed, must not pass for a new one (without this, RUN
+         * after STOP showed a record from before the STOP, 6 times in 6 on
+         * the bench). Any register write restarts the capture: write the
+         * level with the value it has (trig_fresh_restart). */
         if (trig_fresh_restart(drop_next, was_holding)) {
             fpga_scope_write_reg(FPGA_CORE_OP_LEVEL, acq_trig_code);
             acq_fresh_restarts++;
             drop_next = false;
             /* the capture starts now: wait for it like after a hand-over,
-             * and give AUTO its whole budget before a free-running read */
+             * and give AUTO its whole wait before it asks for a forced record */
             const uint32_t t = xTaskGetTickCount();
             capture_in_flight = true;
             last_handover_tick = t;
@@ -1231,30 +1080,20 @@ void fpga_acq_task(void *pv)
             last_trig_tick = t;
         }
         was_holding = false;
-        /* EXP-53/54 (2026-09-20..22) — PC0 is a HANDOVER strobe, not a
-         * completion flag: it pulses 6–9 µs after an opcode-0x04 read that
-         * finds a completed record (50 cycles at 0x10/0x12, never more). The
-         * FPGA runs its own cycle: handover → ~189 ms hold → roll → crossing
-         * of (reg-0x08 − 28), either edge → 512 post samples → HELD until the
-         * next read. So this loop is a POLL, stock's 29 ms cadence: read; if
-         * the read strobed PC0 its data IS the fresh record → commit; else it
-         * is the rolling buffer → discard (AUTO: commit it as free-run once
-         * the budget expires; NORMAL/SINGLE: hold). Sleep until the earliest
-         * possible next handover (last + fill + poll-start margin), then poll
-         * every acq_poll_gap_ms. Reads during the FPGA's cycle are harmless
-         * (EXP-53: the cycle ran at the same rate with reads inside it).
-         * This also fixes NORMAL freezing on slow signals: the single arming
-         * read of EXP-47/50 landed before the crossing and nothing read again. */
+        /* Poll pacing. After a pair has been read (or the capture
+         * restarted), the core fills its ring again before it can hold the
+         * next record: sleep one fill (fpga_acq_post_edge_get), then read
+         * every acq_poll_gap_ms until a read finds a held record. A read
+         * while the core is filling only returns the ring as it is (never
+         * shown) and does not disturb the capture. */
         uint32_t now = xTaskGetTickCount();
         if (capture_in_flight) {
             uint32_t earliest = last_handover_tick + fpga_acq_post_edge_get();
             /* Sleep in slices and leave for the park point as soon as a
-             * pause is asked: at a slow timebase the fill is seconds long
-             * (2 s at 500 S/s), longer than fpga_acq_pause()'s 1 s budget, so
-             * a register write (timebase, trigger source, level) was refused
-             * about every other time (bench 2026-11-14, tb 0x14). Nothing is
-             * read on the way out; the wait is taken up again after the
-             * resume, from the same last_handover_tick. */
+             * pause is asked: at slow timebases the fill is seconds long
+             * (2 s at 500 S/s), longer than fpga_acq_pause()'s 1 s budget.
+             * Nothing is read on the way out; the wait resumes after the
+             * pause from the same last_handover_tick. */
             bool pause_asked = false;
             if ((int32_t)(earliest - now) > 0) {
                 uint32_t d = earliest - now;
@@ -1276,7 +1115,7 @@ void fpga_acq_task(void *pv)
             if (pause_asked) continue;               /* to the park point at the top */
         }
         if (acq_read_br != 0xFF)
-            spi3_set_br(acq_read_br);                       /* EXP-46 (b) */
+            spi3_set_br(acq_read_br);                       /* `fpga acqbr` */
         /* Ask our core what it holds (never between the op 04 and the op 05
          * of a pair, never a design that has not identified itself). */
         if ((uint32_t)(xTaskGetTickCount() - core_watch_tick) >= pdMS_TO_TICKS(ACQ_CORE_WATCH_MS)) {
@@ -1284,8 +1123,8 @@ void fpga_acq_task(void *pv)
             if (fpga_core_watch_poll())
                 continue;                                   /* a register was rewritten: capture restarted */
         }
-        /* AUTO and no trigger for a whole budget, on a core with op 09: ask
-         * it to hold a record as it is, just before reading. Between polls
+        /* AUTO and no trigger for a whole wait: ask the core to hold a
+         * record as it is (op 09), just before reading. Between polls
          * the capture stays armed, so a trigger that comes is still caught
          * and its record read instead (the request does nothing to a record
          * already held). The hold happens at the next stored sample: wait
@@ -1307,9 +1146,6 @@ void fpga_acq_task(void *pv)
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, xTaskGetTickCount() * portTICK_PERIOD_MS);
         uint32_t edges_before = fpga.pc0_edges;
         uint16_t hw_to_before = fpga.spi3_hw_timeouts;
-        /* Reads land in staging, not the published buffers (P0.2): a frame
-         * the gate below rejects never reaches the display, and an accepted
-         * one is committed atomically in fpga_acq_frames_commit(). */
         volatile uint8_t *w1 = acq_write_ch1();
         volatile uint8_t *w2 = acq_write_ch2();
         uint8_t s1 = fpga_acq_read_channel(FPGA_CORE_OP_REC_A, w1);
@@ -1329,10 +1165,10 @@ void fpga_acq_task(void *pv)
             if (triggered && !pc0) acq_kind_n[2]++;
             if (!triggered && pc0) acq_kind_n[3]++;
         }
-        /* `held`: the read is a record the FPGA held and handed over. On a
-         * core with op 09 it may have been held on request (forced) instead
-         * of by a trigger: handed over, time-ordered and simultaneous like
-         * any record, but not `triggered`. */
+        /* `held`: the read is a record the core held and handed over. It may
+         * have been held on request (op 09, `forced`) instead of by a
+         * trigger: time-ordered and simultaneous like any record, but not
+         * `triggered`. */
         const bool held = triggered;
         const bool forced = held && trig_hdr_forced(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI]);
         if (forced) { triggered = false; acq_force_n[1]++; }
@@ -1363,12 +1199,11 @@ void fpga_acq_task(void *pv)
             if (forced_asked && !held) acq_force_n[2]++;
             continue;
         }
-        /* Capture configuration (dsp/acq_cfg.h, bench 2026-11-14): a record
-         * whose samples may predate the last change of routing, range,
-         * coupling, position, probe, timebase, trigger, interleave or roll,
-         * or overlap the settling after it, is dropped -- neither
-         * configuration describes it. The published record (screen and
-         * stream) stays the last good one, with its own configuration. */
+        /* Capture configuration (dsp/acq_cfg.h): a record whose samples may
+         * predate the last change of routing, range, coupling, position,
+         * probe, timebase, trigger, interleave or roll, or overlap the
+         * settling after it, is dropped: neither configuration describes it.
+         * The published record stays the last good one. */
         if (acq_cfg_settle_cmd != 0xFFFFu &&
             !acq_cfg_admit(&s_acq_cfg_trk, last_read_tick * portTICK_PERIOD_MS,
                            acq_cfg_fill_ms(scope_timebase_sample_rate(acq_rate_idx)),
@@ -1376,32 +1211,18 @@ void fpga_acq_task(void *pv)
             acq_cfg_drops++;
             continue;
         }
-        /* Anchor the success flags on frame validity — a fully dead bus
-         * reads 0xFF everywhere (pull-up idle / spi3_xfer timeout), which
-         * after the -28 offset is a plausible flat 227, and one spurious
-         * PC0 glitch would otherwise latch the scope UI's demo-kill flag on
-         * garbage (the same unanchored-measurement trap as the /2 reads).
-         * Accept if either window carried the 0x80 data-ready marker, or the
-         * CH1 buffer is non-constant (the marker appears only in the FIRST
-         * window after data-ready per Stlkv, so a marker-only gate could
-         * false-negative; varying data is accepted on its own merits). */
+        /* Validity gate, reached only by a held record. A dead bus (0xFF
+         * everywhere) is already refused above: its header carries no seam.
+         * Accept when either reply starts with the core's 0x80 or the CH1
+         * samples vary, and only when no SPI3 hardware timeout fired during
+         * the two reads (a timeout fabricates 0xFF bytes). */
         bool marker = (s1 == FPGA_CORE_REPLY_FIRST) || (s2 == FPGA_CORE_REPLY_FIRST);
         bool varies = false;
         for (int i = 1; i < 1024; i++) {
             if (w1[i] != w1[0]) { varies = true; break; }
         }
-        /* The old third gate term tested acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]==0x01 as a stock
-         * "buffer-valid" flag. Refuted 2026-08-15 by stock's own dispatch:
-         * stock discards only two bytes, so that byte is sample[0], and on
-         * this board it reads mid-scale (0x7C/0x79) and never 0x01. The term
-         * was therefore always false here — dropping it changes nothing. */
-        /* Third gate term (audit 2026-08-20, P0.3): the marker/varies gate
-         * catches an all-0xFF dead bus, but a poll expiry PARTWAY through a
-         * read yields a frame that is half real data, half fabricated 0xFF —
-         * which "varies" and would pass. If spi3_hw_timeouts moved during the
-         * two reads, at least one byte is fabricated: reject. */
         if ((marker || varies) && fpga.spi3_hw_timeouts == hw_to_before) {
-            fpga.acq_last_rot = fpga_acq_unrotate_staging(held);   /* dev plan 2.3: seam-based */
+            fpga.acq_last_rot = fpga_acq_unrotate_staging(held);
             acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
             /* a forced record is in time order but has no trigger at 512 */
             acq_stage_ordered_core = acq_stage_ordered && acq_rot_from_hdr && !forced;
@@ -1428,39 +1249,34 @@ void fpga_acq_task(void *pv)
                 acq_single_done_pub = true;
             }
         } else {
-            fpga.spi3_total_timeouts++;    /* rejected frame — shows in TO: */
-            /* Dry-spell recovery only: after a run of rejected reads (a dead
-             * bus / dropped reference, not the normal free-run path), restore
-             * DAC1 to mid so a lost vertical reference cannot silently freeze
-             * capture. Rare by construction, so it does not fight the UI
-             * vertical-position control the way a per-poll re-arm would. */
+            fpga.spi3_total_timeouts++;    /* rejected frame: shows in TO: */
+            /* After 32 rejected records with no commit between, re-apply the
+             * vertical offset references: the calibrated codes, or DAC1
+             * mid-scale without a usable cal page (scope_vpos_recover). */
             if (++fpga.spi3_timeout_count >= 32) {
-                /* Mid-scale without a usable cal page (as before); with one,
-                 * the calibrated codes, so recovery does not silently undo
-                 * the vertical position. */
                 scope_vpos_recover();
                 fpga.spi3_timeout_count = 0;
             }
         }
 
-        /* Bound the read rate lightly; the display's own 50 ms frame loop
-         * caps rendering, so reading faster than it draws only costs SPI
-         * time (~275 µs per CH1+CH2 pair at /2). */
+        /* A short yield between passes. */
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
-/* See fpga.h. The acquisition task reads SPI3 continuously, so every shell
- * command that uses the bus parks it here first. */
+/* The acquisition task reads SPI3 continuously, so every other user of the
+ * bus parks it here first. True at once when the task does not exist. */
 bool fpga_acq_pause(void)
 {
     if (acq_task_handle == NULL)
         return true;
     acq_pause_req = true;
     acq_pause_ack = false;      /* demand a FRESH ack from the park point */
-    /* Worst-case ack latency = one full pass of the acquisition loop: the
-     * trigger-mode edge wait (≤FPGA_NORMAL_TRIG_WAIT_MS) + two 1026-byte
-     * reads + 10 ms. 1 s is a comfortable margin. */
+    /* A running task reaches its park point within one wait slice
+     * (ACQ_WAIT_SLICE_MS) plus one record pair, roll point or status read;
+     * 100 x 10 ms = 1 s is a wide margin. It never acks while the FPGA is
+     * not initialised or the bus is released (the check above the park
+     * point), so the pause then fails. */
     for (int i = 0; i < 100; i++) {
         if (acq_pause_ack)
             return true;
@@ -1476,49 +1292,25 @@ void fpga_acq_resume(void)
 }
 
 /*
- * Reconcile the display's timebase with the register the arm block just wrote.
- * Before 2026-08-19 nothing did this, so a stock boot came up with the display
- * on 0x0A and the hardware on 0x08 and no way to notice.
+ * Make the core's timebase register and the display's timebase agree after
+ * an arm burst, which writes 0x08:
+ *   - the display's code has a known rate: write it to the core, so the
+ *     user's timebase survives a power cycle;
+ *   - it has none: set the display to the 0x08 the burst wrote.
+ * In roll mode the roll code is written back instead.
  *
- * MUST be called from EVERY arm path. There are two — the hardware-SPI one in
- * fpga_spi3_config_sequence() and the bit-bang one under FPGA_CONFIG_B_ARM —
- * and the first attempt patched only the first, which is dead code in the
- * shipping guest-coldtrace build. The device reported the mismatch unchanged;
- * that is the whole reason `fpga scope freq` prints both codes.
+ * Must be called after every arm burst: the upload in fpga_boot.c (boot and
+ * fpga_reload) and the reverse-engineering toolkit's config sequence. main()
+ * calls it again right after settings_store_init(), which runs after
+ * fpga_init() and restores the persisted timebase_idx: at boot that later
+ * call is the one that counts.
  *
- * The arm sequences themselves are NOT touched: they are the bench-proven
- * 2026-08-13 cold-boot bring-up and stay byte-identical. This runs after, and
- * only in one of two directions:
- *
- *   - persisted code has a MEASURED rate -> push it to the hardware, so a
- *     user's timebase choice survives a power cycle;
- *   - persisted code has no rate         -> pull the display down to the 0x08
- *     the arm block wrote. Neither code can be labelled, so moving the
- *     hardware would be change for its own sake on the one path that took
- *     months to get working.
- *
- * Caller must hold the SPI3 bus with a clock the FPGA accepts for writes.
- *
- * ALSO called from main() immediately after settings_store_init(). That is not
- * belt-and-braces, it is required: settings_store_init() runs AFTER fpga_init()
- * — deliberately, so the bench-validated config sequence keeps the electrical
- * environment it was validated in — and it overwrites timebase_idx with the
- * persisted value. So the in-fpga_init call can never win, and on the first
- * flash it did not: the reconcile ran, reported "pulled", and the display still
- * read 0x0A. The call after the restore is the authoritative one; the one in
- * the arm path keeps acq_rate_idx honest about what the arm block wrote in
- * case no settings record exists.
- *
- * Safe to call pre-scheduler: it takes no lock, and every caller runs before
- * fpga_create_tasks(), so no acquisition task can be mid-frame on SPI3.
+ * Writes the register directly, without a park. The caller must hold SPI3
+ * at a clock the core accepts, with the task not running: at boot it does
+ * not exist yet, and fpga_reload() suspends it.
  */
-/* 0 = never ran, 1 = pushed the display's code to the FPGA, 2 = pulled the
- * display down to the arm block's 0x08. Reported by `status`.
- *
- * This exists because the first version of this fix was placed in ONE of the
- * two arm paths and the other is what the shipping build uses. It compiled,
- * it was correct, and it never executed. "Did this code path run" was only
- * answerable by inference from a symptom; now it is a readable fact. */
+/* 0 = never ran, 1 = wrote a code to the core, 2 = set the display to 0x08.
+ * Shown by `status`. */
 static volatile uint8_t fpga_tb_reconcile_action;
 
 uint8_t fpga_timebase_reconcile_action(void)
@@ -1530,8 +1322,8 @@ void fpga_reconcile_timebase_after_arm(void)
 {
     scope_state_t *ss = scope_state_get();
 
-    /* Roll (C11) survives a re-arm: the arm burst leaves reg 0x01 at its own
-     * value, so put back the roll code the FPGA was given, not the Y-T one. */
+    /* Roll survives a re-arm: put back the roll code the core was given,
+     * not the Y-T one. */
     if (ss->roll && acq_roll_on) {
         const uint8_t rc = (acq_roll_code_override >= 0)
                                ? (uint8_t)acq_roll_code_override
@@ -1558,10 +1350,10 @@ void fpga_reconcile_timebase_after_arm(void)
     }
 }
 
-/* Trigger sibling of the reconcile above (EXP-41): the arm burst leaves reg
- * 0x08 at stock's captured 0xAD, above every bench signal this project has
- * applied; hand it to the (possibly restored) UI level. Runs before the acq
- * task exists, so a bare write is correct here, as for the timebase. */
+/* Trigger counterpart of the reconcile above: the arm burst leaves reg 0x08
+ * at 0xAD and reg 0x06 at CH1; write the (possibly restored) UI level and
+ * source. Called only from main(), before the task exists, so bare writes
+ * are correct. fpga_reload() uses the apply functions instead. */
 static volatile uint8_t fpga_trig_reconcile_code;
 
 uint8_t fpga_trigger_reconcile_code(void) { return fpga_trig_reconcile_code; }
