@@ -1,12 +1,16 @@
 /*
  * OpenScope 2C53T - shell commands: system
  *
- * status, flash, CAN, USB, meter, settings, persistence, battery, signal
- * generator, firmware loader.
+ * status, SPI flash, CAN analyser, meter, settings and persistence, bootloader
+ * reboot, battery, signal generator, firmware loader.
  */
 
 #include "shell_parts.h"
 
+/* Which FPGA configuration path completed this boot, for `status`. NONE when
+ * no upload finished (h2_upload_done clear). The bit-bang path stores the
+ * marker 0xBBBB in diag_spi_ctrl1 (fpga_boot.c); any other value is taken as
+ * the hardware SPI3 path. */
 static cfg_path_t fpga_cfg_path(void)
 {
     if (!fpga.h2_upload_done) return CFG_PATH_NONE;
@@ -22,6 +26,7 @@ static const char *fpga_cfg_path_name(cfg_path_t p)
     }
 }
 
+/* Print the last command frame sent to the FPGA, in hex. */
 static void usb_print_last_tx_frame(void)
 {
     usb_send_str("last_tx_frame:");
@@ -31,12 +36,13 @@ static void usb_print_last_tx_frame(void)
     usb_send_str("\r\n");
 }
 
-/* For the feature shell files (shell_internal.h); usb_print_last_tx_frame() unchanged. */
+/* Exported for the feature shell files (declared in shell_internal.h). */
 void usb_debug_sh_print_last_tx_frame(void)
 {
     usb_print_last_tx_frame();
 }
 
+/* Print the TX frame history ring, oldest first, one bracketed frame each. */
 static void usb_print_recent_tx_frames(void)
 {
     uint8_t count = fpga.tx_frame_history_count;
@@ -57,7 +63,7 @@ static void usb_print_recent_tx_frames(void)
     usb_send_str("\r\n");
 }
 
-/* For the feature shell files (shell_internal.h); usb_print_recent_tx_frames() unchanged. */
+/* Exported for the feature shell files (declared in shell_internal.h). */
 void usb_debug_sh_print_recent_tx_frames(void)
 {
     usb_print_recent_tx_frames();
@@ -297,6 +303,7 @@ void cmd_flash_jedec(void)
                      manufacturer, memory_type, capacity);
 }
 
+/* flash read <addr> <len>: hex dump of up to 256 bytes of the W25Q, 16 per line. */
 void cmd_flash_read(const char *args)
 {
     char buf[64];
@@ -343,6 +350,8 @@ void cmd_flash_read(const char *args)
     }
 }
 
+/* flash dump <addr> <len>: up to 4096 raw W25Q bytes after a "FLASHDUMP <len>"
+ * header line, read and sent in 256-byte chunks. */
 void cmd_flash_dump(const char *args)
 {
     char buf[64];
@@ -387,18 +396,13 @@ void cmd_flash_dump(const char *args)
     }
 }
 
-/*
- * Factory-cal self-protection (src/util/cal_backup.c).
- *   cal status              report the MCU cal page and the W25Q backup
- *   cal backup              copy the MCU cal page to the W25Q (safe: W25Q only)
- *   cal restore [force] CONFIRM   write the W25Q backup back to MCU flash
- * Restore refuses to overwrite a programmed (precious) page unless `force`.
- */
-/* ── CAN bus analyser (CH1 = CAN_H, CH2 = CAN_L) ───────────────────────────
+/* CAN bus analyser (CH1 = CAN_H, CH2 = CAN_L).
  *   can decode              decode the current record, frame by frame
  *   can stats [n]           n fresh records (default 20): per-ID counts, ACK/NAK/CRC
  *   can screen [on|off]     readout on badge row 2, refreshed 5x per second
  * Best timebase for decoding a 500 kbit/s bus: 0x0A (whole frame + ACK). */
+
+/* The one flag a frame is reported by, in priority order. */
 static const char *can_flags_str(uint8_t f)
 {
     if (f & DECODE_FLAG_ERROR) return "ERR";
@@ -409,6 +413,8 @@ static const char *can_flags_str(uint8_t f)
     return "?";
 }
 
+/* One line per record: generation, timebase and sample rate, rotation,
+ * samples per bit, bit rate and the two bus levels (CH1-CH2 counts). */
 static void can_print_report(const can_bus_report_t *r, uint32_t gen)
 {
     unsigned spb100 = (unsigned)(r->spb * 100.0f + 0.5f);
@@ -448,6 +454,9 @@ void cmd_can_decode(void)
     if (res->num_frames == 0) usb_send_str("  no frame start in this record\r\n");
 }
 
+/* Collect n records with distinct generations (default 20) into the stats
+ * table, giving up after 1 s per record plus 2 s. Prints the summary line,
+ * the totals, one row per ID, and the last record that held a CAN signal. */
 void cmd_can_stats(const char *args)
 {
     uint32_t n = 20;
@@ -508,6 +517,8 @@ void cmd_can_screen(const char *args)
     usb_debug_printf("can screen %s\r\n", can_scope_screen_on() ? "ON (badge row 2)" : "OFF");
 }
 
+/* meter relays [on|off]: whether entering the meter moves the scope's range
+ * relays. With it on, the meter link follows the screen only. */
 void cmd_meter_relays(const char *args)
 {
     bool on;
@@ -519,6 +530,10 @@ void cmd_meter_relays(const char *args)
                      onoff(fpga_meter_relays_get()));
 }
 
+/* meter state: mode and submode with the stock selector words, the meter link
+ * (policy, PC11, fast switch and wake counters), the last decoded reading,
+ * range fields, the first 12 frame bytes, the continuity beep and the
+ * cal-word guard. Read only. */
 void cmd_meter_state(void)
 {
     meter_reading_t r;
@@ -580,31 +595,6 @@ void cmd_meter_state(void)
                      (unsigned)fpga.meter_cal_word_refused, (unsigned)fpga.meter_cal_word_last);
 }
 
-/*
- * `fpga scope freq [n]` — run the SHIPPED frequency estimator on the live
- * acquisition buffer, n times, and report every outcome including refusals.
- *
- * This exists because reading a number off the LCD cannot distinguish "the
- * estimator is right" from "the estimator is wrong and the badge is holding a
- * stale value". It reports the diagnostics the badge throws away: sharpness,
- * which window was used, and the interpolated bin.
- */
-/*
- * `settings` — why did the boot reconcile say what it said?
- *
- * Added 2026-08-19 after three consecutive power cycles reported "pulled the
- * display down to the arm block's 0x08", i.e. the restored timebase had no
- * measured rate — including one run where the change was committed through a
- * documented immediate-flush point (a mode switch). That is either a write
- * that never reached flash or a load that never came back, and NOTHING ON THE
- * DEVICE DISTINGUISHED THEM: settings_store_status_t has carried
- * storage_bound, load_result, writes, write_failures and changes_seen since
- * the store was written, and no caller ever read them.
- *
- * Same shape as the /2 SSPI reads, the floating MISO and the invented
- * volts/div labels: a conclusion drawn from one bit, while the instrument that
- * would have settled it already existed and was simply never wired up.
- */
 /* reset settings CONFIRM: "Reset to defaults" on the direct route. The
  * built-in defaults (the property table's) go over the user settings (the
  * saved record) through the same function as the Settings row: the input
@@ -646,6 +636,10 @@ void cmd_reset_settings(const char *args)
     model_shell_reset_report(r.status, r.changed, r.left, settings_flush_outcome_text(r.saved), reset_emit);
 }
 
+/* settings: the settings store's status (storage bound, boot load result,
+ * writes, write failures, changes seen) and the config layer's save counters.
+ * Together they tell a write that never reached flash from a load that never
+ * came back, and a failed save from one refused because writes are disabled. */
 void cmd_settings(void)
 {
     const settings_store_status_t *st = settings_store_get_status();
@@ -665,11 +659,9 @@ void cmd_settings(void)
     usb_debug_printf("changes seen  : %lu\r\n", (unsigned long)st->changes_seen);
     usb_debug_printf("live timebase : 0x%02X\r\n", (unsigned)ss->timebase_idx);
 
-    /* The store's "write failures" above conflates a refusal we chose with a
-     * failure we suffered — config.h:162 warns about exactly that lie, and on
-     * 2026-08-20 it cost a bench session: three power-cycle tests blamed the
-     * write path when the build had writes disabled. These lines make the
-     * distinction unmissable. */
+    /* The store's "write failures" above counts a save refused because writes
+     * are disabled at build time the same as a real failure. The config
+     * layer's counters (config_persist_stats_t, config.h) separate the two. */
     const config_persist_stats_t *cs = config_persist_stats();
     usb_debug_printf("writes enabled: %s\r\n",
                      cs->writes_enabled
@@ -685,6 +677,7 @@ void cmd_settings(void)
                  "orderly power-off follows it - see settings_store.h)\r\n");
 }
 
+/* Reply first, give it time to leave, then reboot into the DFU bootloader. */
 void cmd_reboot_bootloader(void)
 {
     usb_send_str("Rebooting to bootloader...\r\n");
@@ -705,7 +698,7 @@ const char *meter_layout_name(uint8_t layout)
     }
 }
 
-/* For the feature shell files (shell_internal.h); meter_layout_name() unchanged. */
+/* Exported for the feature shell files (declared in shell_internal.h). */
 const char *usb_debug_sh_meter_layout_name(uint8_t layout)
 {
     return meter_layout_name(layout);
@@ -750,6 +743,9 @@ void cmd_batt(const char *args)
                      (unsigned)battery_is_critical());
 }
 
+/* meter auto [start [settle_ms]|status|cancel]: start (default settle 700 ms,
+ * at most 3000), query or cancel the background submode autoselect. Every
+ * accepted form ends with the status line. */
 void cmd_meter_auto_async(const char *args)
 {
     meter_autoselect_status_t st;
@@ -800,13 +796,14 @@ void cmd_meter_auto_async(const char *args)
                      st.cancel_pending ? 1U : 0U);
 }
 
-/* ── siggen — signal generator state + the registers behind it ─────────
- * Bench check for parity G1/G3/G4: every field the stock SWD session read
- * (TMR7 DIV/PR/CTRL1, DAC CTRL both halves, DMA2 ch4, flex select, PA5
- * mode) printed next to what we asked for, so a GEN-lead -> CH2 capture
- * can be tied to the programming. The settings are the gen.* properties
+/* siggen: the signal generator state and the registers behind it.
+ * Prints the requested settings, our timer timing next to the stock formula's,
+ * then TMR7 (CTRL1/CTRL2/DIV/PR/CNT), DAC CTRL (both halves) and data
+ * registers, DMA2 channel 4 and its flex source select, the PA5 mode nibble,
+ * and samples of the cycle in the DMA buffer. A GEN-lead -> CH2 capture can
+ * then be tied to the programming. The settings are the gen.* properties
  * (set gen.wave=3 gen.amp=1.5 gen.freq=2000 gen.out=on); `siggen dump`
- * adds the cycle in the DMA buffer. */
+ * prints the whole cycle. */
 static void siggen_print_state(void)
 {
     const siggen_config_t *c = siggen_get_config();
@@ -884,37 +881,10 @@ void cmd_siggen(const char *args)
     siggen_print_state();
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Shell command table (2026-08-20; audit item 8.9)
- *
- * Replaces the ~110-entry if/strcmp dispatch chain. Each row binds ONE
- * command to its handler, its bus-safety requirement and its help text, so
- * the three can never drift apart again — the P0.1 fix had to hand-wrap
- * eleven dispatch entries in spi3_shell_claim(); here that is one flag.
- *
- * Matching: a row matches when its name is a whole-word prefix of the line
- * (next char is NUL/space/tab). The dispatcher picks the LONGEST matching
- * name, so ordering in this table carries no semantics and near-miss pairs
- * ("meter auto" / "meter autoscan", "trig" / "trig2") cannot shadow each
- * other. Flags:
- *   SC_EXACT    command takes no arguments; trailing text = no match
- *               (falls through to "Unknown command", as before).
- *   SC_NEEDARGS command requires arguments; a bare name prints the row's
- *               help instead of running the handler — this preserves the
- *               old chain's "trailing space required" contract and matters
- *               because parse_int("") SUCCEEDS with 0, so a handler given
- *               a bare name would otherwise act on the value 0.
- *   SC_SPI3     handler drives the raw SPI3 bus: the dispatcher parks the
- *               acquisition task around the call (audit P0.1).
- *
- * Adding a command = adding ONE row (CMD_A if the handler takes an args
- * string, CMD_V if it takes void). Help is part of the row; keep the
- * left-aligned name+argspec column at 32 chars like the rows around it.
- * ═══════════════════════════════════════════════════════════════════ */
-/* ── fwload / fwstat / fwapply — image loading over this shell ──────────
- * The state machine and every flash touch live in fw_loader.c; these
- * handlers are parsing and printing only. The RX rerouting that feeds the
- * transfer is in vUsbDebugTask below. */
+/* fwload / fwstat / fwswap / fwapply: firmware image loading over this shell.
+ * The state machine and every flash access live in fw_loader.c; these
+ * handlers only parse and print. The RX rerouting that feeds the transfer is
+ * in vUsbDebugTask (shell.c). */
 
 static const char *fwl_err_name(fw_loader_error_t e)
 {
@@ -931,6 +901,9 @@ static const char *fwl_err_name(fw_loader_error_t e)
     return "?";
 }
 
+/* Loader state and progress, both W25Q cache slots (size/CRC), and the last
+ * install breadcrumb (AT32 backup registers, captured once at boot; it
+ * survives a reset while the board stays powered). */
 void fwl_print_status(void)
 {
     static const char *names[] = { "IDLE", "RECEIVING", "STAGED", "ERROR" };
@@ -957,6 +930,10 @@ void fwl_print_status(void)
         usb_send_str("last install: no record since power-up (none, or the board lost power)\r\n");
 }
 
+/* fwload <size> <crc32 hex> [a|b]: arm the raw-byte intake for an image of
+ * <size> bytes into a W25Q cache slot (default b). Once armed, the next bytes
+ * from the host go into the image, so every argument is checked first and
+ * anything malformed is refused rather than defaulted. */
 void cmd_fwload(const char *args)
 {
     char *end = NULL;
@@ -967,35 +944,28 @@ void cmd_fwload(const char *args)
     if (end && *end) {
         crc = strtoul(end, &end2, 16);
         /* strtoul() leaves endptr == nptr when it converted nothing, so this
-         * separates "crc32 token is not hex" from "crc32 is literally 0" and
-         * from "no crc32 given" — all three used to print the same usage
-         * line, which sends the operator hunting a syntax error they do not
-         * have. */
+         * separates "crc32 token is not hex" from "crc32 is 0" and from "no
+         * crc32 given", each with its own message. */
         if (end2 == end) crc_bad = true;
     }
-    uint8_t slot = 1; /* default: slot b — "the other firmware" by custom */
+    uint8_t slot = 1; /* default: slot b, by convention the other firmware */
     bool slot_bad = false;
     if (end2 != NULL) {
         while (*end2 == ' ') end2++;
         if (*end2 == 'a' || *end2 == 'A') slot = 0;
         else if (*end2 == 'b' || *end2 == 'B') slot = 1;
         else if (*end2 != '\0') slot_bad = true;
-        /* The letter must END the argument. `fwload 8192 DEADBEEF apple`
-         * matched 'a', dropped "pple" and armed the raw-byte intake — the
-         * same wedge the comment below describes, reached through the
-         * recognised-letter door instead of the unrecognised one. */
+        /* The letter must end the argument: `fwload 8192 DEADBEEF apple`
+         * is refused, not taken as slot a. */
         if (!slot_bad && *end2 != '\0') {
             const char *tail = end2 + 1;
             while (*tail == ' ') tail++;
             if (*tail != '\0') slot_bad = true;
         }
     }
-    /* An argument that is present but is neither a nor b used to fall back to
-     * the default and arm the intake anyway: `fwload <size> <crc> c` put the
-     * shell into raw mode while the operator was still reading the reply, and
-     * the next line they typed went into the image instead of the parser.
-     * (Wedged the 2C23T port that way on 2026-08-24 — same parser, same trap.)
-     * Refusing costs nothing: cdc_flash.py never sends anything but a or b. */
+    /* A slot argument that is present but is neither a nor b is refused, not
+     * defaulted: arming the intake would make the next line typed part of
+     * the image. scripts/cdc_flash.py only ever sends a or b. */
     if (crc_bad) {
         /* Checked before slot_bad: an unparseable crc32 leaves end2 pointing at
          * that same token, which can then be mis-blamed on the slot letter. */
@@ -1026,14 +996,15 @@ void cmd_fwstat(void)
     fwl_print_status();
 }
 
+/* fwswap a|b: install an image already cached in a W25Q slot (no transfer).
+ * The loader verifies the slot, then erases, programs and verifies MCU flash
+ * from RAM and resets into the image. Returns only if the install is refused. */
 void cmd_fwswap(const char *args)
 {
     uint8_t slot;
     while (*args == ' ') args++;
-    /* The token must be exactly one letter. A first-character match meant
-     * `fwswap apple` and `fwswap b0rked` both reached erase+program+system
-     * reset — the most destructive command in this shell, accepting the
-     * loosest argument in it. */
+    /* The token must be exactly one letter (`fwswap apple` is refused): this
+     * command erases the application and resets. */
     const char *sw_tail = (*args != '\0') ? args + 1 : args;
     while (*sw_tail == ' ') sw_tail++;
     if (*sw_tail != '\0') slot = 0xFF;
@@ -1055,6 +1026,8 @@ void cmd_fwswap(const char *args)
     }
 }
 
+/* fwapply: install the staged image (erase, program, verify from RAM) and
+ * reset into it. Returns only when the apply is refused. */
 void cmd_fwapply(void)
 {
     if (fw_loader_state() != FW_LOADER_STAGED) {

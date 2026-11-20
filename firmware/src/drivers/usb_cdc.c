@@ -7,19 +7,16 @@
 
 #include "shell_parts.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * USB Device Instance
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── USB device instance ────────────────────────────────────────────── */
 
 usbd_core_type usb_core_dev;
 
-/* ═══════════════════════════════════════════════════════════════════
- * USB Delay Helpers (required by USB middleware via usb_conf.h)
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Delay helpers the USB middleware needs (usb_conf.h) ────────────── */
 
 void usb_delay_ms(uint32_t ms)
 {
-    /* Use FreeRTOS delay if scheduler is running, otherwise spin */
+    /* FreeRTOS delay when the scheduler runs, else an approximate busy
+     * loop. */
     if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
         vTaskDelay(pdMS_TO_TICKS(ms));
     } else {
@@ -39,9 +36,7 @@ void usb_delay_us(uint32_t us)
 }
 
 #if USB_MSC
-/* ═══════════════════════════════════════════════════════════════════
- * USB Interrupt Handler
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Enumeration trace and the USB interrupt handler ─────────────────── */
 /* Enumeration trace: the first USB_TRACE_N bus resets and SETUP packets
  * after each attach, timestamped, with "stalled" when the device answered
  * with a STALL. `usb trace` prints it. After a fallback it shows exactly
@@ -67,6 +62,9 @@ static uint32_t s_utrace_t0;
 
 static uint8_t s_utrace_dev;          /* usb_dev_kind_t of this attach */
 
+/* Append one trace entry (setup: 8 bytes or NULL), time relative to the
+ * attach; dropped when the trace is full. Called from the USB interrupt, or
+ * with it masked. */
 static void usb_trace_add(uint8_t kind, const uint8_t *setup)
 {
     uint8_t n = s_utrace_n;
@@ -87,6 +85,9 @@ static void usb_trace_reset(uint8_t dev)
 }
 
 #endif
+/* USB interrupt. In a USB_MSC build it first records bus resets and SETUP
+ * packets (read from packet memory before the library consumes them), and
+ * after the library has run marks the SETUP it answered with a STALL. */
 void USBFS_L_CAN1_RX0_IRQHandler(void)
 {
 #if USB_MSC
@@ -114,21 +115,19 @@ void USBFS_L_CAN1_RX0_IRQHandler(void)
 usb_mode_sm_t s_usb_mode;
 
 #endif
-/* ═══════════════════════════════════════════════════════════════════
- * USB CDC Initialization
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Initialisation ─────────────────────────────────────────────────── */
 
 void usb_debug_init(void)
 {
 #ifdef EMULATOR_BUILD
     return;  /* No USB in emulator */
 #else
-    /* At 240MHz, PLL dividers can't produce 48MHz for USB.
-     * Use HICK (internal RC oscillator) with ACC calibration instead.
-     * This is the standard AT32 approach for non-48/72/96/etc. clocks. */
+    /* At 240 MHz no USB divider of the PLL gives 48 MHz, so the USB clock
+     * comes from HICK (internal RC, 48 MHz), trimmed by ACC. */
     crm_usb_clock_source_select(CRM_USB_CLOCK_SOURCE_HICK);
 
-    /* Enable ACC and configure calibration for USB SOF sync */
+    /* ACC trims HICK against the host's 1 ms SOF: C2 is the target count
+     * per SOF, C1 and C3 the window around it. */
     crm_periph_clock_enable(CRM_ACC_PERIPH_CLOCK, TRUE);
     acc_write_c1(7980);
     acc_write_c2(8000);
@@ -154,14 +153,12 @@ void usb_debug_init(void)
 #endif
     usbd_core_init(&usb_core_dev, USB, &cdc_class_handler, &cdc_desc_handler, 0);
 
-    /* Enable USB pull-up — device becomes visible to host */
+    /* Enable the USB pull-up: the device becomes visible to the host. */
     usbd_connect(&usb_core_dev);
 #endif
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Output Helpers
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Output ─────────────────────────────────────────────────────────── */
 
 bool usb_debug_connected(void)
 {
@@ -172,18 +169,12 @@ bool usb_debug_connected(void)
 #endif
 }
 
-/* Send raw bytes to the console.
- *
- * Two transports, both optional: RTT over the SWD wires and USB CDC. Output
- * goes to whichever is live. On the bench unit USB CDC has never enumerated
- * (CLAUDE.local.md), so in practice this is the RTT path — but the CDC path is
- * left intact so a unit with working USB behaves as before. */
 /* ── CDC endpoint health ──────────────────────────────────────────────
  * The CDC bulk pair shares endpoint register 1. A completion the library
- * lost (usb_conf.h: the CTR read-modify-write race, now fixed there) used to
- * wedge the shell until a USB replug: g_tx_completed never returned, so
- * every send waited its 1 s and was dropped; or the OUT endpoint stayed NAK
- * and nothing more was received. These checks recognise the stuck state from
+ * lost (usb_conf.h guards the CTR read-modify-write race that causes it)
+ * would wedge the shell until a USB replug: g_tx_completed never returns,
+ * so every send waits its 1 s and is dropped; or the OUT endpoint stays NAK
+ * and nothing more is received. These checks recognise the stuck state from
  * the hardware itself and recover, with the USB interrupt masked so they
  * cannot interleave with it:
  *   TX lost:  g_tx_completed == 0, STAT_TX == NAK (the packet went out: the
@@ -204,6 +195,8 @@ static struct {
     bool     host_absent;
 } s_cdc;
 
+/* Mask the USB interrupt; returns whether it was enabled, for
+ * usb_irq_restore(). */
 static bool usb_irq_mask(void)
 {
     const bool was = NVIC_GetEnableIRQ(USBFS_L_CAN1_RX0_IRQn) != 0u;
@@ -218,6 +211,7 @@ static void usb_irq_restore(bool was)
     if (was) NVIC_EnableIRQ(USBFS_L_CAN1_RX0_IRQn);
 }
 
+/* "TX lost" above: mark the completion. Returns true when it healed. */
 static bool cdc_tx_heal(cdc_struct_type *pcdc)
 {
     bool healed = false;
@@ -232,6 +226,8 @@ static bool cdc_tx_heal(cdc_struct_type *pcdc)
     return healed;
 }
 
+/* "RX lost" above: read the waiting packet (at most one max packet) into
+ * the class buffer and mark it received. Shell task, before each read. */
 void cdc_rx_heal(cdc_struct_type *pcdc)
 {
     if (pcdc->g_rx_completed) return;
@@ -248,6 +244,12 @@ void cdc_rx_heal(cdc_struct_type *pcdc)
     usb_irq_restore(was);
 }
 
+/* Send raw bytes to the console: always to RTT (SWD), and to USB CDC when
+ * the device is configured (not in a DEBUG_SHELL_RTT_ONLY build). CDC goes
+ * in max-packet chunks, each waiting for the previous one; a lost
+ * completion is healed after 2 waits, and a host that does not read for
+ * 1 s marks itself absent (see CDC endpoint health). No lock: shell task
+ * callers only. */
 void usb_send_bytes(const uint8_t *data, uint16_t len)
 {
     rtt_write(data, len);
@@ -325,6 +327,8 @@ const char *usb_share_label(void)
     return usb_share_medium_out() ? "Ejected" : "On";
 }
 
+/* Drop off the bus: close the class endpoints, pull-up off, connection
+ * state back to DEFAULT, MSC state reset. Leaves the USB interrupt masked. */
 static void usb_core_detach(void)
 {
     (void)usb_irq_mask();
@@ -338,6 +342,8 @@ static void usb_core_detach(void)
     /* the interrupt stays off until the next attach */
 }
 
+/* Re-initialise the device core as `kind` (CDC, or CDC + MSC with the
+ * medium present), restart the trace, unmask the interrupt, pull-up on. */
 static void usb_core_attach(usb_dev_kind_t kind)
 {
     (void)usb_irq_mask();
@@ -397,7 +403,7 @@ void usb_send_str(const char *str)
     usb_send_bytes((const uint8_t *)str, strlen(str));
 }
 
-/* For the feature shell files (shell_internal.h); usb_send_str() unchanged. */
+/* usb_send_str() for the feature shell files (shell_internal.h). */
 void usb_debug_sh_send_str(const char *str)
 {
     usb_send_str(str);
@@ -419,9 +425,10 @@ int usb_debug_printf(const char *fmt, ...)
 }
 
 /* The stream sender's port into the CDC IN path (src/stream/stream.h).
- * Additions beside the frozen write path, which they call unchanged; shell
- * task only, like every other writer here. Built in every image: without
- * the stream nothing calls them and the linker drops them. */
+ * tx_ready: true when the IN endpoint is free (with heal, after trying to
+ * recover a lost completion). write: usb_send_bytes(), true when nothing was
+ * dropped. Shell task only, like every other writer here. Built in every
+ * image: without the stream nothing calls them and the linker drops them. */
 bool usb_debug_stream_tx_ready(bool heal)
 {
 #if DEBUG_SHELL_RTT_ONLY
@@ -442,12 +449,13 @@ bool usb_debug_stream_write(const uint8_t *data, uint16_t len)
     return s_cdc.tx_drops == drops;
 }
 
-/* ── usb — USB Sharing (parity C16): the read-only gallery drive ───────
+/* ── usb: USB Sharing, the read-only gallery drive ─────────────────────
  * The unit boots as the plain CDC device. `usb share on` (or Settings "USB
  * Sharing") re-enumerates it as CDC + MSC: this port closes, and comes back
  * about a second later with the drive. If the host has not configured the
  * composite device within 3 s, the unit returns as CDC-only on its own and
  * `usb` reports FALLBACK; `usb trace` then shows the host's requests. */
+/* One line: configured, heal, timeout and drop counters, host not reading. */
 static void cmd_usb_cdc_counters(void)
 {
     usb_debug_printf("CDC: conf=%d tx_heals=%lu rx_heals=%lu tx_timeouts=%lu tx_drops=%lu%s\r\n",
@@ -458,6 +466,8 @@ static void cmd_usb_cdc_counters(void)
 }
 
 #if USB_MSC
+/* usb trace: the enumeration trace of the last attach, then the SCSI
+ * commands the MSC side recorded, with sense data and repeat counts. */
 static void cmd_usb_trace(void)
 {
     static const char *const kind[] = { "?", "RESET", "SETUP", "CONFIGURED", "TIMEOUT" };
@@ -518,6 +528,8 @@ static void cmd_usb_trace(void)
 }
 
 #endif
+/* usb [status] | usb share [on|off] | usb trace. In a USB_MSC=0 build only
+ * the status line and the CDC counters exist. */
 void cmd_usb(const char *args)
 {
 #if USB_MSC

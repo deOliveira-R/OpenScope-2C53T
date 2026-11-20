@@ -36,18 +36,10 @@
 #include "rtt.h"
 #include "continuity_buzzer.h"
 
-/* On the bench unit USB CDC never enumerates (error -71, unsolved), yet
- * usbd_connect_state_get() still reports CONFIGURED — so usb_send_bytes()
- * walks into the CDC TX path and the shell task stalls there instead of
- * returning to poll RTT. Measured 2026-08-11: the banner reached the RTT
- * buffer (rtt_write runs first) and the task never came back.
- *
- * RTT exists precisely to bypass that transport, so this flag cuts the CDC
- * half out entirely. Build with -DDEBUG_SHELL_RTT_ONLY=1.
- *
- * NOTE this is an isolation switch, not the real fix. The underlying defect is
- * that a half-alive USB stack can wedge the shell; the proper repair is to
- * count consecutive CDC TX timeouts and latch the transport dead. */
+/* DEBUG_SHELL_RTT_ONLY=1 (build with -DDEBUG_SHELL_RTT_ONLY=1) leaves the
+ * CDC half of the shell out: no CDC input, output to RTT only. For a unit
+ * whose USB stack reports CONFIGURED but does not move data, so that the
+ * shell can be reached over SWD without the CDC send path in the way. */
 #ifndef DEBUG_SHELL_RTT_ONLY
 #define DEBUG_SHELL_RTT_ONLY 0
 #endif
@@ -99,52 +91,34 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdlib.h>
-#include "model_shell.h"   /* get / set / list / describe (ARCH-1 M1 rows) */
-#include "ui_shell.h"      /* ui press / long / seq / screen, btn, keys (ARCH-1 M2 rows) */
+#include "model_shell.h"   /* get / set / list / describe rows */
+#include "ui_shell.h"      /* ui press / long / seq / screen rows */
 #include "../util/features.h"   /* version, features: what this build contains */
 #include "stream.h"        /* binary stream over this channel (src/stream/): no-ops when off */
-#include "shell_internal.h" /* the accessors below, for the feature shell files */
+#include "shell_internal.h" /* the usb_debug_sh_* accessors, for the feature shell files */
 #include "model_exec.h"      /* `fpga roll code`: the re-apply goes through the executor */
 #include "shell_bench.h"     /* bench shell rows (FEATURE_BENCHSHELL): empty when off */
 #include "../re/shell_re.h"   /* reverse-engineering toolkit rows (FEATURE_RETOOLS): empty when off */
 #include "shell_meterdebug.h" /* meter diagnostics rows (FEATURE_METERDEBUG): empty when off */
 
-/* ═══════════════════════════════════════════════════════════════════
- * Which FPGA config path ran this boot — the witness the status shell
- * needs before it is allowed to report anything about configuration.
- *
- * WHY THIS EXISTS. On 2026-08-13 the `status` command printed an FPGA
- * config REFUSAL on a device that was configured and capturing: it read
- * hardware-SPI-only fields on a bit-bang (FPGA_CONFIG_B) build, where
- * that path never runs and the fields sit at their zero-init values.
- * Zero is a plausible reading, so the shell reported it as one.
- *
- * The same hole was still open in the other direction. On a build where
- * NO config path runs at all — FPGA_WARM_HANDOFF_TEST (stock configured
- * the part before the handoff) or FPGA_BUS_RELEASED_BOOT — fpga_init()
- * returns before any config sequence, every cfg_* field stays zero, and
- * the old two-way test (marker present? no) labelled that "hardware
- * SPI3" and decoded the all-zero STATUS as "NOT configured". Both halves
- * of that sentence were fabricated.
- *
- * Evidence used, in order:
- *   h2_upload_done  set to 1 by BOTH config paths (fpga.c bit-bang ~2209,
- *                   hardware-SPI ~2562) and by nothing else. Clear => no
- *                   config sequence ran this boot, so NOTHING downstream
- *                   of it may be reported as a measurement.
- *   diag_spi_ctrl1  == 0xBBBB is not a register value; the bit-bang
- *                   sequence stores it as a path marker (fpga.c ~2169).
- *                   The hardware-SPI path leaves the real CTRL1 there.
- *
- * This is inference from runtime witnesses on purpose: the config
- * sequences themselves are bench-validated and are not to be edited to
- * add a flag. `fpga reinit` re-runs the hardware-SPI path from the shell
- * and correctly re-labels the result, because it rewrites both witnesses.
- * ═══════════════════════════════════════════════════════════════════ */
+/* Which FPGA configuration path completed an upload this boot. `status`
+ * reports configuration fields only for the path that wrote them; a field
+ * no path wrote holds its zero-init value, which looks like a reading.
+ * Decided from two fields of `fpga`, in order (shell_system.c):
+ *   h2_upload_done  1 when an upload sent every byte: set by the bit-bang
+ *                   upload (fpga_boot.c) and by the hardware-SPI3 upload
+ *                   (re/re_fpga_driver.c). Clear: no upload completed (for
+ *                   example the part already ran a design and nothing was
+ *                   sent), so no configuration result is reported.
+ *   diag_spi_ctrl1  0xBBBB is a marker the bit-bang upload stores, not a
+ *                   register value. The hardware-SPI3 path leaves the real
+ *                   SPI3 CTRL1 there.
+ * `fpga reinit` (reverse-engineering toolkit) re-runs the hardware-SPI3
+ * path and rewrites both fields, so the label follows it. */
 typedef enum {
-    CFG_PATH_NONE = 0,   /* no config sequence ran this boot */
-    CFG_PATH_BITBANG,    /* fpga_bitbang_config_sequence() (FPGA_CONFIG_B) */
-    CFG_PATH_HWSPI,      /* fpga_spi3_config_sequence() */
+    CFG_PATH_NONE = 0,   /* no upload completed this boot */
+    CFG_PATH_BITBANG,    /* fpga_bitbang_config_sequence() (fpga_boot.c) */
+    CFG_PATH_HWSPI,      /* fpga_spi3_config_sequence() (re/re_fpga_driver.c) */
 } cfg_path_t;
 
 /* usb_cdc.c */

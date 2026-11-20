@@ -6,6 +6,11 @@
 
 #include "shell_parts.h"
 
+/* `screen dump [shadow] [x y w h]`: the LCD shadow (4-bit palette indices)
+ * as text, one hex digit per pixel, a "ROW n" line per row after a
+ * SCREENDUMP header. The region defaults to the whole screen; rows outside
+ * the shadow's page read as index 0. The `shadow` keyword is accepted and
+ * changes nothing. */
 void cmd_screen_dump(const char *args)
 {
     char buf[64];
@@ -91,6 +96,9 @@ parsed_screen_args:
     }
 }
 
+/* Parse "x y w h" into the outputs, defaulting to the whole screen when args
+ * is empty. Returns false on a malformed argument or a region off the
+ * screen. */
 static bool parse_screen_region_args(const char *args,
                                      uint32_t *x,
                                      uint32_t *y,
@@ -127,6 +135,10 @@ static bool parse_screen_region_args(const char *args,
            *x <= LCD_WIDTH - *w && *y <= LCD_HEIGHT - *h;
 }
 
+/* `screen dumpbin [x y w h]`: the LCD shadow region as raw bytes, two 4-bit
+ * pixels per byte, high nibble first, each row padded to a whole byte. The
+ * rows are packed twice: once for the CRC32 in the SCREENBIN header line,
+ * then again to send, then an END line. */
 void cmd_screen_dumpbin(const char *args)
 {
     uint32_t x, y, w, h;
@@ -185,7 +197,7 @@ void cmd_screen_dumpbin(const char *args)
     usb_send_str("\r\nSCREENBIN END\r\n");
 }
 
-/* ── screenshot — the on-device gallery over the shell (parity C16) ─────
+/* ---- screenshot: the on-device gallery over the shell ----
  * Same store as SAVE / long SAVE (gallery_store.h: 9 slots in our W25Q
  * scratch region, never stock's FAT). `get` frames a raw BMP the way
  * `screen dumpbin` frames its bytes: a header line with len + the CRC32 the
@@ -204,6 +216,8 @@ static const char *gallery_status_str(gallery_status_t st)
     return "?";
 }
 
+/* `screenshot list | save | get <n> | delete <n> | check <n>`. No argument
+ * lists. `check` compares the stored CRC with one recomputed from flash. */
 void cmd_screenshot(const char *args)
 {
     static const char usage[] =
@@ -285,24 +299,29 @@ void cmd_screenshot(const char *args)
 
 /*
  * Boot logo (logo_store.h): upload a 320x240 RGB565 image over the shell.
- *   logo put <len> <crc32hex>   erase the slot, start an upload (len = 153600)
- *   logo data <off> <hex>       <= 48 bytes at the next expected offset
- *   logo end                    verify CRC from flash, commit
+ *   logo put <len> <crc32hex>        erase the slot, start an upload (len = 153600)
+ *   logo data <off> <hex>            up to LOGO_CHUNK_MAX bytes at the next expected offset
+ *   logo blk <off> <len> <crc32hex>  up to LOGO_BLK_MAX raw bytes, CRC-checked
+ *   logo pos                         the next expected offset
+ *   logo end                         verify CRC from flash, commit
+ *   logo info | show [ms] | clear    state, a preview, erase
  * scripts/logo_put.py drives this; every reply starts "logo:" and a failure
- * says "err". The upload session is 12 bytes of static RAM.
+ * says "err". The upload session lives in static RAM.
  */
 logo_upload_t s_logo_up;
 
 /* Raw block receive for `logo blk` (raw_block.h): armed by the command,
- * fed by the task loop (shell_rx) before the line editor sees anything. The
- * block lands in the shell bus scratch, like fw_loader's: same task, never
- * nested with the spi3/skew commands that also borrow it. */
+ * fed by the shell task loop before the line editor sees anything. The
+ * block lands in shell_bus_scratch, which fw_loader and some spi3 and
+ * interleave commands also borrow; all run on the shell task, never nested. */
 raw_block_t s_raw;
 
 
-#define LOGO_BLK_MAX 1024u
+#define LOGO_BLK_MAX 1024u   /* largest `logo blk` block, bytes */
 
-/* A raw block finished (complete or timed out): write it, answer. */
+/* A raw block finished (complete, CRC failed or timed out): on success write
+ * it to the upload in LOGO_CHUNK_MAX pieces; answer either way, followed by
+ * the prompt. */
 void logo_blk_finish(void)
 {
     const raw_block_state_t st = s_raw.state;
@@ -329,12 +348,15 @@ void logo_blk_finish(void)
                           (unsigned long)s_logo_up.received);
 }
 
+/* Called by the logo store during long flash work: keep the shell task's
+ * health check-in alive and yield. */
 static void logo_tick(void)
 {
     health_checkin_self();
     vTaskDelay(1);
 }
 
+/* Two hex digits at p as a byte, or -1 if either is not a hex digit. */
 static int logo_hexbyte(const char *p)
 {
     int v = 0;
@@ -457,6 +479,8 @@ void cmd_logo(const char *args)
     usb_send_str(usage);
 }
 
+/* `screen shadow [page [y]]`: print the shadow's page origin and height, or
+ * set the origin (y, default 0) first. */
 void cmd_screen_shadow(const char *args)
 {
     if (args == NULL || *args == '\0') {
@@ -485,6 +509,10 @@ void cmd_screen_shadow(const char *args)
     usb_send_str("Usage: screen shadow page [y]\r\n");
 }
 
+/* `ui dump`: the UI state and its counters: mode and settings selection,
+ * scope draw counts and timings, the FFT pool and engine (FFT builds), the
+ * meter screen and autoselect, the measurement strip, the graticule per
+ * channel and the long-press timing. */
 void cmd_ui_dump(void)
 {
     meter_autoselect_status_t auto_st;
@@ -580,8 +608,7 @@ void cmd_ui_dump(void)
                      (unsigned)auto_st.last_score,
                      auto_st.cancel_pending ? 1U : 0U);
     /* What the strip and the graticule do with the properties (chN.meas,
-     * view.meashide, view.truescale), and the key timing: the read-only
-     * lines of the retired `fpga scope prm`, `fpga scope graticule`, `keys`. */
+     * view.meashide, view.truescale), and the key timing. */
     prm_print_status();
     {
         const scope_state_t *ss = scope_state_get();

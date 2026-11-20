@@ -1,15 +1,16 @@
 /*
  * OpenScope 2C53T - what the feature shell files need from the shell core
  *
- * shell_bench.c and shell_meterdebug.c hold command handlers that were moved
- * out of usb_debug.c unchanged. The helpers they call are static there and
- * stay so; next to each one usb_debug.c has a thin non-static accessor
- * (usb_debug_sh_*), declared here. Unused in an image without those
- * features, the linker drops them.
+ * The feature shell files (shell_bench.c, shell_meterdebug.c and the
+ * toolkit files in src/re/) do not include shell_parts.h. They reach the
+ * shell core's helpers through the usb_debug_sh_* accessors declared here,
+ * each defined next to its helper (shell.c, usb_cdc.c, shell_system.c).
+ * In an image without those features nothing calls the accessors and the
+ * linker drops them.
  *
  * A feature file defines SHELL_FEATURE_FILE before including this header and
- * then also gets the helpers under the names the handlers were written
- * with, so the moved code reads as it did. usb_debug.c includes it without
+ * then also gets the helpers under their usual names (usb_send_str,
+ * parse_hex32, ...) as inline wrappers. shell_parts.h includes it without
  * the define.
  */
 #ifndef SHELL_INTERNAL_H

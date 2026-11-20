@@ -10,11 +10,12 @@
 /* `status` ends with the timebase in force (defined with the scope commands). */
 void timebase_print_status(bool after_set);
 
-/* `fpga cfgsettle [ms|off|default]` -- the capture-configuration rule
- * (dsp/acq_cfg.h): a record is published only after routing, range,
+/* `fpga cfgsettle [ms|off|default]`: the capture-configuration rule
+ * (dsp/acq_cfg.h). A record is published only after routing, range,
  * position, probe, timebase and trigger have been stable for fill + poll gap
- * + this margin. `off` admits every record (the behaviour before the rule),
- * for an A/B in one boot. */
+ * + this margin. `off` (stored as 0xFFFF) admits every record, for an A/B in
+ * one boot; `default` (stored as 0) uses ACQ_CFG_SETTLE_MS. Prints the
+ * setting and the count of refused records. */
 void cmd_fpga_cfgsettle(const char *args)
 {
     while (*args == ' ') args++;
@@ -40,11 +41,11 @@ void cmd_fpga_cfgsettle(const char *args)
                          (unsigned long)fpga_acq_cfg_drops());
 }
 
-/* `fpga unrotate [on|off]` — time-order strobed records at their seam (dev plan 2.3). */
+/* `fpga unrotate [on|off]`: time-order strobed records at the seam the core
+ * reports. Prints the setting, the last seam position and how many held
+ * records carried a seam. */
 void cmd_fpga_unrotate(const char *args)
 {
-    /* Seam-based since 2026-09-22 (dev plan 2.3); the EXP-52 offset argument
-     * belonged to the retired latency model and is no longer accepted. */
     while (*args == ' ') args++;
     if (*args) {
         if      (strncmp(args, "on",  2) == 0) fpga_acq_unrotate_set(true);
@@ -57,7 +58,10 @@ void cmd_fpga_unrotate(const char *args)
                      (unsigned long)fpga_acq_seam_count(0), (unsigned long)fpga_acq_seam_count(1));
 }
 
-/* `fpga core` — which capture core runs, by its own account (op E2, asked once when it was loaded). */
+/* `fpga core [fix on|off]`: which capture core runs, by its own account
+ * (op E2, asked once when it was loaded), whether this firmware can use it,
+ * the acquisition counters and the core's status block. `fix` turns on or off
+ * the rewrite of registers that differ from the firmware's copies. */
 void cmd_fpga_core(const char *args)
 {
     while (*args == ' ') args++;
@@ -110,21 +114,27 @@ void cmd_fpga_core(const char *args)
                      (unsigned long)w.fixed[2], (unsigned long)w.fixed[3]);
 }
 
-/* `fpga interleave cal` (parity C2): converter-B self-calibration. CH2 off,
- * timebase <= 3, a quiet CH1 input. Sweeps the CH1 offset DAC over five codes
- * of this unit's calibration page (base+80, base+400, mid, upper-400, upper —
- * bench B4's set), reads the op04 (A) / op05 (B) means at each, fits
- * B = gain * A + offset (dsp/interleave_cal.c) and applies it in RAM only.
- * Refuses, leaving the correction as it was, on a noisy input, rail-clipped
- * levels, a short span, a gain outside 0.5..2 or a poor fit. The DAC is put
- * back to the position-controlled code whatever happens. Integer printing: the
- * shell's printf has no floats. */
+/* v x 100 rounded to the nearest integer. The shell's printf has no floats,
+ * so values are printed as integers. */
 static long x100(float v) { return (long)(v * 100.0f + (v < 0.0f ? -0.5f : 0.5f)); }
 
-/* "%s%ld.%02ld": sign apart, or -0.6 would print as 0.60. */
+/* The three arguments for "%s%ld.%02ld": the sign apart, or -0.6 would print
+ * as 0.60. */
 #define F2(v)  (x100(v) < 0 ? "-" : ""), (long)((x100(v) < 0 ? -x100(v) : x100(v)) / 100), \
                (long)((x100(v) < 0 ? -x100(v) : x100(v)) % 100)
 
+/* `fpga interleave cal [piecewise]`: converter-B self-calibration. Needs CH2
+ * off, timebase <= 3 (interleave active) and a quiet CH1 input.
+ *   1. Park the trigger level above the sweep.
+ *   2. Step the CH1 offset DAC over five codes from this unit's calibration
+ *      page (il_cal_dac_points: base+80, base+400, mid, upper-400, upper) and
+ *      collect the op04 (A) and op05 (B) means at each.
+ *   3. Put the DAC back to the position code and the trigger level back.
+ *   4. Fit B = gain * A + offset (dsp/interleave_cal.c).
+ *   5. Apply the line in RAM; with `piecewise`, also the knots.
+ * Refuses, leaving the correction as it was, on a noisy input, rail-clipped
+ * levels, a short span, a gain outside 0.5..2, a poor fit, or a channel or
+ * timebase change during the sweep. */
 static void cmd_fpga_interleave_cal(bool piecewise)
 {
     scope_state_t *ss = scope_state_get();
@@ -141,9 +151,9 @@ static void cmd_fpga_interleave_cal(bool piecewise)
     static il_cal_point_t pt[5];
     unsigned got = 0;
     /* Park the trigger level above every sweep level for the sweep. At the
-     * user's level (0 = mid-screen) the middle level sat on it: noise crossing
-     * it got those records triggered and biased, ~8 counts of record-to-record
-     * drift on both converters, refused every time (unit #2, 2026-11-11). The
+     * user's level (0 = mid-screen) the middle level sits on it: noise
+     * crossing it triggers those records and biases them, about 8 counts of
+     * record-to-record drift on both converters, and the fit is refused. The
      * UI's level is untouched and written back after the sweep. */
     const bool parked = fpga_apply_trigger_level(100);
     usb_send_str("interleave cal: keep CH1 quiet (shorted or a steady DC); sweeping the CH1 offset DAC\r\n");
@@ -199,13 +209,11 @@ static void cmd_fpga_interleave_cal(bool piecewise)
                      "correction unchanged\r\n");
         return;
     }
-    /* The line, then the knots through the levels (parity ilplus): the line
-     * is what gated the fit; the knots are what removes unit #2's ~1 count
-     * level-dependent odd-even step. Setting the line clears old knots. */
-    /* The line by default. The knots pass exactly through the five DC levels
-     * and so keep their ~0.5-count static errors: on unit #2 (2026-11-11,
-     * skew on, 10 MHz) the image was -52.0 dBc with the line and -45.2 dBc
-     * with the knots. `cal piecewise` still applies them, for comparison. */
+    /* The line by default; setting it clears any knots. The knots pass
+     * exactly through the five DC levels and so keep their ~0.5-count static
+     * errors: measured on one unit with skew correction on and a 10 MHz tone,
+     * the image was -52.0 dBc with the line and -45.2 dBc with the knots.
+     * `cal piecewise` applies them on top of the line, for comparison. */
     fpga_interleave_corr_set(fit.gain, fit.offset);
     if (piecewise && fit.n_knots >= 2u &&
         fpga_interleave_knots_set(fit.n_knots, fit.knot_a, fit.knot_b))
@@ -217,7 +225,8 @@ static void cmd_fpga_interleave_cal(bool piecewise)
                      "Skew: `fpga interleave skew measure` with a tone.\r\n");
 }
 
-/* "0.451234" from ppm-of-a-period deviation: 500000 + dev. */
+/* Print B's position as a fraction of a converter period ("0.451234"),
+ * from its deviation from 0.5 in ppm of a period: 500000 + dev. */
 static void print_skew_line(const char *what, int32_t dev)
 {
     const int32_t t = 500000 + dev;
@@ -225,16 +234,23 @@ static void print_skew_line(const char *what, int32_t dev)
                      what, (long)t, dev < 0 ? "-" : "+", (long)(dev < 0 ? -dev : dev));
 }
 
-/* `fpga interleave skew measure` (parity ilplus): CH2 off, timebase <= 3,
- * a steady tone of 5..50 MHz on CH1 (the G431's 10 MHz square is the bench
- * source), triggering. Takes 16 fresh merged records, estimates B's delay
- * after A in each (least-squares phase at the tone, dsp/interleave_cal.c) and
- * applies the median. With a skew correction already on, the records read
- * the residual, which is added: a second `measure` should read ~0.500. */
-#define SKEW_RECORDS   16u
+#define SKEW_RECORDS   16u     /* fresh merged records per measurement */
 
-#define SKEW_MIN_OK     8u
+#define SKEW_MIN_OK     8u     /* usable records needed to apply the median */
 
+/* `fpga interleave skew measure`, and one pass of `fpga interleave tone`.
+ * Needs CH2 off, timebase <= 3 and a steady, triggering tone of 5..50 MHz on
+ * CH1 (a 10 MHz square serves).
+ *   1. Take SKEW_RECORDS fresh merged records; in each, estimate B's delay
+ *      after A (least-squares phase at the tone, dsp/interleave_cal.c).
+ *   2. Apply the median. With a skew correction already on, the records read
+ *      the residual, which is added: a second `measure` should read ~0.500.
+ *   3. With with_gain, also set B's gain from the median B'/A amplitude ratio,
+ *      keeping the offset.
+ * Refuses, leaving the setting unchanged, on too few usable records, a wide
+ * spread, or a channel, timebase or skew change during the measurement.
+ * Returns true when everything asked for was applied. Uses shell_bus_scratch
+ * for the record copy. */
 static bool cmd_fpga_interleave_skew_measure(bool with_gain)
 {
     scope_state_t *ss = scope_state_get();
@@ -291,8 +307,8 @@ static bool cmd_fpga_interleave_skew_measure(bool with_gain)
     for (unsigned i = 1; i < ok; i++)                    /* insertion sort, <= 16 */
         for (unsigned j = i; j > 0 && tau[j - 1] > tau[j]; j--) { float t = tau[j]; tau[j] = tau[j - 1]; tau[j - 1] = t; }
     const float med = (ok & 1u) ? tau[ok / 2u] : 0.5f * (tau[ok / 2u - 1u] + tau[ok / 2u]);
-    /* The middle half's spread: a tone at 10 MHz with unit #2's noise
-     * scatters ~0.005 per record; a spread past 0.02 is not a steady tone. */
+    /* The middle half's spread: a 10 MHz tone scatters ~0.005 per record on
+     * a typical unit; a spread past 0.02 is not a steady tone. */
     const float iqr = tau[(3u * ok) / 4u] - tau[ok / 4u];
     const int32_t dev = (int32_t)((med - 0.5f) * 1e6f + (med < 0.5f ? -0.5f : 0.5f));
     print_skew_line("  median:", dev);
@@ -317,9 +333,9 @@ static bool cmd_fpga_interleave_skew_measure(bool with_gain)
     if (!with_gain) return true;
 
     /* Converter B's gain at the tone. The records are already corrected,
-     * B' = (B - off) / g, so the true B/A ratio is g x median(B'/A). On unit
-     * #2 (2026-11-11, 10 MHz) the image is lowest at 0.982..0.986 while the DC
-     * sweep gives 0.980; the tone's own ratio read 0.984. */
+     * B' = (B - off) / g, so the true B/A ratio is g x median(B'/A). Measured
+     * on one unit at 10 MHz: the image is lowest at a gain of 0.982..0.986,
+     * the DC sweep gives 0.980, the tone's own ratio 0.984. */
     for (unsigned i = 1; i < ok; i++)
         for (unsigned k = i; k > 0 && gr[k - 1] > gr[k]; k--) { float t = gr[k]; gr[k] = gr[k - 1]; gr[k - 1] = t; }
     const float gmed = (ok & 1u) ? gr[ok / 2u] : 0.5f * (gr[ok / 2u - 1u] + gr[ok / 2u]);
@@ -339,10 +355,10 @@ static bool cmd_fpga_interleave_skew_measure(bool with_gain)
     return true;
 }
 
-/* `fpga interleave skew [measure|set <ppm>|off]` — converter-B timing skew.
- * <ppm>: B's deviation from half a converter period, ppm of a period (signed;
- * unit #2 reads 0.451 -> -49000); `set 0` = `off`. */
-/* The skew line `fpga interleave skew ...` ends with. */
+/* The skew line `fpga interleave skew measure` ends with. The skew is B's
+ * deviation from half a converter period, in ppm of a period, signed (B at
+ * 0.451 of a period is -49000); 0 means no correction. It is set with the
+ * il.skew property. */
 static void interleave_skew_print_status(void)
 {
     const int32_t ppm = fpga_interleave_skew_get();
@@ -350,9 +366,9 @@ static void interleave_skew_print_status(void)
     else          print_skew_line("interleave skew: correcting", ppm);
 }
 
-/* The single-channel merge and its converter-B correction (B' = (B - off) /
- * gain, record units): il.enabled, il.gain, il.offset, il.knots, il.skew. */
-/* The status block every `fpga interleave ...` ends with. */
+/* The status block every `fpga interleave ...` ends with: the single-channel
+ * merge and its converter-B correction (B' = (B - off) / gain, record units),
+ * which are the properties il.enabled, il.gain, il.offset, il.knots, il.skew. */
 static void interleave_print_status(void)
 {
     float g, o;
@@ -378,9 +394,9 @@ static void interleave_print_status(void)
     else    usb_send_str("  skew: correction OFF\r\n");
 }
 
-/* `fpga interleave`: the status block and the procedures (`cal`, `tone`,
- * `skew measure`: they drive the front end over many records and then write
- * the fit they found). The settings are the il.* properties. */
+/* `fpga interleave [cal [piecewise]|tone|skew measure]`: the status block and
+ * the procedures, which drive the front end over many records and then write
+ * the fit they found. The settings are the il.* properties. */
 void cmd_fpga_interleave(const char *args)
 {
     while (*args == ' ') args++;
@@ -418,11 +434,11 @@ void cmd_fpga_interleave(const char *args)
     interleave_print_status();
 }
 
-/* Parity C3: the whole trigger in two lines -- settings and the wire, then
- * what the acquisition did (trig_policy.h). `record` is the PUBLISHED
- * record's kind: handed-over (coherent), freerun (one channel), or
- * freerun-split (AUTO roll read with both channels on: CH1 and CH2 are two
- * moments, #84 -- the badge shows "Auto*"). */
+/* The trigger: the settings and the registers in force, then what the
+ * acquisition did (trig_policy.h): the status, the badge, the published
+ * record's kind (none, triggered, forced) and the SINGLE state; then the
+ * level code the boot reconcile wrote and where the last drawn window put
+ * the trigger point. */
 static void print_trigger_status(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -439,8 +455,7 @@ static void print_trigger_status(void)
                      k < 3u ? kind[k] : "?",
                      ss->trigger.mode != TRIG_SINGLE ? "-" :
                      fpga_acq_single_done() ? "captured" : "armed");
-    /* What no property carries (the lines the retired `fpga scope level` and
-     * `fpga scope hpos` printed): the level code the boot reconcile wrote,
+    /* What no property carries: the level code the boot reconcile wrote,
      * and where the last drawn window put the trigger point. */
     const uint8_t a = (uint8_t)scope_ui_trig_anchor();
     usb_debug_printf("trigger level %d -> reg 0x08 code 0x%02X in force (boot reconcile wrote 0x%02X)\r\n",
@@ -451,7 +466,7 @@ static void print_trigger_status(void)
                      a == 2 ? (scope_ui_trig_anchor_exact() ? "hardware, the core's index" : "hardware, searched") : a == 1 ? "soft" : "none");
 }
 
-/* `fpga scope trigger` -- print_trigger_status(). The settings themselves
+/* `fpga scope trigger`: print_trigger_status(). The settings themselves
  * are the trig.* properties. */
 void cmd_fpga_scope_trigger(const char *args)
 {
@@ -459,17 +474,17 @@ void cmd_fpga_scope_trigger(const char *args)
     print_trigger_status();
 }
 
-/* `fpga scope range <n> <1|2|both>` — apply coarse frontend range n (0-9) to
- * one channel or, with the explicit `both` keyword, to both. The two channels
+/* `fpga scope range <n> <1|2|both>`: drive coarse frontend range n (0-9) on
+ * one channel or, with the explicit `both` keyword, on both. The two channels
  * have independent relay banks (CH1 PC12/PE4/PE5/PE6, CH2 PA15/PB11/PB10/PA10)
- * driven from the same 10-case stock table. Coupling is NOT touched here — it
- * is PD12/PD13, set in the frontend init (bench 2026-08-15).
+ * driven from the same 10-case table, whose values come from the stock
+ * firmware. Coupling (PD12/PD13, set in the frontend init) is not touched.
+ * Raw relay drive only: the display state and the volts-per-count are not
+ * updated.
  *
- * The channel argument is MANDATORY and 1-based on purpose. It used to be
- * optional, and anything that was not 1 or 2 — including a `0` typed by an
- * experimenter who reasonably read the argument as 0-based — fell through to
- * "both", drove both relay banks, and invalidated the run while printing a
- * success line. Ambiguity now errors instead of guessing. */
+ * The channel argument is mandatory and 1-based. Anything else, a `0`
+ * included, is an error rather than a guess, so a mistyped channel can never
+ * drive both banks while printing a success line. */
 void cmd_fpga_scope_range(const char *args)
 {
     static const char USAGE[] =
@@ -512,66 +527,45 @@ void cmd_fpga_scope_range(const char *args)
                      ch_sel == 0 ? "CH1" : (ch_sel == 1 ? "CH2" : "CH1+CH2"));
 }
 
-/* ---- fpga scope center [range] -------------------------------------------
+/* ---- fpga scope center: per-range DC-offset centring ----
  *
- * Per-range DC-offset CENTERING for scope gain calibration.
- *
- * Each frontend voltage range has its own DC operating point, so before per-
- * range GAIN can be calibrated the vertical-offset DAC (DAC1 / PA4) must be
- * positioned so a quiet/DC input lands at mid-scale (ADC code ~128). Doing
- * this by hand for every range is slow; this command automates it on-device.
- *
- * For each range it applies the frontend (DC coupling) via
- * fpga_scope_set_range_diag(), then binary-searches DAC1 (0..4095) for the
- * value that drives the mean of a 0x04 CH1 capture closest to 128. DAC1 is
- * monotonic-increasing vs ADC code (bench: 500->~0, 2500->~140, 3500->~255),
- * so the search raises DAC1 when the mean is below target and lowers it when
- * above. The operator must keep the input quiet/DC while this runs (no AC
- * signal) — it averages a static level.
- *
- * Diagnostic / bench only. It runs with the acq task LIVE (it reads the acq
- * task's RAM buffer, not SPI3, so there is no bus contention) — the task must
- * keep running to refresh that buffer at each new DC operating point.
+ * Each frontend range has its own DC operating point, so before per-range
+ * gain can be calibrated the channel's vertical-offset reference must put a
+ * quiet input at mid-scale (record code ~128). For CH1 the reference is DAC1
+ * (PA4); for CH2 it is the TMR13 channel 1 PWM-DAC (PA6). The search runs
+ * with the acquisition task live and reads its RAM buffer, never SPI3, so
+ * there is no bus contention; the task must keep running to refresh that
+ * buffer at each new operating point. The input must be quiet or DC.
  */
-#define SCOPE_CENTER_TARGET   128u   /* ADC mid-scale code we center on    */
+#define SCOPE_CENTER_TARGET   128u   /* mid-scale record code to centre on */
 
 #define SCOPE_CENTER_AVG      2u     /* buffer medians averaged per step    */
 
 #define SCOPE_CENTER_ITERS    11u    /* binary-search steps over 0..4095    */
 
-#define SCOPE_CENTER_SETTLE_MS 480u  /* >= one ~430ms buffer fill after a DAC
-
-                                        move, so the read is not stale         */
+#define SCOPE_CENTER_SETTLE_MS 480u  /* analog settle after a DAC move
+                                        (~350 ms measured), before waiting
+                                        for fresh commits                   */
 #define SCOPE_CENTER_COMMIT_TIMEOUT_MS 4000u /* bound on waiting for fresh
                                         commits; 0x12 AUTO fallback ~1.5 s   */
 static uint32_t scope_center_stale_steps;  /* steps that timed out waiting */
 
-/* One capture read window (opcode 0x04 = CH1 buffer, 0x05 = CH2); returns the
- * mean of the first `nbytes` payload bytes. Same framing as spi3_opread_window
- * (one CS-LOW window, opcode + 2 filler bytes, then payload). The two filler
- * bytes are the header stock discards. Caller must already hold the acq pause. */
 /*
- * Median of the acq task's LIVE RAM buffer via an 8-bit histogram.
+ * Median of the acquisition task's RAM buffer for channel `ch` (2 = CH2,
+ * anything else CH1), via an 8-bit histogram. Returns 128 when there is no
+ * buffer.
  *
- * Two design choices, both learned on the bench (2026-08-28/29):
+ * Median, not mean: a clipped AC signal biases the mean toward the open
+ * rail, so a mean-driven search raises the DAC, clips more and runs away to a
+ * rail. The median equals the DC baseline until more than half the samples
+ * clip, and stays monotonic in the DAC, so the binary search converges at
+ * any amplitude.
  *
- * 1. MEDIAN, not mean. The old servo optimised the arithmetic mean, which a
- *    clipped AC signal biases toward the OPEN rail: at large amplitude the sine
- *    clips the top, the mean reads < 128, the search raises DAC1, that clips
- *    MORE, and it runs away to a rail (0.5 Vpp centred perfectly at 2415/128,
- *    but 4 Vpp diverged to 3071). The median equals the DC baseline regardless
- *    of one-rail clipping until more than half the samples clip, and stays
- *    monotonic in DAC1, so the binary search converges at any amplitude.
- *
- * 2. Read the RAM buffer the RUNNING acq task keeps fresh, NOT a direct SPI3
- *    opread with the acq task paused. The capture buffer is a rolling window;
- *    with acq paused nothing re-arms it, so after a DAC step it FREEZES holding
- *    a bimodal old+new mix and no statistic recovers the new operating point
- *    (bench: dac=3071 read 120, frozen, while its true settled level is 207).
- *    The acq task re-arms and commits continuously, so its buffer tracks the
- *    DAC — that is exactly the path `spi3 acqread` reads, which settles in
- *    ~350 ms. Centering therefore runs with acq LIVE and reads RAM (no SPI3
- *    from this side, so no bus contention).
+ * The live buffer, not a direct SPI3 read with acquisition paused: with
+ * acquisition paused nothing re-arms the capture, so after a DAC step the
+ * capture buffer freezes holding a mix of old and new levels and no statistic
+ * recovers the new operating point. The running task re-arms and commits
+ * continuously, so its buffer tracks the DAC.
  */
 uint32_t scope_center_buf_median(uint8_t ch)
 {
@@ -589,35 +583,16 @@ uint32_t scope_center_buf_median(uint8_t ch)
     return 128;
 }
 
-/* Binary-search the channel's offset reference for a mean of ~128. Assumes the
- * range is already applied and the acq task paused. `ch` is 1 or 2: CH1 drives
- * DAC1 (PA4) and reads opcode 0x04; CH2 drives TMR13_C1DT (PA6, PWM-DAC) and
- * reads 0x05. Returns the best code found and its resulting mean.
+/* Wait until the acquisition task has committed `n` records after this call.
+ * The frame generation is a seqlock: +2 per commit, odd while a commit is in
+ * progress. Returns false after SCOPE_CENTER_COMMIT_TIMEOUT_MS.
  *
- * The monotonic assumption below was measured for DAC1 on CH1. For CH2 it is
- * ASSUMED, not verified — TMR13's channel polarity is active-low (stock sets
- * CCTRL C1P), so the duty->voltage sense could invert. If a CH2 search
- * converges on a rail, suspect the direction before suspecting the pin: sweep
- * `trig2 raw` by hand and watch which way the mean moves. */
-/*
- * Settle the acq buffer after a DAC step: the running acq task re-commits its
- * RAM buffer every ~33 ms poll, and the operating point settles in ~350 ms
- * (bench), so wait a generous fixed budget then average a couple of RAM-buffer
- * medians to knock down per-frame noise.
- */
-/* Wait until the acq task has committed `n` records whose reads began after
- * this call. The frame generation is a seqlock: +2 per commit, odd while a
- * commit is in progress. Returns false on timeout.
- *
- * Why not a fixed delay (the pre-2026-09-22 version slept 480 ms): under the
- * poll loop (EXP-54) the RAM buffer changes only on a commit, and with no
- * trigger crossing AUTO commits one free-run record per fallback budget,
- * 3 x fill + 230 ms = 475 ms at 0x10 and ~1.46 s at 0x12. A fixed 480 ms
- * therefore read the buffer from BEFORE the DAC step at slow codes and
- * sometimes at 0x10; the binary search steered on stale medians and the
- * servo reported "DAC1=2047 (median=101)" while the record then read 185. The
- * first commit after the write may have been read before the DAC settled, so
- * the caller asks for two. */
+ * A fixed delay is not enough: the RAM buffer changes only on a commit, and
+ * with no trigger crossing AUTO commits one free-run record per fallback
+ * budget, 3 x fill + 230 ms = 475 ms at timebase 0x10 and ~1.46 s at 0x12.
+ * A median taken before that commit describes the level before the DAC step.
+ * The first commit after the write may have been read before the DAC settled,
+ * so the caller asks for two. */
 static bool scope_center_wait_commits(uint32_t n)
 {
     uint32_t g = fpga_acq_frame_generation() & ~1u;
@@ -631,12 +606,13 @@ static bool scope_center_wait_commits(uint32_t n)
     return true;
 }
 
+/* The settled level after a DAC step: wait SCOPE_CENTER_SETTLE_MS for the
+ * analog settle, then for two fresh commits, then average SCOPE_CENTER_AVG
+ * buffer medians, one commit apart, to knock down per-record noise. A commit
+ * wait that times out increments scope_center_stale_steps; the median is
+ * still taken, and the caller reports the result as unreliable. */
 static uint32_t scope_center_settle_level(uint8_t ch)
 {
-    /* Keep the historical floor for the analog settle (~350 ms bench), then
-     * require fresh commits so the median is of a record read after the DAC
-     * moved. On timeout the median is still taken but the search is steering
-     * blind; the caller reports the count. */
     vTaskDelay(pdMS_TO_TICKS(SCOPE_CENTER_SETTLE_MS));
     if (!scope_center_wait_commits(2u)) scope_center_stale_steps++;
     uint32_t acc = 0;
@@ -647,6 +623,16 @@ static uint32_t scope_center_settle_level(uint8_t ch)
     return acc / SCOPE_CENTER_AVG;
 }
 
+/* Binary-search channel `ch`'s offset reference (2 = CH2's TMR13 PWM-DAC,
+ * anything else CH1's DAC1) for a settled median of SCOPE_CENTER_TARGET.
+ * Expects the range already applied and the acquisition task running. Leaves
+ * the reference at the best code found and returns that code and its median.
+ *
+ * The search assumes the level rises with the code. That was measured for
+ * DAC1 on CH1 (500 -> ~0, 2500 -> ~140, 3500 -> ~255). For CH2 it is assumed:
+ * TMR13's channel polarity is active-low (CCTRL C1P set), so the sense could
+ * invert. If a CH2 search converges on a rail, check the direction with
+ * `trig2 raw` by hand before suspecting the pin. */
 static void scope_center_one(uint8_t ch, uint16_t *out_dac, uint32_t *out_mean)
 {
     uint16_t lo = 0, hi = 4095;
@@ -658,10 +644,6 @@ static void scope_center_one(uint8_t ch, uint16_t *out_dac, uint32_t *out_mean)
         uint16_t mid = (uint16_t)((lo + hi) / 2);
         if (ch == 2) scope_trigger_ch2_raw(mid);
         else         scope_trigger_dac_raw(mid);
-        /* Wait for the running acq task to re-commit its RAM buffer at the new
-         * DC operating point, then read the settled median from that buffer.
-         * (The old paused-SPI path froze the rolling buffer mid-transition —
-         * see scope_center_buf_median.) */
         uint32_t level = scope_center_settle_level(ch);
         uint32_t err = (level > SCOPE_CENTER_TARGET)
                        ? level - SCOPE_CENTER_TARGET
@@ -671,24 +653,22 @@ static void scope_center_one(uint8_t ch, uint16_t *out_dac, uint32_t *out_mean)
             best_dac = mid;
             best_mean = level;
         }
-        if (level < SCOPE_CENTER_TARGET) lo = mid;   /* need higher DAC1 */
-        else                             hi = mid;   /* need lower  DAC1 */
+        if (level < SCOPE_CENTER_TARGET) lo = mid;   /* need a higher code */
+        else                             hi = mid;   /* need a lower code  */
         if (hi - lo <= 1) break;
     }
-    /* Leave the reference at the value we REPORT. Until 2026-09-22 the DAC
-     * stayed at the last probe (`mid`), not at best_dac, so the printed
-     * "center DAC1=..." could differ from what the hardware held. */
+    /* Leave the reference at the code that is reported, not at the last
+     * probe. */
     if (ch == 2) scope_trigger_ch2_raw(best_dac);
     else         scope_trigger_dac_raw(best_dac);
     *out_dac = best_dac;
     *out_mean = best_mean;
 }
 
-/* The timebase in force, for `status`: the boot reconcile, then the code,
- * reg 0x01, the sample rate and the s/div label (the lines the retired
- * `fpga scope timebase` printed; the code itself is the property tb.code).
- * after_set: a code was just set (the published record is still the
- * previous one). */
+/* The timebase in force, for `status`: what the boot reconcile did, then the
+ * code (the property tb.code), reg 0x01, the sample rate and the s/div label.
+ * after_set: a code was just set, so the published record is still the
+ * previous one. */
 void timebase_print_status(bool after_set)
 {
     const scope_state_t *ss = scope_state_get();
@@ -701,10 +681,10 @@ void timebase_print_status(bool after_set)
     usb_debug_printf("boot reconcile: %s\r\n", recon[ra < 3u ? ra : 0u]);
 
     char lbl[12];
-    /* What the status bar shows: x2 merged, times the fast-code zoom (C5). */
-    /* After a set, the published record is still the previous one, so ask
-     * what the NEW code will produce (fpga_interleave_active) rather than
-     * scope_ui_view_merged(), which reads that stale record. */
+    /* The label the status bar shows: x2 when merged, times the fast-code
+     * zoom. After a set, ask what the new code will produce
+     * (fpga_interleave_active) rather than scope_ui_view_merged(), which
+     * reads the previous record. */
     scope_timebase_view_label(ss->timebase_idx,
                               after_set ? fpga_interleave_active()
                                         : scope_ui_view_merged(),
@@ -716,8 +696,9 @@ void timebase_print_status(bool after_set)
                      lbl);
 }
 
-/* Millivolts of one roll point as a signed "x.yyy" string, or counts when the
- * range is uncalibrated -- the same rule and units the Y-T badges use. */
+/* One roll point of channel `ch` into `out`: its code and its volts to the
+ * millivolt ("code 140 = +0.123 V"), or the code and the zero when the range
+ * is uncalibrated. The same zero and gain the Y-T badges use. */
 static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
 {
     const scope_state_t *ss = scope_state_get();
@@ -736,11 +717,10 @@ static void fmt_roll_point(char *out, size_t n, uint8_t ch, uint8_t code)
     snprintf(out, n, "code %u = %c%ld.%03ld V", (unsigned)code, sign, mv / 1000, mv % 1000);
 }
 
-/* `fpga roll [code <hex>|code stock]` -- roll mode (C11) status, with the
- * last op03 frame exactly as received so the live slots can be checked.
- * Roll itself is tb.roll and its step tb.rollstep. `code` picks the reg-0x01
- * byte written on entry (stock writes 0x14 + step; 0x14 is the only code
- * with a measured rate): a debug knob of fpga.c that is no property. */
+/* Roll mode status: setting, step, reg 0x01, the point FIFO and read counts,
+ * the last op03 frame exactly as received (so the live slots can be
+ * checked), and the newest point of each channel against its expected 0 V
+ * and the offset DAC last written. */
 static void roll_print_status(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -797,6 +777,12 @@ static void roll_print_status(void)
     }
 }
 
+/* `fpga roll [code <hex>|code stock]`: roll mode status. Roll itself is the
+ * property tb.roll and its step tb.rollstep. `code` overrides the reg-0x01
+ * byte written on entering roll (the stock value is 0x14 + step; 0x14 is the
+ * only code with a measured rate); `code stock` removes the override. It is a
+ * debug setting of fpga_acq.c, not a property. When roll is on, the step is
+ * requested again so roll is re-entered with the new byte. */
 void cmd_fpga_roll(const char *args)
 {
     while (*args == ' ') args++;
@@ -832,22 +818,23 @@ void cmd_fpga_roll(const char *args)
     roll_print_status();
 }
 
-/* `fpga scope measure [reps]` — print what the measurement badges compute,
- * raw and machine-parseable: one line per fresh record. This is the bench
- * instrument for EXP-19 badge validation, and it deliberately calls the SAME
- * sources the badges call (scope_measure_record, scope_cal_volts_per_count,
- * scope_timebase_sample_rate, scope_freq_estimate) rather than reimplementing
- * any of them — two implementations of one quantity is the two-renderers bug.
+/* `fpga scope measure [reps]`: print what the measurement badges compute,
+ * raw and machine-parseable, for badge validation on the bench. One header
+ * line, then per pass (reps, default 5, clamped to 1..50, 60 ms apart) an
+ * `M` line and a `P` line from the live record buffers. It calls the same
+ * functions the badges call (scope_measure_record, scope_cal_volts_per_count,
+ * scope_timebase_sample_rate, scope_freq_estimate, scope_params_compute)
+ * rather than reimplementing them, so the shell and the screen cannot
+ * disagree.
  *
- * Integer-only output (shell printf carries no %f): voltages in MICROVOLTS,
- * duty in permille, period in samples x100, frequency in mHz. A field the
- * instrument refuses (k = 0, no rate, estimator declined) prints "-" so a
- * refusal can never be confused with a measured zero. */
+ * Integer-only output (the shell's printf has no %f): voltages in microvolts,
+ * duty in permille, period and edge times in samples x100, frequency in mHz.
+ * A field the instrument refuses (k = 0, no rate, estimator declined) prints
+ * "-", so a refusal can never be confused with a measured zero. */
 void cmd_fpga_scope_measure(const char *args)
 {
     uint32_t reps = 5;
-    /* Checked — see cmd_fpga_scope_freq: an unparseable argument used to
-     * degrade this to a single record without saying so. */
+    /* An unparseable argument is an error, not a silent single pass. */
     if (args && *args && parse_int(args, &reps) != 0) {
         usb_send_str("Usage: fpga scope measure [reps 1-50]\r\n");
         return;
@@ -858,9 +845,10 @@ void cmd_fpga_scope_measure(const char *args)
     const scope_state_t *ss = scope_state_get();
     const float fs_tab = scope_timebase_sample_rate(ss->timebase_idx);
     const uint8_t in_force = fpga_acq_rate_idx_get();
-    /* The PUBLISHED record's rate (x2 for an interleaved record) when the
-     * hardware runs the code the UI shows; `fs` in the header and the Freq
-     * estimate both use it, so an interleaved record is not read at half. */
+    /* The published record's rate (x2 for an interleaved record) when the
+     * hardware runs the code the UI shows, else the table rate; `fs` in the
+     * header and the Freq estimate both use it, so an interleaved record is
+     * not read at half. */
     const float fs = (in_force == ss->timebase_idx) ? fpga_record_sample_rate()
                                                     : fs_tab;
     const bool tb_ok = (in_force == ss->timebase_idx) && (fs > 0.0f);
@@ -869,7 +857,8 @@ void cmd_fpga_scope_measure(const char *args)
 
     /* k1/k2 are probe-TIP volts per count (scope_cal applies the probe
      * factor); probeN says which factor, so a bench script can tell a 10x
-     * setting from a calibration change. Appended, so parsers keep working. */
+     * setting from a calibration change. The probe fields come last, so
+     * parsers of the earlier fields are not affected. */
     usb_debug_printf("badge sources: rng1=%u k1_uV=%lu  rng2=%u k2_uV=%lu  "
                      "tb=0x%02X inforce=0x%02X fs=%lu  probe1=x%u probe2=x%u\r\n",
                      (unsigned)ss->ch1.vdiv_idx,
@@ -918,7 +907,7 @@ void cmd_fpga_scope_measure(const char *args)
             snprintf(vpp2, sizeof vpp2, "%lu",
                      (unsigned long)((float)m2.pp_robust * k2 * 1e6f + 0.5f));
 
-        /* Edge timing in SAMPLES x100 (M4). "-" when no clean edge was found,
+        /* Edge timing in samples x100. "-" when no clean edge was found,
          * same convention as per1. Kept in samples, not seconds: multiply by
          * 1/fs on the host when a rate is in force. */
         char rise[12] = "-", fall[12] = "-";
@@ -938,7 +927,7 @@ void cmd_fpga_scope_measure(const char *args)
                                          ? m1.duty_pct * 10.0f + 0.5f : 0.0f),
                          per, f, rise, fall, (unsigned)m2.pp, vpp2);
 
-        /* All 12 of stock's parameters (C6), for CH1, through the SAME
+        /* All 12 parameters (the stock set), for CH1, through the same
          * scope_params_compute() the badges use. "--" = refused. Hidden or
          * not, all 12 are listed: selection only decides what the screen
          * shows. */
@@ -965,12 +954,12 @@ void cmd_fpga_scope_measure(const char *args)
     }
 }
 
-/* Which of the 12 measurements each channel shows (chN.meas, bit i =
- * parameter i in stock's order: Freq Peri Duty+ Duty- Wid+ Wid- Vmax Vmin
- * Vp-p Amp Vrms Avg) and long PRM's hide (view.meashide), as the strip
- * draws them, for `ui dump`: with more than MSTRIP_MAX_PER_CH (6) on, the
- * strip shows the 6 measure_strip_shown() picks (levels first); the others
- * are listed "(no slot)". */
+/* For `ui dump`: which of the 12 measurements each channel shows (chN.meas,
+ * bit i = parameter i in stock's order: Freq Peri Duty+ Duty- Wid+ Wid- Vmax
+ * Vmin Vp-p Amp Vrms Avg) and long PRM's hide (view.meashide), as the strip
+ * draws them. With more than MSTRIP_MAX_PER_CH (6) on, the strip shows the
+ * ones measure_strip_shown() picks (levels first); the others are listed
+ * "(no slot)". */
 void prm_print_status(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -988,7 +977,7 @@ void prm_print_status(void)
     }
 }
 
-/* `fpga scope cursor` — the cursor readouts (C7) as the screen computes them:
+/* `fpga scope cursor`: the cursor readouts as the screen computes them:
  * X1 X2 X1-X2 1/|dX| from the PUBLISHED record's rate, Y1 Y2 Y1-Y2 from the
  * last drawn band. Y1/Y2 are "--" unless the true-scale graticule is on (the
  * autofit render re-anchors the vertical every frame). Move the cursors first
@@ -999,25 +988,19 @@ void cmd_fpga_scope_cursor(const char *args)
     char x1[16], x2[16], dx[16], ix[16], y1[16], y2[16], dy[16];
     float fs = 0.0f;
     scope_ui_cursor_report(x1, x2, dx, ix, y1, y2, dy, &fs);
-    /* fs is the COLUMN rate, 1000 x record rate / R: record rate x zoom L
-     * (parity C5), or the selected code's on a re-sampled held record (L=0,
-     * C14). */
+    /* fs is the column rate, 1000 x record rate / R: record rate x zoom L,
+     * or the selected code's rate on a re-sampled held record (L = 0). */
     usb_debug_printf("cursor fs=%lu L=%u R=%lu X1=%s X2=%s X1-X2=%s Y1=%s Y2=%s Y1-Y2=%s 1/dX=%s\r\n",
                      (unsigned long)(fs + 0.5f), (unsigned)scope_ui_view_factor(),
                      (unsigned long)scope_ui_view_ratio(), x1, x2, dx, y1, y2, dy, ix);
 }
 
-/* `fpga scope center [ch1|ch2] [0-9]` — auto-center the channel's vertical-
- * offset reference for one range (arg given) or for every range 0..9 (no arg),
- * one report line per range. Channel defaults to CH1, preserving the original
- * bench-validated `fpga scope center [0-9]` usage byte-for-byte.
- *
- * The channel is a NAMED TOKEN, not a numeric suffix, deliberately. On
- * 2026-08-17 `fpga scope range <n> 0` silently addressed BOTH channels because
- * its channel argument was 1-based and 0 fell through to "both", which invalidated
- * a whole relay test. A `center2` spelling would have been worse still: the
- * dispatcher matches "fpga scope center" on 17 chars, so `center2` would have
- * matched the CH1 handler with empty args and quietly swept all ten CH1 ranges. */
+/* `fpga scope center [ch1|ch2] [0-9]`: centre the channel's vertical-offset
+ * reference for one range (number given) or for every range 0..9, one report
+ * line per range (scope_center_one). The channel defaults to CH1 and is a
+ * named token (`ch1`, `ch2`), not a number, so it cannot be mistaken for the
+ * range. Writes only the offset reference and the range relays; the
+ * reference stays at the last range's result. */
 void cmd_fpga_scope_center(const char *args)
 {
     char buf[32];
@@ -1045,16 +1028,13 @@ void cmd_fpga_scope_center(const char *args)
         return;
     }
 
-    /* Centering runs with the acq task LIVE (it keeps the RAM buffer fresh at
-     * the new DC operating point — see scope_center_buf_median). The servo
-     * touches only the DAC and reads RAM, never SPI3, so there is no bus
-     * contention with the acq task's reads and no need to pause it. */
-
-    /* BUGFIX 2026-08-14: the search's scope_trigger_dac_raw() writes were inert
-     * without this init (bench: reported means clustered 120-170 regardless of
-     * DAC1, never spanning 0-255, so the binary search flailed around a fixed
-     * operating point). `trig raw` calls it too — the DAC peripheral must be
-     * enabled before raw writes take effect. */
+    /* The acquisition task stays running: it keeps the RAM buffer fresh at
+     * each new operating point (see scope_center_buf_median), and the search
+     * reads RAM, never SPI3.
+     *
+     * The reference's peripheral must be initialised before raw writes take
+     * effect; without it the writes are inert and the search wanders around
+     * a fixed operating point. `trig raw` initialises it the same way. */
     if (ch == 2) scope_trigger_ch2_init();
     else         scope_trigger_dac_init();
 
@@ -1063,17 +1043,15 @@ void cmd_fpga_scope_center(const char *args)
     for (uint32_t r = first; r <= last; r++) {
         uint16_t dac;
         uint32_t mean;
-        /* Deliberately applies the range to BOTH banks even when centering CH2:
-         * that is what the bench-validated CH1 path did (648492a), and the two
-         * frontends are independent, so restricting it would be an untested
-         * change to a working measurement for no measurable gain. */
+        /* Applies the range to both relay banks whichever channel is
+         * centred. The two frontends are independent, so the other channel's
+         * relays do not affect the result. */
         fpga_scope_set_range_diag((uint8_t)r);
         vTaskDelay(pdMS_TO_TICKS(20));     /* relay/frontend settle */
         scope_center_stale_steps = 0;
         scope_center_one(ch, &dac, &mean);
-        /* Name the reference in the output: a bare "center=" line would read
-         * identically whichever channel ran, and a mislabelled log is how this
-         * project has repeatedly convinced itself of the wrong pin. */
+        /* Name the channel and its reference in the output, so a log line
+         * cannot be attributed to the wrong pin. */
         usb_debug_printf("CH%u range %lu: center %s=%u (median=%lu)%s\r\n",
                          (unsigned)ch, (unsigned long)r,
                          (ch == 2) ? "TMR13_C1DT" : "DAC1",
@@ -1082,10 +1060,9 @@ void cmd_fpga_scope_center(const char *args)
                              ? "  STALE: no fresh commit on some steps -- result unreliable"
                              : "");
     }
-    /* acq was never paused (see the note above) — nothing to resume. */
 }
 
-/* ---- autoset / baseline correction / 50 % centre (parity C9/C10) --------
+/* ---- autoset, baseline correction, 50 % centre ----
  * The shell only queues a run; the key task's service does it, exactly as
  * for the AUTO / long AUTO / long OK keys (scope_selfcal_run.h). Poll with
  * `fpga scope selfcal`. Nothing here writes flash. */
@@ -1116,6 +1093,9 @@ void cmd_fft_auto(void)
 #endif
 }
 
+/* `fpga scope basecal [banks]`: queue a baseline correction over the banks
+ * in the bit mask (bit b = bank b, default 3). Needs scope mode and the
+ * calibration page in use; the inputs must be open or grounded. */
 void cmd_fpga_scope_basecal(const char *args)
 {
     while (*args == ' ') args++;
@@ -1132,6 +1112,8 @@ void cmd_fpga_scope_basecal(const char *args)
                      (unsigned long)banks);
 }
 
+/* `fpga scope center50`: queue the 50 % centre, wait for the key task to do
+ * it, then print the positions, trigger column and level it left. */
 void cmd_fpga_scope_center50(void)
 {
     if (current_mode != MODE_OSCILLOSCOPE) { usb_send_str("refused: not in scope mode\r\n"); return; }
@@ -1143,6 +1125,9 @@ void cmd_fpga_scope_center50(void)
                      (int)ss->trigger.level, (unsigned)fpga_acq_trig_code_get());
 }
 
+/* `fpga scope selfcal [cancel]`: progress and result of the autoset or
+ * baseline run; after a finished baseline run, each refused entry with its
+ * reason and the per-channel counts. `cancel` asks the running one to stop. */
 void cmd_fpga_scope_selfcal(const char *args)
 {
     while (*args == ' ') args++;
@@ -1197,7 +1182,7 @@ void cmd_fpga_scope_selfcal(const char *args)
                      ss->trigger.source == TRIG_SRC_CH2 ? 2u : 1u, (int)ss->trigger.level);
 }
 
-/* ── `mask` — waveform pass/fail (docs/specs/scope/mask-pass-fail.md) ──────────
+/* ---- `mask`: waveform pass/fail (docs/specs/scope/mask-pass-fail.md) ----
  *
  * Every mutation is a request applied by the acquisition task (scope_mask.h).
  * It is posted on the input task, where the keys and the mask's properties
@@ -1213,6 +1198,9 @@ static void mask_call_run(void *vc)
     c->seq = model_fw_mask_request(c->kind, c->a, c->b, c->n);
 }
 
+/* Post mask request k (arguments a, b, n) on the input task and wait for
+ * the acquisition task's acknowledgement. Returns true when it was applied;
+ * otherwise prints which step failed. */
 static bool mask_post_wait(scope_mask_req_t k, uint8_t a, uint8_t b, uint16_t n)
 {
     mask_call_t c = { (uint8_t)k, a, b, n, 0u };
@@ -1221,7 +1209,7 @@ static bool mask_post_wait(scope_mask_req_t k, uint8_t a, uint8_t b, uint16_t n)
                      "(gallery / countdown / self-cal?).\r\n");
         return false;
     }
-    for (int i = 0; i < 30; i++) {                  /* 400 ms in all with the input task's 100 */
+    for (int i = 0; i < 30; i++) {                  /* 300 ms here; 400 ms with the input task's 100 */
         if (scope_mask_acked(c.seq)) return true;
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -1252,6 +1240,9 @@ static void mask_print_cond_diff(uint8_t d)
     if (d & MASK_PF_C_TRIG_SRC)   usb_send_str(" trig-source");
 }
 
+/* The mask's state, teach progress, the conditions it was taught under,
+ * the test counters with skip reasons, the last verdict and last failure,
+ * stop-on-fail, the move focus and the free heap. */
 static void mask_print_status(void)
 {
     scope_mask_summary_t s;
@@ -1305,6 +1296,9 @@ static void mask_print_status(void)
                      (unsigned long)xPortGetMinimumEverFreeHeapSize());
 }
 
+/* `mask [status|teach [n] [ch1|ch2|both]|clear|reset|run|dump]`. teach,
+ * clear, reset and run are posted with mask_post_wait; dump reads the
+ * finished mask directly. Tolerances and stop-on-fail are mask.* properties. */
 void cmd_mask(const char *args)
 {
     while (*args == ' ') args++;

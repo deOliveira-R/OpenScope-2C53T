@@ -6,6 +6,16 @@
 
 #include "shell_parts.h"
 
+/*
+ * Factory calibration page protection (src/util/cal_backup.c).
+ *   cal status                    report the MCU cal page and the W25Q backup
+ *   cal backup                    copy the MCU cal page to the W25Q (writes the W25Q only)
+ *   cal restore [force] CONFIRM   write the W25Q backup back to MCU flash
+ * Restore refuses to overwrite a programmed (precious) page unless `force`.
+ */
+
+/* cal status: class and CRC of the live page, then the backup record and
+ * whether it matches the live page. */
 void cmd_cal_status(void)
 {
     cal_backup_report_t r;
@@ -41,6 +51,8 @@ void cmd_cal_backup(void)
     }
 }
 
+/* cal restore [force] CONFIRM: parse the optional force and the required
+ * CONFIRM, then write the backup to the MCU page at CAL_BACKUP_SRC_ADDR. */
 void cmd_cal_restore(const char *args)
 {
     char abuf[40];
@@ -74,13 +86,17 @@ void cmd_cal_restore(const char *args)
 }
 
 /*
- * Stock calibration page in use (parity C4; src/util/calpage.h, scope_vpos.h).
+ * The stock calibration page as used for the offset references
+ * (src/util/calpage.h, scope_vpos.h).
  *   cal page [on|off|reload]     decoded table, bank in force, substitutions
  *   cal page calc <1|2> <bank> <range> <pos>   one code, ours vs stock's
  * The vertical position is the property chN.pos; `cal page` prints the
  * offset code it gave and the reference read back, per channel.
- * The page is only READ here; `cal restore` is still the one writer.
+ * The page is only read here; `cal restore` is its only writer.
  */
+
+/* Format a page gain with four decimals; g <= 0 means no page gain, so the
+ * compiled table is in use. */
 static void fmt_g(char *out, size_t n, float g)
 {
     if (g <= 0.0f) { snprintf(out, n, "-- (compiled table)"); return; }
@@ -88,6 +104,9 @@ static void fmt_g(char *out, size_t n, float g)
     snprintf(out, n, "%lu.%04lu", x / 10000ul, x % 10000ul);
 }
 
+/* One line per channel: range, position, the offset code written from the
+ * page and its bank (if any), the reference value in force now (DAC1 for CH1,
+ * TMR13_C1DT for CH2), and the record median. */
 static void print_vpos_channel(uint8_t ch)
 {
     uint8_t bank = 0, range = 0;
@@ -109,6 +128,8 @@ static void print_vpos_channel(uint8_t ch)
                          (unsigned long)med, (unsigned long)(med + 28u));
 }
 
+/* cal page calc <ch> <bank> <range> <pos>: the code stock's formula gives for
+ * that page entry next to the code we use (from the clean bank pair). */
 static void cmd_cal_page_calc(const char *args)
 {
     char *end;
@@ -130,8 +151,9 @@ static void cmd_cal_page_calc(const char *args)
     calpage_parse((const uint8_t *)CAL_BACKUP_SRC_ADDR, CALPAGE_LEN, &p);
     const uint8_t c = (uint8_t)(v[0] - 1), b = (uint8_t)v[1], r = (uint8_t)v[2];
     const int pos = calpage_clamp_pos((int)v[3]);
-    /* What stock writes for the entry AS STORED: CH1 low 12 bits (bfi at
-     * 0x08008A44), CH2 the full value into TMR13 C1DT. */
+    /* What stock writes for the entry as stored: CH1 keeps the low 12 bits
+     * (a bit-field insert at stock 0x08008A44), CH2 the full value into
+     * TMR13 C1DT. */
     const uint32_t st = calpage_stock_formula(p.raw[c][0][b][r], p.raw[c][1][b][r], pos);
     uint16_t ours = 0;
     const bool ok = calpage_dac_code(&p, c, b, r, pos, &ours);
@@ -144,6 +166,10 @@ static void cmd_cal_page_calc(const char *args)
         usb_debug_printf("none (%s)\r\n", calpage_usable(&p) ? "no clean bank" : calpage_status_str(p.status));
 }
 
+/* cal page [on|off|reload]: apply the option, then print the parsed page:
+ * status and use, gains, header, the bank in force, both channels' offset
+ * codes, and, when the page parsed far enough, every substituted entry and
+ * the full raw table with its flags. */
 void cmd_cal_page(const char *args)
 {
     while (args && *args == ' ') args++;
@@ -246,13 +272,14 @@ void cmd_cal_base(const char *args)
             }
 }
 
-/* `cal user [show|save|clear]` — OpenScope's own corrections in the W25Q
- * (usercal.h, FLASH_REGION_USER_CAL 0xF00000): the baseline deltas (long
+/* `cal user [show|save|clear]`: OpenScope's own corrections in the W25Q
+ * (usercal.h, FLASH_REGION_USER_CAL at 0xF00000): the baseline deltas (long
  * AUTO / `fpga scope basecal`) and the interleave B correction (`fpga
- * interleave cal`). Owner policy: nothing is saved unless asked here (or by
- * a UI confirm); the stock page is never written. `clear` appends an empty
- * record (no erase) and drops the RAM corrections too, so the live state and
- * the next boot agree; `cal base clear` is RAM only. */
+ * interleave cal`). Nothing is saved unless asked here (or by a UI confirm);
+ * the stock page is never written. `clear` appends an empty record (no erase)
+ * and drops the RAM corrections too, so the live state and the next boot
+ * agree; `cal base clear` is RAM only. Every form ends with the status of the
+ * saved record, the boot load and the live table. */
 void cmd_cal_user(const char *args)
 {
     while (*args == ' ') args++;

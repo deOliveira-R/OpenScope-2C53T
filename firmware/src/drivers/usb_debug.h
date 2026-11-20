@@ -1,21 +1,9 @@
 /*
- * OpenScope 2C53T - USB Debug Shell
+ * OpenScope 2C53T - debug shell, public interface
  *
- * USB CDC virtual serial port for interactive FPGA exploration.
- * Connect via: screen /dev/tty.usbmodem* 115200
- *
- * Commands:
- *   help                           - List available commands
- *   version                        - Firmware version info
- *   status                         - FPGA and system status
- *   usart tx <hi> <lo>             - Send a two-byte word on USART2 (the meter chip)
- *   gpio set <port><pin> <0|1>     - Set GPIO pin state
- *   gpio read <port><pin>          - Read GPIO pin state
- *   gpio scan                      - Scan all FPGA-related pins
- *   mem read <hex_addr> [count]    - Read memory/registers (32-bit)
- *   mem write <hex_addr> <hex_val> - Write memory/register (32-bit)
- *   meter wave                     - Show DMM voltage waveform sample stats
- *   spi3 read [len]                - Raw SPI3 read and hex dump
+ * The shell runs over USB CDC (usb_cdc.c) and over RTT on the SWD wires.
+ * Connect via: screen /dev/tty.usbmodem* 115200 (the baud rate is ignored).
+ * `help` lists the commands of the build; the table is in shell.c.
  */
 
 #ifndef USB_DEBUG_H
@@ -25,39 +13,41 @@
 #include <stdbool.h>
 
 /*
- * Initialize USB CDC hardware:
- *   - Configure HICK 48MHz clock for USB (ACC calibrated)
- *   - Enable USB peripheral clock
- *   - Initialize USB device core with CDC class
- *   - Enable USB interrupt
- *
- * Call after system_clock_config() and before FreeRTOS scheduler start.
+ * Start the USB device:
+ *   - USB clock from HICK 48 MHz, trimmed by ACC against the host's SOF
+ *   - USB peripheral clock and interrupt on
+ *   - device core initialised as the plain CDC device, pull-up on
+ * Call after system_clock_config() and before the scheduler starts.
+ * Does nothing in the emulator build.
  */
 void usb_debug_init(void);
 
 /*
- * Create the USB debug shell FreeRTOS task.
+ * Create the shell task (not in the emulator build).
  * Call after usb_debug_init() and before vTaskStartScheduler().
  */
 void usb_debug_create_task(void);
 void usb_debug_pinlog_tick(void);   /* 1 s timer: the toolkit's pin log (pinlog, src/re/) */
 
 /*
- * Send a formatted string to the USB debug console.
- * Safe to call from any task context. Max 256 chars per call.
- * Returns number of bytes queued, 0 if USB not connected.
+ * Send a formatted string to the console (RTT, and CDC when configured).
+ * Output is cut to 255 bytes. Returns vsnprintf's result: the untruncated
+ * length, whether or not anything was sent. There is no lock: callers are
+ * the shell task's commands.
  */
 int usb_debug_printf(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /*
- * Check if USB debug console is connected and configured.
+ * True when the host has configured the USB device (always false in the
+ * emulator build).
  */
 bool usb_debug_connected(void);
 
 /* USB Sharing (USB_MSC=1 builds only): ask the shell task to re-enumerate as
  * CDC + read-only gallery drive (on) or CDC only (off); safe from any task.
- * usb_share_wanted() is what was last asked for (after an automatic fallback
- * to CDC-only: off). See usb_mode_sm.h. */
+ * usb_share_wanted() is the request still pending, else what the mode state
+ * machine holds (off after an automatic fallback to CDC-only). See
+ * usb_mode_sm.h. */
 void usb_share_request(bool on);
 bool usb_share_wanted(void);
 /* Settings row: re-insert a drive the host ejected, else toggle sharing;

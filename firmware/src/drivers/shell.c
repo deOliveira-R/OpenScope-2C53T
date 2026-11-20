@@ -7,12 +7,11 @@
 
 #include "shell_parts.h"
 
-/* ═══════════════════════════════════════════════════════════════════
- * Hex Parsing Helpers
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Number parsing ─────────────────────────────────────────────────── */
 
 /* Parse a hex string like "0x40021000" or "40021000" into uint32_t.
- * Returns 0 on success, -1 on error. */
+ * The number may end at NUL, space, CR or LF. Returns 0 on success, -1 on
+ * any other trailing character. */
 int parse_hex32(const char *s, uint32_t *out)
 {
     if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) s += 2;
@@ -21,13 +20,14 @@ int parse_hex32(const char *s, uint32_t *out)
     return (*end == '\0' || *end == ' ' || *end == '\r' || *end == '\n') ? 0 : -1;
 }
 
-/* For the feature shell files (shell_internal.h); parse_hex32() unchanged. */
+/* parse_hex32() for the feature shell files (shell_internal.h). */
 int usb_debug_sh_parse_hex32(const char *s, uint32_t *out)
 {
     return parse_hex32(s, out);
 }
 
-/* Parse a decimal or hex string into uint32_t */
+/* Parse a decimal string, or hex with a 0x prefix, into uint32_t. Same
+ * ending rule and return values as parse_hex32(). */
 int parse_int(const char *s, uint32_t *out)
 {
     if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
@@ -37,25 +37,25 @@ int parse_int(const char *s, uint32_t *out)
     return (*end == '\0' || *end == ' ' || *end == '\r' || *end == '\n') ? 0 : -1;
 }
 
-/* For the feature shell files (shell_internal.h); parse_int() unchanged. */
+/* parse_int() for the feature shell files (shell_internal.h). */
 int usb_debug_sh_parse_int(const char *s, uint32_t *out)
 {
     return parse_int(s, out);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * Command Handlers
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── Command handlers ───────────────────────────────────────────────── */
 
-/* cmd_help is defined next to the command table at the bottom of the file —
- * it renders the per-row help strings, so it must live after the table. */
+/* cmd_help prints the table's help strings, so it is defined after the
+ * table. */
 static void cmd_help(void);
 
+/* version: build date and compiler, FPGA design, MCU clock, defaults
+ * profile, and the features compiled in. */
 static void cmd_version(void)
 {
-    /* The compiler rides on the Build line: whether the RAM installer called
-     * flash-resident memset (issue #42) depended on the toolchain, and every
-     * bench script already logs the line that starts with "Build:". */
+    /* The compiler goes on the Build line, which bench scripts log: code
+     * generation depends on the toolchain (for example whether the RAM
+     * installer calls a flash-resident memset). */
     usb_debug_printf(
         "OpenScope 2C53T\r\n"
         "Build: " __DATE__ " " __TIME__ ", gcc " __VERSION__ "\r\n"
@@ -92,6 +92,8 @@ static void cmd_features(void)
     usb_debug_printf("mask 0x%08lx\r\n", (unsigned long)features_mask());
 }
 
+/* CRC-32 (reflected, polynomial 0xEDB88320, as zlib), bitwise. Start with
+ * crc = 0 and feed the result back in to continue over more data. */
 uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
 {
     crc = ~crc;
@@ -105,31 +107,26 @@ uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
     return ~crc;
 }
 
-/* For the feature shell files (shell_internal.h); crc32_update() unchanged. */
+/* crc32_update() for the feature shell files (shell_internal.h). */
 uint32_t usb_debug_sh_crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
 {
     return crc32_update(crc, data, len);
 }
 
+/* Shell time in ms, from the tick count (wraps with it). */
 uint32_t shell_now_ms(void) { return (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS); }
 
-/* ── Stock-parity meter shell (M1/M4/M5) ────────────────────────────────
- *
- * (the function is the property meter.func, degC/degF is meter.degf)
- * `meter state`           everything decoded from the last frame, the switch
- *                         counters, the beep source and the guard
- * `meter fast [on|off]`   one-word switching (default on); off = old PC11 path
- * `meter keepalive [..]`  the 4 Hz unobeyed poll (default on)
- * `meter beep ...`        the SoC-edge buzzer (default off)
- */
+/* "on" or "off", for printing a flag. */
 const char *onoff(bool b) { return b ? "on" : "off"; }
 
-/* For the feature shell files (shell_internal.h); onoff() unchanged. */
+/* onoff() for the feature shell files (shell_internal.h). */
 const char *usb_debug_sh_onoff(bool b)
 {
     return onoff(b);
 }
 
+/* Read "on" or "off" after leading spaces into *out. Only the first two or
+ * three characters are compared. Returns false (and leaves *out) otherwise. */
 bool shell_onoff_arg(const char *args, bool *out)
 {
     while (*args == ' ') args++;
@@ -138,21 +135,20 @@ bool shell_onoff_arg(const char *args, bool *out)
     return false;
 }
 
-/* For the feature shell files (shell_internal.h); shell_onoff_arg() unchanged. */
+/* shell_onoff_arg() for the feature shell files (shell_internal.h). */
 bool usb_debug_sh_onoff_arg(const char *args, bool *out)
 {
     return shell_onoff_arg(args, out);
 }
 
-/* One scratch buffer shared by the shell's bus-snapshot commands (`spi3 read`
- * uses the first half; `spi3 frame` uses both halves for a coherent CH1+CH2
- * grab). They all run on the single shell task and never nest, so sharing is
- * safe — and it keeps guest RAM in budget: two per-command 1 KB buffers
- * overflowed the region by 368 bytes (2ff992c, caught once #31 unblocked the
- * guest link). One 2 KB buffer costs +1 KB over the old lone snapshot. */
+/* The shell's one scratch buffer, 4-aligned. Users: the bench shell's bus
+ * snapshots (`spi3 read` the first half, `spi3 frame` both halves for CH1
+ * and CH2 together), `tasks`, and the firmware loader (lent at task start).
+ * All run on the shell task and never nest, so one buffer serves them all
+ * and saves RAM. */
 uint8_t shell_bus_scratch[2 * FPGA_ADC_BUF_SIZE] __attribute__((aligned(4)));
 
-/* For the feature shell files (shell_internal.h); shell_bus_scratch unchanged. */
+/* shell_bus_scratch for the feature shell files (shell_internal.h). */
 uint8_t *usb_debug_sh_scratch(void)
 {
     return shell_bus_scratch;
@@ -165,6 +161,7 @@ void usb_debug_pinlog_tick(void)
     retools_pinlog_tick();
 }
 
+/* uptime: h:mm:ss from the 1 s counter uptime_seconds. */
 static void cmd_uptime(void)
 {
     extern volatile uint32_t uptime_seconds;
@@ -172,13 +169,13 @@ static void cmd_uptime(void)
     usb_debug_printf("Uptime: %lu:%02lu:%02lu\r\n", s / 3600, (s % 3600) / 60, s % 60);
 }
 
-/* Claim the SPI3 bus for a raw shell command (audit 2026-08-20, P0.1).
- * The acquisition task runs at priority 3, ABOVE this shell task at 2, so
- * without a park it preempts any spi3_raw_xfer sequence mid-CS-window and
- * both transfers interleave into garbage — a live source of bad experimental
- * data before 2026-08-20. Used at the DISPATCH level around every command
- * that drives the bus raw; pair with fpga_acq_resume() after the command
- * returns (dispatch-level pairing survives the commands' early returns). */
+/* Claim the SPI3 bus for a command flagged SC_SPI3: park the acquisition
+ * task. It runs at priority 3, above the shell task at 2, and would
+ * otherwise preempt a raw transfer inside its CS window and corrupt both.
+ * Called by dispatch_command(), which calls fpga_acq_resume() after the
+ * command returns, so the pairing holds through the commands' early
+ * returns. Prints an error and returns false when the task does not park
+ * within fpga_acq_pause()'s wait. */
 static bool spi3_shell_claim(void)
 {
     if (!fpga_acq_pause()) {
@@ -197,8 +194,9 @@ static bool spi3_shell_claim(void)
  * (input) task is the one named "key" (main.c: every key, every screen and
  * every property setter runs on it); its line is marked and repeated at the
  * end. uxTaskGetSystemState suspends the scheduler while it walks the task
- * lists and scans each stack for its untouched fill (not timed on the unit
- * yet: a few thousand byte compares). Lines are in creation order. */
+ * lists and scans each stack for its untouched fill (a few thousand byte
+ * compares; the time is not measured). The task array lives in
+ * shell_bus_scratch. Lines are in creation order. */
 static void cmd_tasks(void)
 {
     static const char *const state[] = { "run", "ready", "block", "susp", "del", "?" };
@@ -244,6 +242,11 @@ static void cmd_tasks(void)
         usb_send_str("key (input) task: not found (no task named \"key\")\r\n");
 }
 
+/* ── The command table ──────────────────────────────────────────────────
+ * One row per command. dispatch_command() picks the row whose name is the
+ * longest whole-word prefix of the line (on "a b c" a row "a b" wins over a
+ * row "a"); the rest of the line is the arguments. A row
+ * with a NULL help string is an alias and is left out of `help`. */
 typedef struct {
     const char *name;                    /* full command word(s) */
     void (*fn_args)(const char *args);   /* exactly one of these two is set */
@@ -252,12 +255,14 @@ typedef struct {
     const char *help;                    /* preformatted line(s); NULL = alias row */
 } shell_cmd_t;
 
-#define SC_EXACT    0x01u
+/* Row flags */
+#define SC_EXACT    0x01u   /* takes no arguments: matches only the whole line */
 
-#define SC_NEEDARGS 0x02u
+#define SC_NEEDARGS 0x02u   /* refused with its usage when no arguments follow */
 
-#define SC_SPI3     0x04u
+#define SC_SPI3     0x04u   /* drives SPI3 raw: acquisition parked around it */
 
+/* A row whose handler takes the argument string, or takes nothing. */
 #define CMD_A(name, fn, flags, help)  { name, fn, NULL, flags, help }
 
 #define CMD_V(name, fn, flags, help)  { name, NULL, fn, flags, help }
@@ -429,6 +434,9 @@ static void cmd_help(void)
     usb_send_str("\r\n");
 }
 
+/* Run one command line (modified: line endings stripped). Steps: find the
+ * row, check the arguments, park acquisition for SC_SPI3 rows, call the
+ * handler, then ask the input task to save settings (unless `persist off`). */
 static void dispatch_command(char *line)
 {
     /* Strip trailing \r\n */
@@ -438,7 +446,7 @@ static void dispatch_command(char *line)
 
     if (len == 0) return;
 
-    /* Longest whole-word-prefix match over the table (see table comment). */
+    /* Longest whole-word-prefix match over the table (see the table). */
     const shell_cmd_t *best = NULL;
     size_t best_len = 0;
     for (const shell_cmd_t *c = shell_cmds; c->name != NULL; c++) {
@@ -483,37 +491,38 @@ static void dispatch_command(char *line)
 
     if (best->fn_args) best->fn_args(args); else best->fn_void();
     /* Any command may have changed a persisted setting (timebase, vdiv,
-     * coupling, probe, trigger, siggen, meter mode, prefs, ...) and none of
-     * them has a key press behind it, so settings_after_button() never sees
-     * it. One request per command, served by the input task within 100 ms: a
-     * no-op (no flash access) when nothing differs from the saved image.
+     * coupling, probe, trigger, siggen, meter mode, prefs, ...) with no key
+     * press behind it, and only a key press gives the settings store its
+     * turn. One request per command, served by the input task within 100 ms:
+     * a no-op (no flash access) when nothing differs from the saved image.
      * `persist off` (bench sweeps) skips the request; see shell_persist.h. */
     if (shell_persist_after_command())
         input_request_settings_flush();
 }
 
-/* ═══════════════════════════════════════════════════════════════════
- * FreeRTOS Task — USB Debug Shell
- * ═══════════════════════════════════════════════════════════════════ */
+/* ── The shell task ─────────────────────────────────────────────────── */
 
 #define CMD_BUF_SIZE 128
 
 /* Line accumulator shared by both transports. `echo` is on for USB (a raw
  * serial terminal shows nothing otherwise) and off for RTT, where the host
- * telnet client is line-buffered and echoes locally — echoing there would
+ * telnet client is line-buffered and echoes locally: echoing there would
  * double every character. */
 static char cmd_buf[CMD_BUF_SIZE];
 
 static int  cmd_pos = 0;
 
-/* Returns how many bytes were consumed. Less than len only when a command
- * armed a raw block: the rest of the packet is that block's data.
+/* Line editor: append printable bytes to cmd_buf (up to CMD_BUF_SIZE - 1,
+ * the rest dropped), handle backspace/DEL, and on CR or LF run the line and
+ * print the prompt. Returns how many bytes were consumed. Less than len
+ * only when a command armed a raw block: the rest of the packet is that
+ * block's data.
  *
- * Echo is batched: one packet per received chunk instead of one IN transfer
- * per character. Per-character echo meant ~115 one-byte IN transfers for
- * every 115-byte `logo data` line, interleaved with the host's OUT packets
- * on the same endpoint: slow, and exactly the IN/OUT overlap that triggered
- * the lost-completion race (usb_conf.h). */
+ * Echo is batched, up to 64 bytes per send, instead of one IN transfer per
+ * character: a 115-byte `logo data` line would otherwise be 115 one-byte IN
+ * transfers interleaved with the host's OUT packets on the same endpoint,
+ * which is slow and the IN/OUT overlap that exposes lost completions
+ * (usb_conf.h). */
 static uint16_t shell_feed(const uint8_t *bytes, uint16_t len, bool echo)
 {
     uint8_t eb[64];
@@ -580,18 +589,30 @@ static const char shell_banner[] =
     "+----------------------------------+\r\n"
     "\r\n> ";
 
-/* Instrumentation for the 2026-08-11 "shell task never polls RTT" hunt.
- * Non-static so the addresses come out of the ELF with nm and can be read over
- * SWD on a running target — no console needed, which is the whole problem.
- *   dbg_shell_entered == 0  -> the task never ran; look at task creation
- *   dbg_shell_loops   == 0  -> it started but never completed an iteration
- *   dbg_shell_loops growing -> the loop is fine and rtt_read() is the fault */
+/* Liveness counters of the shell task, for a unit whose console is silent.
+ * Non-static so nm gives their addresses and they can be read over SWD on a
+ * running target:
+ *   dbg_shell_entered    0xA5A5A5A5 once the task has started
+ *   dbg_shell_loops      passes of the task loop
+ *   dbg_shell_rtt_bytes  bytes read from RTT
+ * entered set and loops still: the task is stuck in a pass. loops growing
+ * and rtt_bytes still: no RTT input arrives. */
 volatile uint32_t dbg_shell_entered;
 
 volatile uint32_t dbg_shell_loops;
 
 volatile uint32_t dbg_shell_rtt_bytes;
 
+/* The shell task. Each pass:
+ *   1. RTT: banner on attach or first input, then feed input (no echo);
+ *   2. USB CDC (unless DEBUG_SHELL_RTT_ONLY): banner after the host settles,
+ *      then input goes to the firmware loader during a transfer, is
+ *      discarded while an aborted image drains, else to the line editor;
+ *   3. firmware loader timeout, and the drain's own timeout;
+ *   4. raw block (`logo blk`) timeout;
+ *   5. USB_MSC builds: device mode switch and MSC sector reads;
+ *   6. binary stream frames;
+ *   7. idle wait when nothing happened. */
 static void vUsbDebugTask(void *pvParameters)
 {
     (void)pvParameters;
@@ -604,7 +625,7 @@ static void vUsbDebugTask(void *pvParameters)
     bool rtt_banner_sent = false;
     uint32_t usb_settle = 0;
     /* When a transfer dies mid-stream the host still has bytes in flight, and
-     * without this they land in shell_feed() and are parsed as command lines —
+     * without this they land in shell_feed() and are parsed as command lines:
      * a binary typed at the prompt. cdc_flash.py stops at the first chunk
      * carrying ERROR, so the tail is short, but any other host makes it long.
      * Swallow exactly what the aborted image still owed, and give up on the
@@ -613,12 +634,11 @@ static void vUsbDebugTask(void *pvParameters)
     uint32_t fwl_discard = 0;
     uint32_t fwl_discard_idle = 0;
 
-    /* The firmware loader borrows this task's bus scratch (the arena `spi3
-     * read` / `spi3 frame` already share, 545a9d8) instead of owning a 512 B
-     * buffer of its own — the RAM ceiling is that close. Safe for the same
-     * reason theirs is: every fw_loader entry point runs on this task, and no
-     * other command can interleave with a transfer (RX is routed to the
-     * loader) or an install (interrupts are off). */
+    /* The firmware loader has no buffer of its own; it borrows
+     * shell_bus_scratch, to save RAM. Safe because every fw_loader entry
+     * point runs on this task, and no other command can interleave with a
+     * transfer (RX is routed to the loader) or an install (interrupts are
+     * off). */
     fw_loader_attach_scratch(shell_bus_scratch, sizeof(shell_bus_scratch));
     fw_loader_breadcrumb_capture();   /* last install's record, read once and cleared */
 
@@ -627,21 +647,12 @@ static void vUsbDebugTask(void *pvParameters)
         dbg_shell_loops++;
 
 #if defined(FAULT_SELFTEST) && FAULT_SELFTEST
-        /* Deliberate, self-inflicted fault ~10 s after boot, from a task (so the
-         * frame lands on the PSP exactly like the fault under investigation).
-         *
-         * Two questions at once:
-         *  1. does the fault handler actually record anything? If this writes a
-         *     valid g_fault, the handler and vector wiring are sound and the
-         *     ~55 s fault is special in some way (most likely an unusable stack
-         *     frame). If it records nothing, the instrument itself is broken.
-         *  2. does the device freeze at ~10 s WITH NO DEBUGGER ATTACHED? The UI
-         *     stopping on its own is proof the fault is real and not something
-         *     the OpenOCD attach provokes — which is the confound that makes the
-         *     whole "~55 s HardFault" reading suspect.
-         *
-         * udf #0 is the permanently-undefined encoding: guaranteed UNDEFINSTR
-         * -> UsageFault, no memory access involved, nothing ambiguous. */
+        /* Fault self-test (build with FAULT_SELFTEST=1): a deliberate fault
+         * on the 1000th pass (about 10 s after boot when idle), from a task,
+         * so the exception frame lands on the PSP. It checks that the fault
+         * handler records a valid g_fault, and that the unit stops with no
+         * debugger attached. udf #0 is the permanently undefined encoding:
+         * UNDEFINSTR -> UsageFault, with no memory access involved. */
         if (dbg_shell_loops == 1000u) {
             __asm volatile ("udf #0");
         }
@@ -670,7 +681,8 @@ static void vUsbDebugTask(void *pvParameters)
 #if !DEBUG_SHELL_RTT_ONLY
         if (usb_debug_connected()) {
             if (!usb_banner_sent) {
-                /* Let the host finish enumerating before the first write. */
+                /* Let the host finish enumerating before the first write:
+                 * 50 passes, about 0.5 s at the idle cadence. */
                 if (usb_settle < 50) {
                     usb_settle++;
                 } else {
@@ -683,7 +695,7 @@ static void vUsbDebugTask(void *pvParameters)
                 uint16_t rx_len = usb_vcp_get_rxdata(&usb_core_dev, rx_buf);
                 if (rx_len > 0) {
                     if (fw_loader_active()) {
-                        /* Raw image bytes for fw_loader — no echo, no line
+                        /* Raw image bytes for fw_loader: no echo, no line
                          * editor. Progress every 64 KB so a long transfer
                          * is visibly alive without flooding the port. */
                         uint32_t before = fw_loader_bytes();
@@ -695,10 +707,10 @@ static void vUsbDebugTask(void *pvParameters)
                             usb_send_str(pbuf);
                         }
                         if (!fw_loader_active()) {
-                            fwl_print_status();  /* staged or failed — say so */
+                            fwl_print_status();  /* staged or failed: say so */
                             if (fw_loader_state() == FW_LOADER_ERROR) {
                                 /* The host has sent `before + rx_len` bytes
-                                 * so far — the tail of THIS packet is already
+                                 * so far: the tail of this packet is already
                                  * off the wire even when the loader refused
                                  * it, so `expected - bytes()` would over-
                                  * count and the drain would eat up to a
@@ -739,8 +751,8 @@ static void vUsbDebugTask(void *pvParameters)
         (void)rx_buf; (void)usb_banner_sent; (void)usb_settle;
 #endif
 
-        /* Age the fw_loader RX-silence timeout, and report if it fires —
-         * the poll is what turns a wedged transfer back into a live shell. */
+        /* Age the fw_loader RX-silence timeout, and report if it fires: the
+         * poll is what turns a wedged transfer back into a live shell. */
         {
             bool was_loading = fw_loader_active();
             fw_loader_poll();
@@ -809,6 +821,8 @@ static void vUsbDebugTask(void *pvParameters)
     }
 }
 
+/* Shell task: 768 words of stack, priority 2 (below acquisition at 3). In a
+ * USB_MSC build the MSC interrupt is given its handle to wake it. */
 void usb_debug_create_task(void)
 {
 #ifndef EMULATOR_BUILD
