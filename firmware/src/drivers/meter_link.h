@@ -39,31 +39,22 @@
                                       * send it obeyed outside a function change */
 #define FPGA_CMD_METER_VAR_14 0x14   /* the chip's own auto-everything function */
 
-/* An item of the transmit queue: bits 0-7 low byte, 8-15 high byte, bit 16
- * OBEY. With OBEY the frame carries the AA 55 header and the chip acts on
- * it. Without, it carries 00 00: the chip ignores the command, but any
- * traffic makes it send data frames (measured: transmit stopped, data frames
- * stopped). The keepalive must not be obeyed, or every poll restarts a
- * measurement and its autorange. */
-#define FPGA_TX_OBEY_BIT  (1U << 16)
+/* A command word is sent obeyed or unobeyed. Obeyed, the frame carries the
+ * AA 55 header and the chip acts on it. Unobeyed, it carries 00 00: the chip
+ * ignores the command, but any traffic makes it send data frames (measured:
+ * transmit stopped, data frames stopped). The keepalive must be unobeyed, or
+ * every poll restarts a measurement and its autorange. */
 
 /* ── sending ────────────────────────────────────────────────────────── */
 
-/* Queue an obeyed command for the transmit task. Does not block: pdFALSE if
- * the queue is full. */
+/* Every frame goes through one queue and one task (dvom_TX). Queue an obeyed
+ * command; does not block: pdFALSE if the queue is full. Callable once
+ * fpga_create_tasks() has run. */
 BaseType_t fpga_send_cmd(uint8_t cmd_high, uint8_t cmd_low);
 /* Queue a frame the chip will not act on (00 00 header). */
 BaseType_t fpga_send_cmd_unobeyed(uint8_t cmd_high, uint8_t cmd_low);
-/* The keepalive: unobeyed traffic that makes the chip send a data frame. */
-BaseType_t fpga_send_cmd_keepalive(uint8_t cmd_high, uint8_t cmd_low);
-/* Send one frame now, byte by byte, without the queue or the transmit task
- * (about 11 ms). Works without the scheduler; USART2 must be enabled. */
-void fpga_send_cmd_direct(uint8_t cmd_high, uint8_t cmd_low);
 /* Send one obeyed word and wait delay_ms. */
 void fpga_wire_send_word(uint16_t word, uint32_t delay_ms);
-/* The transmit task exists. fpga_send_cmd() only queues, so a diagnostic
- * that reports a send checks this first. */
-bool fpga_usart_tx_task_exists(void);
 
 /* The header of obeyed frames: true = AA 55 (default; the chip requires it,
  * measured on two units), false = 00 00, a negative control for the bench. */

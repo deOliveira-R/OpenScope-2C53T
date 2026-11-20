@@ -214,12 +214,9 @@ static void fpga_diag_clear(void)
     taskEXIT_CRITICAL();
 }
 
-/* Can a byte actually leave PA2 right now?
- *
- * USART-silent builds (FPGA_USART_SILENT_SCOPE — coldtrace, warm handoff)
- * configure USART2's registers but never set UEN/TE, so every send path in
- * this shell, queued or polled, is a no-op that reports success. Print the
- * refusal here once and let each command bail. */
+/* Can a byte leave PA2 now? With the meter link off, USART2 is disabled
+ * (UEN and TE clear) and a queued frame goes nowhere: say so and let the
+ * command stop. */
 bool usart_tx_wire_live(void)
 {
     uint32_t ctrl1 = fpga_usart_ctrl1();
@@ -240,16 +237,6 @@ bool usart_tx_wire_live(void)
 static bool usart_send_cmd_reporting(uint8_t cmd_hi, uint8_t cmd_lo)
 {
     if (!usart_tx_wire_live()) return false;
-
-    if (!fpga_usart_tx_task_exists()) {
-        /* The queue has no consumer on this build — go straight out the
-         * polled path rather than parking the frame forever. */
-        fpga_send_cmd_direct(cmd_hi, cmd_lo);
-        usb_debug_printf("TX [%02X %02X]: sent DIRECT (polled) — dvom_TX drain task does not\r\n"
-                         "  exist on this build, so the queue would never have been emptied.\r\n",
-                         cmd_hi, cmd_lo);
-        return true;
-    }
 
     if (fpga_send_cmd(cmd_hi, cmd_lo) != pdTRUE) {
         usb_debug_printf("TX [%02X %02X]: QUEUE FULL — NOT SENT\r\n", cmd_hi, cmd_lo);
@@ -296,20 +283,8 @@ void cmd_usart_tx(const char *args)
         return;
     }
 
-    /* Two ways this command used to lie, both of which have already voided a
-     * bench experiment (exp(02), 2026-08-16 — recorded VOID, not negative):
-     *
-     *   1. fpga_send_cmd() only ENQUEUES. On coldtrace/warm-handoff builds the
-     *      dvom_TX drain task is never created, so the frame sits in the queue
-     *      forever while this command prints "queued" and the operator reads
-     *      the absence of a reply as a measurement.
-     *   2. Those same builds leave USART2 disabled (CTRL1 UEN clear,
-     *      FPGA_USART_SILENT_SCOPE), so even the polled path cannot shift a
-     *      byte out of PA2.
-     *
-     * So: check the wire first and refuse when it is dark, and when only the
-     * drain task is missing, send on the polled path and SAY that is what
-     * happened. */
+    /* fpga_send_cmd() only queues the frame, so check first that USART2 is
+     * enabled, and report a full queue. */
     if (!usart_send_cmd_reporting(bytes[0], bytes[1])) return;
 
     /* Wait briefly for echo/response, then show last RX frame */
@@ -2313,11 +2288,6 @@ void cmd_fpga_selftest(void)
                      (unsigned long)usart_c1, (unsigned long)fpga_usart_baudr(),
                      (unsigned)((usart_c1 >> 13) & 1u), (unsigned)((usart_c1 >> 3) & 1u),
                      (unsigned)((usart_c1 >> 2) & 1u), (unsigned)((usart_c1 >> 5) & 1u));
-    usb_debug_printf("        dvom_TX drain task: %s\r\n",
-                     fpga_usart_tx_task_exists()
-                         ? "present (queued sends will go out)"
-                         : "ABSENT — queued sends would never transmit; the shell now\r\n"
-                           "        falls back to the polled path and says so");
     if (((usart_c1 >> 13) & 1u) == 0)
         usb_send_str("        UEN CLEAR: the wire is dark. No USART command can reach the\r\n"
                      "        FPGA, so silence is NOT a measurement. `fpga usart on` first.\r\n");

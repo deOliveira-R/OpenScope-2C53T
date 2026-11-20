@@ -736,7 +736,7 @@ static void cmd_status(void)
         "SYSCLK: %uMHz\r\n"
         "\r\n=== FPGA ===\r\n"
         "Initialized: %s\r\n"
-        "SPI3 active: %s\r\n"
+        "SPI3 pins released: %s\r\n"
         "TX count: %u\r\n"
         "RX bytes: %u\r\n"
         "Data frames: %u\r\n"
@@ -745,7 +745,7 @@ static void cmd_status(void)
         (unsigned long)uptime_seconds,
         system_core_clock / 1000000,
         fpga.initialized ? "YES" : "NO",
-        fpga.spi3_active ? "YES" : "NO",
+        fpga.bus_released ? "YES" : "NO",
         fpga.tx_count,
         fpga.rx_byte_count,
         fpga.frame_count,

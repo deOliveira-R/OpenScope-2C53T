@@ -102,20 +102,8 @@ uint8_t fpga_bitbang_config_sequence(void)
     int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
 
-    /* PB3 (SCK), PB5 (MOSI), PB6 (CS) become GPIO push-pull outputs, PB4
-     * (MISO) a floating input. The idle levels (SCK HIGH, CS HIGH, MOSI LOW:
-     * mode-3 idle) are loaded first, so the pins do not glitch. */
-    GPIOB->scr = BB_SCK | BB_CS;
-    GPIOB->clr = BB_MOSI;
-    gpio_cfg.gpio_pins = BB_SCK | BB_MOSI | BB_CS;
-    gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-    gpio_cfg.gpio_pins = BB_MISO;
-    gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
-    gpio_cfg.gpio_pull = GPIO_PULL_NONE;   /* floating */
-    gpio_init(GPIOB, &gpio_cfg);
+    /* The pins become GPIO for the configuration port. */
+    spi3_pins_gpio();
 
     /* Read IDCODE, USERCODE and STATUS before the upload (shown by `status`). */
     bb_read_reg32(0x11, (uint8_t *)fpga.probe_idcode);
@@ -177,19 +165,9 @@ uint8_t fpga_bitbang_config_sequence(void)
     fpga_scope_delay_ms(100);
 
 bb_restore_pins:
-    /* PB3 and PB5 back to the SPI3 alternate function, so the acquisition
-     * task reads records over hardware SPI3. PB4 stays a floating input and
-     * PB6 a GPIO (software CS). */
-    gpio_cfg.gpio_pins = BB_SCK | BB_MOSI;
-    gpio_cfg.gpio_mode = GPIO_MODE_MUX;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-    gpio_cfg.gpio_pins = BB_MISO;
-    gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
-    gpio_cfg.gpio_pull = GPIO_PULL_NONE;
-    gpio_init(GPIOB, &gpio_cfg);
-    SPI3_CS_DEASSERT();
+    /* The pins go back to SPI3, so the acquisition task reads records over
+     * the peripheral. */
+    spi3_pins_peripheral();
 
     /* fpga_reload() refused or lost its source: no design was loaded, so there
      * is nothing to arm. The boot path asks for the arm writes even so when a
@@ -284,11 +262,7 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
     int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
 
-    /* fpga_bus_release() also drives PB11 high. PB11 is a CH2 range relay
-     * line, so put its level back afterwards. */
-    const bool pb11_was_high = (GPIOB->odt & PB11_MASK) != 0u;
-    fpga_bus_release();                  /* PB3/PB5/PB6 Hi-Z, SPI3 off, acq gated */
-    if (!pb11_was_high) GPIOB->clr = PB11_MASK;
+    fpga_bus_release();                  /* no line into the FPGA is driven while its supply is off */
     GPIOC->clr = PC6_MASK;               /* FPGA supply off */
     fpga_scope_delay_ms(FPGA_RELOAD_OFF_MS);
     GPIOC->scr = PC6_MASK;               /* and on again */
@@ -445,104 +419,95 @@ const char *fpga_boot_design(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * SPI3 bus release and re-acquisition
- * ═══════════════════════════════════════════════════════════════════
+ * The SPI3 pins: PB3 SCK, PB4 MISO, PB5 MOSI, PB6 chip select
  *
- * fpga_bus_release() lets go of the lines the MCU drives (PB3 SCK, PB5 MOSI,
- * PB6 CS): SPI3 off, all three floating inputs (Hi-Z). Two uses: fpga_reload()
- * before it switches the FPGA's supply off (no back-feed through the lines),
- * and the toolkit's `fpga busrelease`, which hands the bus to an external SPI
- * master on the SPI3 test pads. PB4 (MISO) is driven by the FPGA and is
- * already an input, so it is left alone. The MCU keeps PC6 HIGH (FPGA
- * supply) and also drives PB11 HIGH.
- *
- * While fpga.bus_released is set, fpga_acq_task stays off the bus.
- * fpga_spi3_bus_reacquire() takes the bus back. */
-void fpga_bus_release(void)
+ * They have three states, and the three functions below are the only code
+ * that sets them. PB4 is an input with pull-up in all three, so a line the
+ * FPGA does not drive reads 0xFF. No other pin is touched here: PC6 (the
+ * FPGA's supply) belongs to fpga_init and fpga_reload, PB11 to the front end.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static void spi3_pin_miso_input(void)
 {
-    gpio_init_type gpio_cfg;
-
-    /* Set the flag first so the acquisition task stops touching SPI3. */
-    fpga.bus_released = true;
-    fpga.spi3_active = false;
-
-    /* Disable the SPI3 peripheral so it stops driving SCK/MOSI. */
-    FPGA_SPI->ctrl1 &= ~(1u << 6);   /* SPE = 0 */
-
-    /* PB3 (SCK), PB5 (MOSI), PB6 (CS) to floating inputs (Hi-Z). */
-    gpio_default_para_init(&gpio_cfg);
-    gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
-    gpio_cfg.gpio_pull = GPIO_PULL_NONE;
-    gpio_cfg.gpio_pins = GPIO_PINS_3 | GPIO_PINS_5 | GPIO_PINS_6;
-    gpio_init(GPIOB, &gpio_cfg);
-
-    /* PB11 and PC6 as push-pull outputs, both HIGH. */
-    gpio_default_para_init(&gpio_cfg);
-    gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_cfg.gpio_pins = GPIO_PINS_11;          /* PB11 = CH2 range relay bit 1 */
-    gpio_init(GPIOB, &gpio_cfg);
-    GPIOB->scr = PB11_MASK;                      /* PB11 HIGH */
-
-    gpio_cfg.gpio_pins = GPIO_PINS_6;            /* PC6 = FPGA supply enable */
-    gpio_init(GPIOC, &gpio_cfg);
-    GPIOC->scr = PC6_MASK;                       /* PC6 HIGH */
+    gpio_init_type g;
+    gpio_default_para_init(&g);
+    g.gpio_pins = BB_MISO;
+    g.gpio_mode = GPIO_MODE_INPUT;
+    g.gpio_pull = GPIO_PULL_UP;
+    gpio_init(GPIOB, &g);
 }
 
-/* Take the SPI3 bus back after fpga_bus_release(): the same pin and
- * peripheral setup as fpga_init(), then clear fpga.bus_released. It always
- * reconfigures, whether or not the bus was released. */
-void fpga_spi3_bus_reacquire(void)
+/* The peripheral drives the bus: PB3 and PB5 alternate function, PB6 a GPIO
+ * output (software chip select, idle high), SPI3 master in mode 3 at /2
+ * (60 MHz from the 120 MHz APB1), 8 bits, MSB first. */
+void spi3_pins_peripheral(void)
 {
-    gpio_init_type gpio_cfg;
-    gpio_default_para_init(&gpio_cfg);
+    gpio_init_type g;
+    gpio_default_para_init(&g);
 
     crm_periph_clock_enable(CRM_SPI3_PERIPH_CLOCK, TRUE);
 
-    /* PB3 = SPI3_SCK: AF push-pull, the same drive setting as stock. */
-    gpio_cfg.gpio_pins = GPIO_PINS_3;
-    gpio_cfg.gpio_mode = GPIO_MODE_MUX;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-
-    /* PB4 = SPI3_MISO: input with pull-up, as stock, so an undriven line
-     * reads 0xFF. */
-    gpio_cfg.gpio_pins = GPIO_PINS_4;
-    gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
-    gpio_cfg.gpio_pull = GPIO_PULL_UP;
-    gpio_init(GPIOB, &gpio_cfg);
-    gpio_cfg.gpio_pull = GPIO_PULL_NONE;   /* restore shared struct default */
-
-    /* PB5 = SPI3_MOSI: AF push-pull. */
-    gpio_cfg.gpio_pins = GPIO_PINS_5;
-    gpio_cfg.gpio_mode = GPIO_MODE_MUX;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-
-    /* PB6 = SPI3_CS: GPIO output push-pull, idle HIGH. */
-    gpio_cfg.gpio_pins = GPIO_PINS_6;
-    gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
+    g.gpio_pins = BB_SCK | BB_MOSI;
+    g.gpio_mode = GPIO_MODE_MUX;
+    g.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+    g.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+    gpio_init(GPIOB, &g);
+    spi3_pin_miso_input();
     SPI3_CS_DEASSERT();
+    g.gpio_pins = BB_CS;
+    g.gpio_mode = GPIO_MODE_OUTPUT;
+    gpio_init(GPIOB, &g);
 
-    /* PC6 = FPGA supply enable, HIGH (fpga_bus_release left it HIGH). */
-    gpio_cfg.gpio_pins = GPIO_PINS_6;
-    gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOC, &gpio_cfg);
-    GPIOC->scr = PC6_MASK;
+    FPGA_SPI->ctrl1 = SPI3_CTRL1_MODE3_MASTER;
+    FPGA_SPI->ctrl2 = SPI3_CTRL2_DMA_REQUESTS;
+    FPGA_SPI->ctrl1 |= SPI3_CTRL1_ENABLE;
+}
 
-    /* SPI3 CTRL1, CTRL2 and enable, as in fpga_init (mode 3, master, /2, software CS). */
-    FPGA_SPI->ctrl1 = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 8) | (1 << 9);
-    FPGA_SPI->ctrl2 = 0x03;
-    FPGA_SPI->ctrl1 |= (1 << 6);   /* SPE = 1 */
+/* The MCU drives the bus as GPIO, for the FPGA's configuration port: PB3,
+ * PB5 and PB6 push-pull outputs. The idle levels of mode 3 (SCK high, chip
+ * select high, MOSI low) are loaded first, so the pins do not glitch. */
+void spi3_pins_gpio(void)
+{
+    gpio_init_type g;
+    gpio_default_para_init(&g);
 
+    GPIOB->scr = BB_SCK | BB_CS;
+    GPIOB->clr = BB_MOSI;
+    g.gpio_pins = BB_SCK | BB_MOSI | BB_CS;
+    g.gpio_mode = GPIO_MODE_OUTPUT;
+    g.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
+    g.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
+    gpio_init(GPIOB, &g);
+    spi3_pin_miso_input();
+}
+
+/* Nothing drives the bus from the MCU: SPI3 off, PB3, PB5 and PB6 floating
+ * inputs. */
+void spi3_pins_released(void)
+{
+    gpio_init_type g;
+    gpio_default_para_init(&g);
+
+    FPGA_SPI->ctrl1 &= ~SPI3_CTRL1_ENABLE;
+    g.gpio_pins = BB_SCK | BB_MOSI | BB_CS;
+    g.gpio_mode = GPIO_MODE_INPUT;
+    g.gpio_pull = GPIO_PULL_NONE;
+    gpio_init(GPIOB, &g);
+    spi3_pin_miso_input();
+}
+
+/* Give the bus up and take it back. Two users: fpga_reload(), so that no
+ * line feeds the FPGA while its supply is off, and the toolkit's
+ * `fpga busrelease`, for an external SPI master on the test pads. While
+ * fpga.bus_released is set, the acquisition task stays off the bus. */
+void fpga_bus_release(void)
+{
+    fpga.bus_released = true;    /* first, so the acquisition task stops using SPI3 */
+    spi3_pins_released();
+}
+
+void fpga_spi3_bus_reacquire(void)
+{
+    spi3_pins_peripheral();
     fpga.bus_released = false;
-    fpga.spi3_active  = true;
 }

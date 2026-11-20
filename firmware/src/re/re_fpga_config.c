@@ -27,16 +27,13 @@
 #include "shell_re.h"
 #include "re_fpga_driver.h"
 
-/* EXPERIMENTAL (experimental/esp32-bringup) — UNTESTED. Hand the SPI3 bus to
- * an external SSPI master (ESP32) on the back-side test pads. Re-flash to undo. */
+/* Give the SPI3 pins up so that an external SPI master on the test pads can
+ * drive the FPGA's configuration port; `fpga busreacquire` takes them back. */
 void cmd_fpga_bus_release(void)
 {
     fpga_bus_release();
-    usb_send_str("SPI3 bus RELEASED to external master.\r\n");
-    usb_send_str("  PB3(SCK)/PB5(MOSI)/PB6(CS) -> Hi-Z, MCU off the bus.\r\n");
-    usb_send_str("  PB4(MISO) input (FPGA-driven, shared read).\r\n");
-    usb_send_str("  PC6=HIGH (SPI en), PB11=HIGH (active), PC9 power-hold kept.\r\n");
-    usb_send_str("  ESP32 may now drive SSPI. Re-flash/power-cycle to reclaim.\r\n");
+    usb_send_str("SPI3 pins released: PB3 (SCK), PB5 (MOSI), PB6 (CS) are inputs; PB4 (MISO) input with pull-up.\r\n");
+    usb_send_str("  The FPGA stays powered (PC6). Take the pins back with `fpga busreacquire`.\r\n");
 }
 
 void cmd_fpga_bus_reacquire(void)

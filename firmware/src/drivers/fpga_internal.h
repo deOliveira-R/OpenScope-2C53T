@@ -52,6 +52,19 @@
 
 #define PC6_MASK        (1 << 6)   /* FPGA supply enable: LOW switches the FPGA off */
 
+/* SPI3 CTRL1: master (bit 2), mode 3 (CPOL bit 1, CPHA bit 0), software
+ * chip select held inactive (bits 9 and 8), divider /2, 8 bits, MSB first.
+ * CTRL2: the two DMA request enables, as stock sets them; no DMA channel is
+ * configured, so they have no effect. */
+#define SPI3_CTRL1_MODE3_MASTER  ((1u << 0) | (1u << 1) | (1u << 2) | (1u << 8) | (1u << 9))
+#define SPI3_CTRL1_ENABLE        (1u << 6)
+#define SPI3_CTRL2_DMA_REQUESTS  0x03u
+
+/* The three states of the SPI3 pins (fpga_boot.c). */
+void spi3_pins_peripheral(void);
+void spi3_pins_gpio(void);
+void spi3_pins_released(void);
+
 /* CS control macros */
 #define SPI3_CS_ASSERT()    (GPIOB->clr = PB6_MASK)   /* PB6 LOW */
 
@@ -164,12 +177,26 @@ static inline void systick_delay_ms(uint32_t ms)
 #define BB_CS    (1u << 6)   /* PB6 */
 
 /* meter_link.c */
+/* An item of the meter link's transmit queue: a command word (bytes[0] high,
+ * bytes[1] low) sent obeyed or unobeyed, or a whole frame sent as given. */
+typedef enum { METER_TX_WORD_OBEYED, METER_TX_WORD_UNOBEYED, METER_TX_RAW } meter_tx_kind_t;
+typedef struct {
+    uint8_t kind;                       /* a meter_tx_kind_t */
+    uint8_t bytes[FPGA_TX_FRAME_SIZE];
+} meter_tx_item_t;
+#define METER_TX_QUEUE_LEN  10u
+/* One frame is 10 bytes of 10 bits at 9600 baud: 10.4 ms. */
+#define METER_TX_FRAME_MS          11u
+#define METER_TX_FRAME_TIMEOUT_MS  (2u * METER_TX_FRAME_MS)                    /* dvom_TX gives a frame up */
+#define METER_TX_QUEUE_WAIT_MS     (METER_TX_QUEUE_LEN * METER_TX_FRAME_MS)    /* a full queue has drained */
+/* Gaps after the activation words (after the last one, longer), as stock leaves them. */
+#define METER_ACTIVATION_GAP_MS    10u
+#define METER_ACTIVATION_END_MS    50u
+bool meter_tx_raw_frame(const uint8_t *frame);
 extern QueueHandle_t     usart_tx_queue;
 extern QueueHandle_t meter_rx_queue;
 extern TaskHandle_t      tx_task_handle;
 extern TaskHandle_t      rx_task_handle;
-void usart2_send_frame(const uint8_t *frame);
-void fpga_record_tx_frame(const uint8_t *frame);
 void fpga_usart_tx_task(void *pv);
 void fpga_usart_rx_task(void *pv);
 extern TaskHandle_t       meter_poll_handle;

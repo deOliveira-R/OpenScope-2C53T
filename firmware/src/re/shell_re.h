@@ -36,9 +36,9 @@ void retools_pinlog_tick(void);
           "re pinsweep [run]               Which MCU pin reloads the FPGA: pulse each candidate low,\r\n" \
           "                                watch the config-port STATUS (no argument: list the pins)\r\n"), \
     CMD_V("fpga busrelease", cmd_fpga_bus_release, SC_EXACT, \
-          "fpga busrelease                 Hand SPI3 to an external master (one-way, EXPERIMENTAL)\r\n"), \
+          "fpga busrelease                 Give the SPI3 pins to an external master\r\n"), \
     CMD_V("fpga busreacquire", cmd_fpga_bus_reacquire, SC_EXACT, \
-          "fpga busreacquire               Take SPI3 back after busrelease (H7 capture prep)\r\n"), \
+          "fpga busreacquire               Take the SPI3 pins back\r\n"), \
     CMD_A("pinlog", cmd_pinlog, 0, \
           "pinlog [start]                  Bench: log all GPIO inputs + battery ADC once a second\r\n"), \
     CMD_A("fpga reinit", cmd_fpga_reinit, SC_SPI3, \

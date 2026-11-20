@@ -120,70 +120,8 @@ void fpga_init(void)
      * --------------------------------------------------------------- */
     systick_delay_ms(50);
 
-    /* SPI3 (0x40003C00, APB1EN bit 15). SPI4 (0x40004000) is a different
-     * peripheral; PB3/PB4/PB5 belong to SPI3. */
-    crm_periph_clock_enable(CRM_SPI3_PERIPH_CLOCK, TRUE);
-
-    /* PB3 = SPI3_SCK: AF push-pull. Drive STRONGER gives the CRL nibble 0x9
-     * (MODE 01), the same value as stock's PB3 in a register dump. */
-    gpio_cfg.gpio_pins = GPIO_PINS_3;
-    gpio_cfg.gpio_mode = GPIO_MODE_MUX;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-
-    /* PB4 = SPI3_MISO: input with pull-up, as stock (register dump), so an
-     * undriven line reads 0xFF. The upload in step 4 sets PB4 floating and
-     * leaves it so (fpga_boot.c). */
-    gpio_cfg.gpio_pins = GPIO_PINS_4;
-    gpio_cfg.gpio_mode = GPIO_MODE_INPUT;
-    gpio_cfg.gpio_pull = GPIO_PULL_UP;
-    gpio_init(GPIOB, &gpio_cfg);
-    gpio_cfg.gpio_pull = GPIO_PULL_NONE;   /* restore shared struct default */
-
-    /* PB5 = SPI3_MOSI: AF push-pull */
-    gpio_cfg.gpio_pins = GPIO_PINS_5;
-    gpio_cfg.gpio_mode = GPIO_MODE_MUX;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-
-    /* PB6 = SPI3_CS: GPIO output push-pull (software CS) */
-    gpio_cfg.gpio_pins = GPIO_PINS_6;
-    gpio_cfg.gpio_mode = GPIO_MODE_OUTPUT;
-    gpio_cfg.gpio_out_type = GPIO_OUTPUT_PUSH_PULL;
-    gpio_cfg.gpio_drive_strength = GPIO_DRIVE_STRENGTH_STRONGER;
-    gpio_init(GPIOB, &gpio_cfg);
-
-    /* CS idle HIGH */
-    SPI3_CS_DEASSERT();
-
-    /*
-     * SPI3 CTRL1: master, mode 3, 8-bit, MSB first, software CS, /2.
-     *   [0]   CPHA   = 1 (mode 3)
-     *   [1]   CPOL   = 1 (mode 3)
-     *   [2]   MSTEN  = 1 (master)
-     *   [5:3] MDIV   = 000 (/2: 60 MHz from the 120 MHz APB1, as stock)
-     *   [6]   SPIEN  = 0 (enabled below)
-     *   [7]   LTF    = 0 (MSB first)
-     *   [8]   SWCSIN = 1 (internal CS high)
-     *   [9]   SWCSEN = 1 (software CS)
-     *   [10]  RONLY  = 0 (full duplex)
-     *   [11]  FBN    = 0 (8-bit)
-     */
-    FPGA_SPI->ctrl1 = (1 << 0)   /* CPHA = 1 */
-               | (1 << 1)   /* CPOL = 1 */
-               | (1 << 2)   /* MSTEN = 1 */
-               /* MDIV = 000: /2 */
-               | (1 << 8)   /* SWCSIN (SSI) = 1 */
-               | (1 << 9);  /* SWCSEN (SSM) = 1 */
-
-    /* DMA request enables, set as stock sets them. No DMA channel is
-     * configured, so the requests go nowhere and polled access still works. */
-    FPGA_SPI->ctrl2 = 0x03;  /* RXDMAEN + TXDMAEN (match stock) */
-
-    /* Enable SPI */
-    FPGA_SPI->ctrl1 |= (1 << 6) /* SPE */;
+    /* The SPI3 pins and the peripheral (fpga_boot.c owns their states). */
+    spi3_pins_peripheral();
 
     /* SPI3 interrupt enabled in the NVIC as stock does; see the stub handler
      * above. */
@@ -323,7 +261,7 @@ void fpga_create_tasks(void)
     }
 
     /* Create queues */
-    usart_tx_queue = xQueueCreate(10, sizeof(uint32_t));
+    usart_tx_queue = xQueueCreate(METER_TX_QUEUE_LEN, sizeof(meter_tx_item_t));
     meter_rx_queue = xQueueCreate(8, sizeof(fpga_meter_rx_event_t));
 
     /* Staging buffers: a record is read into these and copied to the public

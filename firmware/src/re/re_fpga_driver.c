@@ -570,6 +570,5 @@ void fpga_edgecap_15(uint8_t reps)
 
 void fpga_send_raw_frame(const uint8_t *frame)
 {
-    fpga_record_tx_frame(frame);
-    usart2_send_frame(frame);
+    (void)meter_tx_raw_frame(frame);
 }

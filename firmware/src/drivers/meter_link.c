@@ -17,10 +17,11 @@
  * shell. Shared items: fpga_internal.h.
  *
  * How the parts work together:
- *   - Senders put 32-bit items (command word, plus FPGA_TX_OBEY_BIT for an
- *     obeyed frame) on usart_tx_queue.
+ *   - Senders put items (a command word, obeyed or unobeyed, or a raw
+ *     frame) on usart_tx_queue. Nothing else reaches the wire.
  *   - fpga_usart_tx_task ("dvom_TX") takes one item, builds its frame in
- *     fpga.tx_frame and enables the TX interrupt, then waits 10 ms.
+ *     fpga.tx_frame, enables the TX interrupt and waits for the handler's
+ *     signal that the frame is out.
  *   - USART2_IRQHandler sends the TX bytes and assembles received bytes into
  *     frames. A data frame goes to meter_rx_queue as a copied event; an echo
  *     frame only updates the echo counters.
@@ -29,8 +30,6 @@
  *     function change and a few after it.
  *   - fpga_meter_poll_task runs the function changes other tasks request
  *     (one can take seconds) and sends the 4 Hz keepalive.
- *   - Before the scheduler runs, and in a few named places, frames go out
- *     through the polled byte pump (usart2_send_frame) instead of the queue.
  */
 
 #include "fpga_internal.h"
@@ -48,7 +47,7 @@ static void fpga_send_meter_mode_sequence(uint8_t submode);
 volatile int16_t  fpga_meter_probe_tail_override = -1;
 
 /* FreeRTOS handles */
-QueueHandle_t     usart_tx_queue  = NULL;  /* 32-bit: hi|lo + OBEY bit16 */
+QueueHandle_t     usart_tx_queue  = NULL;  /* meter_tx_item_t; dvom_TX is its only reader */
 
 QueueHandle_t meter_rx_queue = NULL;  /* fpga_meter_rx_event_t: a copied data frame */
 
@@ -150,33 +149,6 @@ static void fpga_meter_reset_transport(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Polled TX (no queue, no interrupt): before the scheduler runs, for the
- * poll task's activation words and for the direct shell sends. It does not
- * wait for a frame dvom_TX may be sending.
- * ═══════════════════════════════════════════════════════════════════ */
-
-static void usart2_send_byte(uint8_t b)
-{
-    volatile uint32_t timeout = 100000;
-    while (!(USART2->sts & USART_TDBE_FLAG)) {
-        if (--timeout == 0) return;
-    }
-    USART2->dt = b;
-}
-
-void usart2_send_frame(const uint8_t *frame)
-{
-    for (int i = 0; i < FPGA_TX_FRAME_SIZE; i++) {
-        usart2_send_byte(frame[i]);
-    }
-    /* Wait for transmit complete */
-    volatile uint32_t timeout = 100000;
-    while (!(USART2->sts & USART_TDC_FLAG)) {
-        if (--timeout == 0) break;
-    }
-}
-
-/* ═══════════════════════════════════════════════════════════════════
  * Diagnostic history rings, read by the shell. Nothing here may feed
  * a range or value decision.
  * ═══════════════════════════════════════════════════════════════════ */
@@ -193,7 +165,7 @@ static void fpga_record_tx_cmd(uint8_t cmd_hi, uint8_t cmd_lo)
     }
 }
 
-void fpga_record_tx_frame(const uint8_t *frame)
+static void fpga_record_tx_frame(const uint8_t *frame)
 {
     uint8_t idx = fpga.tx_frame_history_head;
 
@@ -401,10 +373,9 @@ void fpga_meter_tx_header_set(bool aa55) { meter_tx_header_aa55 = aa55; }
 bool fpga_meter_tx_header_get(void)      { return meter_tx_header_aa55; }
 
 /*
- * The one place a command frame is built; both the polled path and dvom_TX
- * call it. A new transmit path must call it too, never assemble the bytes
- * itself, or the header switch and the guard below will not apply to it.
- * (The `usart raw` shell command sends hand-typed bytes on purpose.)
+ * The one place a command frame is built (dvom_TX calls it), so the header
+ * switch and the guard below apply to every word. Only a raw frame of the
+ * toolkit's `usart raw` goes out as typed.
  */
 static void meter_build_tx_frame(uint8_t *frame, uint8_t cmd_hi, uint8_t cmd_lo,
                                  bool obey)
@@ -434,38 +405,38 @@ static void meter_build_tx_frame(uint8_t *frame, uint8_t cmd_hi, uint8_t cmd_lo,
     frame[9] = (cmd_lo + cmd_hi) & 0xFF;
 }
 
-static void usart2_send_cmd_ex(uint8_t cmd_hi, uint8_t cmd_lo, bool obey)
+/* Every frame to the meter chip goes through usart_tx_queue and is sent by
+ * dvom_TX: there is no other way onto the wire, so two frames cannot
+ * interleave. false = the queue stayed full for `wait`. */
+static bool meter_tx_enqueue(const meter_tx_item_t *item, TickType_t wait)
 {
-    uint8_t frame[FPGA_TX_FRAME_SIZE];
-    fpga_record_tx_cmd(cmd_hi, cmd_lo);
-    fpga.tx_count++;
-    meter_build_tx_frame(frame, cmd_hi, cmd_lo, obey);
-    fpga_record_tx_frame(frame);
-    usart2_send_frame(frame);
+    return xQueueSend(usart_tx_queue, item, wait) == pdTRUE;
 }
 
-/* Polled, obeyed: a deliberate command to the meter chip. */
-static void usart2_send_cmd(uint8_t cmd_hi, uint8_t cmd_lo)
+static bool meter_tx_word(uint8_t cmd_hi, uint8_t cmd_lo, bool obey, TickType_t wait)
 {
-    usart2_send_cmd_ex(cmd_hi, cmd_lo, true);
+    const meter_tx_item_t item = {
+        .kind = obey ? METER_TX_WORD_OBEYED : METER_TX_WORD_UNOBEYED,
+        .bytes = { cmd_hi, cmd_lo },
+    };
+    return meter_tx_enqueue(&item, wait);
 }
 
-/* Send one word, then wait delay_ms: through the queue once the scheduler
- * runs, polled before. */
+/* A hand-made 10-byte frame, sent as given (the toolkit's `usart raw`). */
+bool meter_tx_raw_frame(const uint8_t *frame)
+{
+    meter_tx_item_t item = { .kind = METER_TX_RAW };
+    memcpy(item.bytes, frame, FPGA_TX_FRAME_SIZE);
+    return meter_tx_enqueue(&item, 0);
+}
+
+/* Send one word, then wait delay_ms. A sequence's words must not be lost,
+ * so this waits for queue space (METER_TX_QUEUE_WAIT_MS: the queue's ten
+ * frames take about 104 ms to send). */
 static void fpga_timed_send_cmd_ex(uint8_t cmd_hi, uint8_t cmd_lo,
                                    uint32_t delay_ms, bool obey)
 {
-    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING && usart_tx_queue != NULL) {
-        uint32_t item = ((uint32_t)cmd_hi << 8) | cmd_lo |
-                        (obey ? FPGA_TX_OBEY_BIT : 0U);
-
-        /* A transition's words must not be dropped: wait up to 100 ms for
-         * queue space. */
-        (void)xQueueSend(usart_tx_queue, &item, pdMS_TO_TICKS(100));
-    } else {
-        usart2_send_cmd_ex(cmd_hi, cmd_lo, obey);
-    }
-
+    (void)meter_tx_word(cmd_hi, cmd_lo, obey, pdMS_TO_TICKS(METER_TX_QUEUE_WAIT_MS));
     fpga_scope_delay_ms(delay_ms);
 }
 
@@ -747,8 +718,11 @@ void USART2_IRQHandler(void)
         if (fpga.tx_index < FPGA_TX_FRAME_SIZE) {
             USART2->dt = fpga.tx_frame[fpga.tx_index++];
         } else {
-            /* All bytes handed to the USART: disable the TX interrupt */
+            /* All bytes handed to the USART: stop, and tell dvom_TX. */
+            BaseType_t woken = pdFALSE;
             USART2->ctrl1 &= ~USART_CTRL1_TDBEIEN;
+            vTaskNotifyGiveFromISR(tx_task_handle, &woken);
+            portYIELD_FROM_ISR(woken);
         }
     }
 
@@ -879,40 +853,36 @@ void USART2_IRQHandler(void)
  * ═══════════════════════════════════════════════════════════════════ */
 
 /*
- * dvom_TX: takes one 32-bit item from usart_tx_queue (word in bits 0-15,
- * FPGA_TX_OBEY_BIT), builds its frame and starts the interrupt-driven send.
+ * dvom_TX: the only sender. Takes one item from usart_tx_queue, builds its
+ * frame (a word through meter_build_tx_frame, a raw frame as given), starts
+ * the interrupt-driven send and waits for the handler to say that the last
+ * byte has gone to the USART. The wait is bounded, because a link reset
+ * (fpga_meter_reset_transport) can abandon a frame.
  */
 void fpga_usart_tx_task(void *pv)
 {
     (void)pv;
-    uint32_t cmd_item;
+    meter_tx_item_t item;
 
     for (;;) {
-        xQueueReceive(usart_tx_queue, &cmd_item, portMAX_DELAY);
+        xQueueReceive(usart_tx_queue, &item, portMAX_DELAY);
 
-        uint8_t cmd_lo = cmd_item & 0xFF;
-        uint8_t cmd_hi = (cmd_item >> 8) & 0xFF;
-        bool    obey   = (cmd_item & FPGA_TX_OBEY_BIT) != 0;
-
-        /* Through the shared builder only (see meter_build_tx_frame). */
-        fpga.tx_count++;
-        fpga_record_tx_cmd(cmd_hi, cmd_lo);
-        fpga.tx_index = 0;
-        {
-            uint8_t frame[FPGA_TX_FRAME_SIZE];
-            meter_build_tx_frame(frame, cmd_hi, cmd_lo, obey);
-            memcpy((void *)fpga.tx_frame, frame, FPGA_TX_FRAME_SIZE);
+        uint8_t frame[FPGA_TX_FRAME_SIZE];
+        if (item.kind == METER_TX_RAW) {
+            memcpy(frame, item.bytes, FPGA_TX_FRAME_SIZE);
+        } else {
+            fpga.tx_count++;
+            fpga_record_tx_cmd(item.bytes[0], item.bytes[1]);
+            meter_build_tx_frame(frame, item.bytes[0], item.bytes[1],
+                                 item.kind == METER_TX_WORD_OBEYED);
         }
+        fpga.tx_index = 0;
+        memcpy((void *)fpga.tx_frame, frame, FPGA_TX_FRAME_SIZE);
         fpga_record_tx_frame((const uint8_t *)fpga.tx_frame);
 
-        /* Enable the TX interrupt; the handler sends all 10 bytes. */
-        USART2->ctrl1 |= USART_CTRL1_TDBEIEN;
-
-        /* A frame takes about 10.4 ms at 9600 baud, but the handler loads its
-         * last byte at about 8.3 ms, and this wait is at least 9 ms (1 kHz
-         * tick). So the next frame cannot overwrite fpga.tx_frame while the
-         * handler still reads it. */
-        vTaskDelay(pdMS_TO_TICKS(10));
+        (void)ulTaskNotifyTake(pdTRUE, 0);              /* forget an abandoned frame's signal */
+        USART2->ctrl1 |= USART_CTRL1_TDBEIEN;           /* the handler sends the 10 bytes */
+        (void)ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(METER_TX_FRAME_TIMEOUT_MS));
     }
 }
 
@@ -967,8 +937,8 @@ static void fpga_send_meter_poll_sequence(uint8_t submode)
         return;
     }
 
-    (void)fpga_send_cmd_keepalive((uint8_t)(plan.start_word >> 8),
-                                  (uint8_t)(plan.start_word & 0x00FFU));
+    (void)fpga_send_cmd_unobeyed((uint8_t)(plan.start_word >> 8),
+                                 (uint8_t)(plan.start_word & 0x00FFU));
 }
 
 /* Function changes run in the poll task, not in the task that asks for them:
@@ -987,10 +957,6 @@ bool fpga_meter_mode_request_pending(void) { return meter_mode_request >= 0; }
 
 void fpga_request_meter_mode(uint8_t submode)
 {
-    if (!meter_poll_handle) {            /* tasks not created yet: run it here */
-        fpga_set_meter_mode(submode);
-        return;
-    }
     meter_mode_request = submode;
     xTaskNotifyGive(meter_poll_handle);
 }
@@ -1034,15 +1000,12 @@ void fpga_meter_poll_task(void *pv)
                 /* Stock's activation words, once after each link-on
                  * (fpga_set_meter_mux(true)); fpga_init sends none. They
                  * normally follow the link-on's transition, so they must be
-                 * unobeyed (see fpga_timed_send_cmd). Polled, so they are not
-                 * ordered with the queue. */
+                 * unobeyed (see fpga_timed_send_cmd). */
                 fpga_meter_needs_activation = false;
-                usart2_send_cmd_ex(0x05, 0x08, false);  vTaskDelay(pdMS_TO_TICKS(10));
-                usart2_send_cmd_ex(0x05, 0x09, false);  vTaskDelay(pdMS_TO_TICKS(10));
-                if (GPIOC->idt & (1U << 7)) usart2_send_cmd_ex(0x05, 0x07, false);
-                else                        usart2_send_cmd_ex(0x05, 0x0A, false);
-                vTaskDelay(pdMS_TO_TICKS(10));
-                usart2_send_cmd_ex(0x05, 0x14, false);  vTaskDelay(pdMS_TO_TICKS(50));
+                fpga_timed_send_cmd(0x05, 0x08, METER_ACTIVATION_GAP_MS);
+                fpga_timed_send_cmd(0x05, FPGA_CMD_METER_START, METER_ACTIVATION_GAP_MS);
+                fpga_timed_send_cmd(0x05, fpga_probe_cmd_byte(), METER_ACTIVATION_GAP_MS);
+                fpga_timed_send_cmd(0x05, FPGA_CMD_METER_VAR_14, METER_ACTIVATION_END_MS);
             }
             if (meter_keepalive_enabled)
                 fpga_send_meter_poll_sequence(meter_submode);
@@ -1208,51 +1171,17 @@ uint32_t fpga_usart_baudr(void) { return USART2->baudr; }
  * Sending words from other files
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* An obeyed command to the meter chip. */
+/* An obeyed command to the meter chip. Does not wait: pdFALSE when the queue
+ * is full. Callable once fpga_create_tasks() has run. */
 BaseType_t fpga_send_cmd(uint8_t cmd_high, uint8_t cmd_low)
 {
-    if (!fpga.initialized) return pdFALSE;
-
-    /* Through the queue without waiting; pdFALSE when it is full. Only once
-     * the scheduler runs: before that the queue (10 items) has no consumer
-     * and a longer sequence would be cut short without a sign, so send
-     * polled instead (the interrupt cannot be mid-frame then).
-     * fpga_timed_send_cmd_ex() has the same check. */
-    if (usart_tx_queue != NULL &&
-        xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-        uint32_t item = ((uint32_t)cmd_high << 8) | cmd_low | FPGA_TX_OBEY_BIT;
-        return xQueueSend(usart_tx_queue, &item, 0);  /* non-blocking */
-    }
-    usart2_send_cmd(cmd_high, cmd_low);
-    return pdTRUE;
+    return meter_tx_word(cmd_high, cmd_low, true, 0) ? pdTRUE : pdFALSE;
 }
 
-/* An unobeyed frame (00 00 header), queued only; never polled. */
+/* The same with the 00 00 header: traffic the chip does not act on. */
 BaseType_t fpga_send_cmd_unobeyed(uint8_t cmd_high, uint8_t cmd_low)
 {
-    if (usart_tx_queue != NULL &&
-        xTaskGetSchedulerState() == taskSCHEDULER_RUNNING) {
-        uint32_t item = ((uint32_t)cmd_high << 8) | cmd_low;  /* OBEY clear */
-        return xQueueSend(usart_tx_queue, &item, 0);
-    }
-    return pdFALSE;  /* best-effort; never block the caller */
-}
-
-BaseType_t fpga_send_cmd_keepalive(uint8_t cmd_high, uint8_t cmd_low)
-{
-    return fpga_send_cmd_unobeyed(cmd_high, cmd_low);
-}
-
-bool fpga_usart_tx_task_exists(void)
-{
-    return tx_task_handle != NULL;
-}
-
-void fpga_send_cmd_direct(uint8_t cmd_high, uint8_t cmd_low)
-{
-    /* Polled and obeyed, bypassing the queue (`usart tx` when dvom_TX does
-     * not exist). */
-    usart2_send_cmd(cmd_high, cmd_low);
+    return meter_tx_word(cmd_high, cmd_low, false, 0) ? pdTRUE : pdFALSE;
 }
 
 /* ═══════════════════════════════════════════════════════════════════

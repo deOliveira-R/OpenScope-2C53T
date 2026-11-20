@@ -46,7 +46,6 @@ typedef struct {
 
     /* ── driver status ─────────────────────────────────────────────── */
     volatile bool     initialized;  /* fpga_init finished */
-    volatile bool     spi3_active;  /* the acquisition task may use SPI3 */
     volatile bool     bus_released;  /* the SPI3 pins are given up (fpga_bus_release); the acquisition task stays off the bus */
 
     /* ── meter link counters and histories, for the shell ──────────── */
