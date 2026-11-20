@@ -984,8 +984,8 @@ void cmd_scope_trig(const char *args)
  * if sweeping DAC1 moves CH1's mean but sweeping this does not move CH2's, the
  * pin is wrong and the failure is clean rather than ambiguous.
  *
- * scope_trigger_ch2_raw() self-inits, so this works on ANY build — no
- * FPGA_CH2_TRIGGER flag needed. That flag only arms TMR13 at boot.
+ * fpga_init() arms TMR13 at boot; scope_trigger_ch2_raw() also initialises
+ * it by itself.
  */
 void cmd_scope_trig2(const char *args)
 {

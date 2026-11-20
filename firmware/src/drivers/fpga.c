@@ -431,220 +431,11 @@ static void spi3_pump_h2_record(const uint8_t *tx, uint32_t n)
     fpga_h2_record_body_rx((timeout == 0) ? 0xFF : (uint8_t)FPGA_SPI->dt);
 }
 
-/* Set the SPI3 baud-rate divider (CTRL1 bits [5:3]) on the fly. Requires
- * toggling SPE off/on. br: 0=/2 (60MHz), 1=/4, 2=/8, 3=/16, 4=/32 ...
- *
- * Used to slow ONLY the 115KB 0x3B bitstream upload. Gowin SPI configuration
- * is clock-rate agnostic (the config logic samples on clock edges, not at a
- * fixed rate), so a slower upload is safe; the question under test is whether
- * our gapless 60MHz pump is marginal over 115K bytes (boot-to-boot 0x3A close
- * status varied F8/FC/00 — see SPI3_STOCK_BOOT_CAPTURE_ANALYSIS.md). */
-/* TESTED 2026-06-12 (Unit 2): /16 produced IDENTICAL behavior to /2 —
- * close status still 00, buffers still empty. The gapless 60MHz pump is NOT
- * the marginal link. Reverted to /2 (stock-faithful); helper kept for future
- * sweeps. The config-completion gap is elsewhere (prelude/config-enter or a
- * runtime command we haven't replayed). */
-#define SPI3_UPLOAD_BR  0u   /* /2 = 60MHz, matches stock */
-
-/* ─── WARM-HANDOFF EXPERIMENT (2026-06-13, reworked 2026-08-12) ─────────
- * Set to 1 to build a "read-only" firmware for the stock→ours warm-handoff
- * test. The premise: stock firmware successfully configures the FPGA's scope
- * design at boot; the GW1N holds that SRAM config as long as power is
- * maintained (an MCU soft-reset does NOT power-cycle it, and RECONFIG_N stays
- * high). So if we boot stock (FPGA→scope-configured), then reflash to THIS
- * build via the stock IAP path WITHOUT cutting power, our firmware comes up in
- * front of an already-configured scope FPGA — letting us test our SPI3 read
- * path in isolation from the config-entry wall.
- *
- * 2026-08-12 rework, after Stlkv proved the recipe end-to-end on a second
- * V1.4 unit (issue #18: live CH1 trace under rosenrot00's ported firmware):
- *   1. DAC1 (PA4, trigger comparator reference) is armed to mid-scale at
- *      init — the MCU reset zeroes it and every capture reads flat zeros
- *      until it is restored. This was Stlkv's missing link, and it also
- *      explains the June "one buffer then idle" result.
- *   2. The readout is the LCD, not the (dead-on-this-unit) USB-CDC shell:
- *      a dedicated PC0-gated acquisition task speaks the real 0x04/0x05
- *      per-channel 1026-byte protocol and feeds the scope UI. The synthetic
- *      demo trace disappearing = first real frame latched.
- *   3. The build is read-only ON THE WIRE, enforced, not accidental: the
- *      Makefile target pairs FPGA_USART_SILENT_SCOPE (USART2 UEN never set),
- *      and every mode-entry/heartbeat path that transmits or re-postures the
- *      frontend is compiled out below. Before the rework, main()'s
- *      pre-scheduler fpga_enter_scope_mode() call was sending ~20 polled
- *      USART2 frames (incl. FPGA_CMD_RESET) at boot in this very build.
- *   ⚠ NEVER touch the Gowin config port here (0x11/0x41/0x05-prelude/0x12/
- *     0x15/0x3B/0x3A/0x3C): a configured part's port is closed, and reading
- *     it desynchronises acquisition (Exp L). The mandatory anchored-read
- *     discipline does NOT apply in this build — it would destroy the state
- *     being tested.
- *
- * Bench procedure: docs/fpga_warm_handoff_test.md. Revert to 0 for normal builds. */
-/*
- * FPGA_WARM_HANDOFF_TEST has always carried TWO independent meanings:
- *   (a) "the FPGA is already configured — do not re-run config", and
- *   (b) "this is a scope-only image — no-op every meter entry point".
- * They were fused because the first build that needed (a) also wanted (b).
- * A cold-configured build (FPGA_CONFIG_B) needs (a) and has no reason to
- * inherit (b): it configured the part itself, so there is no stock-armed
- * state to preserve.
- *
- * FPGA_METER_SUBMODES lifts (b) only. With it set, meter mode-entry re-postures
- * the analog frontend for the selected submode and scope entry puts the scope
- * posture back. Default 0 so every existing build is bit-identical.
- * Measured gap it exists to close: EXP-23 (2026-09-04) — meter and scope
- * coexist, but all 11 submodes drive an identical frontend and an identical
- * TX frame, because fpga_set_meter_mode() returns before its first statement.
- */
-
-
-/* USART-silent scope-boot experiment (2026-06-13, stock-bringup-diff finding).
- * Stock holds USART2 UEN CLEAR through the entire scope boot and never runs the
- * dvom/meter tasks before the SPI3 config; our firmware enables USART2 + runs
- * dvom_TX/dvom_RX/meter_poll, which is the leading suspect for keeping the FPGA's
- * NV design owning the SSPI pins (prelude MISO 0x80 user-mode vs stock 0xFF
- * config-wait). When set: USART2 UEN never asserted, NVIC off, Step 3b + Step 8
- * USART traffic skipped, and NO auto-tasks created — the SPI3 wire stays quiet so
- * `fpga reinit` / `spi3 xfer` run unperturbed. Watch first 0x05 prelude MISO for
- * 0x80->0xFF and `0x11` IDCODE for 01 20 68 1B. See docs/fpga_stock_bringup_diff_plan.md. */
-/* Experiment E: spin forever at the config-enable instant for an SWD state dump.
- * Build with `make guest-spin`. Never enable in a normal build — the device
- * parks in fpga_init and never reaches the scheduler (recover by reflashing). */
-#ifndef FPGA_SPIN_AT_CONFIG_ENABLE
-#define FPGA_SPIN_AT_CONFIG_ENABLE  0
-#endif
-
-
-/* Stock-fidelity config build (2026-07-28, Experiment F — follow-on to Exp E).
- * The Exp E SWD dump parked both stock and our firmware one instruction before
- * 0x15 reaches the SPI3 data register and diffed every peripheral register.
- * Clock tree came back byte-identical; what remained were five enumerable MCU
- * state differences. This flag closes ALL of them at once so a single bench
- * cycle can decide whether MCU-side state is the cause at all:
- *
- *   1. SPI3 CTRL1 BR — stock 0x347 (BR=0, /2), ours 0x37f (BR=7, /256).
- *      => cmd_br forced to 0. The /256 read clock moves OUT of the config
- *         frame and into the probe_edit STATUS read, which already runs at
- *         /256 in its own CS frame, so we keep a VALID readout.
- *   2. PB4 / SPI3_MISO — stock input PULL-UP, ours input FLOATING. This is
- *      why undriven MISO reads 0xFF in the stock capture; ours had no defined
- *      idle level, so every status read this project has taken was made under
- *      the wrong electrical conditions. Cannot itself gate config (it is an
- *      MCU input) — this is a measurement fix.
- *   3. PC2 and PB12 — stock drives both output push-pull HIGH; ours leaves
- *      them floating. NOT covered by the Exp C frontend ablation.
- *   4. USART2 UEN — stock CLEAR at the CONFIG_ENABLE instant (measured:
- *      CTRL1=0x0000002c). Paired with FPGA_USART_SILENT_SCOPE by the Makefile
- *      target. Already bench-refuted in isolation (2026-06-13); included only
- *      so this build is a clean superset.
- *   5. SPI2 peripheral clock — stock sets APB1EN bit14; ours does not.
- *
- * PB9 is deliberately NOT driven: stock has it AF push-pull, and an AF output
- * level is not reflected in ODR, so we cannot know what level to match. See
- * FPGA_FIDELITY_DRIVE_PB9 below.
- *
- * Build with `make guest-fidelity`. Full rationale + raw dumps:
- * reverse_engineering/analysis_v120/expE_swd_state_diff_2026-07-28.md */
-
-/* PB9 is AF push-pull in stock (likely a timer channel — PB8, the LCD
- * backlight, is AF-PP too and stock PWM-dims it). ODR does not reflect an AF
- * output level, so driving PB9 as a plain GPIO is a guess in BOTH directions.
- * Off by default; flip only to sweep it deliberately. */
-#ifndef FPGA_FIDELITY_DRIVE_PB9
-#define FPGA_FIDELITY_DRIVE_PB9  0
-#endif
-
-/* Experiment S (2026-08-11) — Gowin SSPI RELOAD (0x3C) before the prelude.
- *
- * Gowin documents exactly two ways to get a running part to accept a new
- * configuration: pulse RECONFIG_N, or power-cycle it. As of Exp R both are
- * closed to us — every GPIO form of a RECONFIG_N pulse is refuted (Exps G/O/Q,
- * plus maksidze's measurement that QN48 pin 48 never pulses at all), and a
- * genuine power cycle leaves STATUS at 00039020.
- *
- * RELOAD is the third form: the same request as a command, over a bus we have
- * PROVEN the part decodes (Exp J — four opcodes, four distinct replies).
- *
- * The send code at [0a] and the `reload_3c` field have existed since June, but
- * the only way to reach them was the debug shell, which needs USB CDC (never
- * enumerated on this unit) or RTT (impossible while RDP is set). There has never
- * been a make target. So this test has never run on a validated readout — it is
- * in the re-run backlog alongside the trailing-clock sweep and Exp H on stock.
- *
- * Built on FPGA_STOCK_FIDELITY so the only difference from the Exp F/R baseline
- * is the 0x3C frame itself. Read ED: on the LCD overlay. */
-#ifndef FPGA_RELOAD_3C_BUILD
-#define FPGA_RELOAD_3C_BUILD  0
-#endif
-
-/* RECONFIG_N pulse candidate (2026-07-28, Experiment G).
- *
- * Exp F closed all five enumerable MCU-state differences and the wall held
- * (ED = 0x00039020, Edit Mode bit7 clear). That sends us back to apicula's
- * 2026-06-13 reply (docs/CONFIG_ENTRY_REPLY_FROM_APICULA.md), which already
- * told us the mechanism: an already-configured, auto-booted, RUNNING GW1N does
- * not re-enter config from an SSPI CONFIG_ENABLE alone. The documented triggers
- * are **RECONFIG_N (low pulse >=25ns) or a power cycle**. FLASH_LOCK is a red
- * herring (flash read-back protection only, per UG290 Table 7-12 note [2]).
- *
- * The critical realisation: **Exp E was a STATIC snapshot and is structurally
- * blind to transitions.** A RECONFIG_N pulse issued by stock at any point
- * BEFORE the config-enable instant leaves the pin sitting HIGH — identical to
- * a pin that was merely driven HIGH and never pulsed. So "PC2/PB12 read HIGH in
- * both dumps" is NOT evidence stock didn't pulse them, and Exp F driving them
- * statically HIGH was the wrong test for a pulse.
- *
- * PC2 and PB12 are now the top RECONFIG_N candidates: outside the Exp C-refuted
- * analog-frontend bank they are the ONLY pins stock drives that we leave
- * floating. Pulse LOW -> HIGH before the prelude via the existing reset_port /
- * reset_pin / reset_low_ms machinery.
- *
- * Port encoding matches fpga_cfg_seq_opts_t: 0=none, 1=A, 2=B, 3=C, 4=D, 5=E.
- *   PC2  -> port 3, pin 2   (`make guest-reconfig-pc2`)
- *   PB12 -> port 2, pin 12  (`make guest-reconfig-pb12`)
- */
-#ifndef FPGA_FIDELITY_RECONFIG_PORT
-#define FPGA_FIDELITY_RECONFIG_PORT  0
-#endif
-#ifndef FPGA_FIDELITY_RECONFIG_PIN
-#define FPGA_FIDELITY_RECONFIG_PIN   0
-#endif
-
-/* Experiment J (2026-07-28): anchored opcode-discrimination probe at /256.
- * Reads 0x11/0x00/0x41/0x13 before the prelude and 0x11 again after
- * CONFIG_ENABLE, looking for the independently-known IDCODE 0x0120681B. */
-#ifndef FPGA_IDCODE_PROBE
-#define FPGA_IDCODE_PROBE  0
-#endif
-
-/* Step-resolved anchored status trace across the whole config sequence
- * (`make guest-trace`). Adds read frames between the prelude steps. */
-#ifndef FPGA_CFG_TRACE_BUILD
-#define FPGA_CFG_TRACE_BUILD  0
-#endif
-
-/* Build B (2026-08-13, `make guest-configB`) — true bit-bang transplant of the
- * maksidze/Stlkv V0.4 loader (GPIO-mode PB3/4/5/6, not SPI3 AF). Tested only if
- * Build A's wall holds: it isolates the LAST candidate, GPIO/bit-bang clocking
- * vs hardware-SPI AF. See fpga_bitbang_config_sequence() and issue #18. */
-
-/* CH2 vertical-offset reference (TMR13 CH1 PWM-DAC on PA6), armed at boot
- * alongside the DAC1 arm for CH1. Was bench plan item 5 (2026-08-13,
- * `make guest-warmtest-ch2`) and defaulted OFF while PA6 was "decoded, not
- * confirmed". CONFIRMED since: EXP-07 (2026-08-17) moved CH2's mean with
- * TMR13 alone and not with DAC1 (specificity control held); EXP-21
- * (2026-08-21) read 1 kHz on CH1 and 2 kHz on CH2 independently once armed
- * and rendered a Lissajous. Unarmed, op05 reads all zeros — which is what
- * every "CH2 dead" note on a plain coldtrace build since then actually was.
- * Default ON as of 2026-09-14; `make guest-coldtrace-noch2` is the A/B
- * control. See scope_trigger_ch2_init(). */
-#ifndef FPGA_CH2_TRIGGER
-#define FPGA_CH2_TRIGGER  1
-#endif
-
-/* Build B + engine-arm (`make guest-configB-arm`): after the bit-bang config
- * breaks the wall, send stock's post-config five writes + 0x03 status read to
- * try to ARM the capture engine. Bench plan item 4. */
-
+/* Set the SPI3 baud-rate divider (CTRL1 bits [5:3]); SPE goes off and on
+ * around the change. br: 0 = /2 (60 MHz, what fpga_init() programs),
+ * 1 = /4 ... 7 = /256. The FPGA's configuration port answers correctly only
+ * at a slow clock (its IDCODE reads as garbage at /2 and clean at /256), so
+ * reads of that port use 7. */
 static void spi3_set_br(uint32_t br)
 {
     FPGA_SPI->ctrl1 &= ~(1u << 6);              /* SPE = 0 */
@@ -1129,13 +920,8 @@ static const uint8_t fpga_relay_tbl[10] = {
  * stock writes it only from the CH2 range/cal functions; the netlist pad we
  * had read as "IOR1B = the run line" is actually an ADC data bit; and on the
  * bench that evening driving PB11 LOW did not stop an armed capture). It is
- * still held HIGH across config + arm — only the CH2 range table releases it,
- * and only after arming. Set this to 0 to restore the old always-HIGH
- * behaviour if a cold boot is ever seen to fail arming. */
-#ifndef FPGA_PB11_AS_CH2_RELAY
-#define FPGA_PB11_AS_CH2_RELAY 1
-#endif
-
+ * held HIGH across the upload and the arm writes (main() and fpga_init()
+ * drive it); the CH2 range table moves it afterwards. */
 static void fpga_set_ch1_frontend_range(uint8_t range_idx)
 {
     uint8_t b;
@@ -1157,23 +943,9 @@ static void fpga_set_ch2_frontend_range(uint8_t range_idx)
     b = fpga_relay_tbl[range_idx];
 
     if (b & 0x01) GPIOA->scr = (1U << 15); else GPIOA->clr = (1U << 15); /* PA15 */
-#if FPGA_PB11_AS_CH2_RELAY
     if (b & 0x02) GPIOB->scr = PB11_MASK;  else GPIOB->clr = PB11_MASK;  /* PB11 */
-#endif
     if (b & 0x04) GPIOB->scr = (1U << 10); else GPIOB->clr = (1U << 10); /* PB10 */
     if (b & 0x08) GPIOA->scr = (1U << 10); else GPIOA->clr = (1U << 10); /* PA10 */
-}
-
-/* Shared analog enables asserted in scope mode. PA6 is the CH2 offset
- * reference (TMR13_CH1 PWM, EXP-07); with FPGA_CH2_TRIGGER the pin is AF and
- * TMR13 owns it, so the old "drive PA6 HIGH" write is kept only for the
- * control build, where PA6 is still a plain output. PB9 is deliberately NOT
- * driven — it is the onboard piezo buzzer (TMR11 CH1 PWM, sys_pwm.c, C15). */
-static void fpga_scope_frontend_enables(void)
-{
-#if !FPGA_CH2_TRIGGER
-    GPIOA->scr = (1U << 6);
-#endif
 }
 
 /* Apply BOTH channels from their own volts/div indices. */
@@ -1194,7 +966,6 @@ static void fpga_set_scope_frontend_ranges(const scope_state_t *ss)
 
     fpga_set_ch1_frontend_range(r1);
     fpga_set_ch2_frontend_range(r2);
-    fpga_scope_frontend_enables();
 }
 
 /* Bench-cal hook: apply one range index to a channel (ch 0 = CH1, 1 = CH2,
@@ -1214,8 +985,6 @@ void fpga_scope_set_range_diag_ch(uint8_t ch, uint8_t range_idx)
     else if (ch == 1) fpga_set_ch2_frontend_range(range_idx);
     else            { fpga_set_ch1_frontend_range(range_idx);
                       fpga_set_ch2_frontend_range(range_idx); }
-
-    fpga_scope_frontend_enables();
 }
 
 void fpga_scope_set_range_diag(uint8_t range_idx)
@@ -4440,16 +4209,6 @@ uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt)
 
         /* [3] 15 00 — own frame (mode 0) or held LOW into the upload (mode 2) */
         SPI3_CS_ASSERT();
-#if FPGA_SPIN_AT_CONFIG_ENABLE
-        /* Experiment E (2026-07-27): park forever with the bus in EXACTLY the
-         * state stock has at flash 0x0802DA42 — prelude 05/12 already sent, CS
-         * LOW, 0x15 not yet clocked — so SWD can dump the full peripheral state
-         * and diff it against the stock spin image (which has `b .` patched in
-         * at that same instruction). Feed the IWDG in the loop: our firmware
-         * starts it late, but it survives a soft reset from a previous boot and
-         * must not reset us mid-dump. */
-        for (;;) { wdt_counter_reload(); }
-#endif
         fpga.init_hs[7] = spi3_xfer(0x15);
         fpga.init_hs[8] = spi3_xfer(0x00);
         if (opt->prelude_frame_mode != 2) {
@@ -4961,14 +4720,12 @@ void fpga_init(void)
     scope_trigger_dac_init();
     scope_trigger_dac_raw(2048);
 
-#if FPGA_CH2_TRIGGER
-    /* CH2 trigger reference — TMR13 CH1 PWM-DAC on PA6, the CH2 analog of the
-     * DAC1 arm above (ripcord contract 38; bench plan item 5, 2026-08-13). Our
-     * firmware never programmed TMR13, so CH2's comparator had no reference and
-     * was predicted dead. Bring TMR13 up (stock config, decoded from master_init)
-     * and arm mid-scale. Like the DAC1 write this is MCU-internal (CRM/PA6/TMR13)
-     * and cannot disturb the FPGA. ⚠ Drives PA6 as AF PWM — confirm on the bench
-     * that PA6 is really the CH2 reference and not a conflicting frontend line. */
+    /* CH2 offset reference — TMR13 CH1 as a PWM-DAC on PA6, the CH2 analog of
+     * the DAC1 arm above (the factory firmware's TMR13 setup, decoded from its
+     * master_init). Without it CH2 reads all zeros. Confirmed on the bench:
+     * EXP-07 (2026-08-17) moved CH2's mean with TMR13 alone and not with DAC1;
+     * EXP-21 (2026-08-21) read 1 kHz on CH1 and 2 kHz on CH2 independently.
+     * Like the DAC1 write this is MCU-internal (CRM/PA6/TMR13). */
     scope_trigger_ch2_init();
     /* Arm at the code that CENTERS CH2, not raw mid-scale. DAC1 (CH1) centers at
      * 2048 because it is a true 12-bit DAC — 2048 is mid voltage. TMR13 is a
@@ -4979,7 +4736,6 @@ void fpga_init(void)
      * 2544 boots CH2 centered, mirroring CH1's fixed-arm pattern. The runtime
      * `fpga scope center ch2` servo refines this per-range / per-unit. */
     scope_trigger_ch2_raw(2544);
-#endif
 
     /* Frontend relays — bench run 3 (2026-08-12, first live capture): the
      * engine free-runs after a pinhole handoff, but the trace sat at the

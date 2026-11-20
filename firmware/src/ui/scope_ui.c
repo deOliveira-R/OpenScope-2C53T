@@ -65,9 +65,6 @@
 /* The graticule's centre line: the 4th of the lines ruled every SCOPE_DIV_PX
  * rows from SCOPE_TOP. True scale puts 0 V (position 0) on it. */
 #define SCOPE_GRID_MID_Y (SCOPE_TOP + 4 * SCOPE_DIV_PX)
-#ifdef SCOPE_DEBUG_OVERLAY
-#define SCOPE_DBG_Y     (LCD_HEIGHT - 60)  /* top of the debug strip */
-#endif
 
 /* The red STOP box on the plot (top centre). UI round 1: R1-B adds a RUN/STOP
  * tab to the status bar; until that is merged this box is the only STOP
@@ -84,22 +81,8 @@
 _Static_assert(MSTRIP_PRM_COUNT == SCOPE_PRM_COUNT,
                "measure_strip's mask width must be stock's 12 measurements");
 
-/* Bottom of the measurement strip (measure_strip.h anchors its rows there).
- *
- * BENCH 2026-08-14: with SCOPE_DEBUG_OVERLAY the badges were INVISIBLE, and had
- * been in every build — `-DSCOPE_DEBUG_OVERLAY` is unconditional in the
- * Makefile's C_DEFS, so there was no configuration in which they showed. The
- * overlay's four lines start at SCOPE_DBG_Y (=180) and run to ~219, painting
- * straight over rows that sat at 193 and 208.
- *
- * Debug builds therefore stack the strip ABOVE the debug strip. That costs
- * waveform height, which is the right trade: an overlay build is a bench build,
- * and a measurement you cannot see is worth less than the pixels it hides. */
-#ifdef SCOPE_DEBUG_OVERLAY
-#define STRIP_BOTTOM    SCOPE_DBG_Y
-#else
+/* Bottom of the measurement strip (measure_strip.h anchors its rows there). */
 #define STRIP_BOTTOM    SCOPE_BOT
-#endif
 
 /*
  * How many consecutive refusals the Freq badge holds its last reading for.
@@ -2395,172 +2378,6 @@ static void draw_math_waveform(void)
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════════════════════
- * SPI3 Debug Overlay
- * Shows raw acquisition status for diagnosing scope data pipeline.
- * Off by default. Enable with -DSCOPE_DEBUG_OVERLAY at build time.
- * ═══════════════════════════════════════════════════════════════════ */
-
-#ifdef SCOPE_DEBUG_OVERLAY
-
-/* SCOPE_DBG_Y is defined with the layout constants at the top of this file,
- * because the badge rows must be positioned relative to it. */
-#define SCOPE_DBG_H   58
-
-/*
- * GPIO pin scanner — REMOVED 2026-08-13.
- *
- * It accumulated per-port "this pin has toggled since boot" masks
- * (gpio_toggle_a..e) every frame, and NOTHING read them: the overlay line
- * that printed them was replaced during the config-entry experiments, and
- * the two derived counters (pb3/pb4_toggle_count) were assigned and never
- * used, which is why they showed up as unused statics in the build. An
- * instrument with no readout is not an instrument; this file has enough
- * history of numbers that could not mean what they appeared to mean.
- *
- * It is in git if it is ever wanted again: `git log -S gpio_toggle_a --
- * firmware/src/ui/scope_ui.c` (added in 5b7437a, last read before 134fa83).
- * Note the in-context MISO finder it once carried was already deleted in
- * 2026-04-06 because it drove SPI3 from the display task and corrupted the
- * acquisition task's transfers.
- */
-
-/* Set by draw_scope_screen (whose full-area clear wipes 180-224) so the strip
- * background is refilled exactly when needed; the live incremental path never
- * dirties it, so per-frame text updates go straight over their own opaque
- * cells with no blank state — that blank-then-text sequence at frame rate was
- * half of the visible full-screen flashing. */
-static uint8_t scope_dbg_strip_dirty = 1;
-
-/* Pad to a fixed width so opaque redraw erases a previously-longer line
- * (counters shrink after a reset; P0 flips H/L width-stable but SS does not). */
-static void dbg_pad(char *s, unsigned cap, unsigned width)
-{
-    unsigned l = 0;
-    while (s[l] != '\0') l++;
-    while (l < width && l + 1 < cap) s[l++] = ' ';
-    s[l] = '\0';
-}
-
-static void draw_scope_debug(const theme_t *th)
-{
-    /* Dark background strip */
-#if (defined(FPGA_CFG_TRACE_BUILD) && FPGA_CFG_TRACE_BUILD) || \
-    (defined(FPGA_IDCODE_PROBE) && FPGA_IDCODE_PROBE)
-    /* Variant overlays draw variable-length content — keep the full refill. */
-    lcd_fill_rect(0, SCOPE_DBG_Y, LCD_WIDTH, SCOPE_DBG_H, 0x0000);
-#else
-    if (scope_dbg_strip_dirty) {
-        lcd_fill_rect(0, SCOPE_DBG_Y, LCD_WIDTH, SCOPE_DBG_H, 0x0000);
-        scope_dbg_strip_dirty = 0;
-    }
-#endif
-
-    char buf[64];
-
-    /* Line 1 (green): transport counters from the real FPGA path */
-    /* Line 1 (green): post-upload scope-engine config readback.
-     * SS = fpga.scope_status[] from the 0x03 status read — stock capture
-     * returns 00 01 42 2E. CL = 0x3A close status — stock returns F8.
-     * R  = first 4 raw CH1 bytes (pre-cal), to see if samples vary at all. */
-    snprintf(buf, sizeof(buf), "SS:%02X%02X%02X%02X CL:%02X R:%02X%02X%02X%02X",
-             fpga.scope_status[0], fpga.scope_status[1],
-             fpga.scope_status[2], fpga.scope_status[3],
-             fpga.h2_close_status,
-             fpga.diag_ch1_raw[0], fpga.diag_ch1_raw[1],
-             fpga.diag_ch1_raw[2], fpga.diag_ch1_raw[3]);
-    dbg_pad(buf, sizeof(buf), 38);
-    font_draw_string(2, SCOPE_DBG_Y + 2, buf,
-                     0x07E0, 0x0000, &font_small);  /* green */
-
-    /* Line 2 (cyan): acquisition state and critical control pins */
-    snprintf(buf, sizeof(buf), "OK:%u TO:%u 1:%02X P0:%c P6:%c B:%c",
-             (unsigned)fpga.spi3_ok_count,
-             (unsigned)fpga.spi3_total_timeouts,
-             fpga.spi3_first_byte,
-             (GPIOC->idt & (1 << 0)) ? 'H' : 'L',
-             (GPIOC->odt & (1 << 6)) ? 'H' : 'L',
-             (GPIOB->odt & (1 << 11)) ? 'H' : 'L');
-    dbg_pad(buf, sizeof(buf), 38);
-    font_draw_string(2, SCOPE_DBG_Y + 15, buf,
-                     0x07FF, 0x0000, &font_small);  /* cyan */
-
-    /* Line 3 (yellow): Init handshake responses + raw PB4 state
-     * G1[0-3] = sync+0x05+pad, G2[4-6] = 0x12+pad, G3[7-10] = 0x15+pad+0x3B
-     * PB4: raw GPIO read of the MISO pin (1=HIGH/floating, 0=driven LOW) */
-    /* L/H = min/max across the whole CH1 acquisition buffer. If L==H the
-     * samples are a stuck constant (analog/trigger problem); if they spread,
-     * real signal is arriving and the fault is downstream in rendering. */
-    {
-        const volatile uint8_t *cb = fpga_get_ch1_buf();
-        uint8_t lo = 0xFF, hi = 0x00;
-        for (uint32_t i = 0; i < FPGA_ADC_BUF_SIZE; i++) {
-            uint8_t v = cb[i];
-            if (v < lo) lo = v;
-            if (v > hi) hi = v;
-        }
-        /* CFG = Gowin STATUS_REGISTER (opcode 0x41) read right after the 0x3A
-         * close — the authoritative "did the upload take?" verdict. Read at a
-         * forced /256 since 2026-07-28; every earlier value was clocked at /2
-         * and slipped one bit (the persistent 80 01 C8 10 is 0x00039020 read
-         * one bit early — see fpga.c [6b]).
-         *
-         * D = DONE_FINAL (bit 13) — 1 means configuration completed. This, not
-         *     SYSTEM_EDIT_MODE, is the success signal (Exp H showed stock reads
-         *     the same 0x00039020 at the config-enable instant that we do, so
-         *     ED cannot discriminate).
-         * E = the error nibble, bits 3..0 = TIMEOUT | ID_VERIFY_FAILED |
-         *     BAD_COMMAND | CRC_ERROR. Non-zero means bytes DID reach the config
-         *     engine and were rejected → a content/transport bug, localizable.
-         *     Zero with D=0 means the engine never received anything at all. */
-        uint32_t sr = ((uint32_t)fpga.cfg_status_reg[0] << 24) |
-                      ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-                      ((uint32_t)fpga.cfg_status_reg[2] << 8)  |
-                      ((uint32_t)fpga.cfg_status_reg[3]);
-        /* A = the post-0x3A IDCODE anchor: the bit offset at which 0x0120681B was
-         *     found in the read taken immediately before CFG, at the same clock.
-         *     A>=0  -> CFG was read on a validated path AND the config port is
-         *             still open, i.e. we are definitively NOT configured.
-         *     A=-1  -> either the port closed (Exp L: what a successfully
-         *             configured part does) or the bus is dead. CFG is then
-         *             UNTRUSTWORTHY on its own — corroborate with a live trace. */
-        snprintf(buf, sizeof(buf), "CFG:%08lX D%u E%X A%d L%u H%u",
-                 (unsigned long)sr,
-                 (unsigned)((sr >> 13) & 1u),
-                 (unsigned)(sr & 0x0Fu),
-                 (int)fpga.probe_id_bit_close,
-                 (unsigned)lo, (unsigned)hi);
-    }
-    dbg_pad(buf, sizeof(buf), 38);
-    font_draw_string(2, SCOPE_DBG_Y + 28, buf,
-                     0xFFE0, 0x0000, &font_small);  /* yellow */
-
-    /* Line 4 (magenta): SPI3 CTRL1 + the EDIT_MODE probe + H2 upload flag.
-     * S1 = SPI3 CTRL1 as latched during the config frame. Bits[5:3] are BR, so
-     *      0347 = /2 (stock, Exp F fidelity build) and 037F = /256. This is the
-     *      on-device proof of which clock the config frame actually ran at.
-     * ED = STATUS_REGISTER (0x41) read at /256 immediately after 0x15.
-     *      SYSTEM_EDIT_MODE is bit 7 of the ASSEMBLED 32-bit word, i.e. bit 7 of
-     *      ED[3] — NOT bit 7 of ED[0], as this comment and tools/re/swd/swd_fpga_status.sh
-     *      both said until 2026-07-28. (Same verdict either way for 0x00039020:
-     *      ED[3]=0x20, bit 7 clear. But the test was reading bit 31.)
-     *      Exp H demoted this from "the wall" to a non-discriminator: stock reads
-     *      the same 0x00039020 here and still configures. Compare CFG's D flag.
-     * Dropped S2/ST here — CTRL2 and STS were static (0003 / 0002) across every
-     * run so far, and ED is the number this experiment turns on.
-     * H2T means bytes streamed, not recovered FPGA acceptance. */
-    snprintf(buf, sizeof(buf), "S1:%04X ED:%02X%02X%02X%02X H2T:%c",
-             (uint16_t)fpga.diag_spi_ctrl1,
-             fpga.edit_mode_status[0], fpga.edit_mode_status[1],
-             fpga.edit_mode_status[2], fpga.edit_mode_status[3],
-             fpga.h2_upload_done ? 'Y' : 'N');
-    dbg_pad(buf, sizeof(buf), 38);
-    font_draw_string(2, SCOPE_DBG_Y + 41, buf,
-                     0xF81F, 0x0000, &font_small);  /* magenta */
-}
-
-#endif /* SCOPE_DEBUG_OVERLAY */
-
-/* ═══════════════════════════════════════════════════════════════════
  * X-Y (Lissajous) view — CH1 drives X, CH2 drives Y
  *
  * Plots the two ADC buffers against each other instead of against time:
@@ -2833,41 +2650,6 @@ void draw_scope_screen(uint32_t frame)
 
     /* No "CH1"/"CH2" text top-left any more: the status bar's focus glyph
      * shows the active channel in its colour (UI round 1). */
-
-#if !defined(EMULATOR_BUILD) && defined(SCOPE_DEBUG_OVERLAY)
-    /* SPI3 acquisition diagnostic — small text overlay top-center. Developer
-     * text: debug-overlay builds only since UI round 1 (it is in the bottom
-     * strip of those builds anyway). Shows probing status so we can see
-     * FPGA data flow without serial. */
-    {
-        char spi3_buf[24];
-        uint16_t spi3_color;
-        if (fpga.spi3_ok_count > 0) {
-            snprintf(spi3_buf, sizeof(spi3_buf), "SPI3:OK %u",
-                     (unsigned)fpga.spi3_ok_count);
-            spi3_color = th->success;
-        } else if (fpga.spi3_total_timeouts > 0) {
-            snprintf(spi3_buf, sizeof(spi3_buf), "SPI3:-- %u [%02X]",
-                     (unsigned)fpga.spi3_total_timeouts,
-                     fpga.spi3_first_byte);
-            spi3_color = th->warning;
-        } else if (fpga.initialized) {
-            snprintf(spi3_buf, sizeof(spi3_buf), "SPI3:wait");
-            spi3_color = th->text_secondary;
-        } else {
-            snprintf(spi3_buf, sizeof(spi3_buf), "SPI3:off");
-            spi3_color = th->text_secondary;
-        }
-        font_draw_string(40, SCOPE_TOP + 2, spi3_buf,
-                         spi3_color, th->background, &font_small);
-    }
-#endif
-
-#ifdef SCOPE_DEBUG_OVERLAY
-    /* Layer 12: SPI3 debug overlay (bottom of screen) */
-    scope_dbg_strip_dirty = 1;   /* the :1050-style full clear wiped 180-224 */
-    draw_scope_debug(th);
-#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3155,11 +2937,6 @@ void draw_scope_live_frame(void)
      *
      * Cost of leaving it out: stale badges — a display bug. The version that
      * was here was a data-loss bug. Prefer the display bug. */
-
-#ifdef SCOPE_DEBUG_OVERLAY
-    /* Keep the counters moving; opaque fixed-width lines, no strip refill. */
-    draw_scope_debug(th);
-#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════

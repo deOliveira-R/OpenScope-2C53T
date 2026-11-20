@@ -200,19 +200,14 @@ void delay_ms(uint32_t ms)
  * pre-B2 tick so the demo animation looks the same. */
 #define SCOPE_ANIM_TICK_FRAMES  20
 
-/* Idle heartbeat, split by whether the heartbeat blanks the screen.
+/* Idle heartbeat, split by whether the heartbeat blanks the screen: a
+ * repaint when nothing the epoch sees has changed, so a frozen display can
+ * be told from a hung task.
  *
- * Something must still tick over when nothing changes, because the
- * SCOPE_DEBUG_OVERLAY strip (compiled into every build today, Makefile
- * C_DEFS) shows SPI3 timeout and status counters that move without
- * touching anything the epoch can see — and that strip is the only
- * instrument on bench unit #1.
- *
- * draw_scope_live_frame() redraws that strip as opaque fixed-width text
- * with no refill (scope_ui.c), so when the compositor is available the
- * heartbeat costs no blank and can stay at the pre-B2 1 s. When it is
- * not available the heartbeat is a full clear-and-repaint, and that is
- * the one that was flashing a settled screen once a second forever. */
+ * When the flicker-free compositor (draw_scope_live_frame) is available the
+ * heartbeat costs no blank and stays at 1 s. When it is not, the heartbeat
+ * is a full clear-and-repaint, which flashed a settled screen once a second:
+ * that one is backed off to 5 s. */
 #define SCOPE_IDLE_LIVE_FRAMES  20    /* 1 s, flicker-free */
 #define SCOPE_STRIP_REFRESH_FRAMES 10 /* 500 ms: measurement cells in place */
 #define SCOPE_IDLE_FULL_FRAMES  100   /* 5 s, blanks — back it off */

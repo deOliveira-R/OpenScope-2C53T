@@ -33,12 +33,6 @@
 #include "scope_trigger.h"
 #include "fpga.h"
 
-/* Same default as fpga.c: CH2's reference is armed in every build except the
- * `guest-coldtrace-noch2` A/B control, which must not have PA6 driven. */
-#ifndef FPGA_CH2_TRIGGER
-#define FPGA_CH2_TRIGGER  1
-#endif
-
 /* The fixed arm fpga_init() uses when there is no page (fpga.c: DAC1 2048 =
  * mid voltage; TMR13 2544 = the code that centred CH2 on bench unit #1). */
 #define VPOS_LEGACY_DAC1   2048u
@@ -115,9 +109,7 @@ bool scope_vpos_enable(bool on)
     } else if (was) {
         /* Back to the pre-C4 operating point, as fpga_init() leaves it. */
         scope_trigger_dac_raw(VPOS_LEGACY_DAC1);
-#if FPGA_CH2_TRIGGER
         scope_trigger_ch2_raw(VPOS_LEGACY_TMR13);
-#endif
         vp.wrote[0] = vp.wrote[1] = false;
     }
     return true;
@@ -137,9 +129,6 @@ static channel_state_t *chan(uint8_t ch)
 void scope_vpos_apply_ch(uint8_t ch, uint8_t range)
 {
     if ((ch != 1u && ch != 2u) || !scope_vpos_active()) return;
-#if !FPGA_CH2_TRIGGER
-    if (ch == 2u) return;
-#endif
     /* Stock's bank rule on the code in force (reg 0x01) and the converter
      * routing in force (PC1/PC2 mask) — the hardware state, not the UI's
      * intent, because the bank describes how the converters are clocked. */

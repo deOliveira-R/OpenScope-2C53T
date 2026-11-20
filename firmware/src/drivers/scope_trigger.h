@@ -55,9 +55,9 @@ uint16_t scope_trigger_dac_last(void);
  * (0b111), CCTRL C1EN|C1P, CTRL1 CEN. Our firmware never programmed TMR13, which
  * is why CH2 was predicted dead. This mirrors the DAC1 CH1 bring-up.
  *
- * ⚠ PA6 was "Unknown" in HARDWARE_PINOUT — identifying it as TMR13_CH1 is a new
- * inference to CONFIRM on the bench (it was also loosely called an analog-frontend
- * pin). Behind FPGA_CH2_TRIGGER; opt-in, layered onto the warm-handoff build. */
+ * PA6 as TMR13_CH1 is confirmed on the bench: EXP-07 (2026-08-17) moved CH2's
+ * mean with TMR13 alone and not with DAC1; unarmed, CH2 reads all zeros.
+ * fpga_init() arms it at boot. */
 void scope_trigger_ch2_init(void);
 void scope_trigger_ch2_raw(uint16_t code);   /* write TMR13_C1DT (0..4095 duty) */
 void scope_trigger_ch2_set(int range, int level);

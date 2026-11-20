@@ -315,10 +315,6 @@ MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
 
 # C defines
 C_DEFS  = -DAT32F403AVGT7
-# SCOPE_DEBUG_OVERLAY paints a 4-line debug strip over the bottom of the scope
-# area (rows 180-219). Useful for bench diagnostics, but it sits on top of the
-# trace — disabled for a clean display. Re-add `-DSCOPE_DEBUG_OVERLAY` to bring
-# the strip back.
 C_DEFS += $(FEATURE_DEFS)
 # UI round 1: the status bar's RUN/STOP/ARM tab (R1-B) replaces the red STOP
 # box on the plot (R1-C, scope_ui.c).

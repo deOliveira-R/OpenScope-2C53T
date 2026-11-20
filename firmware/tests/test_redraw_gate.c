@@ -230,11 +230,9 @@ static void check_idle_settled_screen(bool verbose)
 static void check_idle_heartbeat_stays_live(bool verbose)
 {
     /* NEGATIVE CONTROL for the slow backstop above: when the flicker-free
-     * compositor IS available it also repaints the SCOPE_DEBUG_OVERLAY
-     * strip (scope_ui.c, opaque text, no refill), and that strip is the
-     * only instrument on bench unit #1. Backing the heartbeat off to 5 s
-     * there would freeze the bench counters, so the live case must keep
-     * the pre-B2 1 s cadence — and must not blank while doing it. */
+     * compositor IS available the heartbeat costs no blank, so the live
+     * case keeps the 1 s cadence (SCOPE_IDLE_LIVE_FRAMES) — and must not
+     * blank while doing it. */
     scenario_t s = { 400, 0, 0, true, false, FW_FULL_MIN, 0, FW_IDLE_LIVE };
 
     tally_t nw = run(GATE_NEW, &s);
