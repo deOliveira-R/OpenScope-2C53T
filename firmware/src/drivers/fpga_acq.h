@@ -180,4 +180,27 @@ typedef struct {
 } fpga_roll_stats_t;
 void    fpga_roll_stats_get(fpga_roll_stats_t *out);
 
+/* State and counters of the acquisition (fpga_acq.c writes; the display and the shell read). */
+typedef struct {
+    /* The published record (fpga_acq.c writes, the display reads; see
+     * fpga_acq_frame_generation). */
+    volatile uint8_t  ch1_buf[FPGA_ADC_BUF_SIZE];
+    volatile uint8_t  ch2_buf[FPGA_ADC_BUF_SIZE];
+    volatile uint16_t spi3_ok_count;  /* records read */
+    volatile uint16_t spi3_total_timeouts;  /* records refused since boot: a transfer timed out during the read */
+    volatile uint16_t spi3_hw_timeouts;  /* SPI3 byte transfers that timed out since boot; each returned 0xFF instead of bus data */
+    volatile uint8_t  diag_ch1_raw[4];  /* first 4 bytes of the last CH1 read */
+    volatile uint8_t  diag_ch2_raw[4];  /* first 4 bytes of the last CH2 read */
+    volatile uint8_t  acq_hdr_ch1[3];  /* the 3 header bytes of the last op 04 reply */
+    volatile uint8_t  acq_hdr_ch2[3];  /* the same of the last op 05 reply */
+    volatile uint32_t pc0_last_tick;  /* tick of the last PC0 edge */
+    volatile int32_t  acq_last_rot;  /* rotation applied to the last published record, -1 = none */
+    volatile uint32_t acq_last_latency_ms;  /* PC0 edge to publication of the last held record */
+    volatile uint32_t acq_poll_reads;  /* reads that found no held record, total */
+    volatile uint32_t acq_polls_last;  /* such reads before the last held record */
+    volatile uint32_t pc0_edges;  /* falling edges of PC0 (record ready), counted in EXINT0 */
+} fpga_acq_state_t;
+
+extern fpga_acq_state_t acq;   /* defined in fpga_acq.c */
+
 #endif /* FPGA_ACQ_H */

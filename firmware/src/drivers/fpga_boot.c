@@ -10,6 +10,8 @@
 #include "fpga_internal.h"
 #include "fpga_bitstream_core.h"
 
+fpga_boot_state_t fboot;
+
 #ifndef FPGA_BB_HALF_DELAY
 
 #define FPGA_BB_HALF_DELAY 0   /* nops per SCK half-period; 0 = as fast as GPIO writes go */
@@ -92,8 +94,8 @@ static bool            bb_arm_live;      /* outcome 1: still run the arm writes 
  * before the control writes; the outcome is left in bb_outcome. */
 uint32_t fpga_cfg_status(void)
 {
-    return ((uint32_t)fpga.cfg_status_reg[0] << 24) | ((uint32_t)fpga.cfg_status_reg[1] << 16) |
-           ((uint32_t)fpga.cfg_status_reg[2] << 8)  |  (uint32_t)fpga.cfg_status_reg[3];
+    return ((uint32_t)fboot.cfg_status_reg[0] << 24) | ((uint32_t)fboot.cfg_status_reg[1] << 16) |
+           ((uint32_t)fboot.cfg_status_reg[2] << 8)  |  (uint32_t)fboot.cfg_status_reg[3];
 }
 
 uint8_t fpga_bitbang_config_sequence(void)
@@ -101,10 +103,10 @@ uint8_t fpga_bitbang_config_sequence(void)
     gpio_init_type gpio_cfg;
     gpio_default_para_init(&gpio_cfg);
 
-    fpga.probe_id_bit       = -1;
-    fpga.probe_id_bit_close = -1;
-    fpga.upload_len         = (bb_src_fn == NULL) ? FPGA_BITSTREAM_CORE_SIZE : bb_src_len;
-    fpga.h2_bytes_sent      = 0;
+    fboot.probe_id_bit       = -1;
+    fboot.probe_id_bit_close = -1;
+    fboot.upload_len         = (bb_src_fn == NULL) ? FPGA_BITSTREAM_CORE_SIZE : bb_src_len;
+    fboot.h2_bytes_sent      = 0;
 
     int sched_running = (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING);
     if (sched_running && acq_task_handle) vTaskSuspend(acq_task_handle);
@@ -113,22 +115,22 @@ uint8_t fpga_bitbang_config_sequence(void)
     spi3_pins_gpio();
 
     /* Read IDCODE, USERCODE and STATUS before the upload (shown by `status`). */
-    bb_read_reg32(0x11, (uint8_t *)fpga.probe_idcode);
-    bb_read_reg32(0x13, (uint8_t *)fpga.probe_user);
-    bb_read_reg32(0x41, (uint8_t *)fpga.probe_status);
+    bb_read_reg32(0x11, (uint8_t *)fboot.probe_idcode);
+    bb_read_reg32(0x13, (uint8_t *)fboot.probe_user);
+    bb_read_reg32(0x41, (uint8_t *)fboot.probe_status);
     /* 0x0120681B is the FPGA's IDCODE: only an empty (unconfigured) part
      * answers it on this port. */
-    if (fpga.probe_idcode[0] == 0x01 && fpga.probe_idcode[1] == 0x20 &&
-        fpga.probe_idcode[2] == 0x68 && fpga.probe_idcode[3] == 0x1B)
-        fpga.probe_id_bit = 0;
+    if (fboot.probe_idcode[0] == 0x01 && fboot.probe_idcode[1] == 0x20 &&
+        fboot.probe_idcode[2] == 0x68 && fboot.probe_idcode[3] == 0x1B)
+        fboot.probe_id_bit = 0;
 
     /* A part that does not answer its IDCODE still runs a design, and these
      * pins are that design's own SPI port. An upload would only feed it about
      * 115 KB of stray bytes, so send nothing when asked to require empty. */
     bb_outcome = 0;
-    if (bb_require_empty && fpga.probe_id_bit != 0) {
+    if (bb_require_empty && fboot.probe_id_bit != 0) {
         bb_outcome = 1;
-        fpga.upload_result = FPGA_UPLOAD_NOT_EMPTY;
+        fboot.upload_result = FPGA_UPLOAD_NOT_EMPTY;
         goto bb_restore_pins;
     }
 
@@ -142,7 +144,7 @@ uint8_t fpga_bitbang_config_sequence(void)
     if (bb_src_fn == NULL) {
         for (uint32_t i = 0; i < FPGA_BITSTREAM_CORE_SIZE; ++i)
             (void)bb_xfer(fpga_bitstream_core[i]);
-        fpga.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
+        fboot.h2_bytes_sent = FPGA_BITSTREAM_CORE_SIZE;
     } else {
         /* Payload from a source (the flash slot), 256 bytes at a time. The
          * clock simply stops between chunks; the frame stays open (CS low). */
@@ -155,20 +157,20 @@ uint8_t fpga_bitbang_config_sequence(void)
             for (uint32_t i = 0; i < n; ++i) (void)bb_xfer(chunk[i]);
             off += n;
         }
-        fpga.h2_bytes_sent = off;
+        fboot.h2_bytes_sent = off;
     }
     GPIOB->scr = BB_CS;
-    fpga.h2_upload_done = (bb_outcome == 0) ? 1 : 0;
-    fpga.upload_result = (bb_outcome == 0) ? FPGA_UPLOAD_SENT : FPGA_UPLOAD_SOURCE_FAILED;
+    fboot.h2_upload_done = (bb_outcome == 0) ? 1 : 0;
+    fboot.upload_result = (bb_outcome == 0) ? FPGA_UPLOAD_SENT : FPGA_UPLOAD_SOURCE_FAILED;
 
     /* STATUS after the upload; bit 13 is DONE (the design started). */
-    bb_read_reg32(0x41, (uint8_t *)fpga.cfg_status_reg);
+    bb_read_reg32(0x41, (uint8_t *)fboot.cfg_status_reg);
     /* IDCODE again: a configured part stops answering, so a mismatch here is
      * the expected result of a good upload. */
-    bb_read_reg32(0x11, (uint8_t *)fpga.probe_idcode_close);
-    if (fpga.probe_idcode_close[0] == 0x01 && fpga.probe_idcode_close[1] == 0x20 &&
-        fpga.probe_idcode_close[2] == 0x68 && fpga.probe_idcode_close[3] == 0x1B)
-        fpga.probe_id_bit_close = 0;
+    bb_read_reg32(0x11, (uint8_t *)fboot.probe_idcode_close);
+    if (fboot.probe_idcode_close[0] == 0x01 && fboot.probe_idcode_close[1] == 0x20 &&
+        fboot.probe_idcode_close[2] == 0x68 && fboot.probe_idcode_close[3] == 0x1B)
+        fboot.probe_id_bit_close = 0;
 
     bb_cmd16(0x3A, 0x00);   /* CONFIG_DISABLE */
     fpga_scope_delay_ms(100);
@@ -215,7 +217,7 @@ bb_restore_pins:
         SPI3_CS_ASSERT();
         spi3_xfer(FPGA_CORE_OP_LIVE);
         for (unsigned i = 0; i < 4; i++)
-            fpga.scope_status[i] = spi3_xfer(0xFF);
+            fboot.scope_status[i] = spi3_xfer(0xFF);
         SPI3_CS_DEASSERT();
         /* The burst wrote 07 00 (edge: either direction). The edge register
          * may be used from here on only on our own core: this upload must
@@ -226,17 +228,17 @@ bb_restore_pins:
                                                     ((fpga_cfg_status() >> GOWIN_STATUS_DONE_BIT) & 1u) != 0u);
         /* Ask our core which build it is (op E2; the E-range is never sent to
          * a design that is not ours). A core older than D5 answers zeros. */
-        for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) fpga.core_ident[i] = 0u;
+        for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) fboot.core_ident[i] = 0u;
         if (acq_design_ours) {
             SPI3_CS_ASSERT();
-            fpga.core_ident[0] = spi3_xfer(FPGA_CORE_OP_IDENT);
+            fboot.core_ident[0] = spi3_xfer(FPGA_CORE_OP_IDENT);
             for (unsigned i = 1; i < CORE_IDENT_REPLY_LEN; i++)
-                fpga.core_ident[i] = spi3_xfer(0xFF);
+                fboot.core_ident[i] = spi3_xfer(0xFF);
             SPI3_CS_DEASSERT();
         }
         {   /* only our core, identified and complete, is acquired from */
             uint8_t r[CORE_IDENT_REPLY_LEN];
-            for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
+            for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fboot.core_ident[i];
             acq_core_ok_set(core_ident_usable(acq_design_ours, r));
         }
     }
@@ -244,7 +246,7 @@ bb_restore_pins:
     spi3_set_br(0);                      /* restore /2 for normal acquisition */
 
     if (sched_running && acq_task_handle) vTaskResume(acq_task_handle);
-    return fpga.cfg_status_reg[3];
+    return fboot.cfg_status_reg[3];
 }
 
 /*
@@ -288,10 +290,10 @@ fpga_reload_status_t fpga_reload(fpga_payload_fn fn, void *ctx, uint32_t len,
 
     const uint32_t status = fpga_cfg_status();
     if (rep) {
-        rep->idcode_before = ((uint32_t)fpga.probe_idcode[0] << 24) | ((uint32_t)fpga.probe_idcode[1] << 16) |
-                             ((uint32_t)fpga.probe_idcode[2] << 8)  |  (uint32_t)fpga.probe_idcode[3];
+        rep->idcode_before = ((uint32_t)fboot.probe_idcode[0] << 24) | ((uint32_t)fboot.probe_idcode[1] << 16) |
+                             ((uint32_t)fboot.probe_idcode[2] << 8)  |  (uint32_t)fboot.probe_idcode[3];
         rep->status = (outcome == 1) ? 0u : status;
-        rep->sent   = (outcome == 1) ? 0u : fpga.h2_bytes_sent;
+        rep->sent   = (outcome == 1) ? 0u : fboot.h2_bytes_sent;
     }
     if (outcome == 1) return FPGA_RELOAD_NOT_EMPTY;
     if (outcome == 2) return FPGA_RELOAD_SRC_FAIL;
@@ -507,15 +509,15 @@ void spi3_pins_released(void)
 /* Give the bus up and take it back. Two users: fpga_reload(), so that no
  * line feeds the FPGA while its supply is off, and the toolkit's
  * `fpga busrelease`, for an external SPI master on the test pads. While
- * fpga.bus_released is set, the acquisition task stays off the bus. */
+ * fboot.bus_released is set, the acquisition task stays off the bus. */
 void fpga_bus_release(void)
 {
-    fpga.bus_released = true;    /* first, so the acquisition task stops using SPI3 */
+    fboot.bus_released = true;    /* first, so the acquisition task stops using SPI3 */
     spi3_pins_released();
 }
 
 void fpga_spi3_bus_reacquire(void)
 {
     spi3_pins_peripheral();
-    fpga.bus_released = false;
+    fboot.bus_released = false;
 }

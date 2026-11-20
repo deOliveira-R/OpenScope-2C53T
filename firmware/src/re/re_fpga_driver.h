@@ -31,7 +31,7 @@ typedef struct {
     uint8_t  strap_pd2;       /* PD2 through the whole sequence:       0=untouched, 1=hold HIGH, 2=hold LOW */
     uint8_t  strap_pd1213;    /* PD12+PD13 through the whole sequence: 0=untouched, 1=hold HIGH, 2=hold LOW */
     uint16_t trailing_clocks; /* dummy 0x00 bytes after the last design byte, before the 0x3A close */
-    uint8_t  probe_edit;      /* 1 = after 0x15, read STATUS (0x41) at /256 into fpga.edit_mode_status[] */
+    uint8_t  probe_edit;      /* 1 = after 0x15, read STATUS (0x41) at /256 into fboot.edit_mode_status[] */
     uint8_t  reload_3c;       /* 1 = send RELOAD (0x3C) at /256 before the prelude */
     uint8_t  probe_idcode;    /* 1 = read 0x11/0x00/0x41/0x13 at /256 (8 bytes each) before
                                *     the prelude and 0x11 again after 0x15, into
@@ -45,7 +45,7 @@ typedef struct {
 } fpga_cfg_seq_opts_t;
 
 /* Run the sequence. Returns the byte read after the 0x3A close; fills
- * fpga.init_hs[], fpga.h2_close_status and fpga.scope_status[]. */
+ * fboot.init_hs[], fboot.h2_close_status and fboot.scope_status[]. */
 uint8_t fpga_spi3_config_sequence(const fpga_cfg_seq_opts_t *opt);
 
 /* For a logic analyser on the SPI3 pins: `reps` (0 = 16) identical 0x15

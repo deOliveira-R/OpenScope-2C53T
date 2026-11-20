@@ -690,7 +690,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
          * (drawn only by the full path), the demo/pre-data state,
          * and all button-driven DCMD redraws. */
         static uint16_t last_spi3_ok = 0;
-        uint16_t spi3_now = fpga.spi3_ok_count;
+        uint16_t spi3_now = acq.spi3_ok_count;
         bool new_data = (spi3_now != last_spi3_ok);
         last_spi3_ok = spi3_now;
 

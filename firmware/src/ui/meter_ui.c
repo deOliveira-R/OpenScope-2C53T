@@ -1740,7 +1740,7 @@ void draw_meter_screen(void)
 
         /* Short frame counter prefix so we can see updates */
         dbg[i++] = 'F';
-        { uint16_t fc = fpga.frame_count; char tmp[6]; int t = 0;
+        { uint16_t fc = mlink.frame_count; char tmp[6]; int t = 0;
           if (fc == 0) tmp[t++] = '0';
           else while (fc > 0 && t < 5) { tmp[t++] = '0' + (fc % 10); fc /= 10; }
           for (int j = t - 1; j >= 0; j--) dbg[i++] = tmp[j]; }
@@ -1749,7 +1749,7 @@ void draw_meter_screen(void)
         /* All 12 frame bytes — fits in 64-char buffer with room to spare.
          * 12 bytes × 3 chars ("HH ") = 36 chars, plus ~8 prefix = ~44 total. */
         for (int b = 0; b < 12; b++) {
-            uint8_t v = fpga.rx_frame[b];
+            uint8_t v = mlink.rx_frame[b];
             dbg[i++] = hex[(v >> 4) & 0xF];
             dbg[i++] = hex[v & 0xF];
             if (b < 11) dbg[i++] = ' ';

@@ -100,7 +100,7 @@ typedef struct {
  * RX full, read. Returns the byte received while tx_byte went out.
  *
  * On a poll timeout it returns 0xFF, which looks like a real byte. So each
- * timeout also increments fpga.spi3_hw_timeouts; bulk readers compare that
+ * timeout also increments acq.spi3_hw_timeouts; bulk readers compare that
  * counter before and after a read and drop a record with made-up bytes. The
  * flags depend only on the MCU (the master clocks whatever the FPGA does), so
  * a timeout means the SPI peripheral itself is disabled or stuck.
@@ -112,14 +112,14 @@ static inline uint8_t spi3_xfer(uint8_t tx_byte)
     /* Wait for TX buffer empty */
     timeout = 100000;
     while (!(FPGA_SPI->sts & SPI_I2S_TDBE_FLAG)) {
-        if (--timeout == 0) { fpga.spi3_hw_timeouts++; return 0xFF; }
+        if (--timeout == 0) { acq.spi3_hw_timeouts++; return 0xFF; }
     }
     FPGA_SPI->dt = tx_byte;
 
     /* Wait for RX buffer not empty */
     timeout = 100000;
     while (!(FPGA_SPI->sts & SPI_I2S_RDBF_FLAG)) {
-        if (--timeout == 0) { fpga.spi3_hw_timeouts++; return 0xFF; }
+        if (--timeout == 0) { acq.spi3_hw_timeouts++; return 0xFF; }
     }
     return (uint8_t)FPGA_SPI->dt;
 }

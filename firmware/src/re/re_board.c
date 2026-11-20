@@ -88,29 +88,29 @@ typedef struct {
 
 static void fpga_diag_snapshot_take(fpga_diag_snapshot_t *snap)
 {
-    snap->tx_count = fpga.tx_count;
-    snap->rx_byte_count = fpga.rx_byte_count;
-    snap->frame_count = fpga.frame_count;
-    snap->echo_count = fpga.echo_count;
-    snap->spi3_ok_count = fpga.spi3_ok_count;
+    snap->tx_count = mlink.tx_count;
+    snap->rx_byte_count = mlink.rx_byte_count;
+    snap->frame_count = mlink.frame_count;
+    snap->echo_count = mlink.echo_count;
+    snap->spi3_ok_count = acq.spi3_ok_count;
 }
 
 static void fpga_diag_print_delta(const fpga_diag_snapshot_t *before)
 {
-    uint16_t tx_delta = fpga.tx_count - before->tx_count;
-    uint16_t rx_delta = fpga.rx_byte_count - before->rx_byte_count;
-    uint16_t frame_delta = fpga.frame_count - before->frame_count;
-    uint16_t echo_delta = fpga.echo_count - before->echo_count;
-    uint16_t spi_delta = fpga.spi3_ok_count - before->spi3_ok_count;
+    uint16_t tx_delta = mlink.tx_count - before->tx_count;
+    uint16_t rx_delta = mlink.rx_byte_count - before->rx_byte_count;
+    uint16_t frame_delta = mlink.frame_count - before->frame_count;
+    uint16_t echo_delta = mlink.echo_count - before->echo_count;
+    uint16_t spi_delta = acq.spi3_ok_count - before->spi3_ok_count;
 
     usb_debug_printf("Delta: TX %+d RX %+d DF %+d EF %+d SPI %+d\r\n",
                      (int)tx_delta, (int)rx_delta, (int)frame_delta,
                      (int)echo_delta, (int)spi_delta);
 
-    if ((frame_delta > 0 || echo_delta > 0) && fpga.rx_frame_valid) {
+    if ((frame_delta > 0 || echo_delta > 0) && mlink.rx_frame_valid) {
         usb_debug_printf("RX:");
         for (int i = 0; i < FPGA_RX_FRAME_SIZE; i++) {
-            usb_debug_printf(" %02X", fpga.rx_frame[i]);
+            usb_debug_printf(" %02X", mlink.rx_frame[i]);
         }
         usb_send_str("\r\n");
     }

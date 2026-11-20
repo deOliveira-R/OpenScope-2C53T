@@ -56,7 +56,7 @@ void cmd_fpga_reinit(const char *args)
     /* guest-bringup leaves the bus released (PB3/5/6 Hi-Z, SPE off). reinit means
      * "take the bus and configure", so reacquire it first — otherwise the whole
      * handshake clocks into a dead wire (H7, 2026-08-26). No-op on other builds. */
-    if (fpga.bus_released) {
+    if (fboot.bus_released) {
         fpga_spi3_bus_reacquire();
         usb_send_str("reinit: bus was released -> reacquired SPI3 (PB3/4/5/6, SPE)\r\n");
     }
@@ -172,8 +172,8 @@ reinit_bad_token:
 
     usb_debug_printf("0x3A close: %02X (stock F8)\r\n", close);
     usb_debug_printf("0x03 status: %02X %02X %02X %02X (stock 00 01 42 2E)\r\n",
-                     fpga.scope_status[0], fpga.scope_status[1],
-                     fpga.scope_status[2], fpga.scope_status[3]);
+                     fboot.scope_status[0], fboot.scope_status[1],
+                     fboot.scope_status[2], fboot.scope_status[3]);
 
     /* Gowin STATUS_REGISTER (0x41) — the authoritative config status. Decode the
      * named bits so one reinit run tells us WHICH side of the wall we're on:
@@ -182,8 +182,8 @@ reinit_bad_token:
      *   DONE    -> config actually took. */
     uint32_t sr = fpga_cfg_status();
     usb_debug_printf("0x41 STATUS: %02X %02X %02X %02X (raw=%08lX)\r\n",
-                     fpga.cfg_status_reg[0], fpga.cfg_status_reg[1],
-                     fpga.cfg_status_reg[2], fpga.cfg_status_reg[3], sr);
+                     fboot.cfg_status_reg[0], fboot.cfg_status_reg[1],
+                     fboot.cfg_status_reg[2], fboot.cfg_status_reg[3], sr);
     if (sr == 0xFFFFFFFFu || sr == 0x00000000u) {
         usb_debug_printf("  -> %s (no valid status; FPGA not in SSPI config-receive)\r\n",
                          sr == 0xFFFFFFFFu ? "all-FF" : "all-00");
@@ -203,13 +203,13 @@ reinit_bad_token:
     if (opt.reload_3c)
         usb_send_str("reinit: sent 0x3C RELOAD before prelude\r\n");
     if (opt.probe_edit) {
-        uint32_t es = ((uint32_t)fpga.edit_mode_status[0] << 24) |
-                      ((uint32_t)fpga.edit_mode_status[1] << 16) |
-                      ((uint32_t)fpga.edit_mode_status[2] << 8) |
-                      (uint32_t)fpga.edit_mode_status[3];
+        uint32_t es = ((uint32_t)fboot.edit_mode_status[0] << 24) |
+                      ((uint32_t)fboot.edit_mode_status[1] << 16) |
+                      ((uint32_t)fboot.edit_mode_status[2] << 8) |
+                      (uint32_t)fboot.edit_mode_status[3];
         usb_debug_printf("post-0x15 STATUS@/256: %02X %02X %02X %02X (raw=%08lX)\r\n",
-                         fpga.edit_mode_status[0], fpga.edit_mode_status[1],
-                         fpga.edit_mode_status[2], fpga.edit_mode_status[3], es);
+                         fboot.edit_mode_status[0], fboot.edit_mode_status[1],
+                         fboot.edit_mode_status[2], fboot.edit_mode_status[3], es);
         usb_debug_printf("  EDIT_MODE(bit7)=%s  flags:%s%s%s%s%s%s\r\n",
                          (es & (1u << 7))  ? "YES (config-receive engaged!)" : "no (0x15 did NOT engage)",
                          (es & (1u << 0))  ? " CRC_ERR" : "",

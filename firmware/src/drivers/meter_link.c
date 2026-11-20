@@ -20,7 +20,7 @@
  *   - Senders put items (a command word, obeyed or unobeyed, or a raw
  *     frame) on usart_tx_queue. Nothing else reaches the wire.
  *   - fpga_usart_tx_task ("dvom_TX") takes one item, builds its frame in
- *     fpga.tx_frame, enables the TX interrupt and waits for the handler's
+ *     mlink.tx_frame, enables the TX interrupt and waits for the handler's
  *     signal that the frame is out.
  *   - USART2_IRQHandler sends the TX bytes and assembles received bytes into
  *     frames. A data frame goes to meter_rx_queue as a copied event; an echo
@@ -33,6 +33,8 @@
  */
 
 #include "fpga_internal.h"
+
+meter_link_state_t mlink;
 
 /* Times of the link. None of these is a measured limit of the chip; they are
  * the values the link has run with, named so that they are in one place. */
@@ -129,9 +131,9 @@ static void fpga_meter_reset_transport(void)
     if (usart_tx_queue != NULL) xQueueReset(usart_tx_queue);
     if (meter_rx_queue != NULL) xQueueReset(meter_rx_queue);
 
-    fpga.tx_index = 0;
-    fpga.rx_index = 0;
-    fpga.rx_frame_valid = false;
+    mlink.tx_index = 0;
+    mlink.rx_index = 0;
+    mlink.rx_frame_valid = false;
     (void)USART2->sts;
     (void)USART2->dt;
 
@@ -165,78 +167,78 @@ static void fpga_meter_reset_transport(void)
 
 static void fpga_record_tx_cmd(uint8_t cmd_hi, uint8_t cmd_lo)
 {
-    uint8_t idx = fpga.tx_cmd_history_head & 0x0F;
+    uint8_t idx = mlink.tx_cmd_history_head & 0x0F;
 
-    fpga.tx_cmd_hi_history[idx] = cmd_hi;
-    fpga.tx_cmd_lo_history[idx] = cmd_lo;
-    fpga.tx_cmd_history_head = (uint8_t)((idx + 1U) & 0x0F);
-    if (fpga.tx_cmd_history_count < 16U) {
-        fpga.tx_cmd_history_count++;
+    mlink.tx_cmd_hi_history[idx] = cmd_hi;
+    mlink.tx_cmd_lo_history[idx] = cmd_lo;
+    mlink.tx_cmd_history_head = (uint8_t)((idx + 1U) & 0x0F);
+    if (mlink.tx_cmd_history_count < 16U) {
+        mlink.tx_cmd_history_count++;
     }
 }
 
 static void fpga_record_tx_frame(const uint8_t *frame)
 {
-    uint8_t idx = fpga.tx_frame_history_head;
+    uint8_t idx = mlink.tx_frame_history_head;
 
-    memcpy((void *)fpga.last_tx_frame, frame, FPGA_TX_FRAME_SIZE);
-    memcpy((void *)fpga.tx_frame_history[idx], frame, FPGA_TX_FRAME_SIZE);
-    fpga.tx_frame_history_tx_count[idx] = fpga.tx_count;
-    fpga.tx_frame_history_head =
+    memcpy((void *)mlink.last_tx_frame, frame, FPGA_TX_FRAME_SIZE);
+    memcpy((void *)mlink.tx_frame_history[idx], frame, FPGA_TX_FRAME_SIZE);
+    mlink.tx_frame_history_tx_count[idx] = mlink.tx_count;
+    mlink.tx_frame_history_head =
         (uint8_t)((idx + 1U) % FPGA_TX_FRAME_HISTORY);
-    if (fpga.tx_frame_history_count < FPGA_TX_FRAME_HISTORY) {
-        fpga.tx_frame_history_count++;
+    if (mlink.tx_frame_history_count < FPGA_TX_FRAME_HISTORY) {
+        mlink.tx_frame_history_count++;
     }
 
     /* A second ring for every frame except the 0x0509 keepalive, which would
      * otherwise push the last selector and setup words out of the first. */
     if (frame[2] != 0x05U || frame[3] != FPGA_CMD_METER_START) {
-        idx = fpga.tx_control_frame_history_head;
-        memcpy((void *)fpga.tx_control_frame_history[idx], frame,
+        idx = mlink.tx_control_frame_history_head;
+        memcpy((void *)mlink.tx_control_frame_history[idx], frame,
                FPGA_TX_FRAME_SIZE);
-        fpga.tx_control_frame_history_tx_count[idx] = fpga.tx_count;
-        fpga.tx_control_frame_history_head =
+        mlink.tx_control_frame_history_tx_count[idx] = mlink.tx_count;
+        mlink.tx_control_frame_history_head =
             (uint8_t)((idx + 1U) % FPGA_TX_FRAME_HISTORY);
-        if (fpga.tx_control_frame_history_count < FPGA_TX_FRAME_HISTORY) {
-            fpga.tx_control_frame_history_count++;
+        if (mlink.tx_control_frame_history_count < FPGA_TX_FRAME_HISTORY) {
+            mlink.tx_control_frame_history_count++;
         }
     }
 }
 
 static void fpga_record_rx_raw_byte(uint8_t byte, uint8_t rx_index_before)
 {
-    uint8_t idx = fpga.rx_raw_history_head;
+    uint8_t idx = mlink.rx_raw_history_head;
 
-    fpga.rx_raw_history[idx] = byte;
-    fpga.rx_raw_history_tx_count[idx] = fpga.tx_count;
-    fpga.rx_raw_history_tx_index[idx] = fpga.tx_index;
-    fpga.rx_raw_history_rx_index[idx] = rx_index_before;
-    fpga.rx_raw_history_head =
+    mlink.rx_raw_history[idx] = byte;
+    mlink.rx_raw_history_tx_count[idx] = mlink.tx_count;
+    mlink.rx_raw_history_tx_index[idx] = mlink.tx_index;
+    mlink.rx_raw_history_rx_index[idx] = rx_index_before;
+    mlink.rx_raw_history_head =
         (uint8_t)((idx + 1U) % FPGA_RX_RAW_HISTORY);
-    if (fpga.rx_raw_history_count < FPGA_RX_RAW_HISTORY) {
-        fpga.rx_raw_history_count++;
+    if (mlink.rx_raw_history_count < FPGA_RX_RAW_HISTORY) {
+        mlink.rx_raw_history_count++;
     }
 }
 
 static void fpga_record_rx_data_frame(void)
 {
-    uint8_t idx = fpga.rx_frame_history_head;
+    uint8_t idx = mlink.rx_frame_history_head;
 
     /* Every complete data frame as the interrupt handler receives it, with
      * the link counters of that moment, including frames dvom_RX will skip. */
-    memcpy((void *)fpga.rx_frame_history[idx], (const void *)fpga.rx_frame,
+    memcpy((void *)mlink.rx_frame_history[idx], (const void *)mlink.rx_frame,
            FPGA_RX_FRAME_SIZE);
-    fpga.rx_history_frame_count[idx] = fpga.last_rx_frame_count;
-    fpga.rx_history_tx_count[idx] = fpga.last_rx_tx_count;
-    fpga.rx_history_echo_count[idx] = fpga.last_rx_echo_count;
-    fpga.rx_history_sequence_count[idx] = fpga.last_rx_mode_sequence_count;
-    fpga.rx_history_sequence_submode[idx] = fpga.last_rx_mode_sequence_submode;
-    fpga.rx_history_discard_remaining[idx] = fpga.last_rx_discard_remaining;
-    fpga.rx_history_transition_busy[idx] = fpga.last_rx_transition_busy;
-    fpga.rx_frame_history_head =
+    mlink.rx_history_frame_count[idx] = mlink.last_rx_frame_count;
+    mlink.rx_history_tx_count[idx] = mlink.last_rx_tx_count;
+    mlink.rx_history_echo_count[idx] = mlink.last_rx_echo_count;
+    mlink.rx_history_sequence_count[idx] = mlink.last_rx_mode_sequence_count;
+    mlink.rx_history_sequence_submode[idx] = mlink.last_rx_mode_sequence_submode;
+    mlink.rx_history_discard_remaining[idx] = mlink.last_rx_discard_remaining;
+    mlink.rx_history_transition_busy[idx] = mlink.last_rx_transition_busy;
+    mlink.rx_frame_history_head =
         (uint8_t)((idx + 1U) % FPGA_RX_FRAME_HISTORY);
-    if (fpga.rx_frame_history_count < FPGA_RX_FRAME_HISTORY) {
-        fpga.rx_frame_history_count++;
+    if (mlink.rx_frame_history_count < FPGA_RX_FRAME_HISTORY) {
+        mlink.rx_frame_history_count++;
     }
 }
 
@@ -285,39 +287,39 @@ static void fpga_record_meter_transition_snapshot(
     uint16_t tx_before,
     uint16_t frame_before)
 {
-    uint8_t idx = fpga.meter_transition_history_head;
+    uint8_t idx = mlink.meter_transition_history_head;
 
     /* One entry per full transition: the planned and the read-back
      * multiplexer pins, the words sent, and the TX and data frame counts
      * before and after the sequence. */
-    fpga.meter_transition_history_submode[idx] = submode;
-    fpga.meter_transition_history_config[idx] =
+    mlink.meter_transition_history_submode[idx] = submode;
+    mlink.meter_transition_history_config[idx] =
         plan->has_config_word ? plan->config_word : 0;
-    fpga.meter_transition_history_selector[idx] = plan->selector_word;
-    fpga.meter_transition_history_apply[idx] =
+    mlink.meter_transition_history_selector[idx] = plan->selector_word;
+    mlink.meter_transition_history_apply[idx] =
         plan->has_apply_word ? plan->apply_word : 0;
-    fpga.meter_transition_history_bank[idx] =
+    mlink.meter_transition_history_bank[idx] =
         plan->has_command_bank_prefix ? 1U : 0U;
-    fpga.meter_transition_history_bank_first[idx] =
+    mlink.meter_transition_history_bank_first[idx] =
         plan->has_command_bank_prefix ? plan->command_bank_first : 0U;
-    fpga.meter_transition_history_bank_second[idx] =
+    mlink.meter_transition_history_bank_second[idx] =
         plan->has_command_bank_prefix ? plan->command_bank_second : 0U;
-    fpga.meter_transition_history_probe[idx] =
+    mlink.meter_transition_history_probe[idx] =
         plan->has_probe_detect ?
         (uint16_t)((GPIOC->idt & (1U << 7)) ? 0x0507U : 0x050AU) : 0;
-    fpga.meter_transition_history_start[idx] = plan->start_word;
-    fpga.meter_transition_history_sequence_count[idx] =
-        fpga.meter_mode_sequence_count;
-    fpga.meter_transition_history_tx_before[idx] = tx_before;
-    fpga.meter_transition_history_tx_after[idx] = fpga.tx_count;
-    fpga.meter_transition_history_frame_before[idx] = frame_before;
-    fpga.meter_transition_history_frame_after[idx] = fpga.frame_count;
-    fpga.meter_transition_history_planned_gpio[idx] = planned_gpio;
-    fpga.meter_transition_history_actual_gpio[idx] = actual_gpio;
-    fpga.meter_transition_history_head =
+    mlink.meter_transition_history_start[idx] = plan->start_word;
+    mlink.meter_transition_history_sequence_count[idx] =
+        mlink.meter_mode_sequence_count;
+    mlink.meter_transition_history_tx_before[idx] = tx_before;
+    mlink.meter_transition_history_tx_after[idx] = mlink.tx_count;
+    mlink.meter_transition_history_frame_before[idx] = frame_before;
+    mlink.meter_transition_history_frame_after[idx] = mlink.frame_count;
+    mlink.meter_transition_history_planned_gpio[idx] = planned_gpio;
+    mlink.meter_transition_history_actual_gpio[idx] = actual_gpio;
+    mlink.meter_transition_history_head =
         (uint8_t)((idx + 1U) % FPGA_METER_TRANSITION_HISTORY);
-    if (fpga.meter_transition_history_count < FPGA_METER_TRANSITION_HISTORY) {
-        fpga.meter_transition_history_count++;
+    if (mlink.meter_transition_history_count < FPGA_METER_TRANSITION_HISTORY) {
+        mlink.meter_transition_history_count++;
     }
 }
 
@@ -330,41 +332,41 @@ static void fpga_arm_meter_first_rx_latch(
     /* Arm a one-shot latch: the interrupt handler keeps the first data frame
      * after this transition together with the transition's words and pins
      * (fpga_capture_meter_first_rx_latch). */
-    fpga.meter_first_rx_after_transition_valid = 0;
-    fpga.meter_first_rx_after_transition_submode = submode;
-    fpga.meter_first_rx_after_transition_seq = fpga.meter_mode_sequence_count;
-    fpga.meter_first_rx_after_transition_config =
+    mlink.meter_first_rx_after_transition_valid = 0;
+    mlink.meter_first_rx_after_transition_submode = submode;
+    mlink.meter_first_rx_after_transition_seq = mlink.meter_mode_sequence_count;
+    mlink.meter_first_rx_after_transition_config =
         plan->has_config_word ? plan->config_word : 0;
-    fpga.meter_first_rx_after_transition_selector = plan->selector_word;
-    fpga.meter_first_rx_after_transition_apply =
+    mlink.meter_first_rx_after_transition_selector = plan->selector_word;
+    mlink.meter_first_rx_after_transition_apply =
         plan->has_apply_word ? plan->apply_word : 0;
-    fpga.meter_first_rx_after_transition_probe =
+    mlink.meter_first_rx_after_transition_probe =
         plan->has_probe_detect ?
         (uint16_t)(0x0500U | fpga_probe_cmd_byte()) : 0;
-    fpga.meter_first_rx_after_transition_start = plan->start_word;
-    fpga.meter_first_rx_after_transition_planned_gpio = planned_gpio;
-    fpga.meter_first_rx_after_transition_actual_gpio = actual_gpio;
-    fpga.meter_first_rx_after_transition_h2_bytes = fpga.h2_bytes_sent;
-    fpga.meter_first_rx_after_transition_h2_done = fpga.h2_upload_done;
-    fpga.meter_first_rx_after_transition_armed = 1;
+    mlink.meter_first_rx_after_transition_start = plan->start_word;
+    mlink.meter_first_rx_after_transition_planned_gpio = planned_gpio;
+    mlink.meter_first_rx_after_transition_actual_gpio = actual_gpio;
+    mlink.meter_first_rx_after_transition_h2_bytes = fboot.h2_bytes_sent;
+    mlink.meter_first_rx_after_transition_h2_done = fboot.h2_upload_done;
+    mlink.meter_first_rx_after_transition_armed = 1;
 }
 
 static void fpga_capture_meter_first_rx_latch(void)
 {
-    if (fpga.meter_first_rx_after_transition_armed == 0) {
+    if (mlink.meter_first_rx_after_transition_armed == 0) {
         return;
     }
 
-    memcpy((void *)fpga.meter_first_rx_after_transition_frame,
-           (const void *)fpga.rx_frame, FPGA_RX_FRAME_SIZE);
-    fpga.meter_first_rx_after_transition_data = fpga.last_rx_frame_count;
-    fpga.meter_first_rx_after_transition_tx = fpga.last_rx_tx_count;
-    fpga.meter_first_rx_after_transition_echo = fpga.last_rx_echo_count;
-    fpga.meter_first_rx_after_transition_busy = fpga.last_rx_transition_busy;
-    fpga.meter_first_rx_after_transition_discard =
-        fpga.last_rx_discard_remaining;
-    fpga.meter_first_rx_after_transition_valid = 1;
-    fpga.meter_first_rx_after_transition_armed = 0;
+    memcpy((void *)mlink.meter_first_rx_after_transition_frame,
+           (const void *)mlink.rx_frame, FPGA_RX_FRAME_SIZE);
+    mlink.meter_first_rx_after_transition_data = mlink.last_rx_frame_count;
+    mlink.meter_first_rx_after_transition_tx = mlink.last_rx_tx_count;
+    mlink.meter_first_rx_after_transition_echo = mlink.last_rx_echo_count;
+    mlink.meter_first_rx_after_transition_busy = mlink.last_rx_transition_busy;
+    mlink.meter_first_rx_after_transition_discard =
+        mlink.last_rx_discard_remaining;
+    mlink.meter_first_rx_after_transition_valid = 1;
+    mlink.meter_first_rx_after_transition_armed = 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -398,16 +400,16 @@ static void meter_build_tx_frame(uint8_t *frame, uint8_t cmd_hi, uint8_t cmd_lo,
      */
     if (obey && meter_word_is_cal_wizard((uint16_t)(((uint16_t)cmd_hi << 8) | cmd_lo))) {
         obey = false;
-        fpga.meter_cal_word_refused++;
-        fpga.meter_cal_word_last = (uint16_t)(((uint16_t)cmd_hi << 8) | cmd_lo);
+        mlink.meter_cal_word_refused++;
+        mlink.meter_cal_word_last = (uint16_t)(((uint16_t)cmd_hi << 8) | cmd_lo);
     }
     memset(frame, 0, FPGA_TX_FRAME_SIZE);
     if (meter_tx_header_aa55 && obey) {
         frame[0] = 0xAAU;
         frame[1] = 0x55U;
         /* The word the chip may echo; the echo check compares against it. */
-        fpga.last_obeyed_tx_lo = cmd_lo;
-        fpga.last_obeyed_tx_valid = true;
+        mlink.last_obeyed_tx_lo = cmd_lo;
+        mlink.last_obeyed_tx_valid = true;
     }
     frame[2] = cmd_hi;
     frame[3] = cmd_lo;
@@ -644,12 +646,12 @@ bool fpga_debug_send_meter_boot_order(uint8_t submode, uint32_t delay_ms,
     /* Stock's wake words 0x0508, 0x0509 and the probe word (unobeyed), then
      * the submode's selector (obeyed) followed by delay_ms. The 0x0508 is
      * recorded in the apply-word field. */
-    fpga.meter_mode_sequence_count++;
-    fpga.meter_mode_sequence_submode = submode;
-    fpga.meter_mode_selector_word = plan.selector_word;
-    fpga.meter_mode_apply_word = 0x0508U;
-    fpga.meter_mode_probe_word = (uint16_t)(0x0500U | probe_cmd);
-    fpga.meter_mode_start_word = 0x0509U;
+    mlink.meter_mode_sequence_count++;
+    mlink.meter_mode_sequence_submode = submode;
+    mlink.meter_mode_selector_word = plan.selector_word;
+    mlink.meter_mode_apply_word = 0x0508U;
+    mlink.meter_mode_probe_word = (uint16_t)(0x0500U | probe_cmd);
+    mlink.meter_mode_start_word = 0x0509U;
 
     (void)meter_send_wake_words();
     fpga_wire_send_word(plan.selector_word, delay_ms);
@@ -717,18 +719,18 @@ bool fpga_debug_send_meter_pc11_timing(uint8_t submode,
 /* ═══════════════════════════════════════════════════════════════════
  * USART2 interrupt handler
  *
- *   TX: sends fpga.tx_frame (10 bytes, position in tx_index), then turns
+ *   TX: sends mlink.tx_frame (10 bytes, position in tx_index), then turns
  *       its own interrupt off.
  *   RX: finds a 5A A5 or AA 55 header and collects the rest of the frame
- *       in fpga.rx_buf.
+ *       in mlink.rx_buf.
  * ═══════════════════════════════════════════════════════════════════ */
 
 void USART2_IRQHandler(void)
 {
     /* TX: send next byte from frame buffer */
     if ((USART2->ctrl1 & USART_CTRL1_TDBEIEN) && (USART2->sts & USART_TDBE_FLAG)) {
-        if (fpga.tx_index < FPGA_TX_FRAME_SIZE) {
-            USART2->dt = fpga.tx_frame[fpga.tx_index++];
+        if (mlink.tx_index < FPGA_TX_FRAME_SIZE) {
+            USART2->dt = mlink.tx_frame[mlink.tx_index++];
         } else {
             /* All bytes handed to the USART: stop, and tell dvom_TX. */
             BaseType_t woken = pdFALSE;
@@ -740,91 +742,91 @@ void USART2_IRQHandler(void)
 
     /* RX: receive and assemble frame */
     if (USART2->sts & USART_RDBF_FLAG) {
-        fpga.rx_byte_count++;
+        mlink.rx_byte_count++;
         uint8_t byte = (uint8_t)USART2->dt;
-        uint8_t rx_index_before = fpga.rx_index;
+        uint8_t rx_index_before = mlink.rx_index;
 
         /* Every received byte, before any header check (diagnostic ring). */
         fpga_record_rx_raw_byte(byte, rx_index_before);
 
-        if (fpga.rx_index == 0) {
+        if (mlink.rx_index == 0) {
             /* Looking for frame header first byte */
             if (byte == FPGA_RX_DATA_HDR_0 || byte == FPGA_RX_ECHO_HDR_0) {
                 if (byte == FPGA_RX_DATA_HDR_0) {
-                    fpga.rx_sync_data_start_count++;
+                    mlink.rx_sync_data_start_count++;
                 } else {
-                    fpga.rx_sync_echo_start_count++;
+                    mlink.rx_sync_echo_start_count++;
                 }
-                fpga.rx_buf[0] = byte;
-                fpga.rx_index = 1;
+                mlink.rx_buf[0] = byte;
+                mlink.rx_index = 1;
             } else {
-                fpga.rx_sync_stray_count++;
+                mlink.rx_sync_stray_count++;
             }
-        } else if (fpga.rx_index == 1) {
+        } else if (mlink.rx_index == 1) {
             /* Validate header second byte */
-            if ((fpga.rx_buf[0] == FPGA_RX_DATA_HDR_0 && byte == FPGA_RX_DATA_HDR_1) ||
-                (fpga.rx_buf[0] == FPGA_RX_ECHO_HDR_0 && byte == FPGA_RX_ECHO_HDR_1)) {
-                if (fpga.rx_buf[0] == FPGA_RX_DATA_HDR_0) {
-                    fpga.rx_sync_data_header_count++;
+            if ((mlink.rx_buf[0] == FPGA_RX_DATA_HDR_0 && byte == FPGA_RX_DATA_HDR_1) ||
+                (mlink.rx_buf[0] == FPGA_RX_ECHO_HDR_0 && byte == FPGA_RX_ECHO_HDR_1)) {
+                if (mlink.rx_buf[0] == FPGA_RX_DATA_HDR_0) {
+                    mlink.rx_sync_data_header_count++;
                 } else {
-                    fpga.rx_sync_echo_header_count++;
+                    mlink.rx_sync_echo_header_count++;
                 }
-                fpga.rx_buf[1] = byte;
-                fpga.rx_index = 2;
+                mlink.rx_buf[1] = byte;
+                mlink.rx_index = 2;
             } else {
                 /* Invalid header: start over */
-                fpga.rx_sync_bad_second_count++;
-                fpga.rx_index = 0;
+                mlink.rx_sync_bad_second_count++;
+                mlink.rx_index = 0;
             }
         } else {
-            fpga.rx_buf[fpga.rx_index++] = byte;
+            mlink.rx_buf[mlink.rx_index++] = byte;
 
             /* Check for complete frame */
-            if (fpga.rx_buf[0] == FPGA_RX_DATA_HDR_0 &&
-                fpga.rx_index >= FPGA_RX_FRAME_SIZE) {
+            if (mlink.rx_buf[0] == FPGA_RX_DATA_HDR_0 &&
+                mlink.rx_index >= FPGA_RX_FRAME_SIZE) {
                 /*
                  * Drop a data frame that completes while a command frame is
                  * still being sent, as stock does (it checks the same TX byte
                  * index). Since a link reset sets tx_index to 0, this also
                  * drops every data frame until dvom_TX has sent one frame.
                  */
-                if (fpga.tx_index < FPGA_TX_FRAME_SIZE) {
-                    fpga.rx_data_tx_busy_drop_count++;
-                    fpga.rx_index = 0;
+                if (mlink.tx_index < FPGA_TX_FRAME_SIZE) {
+                    mlink.rx_data_tx_busy_drop_count++;
+                    mlink.rx_index = 0;
                     return;
                 }
 
                 /* Complete data frame (12 bytes). dvom_RX gets its own copy in
                  * the queue event, so a later frame cannot overwrite the bytes
-                 * before the task has parsed them. fpga.rx_frame keeps the
+                 * before the task has parsed them. mlink.rx_frame keeps the
                  * latest for diagnostics. */
                 fpga_meter_rx_event_t event;
-                memcpy((void *)fpga.rx_frame, (const void *)fpga.rx_buf,
+                memcpy((void *)mlink.rx_frame, (const void *)mlink.rx_buf,
                        FPGA_RX_FRAME_SIZE);
-                memcpy(event.frame, (const void *)fpga.rx_buf,
+                memcpy(event.frame, (const void *)mlink.rx_buf,
                        FPGA_RX_FRAME_SIZE);
-                fpga.rx_frame_valid = true;
-                fpga.frame_count++;
+                mlink.rx_frame_valid = true;
+                mlink.frame_count++;
                 /* The link state at this frame's arrival. dvom_RX uses
                  * transition_busy and mode_sequence_submode from the event;
                  * the rest is for diagnostics. */
-                fpga.last_rx_frame_count = fpga.frame_count;
-                fpga.last_rx_tx_count = fpga.tx_count;
-                fpga.last_rx_echo_count = fpga.echo_count;
-                fpga.last_rx_mode_sequence_count = fpga.meter_mode_sequence_count;
-                fpga.last_rx_mode_sequence_submode = fpga.meter_mode_sequence_submode;
-                fpga.last_rx_discard_remaining = meter_frame_discard_count;
-                fpga.last_rx_transition_busy = meter_transition_busy ? 1U : 0U;
-                event.frame_count = fpga.last_rx_frame_count;
-                event.tx_count = fpga.last_rx_tx_count;
-                event.echo_count = fpga.last_rx_echo_count;
-                event.mode_sequence_count = fpga.last_rx_mode_sequence_count;
-                event.mode_sequence_submode = fpga.last_rx_mode_sequence_submode;
-                event.discard_remaining = fpga.last_rx_discard_remaining;
-                event.transition_busy = fpga.last_rx_transition_busy;
+                mlink.last_rx_frame_count = mlink.frame_count;
+                mlink.last_rx_tx_count = mlink.tx_count;
+                mlink.last_rx_echo_count = mlink.echo_count;
+                mlink.last_rx_mode_sequence_count = mlink.meter_mode_sequence_count;
+                mlink.last_rx_mode_sequence_submode = mlink.meter_mode_sequence_submode;
+                mlink.last_rx_discard_remaining = meter_frame_discard_count;
+                mlink.last_rx_transition_busy = meter_transition_busy ? 1U : 0U;
+                event.frame_count = mlink.last_rx_frame_count;
+                event.tx_count = mlink.last_rx_tx_count;
+                event.echo_count = mlink.last_rx_echo_count;
+                event.mode_sequence_count = mlink.last_rx_mode_sequence_count;
+                event.mode_sequence_submode = mlink.last_rx_mode_sequence_submode;
+                event.discard_remaining = mlink.last_rx_discard_remaining;
+                event.transition_busy = mlink.last_rx_transition_busy;
                 fpga_record_rx_data_frame();
                 fpga_capture_meter_first_rx_latch();
-                fpga.rx_index = 0;
+                mlink.rx_index = 0;
 
                 /* To dvom_RX, once the scheduler runs. A full queue drops the frame. */
                 if (meter_rx_queue != NULL &&
@@ -835,8 +837,8 @@ void USART2_IRQHandler(void)
                     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
                 }
 
-            } else if (fpga.rx_buf[0] == FPGA_RX_ECHO_HDR_0 &&
-                       fpga.rx_index >= FPGA_RX_ECHO_FRAME_SIZE) {
+            } else if (mlink.rx_buf[0] == FPGA_RX_ECHO_HDR_0 &&
+                       mlink.rx_index >= FPGA_RX_ECHO_FRAME_SIZE) {
                 /*
                  * Complete echo frame (10 bytes). Valid, as stock checks it,
                  * when byte[3] is the low byte of the command and byte[7] is
@@ -844,17 +846,17 @@ void USART2_IRQHandler(void)
                  * sent: unobeyed frames get no echo. A valid echo is what
                  * confirms a selector (fpga_send_selector_confirmed).
                  */
-                memcpy((void *)fpga.last_rx_echo_frame, (const void *)fpga.rx_buf,
+                memcpy((void *)mlink.last_rx_echo_frame, (const void *)mlink.rx_buf,
                        FPGA_RX_ECHO_FRAME_SIZE);
-                if (fpga.last_obeyed_tx_valid &&
-                    fpga.rx_buf[3] == fpga.last_obeyed_tx_lo &&
-                    fpga.rx_buf[7] == 0xAAU) {
-                    fpga.rx_echo_valid_count++;
-                    fpga.echo_count++;
+                if (mlink.last_obeyed_tx_valid &&
+                    mlink.rx_buf[3] == mlink.last_obeyed_tx_lo &&
+                    mlink.rx_buf[7] == 0xAAU) {
+                    mlink.rx_echo_valid_count++;
+                    mlink.echo_count++;
                 } else {
-                    fpga.rx_echo_bad_count++;
+                    mlink.rx_echo_bad_count++;
                 }
-                fpga.rx_index = 0;
+                mlink.rx_index = 0;
             }
         }
     }
@@ -883,14 +885,14 @@ void fpga_usart_tx_task(void *pv)
         if (item.kind == METER_TX_RAW) {
             memcpy(frame, item.bytes, FPGA_TX_FRAME_SIZE);
         } else {
-            fpga.tx_count++;
+            mlink.tx_count++;
             fpga_record_tx_cmd(item.bytes[0], item.bytes[1]);
             meter_build_tx_frame(frame, item.bytes[0], item.bytes[1],
                                  item.kind == METER_TX_WORD_OBEYED);
         }
-        fpga.tx_index = 0;
-        memcpy((void *)fpga.tx_frame, frame, FPGA_TX_FRAME_SIZE);
-        fpga_record_tx_frame((const uint8_t *)fpga.tx_frame);
+        mlink.tx_index = 0;
+        memcpy((void *)mlink.tx_frame, frame, FPGA_TX_FRAME_SIZE);
+        fpga_record_tx_frame((const uint8_t *)mlink.tx_frame);
 
         (void)ulTaskNotifyTake(pdTRUE, 0);              /* forget an abandoned frame's signal */
         USART2->ctrl1 |= USART_CTRL1_TDBEIEN;           /* the handler sends the 10 bytes */
@@ -926,7 +928,7 @@ void fpga_usart_rx_task(void *pv)
         if (fpga_meter_submode_is_valid(event.mode_sequence_submode)) {
             parse_submode = event.mode_sequence_submode;
         }
-        meter_data_set_function_confirmed(fpga_meter_soc_live() && fpga.meter_selector_confirmed);
+        meter_data_set_function_confirmed(fpga_meter_soc_live() && mlink.meter_selector_confirmed);
         meter_data_process_frame(event.frame, parse_submode);
     }
 }
@@ -1104,7 +1106,7 @@ static bool meter_link_function_covered(uint8_t submode)
 {
     if (meter_mode_request >= 0) return true;                       /* the newest request wins */
     if (meter_transition_busy) return meter_transition_target == submode;
-    return fpga_meter_soc_live() && fpga.meter_mode_sequence_submode == submode;
+    return fpga_meter_soc_live() && mlink.meter_mode_sequence_submode == submode;
 }
 
 void fpga_meter_link_set(bool on)
@@ -1219,20 +1221,20 @@ BaseType_t fpga_send_cmd_unobeyed(uint8_t cmd_high, uint8_t cmd_low)
 
 /* Wait until a data frame has arrived since frame_before, up to the
  * timeout, with an unobeyed keepalive every 250 ms; then settle. Leaves the
- * wake time in fpga.meter_soc_wake_ms (0xFFFF: timed out). */
+ * wake time in mlink.meter_soc_wake_ms (0xFFFF: timed out). */
 static void fpga_meter_wait_for_soc(uint16_t frame_before)
 {
     uint32_t waited = 0;
     uint32_t since_keepalive = 0;
 
-    fpga.meter_soc_wake_ms = 0xFFFFu;  /* timeout until proven otherwise */
+    mlink.meter_soc_wake_ms = 0xFFFFu;  /* timeout until proven otherwise */
     while (waited < FPGA_METER_SOC_WAKE_TIMEOUT_MS) {
-        if (fpga.frame_count != frame_before) {
-            fpga.meter_soc_wake_ms = (uint16_t)waited;
+        if (mlink.frame_count != frame_before) {
+            mlink.meter_soc_wake_ms = (uint16_t)waited;
             break;
         }
         if (waited + FPGA_METER_SOC_WAKE_POLL_MS >= FPGA_METER_SOC_WAKE_TIMEOUT_MS) {
-            fpga.meter_soc_wake_timeouts++;
+            mlink.meter_soc_wake_timeouts++;
         }
         if (since_keepalive >= METER_KEEPALIVE_PERIOD_MS) {
             (void)fpga_send_cmd_unobeyed(0x05, FPGA_CMD_METER_START);
@@ -1247,29 +1249,29 @@ static void fpga_meter_wait_for_soc(uint16_t frame_before)
 
 /* Send the selector obeyed and wait for a valid echo; up to
  * FPGA_METER_SELECTOR_TRIES tries. Leaves the outcome in
- * fpga.meter_selector_attempts and fpga.meter_selector_confirmed. */
+ * mlink.meter_selector_attempts and mlink.meter_selector_confirmed. */
 static void fpga_send_selector_confirmed(uint16_t word, uint32_t settle_ms)
 {
-    fpga.meter_selector_attempts = 0;
-    fpga.meter_selector_confirmed = 0;
+    mlink.meter_selector_attempts = 0;
+    mlink.meter_selector_confirmed = 0;
     for (uint8_t attempt = 0; attempt < FPGA_METER_SELECTOR_TRIES; attempt++) {
-        uint16_t echo_before = fpga.rx_echo_valid_count;
+        uint16_t echo_before = mlink.rx_echo_valid_count;
         uint32_t waited = 0;
 
-        fpga.meter_selector_attempts++;
+        mlink.meter_selector_attempts++;
         fpga_wire_send_word(word, 0);
         while (waited < FPGA_METER_SELECTOR_ECHO_WAIT_MS) {
-            if (fpga.rx_echo_valid_count != echo_before) {
-                fpga.meter_selector_confirmed = 1;
+            if (mlink.rx_echo_valid_count != echo_before) {
+                mlink.meter_selector_confirmed = 1;
                 break;
             }
             fpga_scope_delay_ms(FPGA_METER_SOC_WAKE_POLL_MS);
             waited += FPGA_METER_SOC_WAKE_POLL_MS;
         }
-        if (fpga.meter_selector_confirmed) break;
+        if (mlink.meter_selector_confirmed) break;
     }
-    if (!fpga.meter_selector_confirmed) {
-        fpga.meter_selector_unconfirmed_total++;
+    if (!mlink.meter_selector_confirmed) {
+        mlink.meter_selector_unconfirmed_total++;
     }
     fpga_scope_delay_ms(settle_ms);
 }
@@ -1287,23 +1289,23 @@ static void fpga_send_meter_mode_sequence(uint8_t submode)
     uint16_t probe_word = (uint16_t)(0x0500U | fpga_probe_cmd_byte());
 
     if (!fpga_meter_submode_is_valid(submode)) {
-        fpga.meter_mode_sequence_count++;
-        fpga.meter_mode_sequence_submode = submode;
-        fpga.meter_mode_config_word = 0;
-        fpga.meter_mode_selector_word = FPGA_METER_INVALID_SELECTOR_WORD;
-        fpga.meter_mode_apply_word = 0;
-        fpga.meter_mode_probe_word = 0;
-        fpga.meter_mode_start_word = 0;
+        mlink.meter_mode_sequence_count++;
+        mlink.meter_mode_sequence_submode = submode;
+        mlink.meter_mode_config_word = 0;
+        mlink.meter_mode_selector_word = FPGA_METER_INVALID_SELECTOR_WORD;
+        mlink.meter_mode_apply_word = 0;
+        mlink.meter_mode_probe_word = 0;
+        mlink.meter_mode_start_word = 0;
         return;
     }
 
-    fpga.meter_mode_sequence_count++;
-    fpga.meter_mode_sequence_submode = submode;
-    fpga.meter_mode_config_word = 0;
-    fpga.meter_mode_selector_word = plan.selector_word;
-    fpga.meter_mode_apply_word = plan.apply_word;  /* always 0, see the plan */
-    fpga.meter_mode_probe_word = plan.has_probe_detect ? probe_word : 0;
-    fpga.meter_mode_start_word = plan.start_word;
+    mlink.meter_mode_sequence_count++;
+    mlink.meter_mode_sequence_submode = submode;
+    mlink.meter_mode_config_word = 0;
+    mlink.meter_mode_selector_word = plan.selector_word;
+    mlink.meter_mode_apply_word = plan.apply_word;  /* always 0, see the plan */
+    mlink.meter_mode_probe_word = plan.has_probe_detect ? probe_word : 0;
+    mlink.meter_mode_start_word = plan.start_word;
     /*
      * The words of a transition, from the plan (fpga_meter_plan.c): the bank
      * prefix 0x00 0x00, 0x00 0x2C (submodes 7 continuity and 8 diode), the
@@ -1316,7 +1318,7 @@ static void fpga_send_meter_mode_sequence(uint8_t submode)
         fpga_timed_send_cmd(0x00, plan.command_bank_second, plan.settle_ms);
     }
     if (plan.has_config_word) {
-        fpga.meter_mode_config_word = plan.config_word;
+        mlink.meter_mode_config_word = plan.config_word;
         fpga_timed_send_cmd((uint8_t)(plan.config_word >> 8),
                             (uint8_t)(plan.config_word & 0x00FFU),
                             plan.settle_ms);
@@ -1361,8 +1363,8 @@ static void fpga_apply_meter_transition(uint8_t submode, bool wake_preamble)
     }
     (void)fpga_meter_mux_gpio_state_for_submode(submode, &planned_mux);
     planned_gpio = fpga_meter_mux_gpio_mask_from_state(&planned_mux);
-    tx_before = fpga.tx_count;
-    frame_before = fpga.frame_count;
+    tx_before = mlink.tx_count;
+    frame_before = mlink.frame_count;
     fpga_set_meter_frontend_for_submode(submode);
     actual_gpio = fpga_meter_mux_gpio_mask_live();
     fpga_scope_delay_ms(plan.settle_ms);
@@ -1374,8 +1376,8 @@ static void fpga_apply_meter_transition(uint8_t submode, bool wake_preamble)
     fpga_meter_discard_next_frames(plan.discard_frames);
     /* The chip woke and echoed the selector: later function changes can be
      * a fast switch. */
-    meter_soc_live_flag = (fpga.meter_soc_wake_ms != 0xFFFFu) &&
-                          fpga.meter_selector_confirmed;
+    meter_soc_live_flag = (mlink.meter_soc_wake_ms != 0xFFFFu) &&
+                          mlink.meter_selector_confirmed;
     meter_transition_busy = false;
 }
 
@@ -1418,23 +1420,23 @@ static bool fpga_meter_fast_switch(uint8_t submode)
     meter_transition_target = submode;
     meter_transition_busy = true;
     meter_data_invalidate(submode);
-    fpga.meter_mode_sequence_count++;
-    fpga.meter_mode_sequence_submode = submode;
-    fpga.meter_mode_selector_word = plan.selector_word;
-    fpga.meter_mode_config_word = 0;
-    fpga.meter_mode_apply_word = 0;
-    fpga.meter_mode_probe_word = 0;
-    fpga.meter_mode_start_word = 0;
+    mlink.meter_mode_sequence_count++;
+    mlink.meter_mode_sequence_submode = submode;
+    mlink.meter_mode_selector_word = plan.selector_word;
+    mlink.meter_mode_config_word = 0;
+    mlink.meter_mode_apply_word = 0;
+    mlink.meter_mode_probe_word = 0;
+    mlink.meter_mode_start_word = 0;
 
     fpga_send_selector_confirmed(plan.selector_word, 0);
 
-    if (!fpga.meter_selector_confirmed) {
-        fpga.meter_fast_fallback_count++;
+    if (!mlink.meter_selector_confirmed) {
+        mlink.meter_fast_fallback_count++;
         meter_transition_busy = false;
         return false;
     }
     fpga_meter_discard_next_frames(plan.discard_frames);
-    fpga.meter_fast_switch_count++;
+    mlink.meter_fast_switch_count++;
     meter_transition_busy = false;
     return true;
 }

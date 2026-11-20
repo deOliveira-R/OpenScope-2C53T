@@ -38,9 +38,6 @@ fpga_state_t fpga;
 
 void fpga_init(void)
 {
-    /* Clear state */
-    memset(&fpga, 0, sizeof(fpga));
-
     /* ---------------------------------------------------------------
      * Step 1: turn JTAG off, keep SWD. At reset PB3 is JTDO, PB4 NJTRST
      * and PA15 JTDI; this frees them for SPI3 and the relays.

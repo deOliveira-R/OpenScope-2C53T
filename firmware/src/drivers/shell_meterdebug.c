@@ -154,18 +154,18 @@ void cmd_meter_hdr(const char *args)
         "  transition: wake_ms=%u tries=%u ok=%u | unconfirmed=%u wake_timeouts=%u\r\n",
         aa55 ? "AA 55 (default)" : "00 00 (legacy, negative control)",
         aa55 ? 0xAA : 0x00, aa55 ? 0x55 : 0x00,
-        (unsigned)fpga.tx_count, (unsigned)fpga.rx_byte_count,
-        (unsigned)fpga.frame_count,
-        (unsigned)fpga.rx_sync_echo_start_count,
-        (unsigned)fpga.rx_sync_echo_header_count,
-        (unsigned)fpga.rx_echo_valid_count,
-        (unsigned)fpga.rx_echo_bad_count,
-        (unsigned)fpga.echo_count,
-        (unsigned)fpga.meter_soc_wake_ms,
-        (unsigned)fpga.meter_selector_attempts,
-        (unsigned)fpga.meter_selector_confirmed,
-        (unsigned)fpga.meter_selector_unconfirmed_total,
-        (unsigned)fpga.meter_soc_wake_timeouts);
+        (unsigned)mlink.tx_count, (unsigned)mlink.rx_byte_count,
+        (unsigned)mlink.frame_count,
+        (unsigned)mlink.rx_sync_echo_start_count,
+        (unsigned)mlink.rx_sync_echo_header_count,
+        (unsigned)mlink.rx_echo_valid_count,
+        (unsigned)mlink.rx_echo_bad_count,
+        (unsigned)mlink.echo_count,
+        (unsigned)mlink.meter_soc_wake_ms,
+        (unsigned)mlink.meter_selector_attempts,
+        (unsigned)mlink.meter_selector_confirmed,
+        (unsigned)mlink.meter_selector_unconfirmed_total,
+        (unsigned)mlink.meter_soc_wake_timeouts);
 }
 
 void cmd_meter_fast(const char *args)
@@ -175,8 +175,8 @@ void cmd_meter_fast(const char *args)
     else if (*args) { usb_send_str("usage: meter fast [on|off]\r\n"); return; }
     usb_debug_printf("meter fast switching: %s (soc_live=%u, fast=%u fallbacks=%u)\r\n",
                      onoff(fpga_meter_fast_switch_get()), fpga_meter_soc_live() ? 1U : 0U,
-                     (unsigned)fpga.meter_fast_switch_count,
-                     (unsigned)fpga.meter_fast_fallback_count);
+                     (unsigned)mlink.meter_fast_switch_count,
+                     (unsigned)mlink.meter_fast_fallback_count);
 }
 
 void cmd_meter_keepalive(const char *args)
@@ -187,7 +187,7 @@ void cmd_meter_keepalive(const char *args)
     usb_debug_printf("meter keepalive: %s  data_frames=%u tx_count=%u (read twice, 2 s apart,"
                      " to see whether frames keep coming)\r\n",
                      onoff(fpga_meter_keepalive_get()),
-                     (unsigned)fpga.frame_count, (unsigned)fpga.tx_count);
+                     (unsigned)mlink.frame_count, (unsigned)mlink.tx_count);
 }
 
 /* The meter's debug overlay. Short SAVE used to toggle it; since UI round 1
@@ -480,9 +480,9 @@ void cmd_meter_autoscan(const char *args)
                          meter_reading.bcd_value,
                          (unsigned)meter_reading.decimal_pos,
                          (unsigned)meter_reading.dbg_frame[8],
-                         (unsigned)fpga.meter_mode_sequence_count,
-                         (unsigned)fpga.meter_mode_selector_word,
-                         (unsigned)fpga.meter_mode_apply_word);
+                         (unsigned)mlink.meter_mode_sequence_count,
+                         (unsigned)mlink.meter_mode_selector_word,
+                         (unsigned)mlink.meter_mode_apply_word);
         if (score > best_score) {
             best_score = score;
             best_mode = submode;
@@ -683,123 +683,123 @@ void cmd_meter_trace(void)
     uint32_t h2_rx_ff_count;
     uint32_t h2_rx_other_count;
     uint8_t h2_close_rx_len;
-    uint8_t h2_close_rx[sizeof(fpga.h2_close_rx)];
+    uint8_t h2_close_rx[sizeof(fboot.h2_close_rx)];
     const factory_cal_t *factory_cal = flash_fs_factory_cal();
 
     taskENTER_CRITICAL();
-    memcpy(producer_frame, (const void *)fpga.rx_frame, FPGA_RX_FRAME_SIZE);
-    rx_sync_data_start = fpga.rx_sync_data_start_count;
-    rx_sync_echo_start = fpga.rx_sync_echo_start_count;
-    rx_sync_data_header = fpga.rx_sync_data_header_count;
-    rx_sync_echo_header = fpga.rx_sync_echo_header_count;
-    rx_sync_bad_second = fpga.rx_sync_bad_second_count;
-    rx_sync_stray = fpga.rx_sync_stray_count;
-    memcpy(last_echo_frame, (const void *)fpga.last_rx_echo_frame,
+    memcpy(producer_frame, (const void *)mlink.rx_frame, FPGA_RX_FRAME_SIZE);
+    rx_sync_data_start = mlink.rx_sync_data_start_count;
+    rx_sync_echo_start = mlink.rx_sync_echo_start_count;
+    rx_sync_data_header = mlink.rx_sync_data_header_count;
+    rx_sync_echo_header = mlink.rx_sync_echo_header_count;
+    rx_sync_bad_second = mlink.rx_sync_bad_second_count;
+    rx_sync_stray = mlink.rx_sync_stray_count;
+    memcpy(last_echo_frame, (const void *)mlink.last_rx_echo_frame,
            sizeof(last_echo_frame));
-    rxraw_count = fpga.rx_raw_history_count;
+    rxraw_count = mlink.rx_raw_history_count;
     if (rxraw_count > FPGA_RX_RAW_HISTORY) {
         rxraw_count = FPGA_RX_RAW_HISTORY;
     }
     for (uint8_t n = 0; n < rxraw_count; n++) {
-        uint8_t idx = (uint8_t)((fpga.rx_raw_history_head +
+        uint8_t idx = (uint8_t)((mlink.rx_raw_history_head +
                                  FPGA_RX_RAW_HISTORY - 1U - n) %
                                 FPGA_RX_RAW_HISTORY);
-        rxraw_byte[n] = fpga.rx_raw_history[idx];
-        rxraw_tx[n] = fpga.rx_raw_history_tx_count[idx];
-        rxraw_tx_index[n] = fpga.rx_raw_history_tx_index[idx];
-        rxraw_rx_index[n] = fpga.rx_raw_history_rx_index[idx];
+        rxraw_byte[n] = mlink.rx_raw_history[idx];
+        rxraw_tx[n] = mlink.rx_raw_history_tx_count[idx];
+        rxraw_tx_index[n] = mlink.rx_raw_history_tx_index[idx];
+        rxraw_rx_index[n] = mlink.rx_raw_history_rx_index[idx];
     }
-    h2_rx_00_count = fpga.h2_rx_00_count;
-    h2_rx_ff_count = fpga.h2_rx_ff_count;
-    h2_rx_other_count = fpga.h2_rx_other_count;
-    h2_close_rx_len = fpga.h2_close_rx_len;
-    memcpy(h2_close_rx, (const void *)fpga.h2_close_rx, sizeof(h2_close_rx));
-    first_rx_valid = fpga.meter_first_rx_after_transition_valid;
-    first_rx_armed = fpga.meter_first_rx_after_transition_armed;
-    first_rx_submode = fpga.meter_first_rx_after_transition_submode;
-    first_rx_seq = fpga.meter_first_rx_after_transition_seq;
-    first_rx_config = fpga.meter_first_rx_after_transition_config;
-    first_rx_selector = fpga.meter_first_rx_after_transition_selector;
-    first_rx_apply = fpga.meter_first_rx_after_transition_apply;
-    first_rx_probe = fpga.meter_first_rx_after_transition_probe;
-    first_rx_start = fpga.meter_first_rx_after_transition_start;
+    h2_rx_00_count = fboot.h2_rx_00_count;
+    h2_rx_ff_count = fboot.h2_rx_ff_count;
+    h2_rx_other_count = fboot.h2_rx_other_count;
+    h2_close_rx_len = fboot.h2_close_rx_len;
+    memcpy(h2_close_rx, (const void *)fboot.h2_close_rx, sizeof(h2_close_rx));
+    first_rx_valid = mlink.meter_first_rx_after_transition_valid;
+    first_rx_armed = mlink.meter_first_rx_after_transition_armed;
+    first_rx_submode = mlink.meter_first_rx_after_transition_submode;
+    first_rx_seq = mlink.meter_first_rx_after_transition_seq;
+    first_rx_config = mlink.meter_first_rx_after_transition_config;
+    first_rx_selector = mlink.meter_first_rx_after_transition_selector;
+    first_rx_apply = mlink.meter_first_rx_after_transition_apply;
+    first_rx_probe = mlink.meter_first_rx_after_transition_probe;
+    first_rx_start = mlink.meter_first_rx_after_transition_start;
     first_rx_planned_gpio =
-        fpga.meter_first_rx_after_transition_planned_gpio;
-    first_rx_actual_gpio = fpga.meter_first_rx_after_transition_actual_gpio;
-    first_rx_data = fpga.meter_first_rx_after_transition_data;
-    first_rx_tx = fpga.meter_first_rx_after_transition_tx;
-    first_rx_echo = fpga.meter_first_rx_after_transition_echo;
-    first_rx_busy = fpga.meter_first_rx_after_transition_busy;
-    first_rx_discard = fpga.meter_first_rx_after_transition_discard;
+        mlink.meter_first_rx_after_transition_planned_gpio;
+    first_rx_actual_gpio = mlink.meter_first_rx_after_transition_actual_gpio;
+    first_rx_data = mlink.meter_first_rx_after_transition_data;
+    first_rx_tx = mlink.meter_first_rx_after_transition_tx;
+    first_rx_echo = mlink.meter_first_rx_after_transition_echo;
+    first_rx_busy = mlink.meter_first_rx_after_transition_busy;
+    first_rx_discard = mlink.meter_first_rx_after_transition_discard;
     memcpy(first_rx_frame,
-           (const void *)fpga.meter_first_rx_after_transition_frame,
+           (const void *)mlink.meter_first_rx_after_transition_frame,
            FPGA_RX_FRAME_SIZE);
-    first_rx_h2_bytes = fpga.meter_first_rx_after_transition_h2_bytes;
-    first_rx_h2_done = fpga.meter_first_rx_after_transition_h2_done;
-    rxh_count = fpga.rx_frame_history_count;
+    first_rx_h2_bytes = mlink.meter_first_rx_after_transition_h2_bytes;
+    first_rx_h2_done = mlink.meter_first_rx_after_transition_h2_done;
+    rxh_count = mlink.rx_frame_history_count;
     if (rxh_count > FPGA_RX_FRAME_HISTORY) rxh_count = FPGA_RX_FRAME_HISTORY;
     for (uint8_t n = 0; n < rxh_count; n++) {
-        uint8_t idx = (uint8_t)((fpga.rx_frame_history_head +
+        uint8_t idx = (uint8_t)((mlink.rx_frame_history_head +
                                  FPGA_RX_FRAME_HISTORY - 1U - n) %
                                 FPGA_RX_FRAME_HISTORY);
-        memcpy(rxh_frames[n], (const void *)fpga.rx_frame_history[idx],
+        memcpy(rxh_frames[n], (const void *)mlink.rx_frame_history[idx],
                FPGA_RX_FRAME_SIZE);
-        rxh_data[n] = fpga.rx_history_frame_count[idx];
-        rxh_tx[n] = fpga.rx_history_tx_count[idx];
-        rxh_echo[n] = fpga.rx_history_echo_count[idx];
-        rxh_seq[n] = fpga.rx_history_sequence_count[idx];
-        rxh_seq_sub[n] = fpga.rx_history_sequence_submode[idx];
-        rxh_busy[n] = fpga.rx_history_transition_busy[idx];
-        rxh_discard[n] = fpga.rx_history_discard_remaining[idx];
+        rxh_data[n] = mlink.rx_history_frame_count[idx];
+        rxh_tx[n] = mlink.rx_history_tx_count[idx];
+        rxh_echo[n] = mlink.rx_history_echo_count[idx];
+        rxh_seq[n] = mlink.rx_history_sequence_count[idx];
+        rxh_seq_sub[n] = mlink.rx_history_sequence_submode[idx];
+        rxh_busy[n] = mlink.rx_history_transition_busy[idx];
+        rxh_discard[n] = mlink.rx_history_discard_remaining[idx];
     }
-    txh_count = fpga.tx_frame_history_count;
+    txh_count = mlink.tx_frame_history_count;
     if (txh_count > FPGA_TX_FRAME_HISTORY) {
         txh_count = FPGA_TX_FRAME_HISTORY;
     }
     for (uint8_t n = 0; n < txh_count; n++) {
-        uint8_t idx = (uint8_t)((fpga.tx_frame_history_head +
+        uint8_t idx = (uint8_t)((mlink.tx_frame_history_head +
                                  FPGA_TX_FRAME_HISTORY - 1U - n) %
                                 FPGA_TX_FRAME_HISTORY);
-        memcpy(txh_frames[n], (const void *)fpga.tx_frame_history[idx],
+        memcpy(txh_frames[n], (const void *)mlink.tx_frame_history[idx],
                FPGA_TX_FRAME_SIZE);
-        txh_tx[n] = fpga.tx_frame_history_tx_count[idx];
+        txh_tx[n] = mlink.tx_frame_history_tx_count[idx];
     }
-    txc_count = fpga.tx_control_frame_history_count;
+    txc_count = mlink.tx_control_frame_history_count;
     if (txc_count > FPGA_TX_FRAME_HISTORY) {
         txc_count = FPGA_TX_FRAME_HISTORY;
     }
     for (uint8_t n = 0; n < txc_count; n++) {
-        uint8_t idx = (uint8_t)((fpga.tx_control_frame_history_head +
+        uint8_t idx = (uint8_t)((mlink.tx_control_frame_history_head +
                                  FPGA_TX_FRAME_HISTORY - 1U - n) %
                                 FPGA_TX_FRAME_HISTORY);
-        memcpy(txc_frames[n], (const void *)fpga.tx_control_frame_history[idx],
+        memcpy(txc_frames[n], (const void *)mlink.tx_control_frame_history[idx],
                FPGA_TX_FRAME_SIZE);
-        txc_tx[n] = fpga.tx_control_frame_history_tx_count[idx];
+        txc_tx[n] = mlink.tx_control_frame_history_tx_count[idx];
     }
-    mth_count = fpga.meter_transition_history_count;
+    mth_count = mlink.meter_transition_history_count;
     if (mth_count > FPGA_METER_TRANSITION_HISTORY) {
         mth_count = FPGA_METER_TRANSITION_HISTORY;
     }
     for (uint8_t n = 0; n < mth_count; n++) {
-        uint8_t idx = (uint8_t)((fpga.meter_transition_history_head +
+        uint8_t idx = (uint8_t)((mlink.meter_transition_history_head +
                                  FPGA_METER_TRANSITION_HISTORY - 1U - n) %
                                 FPGA_METER_TRANSITION_HISTORY);
-        mth_submode[n] = fpga.meter_transition_history_submode[idx];
-        mth_config[n] = fpga.meter_transition_history_config[idx];
-        mth_selector[n] = fpga.meter_transition_history_selector[idx];
-        mth_apply[n] = fpga.meter_transition_history_apply[idx];
-        mth_bank[n] = fpga.meter_transition_history_bank[idx];
-        mth_bank_first[n] = fpga.meter_transition_history_bank_first[idx];
-        mth_bank_second[n] = fpga.meter_transition_history_bank_second[idx];
-        mth_probe[n] = fpga.meter_transition_history_probe[idx];
-        mth_start[n] = fpga.meter_transition_history_start[idx];
-        mth_seq[n] = fpga.meter_transition_history_sequence_count[idx];
-        mth_tx_before[n] = fpga.meter_transition_history_tx_before[idx];
-        mth_tx_after[n] = fpga.meter_transition_history_tx_after[idx];
-        mth_frame_before[n] = fpga.meter_transition_history_frame_before[idx];
-        mth_frame_after[n] = fpga.meter_transition_history_frame_after[idx];
-        mth_planned_gpio[n] = fpga.meter_transition_history_planned_gpio[idx];
-        mth_actual_gpio[n] = fpga.meter_transition_history_actual_gpio[idx];
+        mth_submode[n] = mlink.meter_transition_history_submode[idx];
+        mth_config[n] = mlink.meter_transition_history_config[idx];
+        mth_selector[n] = mlink.meter_transition_history_selector[idx];
+        mth_apply[n] = mlink.meter_transition_history_apply[idx];
+        mth_bank[n] = mlink.meter_transition_history_bank[idx];
+        mth_bank_first[n] = mlink.meter_transition_history_bank_first[idx];
+        mth_bank_second[n] = mlink.meter_transition_history_bank_second[idx];
+        mth_probe[n] = mlink.meter_transition_history_probe[idx];
+        mth_start[n] = mlink.meter_transition_history_start[idx];
+        mth_seq[n] = mlink.meter_transition_history_sequence_count[idx];
+        mth_tx_before[n] = mlink.meter_transition_history_tx_before[idx];
+        mth_tx_after[n] = mlink.meter_transition_history_tx_after[idx];
+        mth_frame_before[n] = mlink.meter_transition_history_frame_before[idx];
+        mth_frame_after[n] = mlink.meter_transition_history_frame_after[idx];
+        mth_planned_gpio[n] = mlink.meter_transition_history_planned_gpio[idx];
+        mth_actual_gpio[n] = mlink.meter_transition_history_actual_gpio[idx];
     }
     taskEXIT_CRITICAL();
 
@@ -818,20 +818,20 @@ void cmd_meter_trace(void)
                      snap.update_count);
     usb_debug_printf("producer counts tx=%u rx_bytes=%u data=%u echo=%u "
                      "rx_valid=%u\r\n",
-                     fpga.tx_count,
-                     fpga.rx_byte_count,
-                     fpga.frame_count,
-                     fpga.echo_count,
-                     fpga.rx_frame_valid ? 1U : 0U);
+                     mlink.tx_count,
+                     mlink.rx_byte_count,
+                     mlink.frame_count,
+                     mlink.echo_count,
+                     mlink.rx_frame_valid ? 1U : 0U);
     usb_debug_printf("producer_last_rx data=%u tx=%u echo=%u seq=%u "
                      "seq_sub=%u busy=%u discard=%u\r\n",
-                     fpga.last_rx_frame_count,
-                     fpga.last_rx_tx_count,
-                     fpga.last_rx_echo_count,
-                     fpga.last_rx_mode_sequence_count,
-                     (unsigned)fpga.last_rx_mode_sequence_submode,
-                     (unsigned)fpga.last_rx_transition_busy,
-                     (unsigned)fpga.last_rx_discard_remaining);
+                     mlink.last_rx_frame_count,
+                     mlink.last_rx_tx_count,
+                     mlink.last_rx_echo_count,
+                     mlink.last_rx_mode_sequence_count,
+                     (unsigned)mlink.last_rx_mode_sequence_submode,
+                     (unsigned)mlink.last_rx_transition_busy,
+                     (unsigned)mlink.last_rx_discard_remaining);
     usb_debug_printf("rx_sync data_start=%u echo_start=%u data_hdr=%u "
                      "echo_hdr=%u bad_second=%u stray=%u "
                      "data_tx_busy_drop=%u echo_valid=%u echo_bad=%u\r\n",
@@ -841,9 +841,9 @@ void cmd_meter_trace(void)
                      rx_sync_echo_header,
                      rx_sync_bad_second,
                      rx_sync_stray,
-                     fpga.rx_data_tx_busy_drop_count,
-                     fpga.rx_echo_valid_count,
-                     fpga.rx_echo_bad_count);
+                     mlink.rx_data_tx_busy_drop_count,
+                     mlink.rx_echo_valid_count,
+                     mlink.rx_echo_bad_count);
     usb_debug_printf("plan stock_mode=%u raw_low=%02X family=%u mux=%u "
                      "portc_porte=%u porta_portb=%u settle_ms=%u discard=%u "
                      "bank=%u/%02X/%02X\r\n",
@@ -868,15 +868,15 @@ void cmd_meter_trace(void)
                      plan.has_apply_word ? 1U : 0U,
                      (unsigned)plan_probe_word,
                      (unsigned)plan.start_word,
-                     (unsigned)fpga.meter_mode_sequence_count,
-                     (unsigned)fpga.meter_mode_sequence_submode);
+                     (unsigned)mlink.meter_mode_sequence_count,
+                     (unsigned)mlink.meter_mode_sequence_submode);
     usb_debug_printf("last_sequence config=%04X selector=%04X apply=%04X "
                      "probe=%04X start=%04X\r\n",
-                     (unsigned)fpga.meter_mode_config_word,
-                     (unsigned)fpga.meter_mode_selector_word,
-                     (unsigned)fpga.meter_mode_apply_word,
-                     (unsigned)fpga.meter_mode_probe_word,
-                     (unsigned)fpga.meter_mode_start_word);
+                     (unsigned)mlink.meter_mode_config_word,
+                     (unsigned)mlink.meter_mode_selector_word,
+                     (unsigned)mlink.meter_mode_apply_word,
+                     (unsigned)mlink.meter_mode_probe_word,
+                     (unsigned)mlink.meter_mode_start_word);
     usb_debug_printf("decoded display=%s unit=%s value_i10000=%ld raw=%d "
                      "dp=%u class=%u reject=%u family=%u/%u extra=%04X\r\n",
                      snap.valid ? snap.display_str : "---",
@@ -1017,10 +1017,10 @@ void cmd_meter_trace(void)
     usb_debug_printf("h2 bytes=%lu done=%u "
                      "spi_ok=%u spi_to=%u rx00=%lu rxff=%lu rxother=%lu "
                      "rx_nonff=%lu close_len=%u close_nonff=%u\r\n",
-                     fpga.h2_bytes_sent,
-                     fpga.h2_upload_done ? 1U : 0U,
-                     fpga.spi3_ok_count,
-                     fpga.spi3_total_timeouts,
+                     fboot.h2_bytes_sent,
+                     fboot.h2_upload_done ? 1U : 0U,
+                     acq.spi3_ok_count,
+                     acq.spi3_total_timeouts,
                      h2_rx_00_count,
                      h2_rx_ff_count,
                      h2_rx_other_count,
@@ -1045,7 +1045,7 @@ void cmd_meter_frontend(void)
     fpga_meter_selector_t selectors = fpga_meter_expected_selectors(meter_submode);
     fpga_meter_transition_plan_t plan =
         fpga_meter_transition_plan_for_submode(meter_submode);
-    uint8_t tx_count = fpga.tx_cmd_history_count;
+    uint8_t tx_count = mlink.tx_cmd_history_count;
 
     usb_send_str("=== DMM Frontend ===\r\n");
     usb_debug_printf("mode=%lu startup=%s meter_submode=%u (%s) reading_submode=%u valid=%u class=%u updates=%lu\r\n",
@@ -1072,12 +1072,12 @@ void cmd_meter_frontend(void)
                      (unsigned)plan.apply_word,
                      plan.has_apply_word ? 1U : 0U);
     usb_debug_printf("mode_sequence count=%u submode=%u selector=%04X apply=%04X probe=%04X start=%04X\r\n",
-                     (unsigned)fpga.meter_mode_sequence_count,
-                     (unsigned)fpga.meter_mode_sequence_submode,
-                     (unsigned)fpga.meter_mode_selector_word,
-                     (unsigned)fpga.meter_mode_apply_word,
-                     (unsigned)fpga.meter_mode_probe_word,
-                     (unsigned)fpga.meter_mode_start_word);
+                     (unsigned)mlink.meter_mode_sequence_count,
+                     (unsigned)mlink.meter_mode_sequence_submode,
+                     (unsigned)mlink.meter_mode_selector_word,
+                     (unsigned)mlink.meter_mode_apply_word,
+                     (unsigned)mlink.meter_mode_probe_word,
+                     (unsigned)mlink.meter_mode_start_word);
     usb_debug_printf("display=%s unit=%s bcd_value=%d dp=%u f6=%02X f7=%02X f8=%02X f9=%02X extra=%04X aux_freq_i10=%ld beep=%u discard=%u trans_skips=%lu\r\n",
                      meter_reading.valid ? meter_reading.display_str : "---",
                      (meter_reading.valid && meter_reading.unit_suffix) ? meter_reading.unit_suffix : "",
@@ -1098,10 +1098,10 @@ void cmd_meter_frontend(void)
                      (unsigned)meter_reading.reject_reason);
     usb_send_str("tx_recent:");
     for (uint8_t i = 0; i < tx_count; i++) {
-        uint8_t idx = (uint8_t)((fpga.tx_cmd_history_head + 16U - tx_count + i) & 0x0FU);
+        uint8_t idx = (uint8_t)((mlink.tx_cmd_history_head + 16U - tx_count + i) & 0x0FU);
         usb_debug_printf(" %02X%02X",
-                         (unsigned)fpga.tx_cmd_hi_history[idx],
-                         (unsigned)fpga.tx_cmd_lo_history[idx]);
+                         (unsigned)mlink.tx_cmd_hi_history[idx],
+                         (unsigned)mlink.tx_cmd_lo_history[idx]);
     }
     usb_send_str("\r\n");
     usb_print_last_tx_frame();
@@ -1190,13 +1190,13 @@ static void print_meter_mux_stream_line(uint32_t index)
                      "seq_word=%04X seq_apply=%04X tx=%u data=%u echo=%u ",
                      have_snap ? (unsigned)snap.observed_frame_family : 0U,
                      have_snap ? (unsigned)snap.reject_reason : 0U,
-                     (unsigned)fpga.meter_mode_sequence_count,
-                     (unsigned)fpga.meter_mode_sequence_submode,
-                     (unsigned)fpga.meter_mode_selector_word,
-                     (unsigned)fpga.meter_mode_apply_word,
-                     fpga.tx_count,
-                     fpga.frame_count,
-                     fpga.echo_count);
+                     (unsigned)mlink.meter_mode_sequence_count,
+                     (unsigned)mlink.meter_mode_sequence_submode,
+                     (unsigned)mlink.meter_mode_selector_word,
+                     (unsigned)mlink.meter_mode_apply_word,
+                     mlink.tx_count,
+                     mlink.frame_count,
+                     mlink.echo_count);
     usb_debug_printf("disp=%s unit=%s raw=%d dp=%u f6=%02X f7=%02X "
                      "f8=%02X f9=%02X extra=%04X discard=%u ",
                      (have_snap && snap.valid) ? snap.display_str : "---",

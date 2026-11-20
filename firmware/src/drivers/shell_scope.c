@@ -53,7 +53,7 @@ void cmd_fpga_unrotate(const char *args)
         else { usb_send_str("usage: fpga unrotate [on|off]\r\n"); return; }
     }
     usb_debug_printf("acq unrotate %s (seam-based); last strobed record's seam at %ld (-1 = none found)\r\n",
-                     fpga_acq_unrotate_get() ? "ON" : "OFF", (long)fpga.acq_last_rot);
+                     fpga_acq_unrotate_get() ? "ON" : "OFF", (long)acq.acq_last_rot);
     usb_debug_printf("held records ordered by the header's seam: %lu; held without a seam: %lu\r\n",
                      (unsigned long)fpga_acq_seam_count(0), (unsigned long)fpga_acq_seam_count(1));
 }
@@ -75,8 +75,8 @@ void cmd_fpga_core(const char *args)
     if (!fpga_acq_design_ours()) { usb_send_str("core: NOT USABLE: the design in the FPGA was not loaded by this firmware; not asked, nothing is acquired\r\n"); return; }
     if (!id.valid) {
         usb_debug_printf("core: NOT USABLE: loaded by us but no valid identity (older than D5, or protocol %u unknown); nothing is acquired; reply %02X %02X %02X %02X %02X %02X %02X %02X %02X\r\n",
-                         (unsigned)id.proto, fpga.core_ident[0], fpga.core_ident[1], fpga.core_ident[2], fpga.core_ident[3],
-                         fpga.core_ident[4], fpga.core_ident[5], fpga.core_ident[6], fpga.core_ident[7], fpga.core_ident[8]);
+                         (unsigned)id.proto, fboot.core_ident[0], fboot.core_ident[1], fboot.core_ident[2], fboot.core_ident[3],
+                         fboot.core_ident[4], fboot.core_ident[5], fboot.core_ident[6], fboot.core_ident[7], fboot.core_ident[8]);
         return;
     }
     usb_debug_printf("core: tag %02X  protocol %u  record %u samples  caps %02X:%s%s%s%s%s\r\n",

@@ -12,7 +12,7 @@ static void usb_print_last_tx_frame(void)
 {
     usb_send_str("last_tx_frame:");
     for (int i = 0; i < FPGA_TX_FRAME_SIZE; i++) {
-        usb_debug_printf(" %02X", (unsigned)fpga.last_tx_frame[i]);
+        usb_debug_printf(" %02X", (unsigned)mlink.last_tx_frame[i]);
     }
     usb_send_str("\r\n");
 }
@@ -26,18 +26,18 @@ void usb_debug_sh_print_last_tx_frame(void)
 /* Print the TX frame history ring, oldest first, one bracketed frame each. */
 static void usb_print_recent_tx_frames(void)
 {
-    uint8_t count = fpga.tx_frame_history_count;
+    uint8_t count = mlink.tx_frame_history_count;
 
     usb_send_str("tx_frames_recent:");
     for (uint8_t i = 0; i < count; i++) {
-        uint8_t idx = (uint8_t)((fpga.tx_frame_history_head +
+        uint8_t idx = (uint8_t)((mlink.tx_frame_history_head +
                                  FPGA_TX_FRAME_HISTORY - count + i) %
                                 FPGA_TX_FRAME_HISTORY);
         usb_send_str(" [");
         for (int j = 0; j < FPGA_TX_FRAME_SIZE; j++) {
             usb_debug_printf("%s%02X",
                              j == 0 ? "" : " ",
-                             (unsigned)fpga.tx_frame_history[idx][j]);
+                             (unsigned)mlink.tx_frame_history[idx][j]);
         }
         usb_send_str("]");
     }
@@ -68,10 +68,10 @@ static void status_print_upload(void)
     const uint32_t sr = fpga_cfg_status();
 
     usb_debug_printf("Upload: %s (%lu of %lu bytes)\r\n",
-                     upload_result_name(fpga.upload_result),
-                     (unsigned long)fpga.h2_bytes_sent, (unsigned long)fpga.upload_len);
-    if (fpga.upload_result != FPGA_UPLOAD_SENT &&
-        fpga.upload_result != FPGA_UPLOAD_SOURCE_FAILED)
+                     upload_result_name(fboot.upload_result),
+                     (unsigned long)fboot.h2_bytes_sent, (unsigned long)fboot.upload_len);
+    if (fboot.upload_result != FPGA_UPLOAD_SENT &&
+        fboot.upload_result != FPGA_UPLOAD_SOURCE_FAILED)
         return;
     usb_debug_printf("STATUS (0x41) after upload: %08lX  DONE (bit %u): %s\r\n",
                      (unsigned long)sr, (unsigned)GOWIN_STATUS_DONE_BIT,
@@ -96,7 +96,7 @@ void cmd_status(void)
         (unsigned long)uptime_seconds,
         system_core_clock / 1000000,
         fpga.initialized ? "YES" : "NO",
-        fpga.bus_released ? "YES" : "NO",
+        fboot.bus_released ? "YES" : "NO",
         (unsigned long)SPI3->ctrl1,
         (GPIOB->idt & (1 << 4)) ? 1 : 0,
         (GPIOC->idt & (1 << 6)) ? 1 : 0,
@@ -104,16 +104,16 @@ void cmd_status(void)
     );
     status_print_upload();
     usb_debug_printf("Core status (op 03) after the load: %02X %02X %02X %02X\r\n",
-                     fpga.scope_status[0], fpga.scope_status[1],
-                     fpga.scope_status[2], fpga.scope_status[3]);
+                     fboot.scope_status[0], fboot.scope_status[1],
+                     fboot.scope_status[2], fboot.scope_status[3]);
 
     usb_debug_printf(
         "\r\n=== Acquisition ===\r\n"
         "SPI3 OK: %u\r\n"
         "SPI3 records refused: %u (transfers timed out: %u)\r\n",
-        fpga.spi3_ok_count,
-        fpga.spi3_total_timeouts,
-        fpga.spi3_hw_timeouts
+        acq.spi3_ok_count,
+        acq.spi3_total_timeouts,
+        acq.spi3_hw_timeouts
     );
     /* PC0 edges: record pairs started by the core (read twice for a rate).
      * acq hdr: the 3 bytes before the samples of the last op 04 and 05 reply. */
@@ -122,11 +122,11 @@ void cmd_status(void)
         "acq latency: %lu ms (strobe -> commit, last cycle); poll reads before it: %lu (total %lu)\r\n"
         "acq rotation: %ld samples (seam of the last strobed record; -1 = none)\r\n"
         "acq hdr CH1: %02X %02X %02X  CH2: %02X %02X %02X\r\n",
-        (unsigned long)fpga.pc0_edges,
-        (unsigned long)fpga.acq_last_latency_ms, (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads,
-        (long)fpga.acq_last_rot,
-        fpga.acq_hdr_ch1[0], fpga.acq_hdr_ch1[1], fpga.acq_hdr_ch1[2],
-        fpga.acq_hdr_ch2[0], fpga.acq_hdr_ch2[1], fpga.acq_hdr_ch2[2]
+        (unsigned long)acq.pc0_edges,
+        (unsigned long)acq.acq_last_latency_ms, (unsigned long)acq.acq_polls_last, (unsigned long)acq.acq_poll_reads,
+        (long)acq.acq_last_rot,
+        acq.acq_hdr_ch1[0], acq.acq_hdr_ch1[1], acq.acq_hdr_ch1[2],
+        acq.acq_hdr_ch2[0], acq.acq_hdr_ch2[1], acq.acq_hdr_ch2[2]
     );
     /* The timebase in force: register 0x01, sample rate, s/div. */
     timebase_print_status(false);
@@ -138,29 +138,29 @@ void cmd_status(void)
         "Data frames: %u\r\n"
         "Echo frames: %u\r\n"
         "RX sync: data_start=%u echo_start=%u data_hdr=%u echo_hdr=%u bad2=%u stray=%u\r\n",
-        fpga.tx_count,
-        fpga.rx_byte_count,
-        fpga.frame_count,
-        fpga.echo_count,
-        fpga.rx_sync_data_start_count,
-        fpga.rx_sync_echo_start_count,
-        fpga.rx_sync_data_header_count,
-        fpga.rx_sync_echo_header_count,
-        fpga.rx_sync_bad_second_count,
-        fpga.rx_sync_stray_count
+        mlink.tx_count,
+        mlink.rx_byte_count,
+        mlink.frame_count,
+        mlink.echo_count,
+        mlink.rx_sync_data_start_count,
+        mlink.rx_sync_echo_start_count,
+        mlink.rx_sync_data_header_count,
+        mlink.rx_sync_echo_header_count,
+        mlink.rx_sync_bad_second_count,
+        mlink.rx_sync_stray_count
     );
     usb_debug_printf(
         "RX gates: data_tx_busy_drop=%u echo_valid=%u echo_bad=%u\r\n",
-        fpga.rx_data_tx_busy_drop_count,
-        fpga.rx_echo_valid_count,
-        fpga.rx_echo_bad_count
+        mlink.rx_data_tx_busy_drop_count,
+        mlink.rx_echo_valid_count,
+        mlink.rx_echo_bad_count
     );
     usb_print_last_tx_frame();
     usb_print_recent_tx_frames();
-    if (fpga.rx_frame_valid) {
+    if (mlink.rx_frame_valid) {
         usb_debug_printf("Last RX frame:");
         for (int i = 0; i < FPGA_RX_FRAME_SIZE; i++)
-            usb_debug_printf(" %02X", fpga.rx_frame[i]);
+            usb_debug_printf(" %02X", mlink.rx_frame[i]);
         usb_send_str("\r\n");
     }
 }
@@ -444,10 +444,10 @@ void cmd_meter_state(void)
                          usb_host ? 1U : 0U, background ? 1U : 0U,
                          fpga_meter_soc_live() ? 1U : 0U, (GPIOC->odt & (1U << 11)) ? 1U : 0U,
                          onoff(fpga_meter_fast_switch_get()), onoff(fpga_meter_keepalive_get()),
-                         (unsigned)fpga.meter_fast_switch_count, (unsigned)fpga.meter_fast_fallback_count,
-                         (unsigned)fpga.meter_soc_wake_ms, (unsigned)fpga.meter_selector_confirmed,
-                         (unsigned)fpga.meter_selector_attempts, (unsigned)fpga.meter_mode_sequence_count,
-                         (unsigned)fpga.frame_count);
+                         (unsigned)mlink.meter_fast_switch_count, (unsigned)mlink.meter_fast_fallback_count,
+                         (unsigned)mlink.meter_soc_wake_ms, (unsigned)mlink.meter_selector_confirmed,
+                         (unsigned)mlink.meter_selector_attempts, (unsigned)mlink.meter_mode_sequence_count,
+                         (unsigned)mlink.frame_count);
     }
     usb_debug_printf("  reading: valid=%u sub=%u class=%u status=%u(%s) text=\"%s\" unit=\"%s\" value=%d.%03d\r\n",
                      r.valid ? 1U : 0U, (unsigned)r.submode, (unsigned)r.result_class,
@@ -471,7 +471,7 @@ void cmd_meter_state(void)
                      active ? 1U : 0U, tick,
                      meter_stock_beep_gate_for_submode(meter_submode) ? 1U : 0U);
     usb_debug_printf("  cal-wizard guard: refused=%u last=%04X (0x02A0 0x0503 0x0501 are never sent obeyed)\r\n",
-                     (unsigned)fpga.meter_cal_word_refused, (unsigned)fpga.meter_cal_word_last);
+                     (unsigned)mlink.meter_cal_word_refused, (unsigned)mlink.meter_cal_word_last);
 }
 
 /* reset settings CONFIRM: "Reset to defaults" on the direct route. The

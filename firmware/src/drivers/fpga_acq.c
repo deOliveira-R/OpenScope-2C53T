@@ -9,6 +9,8 @@
 
 #include "fpga_internal.h"
 
+fpga_acq_state_t acq;
+
 TaskHandle_t      acq_task_handle = NULL;
 
 static volatile bool data_ready = false;
@@ -34,7 +36,7 @@ static volatile bool acq_pause_ack = false;
 
 /* ── Staged and published record ─────────────────────────────────────────
  * The SPI read lands in two staging buffers (heap, allocated in
- * fpga_create_tasks), never in the published fpga.ch1_buf/ch2_buf that the
+ * fpga_create_tasks), never in the published acq.ch1_buf/ch2_buf that the
  * lower-priority display task reads. An accepted record is copied over in
  * fpga_acq_frames_commit, bracketed by acq_frame_gen: odd while a commit is
  * in progress. Readers that need exact numbers re-read until the generation
@@ -54,17 +56,17 @@ uint32_t fpga_acq_frame_generation(void)
 
 static volatile uint8_t *acq_write_ch1(void)
 {
-    return acq_stage_ch1 ? acq_stage_ch1 : fpga.ch1_buf;
+    return acq_stage_ch1 ? acq_stage_ch1 : acq.ch1_buf;
 }
 
 static volatile uint8_t *acq_write_ch2(void)
 {
-    return acq_stage_ch2 ? acq_stage_ch2 : fpga.ch2_buf;
+    return acq_stage_ch2 ? acq_stage_ch2 : acq.ch2_buf;
 }
 
 /* Whether the staged / published record is in time order (rotated at its
  * seam). Published inside the commit's generation window, so the flag always
- * describes the record in fpga.ch1_buf. The same holds for every acq_pub_*
+ * describes the record in acq.ch1_buf. The same holds for every acq_pub_*
  * below. */
 static volatile bool acq_stage_ordered = false;
 
@@ -123,8 +125,8 @@ static void fpga_acq_frames_commit(void)
     if (acq_stage_ch1 == NULL || acq_stage_ch2 == NULL)
         return;   /* in-place fallback: nothing to copy */
     acq_frame_gen++;                                   /* odd: committing */
-    memcpy((void *)fpga.ch1_buf, acq_stage_ch1, FPGA_ADC_BUF_SIZE);
-    memcpy((void *)fpga.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
+    memcpy((void *)acq.ch1_buf, acq_stage_ch1, FPGA_ADC_BUF_SIZE);
+    memcpy((void *)acq.ch2_buf, acq_stage_ch2, FPGA_ADC_BUF_SIZE);
     acq_pub_ordered = acq_stage_ordered;
     acq_pub_ordered_core = acq_stage_ordered_core;
     acq_pub_il = acq_stage_il;
@@ -293,7 +295,7 @@ bool fpga_acq_design_ours(void)               { return acq_design_ours; }
 core_ident_t fpga_core_ident(void)
 {
     uint8_t r[CORE_IDENT_REPLY_LEN];
-    for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fpga.core_ident[i];
+    for (unsigned i = 0; i < CORE_IDENT_REPLY_LEN; i++) r[i] = fboot.core_ident[i];
     return core_ident_parse(r);
 }
 
@@ -315,9 +317,9 @@ static int32_t fpga_acq_unrotate_staging(bool triggered)
     uint32_t k = 0;
     /* The op 05 header first: it always carries the pair's seam. The op 04
      * one is withheld when the record was held only after that frame began. */
-    int hs = trig_seam_from_hdr(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
+    int hs = trig_seam_from_hdr(acq.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], acq.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0)
-        hs = trig_seam_from_hdr(fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
+        hs = trig_seam_from_hdr(acq.acq_hdr_ch1[FPGA_CORE_SEAM_I_HI], acq.acq_hdr_ch1[FPGA_CORE_SEAM_I_LO]);
     if (hs < 0) {                                /* a held record always carries it: not reached */
         acq_seam_n[1]++;
         return -1;
@@ -719,15 +721,15 @@ bool fpga_apply_trigger_level(int level)
 void EXINT0_IRQHandler(void)
 {
     exint_flag_clear(EXINT_LINE_0);
-    fpga.pc0_edges++;
-    fpga.pc0_last_tick = xTaskGetTickCountFromISR();
+    acq.pc0_edges++;
+    acq.pc0_last_tick = xTaskGetTickCountFromISR();
 }
 
 /* ─── Reading one record ─────────────────────────────────────────────
  * One CS-low frame per converter, 1027 bytes (the core's cmd.sv): while the
  * opcode goes out (0x04 = converter A, 0x05 = B) the core sends reply byte 0,
  * 0x80 on every reply (FPGA_CORE_REPLY_FIRST); bytes 1-2 are the seam header,
- * kept in fpga.acq_hdr_ch1/ch2; then 1024 samples from memory address 0.
+ * kept in acq.acq_hdr_ch1/ch2; then 1024 samples from memory address 0.
  * Each sample is stored as raw + FPGA_ADC_OFFSET, clamped to 0..255.
  * Keep the frame whole: a 2-byte frame starting 0x05 would match the Gowin
  * configuration port's ERASE_SRAM command. */
@@ -738,16 +740,16 @@ static void fpga_acq_read_channel(uint8_t opcode, volatile uint8_t *buf)
     uint8_t h1 = spi3_xfer(0xFF);          /* byte 1: seam flags and bits 9:8 */
     uint8_t h2 = spi3_xfer(0xFF);          /* byte 2: seam bits 7:0 */
     {
-        volatile uint8_t *hdr = (opcode == FPGA_CORE_OP_REC_A) ? fpga.acq_hdr_ch1
-                                                 : fpga.acq_hdr_ch2;
+        volatile uint8_t *hdr = (opcode == FPGA_CORE_OP_REC_A) ? acq.acq_hdr_ch1
+                                                 : acq.acq_hdr_ch2;
         hdr[0] = s0; hdr[1] = h1; hdr[2] = h2;
     }
 
     for (int i = 0; i < 1024; i++) {
         uint8_t raw = spi3_xfer(0xFF);
         if (i < 4) {
-            if (opcode == FPGA_CORE_OP_REC_A) fpga.diag_ch1_raw[i] = raw;
-            else                fpga.diag_ch2_raw[i] = raw;
+            if (opcode == FPGA_CORE_OP_REC_A) acq.diag_ch1_raw[i] = raw;
+            else                acq.diag_ch2_raw[i] = raw;
         }
         int16_t cal = (int16_t)raw + (int16_t)FPGA_ADC_OFFSET;
         if (cal < 0)   cal = 0;
@@ -799,7 +801,7 @@ static void fpga_roll_service(void)
 
     if (acq_read_br != 0xFF)
         spi3_set_br(acq_read_br);
-    uint16_t hw_to_before = fpga.spi3_hw_timeouts;
+    uint16_t hw_to_before = acq.spi3_hw_timeouts;
     uint8_t rx[5];
     SPI3_CS_ASSERT();
     rx[0] = spi3_xfer(FPGA_CORE_OP_LIVE);
@@ -809,9 +811,9 @@ static void fpga_roll_service(void)
     for (unsigned i = 0; i < 5u; i++)
         acq_roll_stats.rx[i] = rx[i];
 
-    if (fpga.spi3_hw_timeouts != hw_to_before) {
+    if (acq.spi3_hw_timeouts != hw_to_before) {
         acq_roll_stats.rejects++;        /* a fabricated 0xFF is not a point */
-        fpga.spi3_total_timeouts++;
+        acq.spi3_total_timeouts++;
         return;
     }
     /* Record codes, the Y-T read's domain (raw + FPGA_ADC_OFFSET); the unit's
@@ -821,7 +823,7 @@ static void fpga_roll_service(void)
                          scope_roll_record_code((adc_raw_t){ rx[2] }),
                          scope_roll_record_code((adc_raw_t){ rx[4] }));
     acq_roll_stats.reads++;
-    fpga.spi3_ok_count++;                /* the display's new-data signal */
+    acq.spi3_ok_count++;                /* the display's new-data signal */
 
     /* Roll trigger, as stock's (scope_roll.h): once the FIFO is full and the
      * mode is not AUTO, one crossing check at its centre after every point.
@@ -937,7 +939,7 @@ void fpga_acq_task(void *pv)
      * from here. */
     uint32_t last_trig_tick = xTaskGetTickCount();
     for (;;) {
-        if (!fpga.initialized || fpga.bus_released) {
+        if (!fpga.initialized || fboot.bus_released) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
@@ -1111,8 +1113,8 @@ void fpga_acq_task(void *pv)
         acq_cfg_t cfg_now;
         fpga_acq_cfg_snapshot(&cfg_now);
         (void)acq_cfg_note(&s_acq_cfg_trk, &cfg_now, xTaskGetTickCount() * portTICK_PERIOD_MS);
-        uint32_t edges_before = fpga.pc0_edges;
-        uint16_t hw_to_before = fpga.spi3_hw_timeouts;
+        uint32_t edges_before = acq.pc0_edges;
+        uint16_t hw_to_before = acq.spi3_hw_timeouts;
         volatile uint8_t *w1 = acq_write_ch1();
         volatile uint8_t *w2 = acq_write_ch2();
         fpga_acq_read_channel(FPGA_CORE_OP_REC_A, w1);
@@ -1125,9 +1127,9 @@ void fpga_acq_task(void *pv)
          * and froze it for the pair (fpga/core/rtl/cmd.sv), and the record
          * was still held when op 05 began. PC0 signals the same; it is only
          * compared, for the bench (`fpga core`). */
-        bool triggered = trig_seam_from_hdr(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
+        bool triggered = trig_seam_from_hdr(acq.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI], acq.acq_hdr_ch2[FPGA_CORE_SEAM_I_LO]) >= 0;
         {
-            const bool pc0 = (fpga.pc0_edges != edges_before);
+            const bool pc0 = (acq.pc0_edges != edges_before);
             acq_kind_n[triggered ? 0 : 1]++;
             if (triggered && !pc0) acq_kind_n[2]++;
             if (!triggered && pc0) acq_kind_n[3]++;
@@ -1137,19 +1139,19 @@ void fpga_acq_task(void *pv)
          * trigger: time-ordered and simultaneous like any record, but not
          * `triggered`. */
         const bool held = triggered;
-        const bool forced = held && trig_hdr_forced(fpga.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI]);
+        const bool forced = held && trig_hdr_forced(acq.acq_hdr_ch2[FPGA_CORE_SEAM_I_HI]);
         if (forced) { triggered = false; acq_force_n[1]++; }
         if (triggered) last_trig_tick = last_read_tick;
-        acq_ilcal_feed(w1, w2, fpga.spi3_hw_timeouts == hw_to_before);
+        acq_ilcal_feed(w1, w2, acq.spi3_hw_timeouts == hw_to_before);
         bool first_read = !capture_in_flight;
         capture_in_flight = true;
         if (held || first_read) {
             last_handover_tick = last_read_tick;
-            fpga.acq_polls_last = polls_since_handover;
+            acq.acq_polls_last = polls_since_handover;
             polls_since_handover = 0;
         } else {
             polls_since_handover++;
-            fpga.acq_poll_reads++;
+            acq.acq_poll_reads++;
         }
         /* What this read is and whether it is shown: dsp/trig_policy.h. */
         const trig_acq_in_t pin = {
@@ -1180,9 +1182,9 @@ void fpga_acq_task(void *pv)
         }
         /* A record is used only when no SPI3 transfer timed out during its
          * two reads: a timed-out transfer returns 0xFF instead of bus data. */
-        if (fpga.spi3_hw_timeouts == hw_to_before) {
-            fpga.acq_last_rot = fpga_acq_unrotate_staging(held);
-            acq_stage_ordered = acq_unrotate && fpga.acq_last_rot >= 0;
+        if (acq.spi3_hw_timeouts == hw_to_before) {
+            acq.acq_last_rot = fpga_acq_unrotate_staging(held);
+            acq_stage_ordered = acq_unrotate && acq.acq_last_rot >= 0;
             /* a forced record is in time order but has no trigger at 512 */
             acq_stage_ordered_core = acq_stage_ordered && !forced;
             acq_stage_il = held && fpga_interleave_active() && acq_stage_ch1 && acq_stage_ch2;
@@ -1193,13 +1195,13 @@ void fpga_acq_task(void *pv)
             fpga_acq_frames_commit();
             /* Judge (or teach from) the record just committed: exactly once,
              * from the published buffers, in the only task that writes them. */
-            scope_mask_on_commit(fpga.ch1_buf, fpga.ch2_buf, triggered,
+            scope_mask_on_commit(acq.ch1_buf, acq.ch2_buf, triggered,
                                  acq_stage_ordered, fpga_acq_frame_generation());
             last_commit_tick = last_read_tick;
-            fpga.spi3_ok_count++;
+            acq.spi3_ok_count++;
             data_ready = true;
             if (triggered)
-                fpga.acq_last_latency_ms = xTaskGetTickCount() - fpga.pc0_last_tick;
+                acq.acq_last_latency_ms = xTaskGetTickCount() - acq.pc0_last_tick;
             if (triggered)
                 acq_last_trig_tick = last_commit_tick;
             if (mode_now == TRIG_SINGLE && triggered) {
@@ -1207,7 +1209,7 @@ void fpga_acq_task(void *pv)
                 acq_single_done_pub = true;
             }
         } else {
-            fpga.spi3_total_timeouts++;
+            acq.spi3_total_timeouts++;
         }
 
         /* A short yield between passes. */
@@ -1336,10 +1338,10 @@ bool fpga_data_ready(void)
 
 const volatile uint8_t *fpga_get_ch1_buf(void)
 {
-    return fpga.initialized ? fpga.ch1_buf : NULL;
+    return fpga.initialized ? acq.ch1_buf : NULL;
 }
 
 const volatile uint8_t *fpga_get_ch2_buf(void)
 {
-    return fpga.initialized ? fpga.ch2_buf : NULL;
+    return fpga.initialized ? acq.ch2_buf : NULL;
 }

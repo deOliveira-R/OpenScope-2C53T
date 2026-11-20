@@ -136,81 +136,81 @@ static int parse_gpio(const char *s, gpio_type **port, uint16_t *pin)
 static void fpga_diag_clear(void)
 {
     taskENTER_CRITICAL();
-    fpga.tx_count = 0;
-    fpga.rx_byte_count = 0;
-    fpga.frame_count = 0;
-    fpga.echo_count = 0;
-    fpga.rx_sync_data_start_count = 0;
-    fpga.rx_sync_echo_start_count = 0;
-    fpga.rx_sync_data_header_count = 0;
-    fpga.rx_sync_echo_header_count = 0;
-    fpga.rx_sync_bad_second_count = 0;
-    fpga.rx_sync_stray_count = 0;
-    fpga.rx_data_tx_busy_drop_count = 0;
-    fpga.rx_echo_valid_count = 0;
-    fpga.rx_echo_bad_count = 0;
-    memset((void *)fpga.rx_raw_history, 0, sizeof(fpga.rx_raw_history));
-    memset((void *)fpga.rx_raw_history_tx_count, 0,
-           sizeof(fpga.rx_raw_history_tx_count));
-    memset((void *)fpga.rx_raw_history_tx_index, 0,
-           sizeof(fpga.rx_raw_history_tx_index));
-    memset((void *)fpga.rx_raw_history_rx_index, 0,
-           sizeof(fpga.rx_raw_history_rx_index));
-    fpga.rx_raw_history_head = 0;
-    fpga.rx_raw_history_count = 0;
+    mlink.tx_count = 0;
+    mlink.rx_byte_count = 0;
+    mlink.frame_count = 0;
+    mlink.echo_count = 0;
+    mlink.rx_sync_data_start_count = 0;
+    mlink.rx_sync_echo_start_count = 0;
+    mlink.rx_sync_data_header_count = 0;
+    mlink.rx_sync_echo_header_count = 0;
+    mlink.rx_sync_bad_second_count = 0;
+    mlink.rx_sync_stray_count = 0;
+    mlink.rx_data_tx_busy_drop_count = 0;
+    mlink.rx_echo_valid_count = 0;
+    mlink.rx_echo_bad_count = 0;
+    memset((void *)mlink.rx_raw_history, 0, sizeof(mlink.rx_raw_history));
+    memset((void *)mlink.rx_raw_history_tx_count, 0,
+           sizeof(mlink.rx_raw_history_tx_count));
+    memset((void *)mlink.rx_raw_history_tx_index, 0,
+           sizeof(mlink.rx_raw_history_tx_index));
+    memset((void *)mlink.rx_raw_history_rx_index, 0,
+           sizeof(mlink.rx_raw_history_rx_index));
+    mlink.rx_raw_history_head = 0;
+    mlink.rx_raw_history_count = 0;
     fpga_meter_probe_tail_override = -1;
-    fpga.spi3_ok_count = 0;
-    fpga.spi3_total_timeouts = 0;
-    fpga.h2_rx_00_count = 0;
-    fpga.h2_rx_ff_count = 0;
-    fpga.h2_rx_other_count = 0;
-    fpga.h2_close_rx_len = 0;
-    memset((void *)fpga.h2_close_rx, 0, sizeof(fpga.h2_close_rx));
-    fpga.rx_frame_valid = false;
-    memset((void *)fpga.rx_frame, 0, sizeof(fpga.rx_frame));
-    memset((void *)fpga.last_rx_echo_frame, 0, sizeof(fpga.last_rx_echo_frame));
-    memset((void *)fpga.last_tx_frame, 0, sizeof(fpga.last_tx_frame));
-    memset((void *)fpga.tx_frame_history, 0, sizeof(fpga.tx_frame_history));
-    memset((void *)fpga.tx_frame_history_tx_count, 0,
-           sizeof(fpga.tx_frame_history_tx_count));
-    fpga.tx_frame_history_head = 0;
-    fpga.tx_frame_history_count = 0;
-    memset((void *)fpga.tx_control_frame_history, 0,
-           sizeof(fpga.tx_control_frame_history));
-    memset((void *)fpga.tx_control_frame_history_tx_count, 0,
-           sizeof(fpga.tx_control_frame_history_tx_count));
-    fpga.tx_control_frame_history_head = 0;
-    fpga.tx_control_frame_history_count = 0;
-    memset((void *)fpga.rx_frame_history, 0, sizeof(fpga.rx_frame_history));
-    memset((void *)fpga.rx_history_frame_count, 0, sizeof(fpga.rx_history_frame_count));
-    memset((void *)fpga.rx_history_tx_count, 0, sizeof(fpga.rx_history_tx_count));
-    memset((void *)fpga.rx_history_echo_count, 0, sizeof(fpga.rx_history_echo_count));
-    memset((void *)fpga.rx_history_sequence_count, 0, sizeof(fpga.rx_history_sequence_count));
-    memset((void *)fpga.rx_history_sequence_submode, 0, sizeof(fpga.rx_history_sequence_submode));
-    memset((void *)fpga.rx_history_discard_remaining, 0, sizeof(fpga.rx_history_discard_remaining));
-    memset((void *)fpga.rx_history_transition_busy, 0, sizeof(fpga.rx_history_transition_busy));
-    fpga.rx_frame_history_head = 0;
-    fpga.rx_frame_history_count = 0;
-    memset((void *)fpga.meter_transition_history_submode, 0, sizeof(fpga.meter_transition_history_submode));
-    memset((void *)fpga.meter_transition_history_config, 0, sizeof(fpga.meter_transition_history_config));
-    memset((void *)fpga.meter_transition_history_selector, 0, sizeof(fpga.meter_transition_history_selector));
-    memset((void *)fpga.meter_transition_history_apply, 0, sizeof(fpga.meter_transition_history_apply));
-    memset((void *)fpga.meter_transition_history_bank, 0, sizeof(fpga.meter_transition_history_bank));
-    memset((void *)fpga.meter_transition_history_bank_first, 0, sizeof(fpga.meter_transition_history_bank_first));
-    memset((void *)fpga.meter_transition_history_bank_second, 0, sizeof(fpga.meter_transition_history_bank_second));
-    memset((void *)fpga.meter_transition_history_probe, 0, sizeof(fpga.meter_transition_history_probe));
-    memset((void *)fpga.meter_transition_history_start, 0, sizeof(fpga.meter_transition_history_start));
-    memset((void *)fpga.meter_transition_history_sequence_count, 0, sizeof(fpga.meter_transition_history_sequence_count));
-    memset((void *)fpga.meter_transition_history_tx_before, 0, sizeof(fpga.meter_transition_history_tx_before));
-    memset((void *)fpga.meter_transition_history_tx_after, 0, sizeof(fpga.meter_transition_history_tx_after));
-    memset((void *)fpga.meter_transition_history_frame_before, 0, sizeof(fpga.meter_transition_history_frame_before));
-    memset((void *)fpga.meter_transition_history_frame_after, 0, sizeof(fpga.meter_transition_history_frame_after));
-    memset((void *)fpga.meter_transition_history_planned_gpio, 0, sizeof(fpga.meter_transition_history_planned_gpio));
-    memset((void *)fpga.meter_transition_history_actual_gpio, 0, sizeof(fpga.meter_transition_history_actual_gpio));
-    fpga.meter_transition_history_head = 0;
-    fpga.meter_transition_history_count = 0;
-    memset((void *)fpga.diag_ch1_raw, 0, sizeof(fpga.diag_ch1_raw));
-    memset((void *)fpga.diag_ch2_raw, 0, sizeof(fpga.diag_ch2_raw));
+    acq.spi3_ok_count = 0;
+    acq.spi3_total_timeouts = 0;
+    fboot.h2_rx_00_count = 0;
+    fboot.h2_rx_ff_count = 0;
+    fboot.h2_rx_other_count = 0;
+    fboot.h2_close_rx_len = 0;
+    memset((void *)fboot.h2_close_rx, 0, sizeof(fboot.h2_close_rx));
+    mlink.rx_frame_valid = false;
+    memset((void *)mlink.rx_frame, 0, sizeof(mlink.rx_frame));
+    memset((void *)mlink.last_rx_echo_frame, 0, sizeof(mlink.last_rx_echo_frame));
+    memset((void *)mlink.last_tx_frame, 0, sizeof(mlink.last_tx_frame));
+    memset((void *)mlink.tx_frame_history, 0, sizeof(mlink.tx_frame_history));
+    memset((void *)mlink.tx_frame_history_tx_count, 0,
+           sizeof(mlink.tx_frame_history_tx_count));
+    mlink.tx_frame_history_head = 0;
+    mlink.tx_frame_history_count = 0;
+    memset((void *)mlink.tx_control_frame_history, 0,
+           sizeof(mlink.tx_control_frame_history));
+    memset((void *)mlink.tx_control_frame_history_tx_count, 0,
+           sizeof(mlink.tx_control_frame_history_tx_count));
+    mlink.tx_control_frame_history_head = 0;
+    mlink.tx_control_frame_history_count = 0;
+    memset((void *)mlink.rx_frame_history, 0, sizeof(mlink.rx_frame_history));
+    memset((void *)mlink.rx_history_frame_count, 0, sizeof(mlink.rx_history_frame_count));
+    memset((void *)mlink.rx_history_tx_count, 0, sizeof(mlink.rx_history_tx_count));
+    memset((void *)mlink.rx_history_echo_count, 0, sizeof(mlink.rx_history_echo_count));
+    memset((void *)mlink.rx_history_sequence_count, 0, sizeof(mlink.rx_history_sequence_count));
+    memset((void *)mlink.rx_history_sequence_submode, 0, sizeof(mlink.rx_history_sequence_submode));
+    memset((void *)mlink.rx_history_discard_remaining, 0, sizeof(mlink.rx_history_discard_remaining));
+    memset((void *)mlink.rx_history_transition_busy, 0, sizeof(mlink.rx_history_transition_busy));
+    mlink.rx_frame_history_head = 0;
+    mlink.rx_frame_history_count = 0;
+    memset((void *)mlink.meter_transition_history_submode, 0, sizeof(mlink.meter_transition_history_submode));
+    memset((void *)mlink.meter_transition_history_config, 0, sizeof(mlink.meter_transition_history_config));
+    memset((void *)mlink.meter_transition_history_selector, 0, sizeof(mlink.meter_transition_history_selector));
+    memset((void *)mlink.meter_transition_history_apply, 0, sizeof(mlink.meter_transition_history_apply));
+    memset((void *)mlink.meter_transition_history_bank, 0, sizeof(mlink.meter_transition_history_bank));
+    memset((void *)mlink.meter_transition_history_bank_first, 0, sizeof(mlink.meter_transition_history_bank_first));
+    memset((void *)mlink.meter_transition_history_bank_second, 0, sizeof(mlink.meter_transition_history_bank_second));
+    memset((void *)mlink.meter_transition_history_probe, 0, sizeof(mlink.meter_transition_history_probe));
+    memset((void *)mlink.meter_transition_history_start, 0, sizeof(mlink.meter_transition_history_start));
+    memset((void *)mlink.meter_transition_history_sequence_count, 0, sizeof(mlink.meter_transition_history_sequence_count));
+    memset((void *)mlink.meter_transition_history_tx_before, 0, sizeof(mlink.meter_transition_history_tx_before));
+    memset((void *)mlink.meter_transition_history_tx_after, 0, sizeof(mlink.meter_transition_history_tx_after));
+    memset((void *)mlink.meter_transition_history_frame_before, 0, sizeof(mlink.meter_transition_history_frame_before));
+    memset((void *)mlink.meter_transition_history_frame_after, 0, sizeof(mlink.meter_transition_history_frame_after));
+    memset((void *)mlink.meter_transition_history_planned_gpio, 0, sizeof(mlink.meter_transition_history_planned_gpio));
+    memset((void *)mlink.meter_transition_history_actual_gpio, 0, sizeof(mlink.meter_transition_history_actual_gpio));
+    mlink.meter_transition_history_head = 0;
+    mlink.meter_transition_history_count = 0;
+    memset((void *)acq.diag_ch1_raw, 0, sizeof(acq.diag_ch1_raw));
+    memset((void *)acq.diag_ch2_raw, 0, sizeof(acq.diag_ch2_raw));
     taskEXIT_CRITICAL();
 }
 
@@ -289,10 +289,10 @@ void cmd_usart_tx(const char *args)
 
     /* Wait briefly for echo/response, then show last RX frame */
     vTaskDelay(pdMS_TO_TICKS(200));
-    if (fpga.rx_frame_valid) {
+    if (mlink.rx_frame_valid) {
         usb_debug_printf("RX:");
         for (int i = 0; i < FPGA_RX_FRAME_SIZE; i++)
-            usb_debug_printf(" %02X", fpga.rx_frame[i]);
+            usb_debug_printf(" %02X", mlink.rx_frame[i]);
         usb_send_str("\r\n");
     } else {
         usb_send_str("RX: (no frame)\r\n");
@@ -1140,7 +1140,7 @@ void cmd_fpga_usart(const char *args)
              (unsigned long)c1, (unsigned long)fpga_usart_baudr(),
              (unsigned)((c1 >> 13) & 1), (unsigned)((c1 >> 3) & 1),
              (unsigned)((c1 >> 2) & 1),  (unsigned)((c1 >> 5) & 1),
-             (unsigned)fpga.rx_byte_count, (unsigned)fpga.echo_count);
+             (unsigned)mlink.rx_byte_count, (unsigned)mlink.echo_count);
     usb_send_str(buf);
 }
 
@@ -1177,7 +1177,7 @@ void cmd_fpga_pollgap(const char *args)
     usb_debug_printf("acq poll gap %u ms; poll starts %u ms after a handover (%s); last handover after %lu poll reads, %lu total\r\n",
                      (unsigned)fpga_acq_poll_gap_get(), (unsigned)fpga_acq_post_edge_get(),
                      "derived, dsp/acq_timing.h",
-                     (unsigned long)fpga.acq_polls_last, (unsigned long)fpga.acq_poll_reads);
+                     (unsigned long)acq.acq_polls_last, (unsigned long)acq.acq_poll_reads);
 }
 
 /* `fpga scope coupling` — READ-ONLY: each channel's coupling label beside the
@@ -1636,8 +1636,8 @@ void cmd_fpga_configbb(void)
     (void)fpga_bitbang_config_sequence();
     uint32_t sr = fpga_cfg_status();
     usb_debug_printf("post-upload STATUS(0x41): %02X %02X %02X %02X (raw=%08lX)\r\n",
-                     fpga.cfg_status_reg[0], fpga.cfg_status_reg[1],
-                     fpga.cfg_status_reg[2], fpga.cfg_status_reg[3], sr);
+                     fboot.cfg_status_reg[0], fboot.cfg_status_reg[1],
+                     fboot.cfg_status_reg[2], fboot.cfg_status_reg[3], sr);
     usb_debug_printf("  DONE_FINAL(bit13)=%s  flags:%s%s%s%s\r\n",
                      (sr & (1u << GOWIN_STATUS_DONE_BIT)) ? "YES -- CONFIG TOOK" : "no -- the wall",
                      (sr & (1u << 0))  ? " CRC_ERR" : "",
@@ -1645,7 +1645,7 @@ void cmd_fpga_configbb(void)
                      (sr & (1u << 12)) ? " GWVLD"   : "",
                      (sr & (1u << 15)) ? " READY"   : "");
     usb_debug_printf("  close IDCODE(0x11)=%s (silent=port CLOSED=configured)\r\n",
-                     fpga.probe_id_bit_close == 0 ? "0x0120681B ANSWERS (still open)"
+                     fboot.probe_id_bit_close == 0 ? "0x0120681B ANSWERS (still open)"
                                                   : "silent/unanchored");
 }
 
