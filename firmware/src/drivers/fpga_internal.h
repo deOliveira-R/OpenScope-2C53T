@@ -186,6 +186,7 @@ typedef struct {
     uint8_t bytes[FPGA_TX_FRAME_SIZE];
 } meter_tx_item_t;
 #define METER_TX_QUEUE_LEN  10u
+#define METER_RX_QUEUE_LEN   8u    /* data frames waiting for dvom_RX */
 /* One frame is 10 bytes of 10 bits at 9600 baud: 10.4 ms. */
 #define METER_TX_FRAME_MS          11u
 #define METER_TX_FRAME_TIMEOUT_MS  (2u * METER_TX_FRAME_MS)                    /* dvom_TX gives a frame up */

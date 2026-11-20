@@ -239,10 +239,6 @@ void fpga_create_tasks(void)
         return;
     }
 
-    /* Create queues */
-    usart_tx_queue = xQueueCreate(METER_TX_QUEUE_LEN, sizeof(meter_tx_item_t));
-    meter_rx_queue = xQueueCreate(8, sizeof(fpga_meter_rx_event_t));
-
     /* Staging buffers: a record is read into these and copied to the public
      * buffers in one step (fpga_acq_frames_commit). On the heap, not in BSS,
      * because the boot stack has little room above BSS. If an allocation
@@ -260,10 +256,4 @@ void fpga_create_tasks(void)
 
     /* The acquisition task: reads records from the core over SPI3. */
     xTaskCreate(fpga_acq_task, "fpga", FPGA_ACQ_STACK, NULL, 3, &acq_task_handle);
-    /* The meter tasks. Each is gated on the meter link (meter_link_serving),
-     * so with the link off USART2 is quiet, and with it on only the meter's
-     * own words go out. */
-    xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
-    xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
-    xTaskCreate(fpga_meter_poll_task,  "meter_poll", FPGA_METER_POLL_STACK, NULL, 2, &meter_poll_handle);
 }

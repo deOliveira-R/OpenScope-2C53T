@@ -1547,9 +1547,12 @@ int main(void)
     health_slot_display = health_register("display", xDisplayTaskHandle);
     health_slot_input   = health_register("key",     xInputTaskHandle);
 
+    /* The meter link's queues and tasks: in every image, because the meter
+     * screen's requests go to them. */
+    meter_link_create_tasks();
+
 #ifndef EMULATOR_BUILD
-    /* Create FPGA communication tasks (USART TX/RX + SPI3 acquisition).
-     * These match the stock firmware's dvom_TX, dvom_RX, and fpga tasks. */
+    /* The acquisition task (records from the capture core over SPI3). */
     fpga_create_tasks();
 
     /* Create USB debug shell task (CDC virtual serial port).

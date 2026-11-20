@@ -1168,6 +1168,20 @@ uint32_t fpga_usart_ctrl1(void) { return USART2->ctrl1; }
 
 uint32_t fpga_usart_baudr(void) { return USART2->baudr; }
 
+/* Create the link's two queues and three tasks. Every image that has the
+ * meter screen calls this once before the scheduler starts, so the senders
+ * and the function-change request below always have their queue and task.
+ * Each task is gated on the link (meter_link_serving), so with the link off
+ * USART2 is quiet. */
+void meter_link_create_tasks(void)
+{
+    usart_tx_queue = xQueueCreate(METER_TX_QUEUE_LEN, sizeof(meter_tx_item_t));
+    meter_rx_queue = xQueueCreate(METER_RX_QUEUE_LEN, sizeof(fpga_meter_rx_event_t));
+    xTaskCreate(fpga_usart_tx_task,    "dvom_TX",   FPGA_DVOM_TX_STACK, NULL, 2, &tx_task_handle);
+    xTaskCreate(fpga_usart_rx_task,    "dvom_RX",   FPGA_DVOM_RX_STACK, NULL, 3, &rx_task_handle);
+    xTaskCreate(fpga_meter_poll_task,  "meter_poll", FPGA_METER_POLL_STACK, NULL, 2, &meter_poll_handle);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Sending words from other files
  * ═══════════════════════════════════════════════════════════════════ */

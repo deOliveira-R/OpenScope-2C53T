@@ -45,6 +45,11 @@
  * transmit stopped, data frames stopped). The keepalive must be unobeyed, or
  * every poll restarts a measurement and its autorange. */
 
+/* Create the link's queues and tasks (transmit dvom_TX, receive dvom_RX,
+ * poll meter_poll). Call once before the scheduler starts, in every image
+ * that has the meter screen. */
+void meter_link_create_tasks(void);
+
 /* ── sending ────────────────────────────────────────────────────────── */
 
 /* Every frame goes through one queue and one task (dvom_TX). Queue an obeyed
