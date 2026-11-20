@@ -236,26 +236,4 @@ void meter_data_set_function_confirmed(bool confirmed);
 /* idx 0 = newest ACV frame with the leading 1; returns the total logged. */
 uint32_t meter_data_acv_l1_get(unsigned idx, uint8_t out[12]);
 
-/*
- * Check if valid meter data is available.
- */
-bool meter_data_valid(void);
-
-/*
- * Get the current meter reading value.
- * Returns 0.0 if no valid data.
- */
-float meter_data_get_value(void);
-
-/*
- * Get the display string for the current reading.
- * Returns pointer to internal buffer (e.g., "13.82", "OL", "---").
- */
-const char *meter_data_get_display_str(void);
-
-/*
- * Get the bar graph fraction (0.0 - 1.0).
- */
-float meter_data_get_bar_fraction(void);
-
 #endif /* METER_DATA_H */

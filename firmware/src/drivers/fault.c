@@ -83,9 +83,6 @@ void fault_init(void)
     DWT->CTRL  |= 1u;            /* CYCCNTENA */
 }
 
-bool fault_have_previous(void)      { return prev_valid; }
-const char *fault_previous_summary(void) { return prev_summary; }
-
 /*
  * Record and stop. Deliberately minimal and allocation-free: the record is
  * written FIRST, so if anything later in this function faults again (which is

@@ -43,7 +43,6 @@ void theme_set(theme_id_t id);
 
 /* Cycle to the next/previous theme, wrapping around. Returns the new theme ID. */
 theme_id_t theme_cycle(void);
-theme_id_t theme_cycle_reverse(void);
 
 /* Get pointer to current theme data */
 const theme_t *theme_get(void);

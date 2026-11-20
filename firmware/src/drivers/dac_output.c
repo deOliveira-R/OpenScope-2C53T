@@ -119,8 +119,3 @@ uint16_t *dac_output_get_buffer(void)
 {
     return dac_buffer;
 }
-
-bool dac_output_is_running(void)
-{
-    return running;
-}

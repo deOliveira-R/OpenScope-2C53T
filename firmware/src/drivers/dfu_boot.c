@@ -79,9 +79,6 @@ void dfu_request_reboot(void) {
 void dfu_check_magic(void) {
 }
 
-void dfu_check_boot_button(void) {
-}
-
 /* Must match bootloader's definition */
 #define BOOT_COUNTER_MAGIC   0xB0070000
 

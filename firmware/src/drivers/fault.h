@@ -66,11 +66,4 @@ extern volatile fault_record_t g_fault;
  */
 void fault_init(void);
 
-/* True if a valid record from a previous boot is present. */
-bool fault_have_previous(void);
-
-/* Human-readable one-liner for the previous fault, e.g.
- * "BUS pc=0801eac8 cfsr=00008201 t=54780 idle". Empty if there is none. */
-const char *fault_previous_summary(void);
-
 #endif /* FAULT_H */

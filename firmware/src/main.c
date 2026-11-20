@@ -1225,11 +1225,9 @@ int main(void)
      * RAM persists across soft reset, so the magic word survives. */
     dfu_check_magic();
 
-    /* NOTE: Boot button DFU check (dfu_check_boot_button) is disabled for now.
-     * PC8 (POWER) reads LOW during power-on since it's the same button that
-     * turns the device on, causing false DFU entry. Need a different trigger
-     * (e.g., MENU + POWER combo, or long-hold detection with LCD feedback).
-     * For now, use Settings > Firmware Update for software DFU entry. */
+    /* There is no boot-button entry to DFU: PC8 (POWER) reads low during
+     * power-on, being the button that turns the unit on. Settings > Firmware
+     * Update is the way in. */
 
     /* NOTE: EOPB0 must be set to 0xFE (224KB SRAM) via DFU option bytes
      * before this firmware will work. Use:

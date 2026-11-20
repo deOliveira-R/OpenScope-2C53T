@@ -279,11 +279,6 @@ void lcd_write_data8(uint8_t data)
     lcd_bus_delay();
 }
 
-uint16_t lcd_read_data(void)
-{
-    return *LCD_DATA_ADDR;
-}
-
 /* ========================================================================
  * GPIO initialization for EXMC pins
  *
@@ -811,52 +806,4 @@ uint8_t lcd_read_power_mode(void)
     lcd_write_cmd(0x0A);
     (void)*LCD_DATA_ADDR;
     return (uint8_t)*LCD_DATA_ADDR;
-}
-
-void lcd_display_on(void)
-{
-    lcd_write_cmd(ST7789_DISPON);
-}
-
-void lcd_display_off(void)
-{
-    lcd_write_cmd(ST7789_DISPOFF);
-}
-
-void lcd_set_orientation(uint8_t madctl)
-{
-    lcd_write_cmd(ST7789_MADCTL);
-    lcd_write_data8(madctl);
-}
-
-void lcd_set_brightness(uint8_t level)
-{
-    /*
-     * Backlight control depends on hardware wiring.
-     * The 2C53T may use:
-     *   - A GPIO pin with PWM for backlight dimming
-     *   - FPGA command 0x38 for brightness (from 1013D documentation)
-     *
-     * TODO: Determine actual backlight control method from hardware.
-     * For now, this is a placeholder.
-     */
-    (void)level;
-}
-
-/*
- * Hardware reset is optional - depends on whether RST pin is connected
- * to a GPIO. Many designs tie RST to the MCU reset or to a pull-up.
- */
-void lcd_reset(void)
-{
-    /*
-     * If a GPIO is connected to the LCD RST pin:
-     *   gpio_set_pin(LCD_RST_PORT, LCD_RST_PIN, 0);  // RST low
-     *   delay_ms(10);
-     *   gpio_set_pin(LCD_RST_PORT, LCD_RST_PIN, 1);  // RST high
-     *   delay_ms(120);
-     *
-     * TODO: Identify RST pin from hardware teardown.
-     */
-    delay_ms(120);
 }

@@ -44,9 +44,6 @@ void rtt_init(void);
  */
 size_t rtt_write(const void *data, size_t len);
 
-/* Convenience wrapper around rtt_write() for NUL-terminated strings. */
-size_t rtt_puts(const char *s);
-
 /*
  * Read up to len bytes from the down (host -> target) buffer.
  * Never blocks. Returns the number of bytes read, 0 if nothing is pending.

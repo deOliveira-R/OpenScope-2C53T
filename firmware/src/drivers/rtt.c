@@ -191,12 +191,6 @@ size_t rtt_write(const void *data, size_t len)
     return written;
 }
 
-size_t rtt_puts(const char *s)
-{
-    if (s == NULL) return 0;
-    return rtt_write(s, strlen(s));
-}
-
 size_t rtt_read(void *data, size_t len)
 {
     if (!rtt_ready || data == NULL || len == 0) return 0;

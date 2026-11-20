@@ -218,31 +218,3 @@ void settings_ui_draw_about(void)
 /* ═══════════════════════════════════════════════════════════════════
  * Task health diagnostics panel
  * ═══════════════════════════════════════════════════════════════════ */
-
-void draw_health_panel(uint16_t y_start)
-{
-    const task_health_t *tasks = health_get_tasks();
-    int count = health_get_count();
-    char buf[40];
-
-    lcd_fill_rect(0, y_start - 4, LCD_WIDTH, LCD_HEIGHT - y_start + 4,
-                  COLOR_BLACK);
-    font_draw_string(10, y_start - 2, "TASK HEALTH",
-                     COLOR_GRAY, COLOR_BLACK, &font_small);
-
-    for (int i = 0; i < count && i < 4; i++) {
-        uint16_t y = y_start + 14 + i * 16;
-        bool stalled = health_is_stalled(i);
-        uint16_t fg = stalled ? COLOR_RED : COLOR_GREEN;
-
-        snprintf(buf, sizeof(buf), "%-8s", tasks[i].name);
-        font_draw_string(10, y, buf, fg, COLOR_BLACK, &font_small);
-
-        snprintf(buf, sizeof(buf), "stk:%3lu",
-                 (unsigned long)tasks[i].stack_hwm);
-        font_draw_string(80, y, buf, COLOR_GRAY, COLOR_BLACK, &font_small);
-
-        font_draw_string(170, y, stalled ? "STALL" : "OK",
-                         fg, COLOR_BLACK, &font_small);
-    }
-}

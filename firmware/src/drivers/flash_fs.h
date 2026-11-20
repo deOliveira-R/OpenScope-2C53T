@@ -18,18 +18,6 @@ typedef enum {
 /* Initialize filesystem with mutex protection. Call once from main(). */
 flash_fs_error_t flash_fs_init(void);
 
-/* Write data atomically: writes to .tmp then renames. Mutex-protected. */
-flash_fs_error_t flash_fs_write_atomic(const char *path, const void *data, uint32_t len);
-
-/* Read data. Mutex-protected. */
-flash_fs_error_t flash_fs_read(const char *path, void *buf, uint32_t buf_size, uint32_t *bytes_read);
-
-/* Delete a file. Mutex-protected. */
-flash_fs_error_t flash_fs_delete(const char *path);
-
-/* Check if filesystem is initialized */
-bool flash_fs_is_ready(void);
-
 /* ═══════════════════════════════════════════════════════════════════
  * Raw SPI flash access
  *

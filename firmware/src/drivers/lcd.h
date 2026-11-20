@@ -168,14 +168,12 @@ void lcd_fsmc_init(void);       /* Configure EXMC/FSMC bus timing    */
 void lcd_write_cmd(uint8_t cmd);
 void lcd_write_data(uint16_t data);
 void lcd_write_data8(uint8_t data);
-uint16_t lcd_read_data(void);
 
 /* LCD controller initialization */
 void lcd_init(void);            /* Full init: GPIO + FSMC + ST7789 sequence */
 void lcd_panel_init(void);      /* ST7789 sequence only (EXMC already set up) */
 uint8_t lcd_read_power_mode(void); /* RDDPM: 0x9C healthy, 0x08 after a reset */
 void lcd_bus_timing_spec(void);    /* EXMC write/read timing within the ST7789V datasheet at 240 MHz */
-void lcd_reset(void);           /* Hardware reset via GPIO (if RST pin wired) */
 
 /* Drawing window control */
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
@@ -235,12 +233,6 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count);
 /* Text rendering (using embedded 8x16 font) */
 void lcd_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg);
 void lcd_draw_string(uint16_t x, uint16_t y, const char *str, uint16_t fg, uint16_t bg);
-
-/* Display control */
-void lcd_set_brightness(uint8_t level);  /* If backlight PWM is available */
-void lcd_display_on(void);
-void lcd_display_off(void);
-void lcd_set_orientation(uint8_t madctl);
 
 /* 4-bit indexed software shadow of pixels written through lcd_write_data().
  * Used only for USB/debug screenshots when LCD GRAM readback is unreliable. */

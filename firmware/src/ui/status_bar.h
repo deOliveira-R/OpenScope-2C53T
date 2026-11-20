@@ -17,8 +17,7 @@
  *              "< v" trigger (trigger green), "X1 Y1" cursors, "M" mask.
  *   dot        trigger state: green triggered, amber Auto free-run, grey
  *              waiting, armed or stopped (S11).
- *   view word  the scope view (Y-T / ROLL / X-Y / FFT / SPLIT / WFALL), or
- *              the title set with status_bar_set_title().
+ *   view word  the scope view (Y-T / ROLL / X-Y / FFT / SPLIT / WFALL).
  *   battery    22x10 glyph with 4 bars + "%" (B1); bolt while charging;
  *              red blinking + "LOW" when critical.
  *
@@ -77,18 +76,10 @@
 #define IB_CHIP_GAP     3u
 #define IB_FIELD_GAP    3u      /* between volts/div, probe and coupling (a space is 5) */
 
-#define SB_TITLE_MAX    24u     /* bytes kept by status_bar_set_title, incl. NUL */
-
 /* Draw / invalidate (also declared in ui.h, where main.c finds them). */
 void draw_status_bar(void);
 void status_bar_invalidate(void);
 void draw_info_bar(void);
-
-/* The title for the CURRENT mode (copied, at most SB_TITLE_MAX-1 chars): the
- * meter's function name, a page name. It applies only while the mode it was
- * set in stays current; NULL or "" goes back to the default (the mode's name;
- * the scope view word in the scope). Repaints on the next draw_status_bar. */
-void status_bar_set_title(const char *title);
 
 /* Hash of everything draw_info_bar() prints in the scope time view (more than
  * main.c's info_bar_epoch hashes today: the trigger level and the measured

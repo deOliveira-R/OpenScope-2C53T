@@ -52,8 +52,6 @@ void dac_output_stop(void);
 /* The 100-sample DMA source buffer (12-bit codes, right-aligned). */
 uint16_t *dac_output_get_buffer(void);
 
-bool dac_output_is_running(void);
-
 /* TMR7 input clock: APB1 x2 when APB1 is divided (240 MHz on this board,
  * measured live: stock's DIV 1199 / PR 1 gave 998 Hz for 1 kHz). */
 uint32_t dac_output_timer_clock_hz(void);

@@ -98,7 +98,6 @@ void fw_loader_attach_scratch(uint8_t *buf, uint32_t len);
 
 /* Shell entry points (usb_debug.c). */
 bool fw_loader_begin(uint32_t size, uint32_t crc32, uint8_t slot);
-void fw_loader_abort(void);
 bool fw_loader_apply(void);              /* install the just-staged slot  */
 bool fw_loader_install_slot(uint8_t slot); /* fwswap: install from cache  */
 

@@ -46,10 +46,6 @@ bool scope_vpos_active(void);
  * page and returns false. */
 bool scope_vpos_enable(bool on);
 
-/* Decode status of the live page (NONE before init). The full decode is not
- * kept in RAM; the shell re-parses the page for its table view. */
-calpage_status_t scope_vpos_status(void);
-
 /* Re-apply both channels from the current state. No-op when inactive. */
 void scope_vpos_apply(void);
 

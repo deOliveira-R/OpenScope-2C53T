@@ -228,11 +228,6 @@ const instrument_desc_t *model_instrument_find(const char *name);
 bool                     prop_in_instrument(const prop_desc_t *p, const instrument_desc_t *in);
 /* The default of p when `in` starts on defaults: its override, else prop_default(). */
 int32_t                  prop_instrument_default(const prop_desc_t *p, const instrument_desc_t *in);
-/* The instrument the screen and keys are bound to (sys.instrument), or NULL
- * while none is (Home, Settings). The binding limits the UI route only (keys
- * act on what the screen shows); the raw route (get / set) reaches every
- * instrument's properties whatever is bound: see DEFERRED below. */
-const instrument_desc_t *model_instrument_active(void);
 
 /* ── Setting (EXECUTOR ONLY) ─────────────────────────────────────────── */
 /* The single path: (1) RO/NULL -> INVALID; (2) self-cal busy -> BUSY for

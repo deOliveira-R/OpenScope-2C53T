@@ -106,7 +106,7 @@ typedef enum {
  * overlapping the sample buffer with the waterfall (RAM diet, 2026-11-11).
  *
  * Lifetime rules for a sub-tenant:
- *   - only valid while shared_mem_owner() == SHMEM_OWNER_FFT;
+ *   - only valid while the pool's owner is SHMEM_OWNER_FFT;
  *   - shared_mem_acquire() zeroes the pool on an owner *change*, so history
  *     is wiped automatically after an eviction — callers must notice via
  *     shared_mem_transition_count() and reset their own indices.
@@ -148,9 +148,6 @@ uint8_t *shared_mem_acquire(shmem_owner_t owner);
 /* Release the pool. Safe to call if not owned. */
 void shared_mem_release(void);
 
-/* Check current owner */
-shmem_owner_t shared_mem_owner(void);
-
 /* Get pool pointer only if caller is the current owner (NULL otherwise) */
 uint8_t *shared_mem_get(shmem_owner_t expected_owner);
 
@@ -160,9 +157,6 @@ uint32_t shared_mem_size(void);
 /* ═══════════════════════════════════════════════════════════════════
  * Lifecycle helpers
  * ═══════════════════════════════════════════════════════════════════ */
-
-/* Check if the pool is currently free */
-bool shared_mem_is_free(void);
 
 /* Get the display name of the current owner (for diagnostics) */
 const char *shared_mem_owner_name(void);

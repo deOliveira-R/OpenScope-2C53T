@@ -105,26 +105,8 @@ static bool slot_changed(unsigned s, uint32_t key)
     return true;
 }
 
-/* Title for the mode it was set in (status_bar_set_title). */
-static char    s_title[SB_TITLE_MAX];
-static uint8_t s_title_mode = 0xFFu;
-
-void status_bar_set_title(const char *title)
-{
-    if (title == NULL || title[0] == '\0') {
-        s_title_mode = 0xFFu;
-        return;
-    }
-    s_title_mode = 0xFFu;               /* off while the text is replaced */
-    strncpy(s_title, title, sizeof(s_title) - 1u);
-    s_title[sizeof(s_title) - 1u] = '\0';
-    s_title_mode = (uint8_t)current_mode;
-}
-
 static const char *title_for_mode(void)
 {
-    if (s_title_mode == (uint8_t)current_mode)
-        return s_title;
     switch (current_mode) {
     case MODE_MULTIMETER: return "Multimeter";
     case MODE_SIGNAL_GEN: return "Signal Generator";
@@ -293,20 +275,16 @@ static void slot_dot(const theme_t *th, trig_status_t st)
     blit_icon(SB_DOT_X + 1u, 5u, ICON_DOT, c, th->status_bar_bg);
 }
 
-/* The scope's view word, or a title another screen set for the scope. */
+/* The scope's view word. */
 static void slot_view(const theme_t *th, const scope_state_t *ss)
 {
     const char *w;
-    if (s_title_mode == (uint8_t)current_mode) {
-        w = s_title;
-    } else {
-        switch (scope_view) {
-        case SCOPE_VIEW_FFT:       w = "FFT";   break;
-        case SCOPE_VIEW_SPLIT:     w = "SPLIT"; break;
-        case SCOPE_VIEW_WATERFALL: w = "WFALL"; break;
-        case SCOPE_VIEW_XY:        w = "X-Y";   break;
-        default:                   w = ss->roll ? "ROLL" : "Y-T"; break;
-        }
+    switch (scope_view) {
+    case SCOPE_VIEW_FFT:       w = "FFT";   break;
+    case SCOPE_VIEW_SPLIT:     w = "SPLIT"; break;
+    case SCOPE_VIEW_WATERFALL: w = "WFALL"; break;
+    case SCOPE_VIEW_XY:        w = "X-Y";   break;
+    default:                   w = ss->roll ? "ROLL" : "Y-T"; break;
     }
     if (!slot_changed(SL_VIEW, mix_str(0u, w)))
         return;

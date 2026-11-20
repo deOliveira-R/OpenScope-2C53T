@@ -2015,26 +2015,6 @@ void meter_data_process_frame(const volatile uint8_t *frame, uint8_t submode)
     METER_FINISH_FRAME();
 }
 
-bool meter_data_valid(void)
-{
-    return meter_reading.valid;
-}
-
-float meter_data_get_value(void)
-{
-    return meter_reading.value;
-}
-
-const char *meter_data_get_display_str(void)
-{
-    return meter_reading.display_str;
-}
-
-float meter_data_get_bar_fraction(void)
-{
-    return meter_reading.bar_fraction;
-}
-
 bool meter_continuity_is_short(const meter_reading_t *r, float threshold_ohm)
 {
     if (!r->valid) return false;

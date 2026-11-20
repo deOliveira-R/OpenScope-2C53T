@@ -115,11 +115,6 @@ bool scope_vpos_enable(bool on)
     return true;
 }
 
-calpage_status_t scope_vpos_status(void)
-{
-    return vp.status;
-}
-
 static channel_state_t *chan(uint8_t ch)
 {
     scope_state_t *ss = scope_state_get();

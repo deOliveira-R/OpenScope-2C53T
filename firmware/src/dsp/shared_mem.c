@@ -59,11 +59,6 @@ void shared_mem_release(void)
     current_owner = SHMEM_OWNER_NONE;
 }
 
-shmem_owner_t shared_mem_owner(void)
-{
-    return current_owner;
-}
-
 uint8_t *shared_mem_get(shmem_owner_t expected_owner)
 {
     if (current_owner == expected_owner)
@@ -79,11 +74,6 @@ uint32_t shared_mem_size(void)
 /* ═══════════════════════════════════════════════════════════════════
  * Lifecycle helpers
  * ═══════════════════════════════════════════════════════════════════ */
-
-bool shared_mem_is_free(void)
-{
-    return current_owner == SHMEM_OWNER_NONE;
-}
 
 const char *shared_mem_owner_name(void)
 {

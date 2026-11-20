@@ -263,12 +263,10 @@ static void test_geometry(void)
     for (unsigned i = 0; i < 6; i++)
         CHECK(sw(views[i]) + 2u <= SB_VIEW_W, "view word %s", views[i]);
     CHECK(ICON_BATT_W + 2u + sw("100%") + 2u <= SB_BATT_W, "battery glyph + 100%% (%u)", sw("100%"));
-    CHECK(sw("Signal Generator") <= SB_TITLE_W, "default title");
-    /* A title at the copy limit in wide characters still fits. */
-    char wide[SB_TITLE_MAX];
-    memset(wide, 'M', sizeof(wide) - 1u); wide[sizeof(wide) - 1u] = '\0';
-    CHECK(sw(wide) <= SB_TITLE_W, "a %u-char title (%u px) overflows %u px",
-          (unsigned)(SB_TITLE_MAX - 1u), sw(wide), (unsigned)SB_TITLE_W);
+    /* The titles of the non-scope modes (status_bar.c, title_for_mode). */
+    const char *titles[] = { "Multimeter", "Signal Generator", "Settings", "Home" };
+    for (unsigned i = 0; i < sizeof(titles) / sizeof(titles[0]); i++)
+        CHECK(sw(titles[i]) <= SB_TITLE_W, "title %s (%u px) overflows %u px", titles[i], sw(titles[i]), (unsigned)SB_TITLE_W);
 
     /* CH badge: chip + gap + "<vdiv>" "X10" "<coupling>" 3 px apart. Every
      * state the keys reach (DC/AC) fits with the chip at the widest label

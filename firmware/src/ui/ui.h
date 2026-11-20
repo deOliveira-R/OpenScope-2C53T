@@ -271,7 +271,7 @@ extern fft_result_t     fft_result;
  * ═══════════════════════════════════════════════════════════════════ */
 
 /* status_bar.c: draw_status_bar, status_bar_invalidate, draw_info_bar,
- * status_bar_set_title, status_bar_info_epoch (and the bar geometry) */
+ * status_bar_info_epoch (and the bar geometry) */
 #include "status_bar.h"
 void draw_splash(void);
 
@@ -348,8 +348,5 @@ const char *startup_mode_name(startup_mode_t mode);
 /* The home page: home_screen.h (the screen) and home_ui.c (its painting). */
 
 /* The generator page: siggen_screen.h (the screen) and siggen_ui.c (its painting). */
-
-/* settings_ui.c: the Settings paint is declared in settings_screen.h. */
-void draw_health_panel(uint16_t y_start);
 
 #endif /* UI_H */

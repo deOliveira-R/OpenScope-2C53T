@@ -535,14 +535,6 @@ int32_t prop_instrument_default(const prop_desc_t *p, const instrument_desc_t *i
     return prop_default(p);
 }
 
-const instrument_desc_t *model_instrument_active(void)
-{
-    const int32_t v = prop_get(P(SYS_INSTRUMENT));
-    for (uint8_t i = 0; i < N_INSTRUMENTS; i++)
-        if (k_instruments[i].value == v) return &k_instruments[i];
-    return NULL;                                  /* "none": Home or Settings */
-}
-
 /* ═══════════════════════════════════════════════════════════════════
  * Setting
  * ═══════════════════════════════════════════════════════════════════ */

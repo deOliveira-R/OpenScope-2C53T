@@ -228,13 +228,6 @@ bool fw_loader_begin(uint32_t size, uint32_t crc32, uint8_t slot)
     return true;
 }
 
-void fw_loader_abort(void)
-{
-    if (fwl_state == FW_LOADER_RECEIVING) {
-        fwl_fail(FW_LOADER_ERR_TIMEOUT);
-    }
-}
-
 bool fw_loader_active(void)
 {
     return fwl_state == FW_LOADER_RECEIVING;

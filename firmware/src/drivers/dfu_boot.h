@@ -25,12 +25,6 @@
 void dfu_request_reboot(void);
 
 /*
- * Retained for old app-side call sites. POWER-alone recovery is intentionally
- * disabled; recovery entry is owned by the bootloader POWER+PRM check.
- */
-void dfu_check_boot_button(void);
-
-/*
  * Check for the DFU magic word in RAM (set by dfu_request_reboot).
  * If found, clears it and jumps to bootloader. Call before main().
  * Returns normally if no magic word found.
