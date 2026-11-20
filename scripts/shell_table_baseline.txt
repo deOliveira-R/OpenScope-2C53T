@@ -44,6 +44,7 @@ fpga scope center50	cmd_fpga_scope_center50	0x01	fpga scope center50            
 fpga scope coupling	cmd_fpga_scope_coupling	0x00	fpga scope coupling             Coupling label vs PD12/PD13 relay pins (read-only)\r\n
 fpga scope cursor	cmd_fpga_scope_cursor	0x00	fpga scope cursor               X1 X2 X1-X2 Y1 Y2 Y1-Y2 1/dX as the screen computes them\r\n
 fpga scope freq	cmd_fpga_scope_freq	0x00	fpga scope freq [n]             Run the shipped frequency estimator n times, with diagnostics\r\n
+fpga scope livecheck	cmd_ui_livecheck	0x00	fpga scope livecheck [frames]   Live trace redraw: every pixel against the per-pixel rule\r\n
 fpga scope measure	cmd_fpga_scope_measure	0x00	fpga scope measure [reps]       Badge values raw (uV/permille/mHz) for bench validation\r\n
 fpga scope range	cmd_fpga_scope_range	0x02	fpga scope range <0-9> <1|2|both>  Coarse frontend range; channel is MANDATORY\r\n
 fpga scope selfcal	cmd_fpga_scope_selfcal	0x00	fpga scope selfcal [cancel]     Autoset/baseline progress and result\r\n
@@ -64,6 +65,7 @@ gpio scan	cmd_gpio_scan	0x01	gpio scan                       Scan FPGA-related p
 gpio set	cmd_gpio_set	0x02	gpio set <port><pin> <0|1>      Drive GPIO pin (REFUSES if pin is an input)\r\n  e.g.: gpio set B11 1\r\n
 help	cmd_help	0x01	help                            Show this help\r\n
 lcd	cmd_lcd	0x00	lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n
+lcd colcheck	cmd_lcd_colcheck	0x01	lcd colcheck                    Column write against the general stream: same screenshot shadow?\r\n
 lcd readback	cmd_lcd_readback	0x00	lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n
 list	cmd_model_list	0x00	list [prefix|glob]              Properties: name, type, range, value, flags\r\nlist changed [prefix|glob]      Values that differ from the built-in defaults, with the default\r\n
 logo	cmd_logo	0x00	logo [info]                     Boot logo status (CRC-checked)\r\nlogo put <len> <crc>|blk <off> <n> <crc>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\nlogo pos|data <off> <hex>       Upload position / legacy 48-byte hex chunk\r\nlogo show [ms]|clear            Preview now / remove (built-in splash)\r\n

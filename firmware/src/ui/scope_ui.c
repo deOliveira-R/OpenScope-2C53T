@@ -2674,6 +2674,22 @@ void draw_scope_screen(uint32_t frame)
 /* One column of the live band, painted before it is sent (draw_scope_live_frame). */
 static uint16_t s_live_col[LCD_HEIGHT];
 
+/* What each column of the band held when it was last sent: a 32-bit FNV-1a
+ * hash of its pixels. A column whose new pixels hash the same is not sent
+ * again; with a steady trace that is most of them. The hashes are trusted
+ * only while nobody else has drawn on the band's rows (lcd_watch_take) and
+ * the band and its popup hole are where they were. Two different columns
+ * hashing alike would leave the old one on the glass until it changes again
+ * (one chance in 2^32 for each change). */
+static uint32_t s_live_hash[LCD_WIDTH];
+static bool     s_live_hash_valid;
+static bool     s_live_hole_was;
+#define LIVE_HASH_SEED   2166136261u     /* FNV-1a offset basis */
+#define LIVE_HASH_PRIME  16777619u       /* FNV-1a prime */
+/* Columns sent and skipped by the last live frame (`ui dump`). */
+volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
+volatile uint32_t ui_scope_live_send_us;     /* of the frame's time, the part spent sending columns */
+
 /* Rows between two dotted horizontal grid lines: one division of the graticule. */
 #define SCOPE_GRID_ROW_PITCH 26u
 
@@ -2789,6 +2805,14 @@ void draw_scope_live_frame(void)
     if (hole_bot > band_bot)  hole_bot = band_bot;
     if (hole_top >= hole_bot) hole = false;
     popup_hole_last = hole;
+
+    /* May the columns of the last frame be trusted? Not after anybody else
+     * drew on these rows, nor when the band or its hole moved. */
+    lcd_watch_rows(SCOPE_TOP, band_bot);
+    if (lcd_watch_take() || hole != s_live_hole_was) s_live_hash_valid = false;
+    s_live_hole_was = hole;
+    uint16_t cols_sent = 0;
+    uint32_t send_cycles = 0;        /* time inside the panel writes, for `ui dump` */
 
     for (uint16_t x = 0; x < LCD_WIDTH; x++) {
         /* The trace lives in the 301-column window (scope_geom.h); right of
@@ -3016,16 +3040,30 @@ void draw_scope_live_frame(void)
         }
 #endif
 
-        for (uint8_t sg = 0; sg < nseg; sg++) {
-            if (seg_bot[sg] <= seg_top[sg]) continue;
-            lcd_set_window(x, seg_top[sg], 1, (uint16_t)(seg_bot[sg] - seg_top[sg]));
-            lcd_write_pixels(&col[seg_top[sg] - SCOPE_TOP], (uint32_t)(seg_bot[sg] - seg_top[sg]));
+        uint32_t hash = LIVE_HASH_SEED;
+        for (uint16_t i = 0; i < rows; i++) hash = (hash ^ col[i]) * LIVE_HASH_PRIME;
+        if (!s_live_hash_valid || hash != s_live_hash[x]) {
+            s_live_hash[x] = hash;
+            cols_sent++;
+            const uint32_t s0 = DWT->CYCCNT;
+            for (uint8_t sg = 0; sg < nseg; sg++) {
+                if (seg_bot[sg] <= seg_top[sg]) continue;
+                lcd_write_column(x, seg_top[sg], &col[seg_top[sg] - SCOPE_TOP],
+                                 (uint16_t)(seg_bot[sg] - seg_top[sg]));
+            }
+            send_cycles += DWT->CYCCNT - s0;
         }
         if (pbuf && trace) {
             if (on1) persist_note(x, pp1, y1);
             if (on2) persist_note(x, pp2, y2);
         }
     }
+
+    (void)lcd_watch_take();          /* the marks of this frame's own windows */
+    s_live_hash_valid = true;
+    ui_scope_live_cols_sent = cols_sent;
+    ui_scope_live_send_us = send_cycles / (system_core_clock / 1000000u);
+    ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);
 
 #if FEATURE_BENCHSHELL
     if (live_check_frames) live_check_frames--;

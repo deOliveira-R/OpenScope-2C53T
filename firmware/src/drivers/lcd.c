@@ -581,9 +581,29 @@ static inline void lcd_note_drawer(void)
     }
 }
 
+/* The watched rows (lcd.h): a painter that skips what it drew before must
+ * know when somebody else drew there. */
+static uint16_t lcd_watch_y0, lcd_watch_y1;   /* [y0, y1), empty when equal */
+static bool     lcd_watch_dirty = true;
+
+void lcd_watch_rows(uint16_t y0, uint16_t y1)
+{
+    if (y0 != lcd_watch_y0 || y1 != lcd_watch_y1) lcd_watch_dirty = true;
+    lcd_watch_y0 = y0;
+    lcd_watch_y1 = y1;
+}
+
+bool lcd_watch_take(void)
+{
+    const bool d = lcd_watch_dirty;
+    lcd_watch_dirty = false;
+    return d;
+}
+
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
     lcd_note_drawer();
+    if (y < lcd_watch_y1 && (uint32_t)y + h > lcd_watch_y0) lcd_watch_dirty = true;
     uint16_t x_end = x + w - 1;
     uint16_t y_end = y + h - 1;
 
@@ -718,6 +738,33 @@ void lcd_write_pixels(const uint16_t *pixels, uint32_t count)
         const uint16_t p = *pixels++;
         *LCD_DATA_ADDR = p;
         lcd_shadow_write_pixel(p);
+    }
+}
+
+void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count)
+{
+    /* A stream into a window one pixel wide. Same pixels on the panel and the
+     * same entries in the screenshot shadow as lcd_set_window(x, y, 1, count)
+     * followed by lcd_write_pixels(); what differs is that the shadow's
+     * place (the row pointer, which half of the byte, whether the row is on
+     * the shadow's page) is worked out once for the column, where the
+     * general stream works it out again for every pixel. Measured on the
+     * unit, 2026-11-20: the general stream spent about 170 us on a column of
+     * 206 pixels, most of it on that bookkeeping. `lcd colcheck` compares the
+     * two. */
+    lcd_set_window(x, y, 1, count);
+    lcd_shadow_pos = 0;                       /* this call writes the whole window */
+    const bool    in_x  = (x < LCD_WIDTH);
+    const uint8_t shift = (x & 1U) ? 0U : 4U; /* even x: the high half of the byte */
+    const uint8_t keep  = (x & 1U) ? 0xF0U : 0x0FU;
+    for (uint16_t i = 0; i < count; i++) {
+        const uint16_t p  = pixels[i];
+        const uint16_t yy = (uint16_t)(y + i);
+        *LCD_DATA_ADDR = p;
+        if (in_x && yy >= lcd_shadow_page && yy < (uint16_t)(lcd_shadow_page + LCD_SHADOW_HEIGHT)) {
+            uint8_t *cell = &lcd_shadow[yy - lcd_shadow_page][x >> 1];
+            *cell = (uint8_t)((*cell & keep) | (uint8_t)(lcd_shadow_palette_index(p) << shift));
+        }
     }
 }
 

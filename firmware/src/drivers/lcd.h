@@ -17,6 +17,7 @@
 #define LCD_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* ========================================================================
  * Display dimensions
@@ -178,6 +179,15 @@ void lcd_bus_timing_spec(void);    /* EXMC write/read timing within the ST7789V 
 /* Drawing window control */
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
+/* Watched rows. Every drawing call starts with lcd_set_window(), so a window
+ * that touches the rows [y0, y1) marks them as drawn on. A painter that
+ * remembers what it put there (the scope's live band) names the rows, asks
+ * with lcd_watch_take() before it trusts its memory, and calls it again when
+ * it has finished to discard the marks of its own windows. Changing the rows
+ * marks them too. One watcher: the display task. */
+void lcd_watch_rows(uint16_t y0, uint16_t y1);
+bool lcd_watch_take(void);      /* drawn on since the last call? (clears the mark) */
+
 /* ── The one drawer (ARCH-1 V2b) ────────────────────────────────────────
  * Only the display task may draw: two drawers interleave a multi-write
  * frame. The display task names itself here once it runs; from then on every
@@ -229,6 +239,11 @@ void lcd_clear(uint16_t color);
  * supply exactly w*h pixels to fill a window.
  */
 void lcd_write_pixels(const uint16_t *pixels, uint32_t count);
+
+/* One column: `count` pixels downwards from (x, y). The result of
+ * lcd_set_window(x, y, 1, count) + lcd_write_pixels(pixels, count), with the
+ * screenshot shadow's bookkeeping done once for the column. */
+void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count);
 
 /* Text rendering (using embedded 8x16 font) */
 void lcd_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg);

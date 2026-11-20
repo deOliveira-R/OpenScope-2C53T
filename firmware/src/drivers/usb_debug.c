@@ -3667,6 +3667,19 @@ static void cmd_ui_dump(void)
             usb_debug_printf("scope live frame: last %lu us (view_build %lu us), longest %lu us\r\n",
                              (unsigned long)ui_scope_live_us_last, (unsigned long)ui_scope_view_us_last,
                              (unsigned long)ui_scope_live_us_max);
+            extern volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
+            extern volatile uint32_t ui_scope_live_send_us;
+            usb_debug_printf("scope live frame columns: %u sent, %u unchanged and skipped; sending took %lu us\r\n",
+                             (unsigned)ui_scope_live_cols_sent, (unsigned)ui_scope_live_cols_skipped,
+                             (unsigned long)ui_scope_live_send_us);
+            typedef struct { uint32_t n, last_us, max_us; } ui_perf_t;
+            extern volatile ui_perf_t ui_perf[];
+            extern const char *const ui_perf_name[];
+            extern const uint8_t ui_perf_count;
+            for (uint8_t i = 0; i < ui_perf_count; i++)
+                usb_debug_printf("scope %s: %lu times, last %lu us, longest %lu us\r\n", ui_perf_name[i],
+                                 (unsigned long)ui_perf[i].n, (unsigned long)ui_perf[i].last_us,
+                                 (unsigned long)ui_perf[i].max_us);
         }
         usb_debug_printf("lcd foreign_calls=%lu\r\n", (unsigned long)lcd_foreign_calls);
 #if FEATURE_FFT

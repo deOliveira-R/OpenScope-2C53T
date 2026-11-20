@@ -77,6 +77,7 @@ void cmd_spi3_read(const char *args);
 void cmd_spi3_frame(void);
 void cmd_lcd(const char *args);
 void cmd_lcd_readback(const char *args);
+void cmd_lcd_colcheck(void);
 void cmd_spi3_xfer(const char *args);
 void cmd_spi3_acqread(void);
 void cmd_spi3_opread(const char *args);
@@ -142,6 +143,8 @@ void cmd_spi3_seq(const char *args);
           "fpga autowait [ms]              AUTO edge-wait budget before fallback read (EXP-42)\r\n"), \
     CMD_A("fpga meter reinit", cmd_fpga_meter_reinit, 0, \
           "fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n"), \
+    CMD_V("lcd colcheck", cmd_lcd_colcheck, SC_EXACT, \
+          "lcd colcheck                    Column write against the general stream: same screenshot shadow?\r\n"), \
     CMD_A("lcd readback", cmd_lcd_readback, 0, \
           "lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n"), \
     CMD_A("lcd", cmd_lcd, 0, \

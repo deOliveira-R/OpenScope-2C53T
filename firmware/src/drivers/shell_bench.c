@@ -703,6 +703,65 @@ void cmd_ui_livecheck(const char *args)
         usb_send_str("livecheck: no live frame was drawn (is the scope screen up and running?)\r\n");
 }
 
+/* `lcd colcheck`: lcd_write_column() against lcd_set_window() +
+ * lcd_write_pixels(). The same test column is written both ways at several
+ * places (even and odd x, the screen's top and bottom rows, a column that is
+ * off the panel's right edge is not drawn) and the screenshot shadow is read
+ * back after each. Runs on the display task; it paints over a few columns of
+ * whatever screen is up, which the next repaint of that screen restores. */
+#define COLCHECK_LEN 64u                       /* pixels in the test column */
+#define COLCHECK_TIMEOUT_MS 2000u              /* the display task serves a call once per 50 ms frame */
+typedef struct { uint32_t places, pixels, diffs; uint16_t first_x, first_y; } colcheck_t;
+
+static uint8_t colcheck_shadow_at(uint16_t x, uint16_t y)
+{
+    const uint8_t b = lcd_shadow_bits()[(uint32_t)(y - lcd_shadow_page_y()) * LCD_SHADOW_STRIDE + (x >> 1)];
+    return (x & 1u) ? (uint8_t)(b & 0x0Fu) : (uint8_t)(b >> 4);
+}
+
+static void colcheck_run(void *arg)
+{
+    colcheck_t *r = (colcheck_t *)arg;
+    static const uint16_t xs[] = { 0u, 1u, 158u, 159u, LCD_WIDTH - 2u, LCD_WIDTH - 1u };
+    static const uint16_t ys[] = { 0u, 31u, LCD_HEIGHT - COLCHECK_LEN };
+    static uint16_t px[COLCHECK_LEN];
+    static uint8_t  want[COLCHECK_LEN];
+    const uint16_t *pal = lcd_shadow_palette_get();
+
+    for (uint16_t i = 0; i < COLCHECK_LEN; i++)                /* every palette colour, runs and singles */
+        px[i] = pal[((i / 3u) + (i & 1u) * 7u) & 15u];
+    for (unsigned a = 0; a < sizeof xs / sizeof xs[0]; a++) {
+        for (unsigned b = 0; b < sizeof ys / sizeof ys[0]; b++) {
+            const uint16_t x = xs[a], y = ys[b];
+            lcd_set_window(x, y, 1, COLCHECK_LEN);
+            lcd_write_pixels(px, COLCHECK_LEN);
+            for (uint16_t i = 0; i < COLCHECK_LEN; i++) want[i] = colcheck_shadow_at(x, (uint16_t)(y + i));
+            lcd_fill_rect(x, y, 1, COLCHECK_LEN, 0x0000);      /* so that a column write that does nothing shows */
+            lcd_write_column(x, y, px, COLCHECK_LEN);
+            r->places++;
+            for (uint16_t i = 0; i < COLCHECK_LEN; i++) {
+                r->pixels++;
+                if (colcheck_shadow_at(x, (uint16_t)(y + i)) != want[i] && r->diffs++ == 0) {
+                    r->first_x = x; r->first_y = (uint16_t)(y + i);
+                }
+            }
+        }
+    }
+}
+
+void cmd_lcd_colcheck(void)
+{
+    colcheck_t r = { 0 };
+    if (!display_call_sync(colcheck_run, &r, COLCHECK_TIMEOUT_MS)) {
+        usb_send_str("lcd colcheck: the display task did not answer\r\n");
+        return;
+    }
+    usb_debug_printf("lcd colcheck: %lu columns, %lu pixels, %lu shadow entries differ\r\n",
+                     (unsigned long)r.places, (unsigned long)r.pixels, (unsigned long)r.diffs);
+    if (r.diffs)
+        usb_debug_printf("lcd colcheck: first at x=%u y=%u\r\n", (unsigned)r.first_x, (unsigned)r.first_y);
+}
+
 void cmd_buzzer_test(const char *args)
 {
     uint32_t duration = 750;

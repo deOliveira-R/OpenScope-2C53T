@@ -219,6 +219,20 @@ volatile uint32_t ui_scope_full_draws  = 0;
 /* Time of the last live trace redraw and the longest one, microseconds (DWT
  * cycle counter, started by fault.c at boot); `ui dump` prints them. */
 volatile uint32_t ui_scope_live_us_last, ui_scope_live_us_max;
+/* The same for the other paints of the scope screen (`ui dump`): how often
+ * each ran, how long the last and the longest took. */
+typedef struct { uint32_t n, last_us, max_us; } ui_perf_t;
+enum { UI_PERF_FULL, UI_PERF_STRIP, UI_PERF_CURSOR_ROW, UI_PERF_COUNT };
+volatile ui_perf_t ui_perf[UI_PERF_COUNT];
+const char *const ui_perf_name[UI_PERF_COUNT] = { "full redraw", "measurement strip", "cursor row" };
+const uint8_t ui_perf_count = UI_PERF_COUNT;
+#define UI_TIMED(slot, call) do { \
+        const uint32_t c0_ = DWT->CYCCNT; \
+        call; \
+        const uint32_t us_ = (DWT->CYCCNT - c0_) / (system_core_clock / 1000000u); \
+        ui_perf[slot].n++; ui_perf[slot].last_us = us_; \
+        if (us_ > ui_perf[slot].max_us) ui_perf[slot].max_us = us_; \
+    } while (0)
 volatile uint32_t ui_scope_live_draws  = 0;
 volatile uint32_t ui_redraw_all_count  = 0;   /* DCMD_REDRAW_ALL handled (any mode) */
 volatile uint32_t ui_scope_skipped     = 0;
@@ -588,7 +602,7 @@ static void scope_render(uint32_t frame, redraw_action_t action)
     }
 #endif
     ui_scope_full_draws++;
-    draw_scope_screen(frame);
+    UI_TIMED(UI_PERF_FULL, draw_scope_screen(frame));
 }
 
 /* ── The scope's paint module (ui/scope_screen.h) ────────────────────
@@ -736,7 +750,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
         const bool yt_view = !page_up;
 #endif
         if (act != REDRAW_SKIP && yt_view)
-            scope_ui_cursor_row_refresh();   /* only when its text changed */
+            UI_TIMED(UI_PERF_CURSOR_ROW, scope_ui_cursor_row_refresh());   /* only when its text changed */
         /* The badges between full frames (the live frame does not
          * touch the strip): in place, twice a second, running only
          * (a held record's values do not change). */
@@ -749,7 +763,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
                                  (chg.strip && act == REDRAW_INCREMENTAL))) {
                 /* ... and at once after a soft change (a new range or
                  * probe rescales the values). */
-                scope_ui_strip_refresh();
+                UI_TIMED(UI_PERF_STRIP, scope_ui_strip_refresh());
                 last_strip = frame;
             }
         }
