@@ -284,6 +284,9 @@ void draw_splash(void);
  *   draw_scope_live_frame  only the columns of the plot that changed. */
 void draw_scope_screen(uint32_t frame);
 void draw_scope_live_frame(uint32_t frame);
+/* Bit 0 CH1, bit 1 CH2: the last Y-T frame drew samples of the channel that
+ * are valid but off the plot. */
+uint8_t scope_yt_off_plot(void);
 /* The rows between the status bar and the plot, in every scope view. */
 void scope_ui_paint_margin(void);
 void scope_show_popup(const char *text);

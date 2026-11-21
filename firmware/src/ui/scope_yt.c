@@ -31,6 +31,13 @@ volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
 volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
 
 #endif
+/* Bit 0 CH1, bit 1 CH2: in the last Y-T frame the channel had samples that
+ * are valid but off the plot (and not at the converter's limit). The info
+ * bar's channel badge shows it (scope_yt_off_plot). */
+static volatile uint8_t s_off_plot;
+
+uint8_t scope_yt_off_plot(void) { return s_off_plot; }
+
 /* Time view_build() took in the last frame of a record, microseconds (`ui dump`). */
 volatile uint32_t ui_scope_view_us_last;
 
@@ -94,6 +101,7 @@ typedef struct {
     /* Columns where a trace sits on a converter rail: one bit per column,
      * per channel (yt_rail_columns). */
     uint8_t      rail[2][(SCOPE_GEOM_COLS + 7u) / 8u];
+    uint8_t      off_plot;                  /* bit per channel: a column's sample was off the plot this frame */
     int16_t      trig_y;                    /* the trigger line's row */
     uint16_t     trig_dots;                 /* its dot mask */
     int16_t      p1, p2, mp;
@@ -108,7 +116,9 @@ typedef struct {
     int16_t  y[2];                  /* its row */
     int16_t  lo[2], hi[2];          /* the rows its trace covers */
     int16_t  from[2];               /* the previous column's row, -1 at the first: the persistence feed */
-    uint16_t color[2];              /* the channel's, or what says the trace is wrong here (yt_column) */
+    uint16_t color[2];              /* the trace's colour here: the channel's, or the warning colour where it fails the mask */
+    int16_t  tip_lo[2], tip_hi[2];  /* the rows of this column's own sample, without the span to the previous column */
+    uint16_t tip[2];                /* their colour: a clip colour when the sample is cut off, else color[] */
     int16_t  bound_lo[2], bound_hi[2];   /* rows of the mask bounds, -1: none */
     uint16_t strip_color;           /* the mask verdict strip's colour here, 0: none */
     bool     strip_dotted;          /* ... on every other pixel only */
@@ -235,6 +245,7 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
     f->trig_dots = scope_trig_level_focus ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
 
     f->p1 = f->p2 = f->mp = 0;
+    f->off_plot = 0;
 }
 
 /* Work out column x into c, and advance the frame's previous-column rows. */
@@ -276,19 +287,23 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
             if (*prev[ch] > c->hi[ch]) c->hi[ch] = *prev[ch];
         }
         *prev[ch] = y;
-        /* A sample under the strip would paint nothing: its trace is drawn
-         * on the last rows that can be seen, in the off-plot colour. */
-        if (c->on[ch] && landed >= seen_bot && c->lo[ch] > seen_bot - SCOPE_TRACE_ROWS)
-            c->lo[ch] = (int16_t)(seen_bot - SCOPE_TRACE_ROWS);
+        /* The sample's own rows. One under the strip would paint nothing:
+         * it is drawn on the last rows that can be seen. */
+        c->tip_lo[ch] = y;
+        if (c->on[ch] && landed >= seen_bot) {
+            c->tip_lo[ch] = (int16_t)(seen_bot - SCOPE_TRACE_ROWS);
+            if (c->lo[ch] > c->tip_lo[ch]) c->lo[ch] = c->tip_lo[ch];
+        }
+        c->tip_hi[ch] = (int16_t)(c->tip_lo[ch] + SCOPE_TRACE_ROWS - 1);
 
-        /* The trace's colour says when it is wrong here, the worst case
-         * first: the converter clipped (the data is lost), it is outside
-         * the mask, it is valid but off the plot. */
+        /* A column outside the mask is drawn in the warning colour, span
+         * and all. A sample that is cut off colours its own rows only (the
+         * span to the previous column is not cut off): the converter's
+         * limit first, where the data is lost, then off the plot. */
         const bool at_rail = c->on[ch] && (f->rail[ch][x >> 3] & (1u << (x & 7u))) != 0u;
-        c->color[ch] = at_rail ? th->clip_converter
-                     : mask_px_fail((int8_t)ch, (int)x) ? th->warning
-                     : off_plot ? th->clip_screen
-                     : ch_color[ch];
+        c->color[ch] = mask_px_fail((int8_t)ch, (int)x) ? th->warning : ch_color[ch];
+        c->tip[ch] = at_rail ? th->clip_converter : off_plot ? th->clip_screen : c->color[ch];
+        if (off_plot && !at_rail) f->off_plot |= (uint8_t)(1u << ch);
         /* The mask's bounds are dotted (every other column), through the
          * channel's own map. */
         c->bound_lo[ch] = c->bound_hi[ch] = -1;
@@ -402,8 +417,11 @@ static void el_mask_bounds(const yt_frame_t *f, const yt_col_t *c, uint16_t x, c
 static void el_traces(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)f; (void)x;
-    for (uint8_t ch = 0; ch < 2u; ch++)
-        if (c->on[ch]) strip_span(s, c->lo[ch], c->hi[ch], c->color[ch]);
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        if (!c->on[ch]) continue;
+        strip_span(s, c->lo[ch], c->hi[ch], c->color[ch]);
+        if (c->tip[ch] != c->color[ch]) strip_span(s, c->tip_lo[ch], c->tip_hi[ch], c->tip[ch]);
+    }
 }
 
 /* The demo picture and its "DEMO" mark, in the warning colour beside the
@@ -541,8 +559,12 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
             want = th->warning;                    /* math zero tick */
         else if (mstrip && y >= (uint16_t)s->hi - MASK_STRIP_H && (!mdot || ((x + y) & 1u) == 0u))
             want = mstrip;
+        else if (c->on[1] && (int16_t)y >= c->tip_lo[1] && (int16_t)y <= c->tip_hi[1])
+            want = c->tip[1];
         else if (c->on[1] && (int16_t)y >= c->lo[1] && (int16_t)y <= c->hi[1])
             want = c->color[1];
+        else if (c->on[0] && (int16_t)y >= c->tip_lo[0] && (int16_t)y <= c->tip_hi[0])
+            want = c->tip[0];
         else if (c->on[0] && (int16_t)y >= c->lo[0] && (int16_t)y <= c->hi[0])
             want = c->color[0];
         else if ((int16_t)y == c->bound_lo[0] || (int16_t)y == c->bound_hi[0] ||
@@ -617,6 +639,7 @@ void scope_yt_draw(bool all, uint32_t frame)
     const uint32_t send0 = lcd_perf_column_cycles;
     const uint16_t cols_sent = canvas_draw_columns(&cf);
 
+    s_off_plot = f.off_plot;
     ui_scope_live_cols_sent = cols_sent;
     ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
     ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);

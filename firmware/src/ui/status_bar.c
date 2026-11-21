@@ -347,13 +347,21 @@ static uint32_t s_info_drawn_epoch;
 static bool s_info_drawn;
 static uint8_t s_info_drawn_clip;      /* info_clip() as last drawn */
 
-/* Bit 0 CH1, bit 1 CH2: the channel is on and its last record holds an ADC
- * rail for REC_RAIL_RUN_MIN samples in a row (units.h rec_rail_run). Over
- * the record's valid part: samples 1..1023 (sample 0 is the one the seam
- * search also skips, a stray head value on unit #1, trig_edge.c). 0 before
- * the first record and in Roll, which draws its own point FIFO, not these
- * buffers. */
+/* What the channel badges say about a cut-off trace, the two cases the
+ * trace's own colours show (theme.h clip_converter, clip_screen).
+ * Bit 0 CH1, bit 1 CH2 (INFO_CLIP_CONVERTER): the channel is on and its last
+ * record holds an ADC rail for REC_RAIL_RUN_MIN samples in a row (units.h
+ * rec_rail_run). Over the record's valid part: samples 1..1023 (sample 0 is
+ * the one the seam search also skips, a stray head value on unit #1,
+ * trig_edge.c).
+ * Bit 2 CH1, bit 3 CH2 (INFO_CLIP_SCREEN): the Y-T plot drew samples of the
+ * channel that are valid but off the plot (scope_yt_off_plot), and the
+ * channel is not at a rail; in the Y-T view only.
+ * 0 before the first record and in Roll, which draws its own point FIFO,
+ * not these buffers. */
 #define INFO_CLIP_FIRST 1u
+#define INFO_CLIP_CONVERTER(ch)  (uint8_t)(1u << ((ch) - 1u))       /* ch 1 or 2 */
+#define INFO_CLIP_SCREEN(ch)     (uint8_t)(4u << ((ch) - 1u))
 static uint8_t info_clip(void)
 {
     const scope_state_t *ss = scope_state_get();
@@ -362,6 +370,13 @@ static uint8_t info_clip(void)
     uint8_t m = 0u;
     if (ss->ch1.enabled && rec_rail_run(fpga_get_ch1_buf() + INFO_CLIP_FIRST, n, REC_RAIL_RUN_MIN)) m |= 1u;
     if (ss->ch2.enabled && rec_rail_run(fpga_get_ch2_buf() + INFO_CLIP_FIRST, n, REC_RAIL_RUN_MIN)) m |= 2u;
+    if (scope_view == SCOPE_VIEW_TIME) {
+        const uint8_t off = scope_yt_off_plot();
+        for (uint8_t ch = 1u; ch <= 2u; ch++)
+            if ((off & (1u << (ch - 1u))) && !(m & INFO_CLIP_CONVERTER(ch)) &&
+                (ch == 1u ? ss->ch1.enabled : ss->ch2.enabled))
+                m |= INFO_CLIP_SCREEN(ch);
+    }
     return m;
 }
 
@@ -464,7 +479,7 @@ static void ch_fields(uint8_t ch, const channel_state_t *c, ch_fields_t *f)
  * `col`. With `right` the badge ends at x; otherwise it starts there. If it
  * would not fit IB_CH_W the chip goes (the colour and side still say which). */
 static void draw_ch_badge(uint16_t x, bool right, uint8_t ch, const channel_state_t *c,
-                          uint16_t col, uint16_t bg, bool clipped, uint16_t warn)
+                          uint16_t col, uint16_t bg, bool clipped, uint16_t clip_col)
 {
     ch_fields_t f;
     ch_fields(ch, c, &f);
@@ -475,14 +490,14 @@ static void draw_ch_badge(uint16_t x, bool right, uint8_t ch, const channel_stat
     const uint16_t w  = (uint16_t)((chip ? IB_CHIP_W + IB_CHIP_GAP : 0u) + tw);
     uint16_t x0 = right ? (uint16_t)(x - w) : x;
     if (chip) {
-        /* A record at an ADC rail: the chip turns the warning colour. */
+        /* A cut-off trace: the chip takes the clip colour the trace has. */
         const char num[2] = { (char)('0' + ch), '\0' };
-        lcd_fill_rect(x0, IB_TEXT_Y, IB_CHIP_W, 12, clipped ? warn : col);
+        lcd_fill_rect(x0, IB_TEXT_Y, IB_CHIP_W, 12, clipped ? clip_col : col);
         text_over((uint16_t)(x0 + (IB_CHIP_W - font_string_width(num, &font_small) + 1u) / 2u),
                   IB_TEXT_Y, num, bg);
         x0 = (uint16_t)(x0 + IB_CHIP_W + IB_CHIP_GAP);
     }
-    x0 = (uint16_t)(x0 + font_draw_string(x0, IB_TEXT_Y, f.vdiv, (clipped && !chip) ? warn : col, bg,
+    x0 = (uint16_t)(x0 + font_draw_string(x0, IB_TEXT_Y, f.vdiv, (clipped && !chip) ? clip_col : col, bg,
                                           &font_small) + IB_FIELD_GAP);
     x0 = (uint16_t)(x0 + font_draw_string(x0, IB_TEXT_Y, f.probe, col, bg, &font_small) + IB_FIELD_GAP);
     font_draw_string(x0, IB_TEXT_Y, f.cpl, col, bg, &font_small);
@@ -590,8 +605,8 @@ void draw_info_bar(void)
                                    !ac->enabled ? th->text_secondary
                                    : ach == 2u ? th->ch2 : th->ch1, ib, &font_small);
             const uint8_t clip = info_clip();
-            if (clip & (1u << (ach - 1u)))
-                font_draw_string(176, LCD_HEIGHT - 14, "CLIP", th->warning, ib, &font_small);
+            if (clip & INFO_CLIP_CONVERTER(ach))
+                font_draw_string(176, LCD_HEIGHT - 14, "CLIP", th->clip_converter, ib, &font_small);
             s_info_drawn_epoch = status_bar_info_epoch();
             s_info_drawn_clip = clip;
             s_info_drawn = true;
@@ -613,10 +628,14 @@ void draw_info_bar(void)
              */
             const uint8_t clip = info_clip();
             draw_ch_badge(IB_CH1_X, false, 1u, &ss->ch1,
-                          ss->ch1.enabled ? th->ch1 : th->text_secondary, ib, (clip & 1u) != 0u, th->warning);
+                          ss->ch1.enabled ? th->ch1 : th->text_secondary, ib,
+                          (clip & (INFO_CLIP_CONVERTER(1u) | INFO_CLIP_SCREEN(1u))) != 0u,
+                          (clip & INFO_CLIP_CONVERTER(1u)) ? th->clip_converter : th->clip_screen);
             draw_trig_badge(th, ss, ib);
             draw_ch_badge(IB_CH2_X + IB_CH_W, true, 2u, &ss->ch2,
-                          ss->ch2.enabled ? th->ch2 : th->text_secondary, ib, (clip & 2u) != 0u, th->warning);
+                          ss->ch2.enabled ? th->ch2 : th->text_secondary, ib,
+                          (clip & (INFO_CLIP_CONVERTER(2u) | INFO_CLIP_SCREEN(2u))) != 0u,
+                          (clip & INFO_CLIP_CONVERTER(2u)) ? th->clip_converter : th->clip_screen);
             s_info_drawn_epoch = status_bar_info_epoch();
             s_info_drawn_clip = clip;
             s_info_drawn = true;
