@@ -50,6 +50,7 @@
 #include "scope_state.h"
 #include "scope_timebase.h"
 #include "scope_vpos.h"
+#include "units.h"                           /* rec_rail_run */
 #include "usb_debug.h"
 
 #include "FreeRTOS.h"
@@ -285,6 +286,17 @@ static bool poll_record(void)
     r.trig_src   = cap.trig_src;
     r.trig_mode  = cap.trig_mode;
     r.cap_mask   = cap.mask;
+    /* Clip mask: a channel's bit is set when the samples this frame sends are
+     * clipped (units.h rec_clipped, the rule the screen's badge uses): the
+     * input went past the range and the record holds the
+     * rail, not the signal. It is in the stream so a host does not draw or
+     * analyse cut-off data as if it were the signal, and does not need to
+     * know the rail codes. Bit by channel number; scanned before the
+     * generation check below, so a record replaced meanwhile is not sent
+     * with another record's mask. */
+    for (uint8_t i = 0; i < r.nch; i++)
+        if (rec_clipped(r.ch[i].codes, r.n))
+            r.clip_mask |= r.ch[i].ch ? SF_CLIP_CH2 : SF_CLIP_CH1;
     if (fpga_acq_frame_generation() != g0) return false;  /* a commit hit the metadata: next pass */
 
     if (s.have_gen) {

@@ -219,6 +219,7 @@ bool sf_send_record(sf_writer_t *w, sf_sink_fn s, void *ctx, uint16_t seq, const
     sf_u8(w, r->trig_mode);
     sf_u8(w, r->cap_mask);
     sf_u8(w, SF_REC_CAP_VERSION);
+    sf_u8(w, r->clip_mask);                  /* 1.3, after the version byte */
     return sf_end(w);
 }
 

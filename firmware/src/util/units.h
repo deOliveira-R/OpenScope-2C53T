@@ -90,6 +90,16 @@ static inline int rec_rail_run(const volatile uint8_t *rec, uint32_t n, uint32_t
     return 0;
 }
 
+/* A whole record of n samples is clipped: rec_rail_run over its valid part.
+ * Sample 0 is left out: it is a stray head value on unit #1 (the seam search
+ * skips it too, trig_edge.c). The one rule for everything that says "this
+ * record is clipped": the info bar's badge and the stream's clip_mask. */
+#define REC_CLIP_FIRST 1u
+static inline int rec_clipped(const volatile uint8_t *rec, uint32_t n)
+{
+    return (rec && n > REC_CLIP_FIRST) ? rec_rail_run(rec + REC_CLIP_FIRST, n - REC_CLIP_FIRST, REC_RAIL_RUN_MIN) : 0;
+}
+
 /* Inverse; a record code above REC_CODE_MAX saturates at raw 255. */
 static inline adc_raw_t raw_from_rec(rec_code_t c)
 {

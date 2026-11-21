@@ -37,7 +37,8 @@
 #define SF_PACKET          64u          /* USB full-speed bulk packet */
 
 #define SF_PROTO_MAJOR     1u
-#define SF_PROTO_MINOR     2u     /* 1.1: RECORD capture block, STALE flag; 1.2: HELLO features */
+#define SF_PROTO_MINOR     3u     /* 1.1: RECORD capture block, STALE flag; 1.2: HELLO features;
+                                   * 1.3: RECORD clip_mask */
 
 /* Frame types. Codes are never reused. */
 enum {
@@ -88,9 +89,13 @@ enum {
 #define SF_REC_FIXED_LEN   24u     /* RECORD bytes before the channel table */
 #define SF_REC_CH_LEN      16u     /* one channel table entry               */
 #define SF_REC_TAIL_LEN    4u      /* gen_end                               */
-#define SF_REC_CAP_LEN     7u      /* 1.1 capture block after gen_end       */
-#define SF_REC_CAP_VERSION 1u
+#define SF_REC_CAP_LEN     8u      /* capture block after gen_end (version 2) */
+#define SF_REC_CAP_VERSION 2u      /* 1: 1.1 block (7 bytes); 2: 1.3, + clip_mask */
 #define SF_PROPS_PAIR_LEN  6u
+
+/* RECORD clip_mask bits, by channel number (not by position in the table). */
+#define SF_CLIP_CH1        0x01u
+#define SF_CLIP_CH2        0x02u
 
 /* ── checksums ──────────────────────────────────────────────────────── */
 uint16_t sf_crc16(uint16_t crc, const uint8_t *p, uint32_t n);   /* seed 0xFFFF   */
@@ -162,6 +167,7 @@ typedef struct {
     /* 1.1 capture block: the trigger and routing the record was captured with */
     int16_t  trig_level;            /* UI level -100..100 */
     uint8_t  trig_edge, trig_src, trig_mode, cap_mask;
+    uint8_t  clip_mask;             /* 1.3: SF_CLIP_*, the channel's samples hold a converter rail run */
 } sf_record_t;
 
 typedef struct {

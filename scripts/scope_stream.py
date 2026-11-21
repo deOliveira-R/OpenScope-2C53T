@@ -54,6 +54,9 @@ TYPE_NAMES = {1: "HELLO", 2: "PROPS", 3: "RECORD", 4: "METER", 5: "STATS", 6: "P
 REC_INTERLEAVED, REC_TIME_ORDERED, REC_ROLL = 1, 2, 4
 REC_COHERENT, REC_RUNNING, REC_TRUE_SCALE = 8, 16, 32
 REC_STALE = 64              # 1.1: captured under a configuration no longer in force
+REC_CAP_V1_LEN = 7          # 1.1 capture block after gen_end (cap_version 1)
+REC_CAP_VERSION_CLIP = 2    # 1.3: the cap_version from which the block ends with clip_mask
+CLIP_CH1, CLIP_CH2 = 0x01, 0x02   # 1.3 RECORD clip_mask: bit by channel number
 FLAG_REPLAY = 0x01          # header flags: a copy re-sent from a broker's cache
 FLAG_FILTERED = 0x02        # a broker left other types out of this client's stream: seq gaps expected
 TRIG_NONE = 0xFFFF
@@ -215,9 +218,11 @@ def decode(ftype, payload):
         d["ch"] = chans
         d["gen_end"] = r.take("I")
         d["torn"] = d["gen_end"] != d["gen"]
-        if len(payload) - r.o >= 7:     # 1.1 capture block: trigger and routing at capture
+        if len(payload) - r.o >= REC_CAP_V1_LEN:     # 1.1 capture block: trigger and routing at capture
             (d["trig_level"], d["trig_edge"], d["trig_src"], d["trig_mode"], d["cap_mask"],
              d["cap_version"]) = r.take("hBBBBB")
+            if d["cap_version"] >= REC_CAP_VERSION_CLIP and len(payload) - r.o >= 1:   # 1.3; absent from a 1.1 / 1.2 device
+                d["clip_mask"] = r.take("B")
     elif ftype == T_METER:
         (d["update_count"], d["t_ms"], d["value"], d["bcd"], d["func"], d["auto_fn"], d["result_class"],
          d["status_code"], d["decimal_pos"], d["range_index"], d["flags"]) = r.take("IIfiBBBBBBB")
@@ -298,6 +303,8 @@ def encode_payload(d):
         if "cap_version" in d:
             out += struct.pack("<hBBBBB", d["trig_level"], d["trig_edge"], d["trig_src"], d["trig_mode"],
                                d["cap_mask"], d["cap_version"])
+            if "clip_mask" in d:
+                out += struct.pack("<B", d["clip_mask"])
         return out
     if t == T_METER:
         return struct.pack("<IIfiBBBBBBB", d["update_count"], d["t_ms"], d["value"], d["bcd"], d["func"],
@@ -338,6 +345,7 @@ class Stats:
         self.filtered = 0
         self.rec_kinds = {}       # (kind, has trigger index) -> records
         self.stale = 0            # records flagged STALE (1.1)
+        self.clipped = [0, 0]     # records with CH1 / CH2 clipped at the converter (1.3 clip_mask)
 
     def props_by_name(self):
         """Latest PROPS as {name: value} (names from PROPDESC)."""
@@ -395,6 +403,9 @@ class Stats:
             self.records += 1
             if d["flags"] & REC_STALE:
                 self.stale += 1
+            for i, bit in enumerate((CLIP_CH1, CLIP_CH2)):
+                if d.get("clip_mask", 0) & bit:
+                    self.clipped[i] += 1
             k = (d["kind"], d["trig_idx"] != TRIG_NONE)
             self.rec_kinds[k] = self.rec_kinds.get(k, 0) + 1
             if now is not None:
@@ -425,6 +436,7 @@ class Stats:
             self.crc_errors, self.truncated, self.decode_errors, self.replayed))
         p("records=%d torn=%d stale=%d gen_missed=%d (records published but not received)" % (
             self.records, self.torn, self.stale, self.gen_missed))
+        p("records clipped at the converter: CH1=%d CH2=%d" % tuple(self.clipped))
         if self.rec_kinds:
             p("records by kind: " + " ".join("%s/%s=%d" % (KIND_NAMES.get(k, k).replace(" ", "_"),
                                                            "index" if i else "no_index", n)
@@ -1617,12 +1629,29 @@ def selftest():
                 check_frame(e[1], g, fail)
     ref = got
 
-    # 1b. protocol versions: the vectors are 1.2 (HELLO carries the feature mask); the frozen
-    #     1.1 vectors (v1_1/, the encoder before the field existed) must decode as before,
-    #     with no mask; a 1.0 HELLO too. An unknown bit keeps its number.
+    # 1b. protocol versions: the vectors are 1.3 (HELLO carries the feature mask, RECORD the
+    #     clip_mask); the frozen 1.1 vectors (v1_1/, the encoder before either field existed)
+    #     must decode as before, with no mask; a 1.0 HELLO too. An unknown bit keeps its number.
     hello = decode(T_HELLO, [g for g in got if g[0] == "frame" and g[1] == T_HELLO][0][4])
-    if hello.get("proto_minor") != 2 or hello.get("features") != 0x80000005:
-        fail("1.2 HELLO: minor %r features %r" % (hello.get("proto_minor"), hello.get("features")))
+    if hello.get("proto_minor") != 3 or hello.get("features") != 0x80000005:
+        fail("1.3 HELLO: minor %r features %r" % (hello.get("proto_minor"), hello.get("features")))
+    # 1.3 RECORD: cap_version 2 and a clip_mask byte at the end of the payload; every mask value
+    # decodes to itself and re-encodes to the same bytes (the C encoder's record, last byte set)
+    rec13 = [g[4] for g in got if g[0] == "frame" and g[1] == T_RECORD][0]
+    r13 = decode(T_RECORD, rec13)
+    if r13.get("cap_version") != REC_CAP_VERSION_CLIP or r13.get("clip_mask") != CLIP_CH2:
+        fail("1.3 RECORD: cap_version %r clip_mask %r" % (r13.get("cap_version"), r13.get("clip_mask")))
+    for m in (0, CLIP_CH1, CLIP_CH2, CLIP_CH1 | CLIP_CH2):
+        b = rec13[:-1] + bytes([m])
+        dm = decode(T_RECORD, b)
+        if dm.get("clip_mask") != m or encode_payload(dm) != b:
+            fail("1.3 RECORD clip_mask %d: decoded %r, round trip %s"
+                 % (m, dm.get("clip_mask"), "ok" if encode_payload(dm) == b else "differs"))
+    # a version-1 capture block cut from the same record (no trailing byte): no clip_mask
+    r12 = rec13[:-2] + bytes([1])
+    d12 = decode(T_RECORD, r12)
+    if d12.get("cap_version") != 1 or "clip_mask" in d12 or encode_payload(d12) != r12:
+        fail("version-1 capture block: %r" % {k: d12.get(k) for k in ("cap_version", "clip_mask")})
     bits = {0: "stream", 1: "fft", 2: "usbdrive", 3: "benchshell", 4: "meterdebug"}
     if feature_names(0x80000005, bits) != ["stream", "usbdrive", "bit31"]:
         fail("feature names: %s" % feature_names(0x80000005, bits))
@@ -1650,6 +1679,11 @@ def selftest():
             fail("1.1 HELLO: minor %r, features %r" % (h11.get("proto_minor"), h11.get("features")))
         if "does not report" not in hello_features_text(h11):
             fail("1.1 HELLO text: %s" % hello_features_text(h11))
+        for g in got11:
+            if g[0] == "frame" and g[1] == T_RECORD:
+                r11 = decode(T_RECORD, g[4])
+                if r11.get("cap_version") != 1 or "clip_mask" in r11 or encode_payload(r11) != g[4]:
+                    fail("1.1 RECORD: cap_version %r, clip_mask %r" % (r11.get("cap_version"), r11.get("clip_mask")))
         st11 = Stats()
         for e in collect([vec11]):
             st11.event(e)

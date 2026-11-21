@@ -1,8 +1,8 @@
 # Binary stream protocol (FEATURE_STREAM)
 
-Status: prototype, protocol 1.2 (1.0 plus the RECORD capture block and the STALE flag in 1.1, plus the HELLO
-feature mask in 1.2). Firmware: `firmware/src/stream/`, the build feature `stream` of `firmware/features.mk`
-(on in the bench image `app-coldtrace-meter`; `make WITH=stream` elsewhere).
+Status: prototype, protocol 1.3 (1.0 plus the RECORD capture block and the STALE flag in 1.1, plus the HELLO
+feature mask in 1.2, plus the RECORD clip mask in 1.3). Firmware: `firmware/src/stream/`, the build feature
+`stream` of `firmware/features.mk` (on in the bench image `app-coldtrace-meter`; `make WITH=stream` elsewhere).
 Host: `scripts/scope_stream.py`. Encoder test and cross-check vectors: `firmware/tests/test_stream.c`,
 `firmware/tests/fixtures/stream/` (`v1_1/` holds the frozen 1.1 vectors: the host must keep decoding them).
 Host self-tests: `make -C firmware test-stream-host`.
@@ -104,7 +104,7 @@ Strings are `u8 length` + bytes (no NUL).
 
 | field | type | |
 |---|---|---|
-| proto_major, proto_minor | u8, u8 | 1, 2 |
+| proto_major, proto_minor | u8, u8 | 1, 3 |
 | caps | u8 | what this firmware can send: bit0 scope, bit1 meter, bit2 props |
 | on | u8 | what this `stream on` asked for (same bits) |
 | max_payload | u16 | 4096 |
@@ -163,7 +163,8 @@ moves no epoch. The hash sees every writer.
 | trig_level | i16 | 1.1: the trigger level it was captured with (UI units, -100..100) |
 | trig_edge, trig_src, trig_mode | u8 x 3 | 1.1: 0 rising / 1 falling; 0 CH1 / 1 CH2; 0 Auto / 1 Normal / 2 Single |
 | cap_mask | u8 | 1.1: converter routing at capture: 1 CH1, 2 CH2, 3 both |
-| cap_version | u8 | 1.1: 1 |
+| cap_version | u8 | 1.1: 1; 1.3: 2. A reader takes 1 as a block that ends here, with no `clip_mask` |
+| clip_mask | u8 | 1.3: the channel's samples are clipped at the converter: bit0 CH1, bit1 CH2 (by channel number, not table position); 0 for a channel the record does not hold; bits 2..7 0 |
 
 **Capture configuration (1.1).** The channel table and the capture block describe the configuration the
 record was captured with, never the settings now. The acquisition task (`src/dsp/acq_cfg.h`) notes the
@@ -181,6 +182,14 @@ samples, and comparing it would drop the single record a SINGLE armed just befor
 `fpga cfgsettle [ms|off|default]` shows how many records were refused and sets the margin (`off` restores
 the old behaviour, for an A/B in one boot).
 
+**Clipped at the converter (1.3).** A channel's `clip_mask` bit is set when its samples in this record hold
+a converter rail, code 0 or code 227 and above, for at least 3 samples in a row (`rec_clipped` and
+`REC_RAIL_RUN_MIN` in `firmware/src/util/units.h`; a single rail sample is an edge outlier, not a clip;
+sample 0 is not looked at). It is the rule the device's own channel badge uses. It
+is a property of the data: the input went past the converter's range and those samples are the rail, not the
+signal, so a host should not draw or analyse them as the signal. A valid sample that merely falls outside the
+device's plot is never flagged. An interleaved record can set only bit0.
+
 A triggered record (`kind` 1) is time-ordered only when the acquisition finds the seam of the FPGA's write
 pointer (`fpga_acq_unrotate_staging`). For a fast periodic signal (many periods per record) there is no seam
 to find, so `trig_idx` is 0xFFFF while the record is triggered; the screen then aligns it with its soft
@@ -196,7 +205,7 @@ centre line at code 100 (true scale).
 mix two captures. Discard or mark it. **Missed**: a step in `gen` larger than 2 means records were published
 that the host never got (sent or dropped, the firmware counts which).
 
-2 channels: 2115-byte payload, 2129 bytes on the wire (34 packets). 1 channel: 1075 / 1089 (18 packets). (1.0: 2108 / 2122 and 1068 / 1082.)
+2 channels: 2116-byte payload, 2130 bytes on the wire (34 packets). 1 channel: 1076 / 1090 (18 packets). (1.0: 2108 / 2122 and 1068 / 1082; 1.1 and 1.2: 2115 / 2129 and 1075 / 1089.)
 
 ### METER (0x04)
 

@@ -177,15 +177,25 @@ static sf_record_t make_record(uint8_t nch, uint32_t gen)
     r.ch[0] = (sf_rec_ch_t){ 0u, 3u, 100u, 0u, 0, 1u, 0.0390625f, 1.0f, ch1_codes };
     r.ch[1] = (sf_rec_ch_t){ 1u, 5u, 105u, 1u, 5, 10u, 0.75f, 20.0f, ch2_codes };
     r.trig_level = -25; r.trig_edge = 1u; r.trig_src = 0u; r.trig_mode = 0u; r.cap_mask = nch == 2u ? 3u : 1u;
+    /* as the sender computes it: ch2_codes start with a run at the top rail,
+     * ch1_codes stay inside the range */
+    r.clip_mask = nch == 2u ? SF_CLIP_CH2 : 0u;
     return r;
 }
 
 static void test_record(void)
 {
     static cap_t c;
-    for (uint8_t nch = 1; nch <= 2; nch++) {
+    /* the clip_mask values each channel count can carry: 1 channel (CH1 or
+     * an interleaved CH1) only bit0; 2 channels any of the two bits */
+    static const uint8_t clips1[] = { 0u, SF_CLIP_CH1 };
+    static const uint8_t clips2[] = { 0u, SF_CLIP_CH1, SF_CLIP_CH2, SF_CLIP_CH1 | SF_CLIP_CH2 };
+    for (uint8_t nch = 1; nch <= 2; nch++)
+    for (unsigned k = 0; k < (nch == 1u ? sizeof clips1 : sizeof clips2); k++) {
+        const uint8_t clip = nch == 1u ? clips1[k] : clips2[k];
         cap_init(&c);
         sf_record_t r = make_record(nch, 40u);
+        r.clip_mask = clip;
         g_gen_end = 42u;                              /* a commit during the send */
         sf_writer_t w;
         CHECK(sf_send_record(&w, cap_sink, &c, 9u, &r, gen_end_fn));
@@ -205,10 +215,12 @@ static void test_record(void)
         CHECK(memcmp(s, ch1_codes, 1024) == 0);
         if (nch == 2) CHECK(memcmp(s + 1024, ch2_codes, 1024) == 0);
         CHECK(rd32(s + nch * 1024u) == 42u);           /* gen_end after the samples */
-        const uint8_t *cb = s + nch * 1024u + 4u;      /* 1.1 capture block */
+        const uint8_t *cb = s + nch * 1024u + 4u;      /* capture block */
         CHECK((int16_t)rd16(cb) == -25 && cb[2] == 1u && cb[3] == 0u && cb[4] == 0u);
         CHECK(cb[5] == (nch == 2u ? 3u : 1u) && cb[6] == SF_REC_CAP_VERSION);
+        CHECK(cb[7] == clip);                          /* 1.3 clip_mask, after the version */
         CHECK(cb + SF_REC_CAP_LEN == p + l);
+        CHECK(p[l - 2u] == SF_REC_CAP_VERSION && p[l - 1u] == clip);   /* the last payload byte */
     }
 }
 
@@ -299,8 +311,9 @@ static void vrecord(sf_record_t *r, uint32_t gen_end)
                   "flags=%u kind=%u tb_code=%u nch=%u",
             vseq, r->gen, gen_end, r->t_ms, (double)r->fs_hz, (double)r->s_per_div, r->n, r->trig_idx,
             r->flags, r->kind, r->tb_code, r->nch);
-    fprintf(vexp, " trig_level=%d trig_edge=%u trig_src=%u trig_mode=%u cap_mask=%u cap_version=%u",
-            r->trig_level, r->trig_edge, r->trig_src, r->trig_mode, r->cap_mask, SF_REC_CAP_VERSION);
+    fprintf(vexp, " trig_level=%d trig_edge=%u trig_src=%u trig_mode=%u cap_mask=%u cap_version=%u clip_mask=%u",
+            r->trig_level, r->trig_edge, r->trig_src, r->trig_mode, r->cap_mask, SF_REC_CAP_VERSION,
+            r->clip_mask);
     for (uint8_t i = 0; i < r->nch; i++) {
         const sf_rec_ch_t *c = &r->ch[i];
         fprintf(vexp, " ch%u.id=%u ch%u.vdiv_idx=%u ch%u.zero_code=%u ch%u.coupling=%u ch%u.position=%d "

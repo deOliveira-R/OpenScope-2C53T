@@ -1929,7 +1929,7 @@ test-stream: $(BUILD_DIR)/test_stream
 
 # The host side of the stream (scripts/scope_stream.py, scripts/scope_broker.py):
 # demultiplexer and decoders against the C encoder's vectors above (protocol
-# 1.2) and the frozen 1.1 vectors (fixtures/stream/v1_1), the HELLO feature
+# 1.3) and the frozen 1.1 vectors (fixtures/stream/v1_1), the HELLO feature
 # mask, and the broker against a fake device that speaks 1.2 and then 1.1.
 .PHONY: test-stream-host
 test-stream-host:

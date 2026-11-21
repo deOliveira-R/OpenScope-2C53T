@@ -28,7 +28,7 @@
 #include "battery.h"
 #include "at32f403a_407.h"
 #include "fpga.h"
-#include "units.h"              /* rec_rail_run */
+#include "units.h"              /* rec_clipped */
 #include <stdio.h>
 #include <string.h>
 
@@ -350,26 +350,21 @@ static uint8_t s_info_drawn_clip;      /* info_clip() as last drawn */
 /* What the channel badges say about a cut-off trace, the two cases the
  * trace's own colours show (theme.h clip_converter, clip_screen).
  * Bit 0 CH1, bit 1 CH2 (INFO_CLIP_CONVERTER): the channel is on and its last
- * record holds an ADC rail for REC_RAIL_RUN_MIN samples in a row (units.h
- * rec_rail_run). Over the record's valid part: samples 1..1023 (sample 0 is
- * the one the seam search also skips, a stray head value on unit #1,
- * trig_edge.c).
+ * record is clipped (units.h rec_clipped).
  * Bit 2 CH1, bit 3 CH2 (INFO_CLIP_SCREEN): the Y-T plot drew samples of the
  * channel that are valid but off the plot (scope_yt_off_plot), and the
  * channel is not at a rail; in the Y-T view only.
  * 0 before the first record and in Roll, which draws its own point FIFO,
  * not these buffers. */
-#define INFO_CLIP_FIRST 1u
 #define INFO_CLIP_CONVERTER(ch)  (uint8_t)(1u << ((ch) - 1u))       /* ch 1 or 2 */
 #define INFO_CLIP_SCREEN(ch)     (uint8_t)(4u << ((ch) - 1u))
 static uint8_t info_clip(void)
 {
     const scope_state_t *ss = scope_state_get();
     if (!fpga_data_ready() || ss->roll) return 0u;
-    const uint32_t n = FPGA_ADC_BUF_SIZE - INFO_CLIP_FIRST;
     uint8_t m = 0u;
-    if (ss->ch1.enabled && rec_rail_run(fpga_get_ch1_buf() + INFO_CLIP_FIRST, n, REC_RAIL_RUN_MIN)) m |= 1u;
-    if (ss->ch2.enabled && rec_rail_run(fpga_get_ch2_buf() + INFO_CLIP_FIRST, n, REC_RAIL_RUN_MIN)) m |= 2u;
+    if (ss->ch1.enabled && rec_clipped(fpga_get_ch1_buf(), FPGA_ADC_BUF_SIZE)) m |= 1u;
+    if (ss->ch2.enabled && rec_clipped(fpga_get_ch2_buf(), FPGA_ADC_BUF_SIZE)) m |= 2u;
     if (scope_view == SCOPE_VIEW_TIME) {
         const uint8_t off = scope_yt_off_plot();
         for (uint8_t ch = 1u; ch <= 2u; ch++)
