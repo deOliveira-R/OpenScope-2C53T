@@ -1,41 +1,21 @@
 /*
- * OpenScope 2C53T — redraw gate (B2, 2026-08-13)
+ * OpenScope 2C53T - redraw gate
  *
- * WHY THIS EXISTS
- * ---------------
- * The display task wakes every 50 ms. Before this, the scope branch
- * repainted whenever *any* of three things was true — a popup was
- * counting down, the SPI3 acquisition counter had moved, or one second
- * had elapsed — and the one-second arm was unconditional: with nothing
- * connected, nothing changing and no user input, the scope screen still
- * ran `lcd_fill_rect(0, SCOPE_TOP, 320, SCOPE_H)` + a full repaint once
- * a second, forever. Worse, in the FFT / split / waterfall views and in
- * the cursors-on case, the *data* arm also took the clear-and-repaint
- * path, at the capture rate (~34 Hz on a live bench unit). That is the
- * "2-3 Hz full-repaint flash" recorded on 2026-08-12.
+ * The display task wakes every 50 ms. The gate decides what a tick owes the
+ * LCD for a screen: nothing, a live frame (only what changed is sent) or a
+ * full repaint. The caller folds everything the screen renders out of
+ * program state into an "epoch" (any cheap hash; see redraw_epoch_* below)
+ * and the gate compares it with the epoch of the last completed draw. Same
+ * epoch and no new samples: the next draw would give the same pixels, so it
+ * is skipped.
  *
- * The multimeter had exactly this bug and it was fixed on 2026-04-04 by
- * gating its redraw on `meter_reading.display_update_count` changing,
- * with a slow safety tick. That worked, so this is the same shape —
- * generalised, because the meter had one integer that summarised
- * everything it renders and the scope has ~20 fields. Here the caller
- * folds those fields into an "epoch" (any cheap hash; see
- * `redraw_epoch_*` below) and the gate compares it against the epoch of
- * the last completed draw. Same epoch + no new samples => the next draw
- * would produce identical pixels, so it is pure flicker and is skipped.
+ * Deliberately not a dirty flag set by the UI: the screen's inputs are
+ * spread over many owners, and a hash over observable state cannot go stale
+ * when someone adds an input and forgets to mark it dirty in one of the
+ * places that change it. The cost is one pass over about 20 scalars a tick.
  *
- * DELIBERATELY NOT A DIRTY FLAG SET BY THE UI. The scope screen's inputs
- * are spread across scope_state, main.c's feature toggles, the theme and
- * the FFT config, and (as of 2026-08-13) the measurement badges and
- * FFT/waterfall content are being rewired to real capture data. A hash
- * over observable state cannot go stale when someone adds a renderer
- * input they forget to mark dirty in one of the twenty places that
- * mutate it; a hand-maintained flag can. The cost is one pass over ~20
- * scalars per 50 ms tick.
- *
- * PURE C99, NO FIRMWARE DEPENDENCIES — so `tests/test_redraw_gate.c`
- * can drive it on the host and assert real redraw counts. See
- * `make -C firmware test-redraw-gate`.
+ * Pure C99, no firmware dependencies: tests/test_redraw_gate.c drives it on
+ * the host (make -C firmware test-redraw-gate).
  */
 
 #ifndef REDRAW_GATE_H
@@ -74,16 +54,14 @@ static inline uint32_t redraw_epoch_mix_f(uint32_t h, float v)
  * ═══════════════════════════════════════════════════════════════════ */
 
 typedef enum {
-    REDRAW_SKIP = 0,     /* nothing observable changed — do not touch the LCD */
-    REDRAW_INCREMENTAL,  /* flicker-free update (scope: draw_scope_live_frame) */
-    REDRAW_FULL          /* clear-and-repaint (scope: draw_scope_screen) */
+    REDRAW_SKIP = 0,     /* nothing observable changed: do not touch the LCD */
+    REDRAW_INCREMENTAL,  /* a live frame: only what changed is sent */
+    REDRAW_FULL          /* everything the screen owns, whatever the glass holds */
 } redraw_action_t;
 
 typedef struct {
     uint32_t drawn_epoch;      /* epoch rendered by the last completed draw */
     uint32_t last_draw_frame;  /* tick index of the last completed draw */
-    uint32_t last_full_frame;  /* tick index of the last FULL draw */
-    bool     data_pending;     /* samples arrived that no draw has rendered yet */
     bool     primed;           /* this screen has been painted at least once */
 } redraw_gate_t;
 
@@ -91,17 +69,15 @@ typedef struct {
     uint32_t frame;            /* display-task tick counter (50 ms/tick) */
     uint32_t epoch;            /* hash of everything this screen renders */
     bool     new_data;         /* a new capture landed since the last query */
-    bool     force;            /* explicit invalidate (popup, mode entry) */
-    bool     incremental_ok;   /* the flicker-free renderer can serve this frame */
-    bool     animating;        /* content is a function of `frame` (demo trace) */
+    bool     force;            /* explicit invalidate */
+    bool     animating;        /* content is a function of time (a fading ghost, the demo) */
 
-    /* All three are in display-task ticks; 0 disables that arm. */
-    uint16_t full_min_frames;  /* floor between FULL repaints driven by data */
+    /* Both are in display-task ticks; 0 disables that arm. */
     uint16_t anim_tick_frames; /* cadence while `animating` */
     uint16_t idle_tick_frames; /* heartbeat when nothing else fires */
 } redraw_query_t;
 
-/* Force the next query to draw. Use on screen entry / hard invalidate. */
+/* Force the next query to draw in full. Use on screen entry / hard invalidate. */
 static inline void redraw_gate_invalidate(redraw_gate_t *g)
 {
     g->primed = false;
@@ -116,45 +92,28 @@ static inline void redraw_gate_mark(redraw_gate_t *g, uint32_t epoch,
     g->primed          = true;
     g->drawn_epoch     = epoch;
     g->last_draw_frame = frame;
-    if (action == REDRAW_FULL) g->last_full_frame = frame;
-    g->data_pending    = false;
 }
 
 /*
  * Decide what this tick owes the LCD, and latch the decision.
  *
  * Arms, in priority order:
- *   1. not primed / force        -> FULL. Screen entry, popups (whose
- *                                   countdown advances one step per draw).
- *   2. epoch moved               -> FULL. A user-visible setting changed;
- *                                   badges, markers and labels must repaint.
- *   3. data + incremental_ok     -> INCREMENTAL. The live trace, at the
- *                                   capture rate, with no clear. Unthrottled
- *                                   on purpose: this path never blanks.
- *   4. data, no incremental path -> FULL, but no more often than
- *                                   full_min_frames. FFT/waterfall/cursors
- *                                   still track the data; they just stop
- *                                   flashing at 34 Hz.
- *   5. animating                 -> on anim_tick_frames: INCREMENTAL when
- *                                   the flicker-free renderer can serve it
- *                                   (persistence fading), else FULL (the
- *                                   synthetic demo waveform, a function of
- *                                   `frame`).
- *   6. idle heartbeat            -> the slow backstop for anything a hash
- *                                   cannot see (bench overlay counters).
- *
- * `new_data` is sticky: if arm 4 throttles it, the pending flag survives
- * to the next tick instead of being silently dropped. (The pre-B2 code
- * consumed the counter outside the draw decision, so a skipped frame lost
- * the event entirely.)
+ *   1. not primed / force  -> FULL. Screen entry, an explicit invalidate.
+ *   2. epoch moved         -> FULL. A setting the screen shows changed;
+ *                             badges, markers and labels must repaint.
+ *   3. new data            -> INCREMENTAL, at the capture rate.
+ *   4. animating           -> INCREMENTAL on anim_tick_frames.
+ *   5. idle heartbeat      -> INCREMENTAL on idle_tick_frames: the slow
+ *                             backstop for anything a hash cannot see.
+ * Every screen that uses the gate has a live frame, so only 1 and 2 repaint
+ * in full.
+ * A tick with new data always draws (in full under 1 or 2, which shows the
+ * new data too), so nothing has to be remembered between ticks.
  */
 static inline redraw_action_t redraw_gate_step(redraw_gate_t *g,
                                                const redraw_query_t *q)
 {
-    if (q->new_data) g->data_pending = true;
-
     const uint32_t since_draw = q->frame - g->last_draw_frame;
-    const uint32_t since_full = q->frame - g->last_full_frame;
 
     redraw_action_t action = REDRAW_SKIP;
 
@@ -162,16 +121,13 @@ static inline redraw_action_t redraw_gate_step(redraw_gate_t *g,
         action = REDRAW_FULL;
     } else if (q->epoch != g->drawn_epoch) {
         action = REDRAW_FULL;
-    } else if (g->data_pending && q->incremental_ok) {
+    } else if (q->new_data) {
         action = REDRAW_INCREMENTAL;
-    } else if (g->data_pending &&
-               (q->full_min_frames == 0 || since_full >= q->full_min_frames)) {
-        action = REDRAW_FULL;
     } else if (q->animating && q->anim_tick_frames != 0 &&
                since_draw >= q->anim_tick_frames) {
-        action = q->incremental_ok ? REDRAW_INCREMENTAL : REDRAW_FULL;
+        action = REDRAW_INCREMENTAL;
     } else if (q->idle_tick_frames != 0 && since_draw >= q->idle_tick_frames) {
-        action = q->incremental_ok ? REDRAW_INCREMENTAL : REDRAW_FULL;
+        action = REDRAW_INCREMENTAL;
     }
 
     redraw_gate_mark(g, q->epoch, q->frame, action);

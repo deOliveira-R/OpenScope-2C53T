@@ -1,23 +1,21 @@
 /*
- * Host test for the scope / siggen redraw gate (B2, 2026-08-13).
+ * Host test for the scope / siggen redraw gate (ui/redraw_gate.h).
  *
  * WHAT THIS PROVES, AND WHAT IT DOES NOT
  * --------------------------------------
- * It drives ui/redraw_gate.h — the exact header main.c compiles — over
- * scenario traces and counts full-area repaints. A clean firmware build
- * proves nothing about redraw behaviour, so the reduction is measured
- * here against a transcription of the pre-B2 logic (`old_gate_step`,
- * copied from main.c at 9388e71) running on the same trace.
+ * It drives ui/redraw_gate.h, the exact header main.c compiles, over
+ * scenario traces and counts what each tick sends the LCD: nothing, a live
+ * frame or a full repaint. The queries are filled the way main.c's
+ * scope_view_tick fills them, with the cadences mirrored below.
  *
  * It does NOT prove anything about pixels on the LCD, timing on the
- * device, or that `scope_ui_epoch()` in main.c hashes the right fields.
- * The gate is exercised; the wiring is not. Bench validation still owed.
+ * device, or that main.c hashes the right fields into the epoch. The gate
+ * is exercised; the wiring is not.
  *
- * The negative half matters more than the positive half. Every check
- * here is run a second time against deliberately broken gates (see
- * `mutants[]`), and the test FAILS if a mutant slips through — because
- * this project's recurring failure mode is instruments that report
- * confidently on state they cannot observe.
+ * The negative half matters as much as the positive half. Every check is
+ * run again against deliberately broken gates (see `mutants[]`), and the
+ * test FAILS if a broken gate passes them all: an instrument that cannot
+ * fail reports confidently on state it cannot observe.
  *
  * Build/run:  make -C firmware test-redraw-gate
  */
@@ -51,40 +49,88 @@ static int failures_in_pass = 0;
     } while (0)
 
 /* ═══════════════════════════════════════════════════════════════════
- * The pre-B2 gate, transcribed from main.c @ 9388e71:
- *
- *     bool new_data = (fpga.spi3_ok_count != last_spi3_ok);
- *     if (new_data) last_spi3_ok = fpga.spi3_ok_count;
- *     if (scope_popup_active() || new_data || (frame - last_scope_frame) >= 20) {
- *         ... choose renderer ...
- *         last_scope_frame = frame;
- *     }
- *
- * Renderer choice was: incremental iff (!popup && acq_ready && no cursors)
- * and the view is TIME; otherwise the clear-and-repaint path.
+ * Firmware constants, mirrored from main.c so the numbers below are the
+ * numbers the device runs.
  * ═══════════════════════════════════════════════════════════════════ */
 
-typedef struct { uint32_t last_frame; } old_gate_t;
+#define FW_TICKS_PER_S  20   /* display task wakes every 50 ms */
+#define FW_ANIM_FAST    4    /* SCOPE_ANIM_FAST_FRAMES: X-Y decay, fading persistence */
+#define FW_ANIM_TICK    20   /* SCOPE_ANIM_TICK_FRAMES: demo picture before the first record */
+#define FW_IDLE_TICK    20   /* SCOPE_IDLE_FRAMES: heartbeat while running */
+#define FW_IDLE_STOPPED 0    /* main.c's idle cadence while stopped: no heartbeat */
 
-static redraw_action_t old_gate_step(old_gate_t *g, const redraw_query_t *q)
+#define SECONDS(s)      ((uint32_t)(s) * FW_TICKS_PER_S)
+
+/* ═══════════════════════════════════════════════════════════════════
+ * Gate under test: the real one, or a deliberately broken variant
+ * ═══════════════════════════════════════════════════════════════════ */
+
+typedef enum {
+    GATE_REAL,
+    GATE_MUT_ALWAYS,       /* no gating at all: a full repaint every tick */
+    GATE_MUT_NEVER_IDLE,   /* draws only when the epoch moves */
+    GATE_MUT_EPOCH_LIVE,   /* a state change gets a live frame, not a full repaint */
+    GATE_MUT_DATA_FULL,    /* new data gets a full repaint, not a live frame */
+    GATE_MUT_TIMER_FULL,   /* the animation and heartbeat ticks repaint in full */
+} gate_kind_t;
+
+static gate_kind_t gate_under_test = GATE_REAL;
+
+static redraw_action_t gate_step(redraw_gate_t *g, const redraw_query_t *q)
 {
-    if (!(q->force || q->new_data || (q->frame - g->last_frame) >= 20))
-        return REDRAW_SKIP;
-    g->last_frame = q->frame;
-    return q->incremental_ok ? REDRAW_INCREMENTAL : REDRAW_FULL;
+    const bool was_primed = g->primed;
+    const bool data       = q->new_data;
+
+    switch (gate_under_test) {
+    case GATE_MUT_ALWAYS:
+        redraw_gate_mark(g, q->epoch, q->frame, REDRAW_FULL);
+        return REDRAW_FULL;
+
+    case GATE_MUT_NEVER_IDLE:
+        /* Over-eager gating: refuses to draw unless the epoch moved, so
+         * live capture never reaches the screen. */
+        if (q->epoch == g->drawn_epoch && g->primed) return REDRAW_SKIP;
+        redraw_gate_mark(g, q->epoch, q->frame, REDRAW_FULL);
+        return REDRAW_FULL;
+
+    case GATE_MUT_EPOCH_LIVE: {
+        redraw_action_t a = redraw_gate_step(g, q);
+        if (a == REDRAW_FULL && was_primed && !q->force) a = REDRAW_INCREMENTAL;
+        return a;
+    }
+    case GATE_MUT_DATA_FULL: {
+        redraw_action_t a = redraw_gate_step(g, q);
+        if (a == REDRAW_INCREMENTAL && data) a = REDRAW_FULL;
+        return a;
+    }
+    case GATE_MUT_TIMER_FULL: {
+        redraw_action_t a = redraw_gate_step(g, q);
+        if (a == REDRAW_INCREMENTAL && !data) a = REDRAW_FULL;
+        return a;
+    }
+    case GATE_REAL:
+    default:
+        return redraw_gate_step(g, q);
+    }
 }
+
+static const struct { const char *name; gate_kind_t kind; } mutants[] = {
+    { "no gating at all",              GATE_MUT_ALWAYS },
+    { "draws only on state change",    GATE_MUT_NEVER_IDLE },
+    { "state change as a live frame",  GATE_MUT_EPOCH_LIVE },
+    { "new data as a full repaint",    GATE_MUT_DATA_FULL },
+    { "timed ticks as full repaints",  GATE_MUT_TIMER_FULL },
+};
 
 /* ═══════════════════════════════════════════════════════════════════
  * Scenario driver
  * ═══════════════════════════════════════════════════════════════════ */
 
 typedef struct {
-    uint32_t ticks;          /* display-task ticks to simulate (50 ms each) */
+    uint32_t ticks;          /* display-task ticks to simulate */
     uint32_t data_period;    /* new capture every N ticks; 0 = no data at all */
     uint32_t epoch_period;   /* bump the epoch every N ticks; 0 = never */
-    bool     incremental_ok;
     bool     animating;
-    uint16_t full_min_frames;
     uint16_t anim_tick_frames;
     uint16_t idle_tick_frames;
 } scenario_t;
@@ -98,61 +144,21 @@ typedef struct {
     uint32_t dropped_data;       /* captures never rendered by end of run */
 } tally_t;
 
-/* gate kind selector, so the same driver runs new / old / mutant gates */
-typedef enum { GATE_NEW, GATE_OLD, GATE_MUT_NONSTICKY, GATE_MUT_ALWAYS,
-               GATE_MUT_NEVER_IDLE } gate_kind_t;
+/* Quiet ticks after the trace (no new captures, not counted in the
+ * tally), so a capture landing on the final tick can still be rendered
+ * by a gate that draws it late, and is reported as latency, not a drop. */
+#define DRAIN_TICKS  (FW_IDLE_TICK + 1)
 
-static redraw_action_t step(gate_kind_t kind, redraw_gate_t *g, old_gate_t *og,
-                            const redraw_query_t *q)
+static tally_t run(const scenario_t *s)
 {
-    switch (kind) {
-    case GATE_OLD:
-        return old_gate_step(og, q);
-
-    case GATE_MUT_NONSTICKY: {
-        /* The pre-B2 bug in isolation: a throttled tick consumes the
-         * capture event instead of holding it pending, so the sample is
-         * never rendered. */
-        redraw_query_t q2 = *q;
-        redraw_action_t a = redraw_gate_step(g, &q2);
-        g->data_pending = false;
-        return a;
-    }
-    case GATE_MUT_ALWAYS:
-        /* "Gate" that never skips — i.e. no gating at all. */
-        redraw_gate_mark(g, q->epoch, q->frame, REDRAW_FULL);
-        return REDRAW_FULL;
-
-    case GATE_MUT_NEVER_IDLE: {
-        /* Over-eager gating: refuses to draw unless the epoch moved,
-         * so live capture never reaches the screen. */
-        if (q->epoch == g->drawn_epoch && g->primed) return REDRAW_SKIP;
-        redraw_gate_mark(g, q->epoch, q->frame, REDRAW_FULL);
-        return REDRAW_FULL;
-    }
-    case GATE_NEW:
-    default:
-        return redraw_gate_step(g, q);
-    }
-}
-
-static tally_t run(gate_kind_t kind, const scenario_t *s)
-{
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    old_gate_t og = { 0 };
+    redraw_gate_t g = { 0 };
     tally_t t = { 0, 0, 0, 0, 0 };
 
     uint32_t epoch = 0x1234;
     bool have_pending = false;
     uint32_t pending_since = 0;
 
-    /* The trace is followed by a short quiet drain (no new captures) so a
-     * capture landing on the final tick can still be rendered. Without it
-     * every throttled run reports one phantom "dropped" sample, which
-     * would mask a real drop. Drain ticks are not counted in the tally. */
-    const uint32_t drain = (s->full_min_frames ? s->full_min_frames : 1) + 1;
-
-    for (uint32_t f = 0; f < s->ticks + drain; f++) {
+    for (uint32_t f = 0; f < s->ticks + DRAIN_TICKS; f++) {
         const bool counting = (f < s->ticks);
         bool new_data = counting &&
                         (s->data_period && f && (f % s->data_period) == 0);
@@ -161,18 +167,17 @@ static tally_t run(gate_kind_t kind, const scenario_t *s)
 
         if (new_data && !have_pending) { have_pending = true; pending_since = f; }
 
-        redraw_query_t q;
-        q.frame            = f;
-        q.epoch            = epoch;
-        q.new_data         = new_data;
-        q.force            = false;
-        q.incremental_ok   = s->incremental_ok;
-        q.animating        = s->animating;
-        q.full_min_frames  = s->full_min_frames;
-        q.anim_tick_frames = s->anim_tick_frames;
-        q.idle_tick_frames = s->idle_tick_frames;
+        const redraw_query_t q = {
+            .frame            = f,
+            .epoch            = epoch,
+            .new_data         = new_data,
+            .force            = false,
+            .animating        = s->animating,
+            .anim_tick_frames = s->anim_tick_frames,
+            .idle_tick_frames = s->idle_tick_frames,
+        };
 
-        redraw_action_t a = step(kind, &g, &og, &q);
+        redraw_action_t a = gate_step(&g, &q);
 
         if (a == REDRAW_SKIP) {
             if (counting) t.skipped++;
@@ -189,302 +194,254 @@ static tally_t run(gate_kind_t kind, const scenario_t *s)
     return t;
 }
 
-/* Firmware constants, mirrored from main.c so the numbers below are the
- * numbers the device will actually run. */
-#define FW_FULL_MIN    4     /* SCOPE_FULL_MIN_FRAMES  */
-#define FW_ANIM_TICK   20    /* SCOPE_ANIM_TICK_FRAMES */
-#define FW_IDLE_TICK   100   /* SCOPE_IDLE_FULL_FRAMES — heartbeat that blanks */
-#define FW_IDLE_LIVE   20    /* SCOPE_IDLE_LIVE_FRAMES — flicker-free heartbeat */
-
 /* ═══════════════════════════════════════════════════════════════════
  * The checks
  * ═══════════════════════════════════════════════════════════════════ */
 
 static void check_idle_settled_screen(bool verbose)
 {
-    /* 20 s on a configured, running scope with a live trace already
-     * latched, nothing connected changing, no user input, no new samples.
-     * This is the case the pre-B2 1 s tick repainted forever. */
-    scenario_t s = { 400, 0, 0, false, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
+    /* 20 s on a configured, running scope with a trace already shown,
+     * nothing connected changing, no user input, no new samples. The
+     * screen entry is the one full repaint; after that only the heartbeat
+     * draws, as a live frame, so a frozen display can be told from a hung
+     * task. */
+    const scenario_t s = { SECONDS(20), 0, 0, false, 0, FW_IDLE_TICK };
+    const uint32_t heartbeats = (s.ticks - 1) / FW_IDLE_TICK;
 
-    tally_t nw = run(GATE_NEW, &s);
-    tally_t od = run(GATE_OLD, &s);
+    tally_t t = run(&s);
 
     if (verbose)
-        printf("  idle settled screen (20 s, no data, no input):\n"
-               "      pre-B2  full repaints = %u\n"
-               "      post-B2 full repaints = %u   (skipped %u ticks)\n",
-               od.full, nw.full, nw.skipped);
+        printf("  idle settled screen, running (20 s, no data, no input):\n"
+               "      %u full, %u live frames, %u ticks skipped\n",
+               t.full, t.incremental, t.skipped);
 
-    /* 19, not 20: the pre-B2 tick fired at f=20,40,...,380 — its first
-     * draw is one interval in, where the new gate paints at f=0. */
-    CHECK(od.full == 19, "pre-B2 model should repaint 19x in 20 s, got %u", od.full);
-    CHECK(nw.full <= 5, "settled screen should repaint <=5x in 20 s, got %u", nw.full);
-    CHECK(nw.full * 4 <= od.full, "expected >=4x fewer repaints, %u vs %u",
-          nw.full, od.full);
-    /* ...but it must not go silent: something still has to tick over so a
-     * frozen display is distinguishable from a hung task. */
-    CHECK(nw.full >= 1, "settled screen must still heartbeat at least once");
+    CHECK(t.full == 1, "only the screen entry may repaint in full, got %u", t.full);
+    CHECK(t.incremental == heartbeats,
+          "heartbeat every %u ticks should give %u live frames, got %u",
+          (unsigned)FW_IDLE_TICK, heartbeats, t.incremental);
+    CHECK(t.skipped == s.ticks - 1 - heartbeats,
+          "every other tick must be skipped, %u skipped", t.skipped);
 }
 
-static void check_idle_heartbeat_stays_live(bool verbose)
+static void check_stopped_screen_goes_silent(bool verbose)
 {
-    /* NEGATIVE CONTROL for the slow backstop above: when the flicker-free
-     * compositor IS available the heartbeat costs no blank, so the live
-     * case keeps the 1 s cadence (SCOPE_IDLE_LIVE_FRAMES) — and must not
-     * blank while doing it. */
-    scenario_t s = { 400, 0, 0, true, false, FW_FULL_MIN, 0, FW_IDLE_LIVE };
+    /* Stopped: main.c turns the heartbeat off, nothing arrives, nothing
+     * animates. After the entry paint the LCD is left alone. */
+    const scenario_t s = { SECONDS(20), 0, 0, false, 0, FW_IDLE_STOPPED };
 
-    tally_t nw = run(GATE_NEW, &s);
+    tally_t t = run(&s);
 
     if (verbose)
-        printf("  idle with compositor available (20 s): %u incremental,"
-               " %u full\n", nw.incremental, nw.full);
+        printf("  idle settled screen, stopped (20 s): %u full, %u live frames\n",
+               t.full, t.incremental);
 
-    CHECK(nw.incremental >= 19, "bench heartbeat should run ~1 Hz, got %u",
-          nw.incremental);
-    CHECK(nw.full <= 1, "idle heartbeat must not blank, %u full draws", nw.full);
+    CHECK(t.full == 1, "stopped screen: only the entry paint, got %u full", t.full);
+    CHECK(t.incremental == 0, "stopped screen must not draw, got %u live frames",
+          t.incremental);
 }
 
-static void check_cursors_on_live_data(bool verbose)
+static void check_live_trace_every_capture(bool verbose)
 {
-    /* Cursors on = the live compositor cannot serve the frame (it does not
-     * draw cursor lines), so every capture took the clear-and-repaint path.
-     * 10 s at a 20 Hz capture rate. */
-    scenario_t s = { 200, 1, 0, false, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
+    /* Live frames are never rate-limited: a trace updates once per
+     * capture, on the tick the capture lands, at 10 Hz and at 20 Hz
+     * (a capture on every tick). */
+    static const uint32_t periods[] = { 2, 1 };
 
-    tally_t nw = run(GATE_NEW, &s);
-    tally_t od = run(GATE_OLD, &s);
+    for (unsigned i = 0; i < sizeof periods / sizeof periods[0]; i++) {
+        const scenario_t s = { SECONDS(10), periods[i], 0, false, 0, FW_IDLE_TICK };
+        const uint32_t captures = (s.ticks - 1) / periods[i];
 
-    if (verbose)
-        printf("  cursors on, 20 Hz capture (10 s):\n"
-               "      pre-B2  full repaints = %u\n"
-               "      post-B2 full repaints = %u\n", od.full, nw.full);
+        tally_t t = run(&s);
 
-    CHECK(od.full >= 190, "pre-B2 model should repaint ~every tick, got %u", od.full);
-    CHECK(nw.full <= 55, "should cap near 5 Hz over 10 s, got %u", nw.full);
-    /* NEGATIVE CONTROL: throttling must not silently discard captures. */
-    CHECK(nw.dropped_data == 0, "a capture was never rendered");
-    CHECK(nw.max_data_latency <= FW_FULL_MIN,
-          "capture waited %u ticks for a draw, cap is %u",
-          nw.max_data_latency, FW_FULL_MIN);
+        if (verbose)
+            printf("  live trace, capture every %u tick(s) (10 s): %u live frames,"
+                   " %u full, worst latency %u tick(s)\n",
+                   periods[i], t.incremental, t.full, t.max_data_latency);
+
+        CHECK(t.incremental == captures, "every capture should draw a live frame,"
+              " got %u for %u", t.incremental, captures);
+        CHECK(t.max_data_latency == 0, "live trace lagged %u ticks", t.max_data_latency);
+        CHECK(t.dropped_data == 0, "a capture was never rendered");
+        /* The one full repaint is the first paint on screen entry. */
+        CHECK(t.full == 1, "live data took the full repaint %u times", t.full);
+    }
 }
 
-static void check_waterfall_live_data(bool verbose)
+static void check_data_on_a_state_change_tick(bool verbose)
 {
-    /* Same shape as cursors-on but this is the expensive screen. 10 s at the
-     * stock 34 Hz read cadence, which the 50 ms display tick samples at 20 Hz.
-     *
-     * COST MODEL — post-B1. Before B1 (merged 2026-08-13) a waterfall repaint
-     * was ~20,480 lcd_fill_rect calls, one per pixel column. B1 replaced that
-     * with a per-row blit: 1 fill_rect, 65 lcd_set_window, and 65,920 pixel
-     * writes. So fill_rect is no longer the meaningful unit of work and
-     * multiplying repaints by 20,480 would overstate this saving by ~20,000x.
-     * Pixel writes are what remains, and they scale linearly with repaints —
-     * which is exactly what B2 reduces. Keep this constant in step with
-     * draw_waterfall_screen(); tests/test_waterfall_blit.c measures it. */
-    enum { WF_PIXEL_WRITES_PER_REPAINT = 65920 };
+    /* A capture every tick and a setting changed every 10 ticks. A tick
+     * spent on a full repaint renders the latched capture with it: no
+     * capture waits or is lost, and each state change costs exactly one
+     * full repaint. */
+    const uint32_t change_period = 10;
+    const scenario_t s = { SECONDS(10), 1, change_period, false, 0, FW_IDLE_TICK };
+    const uint32_t changes = (s.ticks - 1) / change_period;
 
-    scenario_t s = { 200, 1, 0, false, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
-
-    tally_t nw = run(GATE_NEW, &s);
-    tally_t od = run(GATE_OLD, &s);
-
-    unsigned long old_px = (unsigned long)od.full * WF_PIXEL_WRITES_PER_REPAINT;
-    unsigned long new_px = (unsigned long)nw.full * WF_PIXEL_WRITES_PER_REPAINT;
+    tally_t t = run(&s);
 
     if (verbose)
-        printf("  waterfall view, 20 Hz capture (10 s), post-B1 blit:\n"
-               "      pre-B2  %u repaints = %lu pixel writes\n"
-               "      post-B2 %u repaints = %lu pixel writes\n",
-               od.full, old_px, nw.full, new_px);
+        printf("  20 Hz capture + a state change every 0.5 s (10 s): %u full,"
+               " %u live frames, worst latency %u\n",
+               t.full, t.incremental, t.max_data_latency);
 
-    CHECK(new_px * 3 < old_px, "expected >3x fewer pixel writes, %lu vs %lu",
-          new_px, old_px);
+    CHECK(t.full == 1 + changes, "expected the entry + %u full repaints, got %u",
+          changes, t.full);
+    CHECK(t.incremental == s.ticks - 1 - changes,
+          "every other tick should be a live frame, got %u", t.incremental);
+    CHECK(t.max_data_latency == 0, "a capture waited %u ticks", t.max_data_latency);
+    CHECK(t.dropped_data == 0, "a capture was never rendered");
 }
 
-static void check_live_trace_not_throttled(bool verbose)
+static void check_demo_animation(bool verbose)
 {
-    /* The whole point of the incremental path: it never blanks, so it is
-     * NOT rate-limited. A live trace must still update once per capture. */
-    scenario_t s = { 200, 2, 0, true, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
+    /* Before the first real record the screen is a function of `frame`
+     * (the synthetic demo waveform). Stopped, so no heartbeat masks the
+     * animation arm: it alone must keep the picture moving, as live
+     * frames on SCOPE_ANIM_TICK_FRAMES. */
+    const scenario_t s = { SECONDS(20), 0, 0, true, FW_ANIM_TICK, FW_IDLE_STOPPED };
+    const uint32_t steps = (s.ticks - 1) / FW_ANIM_TICK;
 
-    tally_t nw = run(GATE_NEW, &s);
+    tally_t t = run(&s);
 
     if (verbose)
-        printf("  live trace, 10 Hz capture (10 s): %u incremental, %u full,"
-               " worst latency %u tick(s)\n",
-               nw.incremental, nw.full, nw.max_data_latency);
+        printf("  demo animation before the first record (20 s): %u full,"
+               " %u live frames\n", t.full, t.incremental);
 
-    CHECK(nw.incremental >= 99, "every capture should draw, got %u for ~99",
-          nw.incremental);
-    CHECK(nw.max_data_latency == 0, "live trace lagged %u ticks",
-          nw.max_data_latency);
-    CHECK(nw.dropped_data == 0, "a capture was never rendered");
-    /* The one permitted full draw is the first paint on screen entry. */
-    CHECK(nw.full <= 1, "live path took the clearing renderer %u times", nw.full);
+    CHECK(t.full == 1, "the demo must not repaint in full, got %u", t.full);
+    CHECK(t.incremental == steps, "demo should step every %u ticks (%u), got %u",
+          (unsigned)FW_ANIM_TICK, steps, t.incremental);
 }
 
-static void check_demo_animation_preserved(bool verbose)
+static void check_fading_persistence(bool verbose)
 {
-    /* Before the first real sample the screen IS a function of `frame`
-     * (synthetic demo waveform, persistence decay). Gating must not
-     * freeze it — the cadence is unchanged from pre-B2. */
-    scenario_t s = { 400, 0, 0, false, true, FW_FULL_MIN, FW_ANIM_TICK,
-                     FW_IDLE_TICK };
+    /* Persistence (or X-Y decay) while stopped: no new data, but the
+     * ghosts fade on wall time. The fade ticks are live frames at the fast
+     * cadence, never a full repaint. */
+    redraw_gate_t g = { 0 };
+    redraw_query_t q = { .frame = 0, .epoch = 0xFADE, .animating = true,
+                         .anim_tick_frames = FW_ANIM_FAST,
+                         .idle_tick_frames = FW_IDLE_STOPPED };
+    const uint32_t ticks = SECONDS(5);
 
-    tally_t nw = run(GATE_NEW, &s);
-    tally_t od = run(GATE_OLD, &s);
-
+    gate_step(&g, &q);                          /* entry: full */
+    uint32_t live = 0, full = 0;
+    for (uint32_t f = 1; f <= ticks; f++) {
+        q.frame = f;
+        redraw_action_t a = gate_step(&g, &q);
+        if (a == REDRAW_INCREMENTAL) live++;
+        if (a == REDRAW_FULL)        full++;
+    }
     if (verbose)
-        printf("  pre-data demo animation (20 s): pre-B2 %u, post-B2 %u\n",
-               od.full, nw.full);
-
-    /* Identical cadence; the new gate is +1 only because it paints on
-     * screen entry (f=0) instead of one interval later. */
-    CHECK(nw.full == od.full + 1, "demo cadence changed: %u vs %u",
-          nw.full, od.full);
+        printf("  fading persistence, stopped (5 s): %u live, %u full\n", live, full);
+    CHECK(full == 0, "a fade must not repaint in full, got %u", full);
+    CHECK(live == ticks / FW_ANIM_FAST, "the fade must tick every %u frames"
+          " (%u), got %u live", (unsigned)FW_ANIM_FAST,
+          (unsigned)(ticks / FW_ANIM_FAST), live);
 }
 
 static void check_state_change_always_draws(bool verbose)
 {
-    /* NEGATIVE CONTROL: a user-visible change must repaint on the very
-     * next tick, with no rate limiting, or button presses feel dead. */
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    redraw_query_t q = { 0, 0xAAAA, false, false, false, false,
-                         FW_FULL_MIN, FW_ANIM_TICK, FW_IDLE_TICK };
+    /* A user-visible change must repaint in full on the very next tick,
+     * with no rate limiting, or button presses feel dead; and once only:
+     * the ticks after it are skipped until the heartbeat is due. */
+    redraw_gate_t g = { 0 };
+    redraw_query_t q = { .frame = 0, .epoch = 0xAAAA,
+                         .anim_tick_frames = FW_ANIM_TICK,
+                         .idle_tick_frames = FW_IDLE_TICK };
+    const uint32_t ticks = 39;
 
-    (void)redraw_gate_step(&g, &q);          /* prime */
+    (void)gate_step(&g, &q);                    /* prime */
 
-    uint32_t drew = 0;
-    for (uint32_t f = 1; f < 40; f++) {
+    uint32_t full = 0;
+    for (uint32_t f = 1; f <= ticks; f++) {
         q.frame = f;
-        q.epoch = 0xAAAA + f;                /* every tick changes something */
-        if (redraw_gate_step(&g, &q) != REDRAW_SKIP) drew++;
+        q.epoch = 0xAAAA + f;                   /* every tick changes something */
+        if (gate_step(&g, &q) == REDRAW_FULL) full++;
     }
+    if (verbose) printf("  state changed every tick: %u/%u full repaints\n", full, ticks);
+    CHECK(full == ticks, "state change must always repaint in full, got %u/%u",
+          full, ticks);
 
-    if (verbose) printf("  state changed every tick: %u/39 draws\n", drew);
-    CHECK(drew == 39, "state change must always draw, got %u/39", drew);
+    /* One change, then a quiet screen until the heartbeat. */
+    q.frame++;
+    q.epoch++;
+    const uint32_t changed_at = q.frame;
+    CHECK(gate_step(&g, &q) == REDRAW_FULL, "a single state change must repaint in full");
+    uint32_t after = 0;
+    for (q.frame = changed_at + 1; q.frame < changed_at + FW_IDLE_TICK; q.frame++)
+        if (gate_step(&g, &q) != REDRAW_SKIP) after++;
+    if (verbose) printf("  one state change: %u draws after its full repaint\n", after);
+    CHECK(after == 0, "a state change must repaint once, %u more draws", after);
 }
 
 static void check_popup_runs_at_tick_rate(bool verbose)
 {
-    /* The popup countdown decrements once per DRAW, so it needs a draw every
-     * tick or it lingers. This is the compositor-UNAVAILABLE case (demo
-     * trace, cursors on, FFT views), where main.c still sets `force` and the
-     * full path both paints the box and steps the countdown. */
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    redraw_query_t q = { 0, 0xBBBB, false, true, false, false,
-                         FW_FULL_MIN, FW_ANIM_TICK, FW_IDLE_TICK };
+    /* main.c marks a popup as new data on every tick while it is up (its
+     * countdown steps once per draw), so it is a live frame every tick
+     * and never a full repaint. */
+    redraw_gate_t g = { 0 };
+    redraw_query_t q = { .frame = 0, .epoch = 0xBBBB, .new_data = true,
+                         .anim_tick_frames = FW_ANIM_TICK,
+                         .idle_tick_frames = FW_IDLE_TICK };
+    const uint32_t ticks = 10;
 
-    uint32_t drew = 0;
-    for (uint32_t f = 0; f < 10; f++) {
-        q.frame = f;
-        if (redraw_gate_step(&g, &q) == REDRAW_FULL) drew++;
-    }
-
-    if (verbose) printf("  popup active, no compositor: %u/10 full draws\n", drew);
-    CHECK(drew == 10, "popup must draw every tick, got %u/10", drew);
-}
-
-static void check_popup_rides_the_compositor(bool verbose)
-{
-    /*
-     * REGRESSION GUARD, 2026-08-19. Until this date main.c set
-     * `q.force = scope_popup_active()` unconditionally, which pinned the
-     * renderer to the full clear-then-redraw for the popup's entire ~500 ms
-     * life. Showing a two-word box therefore blanked the whole screen ten
-     * times, and the box strobed along with the trace — the bench report was
-     * "the numbers flash too fast to read".
-     *
-     * The policy now: when the compositor is available the popup rides on it
-     * as an overlay (main.c marks it as new_data so a live frame runs every
-     * tick, and draw_scope_live_frame steps around the box). So a popup over
-     * a live trace must produce ten INCREMENTAL frames and NOT ONE full
-     * repaint. If someone reinstates the unconditional force, this fails.
-     */
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    /* frame, epoch, new_data, force, incremental_ok, animating, ... */
-    redraw_query_t q = { 0, 0xBBBB, true, false, true, false,
-                         FW_FULL_MIN, FW_ANIM_TICK, FW_IDLE_TICK };
-
-    /* Prime, exactly as entering the screen does. */
-    redraw_gate_step(&g, &q);
+    gate_step(&g, &q);                          /* prime, as screen entry does */
 
     uint32_t live = 0, full = 0;
-    for (uint32_t f = 1; f <= 10; f++) {
+    for (uint32_t f = 1; f <= ticks; f++) {
         q.frame = f;
-        redraw_action_t a = redraw_gate_step(&g, &q);
+        redraw_action_t a = gate_step(&g, &q);
         if (a == REDRAW_INCREMENTAL) live++;
         if (a == REDRAW_FULL)        full++;
     }
 
     if (verbose)
-        printf("  popup over live trace: %u incremental, %u full\n", live, full);
-    CHECK(live == 10, "popup over a live trace must draw incrementally every "
-                      "tick, got %u/10", live);
-    CHECK(full == 0, "a popup over a live trace must not force ANY full "
-                     "repaint — that is the screen flash, got %u", full);
-}
-
-static void check_fading_persistence_stays_live(bool verbose)
-{
-    /* Persistence (or anything animating) on a screen the compositor can
-     * serve: the fade ticks must be live frames, never a full repaint, even
-     * with no new data (stopped). Before 2026-11-13 the animating arm always
-     * returned FULL, which was the 2 Hz blink with persistence on. */
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    /* frame, epoch, new_data, force, incremental_ok, animating, ... */
-    redraw_query_t q = { 0, 0xFADE, false, false, true, true,
-                         FW_FULL_MIN, FW_FULL_MIN, FW_IDLE_TICK };
-    redraw_gate_step(&g, &q);                    /* prime (entry: full) */
-    uint32_t live = 0, full = 0;
-    for (uint32_t f = 1; f <= 100; f++) {
-        q.frame = f;
-        redraw_action_t a = redraw_gate_step(&g, &q);
-        if (a == REDRAW_INCREMENTAL) live++;
-        if (a == REDRAW_FULL)        full++;
-    }
-    if (verbose)
-        printf("  fading persistence, stopped: %u live, %u full in 5 s\n", live, full);
-    CHECK(full == 0, "a fade on the compositor must not full-repaint, got %u", full);
-    CHECK(live >= 20, "the fade must keep ticking (every %u frames), got %u live",
-          (unsigned)FW_FULL_MIN, live);
+        printf("  popup up: %u live frames, %u full\n", live, full);
+    CHECK(live == ticks, "a popup must draw a live frame every tick, got %u/%u",
+          live, ticks);
+    CHECK(full == 0, "a popup must not repaint in full, got %u", full);
 }
 
 static void check_screen_entry_always_draws(bool verbose)
 {
-    /* NEGATIVE CONTROL: switching away and back must repaint even though
-     * the screen's own state never moved — otherwise you get the previous
-     * mode's pixels. main.c calls redraw_gate_invalidate() on mode change. */
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    redraw_query_t q = { 0, 0xC0DE, false, false, false, false,
-                         FW_FULL_MIN, 0, 0 };
+    /* Switching away and back must repaint even though the screen's own
+     * state never moved, otherwise the previous mode's pixels stay.
+     * main.c calls redraw_gate_invalidate() on mode change. */
+    redraw_gate_t g = { 0 };
+    redraw_query_t q = { .frame = 0, .epoch = 0xC0DE };
 
-    CHECK(redraw_gate_step(&g, &q) == REDRAW_FULL, "first paint must draw");
+    CHECK(gate_step(&g, &q) == REDRAW_FULL, "first paint must repaint in full");
     q.frame = 1;
-    CHECK(redraw_gate_step(&g, &q) == REDRAW_SKIP, "unchanged screen must skip");
+    CHECK(gate_step(&g, &q) == REDRAW_SKIP, "unchanged screen must skip");
 
-    redraw_gate_invalidate(&g);              /* mode change */
+    q.force = true;                             /* an explicit invalidate by the caller */
     q.frame = 2;
-    redraw_action_t a = redraw_gate_step(&g, &q);
+    CHECK(gate_step(&g, &q) == REDRAW_FULL, "force must repaint in full");
+    q.force = false;
+    q.frame = 3;
+    CHECK(gate_step(&g, &q) == REDRAW_SKIP, "after the forced repaint the unchanged screen must skip");
+
+    redraw_gate_invalidate(&g);                 /* mode change */
+    q.frame = 4;
+    redraw_action_t a = gate_step(&g, &q);
     if (verbose) printf("  screen re-entry after invalidate: %s\n",
                         a == REDRAW_FULL ? "FULL" : "not full");
-    CHECK(a == REDRAW_FULL, "screen entry must repaint");
+    CHECK(a == REDRAW_FULL, "screen entry must repaint in full");
 }
 
 static void check_siggen_clamped_presses(bool verbose)
 {
-    /* Siggen is drawn only from queue commands, and input_handler sends
-     * DCMD_REDRAW_ALL — a full-screen clear — for every adjustment,
-     * including ones that hit a clamp. 20 presses, 10 of them no-ops. */
-    redraw_gate_t g = { 0, 0, 0, false, false };
+    /* Siggen is drawn only from queue commands, and every adjustment asks
+     * for a redraw, including one that hits a clamp. main.c's DCMD path
+     * draws iff not primed or the epoch moved. 20 presses, 10 of them
+     * no-ops. */
+    redraw_gate_t g = { 0 };
     uint32_t epoch = 0x5165;
     uint32_t drew = 0;
+    const uint32_t presses = 20;
 
-    for (uint32_t i = 0; i < 20; i++) {
-        if (i % 2 == 0) epoch++;             /* half the presses change state */
-        /* main.c's DCMD path: draw iff not primed or epoch moved */
+    for (uint32_t i = 0; i < presses; i++) {
+        if (i % 2 == 0) epoch++;                /* half the presses change state */
         if (!g.primed || epoch != g.drawn_epoch) {
             drew++;
             redraw_gate_mark(&g, epoch, i, REDRAW_FULL);
@@ -492,9 +449,10 @@ static void check_siggen_clamped_presses(bool verbose)
     }
 
     if (verbose)
-        printf("  siggen 20 presses (10 change nothing): pre-B2 20 full-screen"
-               " clears, post-B2 %u\n", drew);
-    CHECK(drew == 10, "expected 10 draws for 10 real changes, got %u", drew);
+        printf("  siggen %u presses (half change nothing): %u full repaints\n",
+               presses, drew);
+    CHECK(drew == presses / 2, "expected %u draws for %u real changes, got %u",
+          presses / 2, presses / 2, drew);
 }
 
 static void check_frame_counter_wrap(bool verbose)
@@ -503,121 +461,74 @@ static void check_frame_counter_wrap(bool verbose)
      * years, but the arithmetic must be wrap-safe regardless because a
      * signed/absolute comparison here would stall the display for the
      * whole second half of the range. */
-    redraw_gate_t g = { 0, 0, 0, false, false };
-    redraw_query_t q = { 0xFFFFFFF0u, 0xD00D, false, false, false, false,
-                         FW_FULL_MIN, 0, FW_IDLE_TICK };
+    const uint32_t start = 0xFFFFFFF0u;
+    const uint32_t ticks = SECONDS(10);
+    redraw_gate_t g = { 0 };
+    redraw_query_t q = { .frame = start, .epoch = 0xD00D,
+                         .idle_tick_frames = FW_IDLE_TICK };
 
-    (void)redraw_gate_step(&g, &q);          /* prime near the wrap */
+    (void)gate_step(&g, &q);                    /* prime near the wrap */
 
-    uint32_t drew = 0;
-    for (uint32_t i = 1; i <= 200; i++) {
-        q.frame = 0xFFFFFFF0u + i;           /* wraps through zero */
-        if (redraw_gate_step(&g, &q) != REDRAW_SKIP) drew++;
+    uint32_t live = 0, full = 0;
+    for (uint32_t i = 1; i <= ticks; i++) {
+        q.frame = start + i;                    /* wraps through zero */
+        redraw_action_t a = gate_step(&g, &q);
+        if (a == REDRAW_INCREMENTAL) live++;
+        if (a == REDRAW_FULL)        full++;
     }
 
-    if (verbose) printf("  across uint32 frame wrap: %u heartbeats in 200 ticks\n",
-                        drew);
-    CHECK(drew == 2, "heartbeat should fire twice in 200 ticks, got %u", drew);
+    if (verbose) printf("  across uint32 frame wrap: %u heartbeats in %u ticks\n",
+                        live, ticks);
+    CHECK(live == ticks / FW_IDLE_TICK, "heartbeat should fire %u times in %u ticks,"
+          " got %u", (unsigned)(ticks / FW_IDLE_TICK), ticks, live);
+    CHECK(full == 0, "the heartbeat must not repaint in full, got %u", full);
 }
-
-/* ═══════════════════════════════════════════════════════════════════
- * Mutant pass — every check above is re-run with a broken gate, and the
- * test fails if the checks do NOT notice.
- * ═══════════════════════════════════════════════════════════════════ */
 
 static int run_all_checks(bool verbose)
 {
     int before = failures_in_pass;
     check_idle_settled_screen(verbose);
-    check_idle_heartbeat_stays_live(verbose);
-    check_cursors_on_live_data(verbose);
-    check_waterfall_live_data(verbose);
-    check_live_trace_not_throttled(verbose);
-    check_demo_animation_preserved(verbose);
+    check_stopped_screen_goes_silent(verbose);
+    check_live_trace_every_capture(verbose);
+    check_data_on_a_state_change_tick(verbose);
+    check_demo_animation(verbose);
+    check_fading_persistence(verbose);
     check_state_change_always_draws(verbose);
     check_popup_runs_at_tick_rate(verbose);
-    check_popup_rides_the_compositor(verbose);
     check_screen_entry_always_draws(verbose);
-    check_fading_persistence_stays_live(verbose);
     check_siggen_clamped_presses(verbose);
     check_frame_counter_wrap(verbose);
     return failures_in_pass - before;
-}
-
-/* Mutants are exercised through the scenario-driven checks only (the
- * hand-written ones call redraw_gate_step directly), so each mutant is
- * paired with the scenario check that must catch it. */
-static void check_mutant(const char *name, gate_kind_t kind,
-                         const scenario_t *s, bool expect_drop,
-                         bool expect_no_reduction)
-{
-    tally_t t = run(kind, s);
-    bool caught = false;
-
-    if (expect_drop && (t.dropped_data > 0 || t.max_data_latency > FW_FULL_MIN))
-        caught = true;
-    if (expect_no_reduction && t.full >= 190)
-        caught = true;
-
-    checks_run++;
-    if (!caught) {
-        checks_failed++;
-        printf("  FAIL: mutant '%s' was NOT caught "
-               "(full=%u incr=%u dropped=%u maxlat=%u)\n",
-               name, t.full, t.incremental, t.dropped_data, t.max_data_latency);
-    } else {
-        printf("  caught mutant: %-28s (full=%u incr=%u dropped=%u maxlat=%u)\n",
-               name, t.full, t.incremental, t.dropped_data, t.max_data_latency);
-    }
 }
 
 int main(void)
 {
     printf("redraw gate — scope/siggen repaint accounting\n");
     printf("================================================================\n");
-    printf("\nmeasured behaviour (pre-B2 model vs redraw_gate.h):\n\n");
+    printf("\nmeasured behaviour of redraw_gate.h:\n\n");
 
+    gate_under_test = GATE_REAL;
     int real_failures = run_all_checks(true);
 
+    /* Every check again against each broken gate: at least one must fail,
+     * or the checks cannot detect what they claim to. */
     printf("\nnegative controls — broken gates must be caught:\n\n");
 
-    /* live-capture scenario: 10 s at 20 Hz, incremental unavailable */
-    scenario_t live = { 200, 1, 0, false, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
-    /* live-trace scenario: incremental available */
-    scenario_t trace = { 200, 2, 0, true, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
-
-    check_mutant("non-sticky data (pre-B2 bug)", GATE_MUT_NONSTICKY,
-                 &live, true, false);
-    check_mutant("no gating at all", GATE_MUT_ALWAYS,
-                 &live, false, true);
-    check_mutant("draws only on state change", GATE_MUT_NEVER_IDLE,
-                 &trace, true, false);
-
-    /* And prove the harness itself can fail: run the full check set
-     * against the "no gating at all" gate by short-circuiting the new
-     * gate, and confirm the reduction assertions fire. */
-    printf("\nharness self-test — the checks must fail on an ungated build:\n");
-    {
-        expect_failures = true;
-        failures_in_pass = 0;
-        /* Reuse check_idle_settled_screen's expectation directly against
-         * the ungated model: 20 s idle, no gating => 400 repaints. */
-        scenario_t idle = { 400, 0, 0, false, false, FW_FULL_MIN, 0, FW_IDLE_TICK };
-        tally_t ungated = run(GATE_MUT_ALWAYS, &idle);
-        CHECK(ungated.full <= 5,
-              "ungated build repainted %u times in 20 s", ungated.full);
-        int caught = failures_in_pass;
-        expect_failures = false;
+    expect_failures = true;
+    for (unsigned i = 0; i < sizeof mutants / sizeof mutants[0]; i++) {
+        gate_under_test = mutants[i].kind;
+        const int caught = run_all_checks(false);
         checks_run++;
-        if (caught != 1) {
+        if (caught == 0) {
             checks_failed++;
-            printf("  FAIL: the idle-screen assertion did not fire on an "
-                   "ungated build — the check cannot detect what it claims to\n");
+            printf("  FAIL: mutant '%s' was NOT caught\n", mutants[i].name);
         } else {
-            printf("  ok: idle-screen assertion fires (%u repaints in 20 s)\n",
-                   ungated.full);
+            printf("  caught mutant: %-30s (%d checks failed)\n",
+                   mutants[i].name, caught);
         }
     }
+    expect_failures = false;
+    gate_under_test = GATE_REAL;
 
     printf("\n================================================================\n");
     if (checks_failed == 0 && real_failures == 0) {

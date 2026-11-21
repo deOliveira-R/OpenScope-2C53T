@@ -1121,8 +1121,9 @@ $(BUILD_DIR)/test_task_call: tests/test_task_call.c src/util/task_call.c src/uti
 test-task-call: $(BUILD_DIR)/test_task_call
 	$<
 
-# Redraw gate (B2): counts full-area repaints for the scope/siggen screens
-# against a transcription of the pre-B2 logic. See tests/test_redraw_gate.c.
+# Redraw gate: counts skipped ticks, live frames and full repaints for the
+# scope/siggen screens over scenario traces, and checks that deliberately
+# broken gates fail. See tests/test_redraw_gate.c.
 $(BUILD_DIR)/test_redraw_gate: tests/test_redraw_gate.c src/ui/redraw_gate.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< -o $@
 

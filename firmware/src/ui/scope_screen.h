@@ -99,19 +99,16 @@ uint32_t scope_screen_cursor_epoch(void);
  *   whole   another kind of view: the whole screen once (as a key's change);
  *   layout  the layout part moved: the redraw gate repaints the view in full
  *           (its epoch is `layout`);
- *   live    a soft change or a cursor line, where a live frame serves the
- *           view: one live frame (and the strip's cells at once
- *           when `strip`);
- *   force   a soft change where it does not (the other views, no record
- *           yet, the emulator): the view in full, as before B7.
+ *   live    a soft change in the Y-T view, or a cursor line: one live frame
+ *           (and the strip's cells at once when `strip`);
+ *   force   a soft change in another view: the view in full.
  * `primed`: the scope was painted since it was entered (else nothing is
- * known to differ: the entry paints it). `compositor`: the per-column live
- * frame can serve this frame in the Y-T view. Pure; display task. */
+ * known to differ: the entry paints it). Pure; display task. */
 typedef struct { uint32_t layout, soft, cursor; uint8_t kind; } scope_shown_t;
 typedef struct { bool bar, whole, layout, live, strip, force; } scope_change_t;
 void           scope_screen_shown(scope_shown_t *now);
 scope_change_t scope_screen_changed(const scope_shown_t *seen, const scope_shown_t *now,
-                                    bool primed, bool compositor);
+                                    bool primed);
 
 /* A `set` from the direct route changed `groups` (bit = PG_x) while the
  * scope is the top screen: true when every one of them is the scope's own

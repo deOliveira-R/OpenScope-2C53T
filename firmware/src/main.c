@@ -187,28 +187,18 @@ void delay_ms(uint32_t ms)
  * Cadences below are in display-task ticks (50 ms each).
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Floor between data-driven FULL repaints: frames that send every pixel,
- * where a live frame sends only what changed. It throttles the views without
- * a live frame (in the emulator, all of them) and the pre-data demo state.
- * 4 ticks = 5 Hz. */
-#define SCOPE_FULL_MIN_FRAMES   4
+/* Cadence of a view whose picture moves by itself and should look smooth:
+ * X-Y's phosphor decay and fading persistence ghosts. 4 ticks = 5 Hz. */
+#define SCOPE_ANIM_FAST_FRAMES  4
 
-/* Cadence while the screen is genuinely a function of `frame`: the
- * synthetic demo waveform before the first real sample, and the
- * persistence ghosts (which decay once per draw). */
+/* Cadence of the demo picture before the first record. */
 #define SCOPE_ANIM_TICK_FRAMES  20
 
-/* Idle heartbeat, split by what the heartbeat costs: a repaint when nothing
- * the epoch sees has changed, so a frozen display can be told from a hung
- * task.
- *
- * Where a live frame serves the view (draw_scope_live_frame) the heartbeat
- * sends only what changed, usually nothing, and stays at 1 s. Where it does
- * not, the heartbeat is a full repaint of the view: that one is backed off
- * to 5 s. */
-#define SCOPE_IDLE_LIVE_FRAMES  20    /* 1 s, a live frame */
+/* Idle heartbeat while running: a live frame when nothing the epoch sees
+ * has changed, so a frozen display can be told from a hung task. It sends
+ * only what changed, usually nothing. */
+#define SCOPE_IDLE_FRAMES       20    /* 1 s */
 #define SCOPE_STRIP_REFRESH_FRAMES 10 /* 500 ms: measurement cells in place */
-#define SCOPE_IDLE_FULL_FRAMES  100   /* 5 s, a full repaint */
 
 /* Draw accounting. Non-static on purpose: these are the evidence that
  * the gate works, and they need to be reachable from a debugger or a
@@ -237,7 +227,7 @@ volatile uint32_t ui_scope_skipped     = 0;
 volatile uint32_t ui_siggen_full_draws = 0;   /* the generator page painted (its screen's draw) */
 volatile uint32_t ui_siggen_skipped    = 0;   /* an in-place paint its epoch gate dropped */
 
-static redraw_gate_t scope_gate  = { 0, 0, 0, false, false };
+static redraw_gate_t scope_gate  = { 0, 0, false };
 
 /* Hash of everything draw_scope_screen()/draw_fft_screen()/
  * draw_waterfall_screen() read out of program state. Sample data is NOT
@@ -358,26 +348,6 @@ static bool s_roll_view(void)
     return scope_state_get()->roll;
 }
 
-/* Is there a live frame for what the scope shows now: one that sends only
- * what changed? */
-static bool scope_incremental_available(const scope_state_t *s)
-{
-#ifdef EMULATOR_BUILD
-    (void)s;
-    return false;   /* the emulator has no records: every view is drawn in full */
-#else
-#if FEATURE_FFT
-    /* FFT, split, waterfall and X-Y compose every pixel of each frame. */
-    if (scope_view != SCOPE_VIEW_TIME) return true;
-#endif
-    /* Roll needs no record. */
-    if (s->roll) return true;
-    /* Y-T: once a record has arrived. Before that the demo picture moves
-     * with the frame counter and is drawn in full at the animation rate. */
-    return scope_acquisition_ready();
-#endif
-}
-
 /* ── What changed on the scope, for its redraw gate (ARCH-1 B7) ──────
  * ui/scope_screen.c hashes what the scope shows in two parts. A LAYOUT
  * change (a channel on or off, the cursor mode, the measurement rows, math,
@@ -386,11 +356,9 @@ static bool scope_incremental_available(const scope_state_t *s)
  * coupling, probe, the timebase code, the trigger settings, the active
  * channel) is what the per-column live frame, the measurement strip's
  * in-place refresh and the bars' own epochs repaint by themselves: one live
- * frame, no clear. Soft only where the compositor serves the frame (the Y-T
- * view with a record); in every other view, and in the emulator, a soft
- * change repaints the view in full, as every change did. The gate's epoch is
- * the layout part alone, so it does not move when the compositor comes or
- * goes. The keys still ask for a full repaint with their popup
+ * frame. Soft only in the Y-T view; in every other view a soft change
+ * repaints the view in full (their live frames do not repaint labels and
+ * margins). The gate's epoch is the layout part alone. The keys still ask for a full repaint with their popup
  * (DCMD_REDRAW_ALL); this is what a `set` from the direct route costs.
  * The decision is scope_screen_changed() (pure, host-tested). */
 /* What the last scope paint showed (display task only). */
@@ -426,7 +394,7 @@ static bool osc_page_up(void)
  * per frame whether what it shows has changed by itself (the meter: a new
  * reading): then it paints in place, ungated. NULL: the router is not up
  * yet. */
-static redraw_gate_t native_gate = { 0, 0, 0, false, false };
+static redraw_gate_t native_gate = { 0, 0, false };
 
 static const screen_t *native_base(void)
 {
@@ -462,7 +430,7 @@ static bool native_paint_update(const screen_t *s, uint32_t frame)
  * dropped, is still painted within a frame, and an idle layer costs no LCD
  * write. The epoch is taken before the paint: a change made while it runs
  * is seen on the next frame. */
-static redraw_gate_t   layer_gate = { 0, 0, 0, false, false };
+static redraw_gate_t   layer_gate = { 0, 0, false };
 static const screen_t *layer_painted;        /* the layer the gate is about */
 
 static void layer_paint(const screen_t *s, scr_paint_t how, uint32_t frame)
@@ -579,7 +547,6 @@ static void scope_render(uint32_t frame, redraw_action_t action)
         if (inc) scope_popup_overlay_tick();
         return;
     }
-#ifndef EMULATOR_BUILD
     if (action == REDRAW_INCREMENTAL) {
         ui_scope_live_draws++;
         const uint32_t c0 = DWT->CYCCNT;
@@ -590,7 +557,6 @@ static void scope_render(uint32_t frame, redraw_action_t action)
         scope_popup_overlay_tick();
         return;
     }
-#endif
     ui_scope_full_draws++;
     UI_TIMED(UI_PERF_FULL, draw_scope_screen(frame));
 }
@@ -620,8 +586,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
     const scope_state_t *ss_anim = scope_state_get();
     scope_shown_t now;
     scope_screen_shown(&now);
-    const scope_change_t chg = scope_screen_changed(&g_scope_seen, &now, scope_gate.primed,
-                                                    scope_incremental_available(ss_anim));
+    const scope_change_t chg = scope_screen_changed(&g_scope_seen, &now, scope_gate.primed);
     /* The top bar's slots (the timebase, the RUN tab) follow a change made
      * by any route at once, not at its next 1 s tick: only the slots whose
      * content changed are painted. Under the page too. */
@@ -663,19 +628,13 @@ redraw_action_t scope_view_tick(uint32_t frame)
             scope_ui_can_row_refresh();
     }
     {
-        /* Redraw decision (B2, 2026-08-13). Also while STOPPED:
-         * nothing new arrives then, so the gate skips, but a popup
-         * still has to be shown and erased on wall-clock time
-         * (until 2026-11-13 this block was inside the running test
-         * and a popup raised while stopped stayed up for good).
-         *
-         * redraw_gate_step() picks between skipping, a live frame
-         * (unthrottled, so the trace updates at the capture rate)
-         * and a rate-capped full repaint, using an epoch over
-         * everything the screen renders. A full repaint is what a
-         * change of layout, a view without a live frame, the
-         * pre-data demo state and every button-driven DCMD redraw
-         * get. */
+        /* Redraw decision, also while stopped: nothing new arrives then,
+         * so the gate skips, but a popup still has to be shown and erased
+         * on wall-clock time. redraw_gate_step() picks between skipping, a
+         * live frame and a full repaint, using an epoch over everything the
+         * screen renders. A full repaint is what a change of layout, a soft
+         * change in a view other than Y-T and every button-driven DCMD
+         * redraw get. */
         static uint16_t last_spi3_ok = 0;
         uint16_t spi3_now = acq.spi3_ok_count;
         bool new_data = (spi3_now != last_spi3_ok);
@@ -684,40 +643,22 @@ redraw_action_t scope_view_tick(uint32_t frame)
         redraw_query_t q;
         q.frame            = frame;
         q.epoch            = now.layout;
-        /* A live popup counts as new data so the compositor runs on
+        /* A live popup counts as new data so a live frame runs on
          * every 50 ms tick while it is up, and once more to erase it
          * (its lifetime is wall-clock, scope_popup.c POPUP_MS). */
         q.new_data         = new_data || scope_popup_active()
                              || scope_ui_take_live_request() || chg.live;
-        q.incremental_ok   = scope_incremental_available(ss_anim);
-        /* Only the full path can show a popup when the compositor is
-         * unavailable (demo trace, cursors on, FFT views). When it IS
-         * available the popup rides along as an overlay, so forcing
-         * here would reinstate exactly the flashing this replaced. */
-        q.force            = (scope_popup_active() && !q.incremental_ok)
-                             || chg.force;
-        /* Both of these genuinely produce new pixels every tick
-         * from `frame` alone: the synthetic demo waveform (only
-         * drawn before the first real sample) and the
-         * persistence overlay (which decays once per draw). */
-        /* X-Y draws its own phosphor decay every frame, so it must
-         * tick at the fast floor (200 ms) rather than the 1 s anim
-         * cadence — otherwise the trail fades in visible 1 s steps. */
+        q.force            = chg.force;
+        /* Pictures that move without new data: the demo before the first
+         * record (a function of `frame`), persistence ghosts (they fade on
+         * wall time) and X-Y's phosphor decay. */
         q.animating        = !scope_acquisition_ready() || persist_enabled
                              || scope_view == SCOPE_VIEW_XY;
-        q.full_min_frames  = SCOPE_FULL_MIN_FRAMES;
-        /* Persistence fades on wall time: with the live frame serving
-         * it, a tick every 200 ms keeps a stopped trace fading
-         * smoothly at no blanking cost. */
-        q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY ||
-                              (persist_enabled && q.incremental_ok))
-                             ? SCOPE_FULL_MIN_FRAMES
+        q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY || persist_enabled)
+                             ? SCOPE_ANIM_FAST_FRAMES
                              : SCOPE_ANIM_TICK_FRAMES;
-        /* Stopped, nothing a hash cannot see changes: no heartbeat
-         * (it drew one live frame a second while stopped). */
-        q.idle_tick_frames = !ss_anim->running ? 0u
-                           : q.incremental_ok ? SCOPE_IDLE_LIVE_FRAMES
-                                              : SCOPE_IDLE_FULL_FRAMES;
+        /* Stopped, nothing a hash cannot see changes: no heartbeat. */
+        q.idle_tick_frames = ss_anim->running ? SCOPE_IDLE_FRAMES : 0u;
 
         redraw_action_t act = page_up ? REDRAW_SKIP
                                       : redraw_gate_step(&scope_gate, &q);

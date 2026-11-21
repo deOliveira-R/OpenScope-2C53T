@@ -494,7 +494,7 @@ void scope_screen_shown(scope_shown_t *now)
 }
 
 scope_change_t scope_screen_changed(const scope_shown_t *seen, const scope_shown_t *now,
-                                    bool primed, bool compositor)
+                                    bool primed)
 {
     scope_change_t c = { false, false, false, false, false, false };
     const bool soft_moved = now->soft != seen->soft;
@@ -503,9 +503,9 @@ scope_change_t scope_screen_changed(const scope_shown_t *seen, const scope_shown
     if (!primed) return c;
     if (now->kind != seen->kind) { c.whole = true; return c; }
     c.layout = now->layout != seen->layout;
-    /* Soft where the live frame is the view's renderer: the Y-T view (kind
-     * 0) with a record. */
-    const bool soft_ok = compositor && now->kind == 0u;
+    /* Soft in the Y-T view (kind 0): its live frame repaints everything a
+     * soft change moves. */
+    const bool soft_ok = now->kind == 0u;
     if (soft_moved && soft_ok) c.live = c.strip = true;
     if (soft_moved && !soft_ok) c.force = true;
     if (now->cursor != seen->cursor) c.live = true;

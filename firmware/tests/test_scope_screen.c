@@ -1107,38 +1107,36 @@ static void test_direct_route_paint(void)
         { "view.curv1", P(VIEW_CURV1), 10, CURSOR },  { "view.curh2", P(VIEW_CURH2), 200, CURSOR },
     };
     bool ok = true;
-    for (unsigned i = 0; i < sizeof F / sizeof F[0]; i++)
-        for (int comp = 0; comp < 2; comp++) {
-            boot();
-            scope_shown_t seen, now;
-            scope_screen_shown(&seen);
-            (void)prop_set_local(F[i].p, F[i].v, ORIGIN_SHELL, NULL);
-            scope_screen_shown(&now);
-            const scope_change_t c = scope_screen_changed(&seen, &now, true, comp != 0);
-            bool good;
-            switch (F[i].kind) {
-            case LIVE:   /* one live frame + the strip's cells with the compositor; the view in full without */
-                good = c.bar && !c.whole && !c.layout && c.live == (comp != 0) && c.strip == (comp != 0) &&
-                       c.force == (comp == 0);
-                break;
-            case LAYOUT: /* the gate repaints the plot area (its epoch is the layout part) */
-                good = c.bar && !c.whole && c.layout && !c.live && !c.strip && !c.force;
-                break;
-            case WHOLE:  /* another kind of view: the whole screen */
-                good = c.whole;
-                break;
-            default:     /* a cursor line: one frame, nothing else, the bar untouched */
-                good = !c.bar && !c.whole && !c.layout && c.live && !c.strip && !c.force;
-                break;
-            }
-            if (!good) printf("    %s comp %d: bar %d whole %d layout %d live %d strip %d force %d\n", F[i].name, comp,
-                              c.bar, c.whole, c.layout, c.live, c.strip, c.force);
-            ok &= good;
-            /* not painted since the scope was entered: only the bar is known to differ */
-            const scope_change_t u = scope_screen_changed(&seen, &now, false, comp != 0);
-            ok &= !u.whole && !u.layout && !u.live && !u.strip && !u.force;
+    for (unsigned i = 0; i < sizeof F / sizeof F[0]; i++) {
+        boot();
+        scope_shown_t seen, now;
+        scope_screen_shown(&seen);
+        (void)prop_set_local(F[i].p, F[i].v, ORIGIN_SHELL, NULL);
+        scope_screen_shown(&now);
+        const scope_change_t c = scope_screen_changed(&seen, &now, true);
+        bool good;
+        switch (F[i].kind) {
+        case LIVE:   /* the Y-T view: one live frame and the strip's cells, no full repaint */
+            good = c.bar && !c.whole && !c.layout && c.live && c.strip && !c.force;
+            break;
+        case LAYOUT: /* the gate repaints the plot area (its epoch is the layout part) */
+            good = c.bar && !c.whole && c.layout && !c.live && !c.strip && !c.force;
+            break;
+        case WHOLE:  /* another kind of view: the whole screen */
+            good = c.whole;
+            break;
+        default:     /* a cursor line: one frame, nothing else, the bar untouched */
+            good = !c.bar && !c.whole && !c.layout && c.live && !c.strip && !c.force;
+            break;
         }
-    CHECK("23 properties x compositor on/off: live frame, plot repaint, whole screen or a cursor frame", ok);
+        if (!good) printf("    %s: bar %d whole %d layout %d live %d strip %d force %d\n", F[i].name,
+                          c.bar, c.whole, c.layout, c.live, c.strip, c.force);
+        ok &= good;
+        /* not painted since the scope was entered: only the bar is known to differ */
+        const scope_change_t u = scope_screen_changed(&seen, &now, false);
+        ok &= !u.whole && !u.layout && !u.live && !u.strip && !u.force;
+    }
+    CHECK("23 properties: live frame, plot repaint, whole screen or a cursor frame", ok);
 
     /* a soft change in another view: that view in full (never a live frame of the Y-T band) */
     boot();
@@ -1147,17 +1145,17 @@ static void test_direct_route_paint(void)
     scope_screen_shown(&seen);
     (void)prop_set_local(P(CH1_VDIV), 6, ORIGIN_SHELL, NULL);
     scope_screen_shown(&now);
-    scope_change_t c = scope_screen_changed(&seen, &now, true, true);
+    scope_change_t c = scope_screen_changed(&seen, &now, true);
     CHECK("FFT view: a range change repaints the view in full", c.force && !c.live && !c.whole);
     (void)prop_set_local(P(VIEW_MODE), 0, ORIGIN_SHELL, NULL);
     (void)prop_set_local(P(TB_ROLL), 1, ORIGIN_SHELL, NULL);
     scope_screen_shown(&seen);
     (void)prop_set_local(P(CH1_VDIV), 7, ORIGIN_SHELL, NULL);
     scope_screen_shown(&now);
-    c = scope_screen_changed(&seen, &now, true, true);
+    c = scope_screen_changed(&seen, &now, true);
     CHECK("roll: a range change repaints the view in full", c.force && !c.live && !c.whole);
     scope_screen_shown(&seen);
-    c = scope_screen_changed(&seen, &seen, true, true);
+    c = scope_screen_changed(&seen, &seen, true);
     CHECK("nothing changed: nothing to do", !c.bar && !c.whole && !c.layout && !c.live && !c.strip && !c.force);
 
     /* which sets the screen paints by itself (model_hw_fw.c port_changed) */
