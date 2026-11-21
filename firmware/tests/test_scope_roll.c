@@ -154,24 +154,17 @@ static void test_geometry(void)
     for (int i = 0; i < 400; i++) roll_push(&f, 1, 2);
     CHECK("visible capped at 301 when full", scope_roll_visible(&f, 301) == 301);
 
-    scope_roll_vmap_t m = { true, 0, 255, 128, 18, 224, 206 };
-    CHECK("fixed: centre code at band middle", scope_roll_y(&m, 128) == (18 + 224) / 2);
-    CHECK("fixed: higher code is higher on screen", scope_roll_y(&m, 160) < scope_roll_y(&m, 128));
-    CHECK("fixed: clamped into the band", scope_roll_y(&m, 255) >= 18 && scope_roll_y(&m, 0) < 224);
-
     scope_roll_fifo_reset(&f);
     for (int i = 0; i < 50; i++) roll_push(&f, (uint8_t)(60 + i), 0);
-    scope_roll_vmap_t fm = { false, 0, 0, 0, 18, 224, 206 };
-    bool fit = scope_roll_fit(&f, 0, scope_roll_visible(&f, 301), &fm);
-    CHECK("fit: min..max of the visible points", fit && fm.lo == 60 && fm.hi == 109);
-    CHECK("fit: min at the bottom, max at the top",
-          scope_roll_y(&fm, 60) == 224 - 3 && scope_roll_y(&fm, 109) == 18 + 2);
+    uint8_t lo = 0, hi = 0;
+    bool fit = scope_roll_fit(&f, 0, scope_roll_visible(&f, 301), &lo, &hi);
+    CHECK("fit: min..max of the visible points", fit && lo == 60 && hi == 109);
     scope_roll_fifo_reset(&f);
     for (int i = 0; i < 5; i++) roll_push(&f, 0, 100);
-    fit = scope_roll_fit(&f, 1, 5, &fm);
-    CHECK("fit: a flat input is spread over >= 16 counts", fit && fm.hi - fm.lo == 16);
+    fit = scope_roll_fit(&f, 1, 5, &lo, &hi);
+    CHECK("fit: a flat input is spread over 16 counts about it", fit && hi - lo == 16 && lo <= 100 && hi >= 100);
     scope_roll_fifo_reset(&f);
-    CHECK("fit: empty FIFO refused", !scope_roll_fit(&f, 0, 250, &fm));
+    CHECK("fit: empty FIFO refused", !scope_roll_fit(&f, 0, 250, &lo, &hi));
 }
 
 /* The amplitude correction. Range 7, nominal 80 mV/count (stock 0x0804BFB8);

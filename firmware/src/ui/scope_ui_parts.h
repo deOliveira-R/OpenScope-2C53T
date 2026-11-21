@@ -221,6 +221,11 @@ typedef union {
 /* The one instance of that scratch. */
 extern ui_draw_scratch_t ui_draw_scratch;
 
+/* scope_ui.c */
+/* A time view's frame reports the channels it drew at the converter's limit
+ * and off the plot (bit 0 CH1, bit 1 CH2). */
+void scope_ui_plot_clip_set(uint8_t at_limit, uint8_t off_plot);
+
 /* scope_popup.c */
 /* A plot popup is set (stays set until a frame is drawn without the box). */
 extern bool     popup_on;
@@ -365,6 +370,13 @@ struct canvas_strip;
 void cursor_layer_paint(const cur_layer_t *L, uint16_t x, const struct canvas_strip *s);
 /* Repaint the cursor readout row when its text changed, or when force. */
 void cursor_row_paint(const scope_state_t *ss, bool force);
+
+#if FEATURE_BENCHSHELL
+/* `fpga scope livecheck` (scope_yt.c): frames left to check, pixels
+ * compared, pixels that differ and the first difference. */
+extern volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
+extern volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
+#endif
 
 /* scope_xy.c */
 /* Add label s at (x, y) to text set T. */

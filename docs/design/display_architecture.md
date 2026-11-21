@@ -146,7 +146,10 @@ from the screenshot copy after a full redraw and after a live update).
    on the rows they occupy (a frame with cursors takes 33 ms where it took
    80 to 89 ms, 20 redraws a second where it was 9.4). The per-pixel function
    stays as the rule `fpga scope livecheck` compares the painting with.
-5. Roll, then the spectrum (cursors on frequency and level come with it).
+5. Roll: done. It is a display type on the canvas and shares the graticule
+   and the trace element with Y-T (`firmware/src/ui/plot_elements.c`), which
+   gave it the clip colours; its fitted band uses the Y-T map. Then the
+   spectrum (cursors on frequency and level come with it).
 6. Row strips; the waterfall; measure the hardware scroll.
 7. X-Y from the intensity buffer; split as two canvases.
 8. The view table and `view.mode`; the `FEATURE_FFT` build switch goes.

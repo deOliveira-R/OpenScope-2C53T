@@ -165,10 +165,9 @@ uint16_t scope_roll_visible(const scope_roll_fifo_t *f, uint16_t width)
 
 #define ROLL_FIT_MIN_SPAN 16
 
-bool scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n,
-                    scope_roll_vmap_t *m)
+bool scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n, uint8_t *lo_out, uint8_t *hi_out)
 {
-    if (f == NULL || m == NULL || ch > 1u)
+    if (f == NULL || lo_out == NULL || hi_out == NULL || ch > 1u)
         return false;
     uint8_t lo = 255u, hi = 0u, v;
     uint16_t got = 0u;
@@ -187,31 +186,9 @@ bool scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n,
         lo = (uint8_t)a;
         hi = (uint8_t)(a + ROLL_FIT_MIN_SPAN);
     }
-    m->fixed = false;
-    m->lo = lo;
-    m->hi = hi;
+    *lo_out = lo;
+    *hi_out = hi;
     return true;
-}
-
-int16_t scope_roll_y(const scope_roll_vmap_t *m, uint8_t code)
-{
-    if (m == NULL || m->y_bot <= m->y_top)
-        return 0;
-    int y;
-    if (m->fixed) {
-        int mid = ((int)m->y_top + (int)m->y_bot) / 2;
-        y = mid - ((int)code - (int)m->center) * (int)m->scope_h / 256;
-    } else {
-        /* 2 px margin top and bottom, as autofit leaves the band edges free. */
-        int top = (int)m->y_top + 2, bot = (int)m->y_bot - 3;
-        if (bot <= top) { top = m->y_top; bot = m->y_bot - 1; }
-        int span = (int)m->hi - (int)m->lo;
-        if (span <= 0) span = 1;
-        y = bot - ((int)code - (int)m->lo) * (bot - top) / span;
-    }
-    if (y < m->y_top)  y = m->y_top;
-    if (y >= m->y_bot) y = m->y_bot - 1;
-    return (int16_t)y;
 }
 
 volts_t scope_roll_point_volts(rec_code_t code, rec_code_t zero,

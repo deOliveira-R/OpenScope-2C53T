@@ -284,9 +284,11 @@ void draw_splash(void);
  *   draw_scope_live_frame  only the columns of the plot that changed. */
 void draw_scope_screen(uint32_t frame);
 void draw_scope_live_frame(uint32_t frame);
-/* Bit 0 CH1, bit 1 CH2: the last Y-T frame drew samples of the channel that
- * are valid but off the plot. */
-uint8_t scope_yt_off_plot(void);
+/* Bit 0 CH1, bit 1 CH2: the last frame of a time view (Y-T, roll) drew
+ * samples of the channel that are valid but off the plot. */
+uint8_t scope_ui_off_plot(void);
+/* ... and had columns of the channel at the converter's limit. */
+uint8_t scope_ui_plot_at_limit(void);
 /* The rows between the status bar and the plot, in every scope view. */
 void scope_ui_paint_margin(void);
 void scope_show_popup(const char *text);

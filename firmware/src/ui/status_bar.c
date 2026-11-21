@@ -349,29 +349,36 @@ static uint8_t s_info_drawn_clip;      /* info_clip() as last drawn */
 
 /* What the channel badges say about a cut-off trace, the two cases the
  * trace's own colours show (theme.h clip_converter, clip_screen).
- * Bit 0 CH1, bit 1 CH2 (INFO_CLIP_CONVERTER): the channel is on and its last
- * record is clipped (units.h rec_clipped).
- * Bit 2 CH1, bit 3 CH2 (INFO_CLIP_SCREEN): the Y-T plot drew samples of the
- * channel that are valid but off the plot (scope_yt_off_plot), and the
- * channel is not at a rail; in the Y-T view only.
- * 0 before the first record and in Roll, which draws its own point FIFO,
- * not these buffers. */
+ * Bit 0 CH1, bit 1 CH2 (INFO_CLIP_CONVERTER): the channel is on and at the
+ * converter's limit: its last record is clipped (units.h rec_clipped); in
+ * Roll, which draws its own point FIFO and not the record, the roll frame
+ * drew columns at the limit (scope_ui_plot_at_limit).
+ * Bit 2 CH1, bit 3 CH2 (INFO_CLIP_SCREEN): the last frame of a time view
+ * drew samples of the channel that are valid but off the plot
+ * (scope_ui_off_plot), and the channel is not at the limit.
+ * 0 before the first record. */
 #define INFO_CLIP_CONVERTER(ch)  (uint8_t)(1u << ((ch) - 1u))       /* ch 1 or 2 */
 #define INFO_CLIP_SCREEN(ch)     (uint8_t)(4u << ((ch) - 1u))
 static uint8_t info_clip(void)
 {
     const scope_state_t *ss = scope_state_get();
-    if (!fpga_data_ready() || ss->roll) return 0u;
+    if (!fpga_data_ready()) return 0u;
+    const bool en[2] = { ss->ch1.enabled, ss->ch2.enabled };
     uint8_t m = 0u;
-    if (ss->ch1.enabled && rec_clipped(fpga_get_ch1_buf(), FPGA_ADC_BUF_SIZE)) m |= 1u;
-    if (ss->ch2.enabled && rec_clipped(fpga_get_ch2_buf(), FPGA_ADC_BUF_SIZE)) m |= 2u;
+    if (ss->roll) {
+        m = scope_ui_plot_at_limit();
+    } else {
+        if (rec_clipped(fpga_get_ch1_buf(), FPGA_ADC_BUF_SIZE)) m |= INFO_CLIP_CONVERTER(1u);
+        if (rec_clipped(fpga_get_ch2_buf(), FPGA_ADC_BUF_SIZE)) m |= INFO_CLIP_CONVERTER(2u);
+    }
     if (scope_view == SCOPE_VIEW_TIME) {
-        const uint8_t off = scope_yt_off_plot();
+        const uint8_t off = scope_ui_off_plot();
         for (uint8_t ch = 1u; ch <= 2u; ch++)
-            if ((off & (1u << (ch - 1u))) && !(m & INFO_CLIP_CONVERTER(ch)) &&
-                (ch == 1u ? ss->ch1.enabled : ss->ch2.enabled))
+            if ((off & (1u << (ch - 1u))) && !(m & INFO_CLIP_CONVERTER(ch)))
                 m |= INFO_CLIP_SCREEN(ch);
     }
+    for (uint8_t ch = 1u; ch <= 2u; ch++)
+        if (!en[ch - 1u]) m &= (uint8_t)~(INFO_CLIP_CONVERTER(ch) | INFO_CLIP_SCREEN(ch));
     return m;
 }
 

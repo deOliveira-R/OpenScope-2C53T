@@ -15,6 +15,7 @@
 
 #include "scope_ui_parts.h"
 #include "canvas.h"
+#include "plot_elements.h"
 
 /* Columns sent and skipped by the last frame (`ui dump`). */
 volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
@@ -31,13 +32,6 @@ volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
 volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
 
 #endif
-/* Bit 0 CH1, bit 1 CH2: in the last Y-T frame the channel had samples that
- * are valid but off the plot (and not at the converter's limit). The info
- * bar's channel badge shows it (scope_yt_off_plot). */
-static volatile uint8_t s_off_plot;
-
-uint8_t scope_yt_off_plot(void) { return s_off_plot; }
-
 /* Time view_build() took in the last frame of a record, microseconds (`ui dump`). */
 volatile uint32_t ui_scope_view_us_last;
 
@@ -99,8 +93,8 @@ typedef struct {
     const uint8_t *pbuf;                    /* persistence intensities, or NULL */
     uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below SCOPE_MID_Y */
     /* Columns where a trace sits on a converter rail: one bit per column,
-     * per channel (yt_rail_columns). */
-    uint8_t      rail[2][(SCOPE_GEOM_COLS + 7u) / 8u];
+     * per channel (plot_rail_columns). */
+    uint8_t      rail[2][PLOT_RAIL_BYTES];
     uint8_t      off_plot;                  /* bit per channel: a column's sample was off the plot this frame */
     int16_t      trig_y;                    /* the trigger line's row */
     uint16_t     trig_dots;                 /* its dot mask */
@@ -110,15 +104,8 @@ typedef struct {
 /* What one column shows, worked out once (yt_column) and read by the
  * elements. Index 0 is CH1, 1 is CH2. */
 typedef struct {
-    bool     inwin;                 /* inside the graticule's 301 columns */
     bool     trace;                 /* the window has a sample for this column */
-    bool     on[2];                 /* the channel is drawn here */
-    int16_t  y[2];                  /* its row */
-    int16_t  lo[2], hi[2];          /* the rows its trace covers */
-    int16_t  from[2];               /* the previous column's row, -1 at the first: the persistence feed */
-    uint16_t color[2];              /* the trace's colour here: the channel's, or the warning colour where it fails the mask */
-    int16_t  tip_lo[2], tip_hi[2];  /* the rows of this column's own sample, without the span to the previous column */
-    uint16_t tip[2];                /* their colour: a clip colour when the sample is cut off, else color[] */
+    plot_trace_col_t tr[2];         /* the channel's trace here (plot_elements.h) */
     int16_t  bound_lo[2], bound_hi[2];   /* rows of the mask bounds, -1: none */
     uint16_t strip_color;           /* the mask verdict strip's colour here, 0: none */
     bool     strip_dotted;          /* ... on every other pixel only */
@@ -127,30 +114,6 @@ typedef struct {
     bool     tcol;                  /* ... the trigger-position pointer */
     bool     mcol;                  /* ... the math label */
 } yt_col_t;
-
-/* Mark in bits the columns of [first, end) where the window cols sits on a
- * converter rail: record code 0 or REC_CODE_MAX (units.h) for at least
- * REC_RAIL_RUN_MIN columns in a row. A run, as rec_rail_run asks of a
- * record: fast edges carry single samples that touch a rail, and one sample
- * is not a clipped input. */
-static void yt_rail_columns(const volatile uint8_t *cols, uint16_t first, uint16_t end, uint8_t *bits)
-{
-    memset(bits, 0, (SCOPE_GEOM_COLS + 7u) / 8u);
-    uint16_t run = 0;
-    int rail = 0, was = 0;                  /* -1 low, +1 high, 0 neither */
-    for (uint16_t x = first; x <= end; x++) {
-        rail = 0;
-        if (x < end) {
-            const uint8_t v = cols[x];
-            rail = (v == 0u) ? -1 : (v >= REC_CODE_MAX) ? 1 : 0;
-        }
-        if (rail != 0 && rail == was) { run++; continue; }
-        if (was != 0 && run >= REC_RAIL_RUN_MIN)
-            for (uint16_t k = (uint16_t)(x - run); k < x; k++) bits[k >> 3] |= (uint8_t)(1u << (k & 7u));
-        was = rail;
-        run = (rail != 0) ? 1u : 0u;
-    }
-}
 
 /* Build the frame: read the sources once and work out everything that does
  * not depend on the column.
@@ -196,8 +159,8 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
         /* The maps run against SCOPE_BOT though the band ends at band_bot:
          * the strip covers the plot's last rows, it does not rescale it. */
         yt_fits(ss, &f->a1, &f->a2);
-        yt_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
-        yt_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
+        plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
+        plot_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
         uint8_t slot = 0;
         if (f->a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f->a1, yt_vmap_counts_per_px(&f->a1));
         if (f->a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f->a2, yt_vmap_counts_per_px(&f->a2));
@@ -257,58 +220,31 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
      * them a column carries only the trigger line, the tags, the cursors and
      * background. Inside, a re-sampled held record may not reach every
      * column: [g_view_first, g_view_end) is what view_build filled. */
-    c->inwin = (x < SCOPE_GEOM_COLS);
     c->trace = f->record && x >= g_view_first && x < g_view_end;
     const bool joined = (x > g_view_first);     /* no span from a blank column */
 
-    /* A trace covers SCOPE_TRACE_ROWS rows from its sample's row down, plus
-     * the span to the previous column's row, so a steep edge draws as a
-     * connected vertical. */
+    /* The traces (plot_trace_col). The band that can be seen ends where the
+     * measurement strip starts. A column outside the mask is drawn in the
+     * warning colour, span and all. */
     const autofit_t *const a[2] = { &f->a1, &f->a2 };
     const volatile uint8_t *const b[2] = { f->b1, f->b2 };
     int16_t *const prev[2] = { &f->p1, &f->p2 };
     const uint16_t ch_color[2] = { th->ch1, th->ch2 };
     for (uint8_t ch = 0; ch < 2u; ch++) {
-        c->on[ch] = a[ch]->on && c->trace;
-        /* Where the sample lands, on or off the map's band, and that row
-         * kept on the band. What can be seen of the band ends where the
-         * measurement strip starts: a sample that lands under the strip is
-         * as much off the plot as one beyond the map. */
-        const int landed = c->on[ch] ? autofit_y_raw(a[ch], b[ch][x]) : (int)SCOPE_MID_Y;
-        const int seen_bot = (a[ch]->y_bot < (int)f->band_bot) ? a[ch]->y_bot : (int)f->band_bot;
-        const bool off_plot = c->on[ch] && (landed < a[ch]->y_top || landed >= seen_bot);
-        const int16_t y = c->on[ch] ? yt_vmap_clip(a[ch], landed) : (int16_t)SCOPE_MID_Y;
-        c->y[ch] = y;
-        c->lo[ch] = y;
-        c->hi[ch] = (int16_t)(y + SCOPE_TRACE_ROWS - 1);
-        c->from[ch] = joined ? *prev[ch] : -1;
-        if (joined) {
-            if (*prev[ch] < c->lo[ch]) c->lo[ch] = *prev[ch];
-            if (*prev[ch] > c->hi[ch]) c->hi[ch] = *prev[ch];
+        plot_trace_col_t *const t = &c->tr[ch];
+        t->on = a[ch]->on && c->trace;
+        if (t->on) {
+            plot_trace_col(t, a[ch], autofit_y_raw(a[ch], b[ch][x]), joined, *prev[ch], (int)f->band_bot,
+                           plot_rail_at(f->rail[ch], x),
+                           mask_px_fail((int8_t)ch, (int)x) ? th->warning : ch_color[ch], th);
+            *prev[ch] = t->y;
+            if (t->off_plot) f->off_plot |= (uint8_t)(1u << ch);
         }
-        *prev[ch] = y;
-        /* The sample's own rows. One under the strip would paint nothing:
-         * it is drawn on the last rows that can be seen. */
-        c->tip_lo[ch] = y;
-        if (c->on[ch] && landed >= seen_bot) {
-            c->tip_lo[ch] = (int16_t)(seen_bot - SCOPE_TRACE_ROWS);
-            if (c->lo[ch] > c->tip_lo[ch]) c->lo[ch] = c->tip_lo[ch];
-        }
-        c->tip_hi[ch] = (int16_t)(c->tip_lo[ch] + SCOPE_TRACE_ROWS - 1);
-
-        /* A column outside the mask is drawn in the warning colour, span
-         * and all. A sample that is cut off colours its own rows only (the
-         * span to the previous column is not cut off): the converter's
-         * limit first, where the data is lost, then off the plot. */
-        const bool at_rail = c->on[ch] && (f->rail[ch][x >> 3] & (1u << (x & 7u))) != 0u;
-        c->color[ch] = mask_px_fail((int8_t)ch, (int)x) ? th->warning : ch_color[ch];
-        c->tip[ch] = at_rail ? th->clip_converter : off_plot ? th->clip_screen : c->color[ch];
-        if (off_plot && !at_rail) f->off_plot |= (uint8_t)(1u << ch);
         /* The mask's bounds are dotted (every other column), through the
          * channel's own map. */
         c->bound_lo[ch] = c->bound_hi[ch] = -1;
         uint8_t lo, hi;
-        if (g_mask_bounds_on && MASK_BOUND_DOT(x) && c->on[ch] &&
+        if (g_mask_bounds_on && MASK_BOUND_DOT(x) && t->on &&
             scope_mask_bound_at(ch, (int)x, g_place.trig_x, &lo, &hi)) {
             c->bound_lo[ch] = autofit_y(a[ch], lo);
             c->bound_hi[ch] = autofit_y(a[ch], hi);
@@ -378,21 +314,11 @@ static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const 
         px[i] = *in ? yt_ghost(*in, (uint16_t)(s->lo + i), base_top, base_bot, bg) : bg;
 }
 
-/* The graticule (scope_geom.h): dotted lines every division, a solid centre
- * cross. Columns right of the graticule carry none. */
+/* The graticule (plot_elements.h). */
 static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
-    if (!c->inwin) return;
-    const theme_t *const th = f->th;
-    if (scope_geom_vgrid((int)x))                           /* dotted vertical line: every other row */
-        for (int y = SCOPE_TOP; y < s->hi; y++)
-            if ((y & 1) == 0) strip_put(s, y, th->grid);
-    if ((x & 1u) == 0)                                      /* dotted horizontal lines: every other column */
-        for (int y = SCOPE_TOP; y < s->hi; y += SCOPE_DIV_PX) strip_put(s, y, th->grid);
-    if (x == SCOPE_GEOM_CENTER_COL)
-        strip_span(s, s->lo, s->hi - 1, th->grid_center);
-    else
-        strip_put(s, SCOPE_GRID_MID_Y, th->grid_center);
+    (void)c;
+    plot_grid_paint(f->th, x, s);
 }
 
 /* The trigger level, a dotted line across the plot. */
@@ -417,11 +343,7 @@ static void el_mask_bounds(const yt_frame_t *f, const yt_col_t *c, uint16_t x, c
 static void el_traces(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)f; (void)x;
-    for (uint8_t ch = 0; ch < 2u; ch++) {
-        if (!c->on[ch]) continue;
-        strip_span(s, c->lo[ch], c->hi[ch], c->color[ch]);
-        if (c->tip[ch] != c->color[ch]) strip_span(s, c->tip_lo[ch], c->tip_hi[ch], c->tip[ch]);
-    }
+    for (uint8_t ch = 0; ch < 2u; ch++) plot_trace_paint(&c->tr[ch], s);
 }
 
 /* The demo picture and its "DEMO" mark, in the warning colour beside the
@@ -559,25 +481,17 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
             want = th->warning;                    /* math zero tick */
         else if (mstrip && y >= (uint16_t)s->hi - MASK_STRIP_H && (!mdot || ((x + y) & 1u) == 0u))
             want = mstrip;
-        else if (c->on[1] && (int16_t)y >= c->tip_lo[1] && (int16_t)y <= c->tip_hi[1])
-            want = c->tip[1];
-        else if (c->on[1] && (int16_t)y >= c->lo[1] && (int16_t)y <= c->hi[1])
-            want = c->color[1];
-        else if (c->on[0] && (int16_t)y >= c->tip_lo[0] && (int16_t)y <= c->tip_hi[0])
-            want = c->tip[0];
-        else if (c->on[0] && (int16_t)y >= c->lo[0] && (int16_t)y <= c->hi[0])
-            want = c->color[0];
+        else if (plot_trace_px(&c->tr[1], (int)y, &want))
+            ;                                      /* CH2 */
+        else if (plot_trace_px(&c->tr[0], (int)y, &want))
+            ;                                      /* CH1 under it */
         else if ((int16_t)y == c->bound_lo[0] || (int16_t)y == c->bound_hi[0] ||
                  (int16_t)y == c->bound_lo[1] || (int16_t)y == c->bound_hi[1])
             want = th->text_secondary;
         else if ((int16_t)y == f->trig_y && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
             want = th->trigger;
-        else if (c->inwin && (y == SCOPE_GRID_MID_Y || x == SCOPE_GEOM_CENTER_COL))
-            want = th->grid_center;
-        else if (c->inwin &&
-                 ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
-                  (((y - SCOPE_TOP) % SCOPE_DIV_PX) == 0 && (x & 1u) == 0)))
-            want = th->grid;
+        else if (plot_grid_px(th, x, (int)y, &want))
+            ;                                      /* graticule */
         else {
             const uint8_t in = f->pbuf ? f->pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x] : 0u;
             want = in ? yt_ghost(in, y, f->pbase_top, f->pbase_bot, th->background) : th->background;
@@ -608,7 +522,7 @@ static void yt_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
      * it. */
     if (f->pbuf && c.trace)
         for (uint8_t ch = 0; ch < 2u; ch++)
-            if (c.on[ch]) persist_note(x, c.from[ch], c.y[ch]);
+            if (c.tr[ch].on) persist_note(x, c.tr[ch].from, c.tr[ch].y);
 }
 
 /* Draw the Y-T plot: one canvas frame in column strips over the band
@@ -639,7 +553,11 @@ void scope_yt_draw(bool all, uint32_t frame)
     const uint32_t send0 = lcd_perf_column_cycles;
     const uint16_t cols_sent = canvas_draw_columns(&cf);
 
-    s_off_plot = f.off_plot;
+    uint8_t at_limit = 0;
+    for (uint8_t ch = 0; ch < 2u; ch++)
+        for (unsigned i = 0; f.record && i < PLOT_RAIL_BYTES; i++)
+            if (f.rail[ch][i]) at_limit |= (uint8_t)(1u << ch);
+    scope_ui_plot_clip_set(at_limit, f.off_plot);
     ui_scope_live_cols_sent = cols_sent;
     ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
     ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);

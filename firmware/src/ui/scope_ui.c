@@ -24,6 +24,20 @@ bool scope_ui_take_live_request(void)
     return r;
 }
 
+/* What the last frame of a time view (Y-T, roll) drew cut off, bit 0 CH1,
+ * bit 1 CH2: columns at the converter's limit, and samples that are valid
+ * but off the plot (and not at the limit). The display type sets both after
+ * each frame; the info bar's channel badges show them. */
+static volatile uint8_t s_at_limit, s_off_plot;
+
+void scope_ui_plot_clip_set(uint8_t at_limit, uint8_t off_plot)
+{
+    s_at_limit = at_limit;
+    s_off_plot = off_plot;
+}
+uint8_t scope_ui_plot_at_limit(void) { return s_at_limit; }
+uint8_t scope_ui_off_plot(void)      { return s_off_plot; }
+
 /* The rows between the status bar and the plot belong to the scope screen:
  * a full paint of any of its views starts with them. */
 void scope_ui_paint_margin(void)

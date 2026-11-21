@@ -201,23 +201,10 @@ uint16_t scope_roll_age_at_column(uint16_t x, uint16_t width);
  * can return, capped by what the FIFO holds. */
 uint16_t scope_roll_visible(const scope_roll_fifo_t *f, uint16_t width);
 
-/* Vertical transform of one band [y_top, y_bot). Two forms, the same two the
- * Y-T renderer has (scope_yt.c): FIXED = true volts/div, `256/scope_h` counts
- * per pixel about `center`, so the status bar's volts/div holds; FIT = the
- * band spans the visible points' own min..max (at least 16 counts, so a quiet
- * input is not blown up into noise). Results are clamped into the band. */
-typedef struct {
-    bool    fixed;
-    uint8_t lo, hi;        /* FIT: code range mapped onto the band */
-    uint8_t center;        /* FIXED: code drawn at the band's middle */
-    int16_t y_top, y_bot;  /* band, y_bot exclusive */
-    int16_t scope_h;       /* FIXED: full trace height the slope is set by */
-} scope_roll_vmap_t;
-
-/* FIT bounds from the newest `n` points of channel `ch`; false when empty. */
-bool    scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n,
-                       scope_roll_vmap_t *m);
-int16_t scope_roll_y(const scope_roll_vmap_t *m, uint8_t code);
+/* The code range a fitted band maps onto: min..max of the newest `n` points
+ * of channel `ch`, widened to at least 16 counts about its middle so a quiet
+ * input is not blown up into noise. false when the FIFO holds none. */
+bool    scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n, uint8_t *lo, uint8_t *hi);
 
 /* ── Volts ──────────────────────────────────────────────────────────── */
 
