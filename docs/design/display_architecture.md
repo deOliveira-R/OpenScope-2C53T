@@ -148,8 +148,11 @@ from the screenshot copy after a full redraw and after a live update).
    stays as the rule `fpga scope livecheck` compares the painting with.
 5. Roll: done. It is a display type on the canvas and shares the graticule
    and the trace element with Y-T (`firmware/src/ui/plot_elements.c`), which
-   gave it the clip colours; its fitted band uses the Y-T map. Then the
-   spectrum (cursors on frequency and level come with it).
+   gave it the clip colours; its fitted band uses the Y-T map. The spectrum:
+   done as a frame painted through the canvas, with the popup box as a hole
+   (the split view's halves still send every column until they are two
+   canvases, step 7). Open: cursors on frequency and level, which need the
+   keys and the place of the readout in that view decided first.
 6. Row strips; the waterfall; measure the hardware scroll.
 7. X-Y from the intensity buffer; split as two canvases.
 8. The view table and `view.mode`; the `FEATURE_FFT` build switch goes.
