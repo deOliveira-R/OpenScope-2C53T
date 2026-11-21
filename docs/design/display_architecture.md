@@ -1,6 +1,6 @@
 # Display architecture
 
-Status: agreed design (2026-11-20). Steps 1 and 2 of the order of work are
+Status: agreed design (2026-11-20). Steps 1, 2 and 4 of the order of work are
 done: the canvas (`firmware/src/ui/canvas.c`) and Y-T as the first display
 type (`firmware/src/ui/scope_yt.c`), whose full redraw and live update are
 the same frame. Every other view still has its own renderer.
@@ -134,7 +134,10 @@ from the screenshot copy after a full redraw and after a live update).
    the live update's rule was kept. Its elements still read the Y-T maps
    directly; axes as an interface come with the second type (step 5).
 3. Clipping roles in the trace element; the record's clip flag in the stream.
-4. Cursors as span elements (today one test per pixel, 80 to 89 ms a frame).
+4. Done. Cursors as a span element: the lines and labels are painted only
+   on the rows they occupy (a frame with cursors takes 33 ms where it took
+   80 to 89 ms, 20 redraws a second where it was 9.4). The per-pixel function
+   stays as the rule `fpga scope livecheck` compares the painting with.
 5. Roll, then the spectrum (cursors on frequency and level come with it).
 6. Row strips; the waterfall; measure the hardware scroll.
 7. X-Y from the intensity buffer; split as two canvases.

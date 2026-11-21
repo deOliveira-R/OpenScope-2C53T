@@ -360,6 +360,9 @@ int16_t math_row(const math_frame_t *mf, uint16_t x);
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L);
 /* Colour of cursor layer L at pixel (x, y), or false. */
 bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c);
+/* Paint cursor layer L's part of column x into strip s. */
+struct canvas_strip;
+void cursor_layer_paint(const cur_layer_t *L, uint16_t x, const struct canvas_strip *s);
 /* Repaint the cursor readout row when its text changed, or when force. */
 void cursor_row_paint(const scope_state_t *ss, bool force);
 

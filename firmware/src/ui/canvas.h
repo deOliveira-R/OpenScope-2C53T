@@ -35,7 +35,7 @@ typedef struct {
  * lo + i along the strip, for lo <= coordinate < hi (rows, for a column
  * strip). Elements write through strip_put and strip_span, which drop what
  * falls outside. */
-typedef struct {
+typedef struct canvas_strip {
     uint16_t *px;
     int16_t   lo, hi;
 } canvas_strip_t;

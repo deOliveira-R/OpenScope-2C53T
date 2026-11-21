@@ -5,6 +5,7 @@
  */
 
 #include "scope_ui_parts.h"
+#include "canvas.h"
 
 /* The vertical transform for cursor rows y_a and y_b, as the renderer last
  * drew it: the math trace's scale while math is on, otherwise the band that
@@ -137,7 +138,9 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t 
 }
 
 /* The layer's colour at pixel (x, y) into *c, or false. Labels win over
- * lines; where two lines cross, V1, H1, V2, H2 in that order. */
+ * lines; where two lines cross, V1, H1, V2, H2 in that order. This is the
+ * rule; the plot paints with cursor_layer_paint and `fpga scope livecheck`
+ * compares the two. */
 bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
 {
     for (uint8_t k = 0; k < L->nlab; k++) {
@@ -153,6 +156,28 @@ bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
         if (L->h && y == L->hy[i] && (L->hsolid[i] || CURSOR_DASH_ON(x))) { *c = L->hc[i]; return true; }
     }
     return false;
+}
+
+/* Paint what the layer has in column x into strip s: only the rows a line or
+ * a label can occupy. Same picture as cursor_layer_px gives pixel by pixel,
+ * so it paints in the reverse of that function's priority: H2, V2, H1, V1,
+ * then the labels, last one first. */
+void cursor_layer_paint(const cur_layer_t *L, uint16_t x, const canvas_strip_t *s)
+{
+    for (int i = 1; i >= 0; i--) {
+        if (L->h && (L->hsolid[i] || CURSOR_DASH_ON(x)))
+            strip_put(s, L->hy[i], L->hc[i]);
+        if (L->v && (int)x == L->vx[i])
+            for (int y = s->lo; y < s->hi; y++)
+                if (L->vsolid[i] || CURSOR_DASH_ON(y)) s->px[y - s->lo] = L->vc[i];
+    }
+    for (int k = (int)L->nlab - 1; k >= 0; k--) {
+        const int dx = (int)x - L->lab[k].x;
+        if (dx < 0 || dx >= L->lab[k].w) continue;
+        for (int dy = 0; dy < (int)font_small.height; dy++)
+            if (font_text_px(L->lab[k].s, &font_small, dx, dy))
+                strip_put(s, L->lab[k].y + dy, L->lab[k].c);
+    }
 }
 
 /*

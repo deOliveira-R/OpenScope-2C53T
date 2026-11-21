@@ -448,11 +448,7 @@ static void el_trigger_pointer(const yt_frame_t *f, const yt_col_t *c, uint16_t 
 static void el_cursors(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)c;
-    if (!f->curs) return;
-    for (int y = s->lo; y < s->hi; y++) {
-        uint16_t color;
-        if (cursor_layer_px(&f->cl, (int)x, y, &color)) strip_put(s, y, color);
-    }
+    if (f->curs) cursor_layer_paint(&f->cl, x, s);
 }
 
 /* What Y-T draws, lowest layer first. */
