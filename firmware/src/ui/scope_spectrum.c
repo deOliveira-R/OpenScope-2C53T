@@ -254,14 +254,17 @@ void fft_note_compose(uint16_t y_top, uint16_t height, const char *msg)
 typedef struct {
     uint16_t     y_top, y_bot, height;
     bool         bars;                      /* a spectrum is drawn */
+    fft_axes_t   ax;                        /* what its columns and rows mean (on: bars) */
+    cur_layer_t  cl;                        /* the cursor lines on those axes */
+    bool         curs;                      /* it has something to draw */
     ctext_set_t  T;                         /* every label: dB scale, header, axis ends, peak tags */
     uint16_t     gy[FFT_GRID_ROWS_MAX];     /* rows of the dB grid */
     uint8_t      ng;
     int16_t      pkx[FFT_CARETS_MAX], pky[FFT_CARETS_MAX];   /* peak carets */
     uint8_t      np;
     const float *draw_data;                 /* level per bin, dB */
-    float        ref_db, range_db;          /* the level at the top row and the span down to the bottom */
-    uint16_t     zoom_start, zoom_span, W;  /* bins shown over the W columns right of the margin */
+    bool         ch2;                       /* the spectrum is CH2's */
+    fft_meas_t   meas[FFT_MEAS_COUNT];      /* what the strip shows of it; all refused without bars */
     uint16_t     bar_hot, bar_low;
 } fft_frame_t;
 
@@ -272,11 +275,39 @@ typedef struct {
     int      mh_y;                          /* row of the max-hold dot, -1: none */
 } fft_col_t;
 
+/* The axes of the spectrum last built, for the keys (scope_ui_fft_axes). */
+static fft_axes_t g_fft_axes;
+
+void scope_ui_fft_axes(fft_axes_t *out)
+{
+    taskENTER_CRITICAL();
+    *out = g_fft_axes;
+    taskEXIT_CRITICAL();
+}
+
+static void fft_axes_publish(const fft_axes_t *ax)
+{
+    taskENTER_CRITICAL();
+    g_fft_axes = *ax;
+    taskEXIT_CRITICAL();
+}
+
 /* Build the frame: take the input (fft_prepare_input), run fft_process(),
  * then lay out the dB grid and its labels, the peak carets with their
  * harmonic tags, the source and peak header and the frequency axis ends.
  * When there is nothing to show the frame holds a message instead. */
-static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height)
+static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height);
+
+/* cursors: the frame draws the cursor lines (the full-screen spectrum). */
+static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height, bool cursors)
+{
+    fft_frame_build_plot(f, y_top, height);
+    fft_axes_publish(&f->ax);
+    f->curs = cursors && f->ax.on && scope_state_get()->cursor.mode != CURSOR_OFF;
+    if (f->curs) cursor_layer_build_spectrum(scope_state_get(), &f->ax, theme_get(), &f->cl);
+}
+
+static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height)
 {
     const fft_config_t *cfg = fft_get_config();
     const uint16_t y_bot = (uint16_t)(y_top + height);
@@ -284,9 +315,12 @@ static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height)
     f->y_bot = y_bot;
     f->height = height;
     f->bars = false;
+    f->ax.on = false;
     f->T.n = 0;
     f->ng = 0;
     f->np = 0;
+    f->ch2 = false;
+    fft_live_measure(NULL, 0u, 0u, 0.0f, 0u, f->meas);
 
     int16_t *sbuf = fft_get_sample_buf();
     uint16_t nsamp = 0;
@@ -304,28 +338,28 @@ static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height)
     }
     const bool live = (src == FFT_SRC_LIVE);
     /* CH2's spectrum in CH2's colour; the demo keeps CH1's. */
-    const bool ch2 = live && sel.ch == 1u;
+    const bool ch2 = f->ch2 = live && sel.ch == 1u;
     f->bar_hot = ch2 ? COLOR_CH2 : COLOR_CH1;
     f->bar_low = ch2 ? FFT_BAR_LOW_CH2 : COLOR_CYAN;
     fft_process(sbuf, nsamp, &fft_result);
     const float *draw_data = (fft_result.avg_db != NULL) ? fft_result.avg_db
                                                          : fft_result.level_db;
+    fft_live_measure(draw_data, FFT_BINS, fft_result.num_peaks ? fft_result.peaks[0].bin : 0u,
+                     fs, FFT_SIZE, f->meas);
     const uint16_t zoom_start = cfg->zoom_start_bin, zoom_end = cfg->zoom_end_bin;
     uint16_t zoom_span = (uint16_t)(zoom_end - zoom_start);
     if (zoom_span == 0) zoom_span = 1;
     const uint16_t W = (uint16_t)(LCD_WIDTH - FFT_LMARGIN);
     f->bars = true;
     f->draw_data = draw_data;
-    f->zoom_start = zoom_start;
-    f->zoom_span = zoom_span;
-    f->W = W;
     /* The same auto-ranged reference the waterfall uses. The dB scale is
      * relative to one count, not to full scale, so a fixed 0 dB reference
      * would pin every bar to full height. See fft_display_ref(). */
     const float ref_db = fft_display_ref(cfg, draw_data, zoom_start, zoom_end);
     const float range_db = cfg->db_range;
-    f->ref_db = ref_db;
-    f->range_db = range_db;
+    f->ax = (fft_axes_t){ .on = true, .x0 = FFT_LMARGIN, .w = W, .bin0 = zoom_start, .bins = zoom_span,
+                          .y_top = y_top, .height = height, .ref_db = ref_db, .range_db = range_db,
+                          .sample_rate_hz = fs, .fft_size = FFT_SIZE };
 
     /* Grid rows every 10 dB, labels every 20 dB in the left margin. */
     for (float db = ref_db; db > ref_db - range_db && f->ng < FFT_GRID_ROWS_MAX; db -= FFT_GRID_DB) {
@@ -347,8 +381,8 @@ static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height)
      * whatever the rate). The tag stays under the header line. */
     for (uint8_t p = 0; p < fft_result.num_peaks && p < FFT_CARETS_MAX; p++) {
         const uint16_t pb = fft_result.peaks[p].bin;
-        if (pb < zoom_start || pb > zoom_end) continue;
-        const int px = (int)FFT_LMARGIN + (int)((uint32_t)(pb - zoom_start) * W / zoom_span);
+        const int px = fft_axes_x(&f->ax, pb);
+        if (px < 0) continue;
         float norm = (ref_db - fft_result.peaks[p].level_db) / range_db;
         if (norm < 0.0f) norm = 0.0f;
         const int py = (int)y_top + (int)(norm * (float)height);
@@ -365,21 +399,13 @@ static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height)
         }
     }
 
-    /* Source and peak header; the peak in Hz only when the rate is known. */
+    /* The header: the source on the left (the peak is a measurement, in the
+     * strip), the window on the right. */
     {
-        char hdr[40], hz[16];
+        char hdr[16];
         const uint16_t col = live ? COLOR_WHITE : COLOR_ORANGE;
-        char tag[12];
-        if (live) snprintf(tag, sizeof tag, "LIVE %s", sel.label);
-        else      snprintf(tag, sizeof tag, "DEMO sq");
-        if (fft_result.num_peaks == 0) {
-            snprintf(hdr, sizeof hdr, "%s", live ? tag : "DEMO SIGNAL");
-        } else if (fft_live_axis_known(fs)) {
-            fft_live_format_hz(fft_result.peaks[0].freq_hz, hz, sizeof hz);
-            snprintf(hdr, sizeof hdr, "%s pk %s", tag, hz);
-        } else {
-            snprintf(hdr, sizeof hdr, "%s bin %u", tag, (unsigned)fft_result.peaks[0].bin);
-        }
+        if (live) snprintf(hdr, sizeof hdr, "LIVE %s", sel.label);
+        else      snprintf(hdr, sizeof hdr, "DEMO SIGNAL");
         ctext_add(&f->T, 4, y_top + 2, hdr, col, col, false);
         static const char *const wn[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
         const char *w = (cfg->window < FFT_WINDOW_COUNT) ? wn[cfg->window] : "?";
@@ -404,16 +430,16 @@ static void fft_column(const fft_frame_t *f, uint16_t x, fft_col_t *c)
     c->mh_y = -1;
     c->bar_c = COLOR_GRID;
     if (!f->bars || x < FFT_LMARGIN) return;
-    uint16_t bin = (uint16_t)(f->zoom_start + (uint16_t)((uint32_t)(x - FFT_LMARGIN) * f->zoom_span / f->W));
+    uint16_t bin = fft_axes_bin(&f->ax, x);
     if (bin >= FFT_BINS) bin = FFT_BINS - 1;
-    float n = (f->ref_db - f->draw_data[bin]) / f->range_db;
+    float n = fft_axes_depth(&f->ax, f->draw_data[bin]);
     if (n < 0.0f) n = 0.0f;
     if (n > 1.0f) n = 1.0f;
     c->bar_top = (int)f->y_top + (int)(n * (float)f->height);
     c->bar_c = (n < 0.25f) ? f->bar_hot : (n < 0.5f) ? COLOR_GREEN
              : (n < 0.75f) ? f->bar_low : COLOR_GRID;
     if (fft_result.max_hold_db != NULL && (x & 1u) == 0u) {
-        const float m = (f->ref_db - fft_result.max_hold_db[bin]) / f->range_db;
+        const float m = fft_axes_depth(&f->ax, fft_result.max_hold_db[bin]);
         if (m >= 0.0f && m <= 1.0f) c->mh_y = (int)f->y_top + (int)(m * (float)f->height);
     }
 }
@@ -426,13 +452,14 @@ static inline bool fft_caret_px(int dx, int dy)
 
 #if FEATURE_BENCHSHELL
 /* `fpga scope livecheck` in the spectrum: every pixel of column x against the
- * per-pixel rule, top layer first: labels, peak carets, the max-hold dot,
- * the dB grid, the bar, black. */
+ * per-pixel rule, top layer first: the cursors, labels, peak carets, the
+ * max-hold dot, the dB grid, the bar, black. */
 static void fft_check_column(const fft_frame_t *f, const fft_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     for (int y = s->lo; y < s->hi; y++) {
         uint16_t want = COLOR_BLACK;
-        bool done = ctext_px(&f->T, x, y, &want);
+        bool done = f->curs && cursor_layer_px(&f->cl, (int)x, y, &want);
+        if (!done) done = ctext_px(&f->T, x, y, &want);
         for (uint8_t k = 0; !done && k < f->np; k++)
             if (fft_caret_px((int)x - f->pkx[k], y - f->pky[k])) { want = COLOR_RED; done = true; }
         if (!done && y == c->mh_y) { want = COLOR_RED; done = true; }
@@ -452,7 +479,7 @@ static void fft_check_column(const fft_frame_t *f, const fft_col_t *c, uint16_t 
 
 /* Paint column x of the spectrum into s: the canvas's paint function. The
  * elements, lowest first: black, the bar, the dB grid, the max-hold dot,
- * the peak carets, the labels. */
+ * the peak carets, the labels, the cursors. */
 static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
 {
     const fft_frame_t *const f = ctx;
@@ -471,6 +498,7 @@ static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
         uint16_t color;
         if (ctext_px(&f->T, x, y, &color)) s->px[y - s->lo] = color;
     }
+    if (f->curs) cursor_layer_paint(&f->cl, x, s);
 #if FEATURE_BENCHSHELL
     if (live_check_frames) fft_check_column(f, &c, x, s);
 #endif
@@ -480,10 +508,23 @@ static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
  * so nothing is blanked and only the columns that changed are sent. all:
  * send every column. hole: step around the popup box while it lives (the
  * full-screen spectrum; the split view puts the box back over each frame). */
-static void fft_region_compose(uint16_t y_top, uint16_t height, bool all, bool hole)
+/* What the furniture of a spectrum needs of the frame that was drawn. */
+typedef struct {
+    fft_meas_t meas[FFT_MEAS_COUNT];
+    bool       ch2;                         /* the spectrum is CH2's */
+    fft_axes_t ax;
+} fft_drawn_t;
+
+static void fft_region_compose(uint16_t y_top, uint16_t height, bool all, bool hole, bool cursors,
+                               fft_drawn_t *drawn)
 {
     fft_frame_t f;
-    fft_frame_build(&f, y_top, height);
+    fft_frame_build(&f, y_top, height, cursors);
+    if (drawn) {
+        memcpy(drawn->meas, f.meas, sizeof f.meas);
+        drawn->ch2 = f.ch2;
+        drawn->ax = f.ax;
+    }
 
     const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
     const canvas_frame_t cf = {
@@ -506,13 +547,20 @@ static void fft_region_compose(uint16_t y_top, uint16_t height, bool all, bool h
  * the frame, as in Y-T. */
 void draw_fft_screen(bool full)
 {
+    const scope_state_t *ss = scope_state_get();
+    /* The spectrum ends at its measurement strip's top, as a trace does. */
+    const uint16_t bot = fft_strip_top(ss);
     if (full) {
         lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, FFT_VIEW_MARGIN, COLOR_BLACK);
-        lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - FFT_VIEW_MARGIN, LCD_WIDTH, FFT_VIEW_MARGIN, COLOR_BLACK);
+        lcd_fill_rect(0, bot - FFT_VIEW_MARGIN, LCD_WIDTH, FFT_VIEW_MARGIN, COLOR_BLACK);
     }
     const bool hole = popup_live();
     popup_hole_last = hole;
-    fft_region_compose(SCOPE_TOP + FFT_VIEW_MARGIN, SCOPE_H - 2u * FFT_VIEW_MARGIN, full, hole);
+    fft_drawn_t d;
+    fft_region_compose(SCOPE_TOP + FFT_VIEW_MARGIN, (uint16_t)(bot - SCOPE_TOP - 2u * FFT_VIEW_MARGIN),
+                       full, hole, true, &d);
+    draw_fft_strip(ss, theme_get(), d.meas, d.ch2, !full);
+    if (ss->cursor.mode != CURSOR_OFF) spectrum_cursor_row_paint(ss, &d.ax, bot, full);
     if (full) draw_popup(theme_get());
 }
 
@@ -591,7 +639,7 @@ void draw_split_screen(uint32_t frame, bool full)
     }
     if (full)
         lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - 1, LCD_WIDTH, 1, COLOR_BLACK);
-    fft_region_compose((uint16_t)(divider + 1), SCOPE_H / 2 - 2, true, false);
+    fft_region_compose((uint16_t)(divider + 1), SCOPE_H / 2 - 2, true, false, false, NULL);
 }
 
 #endif

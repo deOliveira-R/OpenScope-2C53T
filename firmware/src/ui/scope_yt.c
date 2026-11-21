@@ -14,6 +14,7 @@
  */
 
 #include "scope_ui_parts.h"
+#include "key_model.h"      /* the job the arrows are on: the trigger line shows it */
 #include "canvas.h"
 #include "plot_elements.h"
 
@@ -208,7 +209,7 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
     f->trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &f->a2 : &f->a1);
     if (f->trig_y < SCOPE_TOP + TRIG_LINE_MARGIN_TOP) f->trig_y = SCOPE_TOP + TRIG_LINE_MARGIN_TOP;
     if (f->trig_y > SCOPE_BOT - TRIG_LINE_MARGIN_BOT) f->trig_y = SCOPE_BOT - TRIG_LINE_MARGIN_BOT;
-    f->trig_dots = scope_trig_level_focus ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
+    f->trig_dots = (key_focus_get() == KF_TRIGMOVE) ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
 
     f->p1 = f->p2 = f->mp = 0;
     f->off_plot = 0;

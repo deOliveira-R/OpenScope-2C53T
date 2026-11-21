@@ -106,9 +106,6 @@ void fft_set_sample_rate(float sample_rate_hz);
 /* Change window type (recomputes coefficients). */
 void fft_set_window(fft_window_t window);
 
-/* Cycle to next window type. Returns new window type. */
-fft_window_t fft_cycle_window(void);
-
 /* Set averaging count (0=off, 2/4/8/16/32). */
 void fft_set_averaging(uint8_t count);
 

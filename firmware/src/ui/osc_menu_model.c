@@ -8,6 +8,8 @@
 #include "scope_measure.h"
 
 static osc_menu_state_t g_m;
+/* The panel the Measure pane starts on (osc_menu_set_meas_sets). */
+static uint8_t g_meas_first = MEAS_SET_CH1;
 
 /* ── Tables ─────────────────────────────────────────────────────────── */
 
@@ -20,20 +22,24 @@ static const osc_pane_layout_t k_layout[OSC_ROW_COUNT] = {
     [OSC_ROW_TRIGGER] = { OSC_PANE_VALUES, OSC_TRIG_COUNT, 1, 0 },
     [OSC_ROW_PERSIST] = { OSC_PANE_RADIO,  OSC_PERS_COUNT, 1, 0 },
     [OSC_ROW_MATH]    = { OSC_PANE_CHIPS,  OSC_MATH_COUNT, 2, 1 },
+    [OSC_ROW_SPECTRUM] = { OSC_PANE_VALUES, OSC_SPEC_COUNT, 1, 0 },
 };
 
 static const char *const k_row_label[OSC_ROW_COUNT] = {
-    "Display", "Cursors", "Measure", "CH1", "CH2", "Trigger", "Persist", "Math",
+    "Display", "Cursors", "Measure", "CH1", "CH2", "Trigger", "Persist", "Math", "Spectrum",
 };
 static const char *const k_row_title[OSC_ROW_COUNT] = {
     "Display Mode", "Cursor Measurement", "Parameter Measurement", "CH1 Settings",
-    "CH2 Settings", "Trigger Settings", "Persistence", "Mathematics",
+    "CH2 Settings", "Trigger Settings", "Persistence", "Mathematics", "Spectrum Settings",
 };
 
 static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "Roll", "X-Y", "FFT", "Split", "Waterfall" };
-static const char *const k_cur[OSC_CUR_COUNT]    = { "Off", "X1-X2  (time)", "Y1-Y2  (volts)", "Both" };
+/* The lines read the axes of the view they are drawn in: time and volts, or
+ * frequency and level on a spectrum. */
+static const char *const k_cur[OSC_CUR_COUNT]    = { "Off", "X1-X2  (time, freq.)", "Y1-Y2  (volts, level)", "Both" };
 static const char *const k_ch[OSC_CH_COUNT]      = { "Channel:", "Probe:", "Coupling:" };
 static const char *const k_trig[OSC_TRIG_COUNT]  = { "Mode:", "Edge:", "Channel:" };
+static const char *const k_spec[OSC_SPEC_COUNT]  = { "Window:", "Average:", "Max hold:" };
 static const char *const k_pers[OSC_PERS_COUNT]  = { "Off", "500 ms", "1 s", "2 s", "Infinite" };
 static const char *const k_math[OSC_MATH_COUNT]  = {
     "Off", "CH1+CH2", "-CH1", "CH1-CH2", "-CH2", "CH1*CH2", "|CH1|", "CH1/CH2", "|CH2|",
@@ -54,8 +60,16 @@ static const uint8_t k_math_op[OSC_MATH_COUNT] = { 0xFF, 0, 4, 1, 5, 2, 6, 3, 7 
 
 /* ── Lookups ────────────────────────────────────────────────────────── */
 
+/* The Measure pane's panel of each set: the tab row and the set's chips. */
+static const osc_pane_layout_t k_meas_layout[MEAS_SET_COUNT] = {
+    [MEAS_SET_CH1] = { OSC_PANE_CHIPS, OSC_PRM_COUNT, 3, 0 },
+    [MEAS_SET_CH2] = { OSC_PANE_CHIPS, OSC_PRM_COUNT, 3, 0 },
+    [MEAS_SET_FFT] = { OSC_PANE_CHIPS, OSC_PRM_CHIP0 + MEAS_SELECT_FFT_COUNT, 3, 0 },
+};
+
 const osc_pane_layout_t *osc_menu_layout(osc_row_t row)
 {
+    if (row == OSC_ROW_PARAM) return &k_meas_layout[g_m.meas_set < MEAS_SET_COUNT ? g_m.meas_set : MEAS_SET_CH1];
     return ((unsigned)row < OSC_ROW_COUNT) ? &k_layout[row] : &k_layout[OSC_ROW_DISPLAY];
 }
 
@@ -90,10 +104,45 @@ uint8_t osc_menu_disp_item(int32_t view_mode)
     return OSC_DISP_COUNT;
 }
 
-uint8_t osc_menu_prm_of_chip(uint8_t chip)
+uint8_t osc_menu_meas_of_chip(uint8_t set, uint8_t chip)
 {
-    return (chip < 12u) ? k_chip_prm[chip] : 0xFFu;
+    if (chip >= meas_select_size(set)) return 0xFFu;
+    return (set == MEAS_SET_FFT) ? chip : k_chip_prm[chip];
 }
+
+/* The Measure pane's panels, in order: the sets offered. */
+#define MEAS_SETS_CHANNELS  ((1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2))
+
+static bool meas_set_offered(uint8_t set)
+{
+    return set < MEAS_SET_COUNT && ((g_m.meas_sets >> set) & 1u);
+}
+
+/* The offered set after (dir +1) or before (-1) the one on screen; wrap:
+ * round the list (the tab), else MEAS_SET_COUNT at its end (the scroll). */
+static uint8_t meas_set_step(int dir, bool wrap)
+{
+    for (int k = 1; k < MEAS_SET_COUNT + 1; k++) {
+        int s = (int)g_m.meas_set + dir * k;
+        if (wrap) s = ((s % MEAS_SET_COUNT) + MEAS_SET_COUNT) % MEAS_SET_COUNT;
+        else if (s < 0 || s >= MEAS_SET_COUNT) return MEAS_SET_COUNT;
+        if (meas_set_offered((uint8_t)s)) return (uint8_t)s;
+    }
+    return MEAS_SET_COUNT;
+}
+
+void osc_menu_set_meas_sets(uint8_t sets, uint8_t first)
+{
+    g_meas_first  = first;
+    g_m.meas_sets = (sets & ((1u << MEAS_SET_COUNT) - 1u)) ? sets : MEAS_SETS_CHANNELS;
+    g_m.meas_set  = first;
+    if (!meas_set_offered(g_m.meas_set)) {
+        g_m.meas_set = MEAS_SET_CH1;
+        if (!meas_set_offered(g_m.meas_set)) g_m.meas_set = meas_set_step(+1, true);
+    }
+}
+
+
 
 uint8_t osc_menu_math_op(uint8_t item)
 {
@@ -107,21 +156,25 @@ uint8_t osc_menu_math_item(uint8_t op)
     return OSC_MATH_OFF;
 }
 
-const char *osc_menu_item_label(osc_row_t row, uint8_t item, uint8_t ch)
+const char *osc_menu_item_label(osc_row_t row, uint8_t item, uint8_t set)
 {
+    static const char *const k_tab[MEAS_SET_COUNT] = { "CH1", "CH2", "FFT" };
     switch (row) {
     case OSC_ROW_DISPLAY: return item < OSC_DISP_COUNT ? k_disp[item] : "";
     case OSC_ROW_CURSOR:  return item < OSC_CUR_COUNT ? k_cur[item] : "";
     case OSC_ROW_CH1:
     case OSC_ROW_CH2:     return item < OSC_CH_COUNT ? k_ch[item] : "";
     case OSC_ROW_TRIGGER: return item < OSC_TRIG_COUNT ? k_trig[item] : "";
+    case OSC_ROW_SPECTRUM: return item < OSC_SPEC_COUNT ? k_spec[item] : "";
     case OSC_ROW_PERSIST: return item < OSC_PERS_COUNT ? k_pers[item] : "";
     case OSC_ROW_MATH:    return item < OSC_MATH_COUNT ? k_math[item] : "";
     case OSC_ROW_PARAM:
-        if (item == OSC_PRM_TAB)  return ch ? "CH2" : "CH1";
+        if (set >= MEAS_SET_COUNT) return "";
+        if (item == OSC_PRM_TAB)  return k_tab[set];
         if (item == OSC_PRM_ALL)  return "All";
         if (item == OSC_PRM_NONE) return "None";
-        if (item < OSC_PRM_COUNT) return scope_prm_label(k_chip_prm[item - OSC_PRM_CHIP0]);
+        if (item < k_meas_layout[set].n_items)
+            return meas_select_label(set, osc_menu_meas_of_chip(set, (uint8_t)(item - OSC_PRM_CHIP0)));
         return "";
     default:              return "";
     }
@@ -151,10 +204,10 @@ static uint8_t chip_item(const osc_pane_layout_t *l, uint8_t r, uint8_t c)
     return (uint8_t)i;
 }
 
-static uint8_t chip_rows(const osc_pane_layout_t *l)
+static uint8_t chip_rows(osc_row_t row)
 {
     uint8_t r, c;
-    osc_menu_chip_pos((osc_row_t)(l - k_layout), (uint8_t)(l->n_items - 1u), &r, &c);
+    osc_menu_chip_pos(row, (uint8_t)(osc_menu_layout(row)->n_items - 1u), &r, &c);
     return (uint8_t)(r + 1u);
 }
 
@@ -174,9 +227,9 @@ void osc_menu_open(osc_row_t row)
     g_m.row     = (uint8_t)row;
     g_m.in_pane = false;
     g_m.item    = 0;
-    g_m.meas_ch = 0;
     g_m.locked  = false;
     g_m.opens++;
+    osc_menu_set_meas_sets(g_m.meas_sets, g_meas_first);
 }
 
 void osc_menu_open_locked(osc_row_t row)
@@ -227,18 +280,21 @@ static osc_result_t pane_left_edge(void)
  * selection (meas_select is pure, so the model applies it itself). */
 static void param_ok(void)
 {
-    const uint8_t ch = g_m.meas_ch;
-    if (g_m.item == OSC_PRM_TAB)       g_m.meas_ch = (uint8_t)(ch ^ 1u);
-    else if (g_m.item == OSC_PRM_ALL)  meas_select_set(ch, (uint16_t)SCOPE_PRM_ALL_MASK);
-    else if (g_m.item == OSC_PRM_NONE) meas_select_set(ch, 0u);
-    else meas_select_toggle(ch, k_chip_prm[g_m.item - OSC_PRM_CHIP0]);
+    const uint8_t set = g_m.meas_set;
+    if (g_m.item == OSC_PRM_TAB) {
+        const uint8_t next = meas_set_step(+1, true);
+        if (next < MEAS_SET_COUNT) g_m.meas_set = next;
+    }
+    else if (g_m.item == OSC_PRM_ALL)  meas_select_set(set, meas_select_all(set));
+    else if (g_m.item == OSC_PRM_NONE) meas_select_set(set, 0u);
+    else meas_select_toggle(set, osc_menu_meas_of_chip(set, (uint8_t)(g_m.item - OSC_PRM_CHIP0)));
 }
 
 static osc_result_t chips_key(osc_key_t k, osc_action_t *act)
 {
-    const osc_pane_layout_t *l = &k_layout[g_m.row];
+    const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)g_m.row);
     const bool param = (g_m.row == OSC_ROW_PARAM);
-    const uint8_t rows = chip_rows(l);
+    const uint8_t rows = chip_rows((osc_row_t)g_m.row);
     uint8_t r, c;
     osc_menu_chip_pos((osc_row_t)g_m.row, g_m.item, &r, &c);
 
@@ -257,9 +313,11 @@ static osc_result_t chips_key(osc_key_t k, osc_action_t *act)
         return OSC_RES_REDRAW;
     case OSC_KEY_UP:
         if (r == 0u) {
-            if (param && g_m.meas_ch == 1u) {        /* back up into CH1's panel */
-                g_m.meas_ch = 0u;
-                g_m.item = chip_item(l, (uint8_t)(rows - 1u), c);
+            const uint8_t prev = param ? meas_set_step(-1, false) : MEAS_SET_COUNT;
+            if (prev < MEAS_SET_COUNT) {             /* back up into the panel before */
+                g_m.meas_set = prev;
+                const osc_pane_layout_t *pl = osc_menu_layout(OSC_ROW_PARAM);
+                g_m.item = chip_item(pl, (uint8_t)(chip_rows(OSC_ROW_PARAM) - 1u), c);
                 return OSC_RES_REDRAW;
             }
             return OSC_RES_NONE;
@@ -268,9 +326,10 @@ static osc_result_t chips_key(osc_key_t k, osc_action_t *act)
         return OSC_RES_REDRAW;
     case OSC_KEY_DOWN:
         if (r + 1u >= rows) {
-            if (param && g_m.meas_ch == 0u) {        /* scroll on into CH2's panel */
-                g_m.meas_ch = 1u;
-                g_m.item = chip_item(l, 0u, c);
+            const uint8_t next = param ? meas_set_step(+1, false) : MEAS_SET_COUNT;
+            if (next < MEAS_SET_COUNT) {             /* scroll on into the next panel */
+                g_m.meas_set = next;
+                g_m.item = chip_item(osc_menu_layout(OSC_ROW_PARAM), 0u, c);
                 return OSC_RES_REDRAW;
             }
             return OSC_RES_NONE;
@@ -291,7 +350,7 @@ static osc_result_t chips_key(osc_key_t k, osc_action_t *act)
 
 static osc_result_t pane_key(osc_key_t k, osc_action_t *act)
 {
-    const osc_pane_layout_t *l = &k_layout[g_m.row];
+    const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)g_m.row);
     const uint8_t n = l->n_items;
 
     if (l->kind == OSC_PANE_CHIPS) return chips_key(k, act);
@@ -354,7 +413,7 @@ osc_result_t osc_menu_step(osc_key_t k, osc_action_t *act)
     case OSC_KEY_OK:
         g_m.in_pane = true;
         g_m.item    = 0;
-        g_m.meas_ch = 0;
+        osc_menu_set_meas_sets(g_m.meas_sets, g_meas_first);
         act->kind = OSC_ACT_ENTER;
         if (g_m.row == OSC_ROW_PARAM) g_m.item = OSC_PRM_CHIP0;   /* on Freq, past the tab row */
         return OSC_RES_REDRAW;

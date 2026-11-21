@@ -54,31 +54,41 @@ uint8_t key_scan_tick(key_scan_t *s, uint16_t raw, key_scan_event_t out[KEY_NUM]
 
 /* ── Arrow stage ──────────────────────────────────────────────────── */
 
-key_focus_t key_focus_sanitize(key_focus_t cur, bool cursors_on, bool mask_present)
+static bool job_offered(const view_desc_t *v, key_focus_t f, bool cursors_on, bool mask_present)
 {
-    if (cur == KF_CURSOR && !cursors_on)  return KF_ZOOM;
-    if (cur == KF_MASK && !mask_present)  return KF_ZOOM;
-    if ((unsigned)cur >= (unsigned)KF_COUNT) return KF_ZOOM;
+    if (key_focus_is_cursor(f) && !cursors_on) return false;
+    if (f == KF_MASK && !mask_present)   return false;
+    for (uint8_t i = 0; i < v->n_jobs; i++)
+        if (v->jobs[i] == (uint8_t)f) return true;
+    return false;
+}
+
+key_focus_t key_focus_sanitize(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present)
+{
+    const view_desc_t *v = view_desc(view_mode);
+    return job_offered(v, cur, cursors_on, mask_present) ? cur : (key_focus_t)v->jobs[0];
+}
+
+key_focus_t key_focus_next(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present)
+{
+    const view_desc_t *v = view_desc(view_mode);
+    cur = key_focus_sanitize(view_mode, cur, cursors_on, mask_present);
+    uint8_t at = 0;
+    while (at < v->n_jobs && v->jobs[at] != (uint8_t)cur) at++;
+    for (uint8_t k = 1; k <= v->n_jobs; k++) {
+        const key_focus_t f = (key_focus_t)v->jobs[(at + k) % v->n_jobs];
+        if (job_offered(v, f, cursors_on, mask_present)) return f;
+    }
     return cur;
 }
 
-key_focus_t key_focus_next(key_focus_t cur, bool cursors_on, bool mask_present)
+key_focus_t key_focus_after_cursor_change(uint8_t view_mode, key_focus_t cur, bool cursors_on)
 {
-    cur = key_focus_sanitize(cur, cursors_on, mask_present);
-    switch (cur) {
-    case KF_ZOOM:     return KF_CHMOVE;
-    case KF_CHMOVE:   return KF_TRIGMOVE;
-    case KF_TRIGMOVE: return cursors_on ? KF_CURSOR : (mask_present ? KF_MASK : KF_ZOOM);
-    case KF_CURSOR:   return mask_present ? KF_MASK : KF_ZOOM;
-    case KF_MASK:
-    default:          return KF_ZOOM;
+    if (cursors_on) {
+        const key_focus_t job = view_cursor_job(view_mode);
+        return (job != KF_COUNT) ? job : cur;
     }
-}
-
-key_focus_t key_focus_after_cursor_change(key_focus_t cur, bool cursors_on)
-{
-    if (cursors_on) return KF_CURSOR;
-    return (cur == KF_CURSOR) ? KF_ZOOM : cur;
+    return key_focus_is_cursor(cur) ? (key_focus_t)view_desc(view_mode)->jobs[0] : cur;
 }
 
 const char *key_focus_name(key_focus_t f)
@@ -89,6 +99,8 @@ const char *key_focus_name(key_focus_t f)
     case KF_TRIGMOVE: return "trigmove";
     case KF_CURSOR:   return "cursor";
     case KF_MASK:     return "mask";
+    case KF_SPECTRUM: return "spectrum";
+    case KF_SPECTRUM_CURSOR: return "scursor";
     default:          return "?";
     }
 }
@@ -101,6 +113,8 @@ const char *key_focus_popup(key_focus_t f)
     case KF_TRIGMOVE: return "UP/DN: Trig level  LT/RT: x";
     case KF_CURSOR:   return "Arrows: Cursor";
     case KF_MASK:     return "UD/LR:Mask tol MOVE:stop";
+    case KF_SPECTRUM: return "UP/DN: Ref dB  LT/RT: Span";
+    case KF_SPECTRUM_CURSOR: return "Arrows: Cursor";
     default:          return "";
     }
 }
@@ -111,6 +125,13 @@ static key_cmd_t cmd(key_action_t a, int8_t arg)
 {
     key_cmd_t r = { a, arg };
     return r;
+}
+
+/* The scope shows the time record (the keys that act on it: long OK, long
+ * AUTO). */
+static bool scope_shows_time(const key_ctx_t *c)
+{
+    return c->mode == MODE_OSCILLOSCOPE && view_shows(c->view, VIEW_DOM_TIME);
 }
 
 static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
@@ -127,7 +148,8 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     switch (b) {
     /* Long MENU/MOVE/SELECT/TRIGGER/SAVE are global (key_map_global). */
     case BTN_PRM:
-        return c->scope_time_view ? cmd(KA_MEAS_HIDE_TOGGLE, 0) : cmd(KA_NONE, 0);
+        return (c->mode == MODE_OSCILLOSCOPE && view_desc(c->view)->strip)
+               ? cmd(KA_MEAS_HIDE_TOGGLE, 0) : cmd(KA_NONE, 0);
 
     /* Stock has no long CH1/CH2, so this is OURS: the channel enable. */
     case BTN_CH1:
@@ -136,18 +158,18 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
         return (c->mode == MODE_OSCILLOSCOPE) ? cmd(KA_CH_ENABLE_TOGGLE, 1) : cmd(KA_NONE, 0);
 
     /* Long confirm is Run/Stop in the generator (manual 2.1; stock 0x0800D9E2
-     * [H]); in the scope's time view it is stock's 50 % centre (code 0x17 ->
+     * [H]); in a scope view of the time record it is stock's 50 % centre (code 0x17 ->
      * handler 22, 0x0800D954/0x0800DA3A, ms[0xF68] == 2). */
     case BTN_OK:
         if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_RUNSTOP, 0);
-        return c->scope_time_view ? cmd(KA_CENTER50, 0) : cmd(KA_NONE, 0);
+        return scope_shows_time(c) ? cmd(KA_CENTER50, 0) : cmd(KA_NONE, 0);
 
-    /* Long AUTO: stock's baseline correction in the scope's time view (code
+    /* Long AUTO: stock's baseline correction in a scope view of the time record (code
      * 0x10 -> handler 15, 0x0800DF58); in the generator (where stock has no
      * long AUTO) ours: the output-at-boot policy. */
     case BTN_AUTO:
         if (c->mode == MODE_SIGNAL_GEN) return cmd(KA_SIGGEN_BOOT_TOGGLE, 0);
-        return c->scope_time_view ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
+        return scope_shows_time(c) ? cmd(KA_BASECAL, 0) : cmd(KA_NONE, 0);
 
     default:
         return cmd(KA_NONE, 0);
@@ -229,6 +251,24 @@ static key_cmd_t map_scope_arrow(const key_ctx_t *c, button_id_t b)
         case BTN_DOWN:  return cmd(KA_MASK_TOL_V, -1);
         case BTN_LEFT:  return cmd(KA_MASK_TOL_H, -1);
         case BTN_RIGHT: return cmd(KA_MASK_TOL_H, +1);
+        default: break;
+        }
+        break;
+    case KF_SPECTRUM_CURSOR:
+        switch (b) {
+        case BTN_UP:    return cmd(KA_SPECTRUM_CURSOR_MOVE, -1);
+        case BTN_DOWN:  return cmd(KA_SPECTRUM_CURSOR_MOVE, +1);
+        case BTN_LEFT:
+        case BTN_RIGHT: return cmd(KA_CURSOR_NEXT, 0);
+        default: break;
+        }
+        break;
+    case KF_SPECTRUM:
+        switch (b) {
+        case BTN_UP:    return cmd(KA_FFT_REF, +1);
+        case BTN_DOWN:  return cmd(KA_FFT_REF, -1);
+        case BTN_LEFT:  return cmd(KA_FFT_ZOOM, -1);
+        case BTN_RIGHT: return cmd(KA_FFT_ZOOM, +1);
         default: break;
         }
         break;
@@ -351,23 +391,16 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
     case BTN_MOVE:
         /* "Switch CH1/CH2 Adjustment" (m.p30), every scope view. The mask
          * stage has no channel to switch: there MOVE is stop-on-fail. */
-        if (c->scope_time_view && c->focus == KF_MASK && c->mask_present)
+        if (c->focus == KF_MASK && c->mask_present)
             return cmd(KA_MASK_STOPFAIL, 0);
         return cmd(KA_ADJ_CH_SWITCH, 0);
 
     case BTN_SELECT:
-        /* "Select Function for Directional Keys" (m.p30). FFT views keep
-         * their window cycle on this key. */
-        if (!c->scope_time_view)
-            return cmd(KA_FFT_WINDOW, 0);
+        /* "Select Function for Directional Keys" (m.p30), every view: the
+         * next job of the view's list (view_table.h). */
         return cmd(KA_FOCUS_NEXT, 0);
 
     case BTN_UP: case BTN_DOWN: case BTN_LEFT: case BTN_RIGHT:
-        if (!c->scope_time_view) {          /* FFT reference level / zoom */
-            if (btn == BTN_UP || btn == BTN_DOWN)
-                return cmd(KA_FFT_REF, btn == BTN_UP ? +1 : -1);
-            return cmd(KA_FFT_ZOOM, btn == BTN_LEFT ? -1 : +1);
-        }
         return map_scope_arrow(c, btn);
 
     /* Short CH1/CH2, every view: the channel becomes the one the arrows
@@ -378,10 +411,12 @@ key_cmd_t key_map(const key_ctx_t *c, button_id_t btn, bool is_long)
     case BTN_OK:
         return cmd(KA_RUNSTOP, 0);
 
-    /* Time view: autoset (parity C9). The other views: the spectrum's span
-     * from the record they analyse. */
+    /* On the time record: autoset (parity C9). On the spectrum: its span,
+     * from the record it analyses. A view of both (split) goes by the job
+     * the arrows are on. */
     case BTN_AUTO:
-        return c->scope_time_view ? cmd(KA_AUTOSET, 0) : cmd(KA_FFT_AUTO, 0);
+        return view_key_domain(c->view, c->focus) == VIEW_DOM_TIME ? cmd(KA_AUTOSET, 0)
+                                                                    : cmd(KA_FFT_AUTO, 0);
 
     default:
         return cmd(KA_LEGACY, 0);           /* POWER: the router's global */

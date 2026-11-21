@@ -1,9 +1,9 @@
 # Display architecture
 
-Status: agreed design (2026-11-20). Steps 1 to 4 of the order of work are
-done: the canvas (`firmware/src/ui/canvas.c`) and Y-T as the first display
-type (`firmware/src/ui/scope_yt.c`), whose full redraw and live update are
-the same frame. Every other view still has its own renderer.
+Status: agreed design (2026-11-20). Steps 1 to 5 of the order of work are
+done (the canvas, and Y-T, roll and the spectrum as display types on it), and
+the view table of step 8 exists (`firmware/src/ui/view_table.h`). X-Y, the
+waterfall and the split view's upper half still have their own renderers.
 
 ## Why
 
@@ -58,6 +58,32 @@ A display type is a small module with one interface. It states:
 
 Types are entries of a table; the display setting (`view.mode`) selects one.
 A prototype type can sit in the table beside a stable one.
+
+### Domains
+
+The Display menu mixes three kinds of choice: how the data is taken (roll),
+what is analysed (the time record, or the spectrum computed from it) and how
+it is drawn (Y-T or X-Y of the record; spectrum or waterfall of the FFT;
+split as a layout of two). The second kind is the **domain**: time or
+frequency. Measurements, cursors and keys belong to the domain, not to the
+picture:
+
+- **Measurements.** Time: frequency, period, duty, the voltages. Frequency:
+  the peak, its level, the harmonics.
+- **Cursors.** Seconds and volts, or hertz and dB.
+- **The arrows' jobs and AUTO.** Volts/div and time base, positions and the
+  trigger, or reference level and span; autoset or the span fit.
+- **Its settings.** The FFT window, averaging and max hold are settings of
+  the analysis (`fft.window`, `fft.avg`, `fft.maxhold`; the settings page's
+  Spectrum pane), as coupling is a setting of a channel.
+
+A view says which domains it shows; `view_table.h` holds that per `view.mode`
+value, with the jobs short SELECT steps through and what the view draws of
+its domain (the measurement strip, cursors). The key model, the settings
+page and the furniture ask the table, never "is this the FFT view". Split
+shows both domains: its job list runs over both halves, and the job the
+arrows are on says which half the keys, AUTO, the strip and the cursors
+belong to.
 
 ### Element library
 
@@ -151,9 +177,20 @@ from the screenshot copy after a full redraw and after a live update).
    gave it the clip colours; its fitted band uses the Y-T map. The spectrum:
    done as a frame painted through the canvas, with the popup box as a hole
    (the split view's halves still send every column until they are two
-   canvases, step 7). Open: cursors on frequency and level, which need the
-   keys and the place of the readout in that view decided first.
-6. Row strips; the waterfall; measure the hardware scroll.
-7. X-Y from the intensity buffer; split as two canvases.
-8. The view table and `view.mode`; the `FEATURE_FFT` build switch goes.
+   canvases, step 7). Its axes are an interface (`fft_axes_t`,
+   `firmware/src/dsp/fft_live.h`): the bars, the carets and the cursors
+   convert through it. It has the furniture of its domain: a measurement
+   strip (peak, level, harmonics) and cursors on frequency and level, kept
+   in bins and dB so they stay on what they mark, with the readout in the
+   strip's AUX row as in Y-T. The cursor layer is the Y-T one, built from
+   positions on the type's axes.
+6. Row strips; the waterfall, then with the spectrum's strip and a
+   frequency cursor; measure the hardware scroll.
+7. X-Y from the intensity buffer; split as two canvases, each half then
+   with its domain's strip and cursors (the keys already follow the job the
+   arrows are on).
+8. The view table: done for the keys (`view_table.h`: domains and jobs per
+   `view.mode`). Open: the table also selects the renderer (today a switch
+   on `scope_view` in `main.c`, with roll as a flag beside it), and the
+   `FEATURE_FFT` build switch goes.
 9. Panel driver in layers; the measurement strip computed outside the paint.

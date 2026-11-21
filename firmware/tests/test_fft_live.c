@@ -20,6 +20,15 @@
  *      freq_hz = 0, but harmonic labels (bin ratios) survive: a square wave
  *      still gets "Fund" and "H3".
  *
+ *   7. The axes: a bin goes to the first column that shows it and that
+ *      column goes back to the bin; a bin or a level off the plot has no
+ *      place; a cursor step is never less than one bin.
+ *   8. The spectrum's measurements: peak, level and the harmonics of a
+ *      square wave (H3 at -9.5 dBc, H2 far below); bins when the rate is
+ *      unknown; everything refused without a peak; a harmonic beyond the
+ *      spectrum refused. NEGATIVE CONTROL: a sine's H3 is far below a
+ *      square's.
+ *
  * Build: make test-fft-live
  */
 #include <stdio.h>
@@ -244,6 +253,119 @@ static void test_dc_removed(void)
     CHECK(tone - dc > 20.0f, "tone at bin 328 is %.1f dB above the DC bins (%.1f vs %.1f)", tone - dc, tone, dc);
 }
 
+static void test_axes(void)
+{
+    printf("\n[7] the spectrum's axes\n");
+    const fft_axes_t full = { .on = true, .x0 = 22, .w = 298, .bin0 = 1, .bins = 2046,
+                              .y_top = 20, .height = 180, .ref_db = 60.0f, .range_db = 80.0f,
+                              .sample_rate_hz = FS_0X10, .fft_size = FFT_SIZE };
+    const fft_axes_t zoom = { .on = true, .x0 = 22, .w = 298, .bin0 = 300, .bins = 100,
+                              .y_top = 20, .height = 180, .ref_db = 60.0f, .range_db = 80.0f,
+                              .sample_rate_hz = FS_0X10, .fft_size = FFT_SIZE };
+    int ok = 1, n = 0;
+    for (const fft_axes_t *a = &full; a; a = (a == &full) ? &zoom : NULL)
+        for (uint16_t b = a->bin0; b < a->bin0 + a->bins; b++) {
+            const int x = fft_axes_x(a, b);
+            /* The column a bin is drawn in shows that bin, or (zoomed out,
+             * several bins per column) holds it: the next column starts
+             * after it. */
+            const bool last = x + 1 >= (int)a->x0 + (int)a->w;
+            ok &= x >= (int)a->x0 && x < (int)a->x0 + (int)a->w && fft_axes_bin(a, (uint16_t)x) <= b &&
+                  (a->bins > a->w ? (last || fft_axes_bin(a, (uint16_t)(x + 1)) > b)
+                                  : fft_axes_bin(a, (uint16_t)x) == b);
+            n++;
+        }
+    CHECK(ok && n == 2146, "every bin on the axis has a column that shows it (%d bins, two spans)", n);
+    int cols = 1;
+    for (uint16_t x = zoom.x0; x < zoom.x0 + zoom.w; x++) {
+        const int first = fft_axes_x(&zoom, fft_axes_bin(&zoom, x));
+        cols &= first <= (int)x && fft_axes_bin(&zoom, (uint16_t)first) == fft_axes_bin(&zoom, x) &&
+                (first == (int)zoom.x0 || fft_axes_bin(&zoom, (uint16_t)(first - 1)) != fft_axes_bin(&zoom, x));
+    }
+    CHECK(cols, "zoomed in: a bin's column is the first of the columns that show it");
+    CHECK(fft_axes_x(&zoom, 299) == -1 && fft_axes_x(&zoom, 400) == -1 && fft_axes_x(&zoom, 300) == 22,
+          "a bin outside the span has no column (%d %d); the first bin is on the first column (%d)",
+          fft_axes_x(&zoom, 299), fft_axes_x(&zoom, 400), fft_axes_x(&zoom, 300));
+    CHECK(fft_axes_y(&full, 60.0f) == 20 && fft_axes_y(&full, 20.0f) == 110 &&
+          fft_axes_y(&full, 60.1f) == -1 && fft_axes_y(&full, -20.0f) == -1,
+          "levels: the reference on the top row, half the range half way down, off the plot = none");
+    CHECK(fft_axes_bins_per_cols(&zoom, 4) == 1 && fft_axes_bins_per_cols(&full, 4) == 27,
+          "a 4-column step is %u bins at full span and never less than one (%u zoomed in)",
+          (unsigned)fft_axes_bins_per_cols(&full, 4), (unsigned)fft_axes_bins_per_cols(&zoom, 4));
+    const float step = fft_axes_db_per_rows(&full, 4);
+    CHECK(step > 1.77f && step < 1.78f, "a 4-row step is %.3f dB of an 80 dB range over 180 rows", (double)step);
+}
+
+static void make_square_record(int period)
+{
+    for (int i = 0; i < REC_N; i++)
+        rec[i] = ((i % period) < period / 2) ? 228 : 28;
+}
+
+static void measure_record(float fs, fft_meas_t m[FFT_MEAS_COUNT])
+{
+    init_fft(FFT_WINDOW_HANNING, fs);
+    const uint16_t n = fft_live_prepare(rec, REC_N, sbuf, FFT_SIZE);
+    fft_process(sbuf, n, &res);
+    fft_live_measure(res.level_db, FFT_BINS, res.num_peaks ? res.peaks[0].bin : 0u, fs, FFT_SIZE, m);
+    fft_deinit();
+}
+
+static void test_measurements(void)
+{
+    printf("\n[8] the spectrum's measurements\n");
+    fft_meas_t m[FFT_MEAS_COUNT], s[FFT_MEAS_COUNT];
+    char b[16];
+
+    make_square_record(40);                 /* fs/40: fundamental at bin 4096/40 */
+    measure_record(FS_0X10, m);
+    const float f0 = FS_0X10 / 40.0f;
+    CHECK(m[FFT_MEAS_PEAK].unit == FFT_MEAS_UNIT_HZ &&
+          fabsf(m[FFT_MEAS_PEAK].value - f0) <= FS_0X10 / (float)FFT_SIZE,
+          "square: Peak %.1f Hz is within a bin of %.1f Hz", (double)m[FFT_MEAS_PEAK].value, (double)f0);
+    CHECK(m[FFT_MEAS_LEVEL].unit == FFT_MEAS_UNIT_DB && m[FFT_MEAS_LEVEL].value > 60.0f,
+          "square: Level %.1f dB, in dB", (double)m[FFT_MEAS_LEVEL].value);
+    CHECK(m[FFT_MEAS_H3].unit == FFT_MEAS_UNIT_DBC && fabsf(m[FFT_MEAS_H3].value + 9.54f) < 1.0f,
+          "square: H3 %.2f dBc (a square's third harmonic is -9.54 dBc)", (double)m[FFT_MEAS_H3].value);
+    CHECK(m[FFT_MEAS_H2].unit == FFT_MEAS_UNIT_DBC && m[FFT_MEAS_H2].value < -30.0f,
+          "square: H2 %.1f dBc, far below (no even harmonics)", (double)m[FFT_MEAS_H2].value);
+
+    make_tone_record(f0, FS_0X10, 0);
+    measure_record(FS_0X10, s);
+    CHECK(s[FFT_MEAS_H3].unit == FFT_MEAS_UNIT_DBC && s[FFT_MEAS_H3].value < m[FFT_MEAS_H3].value - 20.0f,
+          "NEGATIVE CONTROL: a sine's H3 (%.1f dBc) is far below the square's", (double)s[FFT_MEAS_H3].value);
+
+    make_square_record(40);
+    measure_record(0.0f, m);
+    fft_meas_format(&m[FFT_MEAS_PEAK], b, sizeof b);
+    CHECK(m[FFT_MEAS_PEAK].unit == FFT_MEAS_UNIT_BIN && strncmp(b, "bin ", 4) == 0,
+          "unknown rate: Peak is a bin number (\"%s\"), the levels stay", b);
+
+    float flat[64];
+    for (int i = 0; i < 64; i++) flat[i] = (i == 30) ? 50.0f : 10.0f;
+    fft_live_measure(flat, 64, 30, FS_0X10, FFT_SIZE, m);
+    CHECK(m[FFT_MEAS_H2].unit == FFT_MEAS_UNIT_DBC && m[FFT_MEAS_H3].unit == FFT_MEAS_UNIT_NONE,
+          "a harmonic beyond the spectrum is refused (H2 at bin 60 measured, H3 at bin 90 not)");
+    fft_live_measure(flat, 64, 0, FS_0X10, FFT_SIZE, m);
+    int none = 1;
+    for (int i = 0; i < FFT_MEAS_COUNT; i++) none &= m[i].unit == FFT_MEAS_UNIT_NONE;
+    fft_meas_format(&m[FFT_MEAS_PEAK], b, sizeof b);
+    CHECK(none && strcmp(b, "--") == 0, "no peak: every measurement is refused and reads \"--\"");
+
+    static const struct { float db; const char *unit, *want; } k[] = {
+        { 44.24f, "dB", "44.2dB" }, { -9.54f, "dBc", "-9.5dBc" }, { -0.04f, "dB", "0.0dB" },
+        { 0.0f, "dB", "0.0dB" }, { -123.45f, "dBc", "-123.5dBc" }, { 9.96f, "dB", "10.0dB" },
+    };
+    int fmt = 1;
+    for (unsigned i = 0; i < sizeof k / sizeof k[0]; i++) {
+        fft_live_format_db(k[i].db, k[i].unit, b, sizeof b);
+        if (strcmp(b, k[i].want) != 0) { fmt = 0; printf("  %g -> \"%s\", want \"%s\"\n", (double)k[i].db, b, k[i].want); }
+    }
+    CHECK(fmt, "levels print with one decimal, rounded, and no \"-0.0\"");
+    fft_live_format_db(-123.45f, "dBc", b, 5);
+    CHECK(strlen(b) == 4, "a short buffer is filled and terminated (\"%s\")", b);
+}
+
 int main(void)
 {
     printf("test_fft_live: the live acquisition record as spectrum input\n");
@@ -253,6 +375,8 @@ int main(void)
     test_window_spans_record();
     test_unknown_rate();
     test_dc_removed();
+    test_axes();
+    test_measurements();
     printf("\n%d passed, %d failed\n", tests_passed, tests_failed);
     return tests_failed ? 1 : 0;
 }

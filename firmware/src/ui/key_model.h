@@ -49,6 +49,7 @@
 #include <stdbool.h>
 #include "ui.h"          /* button_id_t, device_mode_t, BTN_LONG_FLAG */
 #include "osc_menu_model.h"   /* osc_row_t / osc_key_t: the args of KA_OSCMENU_* */
+#include "view_table.h"       /* key_focus_t, the views */
 
 /* ── Scan timing (ticks of the 500 Hz scan = 2 ms) ────────────────── */
 #define KEY_NUM              15
@@ -112,29 +113,27 @@ void key_scan_init(key_scan_t *s);
  * tick to out[] (room for KEY_NUM) and returns how many. */
 uint8_t key_scan_tick(key_scan_t *s, uint16_t raw, key_scan_event_t out[KEY_NUM]);
 
-/* ── What the arrows adjust (short SELECT cycles it) ──────────────── */
-typedef enum {
-    KF_ZOOM = 0,    /* LEFT/RIGHT timebase, UP/DOWN volts/div */
-    KF_CHMOVE,      /* LEFT/RIGHT trigger column, UP/DOWN channel vertical position */
-    KF_TRIGMOVE,    /* LEFT/RIGHT trigger column, UP/DOWN trigger level */
-    KF_CURSOR,      /* UP/DOWN move the cursor, LEFT/RIGHT pick one (only while cursors are on) */
-    KF_MASK,        /* mask tolerances (only while a mask exists; ours, not stock's) */
-    KF_COUNT
-} key_focus_t;
+/* ── What the arrows adjust (short SELECT cycles it) ──────────────
+ * The jobs (key_focus_t) and the list each view offers are in view_table.h.
+ * A job is on offer when the view lists it and what it adjusts exists: the
+ * cursor job while cursors are on, the mask job while a mask exists. */
 
-key_focus_t key_focus_next(key_focus_t cur, bool cursors_on, bool mask_present);
-/* Drop a stage that no longer exists (cursors turned off, mask cleared). */
-key_focus_t key_focus_sanitize(key_focus_t cur, bool cursors_on, bool mask_present);
-/* TRIGGER cycled the cursor mode: switching them on selects the cursor
- * stage (what the arrows did before this model), off leaves it. */
-key_focus_t key_focus_after_cursor_change(key_focus_t cur, bool cursors_on);
+/* The job after cur in view_mode's list, skipping the ones not on offer. */
+key_focus_t key_focus_next(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present);
+/* cur if the view offers it now, else the view's first job (the view
+ * changed, cursors were turned off, the mask was cleared). */
+key_focus_t key_focus_sanitize(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present);
+/* The cursor mode changed: switching the cursors on puts the arrows on the
+ * view's cursor job (cur when the view draws no cursors); switching them off
+ * takes them off it, to the view's first job. */
+key_focus_t key_focus_after_cursor_change(uint8_t view_mode, key_focus_t cur, bool cursors_on);
 const char *key_focus_name(key_focus_t f);     /* short shell word */
 const char *key_focus_popup(key_focus_t f);    /* popup text */
 
 /* ── Key -> action ────────────────────────────────────────────────── */
 typedef struct {
     device_mode_t mode;
-    bool          scope_time_view;   /* scope mode and the time-domain view */
+    uint8_t       view;              /* scope mode: view.mode (view_mode_t) */
     key_focus_t   focus;
     bool          cursors_on;
     bool          mask_present;
@@ -159,7 +158,7 @@ typedef enum {
     KA_SCREENSHOT,        /* short SAVE, every mode: whole-screen capture to the gallery (D1) */
     KA_BASECAL,           /* long AUTO in the scope: baseline correction (stock 0x0800DF58) */
     KA_CENTER50,          /* long OK in the scope: 50 % centre (stock 0x0800DA3A) */
-    KA_FOCUS_NEXT,        /* short SELECT (time view): "Select Function for Directional Keys" */
+    KA_FOCUS_NEXT,        /* short SELECT, every view: "Select Function for Directional Keys" */
     KA_ADJ_CH_SWITCH,     /* short MOVE: "Switch CH1/CH2 Adjustment" */
     KA_TB_STEP,           /* arg = -1 faster, +1 slower */
     KA_VDIV_STEP,         /* arg = +1 UP */
@@ -168,6 +167,7 @@ typedef enum {
     KA_TRIGLVL_STEP,      /* arg = +1 UP */
     KA_CURSOR_MOVE,       /* arg = -1 UP, +1 DOWN */
     KA_CURSOR_NEXT,
+    KA_SPECTRUM_CURSOR_MOVE,  /* the selected line on a spectrum: arg = -1 UP, +1 DOWN */
     KA_MASK_TOL_V,        /* arg = +1 UP */
     KA_MASK_TOL_H,        /* arg = +1 right */
     KA_MASK_STOPFAIL,     /* short MOVE in the mask stage (no channel to switch there) */
@@ -184,12 +184,11 @@ typedef enum {
                            * active channel and its coupling flips DC <-> AC */
     KA_RUNSTOP,           /* short OK, every view: RUN/STOP (SINGLE: re-arm; a held mask
                            * failure: resume) */
-    KA_AUTOSET,           /* short AUTO, time view: autoset (stock 0x0800CB50), or the
-                           * mask's cancel / clear while a mask exists */
-    KA_FFT_AUTO,          /* short AUTO, the other views: fit the spectrum's span */
-    KA_FFT_WINDOW,        /* short SELECT, the other views: next FFT window */
-    KA_FFT_REF,           /* UP/DOWN, the other views: reference level, arg = +1 UP */
-    KA_FFT_ZOOM           /* LEFT/RIGHT, the other views: arg = -1 in (LEFT), +1 out */
+    KA_AUTOSET,           /* short AUTO on the time domain: autoset (stock 0x0800CB50), or
+                           * the mask's cancel / clear while a mask exists */
+    KA_FFT_AUTO,          /* short AUTO on the spectrum: fit its span */
+    KA_FFT_REF,           /* UP/DOWN in the spectrum job: reference level, arg = +1 UP */
+    KA_FFT_ZOOM           /* LEFT/RIGHT in the spectrum job: arg = -1 in (LEFT), +1 out */
 } key_action_t;
 
 typedef struct {

@@ -8,13 +8,14 @@
  * properties (osc_menu_bind_*), the measurement selection and the note.
  *
  * DRAWN AREA: y 16..223 (the status bar above and the info bar below stay
- * theirs), x 0..319: rail 96 px with 8 rows of 26 px, a 6 px notch column,
+ * theirs), x 0..319: rail 96 px with 9 rows of 23 px, a 6 px notch column,
  * the pane x 102..319.
  */
 #include "osc_menu_model.h"
 #include "osc_menu_screen.h"
 #include "menu_frame.h"
 #include "meas_select.h"
+#include "key_model.h"       /* the active channel: the one a spectrum view analyses */
 #include "measure_strip.h"   /* MSTRIP_MAX_PER_CH */
 #include "ui.h"
 #include "lcd.h"
@@ -26,7 +27,8 @@
 #define PAGE_Y        16u
 #define PAGE_H       208u
 #define RAIL_W        96u
-#define RAIL_ROW_H    26u
+#define RAIL_ROW_H    23u
+_Static_assert(OSC_ROW_COUNT * RAIL_ROW_H <= PAGE_H, "every rail row is on the page");
 #define CONTENT_Y    (PAGE_Y + MENU_FRAME_TITLE_H + 2u)
 
 static const char *rail_label(uint8_t row) { return osc_menu_row_label((osc_row_t)row); }
@@ -98,8 +100,11 @@ static void draw_chips(const osc_menu_state_t *s)
     const osc_row_t row = (osc_row_t)s->row;
     const osc_pane_layout_t *l = osc_menu_layout(row);
     const bool param = (row == OSC_ROW_PARAM);
-    const uint8_t ch = s->meas_ch;
-    const uint16_t pc = param ? (ch ? th->ch2 : th->ch1) : th->text_secondary;
+    const uint8_t set = s->meas_set;
+    /* A panel is in its source's colour: the channel's, and for the spectrum
+     * the channel it analyses (the active one). */
+    const bool ch2 = (set == MEAS_SET_FFT) ? key_active_channel_get() != 0u : set == MEAS_SET_CH2;
+    const uint16_t pc = param ? (ch2 ? th->ch2 : th->ch1) : th->text_secondary;
     const uint16_t gap = 4u, ch_h = 22u, pitch = 26u;
     const uint16_t in_x = ITEM_X + 4u, in_w = ITEM_W - 8u;
     const uint16_t cw = (uint16_t)((in_w - (l->cols - 1u) * gap) / l->cols);
@@ -112,7 +117,7 @@ static void draw_chips(const osc_menu_state_t *s)
     lcd_fill_rect(ITEM_X, CONTENT_Y, 1, panel_h, pc);
     lcd_fill_rect((uint16_t)(ITEM_X + ITEM_W - 1u), CONTENT_Y, 1, panel_h, pc);
 
-    const uint16_t mask = param ? meas_select_get(ch) : 0u;
+    const uint16_t mask = param ? meas_select_get(set) : 0u;
     const uint8_t cur_math = param ? 0u : osc_menu_bind_current(row);
     for (uint8_t i = 0; i < l->n_items; i++) {
         uint8_t r, c;
@@ -122,9 +127,9 @@ static void draw_chips(const osc_menu_state_t *s)
         const uint16_t y = (uint16_t)(top + r * pitch);
         const uint16_t w = full ? in_w : cw;
         const bool focused = s->in_pane && s->item == i;
-        const char *lab = osc_menu_item_label(row, i, ch);
+        const char *lab = osc_menu_item_label(row, i, set);
         if (param && i == OSC_PRM_TAB) {
-            /* The channel tab: filled in the channel colour, as stock. */
+            /* The panel's tab: filled in its colour, as stock. */
             menu_frame_box(x, y, w, ch_h, pc, focused ? th->text_primary : pc, focused ? 2u : 0u);
             font_draw_string_box((uint16_t)(x + 2u), (uint16_t)(y + (ch_h - font_medium.height) / 2u),
                                  (uint16_t)(w - 4u), lab, th->background, pc, &font_medium, FONT_ALIGN_CENTER);
@@ -132,7 +137,7 @@ static void draw_chips(const osc_menu_state_t *s)
         }
         bool on = false;
         if (param && i >= OSC_PRM_CHIP0)
-            on = (mask >> osc_menu_prm_of_chip((uint8_t)(i - OSC_PRM_CHIP0))) & 1u;
+            on = (mask >> osc_menu_meas_of_chip(set, (uint8_t)(i - OSC_PRM_CHIP0))) & 1u;
         else if (!param)
             on = (i == cur_math);
         menu_frame_chip(x, y, w, ch_h, lab, param ? pc : th->highlight, on, focused, true);
@@ -150,16 +155,15 @@ static void draw_footer(const osc_menu_state_t *s)
     } else if (!s->in_pane) {
         t = "OK: open   MENU: close";
     } else if (s->row == OSC_ROW_PARAM) {
-        /* The strip shows at most MSTRIP_MAX_PER_CH per channel, picked by
+        /* The strip shows at most MSTRIP_MAX_PER_CH of a set, picked by
          * measure_strip.c's priority table (levels first); the selection
-         * itself keeps all 12 (All = A-on), so say how many show. */
-        const unsigned on = meas_select_count(s->meas_ch);
+         * itself keeps all of them (All = A-on), so say how many show. */
+        const unsigned on = meas_select_count(s->meas_set);
+        const char *const tab = osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, s->meas_set);
         if (on > MSTRIP_MAX_PER_CH)
-            snprintf(buf, sizeof buf, "CH%u: %u on, %u shown   %s", (unsigned)s->meas_ch + 1u,
-                     on, (unsigned)MSTRIP_MAX_PER_CH, s->meas_ch ? "UP: CH1" : "DOWN: CH2");
+            snprintf(buf, sizeof buf, "%s: %u on, %u shown", tab, on, (unsigned)MSTRIP_MAX_PER_CH);
         else
-            snprintf(buf, sizeof buf, "CH%u: %u of 12 on   %s", (unsigned)s->meas_ch + 1u,
-                     on, s->meas_ch ? "UP: CH1" : "DOWN: CH2");
+            snprintf(buf, sizeof buf, "%s: %u of %u on", tab, on, meas_select_size(s->meas_set));
         t = buf;
     } else if (l->kind == OSC_PANE_VALUES) {
         /* Locked (TRIGGER's pane): MENU closes, there is no rail to go back to. */
@@ -170,7 +174,7 @@ static void draw_footer(const osc_menu_state_t *s)
     menu_frame_draw_footer(&k_frame, t);
 }
 
-static uint8_t drawn_opens = 0xFFu, drawn_row = 0xFFu, drawn_ch = 0xFFu;
+static uint8_t drawn_opens = 0xFFu, drawn_row = 0xFFu, drawn_set = 0xFFu;
 
 void osc_menu_invalidate(void)
 {
@@ -185,11 +189,11 @@ void osc_menu_draw(void)
 
     /* Repaint the pane background only when its content changes. */
     if (s.opens != drawn_opens || s.row != drawn_row ||
-        (s.row == OSC_ROW_PARAM && s.meas_ch != drawn_ch)) {
+        (s.row == OSC_ROW_PARAM && s.meas_set != drawn_set)) {
         menu_frame_clear_pane(&k_frame);
         drawn_opens = s.opens;
         drawn_row = s.row;
-        drawn_ch = s.meas_ch;
+        drawn_set = s.meas_set;
     }
 
     menu_frame_draw_rail(&k_frame, s.row, !s.in_pane, &first);

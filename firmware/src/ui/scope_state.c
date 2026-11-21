@@ -102,6 +102,10 @@ void scope_state_init(scope_state_t *s)
     s->cursor.v2_x = CURSOR_SCOPE_LEFT + (CURSOR_SCOPE_WIDTH * 2) / 3;
     s->cursor.h1_y = CURSOR_SCOPE_TOP + CURSOR_SCOPE_HEIGHT / 3;
     s->cursor.h2_y = CURSOR_SCOPE_TOP + (CURSOR_SCOPE_HEIGHT * 2) / 3;
+    s->spectrum_cursor.bin[0]   = SPECTRUM_CURSOR_BIN1_DEFAULT;
+    s->spectrum_cursor.bin[1]   = SPECTRUM_CURSOR_BIN2_DEFAULT;
+    s->spectrum_cursor.level[0] = SPECTRUM_CURSOR_LEVEL1_DEFAULT;
+    s->spectrum_cursor.level[1] = SPECTRUM_CURSOR_LEVEL2_DEFAULT;
     /*
      * No cursor scale factors are initialised here any more, and that is the
      * point — see cursor_state_t. The two that used to live here (10 ms

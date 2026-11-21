@@ -1252,7 +1252,8 @@ static void test_flash(void)
     CHECK(config_load(&cfg) && sizeof cfg == 60u && cfg.version == CONFIG_VERSION);
     /* a clear: one tombstone, the settings log untouched again */
     uint32_t p1 = nor_programs[1];
-    CHECK(session_snapshot_clear() && nor_programs[1] == p1 + 2u && log_records() == 2);
+    CHECK(session_snapshot_clear() && nor_programs[1] >= p1 + 2u && nor_programs[1] <= p1 + 3u &&
+          log_records() == 2);                                  /* header + payload (+ a page crossing) */
     CHECK(memcmp(settings_was, region_bytes(FLASH_REGION_SETTINGS), sizeof settings_was) == 0);
     /* status, the shell: reading costs no write */
     p1 = nor_programs[1];

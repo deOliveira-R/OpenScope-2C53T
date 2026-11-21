@@ -221,7 +221,8 @@ static void slot_run(const theme_t *th, const scope_state_t *ss, trig_status_t s
  *   KF_CHMOVE    ">  v"   both in the channel colour (lines.jpeg)
  *   KF_TRIGMOVE  "<  v"   both in the trigger colour (IMG_0324.jpeg)
  *   KF_CURSOR    "X1 Y1"  (or "X2 Y2" when the second pair is selected)
- *   KF_MASK      "Mask"   ours: stock has no mask stage */
+ *   KF_MASK      "Mask"   ours: stock has no mask stage
+ *   KF_SPECTRUM  "dB Hz"  ours: level in the channel's colour, span white */
 static void slot_focus(const theme_t *th, const scope_state_t *ss)
 {
     const uint8_t f  = key_focus_get();
@@ -248,12 +249,17 @@ static void slot_focus(const theme_t *th, const scope_state_t *ss)
         blit_icon(x + 22u, 6u, ICON_ARROW_DOWN, th->trigger, bg);
         break;
     case KF_CURSOR:
+    case KF_SPECTRUM_CURSOR:
         font_draw_string_center(x + SB_FOCUS_W / 2u, SB_TEXT_Y, cs ? "X2 Y2" : "X1 Y1",
                                 th->text_primary, bg, &font_small);
         break;
     case KF_MASK:
         font_draw_string_center(x + SB_FOCUS_W / 2u, SB_TEXT_Y, "Mask",
                                 th->text_primary, bg, &font_small);
+        break;
+    case KF_SPECTRUM:
+        font_draw_string(x + 3u, SB_TEXT_Y, "dB", cc, bg, &font_small);
+        font_draw_string(x + 23u, SB_TEXT_Y, "Hz", th->text_primary, bg, &font_small);
         break;
     default:
         break;

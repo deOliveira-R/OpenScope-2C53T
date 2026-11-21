@@ -20,8 +20,9 @@
  * accepted, and the apply comparison covers what it then does with it.
  *
  * Also: the per-field out-of-range policy, field by field; the stored-only
- * bytes (sys.lang, fft.*, display_persist_mode) carried through a
- * load/save cycle and saved once set; table coverage (every PF_PERSIST
+ * bytes (sys.lang, display_persist_mode) carried through a load/save cycle
+ * and saved once set; the fft.* bytes, live settings, through their codec;
+ * table coverage (every PF_PERSIST
  * property has one row, every row a persisted property or a const one, every
  * record byte is one row's: no padding is left); the session-only list;
  * settings notes by origin (key, shell with persist on/off, boot, load); and
@@ -135,7 +136,24 @@ flash_region_status_t flash_regions_bind_w25q(void) { return FLASH_REGION_ERR_NO
  * then the live view.mode), ref_apply clamps it (above 5 -> 0) into the
  * model's kept-view state and moves no live state (scope_view and the roll
  * flag are the owners', set later through the setter), ref_defaults sets 0.
+ *
+ * A fourth (the FFT settings live): fft.window, fft.avg and fft.maxhold
+ * are settings the spectrum views apply, no longer bytes the store only
+ * carries. The lines marked "fft.*": ref_capture writes the three from
+ * the properties' backing state (the window as is, the averaging as its
+ * count 0/2/4/8/16/32, max hold as 0/1), ref_apply puts them there (a window
+ * above 4 -> Hanning, a byte that is not a count -> off, max hold = any
+ * non-zero byte). ref_defaults already wrote their values (Hanning, off, off).
  * ═══════════════════════════════════════════════════════════════════ */
+#define REF_FFT_WINDOW_COUNT    5u      /* fft.*: rect hanning hamming blackman flattop */
+#define REF_FFT_WINDOW_DEFAULT  1u      /* fft.*: Hanning, ref_defaults' */
+static const uint8_t ref_fft_counts[] = { 0u, 2u, 4u, 8u, 16u, 32u };   /* fft.*: off x2 .. x32 */
+static uint8_t ref_fft_avg_index(uint8_t count)                          /* fft.* */
+{
+    for (uint8_t i = 0; i < sizeof ref_fft_counts; i++)
+        if (ref_fft_counts[i] == count) return i;
+    return 0u;
+}
 #define REF_TRIGGER_LEVEL_LIMIT  103
 
 static uint8_t ref_clamp_idx(uint8_t value, uint8_t count, uint8_t fallback)
@@ -197,6 +215,9 @@ static void ref_capture(device_config_t *cfg)
     cfg->meter_link    = (uint8_t)meter_link_get(NULL);                      /* meter.link */
     cfg->last_screen   = model_last_screen_record();                        /* last screen */
     cfg->view_mode     = model_view_record();                               /* view.mode */
+    cfg->fft_window    = (uint8_t)fft_window_get(NULL);                     /* fft.* */
+    cfg->fft_avg_count = ref_fft_counts[fft_avg_get(NULL)];                 /* fft.* */
+    cfg->fft_max_hold  = fft_maxhold_get(NULL) != 0;                        /* fft.* */
 
     const siggen_config_t *sg = siggen_get_config();
     cfg->siggen_waveform  = sg->waveform;
@@ -256,6 +277,9 @@ static void ref_apply(const device_config_t *cfg)
                                          METER_LINK_SCREEN));                /* meter.link */
     model_last_screen_load(cfg->last_screen <= STARTUP_SCREEN_MAX ? cfg->last_screen : 0u);   /* last screen */
     model_view_boot_load(cfg->view_mode <= 5u ? cfg->view_mode : 0u);       /* view.mode */
+    fft_window_store(NULL, ref_clamp_idx(cfg->fft_window, REF_FFT_WINDOW_COUNT, REF_FFT_WINDOW_DEFAULT));   /* fft.* */
+    fft_avg_store(NULL, ref_fft_avg_index(cfg->fft_avg_count));            /* fft.* */
+    fft_maxhold_store(NULL, ((const uint8_t *)cfg)[offsetof(device_config_t, fft_max_hold)] != 0u);   /* fft.* */
 
     /* v5: the measurement selection (meas_select_set drops bits above 12). */
     meas_select_set(0, cfg->meas_ch1_mask);
@@ -392,6 +416,7 @@ typedef struct {
     uint16_t meas2;
     uint8_t  theme, math_en, math_op, meter_sub, meter_lay, meter_link, startup, last_screen;
     uint8_t  view, view_rec;        /* scope_view (a load must not move it) and the view kept for the record */
+    uint8_t  fft_win, fft_avg, fft_hold;
     uint8_t  wave, amp, duty, out, start_on;
     uint32_t freq;
     uint8_t  bright, vol, autooff;
@@ -414,6 +439,9 @@ static void snap(snap_t *s)
     s->last_screen = model_last_screen();
     s->view      = tv_view();
     s->view_rec  = model_view_record();
+    s->fft_win   = (uint8_t)fft_window_get(NULL);
+    s->fft_avg   = (uint8_t)fft_avg_get(NULL);
+    s->fft_hold  = (uint8_t)fft_maxhold_get(NULL);
     const siggen_config_t *g = siggen_get_config();
     s->wave = g->waveform; s->freq = g->frequency_hz; s->amp = g->amplitude_dv;
     s->duty = g->duty_pct; s->out = g->output_enabled; s->start_on = g->start_on;
@@ -438,6 +466,9 @@ static void restore(const snap_t *s)
     model_last_screen_load(s->last_screen);
     tv_view_set(s->view);
     model_view_boot_load(s->view_rec);      /* the same record value, kept */
+    fft_window_store(NULL, s->fft_win);
+    fft_avg_store(NULL, s->fft_avg);
+    fft_maxhold_store(NULL, s->fft_hold);
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = s->wave; g.frequency_hz = s->freq; g.amplitude_dv = s->amp;
@@ -510,6 +541,9 @@ static void random_state(void)
     tv_view_set((uint8_t)R(TV_VIEW_COUNT));                /* with ss->roll above: any view.mode */
     model_view_boot_load((uint8_t)R(MODEL_VIEW_MODE_MAX + 1u));   /* the loaded view: a capture carries it ... */
     if (R(2)) model_view_boot_forget();                    /* ... until it is in force: then the live one */
+    fft_window_store(NULL, (int32_t)R((uint32_t)P(FFT_WINDOW)->max + 1u));
+    fft_avg_store(NULL, (int32_t)R(MODEL_FFT_AVG_STEPS));
+    fft_maxhold_store(NULL, (int32_t)R(2));
     siggen_config_t g;
     memset(&g, 0, sizeof g);
     g.waveform = (uint8_t)R(SIGGEN_WAVEFORM_COUNT);
@@ -603,6 +637,10 @@ static void test_table_coverage(void)
             if (p && f->codec != V5_CONST) CHECKF(p->flags & PF_PERSIST, "row %u: %s not PF_PERSIST", r, p->name);
             if (p && (p->flags & PF_STORED_ONLY)) CHECK(f->flags & V5_F_STORED);
             if (p && (f->flags & V5_F_STORED)) CHECK(p->flags & PF_STORED_ONLY);
+            /* the FFT settings are live: written from the property; sys.lang is stored only */
+            if (f->prop_id == PROP_ID_FFT_WINDOW || f->prop_id == PROP_ID_FFT_AVG || f->prop_id == PROP_ID_FFT_MAXHOLD)
+                CHECKF(!(f->flags & V5_F_STORED) && p && !(p->flags & PF_STORED_ONLY), "%s is stored only", p ? p->name : "?");
+            if (f->prop_id == PROP_ID_SYS_LANG) CHECK((f->flags & V5_F_STORED) && p && (p->flags & PF_STORED_ONLY));
         } else {
             CHECK(f->codec == V5_CONST || f->codec == V5_CARRY || f->codec == V5_SCREEN);
         }
@@ -958,7 +996,10 @@ static void test_out_of_range_policy(void)
 
 static void test_stored_only_raw_carry(void)
 {
-    static const unsigned carried[] = { 18, 19, 20, 37, 38 };   /* fft x3, persist mode, lang (11 is meter.link now, 22 the last screen, 23 view.mode) */
+    /* persist mode, lang (11 is meter.link now, 22 the last screen, 23
+     * view.mode, 18..20 the FFT settings) */
+    static const unsigned carried[] = { offsetof(device_config_t, display_persist_mode),
+                                        offsetof(device_config_t, language) };
     for (unsigned n = 0; n < 2000u; n++) {
         device_config_t rec;
         config_init_defaults(&rec);
@@ -981,82 +1022,107 @@ static void test_stored_only_raw_carry(void)
     }
 
     /* A byte nothing understands loads the default into the property ... */
+    const unsigned hold_at = offsetof(device_config_t, fft_max_hold);
     device_config_t rec;
     config_init_defaults(&rec);
     rec.language = 7; rec.fft_window = 9; rec.fft_avg_count = 3;
-    ((uint8_t *)&rec)[offsetof(device_config_t, fft_max_hold)] = 0x40;   /* a bool field: poke the byte */
+    ((uint8_t *)&rec)[hold_at] = 0x40;                     /* a bool field: poke the byte */
     settings_store_apply(&rec);
     CHECK(prop_get(P(SYS_LANG)) == 0 && prop_get(P(FFT_WINDOW)) == 1 && prop_get(P(FFT_AVG)) == 0);
     CHECK(prop_get(P(FFT_MAXHOLD)) == 1);
-    /* ... one it does understands reads back ... */
+    /* ... and is saved as that value: the FFT settings are live, so a capture
+     * writes the property; sys.lang's byte is carried */
+    device_config_t back = rec;
+    settings_store_capture(&back);
+    CHECKF(back.fft_window == 1 && back.fft_avg_count == 0 && ((uint8_t *)&back)[hold_at] == 1u &&
+           back.language == 7, "win %u avg %u maxhold 0x%02x lang %u", back.fft_window, back.fft_avg_count,
+           ((uint8_t *)&back)[hold_at], back.language);
+    /* ... one it does understand reads back ... */
     rec.fft_window = 3; rec.fft_avg_count = 16;
     settings_store_apply(&rec);
     CHECK(prop_get(P(FFT_WINDOW)) == 3 && prop_get(P(FFT_AVG)) == 4);
-    /* ... and a set is saved, the other carried bytes untouched */
+    /* ... and a set is saved, the carried bytes untouched */
     CHECK(prop_set_local(P(FFT_WINDOW), 2, ORIGIN_KEY, NULL) == PS_OK);
     CHECK(prop_set_local(P(FFT_AVG), 3, ORIGIN_KEY, NULL) == PS_OK);
     device_config_t next = rec;
     settings_store_capture(&next);
     CHECK(next.fft_window == 2 && next.fft_avg_count == 8);
-    CHECKF(next.language == 7 && ((uint8_t *)&next)[20] == 0x40, "lang %u maxhold 0x%02x", next.language, ((uint8_t *)&next)[20]);
+    CHECKF(next.language == 7 && ((uint8_t *)&next)[hold_at] == 1u, "lang %u maxhold 0x%02x", next.language,
+           ((uint8_t *)&next)[hold_at]);
     CHECK(config_validate(&next));
 }
 
-/* The stored-only rows decode and encode by their own tables: the
- * properties have no RAM variable before M3, so the snapshot comparisons
- * above never see them. Every byte of sys.lang, fft.window and fft.avg_count
- * against the documented mapping (props_sys.c labels; fft.avg is an index
- * into the counts 0/2/4/8/16/32), and every value back. */
-static void test_stored_only_codec(void)
+/* The FFT settings' and sys.lang's rows decode and encode by their own
+ * tables. Every byte of sys.lang, fft.window, fft.avg_count and
+ * fft.max_hold against the documented mapping (props_sys.c labels; fft.avg
+ * is an index into the counts 0/2/4/8/16/32), and every value back: the FFT
+ * settings, live, are written as their record byte whatever the byte held;
+ * sys.lang, stored only, keeps a byte that decodes to its value. */
+static void test_fft_and_lang_codec(void)
 {
-    static const uint8_t counts[6] = { 0u, 2u, 4u, 8u, 16u, 32u };   /* lbl_fft_avg: off x2 .. x32 */
+    static const uint8_t counts[] = { 0u, 2u, 4u, 8u, 16u, 32u };    /* lbl_fft_avg: off x2 .. x32 */
+    const int32_t n_counts = (int32_t)sizeof counts;
+    const int32_t win_max = P(FFT_WINDOW)->max, win_def = prop_default(P(FFT_WINDOW));
     const v5_field_t *fw = model_persist_v5_find(PROP_ID_FFT_WINDOW);
     const v5_field_t *fa = model_persist_v5_find(PROP_ID_FFT_AVG);
+    const v5_field_t *fh = model_persist_v5_find(PROP_ID_FFT_MAXHOLD);
     const v5_field_t *fl = model_persist_v5_find(PROP_ID_SYS_LANG);
-    CHECK(fw && fa && fl);
-    if (!fw || !fa || !fl) return;
+    CHECK(fw && fa && fh && fl);
+    if (!fw || !fa || !fh || !fl) return;
     CHECK(fw->offset == offsetof(device_config_t, fft_window) &&
           fa->offset == offsetof(device_config_t, fft_avg_count) &&
+          fh->offset == offsetof(device_config_t, fft_max_hold) &&
           fl->offset == offsetof(device_config_t, language));
+    /* the counts are one table: the record's, the FFT's and the labels' */
+    CHECK(MODEL_FFT_AVG_STEPS == n_counts && P(FFT_AVG)->max == n_counts - 1 &&
+          memcmp(model_fft_avg_counts, counts, sizeof counts) == 0);
+    CHECK(win_max == (int32_t)REF_FFT_WINDOW_COUNT - 1 && win_def == (int32_t)REF_FFT_WINDOW_DEFAULT);
     unsigned bad = 0;
     for (unsigned b = 0; b < 256u; b++) {
         device_config_t rec;
         config_init_defaults(&rec);
         rec.fft_window = (uint8_t)b; rec.fft_avg_count = (uint8_t)b; rec.language = (uint8_t)b;
-        const int32_t want_w = b <= 4u ? (int32_t)b : 1;              /* rect..flattop, else Hanning */
+        ((uint8_t *)&rec)[fh->offset] = (uint8_t)b;
+        const int32_t want_w = (int32_t)b <= win_max ? (int32_t)b : win_def;   /* rect..flattop, else Hanning */
         int32_t want_a = 0;                                            /* not a count: off */
-        for (int32_t i = 0; i < 6; i++) if (counts[i] == b) want_a = i;
+        for (int32_t i = 0; i < n_counts; i++) if (counts[i] == b) want_a = i;
+        const int32_t want_h = b != 0u;                                /* any non-zero byte: on */
         const int32_t want_l = 0;                                      /* English, the only one */
         if (model_persist_v5_decode(fw, &rec) != want_w) bad++;
         if (model_persist_v5_decode(fa, &rec) != want_a) bad++;
+        if (model_persist_v5_decode(fh, &rec) != want_h) bad++;
         if (model_persist_v5_decode(fl, &rec) != want_l) bad++;
         /* the load puts the same into the properties */
         settings_store_apply(&rec);
         if (prop_get(P(FFT_WINDOW)) != want_w || prop_get(P(FFT_AVG)) != want_a ||
-            prop_get(P(SYS_LANG)) != want_l) bad++;
+            prop_get(P(FFT_MAXHOLD)) != want_h || prop_get(P(SYS_LANG)) != want_l) bad++;
+        /* and a capture writes the FFT settings' values, never the byte */
+        device_config_t next = rec;
+        settings_store_capture(&next);
+        if (next.fft_window != (uint8_t)want_w || next.fft_avg_count != counts[want_a] ||
+            ((uint8_t *)&next)[fh->offset] != (uint8_t)want_h || next.language != (uint8_t)b) bad++;
     }
-    CHECKF(bad == 0, "%u stored-only bytes decoded wrong", bad);
+    CHECKF(bad == 0, "%u bytes decoded or captured back wrong", bad);
     /* every value: captured as its record byte, and read back */
-    for (int32_t v = 0; v <= 5; v++) {
+    for (int32_t v = 0; v < n_counts; v++) {
         device_config_t rec;
         config_init_defaults(&rec);
         rec.fft_window = 0xEE; rec.fft_avg_count = 0xEE; rec.language = 0xEE;   /* nothing understood */
+        ((uint8_t *)&rec)[fh->offset] = 0xEE;
         settings_store_apply(&rec);
-        if (v <= 4) CHECK(prop_set_local(P(FFT_WINDOW), v, ORIGIN_KEY, NULL) == PS_OK);
+        if (v <= win_max) CHECK(prop_set_local(P(FFT_WINDOW), v, ORIGIN_KEY, NULL) == PS_OK);
         CHECK(prop_set_local(P(FFT_AVG), v, ORIGIN_KEY, NULL) == PS_OK);
         device_config_t next = rec;
         settings_store_capture(&next);
-        /* the value the byte already decodes to (the default) is carried as
-         * the byte; any other is written as its record byte */
-        CHECKF(next.fft_avg_count == (v == 0 ? 0xEE : counts[v]), "fft.avg %ld saved as %u", (long)v,
-               next.fft_avg_count);
+        /* the default included: a live setting is written, not carried */
+        CHECKF(next.fft_avg_count == counts[v], "fft.avg %ld saved as %u", (long)v, next.fft_avg_count);
         CHECK(model_persist_v5_decode(fa, &next) == v);
-        if (v <= 4) {
-            CHECKF(next.fft_window == (v == 1 ? 0xEE : (uint8_t)v), "fft.window %ld saved as %u", (long)v,
-                   next.fft_window);
+        if (v <= win_max) {
+            CHECKF(next.fft_window == (uint8_t)v, "fft.window %ld saved as %u", (long)v, next.fft_window);
             CHECK(model_persist_v5_decode(fw, &next) == v);
         }
-        CHECK(next.language == 0xEE);                  /* unchanged property: the byte is carried */
+        CHECK(((uint8_t *)&next)[fh->offset] == 1u);   /* 0xEE loaded as on, written as 1 */
+        CHECK(next.language == 0xEE);                  /* unchanged stored-only property: the byte is carried */
     }
     /* sys.lang's one value is written when it is not what the byte says */
     {
@@ -1662,7 +1728,7 @@ int main(void)
     test_round_trip_through_properties();
     test_out_of_range_policy();
     test_stored_only_raw_carry();
-    test_stored_only_codec();
+    test_fft_and_lang_codec();
     test_notes_by_origin();
     test_refused_commit_no_note();
     test_meter_link_record();

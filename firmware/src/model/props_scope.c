@@ -190,11 +190,14 @@ prop_status_t ch_meas_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_
 
 bool meas_label(const prop_desc_t *p, int32_t bit, char *out, size_t n)
 {
-    (void)p;
-    if (bit < 0 || bit >= SCOPE_PRM_COUNT || !n) return false;
-    snprintf(out, n, "%s", scope_prm_label((unsigned)bit));
+    if (bit < 0 || (unsigned)bit >= meas_select_size(p->arg) || !n) return false;
+    snprintf(out, n, "%s", meas_select_label(p->arg, (unsigned)bit));
     return out[0] != '\0';
 }
+
+/* fft.meas: the same hook under its own name, so a tool that reads the table
+ * finds the spectrum's label table (scripts/model_config.py HOOK_TABLES). */
+bool fft_meas_label(const prop_desc_t *p, int32_t bit, char *out, size_t n) { return meas_label(p, bit, out, n); }
 
 /* ═══ tb ═════════════════════════════════════════════════════════════ */
 
@@ -649,6 +652,40 @@ prop_status_t view_curpos_set(const prop_desc_t *p, int32_t v, uint8_t origin, p
 {
     (void)origin; (void)note;
     view_curpos_store(p, v);
+    return PS_OK;
+}
+
+/* view.curf1 / curf2 (bin of the transform) and curl1 / curl2 (tenths of a
+ * dB): the same four lines on a spectrum, arg = cursor_sel_t. */
+_Static_assert(SPECTRUM_CURSOR_BIN_MIN == 1 && SPECTRUM_CURSOR_BIN_MAX == 2047 &&
+               SPECTRUM_CURSOR_LEVEL_MAX == 2000 &&
+               SPECTRUM_CURSOR_BIN1_DEFAULT == 683 && SPECTRUM_CURSOR_BIN2_DEFAULT == 1365 &&
+               SPECTRUM_CURSOR_LEVEL1_DEFAULT == 400 && SPECTRUM_CURSOR_LEVEL2_DEFAULT == 200,
+               "view.curf 1..2047 (683, 1365), view.curl +-2000 (400, 200): model_table.h holds literals");
+int32_t view_scurpos_get(const prop_desc_t *p)
+{
+    const spectrum_cursor_t *c = &scope_state_get()->spectrum_cursor;
+    switch (p->arg) {
+    case CURSOR_SEL_V1: return c->bin[0];
+    case CURSOR_SEL_V2: return c->bin[1];
+    case CURSOR_SEL_H1: return c->level[0];
+    default:            return c->level[1];
+    }
+}
+void view_scurpos_store(const prop_desc_t *p, int32_t v)
+{
+    spectrum_cursor_t *c = &scope_state_get()->spectrum_cursor;
+    switch (p->arg) {
+    case CURSOR_SEL_V1: c->bin[0] = (uint16_t)v; break;
+    case CURSOR_SEL_V2: c->bin[1] = (uint16_t)v; break;
+    case CURSOR_SEL_H1: c->level[0] = (int16_t)v; break;
+    default:            c->level[1] = (int16_t)v; break;
+    }
+}
+prop_status_t view_scurpos_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    view_scurpos_store(p, v);
     return PS_OK;
 }
 

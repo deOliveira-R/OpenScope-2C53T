@@ -72,18 +72,26 @@ Timebase steps: 5ns, 10ns, 20ns, 50ns, 100ns, 200ns, 500ns, 1us, 2us, 5us, 10us,
 ### What the arrow keys adjust (SELECT)
 
 **SELECT** cycles the arrow keys' function, as stock's "Select Function for
-Directional Keys" does (manual p.30). A popup names the stage. In the FFT
-views SELECT keeps its window-function cycle.
+Directional Keys" does (manual p.30), in every scope view. A popup names the
+stage and the status bar shows it. Each view offers the stages that make
+sense for what it shows (table below).
 
 | Stage | UP/DOWN | LEFT/RIGHT |
 |-------|---------|------------|
-| Zoom (default) | V/div of the adjusted channel | Timebase |
+| Zoom | V/div of the adjusted channel | Timebase |
 | Channel move | Vertical position of the adjusted channel (+-100 px, 5 per press) | Trigger point across the screen |
 | Trigger move | Trigger level (the dotted line) | Trigger point across the screen |
 | Cursor (only while cursors are on) | Move the active cursor | Switch cursor |
 | Mask (only while a mask exists) | Mask vertical tolerance +-2 counts | Mask horizontal tolerance +-1 sample (MOVE = stop-on-fail) |
+| Spectrum | Reference level, 5 dB per press | Span: LEFT zooms in, RIGHT out |
 
-Order: Zoom -> Channel move -> Trigger move -> [Cursor] -> [Mask] -> Zoom.
+| View | Stages, in SELECT's order (the first is where the view starts) |
+|------|------|
+| Y-T, Roll | Zoom, Channel move, Trigger move, [Cursor], [Mask] |
+| X-Y | Zoom, Channel move, Trigger move |
+| FFT, Waterfall | Spectrum, Zoom (the timebase sets the spectrum's range, V/div its level) |
+| Split | Zoom, Channel move, Trigger move, Spectrum: one list over both halves |
+
 Switching cursors on (Settings -> Oscilloscope -> Cursors, or the Oscilloscope
 Settings page) selects the Cursor stage straight away; SELECT leaves it. Channel position moves only the channel's ground-reference marker
 for now: the live trace is autoscaled and ignores it, and it drives neither the
@@ -164,8 +172,8 @@ where they have no long action. POWER is unchanged (its own countdown).
 | **TRIGGER** | Signal generator (from any mode) |
 | **PRM** (scope time view) | Hide / show the measurement badges |
 | **CH1 / CH2** (scope) | Channel on/off (see above; stock has no long CH1/CH2) |
-| **AUTO** (scope time view) | Baseline correction (stock) |
-| **OK** (scope time view) | 50 % centre (stock) |
+| **AUTO** (scope views of the time record: Y-T, Roll, X-Y, Split) | Baseline correction (stock) |
+| **OK** (the same views) | 50 % centre (stock) |
 | **SAVE** (every mode) | Screenshot gallery (stock: scope only) |
 
 While the Oscilloscope Settings page is up, the scope's own long presses
@@ -201,16 +209,37 @@ failure is held. Full design: `docs/specs/scope/mask-pass-fail.md`.
 
 Switching cursors on puts the arrow keys in the Cursor stage; SELECT steps on to the others. The cursor readout shows delta-time (dt), frequency (1/dt), and delta-voltage (dV).
 
+**On a spectrum (FFT view)** the same four lines are cursors on frequency
+(V1, V2) and level (H1, H2), with the readout in the same row above the
+measurements: the two frequencies and their difference, and the level
+difference (with the level lines alone, both levels too). Each line is kept
+at its frequency or level, not at a place on the screen: zoom the span and a
+frequency line stays on the spectral line it marks (and is not drawn while
+that frequency is off the screen; its readout stays). UP on a frequency line
+moves it down in frequency, UP on a level line moves it up; one step is
+4 pixels of the plot at the span and level range in force, so zooming in
+makes the steps finer. Levels are dB relative to one count of the
+transform's input, the unit of the plot's own scale.
+
 ### FFT / Spectrum Views
 
 | Button | Action |
 |--------|--------|
 | Oscilloscope Settings page | The views are chosen on the page (CH panes "FFT: ON/OFF", Display), as on stock. Short PRM cycled them until UI round 1; it now opens the page |
 | **MENU** / **PRM** | Open the Oscilloscope Settings page, as in the time view (the way back to it) |
-| **SELECT** | Cycle FFT window function (in FFT/Split/Waterfall views) |
-| **UP/DOWN** | Adjust reference level (+/- 5dB, in FFT views) |
-| **LEFT/RIGHT** | Zoom in/out frequency range (in FFT views) |
-| **AUTO** | Auto-configure FFT (in FFT views; in the time view AUTO is the mask key) |
+| **SELECT** | Next arrow stage of the view (see "What the arrow keys adjust") |
+| **UP/DOWN**, **LEFT/RIGHT** | In the Spectrum stage: reference level and span |
+| **AUTO** | Fit the spectrum's span (FFT, Waterfall; Split while the arrows are in the Spectrum stage, else autoset) |
+| Settings page, **Spectrum** row | Window (Rect, Hanning, Hamming, Blackman-Harris, Flat top), averaging (off, x2 to x32), max hold. Saved with the settings |
+| **PRM** | The Measure pane, on the spectrum's own measurements (FFT view; long PRM hides them) |
+
+The spectrum's measurements, shown in a strip under the plot as the time
+views show theirs: **Peak** (frequency of the strongest bin; it is the
+bin's centre, so good to half a bin width), **Level** (that bin's level),
+**H2** and **H3** (the level at twice and three times that frequency,
+relative to the peak, dBc). Peak and Level are on until you choose. The
+spectrum half of Split and the Waterfall do not draw the strip or cursors
+yet.
 
 Note: Entering an FFT view claims the shared memory pool (88KB). Returning to time view releases it.
 
@@ -223,7 +252,7 @@ Note: Entering an FFT view claims the shared memory pool (88KB). Returning to ti
 ### Oscilloscope Settings page
 
 Stock's settings page for the scope (stock state 9): a rail of rows on the
-left (Display, Cursors, Measure, CH1, CH2, Trigger, Persist, Math), the
+left (Display, Cursors, Measure, CH1, CH2, Trigger, Persist, Math, Spectrum), the
 selected row's settings on the right. The plot is hidden while it is up; the
 acquisition keeps running behind it.
 
@@ -242,8 +271,12 @@ acquisition keeps running behind it.
 | **SAVE** | Screenshot of the page; long SAVE = gallery |
 | long **MENU / MOVE / SELECT / TRIGGER** | Home / meter / scope / generator, as everywhere (the page closes) |
 
-Measure pane: each channel picks any of stock's 12 measurements (both default
-to Freq, Peri, Duty+, Vp-p, Vrms). The plot's strip shows at most 6 per
+Measure pane: one panel per source, of the sources the view on screen shows:
+CH1 and CH2 in the views of the time record, FFT in the spectrum views, all
+three in Split. OK on the panel's tab goes to the next panel; DOWN past a
+panel's last row scrolls into the next. Each channel picks any of stock's 12
+measurements (both default to Freq, Peri, Duty+, Vp-p, Vrms); the spectrum
+picks among its four. The plot's strip shows at most 6 per
 channel; with more on, the 6 shown are chosen by priority, levels first:
 Vp-p, Vmax, Vmin, Freq, Duty+, Vrms, then the rest in stock order
 (`mstrip_show_priority[]`, firmware/src/ui/measure_strip.c). They are drawn

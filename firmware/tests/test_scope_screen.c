@@ -9,7 +9,10 @@
  *   - every key, short and long, in every arrow stage and view, against the
  *     ORACLE: the scope arms of input_handler.c's exec_key_cmd() and
  *     mode_key() as they were before B7 (base fd20895), transcribed below
- *     with the driver calls logged under the names the fake ops log. Over
+ *     with the driver calls logged under the names the fake ops log, and
+ *     brought to the view table's rules (each view's own jobs, SELECT the
+ *     next job in every view, the arrows by the job, AUTO by the domain the
+ *     job is on), with the jobs of each view its own. Over
  *     thousands of random scope states the screen must leave the same
  *     state, make the same owner calls in the same order, show the same
  *     popup and ask for the same repaint. The deliberate differences are
@@ -41,6 +44,7 @@
 #include "persistence.h"
 #include "math_channel.h"
 #include "fft.h"
+#include "fft_live.h"
 
 #define LONG(b) ((uint8_t)((b) | BTN_LONG_FLAG))
 static int32_t G(const prop_desc_t *p) { return prop_get(p); }
@@ -119,11 +123,13 @@ bool scope_selfcal_request_autoset(void)          { env_logf("autoset;"); return
 bool scope_selfcal_request_basecal(uint8_t banks) { env_logf("basecal(%u);", banks); return !t_busy_req; }
 bool scope_selfcal_request_center50(void)         { env_logf("center50;"); return !t_busy_req; }
 
-fft_window_t fft_cycle_window(void)        { env_logf("fft_window;"); return (fft_window_t)0; }
 float fft_adjust_ref_level(float d)        { env_logf("fft_ref(%d);", (int)d); return 0.0f; }
 void  fft_zoom_in(void)                    { env_logf("fft_zoom_in;"); }
 void  fft_zoom_out(void)                   { env_logf("fft_zoom_out;"); }
 void  fft_auto_request(void)               { env_logf("fft_auto;"); }
+/* scope_spectrum.c: the axes of the spectrum on screen, as a test sets them */
+static fft_axes_t g_axes;
+void scope_ui_fft_axes(fft_axes_t *out)    { *out = g_axes; }
 
 /* The driver calls of the pre-B7 key handlers (fpga.c, scope_vpos.c,
  * scope_ui.c), logged as the ops below log theirs. Channels: 0 = CH1. */
@@ -186,7 +192,16 @@ static uint8_t f_mask_state(void)   { return t_mask_state; }
 static bool f_mask_hold(void)       { return t_mask_hold; }
 static bool f_mask_pending(void)    { return t_pending_seq != 0u && !scope_mask_acked(t_pending_seq); }
 static bool f_mask_tol_pending(void){ return t_tol_seq != 0u && !scope_mask_acked(t_tol_seq); }
-static bool f_view(uint8_t v)       { env_logf("view(%u);", v); scope_view = (scope_view_t)v; return true; }
+/* op_view_select (model_hw_fw.c): another view on the screen puts the
+ * arrows on its first job. */
+static bool f_view(uint8_t v)
+{
+    env_logf("view(%u);", v);
+    const scope_view_t was = scope_view;
+    scope_view = (scope_view_t)v;
+    if (scope_view != was) scope_screen_view_changed();
+    return true;
+}
 static bool f_persist_on(uint8_t m) { persist_enabled = true; t_persist_mode = m; return true; }
 static void f_persist_off(void)     { persist_enabled = false; }
 static uint8_t f_persist_mode(void) { return t_persist_mode; }
@@ -218,11 +233,11 @@ static void boot(void)
     t_mask_slow = t_mask_hold = false; t_mask_state = MASK_PF_EMPTY; t_tolv = 8; t_tolh = 2; t_sf = true;
     t_seq = t_applied_seq = t_tol_seq = t_pending_seq = 0; t_mbox.full = false;
     t_persist_mode = 0; g_fft_epoch = 0;
+    memset(&g_axes, 0, sizeof g_axes);                 /* no spectrum drawn */
     model_bind_hw(&t_ops);
     (void)model_load_defaults(PF_SESSION, NULL, false);
     mask_poll();
     scope_key_focus = KF_ZOOM;
-    scope_trig_level_focus = scope_hpos_focus = scope_mask_focus = false;
     active_channel = 0;
     osc_menu_close();
     screen_reset();
@@ -236,11 +251,69 @@ static void boot(void)
 
 /* ═══ the oracle: input_handler.c before B7 (fd20895), the scope's arms ═══
  * key_ctx_now() + exec_key_cmd() + mode_key(), with osc_menu_env_cursors /
- * set_focus as they were. o_cmd: 'F' = DCMD_REDRAW_ALL sent, 'P' = the
+ * set_focus as they were, brought to the view table's rules: each view has
+ * its own jobs, SELECT is the next job in every view, the arrows go by the
+ * job, AUTO by the domain the job is on. The jobs are the oracle's own
+ * (o_jobs), not key_model.c's. o_cmd: 'F' = DCMD_REDRAW_ALL sent, 'P' = the
  * page's paint sent, '-' = nothing. */
 static char o_cmd;
 static key_focus_t o_focus;                 /* scope_key_focus of the old code */
 static void o_set_focus(key_focus_t f) { o_focus = f; }
+
+/* view.mode from the scope's state: the view, and roll in the time view. */
+static uint8_t o_view_mode(void)
+{
+    switch (scope_view) {
+    case SCOPE_VIEW_XY:        return VIEW_MODE_XY;
+    case SCOPE_VIEW_FFT:       return VIEW_MODE_FFT;
+    case SCOPE_VIEW_SPLIT:     return VIEW_MODE_SPLIT;
+    case SCOPE_VIEW_WATERFALL: return VIEW_MODE_WATERFALL;
+    default:                   return scope_state_get()->roll ? VIEW_MODE_ROLL : VIEW_MODE_YT;
+    }
+}
+
+/* The jobs SELECT steps through in each view, the first where it starts. */
+static const struct { uint8_t n; key_focus_t j[KF_COUNT]; } o_jobs[VIEW_MODE_COUNT] = {
+    [VIEW_MODE_YT]        = { 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
+    [VIEW_MODE_ROLL]      = { 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
+    [VIEW_MODE_XY]        = { 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE } },
+    [VIEW_MODE_FFT]       = { 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR } },
+    [VIEW_MODE_SPLIT]     = { 4, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM } },
+    [VIEW_MODE_WATERFALL] = { 2, { KF_SPECTRUM, KF_ZOOM } },
+};
+static bool o_offered(uint8_t view, key_focus_t f, bool cursors, bool mask)
+{
+    if (((f == KF_CURSOR || f == KF_SPECTRUM_CURSOR) && !cursors) || (f == KF_MASK && !mask)) return false;
+    for (unsigned i = 0; i < o_jobs[view].n; i++)
+        if (o_jobs[view].j[i] == f) return true;
+    return false;
+}
+static key_focus_t o_sanitize(uint8_t view, key_focus_t f, bool cursors, bool mask)
+{
+    return o_offered(view, f, cursors, mask) ? f : o_jobs[view].j[0];
+}
+static key_focus_t o_next(uint8_t view, key_focus_t f, bool cursors, bool mask)
+{
+    f = o_sanitize(view, f, cursors, mask);
+    unsigned at = 0;
+    while (o_jobs[view].j[at] != f) at++;
+    for (unsigned k = 1; k <= o_jobs[view].n; k++) {
+        const key_focus_t g = o_jobs[view].j[(at + k) % o_jobs[view].n];
+        if (o_offered(view, g, cursors, mask)) return g;
+    }
+    return f;
+}
+/* The job in force now. */
+static key_focus_t o_in_force(void)
+{
+    return o_sanitize(o_view_mode(), o_focus, scope_state_get()->cursor.mode != CURSOR_OFF,
+                      scope_mask_state() != MASK_PF_EMPTY);
+}
+/* AUTO acts on the spectrum: the views of it alone, and split's spectrum job. */
+static bool o_auto_on_spectrum(uint8_t view, key_focus_t f)
+{
+    return view == VIEW_MODE_FFT || view == VIEW_MODE_WATERFALL || (view == VIEW_MODE_SPLIT && f == KF_SPECTRUM);
+}
 static void o_popup_and_redraw(const char *t) { scope_show_popup(t); o_cmd = 'F'; }
 static uint32_t o_tol_pending_seq; static uint8_t o_tol_pending_v, o_tol_pending_h;
 
@@ -272,10 +345,10 @@ static key_ctx_t o_ctx(void)
     key_ctx_t c;
     memset(&c, 0, sizeof c);
     c.mode = MODE_OSCILLOSCOPE;
-    c.scope_time_view = (scope_view == SCOPE_VIEW_TIME);
+    c.view = o_view_mode();
     c.cursors_on = (ss->cursor.mode != CURSOR_OFF);
     c.mask_present = (scope_mask_state() != MASK_PF_EMPTY);
-    const key_focus_t f = key_focus_sanitize(o_focus, c.cursors_on, c.mask_present);
+    const key_focus_t f = o_sanitize(c.view, o_focus, c.cursors_on, c.mask_present);
     if (f != o_focus) o_set_focus(f);
     c.focus = f;
     c.active_channel = active_channel;
@@ -283,6 +356,47 @@ static key_ctx_t o_ctx(void)
     c.osc_menu_locked = c.osc_menu_open && osc_menu_is_locked();
     c.osc_menu_opener = osc_menu_screen_opener();
     return c;
+}
+
+/* UP / DOWN in the spectrum's cursor job: the selected line by what 4 px
+ * are worth on the axes on screen (a frequency line UP = lower, a level
+ * line UP = higher); a line off the plot first comes to its nearest edge;
+ * the result stays on the plot. No spectrum drawn: nothing. */
+#define O_SCURSOR_STEP_PX   4
+#define O_TENTHS_PER_DB     10
+static void o_spectrum_cursor_move(int dir)
+{
+    scope_state_t *ss = scope_state_get();
+    fft_axes_t a;
+    scope_ui_fft_axes(&a);
+    if (!a.on) return;
+    const int sel = ss->cursor.active;
+    const bool freq = (sel == CURSOR_SEL_V1 || sel == CURSOR_SEL_V2);
+    int32_t lo, hi, step, v;
+    if (freq) {
+        lo = a.bin0; hi = a.bin0 + a.bins - 1;
+        step = (int32_t)(O_SCURSOR_STEP_PX * a.bins / a.w);
+        if (step < 1) step = 1;
+        step *= dir;
+        v = ss->spectrum_cursor.bin[sel == CURSOR_SEL_V2];
+    } else {
+        const int32_t ref = (int32_t)a.ref_db, range = (int32_t)a.range_db;   /* whole dB here */
+        hi = ref * O_TENTHS_PER_DB; lo = (ref - range) * O_TENTHS_PER_DB + 1;
+        /* tenths of a dB in 4 rows, rounded half up */
+        step = (2 * range * O_SCURSOR_STEP_PX * O_TENTHS_PER_DB + a.height) / (2 * a.height);
+        if (step < 1) step = 1;
+        step *= -dir;
+        v = ss->spectrum_cursor.level[sel == CURSOR_SEL_H2];
+    }
+    if (v < lo) v = lo;
+    else if (v > hi) v = hi;
+    else {
+        v += step;
+        if (v < lo) v = lo;
+        if (v > hi) v = hi;
+    }
+    if (freq) ss->spectrum_cursor.bin[sel == CURSOR_SEL_V2] = (uint16_t)v;
+    else      ss->spectrum_cursor.level[sel == CURSOR_SEL_H2] = (int16_t)v;
 }
 
 static void o_exec(key_cmd_t k, button_id_t btn)
@@ -314,8 +428,8 @@ static void o_exec(key_cmd_t k, button_id_t btn)
         if (!scope_selfcal_request_center50()) o_popup_and_redraw("Busy");
         break;
     case KA_FOCUS_NEXT: {
-        const key_focus_t f = key_focus_next(o_focus, ss->cursor.mode != CURSOR_OFF,
-                                             scope_mask_state() != MASK_PF_EMPTY);
+        const key_focus_t f = o_next(o_view_mode(), o_focus, ss->cursor.mode != CURSOR_OFF,
+                                     scope_mask_state() != MASK_PF_EMPTY);
         o_set_focus(f);
         o_popup_and_redraw(key_focus_popup(f));
         break;
@@ -383,6 +497,10 @@ static void o_exec(key_cmd_t k, button_id_t btn)
         scope_cursor_next_sel();
         scope_ui_request_live();
         break;
+    case KA_SPECTRUM_CURSOR_MOVE:
+        o_spectrum_cursor_move(dir);
+        scope_ui_request_live();
+        break;
     case KA_MASK_TOL_V:
         o_mask_adjust_tol(dir * 2, 0, pb, sizeof(pb));
         o_popup_and_redraw(pb);
@@ -432,14 +550,14 @@ static void o_mode_key(button_id_t button)
     case BTN_CH1: active_channel = 0; o_coupling_toggle(0, pb, sizeof(pb)); o_popup_and_redraw(pb); break;
     case BTN_CH2: active_channel = 1; o_coupling_toggle(1, pb, sizeof(pb)); o_popup_and_redraw(pb); break;
     case BTN_AUTO:
-        if (scope_view != SCOPE_VIEW_TIME) {
+        if (o_auto_on_spectrum(o_view_mode(), o_focus)) {
             /* fft_auto_configure() on the record the view analyses, from the
-             * input task; a request the display task serves since B7. X-Y
-             * holds no FFT buffer: nothing. */
-            if (scope_view != SCOPE_VIEW_XY) env_logf("fft_auto;");
+             * input task; a request the display task serves since B7. */
+            env_logf("fft_auto;");
             o_cmd = 'F';
             break;
         }
+        /* the time record (X-Y included): the mask's meaning, or autoset */
         if (scope_mask_state() != MASK_PF_EMPTY || o_focus == KF_MASK) {
             /* mask_auto_key(): the same procedure; the clear / cancel branch
              * dropped the mask stage */
@@ -449,13 +567,11 @@ static void o_mode_key(button_id_t button)
             o_popup_and_redraw("Busy");
         }
         break;
-    case BTN_SELECT:
-        if (scope_view != SCOPE_VIEW_TIME) { (void)fft_cycle_window(); o_cmd = 'F'; }
-        break;
-    case BTN_UP:    if (scope_view != SCOPE_VIEW_TIME) { (void)fft_adjust_ref_level(5.0f);  o_cmd = 'F'; } break;
-    case BTN_DOWN:  if (scope_view != SCOPE_VIEW_TIME) { (void)fft_adjust_ref_level(-5.0f); o_cmd = 'F'; } break;
-    case BTN_LEFT:  if (scope_view != SCOPE_VIEW_TIME) { fft_zoom_in();  o_cmd = 'F'; } break;
-    case BTN_RIGHT: if (scope_view != SCOPE_VIEW_TIME) { fft_zoom_out(); o_cmd = 'F'; } break;
+    /* the spectrum job's arrows: the live FFT configuration */
+    case BTN_UP:    if (o_focus == KF_SPECTRUM) { (void)fft_adjust_ref_level(5.0f);  o_cmd = 'F'; } break;
+    case BTN_DOWN:  if (o_focus == KF_SPECTRUM) { (void)fft_adjust_ref_level(-5.0f); o_cmd = 'F'; } break;
+    case BTN_LEFT:  if (o_focus == KF_SPECTRUM) { fft_zoom_in();  o_cmd = 'F'; } break;
+    case BTN_RIGHT: if (o_focus == KF_SPECTRUM) { fft_zoom_out(); o_cmd = 'F'; } break;
     case BTN_OK:
         if (scope_mask_hold_active()) {
             (void)scope_mask_post(SCOPE_MASK_REQ_RELEASE, 0, 0, 0);
@@ -480,7 +596,7 @@ static void o_mode_key(button_id_t button)
 static bool b7_named(key_action_t a)
 {
     return a == KA_COUPLING_TOGGLE || a == KA_RUNSTOP || a == KA_AUTOSET || a == KA_FFT_AUTO ||
-           a == KA_FFT_WINDOW || a == KA_FFT_REF || a == KA_FFT_ZOOM;
+           a == KA_FFT_REF || a == KA_FFT_ZOOM;
 }
 static void o_key(uint8_t raw)
 {
@@ -500,18 +616,20 @@ typedef struct {
     scope_state_t ss;
     uint8_t  ach, view, focus;
     uint8_t  mask_state; bool mask_hold, mask_slow, single_done, il, busy_req, fail;
+    fft_axes_t axes;                    /* the spectrum on screen (on: one is drawn) */
 } st_t;
 
 typedef struct {
     scope_state_t ss;
     uint8_t  ach, view, focus;
-    bool     f_trig, f_hpos, f_mask;
+    uint8_t  in_force;                  /* the job the renderer and ui.focus read (key_focus_get) */
     osc_menu_state_t menu; uint8_t opener;
     uint8_t  tolv, tolh; bool sf, hold; uint8_t mask_state;
     char     log[1024], popup[64], cmd;
 } out_t;
 
 static unsigned rnd_s = 2463534242u;
+#define O_LEVEL_SPREAD  600     /* random level lines: +-60 dB, in tenths */
 static unsigned rnd(unsigned n) { rnd_s ^= rnd_s << 13; rnd_s ^= rnd_s >> 17; rnd_s ^= rnd_s << 5; return rnd_s % n; }
 
 static void st_random(st_t *s)
@@ -548,6 +666,22 @@ static void st_random(st_t *s)
     s->mask_hold = s->mask_state == MASK_PF_READY && rnd(3) == 0;
     s->mask_slow = rnd(4) == 0;
     s->single_done = rnd(2) != 0; s->il = rnd(4) == 0; s->busy_req = rnd(6) == 0;
+    /* the spectrum's cursor lines anywhere in their ranges, the axes a span
+     * and a level range that leave some of them off the plot */
+    for (int i = 0; i < 2; i++) {
+        s->ss.spectrum_cursor.bin[i] = (uint16_t)(SPECTRUM_CURSOR_BIN_MIN +
+                                                   rnd(SPECTRUM_CURSOR_BIN_MAX - SPECTRUM_CURSOR_BIN_MIN + 1));
+        s->ss.spectrum_cursor.level[i] = (int16_t)((int)rnd(2 * O_LEVEL_SPREAD + 1) - O_LEVEL_SPREAD);
+    }
+    static const uint16_t widths[] = { 100, 300 }, heights[] = { 100, 160, 200 };
+    static const int16_t refs[] = { -20, 0, 20 }, ranges[] = { 40, 60, 80, 100, 120 };
+    s->axes.on = rnd(3) != 0;
+    s->axes.w = widths[rnd(2)];
+    s->axes.bin0 = (uint16_t)(SPECTRUM_CURSOR_BIN_MIN + rnd(1000));
+    s->axes.bins = (uint16_t)(1 + rnd(1000));
+    s->axes.height = heights[rnd(3)];
+    s->axes.ref_db = refs[rnd(3)];
+    s->axes.range_db = ranges[rnd(5)];
 }
 
 static void st_load(const st_t *s)
@@ -556,11 +690,9 @@ static void st_load(const st_t *s)
     *scope_state_get() = s->ss;
     active_channel = s->ach; scope_view = (scope_view_t)s->view;
     scope_key_focus = (key_focus_t)s->focus; o_focus = (key_focus_t)s->focus;
-    scope_trig_level_focus = (s->focus == KF_TRIGMOVE);
-    scope_hpos_focus = (s->focus == KF_CHMOVE || s->focus == KF_TRIGMOVE);
-    scope_mask_focus = (s->focus == KF_MASK);
     t_mask_state = s->mask_state; t_mask_hold = s->mask_hold; t_mask_slow = s->mask_slow;
     t_single_done = s->single_done; t_il = s->il; t_busy_req = s->busy_req; t_fail = s->fail;
+    g_axes = s->axes;
     o_tol_pending_seq = 0;
     g_popup[0] = '\0'; env_notes = 0;
     env_log_clear();
@@ -572,9 +704,7 @@ static void out_take(out_t *o, bool old)
     o->ss = *scope_state_get();
     o->ach = active_channel; o->view = (uint8_t)scope_view;
     o->focus = old ? (uint8_t)o_focus : (uint8_t)scope_key_focus;
-    o->f_trig = old ? (o_focus == KF_TRIGMOVE) : scope_trig_level_focus;
-    o->f_hpos = old ? (o_focus == KF_CHMOVE || o_focus == KF_TRIGMOVE) : scope_hpos_focus;
-    o->f_mask = old ? (o_focus == KF_MASK) : scope_mask_focus;
+    o->in_force = old ? (uint8_t)o_in_force() : key_focus_get();
     o->menu = *osc_menu_state(); o->opener = osc_menu_screen_opener();
     o->menu.opens = 0;                               /* a visit counter: not state of the page */
     mask_poll();                                     /* what the acquisition task finally applies */
@@ -608,7 +738,7 @@ static bool out_same(const out_t *a, const out_t *b, const char **why)
     if (memcmp(&a->ss, &b->ss, sizeof a->ss) != 0) { *why = "scope state"; return false; }
     if (a->ach != b->ach) { *why = "active channel"; return false; }
     if (a->view != b->view) { *why = "view"; return false; }
-    if (a->focus != b->focus || a->f_trig != b->f_trig || a->f_hpos != b->f_hpos || a->f_mask != b->f_mask) { *why = "focus"; return false; }
+    if (a->focus != b->focus || a->in_force != b->in_force) { *why = "focus"; return false; }
     if (memcmp(&a->menu, &b->menu, sizeof a->menu) != 0 || a->opener != b->opener) { *why = "page"; return false; }
     if (a->tolv != b->tolv || a->tolh != b->tolh || a->sf != b->sf || a->hold != b->hold || a->mask_state != b->mask_state) { *why = "mask"; return false; }
     if (strcmp(a->log, b->log) != 0) { *why = "owner calls"; return false; }
@@ -647,12 +777,17 @@ static void test_screen_entry(void)
     CHECK("draw and tick are the paint module's", g_draws[SCR_PAINT_FULL] == 1 && g_ticks == 1);
 }
 
-/* Every key from every random state: the screen = the pre-B7 handlers. */
+/* Each (view, job) pair is the start of at least this many random states:
+ * the rarest, FFT with its cursor job, is FFT (1/12) with cursors on (3/4)
+ * on that job (1/7), about 36 of 4000. */
+#define ORACLE_MIN_PER_JOB  20u
+
+/* Every key from every random state: the screen = the pre-B7 handlers on the view table's rules. */
 static void test_oracle(void)
 {
-    printf("every key against the pre-B7 handlers (the oracle)\n");
+    printf("every key against the pre-B7 handlers on the view table's rules (the oracle)\n");
     unsigned cases = 0, bad = 0, by_key[N_KEYS] = {0};
-    unsigned seen_stage[KF_COUNT] = {0}, seen_view[SCOPE_VIEW_COUNT] = {0};
+    unsigned seen[VIEW_MODE_COUNT][KF_COUNT] = {{0}};     /* (view, job in force) of the states */
     for (unsigned it = 0; it < 4000; it++) {
         st_t s;
         st_random(&s);
@@ -669,16 +804,21 @@ static void test_oracle(void)
                 by_key[k]++;
             }
         }
-        seen_stage[key_focus_sanitize((key_focus_t)s.focus, s.ss.cursor.mode != CURSOR_OFF,
-                                      s.mask_state != MASK_PF_EMPTY)]++;
-        seen_view[s.view]++;
+        st_load(&s);
+        seen[o_view_mode()][o_in_force()]++;
     }
     printf("    %u cases\n", cases);
     CHECK("18 keys x 4000 random states: same state, owner calls, popup and repaint", bad == 0 && cases == 72000);
     bool all = true;
-    for (unsigned i = 0; i < KF_COUNT; i++) all &= seen_stage[i] > 50;
-    for (unsigned i = 0; i < SCOPE_VIEW_COUNT; i++) all &= seen_view[i] > 50;
-    CHECK("the states cover every arrow stage and every view", all);
+    unsigned fewest = ~0u;
+    for (unsigned v = 0; v < VIEW_MODE_COUNT; v++)
+        for (unsigned i = 0; i < o_jobs[v].n; i++) {
+            const unsigned k = seen[v][o_jobs[v].j[i]];
+            all &= k >= ORACLE_MIN_PER_JOB;
+            if (k < fewest) fewest = k;
+        }
+    printf("    fewest states for one (view, job): %u\n", fewest);
+    CHECK("the states cover every job of every view", all);
 }
 
 /* What each key asks of the model, by name: the property, its value, the
@@ -758,16 +898,37 @@ static void test_key_table(void)
           (screen_close(SCR_OSC_MENU), env_key(BTN_TRIGGER) == SCR_DRAW) && osc_menu_is_locked() && osc_menu_state()->row == OSC_ROW_TRIGGER &&
           screen_top() == SCR_OSC_MENU && env_log_is(""));
 
-    /* spectrum views: the live FFT configuration (no property) */
+    /* spectrum views: the spectrum job is the live FFT configuration (no
+     * property); the zoom job the input's scales */
     boot();
-    (void)prop_set_local(P(VIEW_MODE), 3 /* fft */, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
+    CHECK("FFT view chosen: the arrows start on the spectrum job",
+          scope_key_focus == KF_SPECTRUM && key_focus_get() == KF_SPECTRUM && G(P(UI_FOCUS)) == KF_SPECTRUM);
     env_log_clear();
-    env_key(BTN_UP); env_key(BTN_DOWN); env_key(BTN_LEFT); env_key(BTN_RIGHT); env_key(BTN_SELECT); env_key(BTN_AUTO);
-    CHECK("FFT view: UP/DOWN ref level, LEFT/RIGHT zoom, SELECT window, AUTO = the fft_auto request",
-          env_log_is("fft_ref(5);fft_ref(-5);fft_zoom_in;fft_zoom_out;fft_window;fft_auto;"));
-    (void)prop_set_local(P(VIEW_MODE), 2 /* xy */, ORIGIN_SHELL, NULL);
+    env_key(BTN_UP); env_key(BTN_DOWN); env_key(BTN_LEFT); env_key(BTN_RIGHT); env_key(BTN_AUTO);
+    CHECK("FFT view, spectrum job: UP/DOWN ref level, LEFT/RIGHT zoom, AUTO = the fft_auto request",
+          env_log_is("fft_ref(5);fft_ref(-5);fft_zoom_in;fft_zoom_out;fft_auto;"));
+    g_popup[0] = '\0';
+    CHECK("FFT view: SELECT = the zoom job, its popup",
+          env_key(BTN_SELECT) == SCR_DRAW_FULL && scope_key_focus == KF_ZOOM &&
+          strcmp(g_popup, key_focus_popup(KF_ZOOM)) == 0);
     env_log_clear();
-    CHECK("X-Y: AUTO asks for nothing (no spectrum), still repaints", env_key(BTN_AUTO) == SCR_DRAW_FULL && env_log_is(""));
+    CHECK("FFT view, zoom job: UP = ch1.vdiv +1, AUTO still fits the span",
+          env_key(BTN_UP) == SCR_DRAW_FULL && G(P(CH1_VDIV)) == 4 &&
+          (env_key(BTN_AUTO), env_log_is("vdiv(0,4);fft_auto;")));
+    CHECK("FFT view: SELECT again = the spectrum job (two jobs, wrapping)",
+          env_key(BTN_SELECT) == SCR_DRAW_FULL && scope_key_focus == KF_SPECTRUM);
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_XY, ORIGIN_SHELL, NULL);
+    env_log_clear();
+    CHECK("X-Y: the arrows on zoom; AUTO is the autoset (a view of the time record)",
+          scope_key_focus == KF_ZOOM && env_key(BTN_AUTO) == SCR_HANDLED && env_log_is("autoset;"));
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_SHELL, NULL);
+    env_log_clear();
+    CHECK("split, zoom job: AUTO = autoset",
+          scope_key_focus == KF_ZOOM && env_key(BTN_AUTO) == SCR_HANDLED && env_log_is("autoset;"));
+    scope_key_focus = KF_SPECTRUM; env_log_clear();
+    CHECK("split, spectrum job: AUTO fits the span, UP is the reference level",
+          env_key(BTN_AUTO) == SCR_DRAW_FULL && (env_key(BTN_UP), env_log_is("fft_auto;fft_ref(5);")));
 }
 
 /* The ends of the ladders and the refusals. */
@@ -982,7 +1143,7 @@ static void test_mask_keys(void)
     mask_poll(); t_mask_slow = false; env_log_clear();
     CHECK("AUTO with a mask: the mask's procedure (clear), the stage goes back to zoom, no autoset",
           env_key(BTN_AUTO) == SCR_DRAW_FULL && env_log_is("mask_auto;") && strcmp(g_popup, "MASK: off") == 0 &&
-          scope_key_focus == KF_ZOOM && !scope_mask_focus);
+          scope_key_focus == KF_ZOOM && key_focus_get() == KF_ZOOM);
     env_log_clear();
     CHECK("AUTO with no mask: autoset", env_key(BTN_AUTO) == SCR_HANDLED && env_log_is("autoset;"));
 }
@@ -993,13 +1154,13 @@ static void test_focus(void)
     printf("the arrow stage\n");
     boot();
     env_key(BTN_SELECT);
-    CHECK("SELECT: zoom -> channel move; the renderer's flags follow; ui.focus reports it",
-          scope_key_focus == KF_CHMOVE && scope_hpos_focus && !scope_trig_level_focus &&
-          G(P(UI_FOCUS)) == KF_CHMOVE && key_focus_get() == KF_CHMOVE);
+    CHECK("SELECT: zoom -> channel move; the job in force follows; ui.focus reports it",
+          scope_key_focus == KF_CHMOVE && G(P(UI_FOCUS)) == KF_CHMOVE && key_focus_get() == KF_CHMOVE);
     env_key(BTN_SELECT);
-    CHECK("SELECT: -> trigger move", scope_key_focus == KF_TRIGMOVE && scope_trig_level_focus && scope_hpos_focus);
+    CHECK("SELECT: -> trigger move (the trigger line's highlight asks for it)",
+          scope_key_focus == KF_TRIGMOVE && key_focus_get() == KF_TRIGMOVE);
     env_key(BTN_SELECT);
-    CHECK("SELECT: -> zoom (no cursors, no mask)", scope_key_focus == KF_ZOOM && !scope_hpos_focus);
+    CHECK("SELECT: -> zoom (no cursors, no mask)", scope_key_focus == KF_ZOOM && key_focus_get() == KF_ZOOM);
     /* cursors switched on by a key on the page: the stage follows */
     osc_menu_env_cursors(true);
     CHECK("cursors switched on from the page: the cursor stage", scope_key_focus == KF_CURSOR);
@@ -1009,14 +1170,116 @@ static void test_focus(void)
     CHECK("set view.cursor time does not move the stage", scope_key_focus == KF_ZOOM);
     scope_key_focus = KF_CURSOR;
     (void)prop_set_local(P(VIEW_CURSOR), CURSOR_OFF, ORIGIN_SHELL, NULL);
-    CHECK("set view.cursor off leaves it until a key", scope_key_focus == KF_CURSOR);
+    CHECK("set view.cursor off leaves it until a key; the job in force is zoom already",
+          scope_key_focus == KF_CURSOR && key_focus_get() == KF_ZOOM && G(P(UI_FOCUS)) == KF_ZOOM);
     env_log_clear();
     CHECK("the next key acts in the zoom stage (the dead stage is dropped first)",
           env_key(BTN_UP) == SCR_DRAW_FULL && scope_key_focus == KF_ZOOM && env_log_is("vdiv(0,4);"));
     const key_ctx_t c = scope_screen_ctx();
     CHECK("scope_screen_ctx: the scope's context as it stands",
-          c.mode == MODE_OSCILLOSCOPE && c.scope_time_view && !c.cursors_on && !c.mask_present &&
+          c.mode == MODE_OSCILLOSCOPE && c.view == VIEW_MODE_YT && !c.cursors_on && !c.mask_present &&
           c.focus == KF_ZOOM && c.active_channel == 0 && !c.osc_menu_open);
+
+    /* another view: the arrows start on its first job */
+    static const struct { uint8_t view; key_focus_t first; } V[] = {
+        { VIEW_MODE_FFT, KF_SPECTRUM }, { VIEW_MODE_XY, KF_ZOOM }, { VIEW_MODE_WATERFALL, KF_SPECTRUM },
+        { VIEW_MODE_SPLIT, KF_ZOOM }, { VIEW_MODE_YT, KF_ZOOM },
+    };
+    boot();
+    bool first = true;
+    for (unsigned i = 0; i < sizeof V / sizeof V[0]; i++) {
+        scope_key_focus = KF_TRIGMOVE;
+        (void)prop_set_local(P(VIEW_MODE), V[i].view, ORIGIN_SHELL, NULL);
+        first &= G(P(VIEW_MODE)) == V[i].view && scope_key_focus == V[i].first && key_focus_get() == V[i].first;
+    }
+    CHECK("a new view puts the arrows on its first job (spectrum in FFT and waterfall, zoom elsewhere)", first);
+    scope_key_focus = KF_CHMOVE;
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_ROLL, ORIGIN_SHELL, NULL);
+    CHECK("Y-T -> roll is the same view of the time record: the job stays",
+          G(P(VIEW_MODE)) == VIEW_MODE_ROLL && scope_key_focus == KF_CHMOVE);
+    boot();
+    scope_view = SCOPE_VIEW_FFT;              /* a view the setter did not choose: no hook ran */
+    scope_key_focus = KF_TRIGMOVE;
+    CHECK("FFT view with a job it does not offer: the job in force is the view's first, until a key",
+          key_focus_get() == KF_SPECTRUM && G(P(UI_FOCUS)) == KF_SPECTRUM && scope_key_focus == KF_TRIGMOVE &&
+          scope_screen_ctx().focus == KF_SPECTRUM && scope_key_focus == KF_SPECTRUM);
+    scope_key_focus = KF_ZOOM;                /* a job FFT offers, not its first */
+    scope_screen_view_changed();
+    CHECK("scope_screen_view_changed: the arrows to the view in force's first job", scope_key_focus == KF_SPECTRUM);
+}
+
+/* The spectrum's cursor job (FFT): what a step is worth, the directions,
+ * the edges, nothing without a spectrum. */
+static void spectrum_cursor_setup(uint16_t bins, int32_t sel)
+{
+    boot();
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_CURSOR), CURSOR_BOTH, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_CURSEL), sel, ORIGIN_SHELL, NULL);
+    scope_key_focus = KF_SPECTRUM_CURSOR;
+    memset(&g_axes, 0, sizeof g_axes);
+    g_axes.on = true; g_axes.w = 300; g_axes.bin0 = 100; g_axes.bins = bins;
+    g_axes.height = 200; g_axes.ref_db = 0.0f; g_axes.range_db = 80.0f;   /* 4 rows = 1.6 dB */
+    env_log_clear();
+}
+static void test_spectrum_cursor(void)
+{
+    printf("the spectrum's cursors\n");
+    spectrum_cursor_setup(600, CURSOR_SEL_V1);           /* 600 bins over 300 columns: 4 px = 8 bins */
+    (void)prop_set_local(P(VIEW_CURF1), 400, ORIGIN_SHELL, NULL);
+    CHECK("frequency line, 600 bins on 300 px: DOWN = +8 bins, UP = -8, one live frame each",
+          env_key(BTN_DOWN) == SCR_HANDLED && G(P(VIEW_CURF1)) == 408 &&
+          env_key(BTN_UP) == SCR_HANDLED && G(P(VIEW_CURF1)) == 400 && env_log_is("live;live;"));
+    spectrum_cursor_setup(1500, CURSOR_SEL_V2);          /* a wider span: 4 px = 20 bins */
+    (void)prop_set_local(P(VIEW_CURF2), 400, ORIGIN_SHELL, NULL);
+    CHECK("frequency line, 1500 bins on 300 px: DOWN = +20 bins (the step follows the span)",
+          (env_key(BTN_DOWN), G(P(VIEW_CURF2)) == 420) && G(P(VIEW_CURF1)) == SPECTRUM_CURSOR_BIN1_DEFAULT);
+    spectrum_cursor_setup(600, CURSOR_SEL_H1);
+    (void)prop_set_local(P(VIEW_CURL1), -200, ORIGIN_SHELL, NULL);
+    CHECK("level line, 80 dB on 200 rows: UP = +1.6 dB (16 tenths), DOWN = -1.6 dB",
+          (env_key(BTN_UP), G(P(VIEW_CURL1)) == -184) && (env_key(BTN_DOWN), G(P(VIEW_CURL1)) == -200));
+    spectrum_cursor_setup(600, CURSOR_SEL_V1);
+    (void)prop_set_local(P(VIEW_CURF1), 2000, ORIGIN_SHELL, NULL);   /* past bin0 + bins - 1 = 699 */
+    CHECK("a frequency line off the plot: the first press brings it to the nearest edge, no step",
+          (env_key(BTN_UP), G(P(VIEW_CURF1)) == 699) && (env_key(BTN_UP), G(P(VIEW_CURF1)) == 691));
+    spectrum_cursor_setup(600, CURSOR_SEL_H2);           /* level 2 starts at +20 dB, above ref 0 */
+    CHECK("a level line above the reference: to the top (ref, 0 dB) first, then the step",
+          G(P(VIEW_CURL2)) == SPECTRUM_CURSOR_LEVEL2_DEFAULT &&
+          (env_key(BTN_DOWN), G(P(VIEW_CURL2)) == 0) && (env_key(BTN_DOWN), G(P(VIEW_CURL2)) == -16));
+    spectrum_cursor_setup(600, CURSOR_SEL_V1);
+    (void)prop_set_local(P(VIEW_CURF1), 103, ORIGIN_SHELL, NULL);    /* 3 bins above bin0 = 100 */
+    CHECK("clamped to the span: UP near its start stops at bin0", (env_key(BTN_UP), G(P(VIEW_CURF1)) == 100));
+    (void)prop_set_local(P(VIEW_CURSEL), CURSOR_SEL_H1, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_CURL1), -790, ORIGIN_SHELL, NULL);   /* the floor: (0 - 80) dB + 0.1 */
+    CHECK("clamped to the level range: DOWN near the floor stops at -79.9 dB",
+          (env_key(BTN_DOWN), G(P(VIEW_CURL1)) == -799));
+    spectrum_cursor_setup(600, CURSOR_SEL_V1);
+    g_axes.on = false;
+    const scope_state_t before = *scope_state_get();
+    CHECK("no spectrum drawn: nothing moves (still one live frame)",
+          env_key(BTN_DOWN) == SCR_HANDLED && memcmp(scope_state_get(), &before, sizeof before) == 0 &&
+          env_log_is("live;"));
+    spectrum_cursor_setup(600, CURSOR_SEL_V1);
+    CHECK("LEFT / RIGHT pick the next line, as for the time cursors",
+          (env_key(BTN_RIGHT), G(P(VIEW_CURSEL)) == CURSOR_SEL_V2));
+
+    /* the job: SELECT reaches it, the cursors' switch moves onto and off it */
+    boot();
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_CURSOR), CURSOR_VERTICAL, ORIGIN_SHELL, NULL);
+    CHECK("FFT with cursors on: SELECT spectrum -> zoom -> spectrum cursor -> spectrum",
+          (env_key(BTN_SELECT), scope_key_focus == KF_ZOOM) &&
+          (env_key(BTN_SELECT), scope_key_focus == KF_SPECTRUM_CURSOR && G(P(UI_FOCUS)) == KF_SPECTRUM_CURSOR) &&
+          (env_key(BTN_SELECT), scope_key_focus == KF_SPECTRUM));
+    osc_menu_env_cursors(true);
+    const bool on = scope_key_focus == KF_SPECTRUM_CURSOR;
+    osc_menu_env_cursors(false);
+    CHECK("FFT: cursors switched on from the page -> the spectrum cursor job; off -> the spectrum job",
+          on && scope_key_focus == KF_SPECTRUM);
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_WATERFALL, ORIGIN_SHELL, NULL);
+    scope_key_focus = KF_ZOOM;
+    osc_menu_env_cursors(true);
+    CHECK("waterfall (no cursor job): cursors on leave the job", scope_key_focus == KF_ZOOM);
 }
 
 /* The page over the scope: its keys are the page's; the scope's long keys
@@ -1049,6 +1312,7 @@ static void test_epochs(void)
         { "trig.x", P(TRIG_X), 100, false, true },
         { "ch2.enabled", P(CH2_ENABLED), 0, true, false }, { "view.cursor", P(VIEW_CURSOR), 1, true, false },
         { "view.meashide", P(VIEW_MEASHIDE), 1, true, false }, { "ch1.meas", P(CH1_MEAS), 0x3, true, false },
+        { "fft.meas", P(FFT_MEAS), 0x5, true, false },
         { "view.math", P(VIEW_MATH), 2, true, false },   { "view.persist", P(VIEW_PERSIST), 2, true, false },
         { "view.run", P(VIEW_RUN), 0, true, false },     { "tb.roll", P(TB_ROLL), 1, true, false },
         { "view.mode", P(VIEW_MODE), 3, true, false },
@@ -1100,6 +1364,7 @@ static void test_direct_route_paint(void)
         { "trig.x", P(TRIG_X), 100, LIVE },
         { "ch2.enabled", P(CH2_ENABLED), 0, LAYOUT }, { "view.cursor", P(VIEW_CURSOR), 1, LAYOUT },
         { "view.meashide", P(VIEW_MEASHIDE), 1, LAYOUT }, { "ch1.meas", P(CH1_MEAS), 0x3, LAYOUT },
+        { "fft.meas", P(FFT_MEAS), 0x5, LAYOUT },
         { "view.math", P(VIEW_MATH), 2, LAYOUT },     { "view.persist", P(VIEW_PERSIST), 2, LAYOUT },
         { "view.run", P(VIEW_RUN), 0, LAYOUT },
         { "tb.roll", P(TB_ROLL), 1, WHOLE },          { "view.mode fft", P(VIEW_MODE), 3, WHOLE },
@@ -1136,7 +1401,7 @@ static void test_direct_route_paint(void)
         const scope_change_t u = scope_screen_changed(&seen, &now, false);
         ok &= !u.whole && !u.layout && !u.live && !u.strip && !u.force;
     }
-    CHECK("23 properties: live frame, plot repaint, whole screen or a cursor frame", ok);
+    CHECK("24 properties: live frame, plot repaint, whole screen or a cursor frame", ok);
 
     /* a soft change in another view: that view in full (never a live frame of the Y-T band) */
     boot();
@@ -1177,6 +1442,7 @@ int main(void)
     test_key_equals_set();
     test_mask_keys();
     test_focus();
+    test_spectrum_cursor();
     test_under_page();
     test_epochs();
     test_direct_route_paint();

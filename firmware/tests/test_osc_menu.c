@@ -43,20 +43,22 @@ static void fresh(void)
     scope_state_init(scope_state_get());
     meas_select_defaults();
     osc_menu_close();
+    osc_menu_set_meas_sets(0u, MEAS_SET_CH1);      /* no view said: the channels' panels */
 }
 
 /* ── labels ─────────────────────────────────────────────────────────── */
 static void test_labels_fit(void)
 {
     printf("labels (one line, measured in the real fonts)\n");
-    static const char *const rail[OSC_ROW_COUNT] = {
-        "Display", "Cursors", "Measure", "CH1", "CH2", "Trigger", "Persist", "Math" };
+    static const char *const rail[] = {
+        "Display", "Cursors", "Measure", "CH1", "CH2", "Trigger", "Persist", "Math", "Spectrum" };
     int ok = 1, fit = 1;
     for (int r = 0; r < OSC_ROW_COUNT; r++) {
         ok  &= strcmp(osc_menu_row_label((osc_row_t)r), rail[r]) == 0;
         fit &= text_w(osc_menu_row_label((osc_row_t)r), &font_medium) <= 96u - 8u - 1u;
     }
-    CHECK("8 rail rows in stock order, study 2.3's one-line labels", ok && OSC_ROW_COUNT == 8);
+    CHECK("9 rail rows: stock's 8 in stock order (study 2.3's one-line labels), then Spectrum",
+          ok && OSC_ROW_COUNT == sizeof rail / sizeof rail[0] && OSC_ROW_SPECTRUM == OSC_ROW_MATH + 1);
     CHECK("every rail label fits the 96 px rail in font_medium", fit);
     fit = 1;
     for (int r = 0; r < OSC_ROW_COUNT; r++)
@@ -64,13 +66,23 @@ static void test_labels_fit(void)
     CHECK("every pane title fits the 218 px pane", fit);
     CHECK("pane titles are stock's names", strcmp(osc_menu_row_title(OSC_ROW_PARAM), "Parameter Measurement") == 0 &&
           strcmp(osc_menu_row_title(OSC_ROW_MATH), "Mathematics") == 0);
+    CHECK("the Spectrum pane: \"Spectrum Settings\", three values: Window, Average, Max hold",
+          strcmp(osc_menu_row_title(OSC_ROW_SPECTRUM), "Spectrum Settings") == 0 &&
+          osc_menu_layout(OSC_ROW_SPECTRUM)->kind == OSC_PANE_VALUES &&
+          osc_menu_layout(OSC_ROW_SPECTRUM)->n_items == OSC_SPEC_COUNT &&
+          strcmp(osc_menu_item_label(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, 0), "Window:") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, 0), "Average:") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_SPECTRUM, OSC_SPEC_MAXHOLD, 0), "Max hold:") == 0 &&
+          osc_menu_item_label(OSC_ROW_SPECTRUM, OSC_SPEC_COUNT, 0)[0] == '\0');
 
     fit = 1;
     for (int r = 0; r < OSC_ROW_COUNT; r++) {
         const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)r);
-        for (uint8_t i = 0; i < l->n_items; i++) {
-            for (uint8_t ch = 0; ch < 2; ch++) {
-                const char *s = osc_menu_item_label((osc_row_t)r, i, ch);
+        for (uint8_t set = 0; set < MEAS_SET_COUNT; set++) {
+            /* the Measure pane's panel of each set: its tab row and its chips */
+            const uint8_t n = (r == OSC_ROW_PARAM) ? (uint8_t)(OSC_PRM_CHIP0 + meas_select_size(set)) : l->n_items;
+            for (uint8_t i = 0; i < n; i++) {
+                const char *s = osc_menu_item_label((osc_row_t)r, i, set);
                 fit &= s[0] != '\0';
                 if (l->kind == OSC_PANE_RADIO)  fit &= text_w(s, &font_medium) <= 210u - 30u;
                 if (l->kind == OSC_PANE_VALUES) fit &= text_w(s, &font_medium) <= 98u;
@@ -83,8 +95,21 @@ static void test_labels_fit(void)
     CHECK("every item label is non-empty and fits its radio row / value row / chip", fit);
     CHECK("out-of-range item gives \"\"", osc_menu_item_label(OSC_ROW_CH1, 9, 0)[0] == '\0' &&
           osc_menu_row_label(OSC_ROW_COUNT)[0] == '\0');
-    CHECK("Measure tab names the channel", strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, 0), "CH1") == 0 &&
-          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, 1), "CH2") == 0);
+    CHECK("Measure tab names the set: CH1, CH2, FFT; no such set: \"\"",
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, MEAS_SET_CH1), "CH1") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, MEAS_SET_CH2), "CH2") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, MEAS_SET_FFT), "FFT") == 0 &&
+          osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_TAB, MEAS_SET_COUNT)[0] == '\0');
+    CHECK("the FFT panel: All, None, then Peak Level H2 H3 and nothing past them",
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_ALL, MEAS_SET_FFT), "All") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_CHIP0, MEAS_SET_FFT), "Peak") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_CHIP0 + 1, MEAS_SET_FFT), "Level") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_CHIP0 + 2, MEAS_SET_FFT), "H2") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_CHIP0 + 3, MEAS_SET_FFT), "H3") == 0 &&
+          osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_CHIP0 + MEAS_SELECT_FFT_COUNT, MEAS_SET_FFT)[0] == '\0');
+    CHECK("the Cursors pane reads both domains: X1-X2 (time, freq.), Y1-Y2 (volts, level)",
+          strcmp(osc_menu_item_label(OSC_ROW_CURSOR, OSC_CUR_TIME, 0), "X1-X2  (time, freq.)") == 0 &&
+          strcmp(osc_menu_item_label(OSC_ROW_CURSOR, OSC_CUR_VOLT, 0), "Y1-Y2  (volts, level)") == 0);
 }
 
 /* ── tables ─────────────────────────────────────────────────────────── */
@@ -95,11 +120,19 @@ static void test_tables(void)
         SCOPE_PRM_FREQ, SCOPE_PRM_WID_POS, SCOPE_PRM_VPP, SCOPE_PRM_PERI, SCOPE_PRM_WID_NEG, SCOPE_PRM_AMP,
         SCOPE_PRM_DUTY_POS, SCOPE_PRM_VMAX, SCOPE_PRM_VRMS, SCOPE_PRM_DUTY_NEG, SCOPE_PRM_VMIN, SCOPE_PRM_AVG };
     int ok = 1; uint16_t seen = 0;
-    for (uint8_t i = 0; i < 12; i++) { ok &= osc_menu_prm_of_chip(i) == want[i]; seen |= (uint16_t)(1u << osc_menu_prm_of_chip(i)); }
-    CHECK("Measure chips = stock's 3x4 row-major Freq Wid+ Vp-p / Peri ...", ok);
+    for (uint8_t i = 0; i < 12; i++) {
+        ok &= osc_menu_meas_of_chip(MEAS_SET_CH1, i) == want[i] && osc_menu_meas_of_chip(MEAS_SET_CH2, i) == want[i];
+        seen |= (uint16_t)(1u << osc_menu_meas_of_chip(MEAS_SET_CH1, i));
+    }
+    CHECK("Measure chips of either channel = stock's 3x4 row-major Freq Wid+ Vp-p / Peri ...", ok);
     CHECK("the 12 chips cover all 12 measurements once", seen == SCOPE_PRM_ALL_MASK);
-    CHECK("chip 12 is out of range", osc_menu_prm_of_chip(12) == 0xFF);
+    CHECK("chip 12 is out of range", osc_menu_meas_of_chip(MEAS_SET_CH1, 12) == 0xFF);
     CHECK("chip labels are scope_measure's", strcmp(osc_menu_item_label(OSC_ROW_PARAM, OSC_PRM_CHIP0 + 2, 0), "Vp-p") == 0);
+    ok = 1;
+    for (uint8_t i = 0; i < MEAS_SELECT_FFT_COUNT; i++) ok &= osc_menu_meas_of_chip(MEAS_SET_FFT, i) == i;
+    CHECK("the FFT chips are its measurements in order; none past them, none of no set",
+          ok && osc_menu_meas_of_chip(MEAS_SET_FFT, MEAS_SELECT_FFT_COUNT) == 0xFF &&
+          osc_menu_meas_of_chip(MEAS_SET_COUNT, 0) == 0xFF);
 
     static const uint8_t mop[9] = { 0xFF, MATH_ADD, MATH_INV_A, MATH_SUB, MATH_INV_B,
                                     MATH_MUL, MATH_ABS_A, MATH_DIV, MATH_ABS_B };
@@ -152,8 +185,11 @@ static void test_rail(void)
     printf("rail\n");
     fresh();
     osc_menu_open(OSC_ROW_DISPLAY);
-    CHECK("UP from Display wraps to Math", key(OSC_KEY_UP) == OSC_RES_REDRAW && S()->row == OSC_ROW_MATH);
-    CHECK("DOWN from Math wraps to Display", key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->row == OSC_ROW_DISPLAY);
+    CHECK("UP from Display wraps to Spectrum, the last row",
+          key(OSC_KEY_UP) == OSC_RES_REDRAW && S()->row == OSC_ROW_SPECTRUM);
+    CHECK("UP from Spectrum is Math", key(OSC_KEY_UP) == OSC_RES_REDRAW && S()->row == OSC_ROW_MATH);
+    CHECK("DOWN from Math is Spectrum", key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->row == OSC_ROW_SPECTRUM);
+    CHECK("DOWN from Spectrum wraps to Display", key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->row == OSC_ROW_DISPLAY);
     key(OSC_KEY_DOWN); key(OSC_KEY_DOWN);
     CHECK("DOWN steps one row (Display -> Cursors -> Measure)", S()->row == OSC_ROW_PARAM);
     CHECK("LEFT on the rail does nothing", key(OSC_KEY_LEFT) == OSC_RES_NONE && !S()->in_pane);
@@ -284,7 +320,7 @@ static void test_measure(void)
           meas_select_get(0) == SCOPE_PRM_DEFAULT_MASK && meas_select_get(1) == SCOPE_PRM_DEFAULT_MASK);
     osc_menu_open(OSC_ROW_PARAM);
     key(OSC_KEY_RIGHT);
-    CHECK("entering lands on Freq of CH1", S()->in_pane && S()->item == OSC_PRM_CHIP0 && S()->meas_ch == 0 &&
+    CHECK("entering lands on Freq of CH1", S()->in_pane && S()->item == OSC_PRM_CHIP0 && S()->meas_set == MEAS_SET_CH1 &&
           A.kind == OSC_ACT_ENTER);
     key(OSC_KEY_OK);
     CHECK("OK on Freq turns it off in CH1 only", !(meas_select_get(0) & (1u << SCOPE_PRM_FREQ)) &&
@@ -306,28 +342,104 @@ static void test_measure(void)
     key(OSC_KEY_LEFT);
     CHECK("LEFT reaches the CH1 tab", S()->item == OSC_PRM_TAB);
     key(OSC_KEY_OK);
-    CHECK("OK on the tab flips to CH2's panel", S()->meas_ch == 1 && S()->in_pane);
+    CHECK("OK on the tab flips to CH2's panel", S()->meas_set == MEAS_SET_CH2 && S()->in_pane);
     key(OSC_KEY_OK);
-    CHECK("... and back", S()->meas_ch == 0);
+    CHECK("... and back", S()->meas_set == MEAS_SET_CH1);
     CHECK("LEFT at the left column returns to the rail", key(OSC_KEY_LEFT) == OSC_RES_REDRAW && !S()->in_pane);
 
     key(OSC_KEY_RIGHT);                    /* Freq of CH1 */
     key(OSC_KEY_RIGHT);                    /* Wid+ */
     for (int i = 0; i < 3; i++) key(OSC_KEY_DOWN);
-    CHECK("DOWN walks the column (Wid+ Wid- Vmax Vmin)", S()->item == OSC_PRM_CHIP0 + 10 && S()->meas_ch == 0);
+    CHECK("DOWN walks the column (Wid+ Wid- Vmax Vmin)", S()->item == OSC_PRM_CHIP0 + 10 && S()->meas_set == MEAS_SET_CH1);
     CHECK("DOWN past CH1's last row continues into CH2's top row, same column",
-          key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->meas_ch == 1 && S()->item == OSC_PRM_ALL);
+          key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->meas_set == MEAS_SET_CH2 && S()->item == OSC_PRM_ALL);
     key(OSC_KEY_OK);
     CHECK("All on CH2 sets CH2 only", meas_select_get(1) == SCOPE_PRM_ALL_MASK && meas_select_get(0) == SCOPE_PRM_ALL_MASK);
     key(OSC_KEY_RIGHT); key(OSC_KEY_OK);
     CHECK("None on CH2 clears CH2 only", meas_select_get(1) == 0 && meas_select_get(0) == SCOPE_PRM_ALL_MASK);
     CHECK("UP above CH2's top row goes back to CH1's last row", key(OSC_KEY_UP) == OSC_RES_REDRAW &&
-          S()->meas_ch == 0 && S()->item == OSC_PRM_CHIP0 + 11);
+          S()->meas_set == MEAS_SET_CH1 && S()->item == OSC_PRM_CHIP0 + 11);
     key(OSC_KEY_DOWN);
     for (int i = 0; i < 4; i++) key(OSC_KEY_DOWN);
-    CHECK("DOWN at CH2's last row is clamped", S()->meas_ch == 1 && S()->item == OSC_PRM_CHIP0 + 11 &&
+    CHECK("DOWN at CH2's last row is clamped", S()->meas_set == MEAS_SET_CH2 && S()->item == OSC_PRM_CHIP0 + 11 &&
           key(OSC_KEY_DOWN) == OSC_RES_NONE);
     CHECK("the Measure pane never asks the UI to apply anything", A.kind == OSC_ACT_NONE);
+}
+
+/* ── Measure pane: one panel per measurement set ──────────────────── */
+static void test_measure_panels(void)
+{
+    printf("Measure pane panels (the sets the view has)\n");
+    const uint8_t all3 = (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2) | (1u << MEAS_SET_FFT);
+    /* split: all three, starting on CH1; the tab goes round the three */
+    fresh();
+    osc_menu_set_meas_sets(all3, MEAS_SET_CH1);
+    osc_menu_open(OSC_ROW_PARAM);
+    key(OSC_KEY_RIGHT);
+    CHECK("split from a time job: the pane starts on CH1's Freq", S()->meas_set == MEAS_SET_CH1 &&
+          S()->item == OSC_PRM_CHIP0 && S()->meas_sets == all3);
+    key(OSC_KEY_UP);                                     /* Freq's column: the tab */
+    int ok = S()->item == OSC_PRM_TAB;
+    key(OSC_KEY_OK); ok &= S()->meas_set == MEAS_SET_CH2;
+    key(OSC_KEY_OK); ok &= S()->meas_set == MEAS_SET_FFT;
+    key(OSC_KEY_OK); ok &= S()->meas_set == MEAS_SET_CH1;
+    CHECK("OK on the tab: CH1 -> CH2 -> FFT -> CH1", ok);
+
+    /* the scroll: down through CH1, CH2, then the FFT panel's two chip rows */
+    fresh();
+    osc_menu_set_meas_sets(all3, MEAS_SET_CH1);
+    osc_menu_open(OSC_ROW_PARAM);
+    key(OSC_KEY_RIGHT);                                  /* CH1 Freq, column 0 */
+    for (int i = 0; i < 3; i++) key(OSC_KEY_DOWN);       /* CH1's last row */
+    ok = key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->meas_set == MEAS_SET_CH2 && S()->item == OSC_PRM_TAB;
+    for (int i = 0; i < 4; i++) key(OSC_KEY_DOWN);       /* CH2's last row */
+    ok &= S()->meas_set == MEAS_SET_CH2 && S()->item == OSC_PRM_CHIP0 + 9;
+    CHECK("DOWN past CH1's last row: CH2's tab row; on to CH2's last row", ok);
+    CHECK("DOWN past CH2's last row: the FFT panel's tab row, same column",
+          key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->meas_set == MEAS_SET_FFT && S()->item == OSC_PRM_TAB);
+    CHECK("DOWN: Peak (the first chip row)", key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->item == OSC_PRM_CHIP0);
+    CHECK("DOWN: H3 (the second chip row, the FFT panel's last)",
+          key(OSC_KEY_DOWN) == OSC_RES_REDRAW && S()->item == OSC_PRM_CHIP0 + 3);
+    CHECK("DOWN at the last panel's last row: no wrap", key(OSC_KEY_DOWN) == OSC_RES_NONE &&
+          S()->meas_set == MEAS_SET_FFT);
+    key(OSC_KEY_UP); key(OSC_KEY_UP);                    /* the FFT tab row */
+    CHECK("UP above the FFT panel's top row: CH2's last row, same column",
+          S()->item == OSC_PRM_TAB && key(OSC_KEY_UP) == OSC_RES_REDRAW && S()->meas_set == MEAS_SET_CH2 &&
+          S()->item == OSC_PRM_CHIP0 + 9);
+
+    /* the FFT view: its panel alone, its All / None / chips act on its set */
+    fresh();
+    osc_menu_set_meas_sets(1u << MEAS_SET_FFT, MEAS_SET_FFT);
+    osc_menu_open(OSC_ROW_PARAM);
+    key(OSC_KEY_RIGHT);
+    CHECK("FFT view: the pane starts on Peak, a panel of 3 + 4 items",
+          S()->meas_set == MEAS_SET_FFT && S()->item == OSC_PRM_CHIP0 &&
+          osc_menu_layout(OSC_ROW_PARAM)->n_items == OSC_PRM_CHIP0 + MEAS_SELECT_FFT_COUNT);
+    key(OSC_KEY_OK);
+    CHECK("OK on Peak turns it off in the FFT set only",
+          meas_select_get(MEAS_SET_FFT) == (MEAS_SELECT_FFT_DEFAULT & ~1u) &&
+          meas_select_get(MEAS_SET_CH1) == MEAS_SELECT_CH1_DEFAULT && meas_select_get(MEAS_SET_CH2) == MEAS_SELECT_CH2_DEFAULT);
+    key(OSC_KEY_UP); key(OSC_KEY_RIGHT);                 /* the tab, then All */
+    key(OSC_KEY_OK);
+    const bool on = meas_select_get(MEAS_SET_FFT) == meas_select_all(MEAS_SET_FFT);
+    key(OSC_KEY_RIGHT); key(OSC_KEY_OK);                 /* None */
+    CHECK("All sets the four, None clears them; the channels untouched",
+          on && meas_select_get(MEAS_SET_FFT) == 0 && meas_select_get(MEAS_SET_CH1) == MEAS_SELECT_CH1_DEFAULT);
+    key(OSC_KEY_LEFT); key(OSC_KEY_LEFT); key(OSC_KEY_OK);   /* back along the row to the tab */
+    CHECK("OK on the tab with one panel: it stays", S()->item == OSC_PRM_TAB && S()->meas_set == MEAS_SET_FFT);
+    CHECK("UP on its top row, the first panel: nothing", key(OSC_KEY_UP) == OSC_RES_NONE);
+
+    /* the starting panel */
+    fresh();
+    osc_menu_set_meas_sets(all3, MEAS_SET_FFT);
+    osc_menu_open(OSC_ROW_PARAM);
+    key(OSC_KEY_RIGHT);
+    CHECK("split from the spectrum job: the pane starts on the FFT panel", S()->meas_set == MEAS_SET_FFT);
+    osc_menu_set_meas_sets((1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_FFT);
+    CHECK("a start the view has not: CH1", S()->meas_set == MEAS_SET_CH1);
+    osc_menu_set_meas_sets(0u, MEAS_SET_FFT);
+    CHECK("no sets given: CH1 and CH2", S()->meas_sets == ((1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2)) &&
+          S()->meas_set == MEAS_SET_CH1);
 }
 
 /* ── Math pane ──────────────────────────────────────────────────────── */
@@ -363,7 +475,7 @@ static void test_locked(void)
     osc_menu_open_locked(OSC_ROW_PARAM);
     CHECK("opens inside Measure, on Freq of CH1, locked",
           S()->open && S()->in_pane && S()->locked && osc_menu_is_locked() &&
-          S()->row == OSC_ROW_PARAM && S()->item == OSC_PRM_CHIP0 && S()->meas_ch == 0);
+          S()->row == OSC_ROW_PARAM && S()->item == OSC_PRM_CHIP0 && S()->meas_set == MEAS_SET_CH1);
     key(OSC_KEY_OK);
     CHECK("OK toggles the chip as on the full page", !(meas_select_get(0) & (1u << SCOPE_PRM_FREQ)));
     key(OSC_KEY_OK);
@@ -374,10 +486,10 @@ static void test_locked(void)
     key(OSC_KEY_LEFT);
     CHECK("... and LEFT back, inside the grid", S()->item == OSC_PRM_CHIP0 && S()->in_pane);
     for (int i = 0; i < 8; i++) key(OSC_KEY_DOWN);
-    CHECK("DOWN still scrolls on into CH2's panel", S()->meas_ch == 1 && S()->in_pane && S()->locked);
+    CHECK("DOWN still scrolls on into CH2's panel", S()->meas_set == MEAS_SET_CH2 && S()->in_pane && S()->locked);
     for (int i = 0; i < 12; i++) key(OSC_KEY_UP);
     CHECK("UP back into CH1 and up to the tab row, never the rail",
-          S()->meas_ch == 0 && S()->in_pane && S()->row == OSC_ROW_PARAM);
+          S()->meas_set == MEAS_SET_CH1 && S()->in_pane && S()->row == OSC_ROW_PARAM);
     r = key(OSC_KEY_BACK);
     CHECK("BACK closes the page (no rail to go to)", r == OSC_RES_CLOSE && !S()->open && !osc_menu_is_locked());
 
@@ -418,29 +530,56 @@ static void test_meas_select(void)
           scope_state_get()->prm_mask == SCOPE_PRM_ALL_MASK);
     scope_state_get()->prm_mask = 0x00Fu;
     CHECK("... both ways", meas_select_get(0) == 0x00Fu);
-    meas_select_set(1, 0x0F0u);
-    meas_select_set(2, 0x111u);
-    CHECK("CH2 has its own; ch > 1 is ignored", meas_select_get(1) == 0x0F0u && meas_select_get(0) == 0x00Fu &&
-          meas_select_get(2) == 0);
-    meas_select_toggle(1, SCOPE_PRM_AVG);
-    meas_select_toggle(1, 12);
-    CHECK("toggle flips one bit; prm >= 12 ignored", meas_select_get(1) == (0x0F0u | (1u << SCOPE_PRM_AVG)));
-    CHECK("count", meas_select_count(1) == 5 && meas_select_count(0) == 4);
+    meas_select_set(MEAS_SET_CH2, 0x0F0u);
+    meas_select_set(MEAS_SET_FFT, 0x111u);
+    meas_select_set(MEAS_SET_COUNT, 0x0FFu);
+    CHECK("CH2 and FFT have their own; FFT keeps its 4 bits; no such set: ignored, reads 0",
+          meas_select_get(MEAS_SET_CH2) == 0x0F0u && meas_select_get(MEAS_SET_CH1) == 0x00Fu &&
+          meas_select_get(MEAS_SET_FFT) == 0x001u && meas_select_get(MEAS_SET_COUNT) == 0);
+    meas_select_toggle(MEAS_SET_CH2, SCOPE_PRM_AVG);
+    meas_select_toggle(MEAS_SET_CH2, SCOPE_PRM_COUNT);
+    CHECK("toggle flips one bit; prm >= 12 ignored",
+          meas_select_get(MEAS_SET_CH2) == (0x0F0u | (1u << SCOPE_PRM_AVG)));
+    meas_select_toggle(MEAS_SET_FFT, MEAS_SELECT_FFT_COUNT - 1);
+    meas_select_toggle(MEAS_SET_FFT, MEAS_SELECT_FFT_COUNT);
+    meas_select_toggle(MEAS_SET_COUNT, 0);
+    CHECK("FFT toggle: H3 on; an id past its 4 ignored; no such set ignored",
+          meas_select_get(MEAS_SET_FFT) == (0x001u | (1u << (MEAS_SELECT_FFT_COUNT - 1))) &&
+          meas_select_get(MEAS_SET_COUNT) == 0);
+    CHECK("count", meas_select_count(MEAS_SET_CH2) == 5 && meas_select_count(MEAS_SET_CH1) == 4 &&
+          meas_select_count(MEAS_SET_FFT) == 2 && meas_select_count(MEAS_SET_COUNT) == 0);
+    CHECK("sizes and all: 12, 12, 4, none",
+          meas_select_size(MEAS_SET_CH1) == SCOPE_PRM_COUNT && meas_select_size(MEAS_SET_CH2) == SCOPE_PRM_COUNT &&
+          meas_select_size(MEAS_SET_FFT) == MEAS_SELECT_FFT_COUNT && meas_select_size(MEAS_SET_COUNT) == 0 &&
+          meas_select_all(MEAS_SET_CH1) == SCOPE_PRM_ALL_MASK &&
+          meas_select_all(MEAS_SET_FFT) == (1u << MEAS_SELECT_FFT_COUNT) - 1u && meas_select_all(MEAS_SET_COUNT) == 0);
+    CHECK("labels: a channel's are scope_measure's, the spectrum's Peak Level H2 H3, \"?\" out of range",
+          strcmp(meas_select_label(MEAS_SET_CH1, SCOPE_PRM_VPP), scope_prm_label(SCOPE_PRM_VPP)) == 0 &&
+          strcmp(meas_select_label(MEAS_SET_FFT, 0), "Peak") == 0 && strcmp(meas_select_label(MEAS_SET_FFT, 1), "Level") == 0 &&
+          strcmp(meas_select_label(MEAS_SET_FFT, 2), "H2") == 0 && strcmp(meas_select_label(MEAS_SET_FFT, 3), "H3") == 0 &&
+          strcmp(meas_select_label(MEAS_SET_FFT, MEAS_SELECT_FFT_COUNT), "?") == 0 &&
+          strcmp(meas_select_label(MEAS_SET_CH1, SCOPE_PRM_COUNT), "?") == 0 &&
+          strcmp(meas_select_label(MEAS_SET_COUNT, 0), "?") == 0);
     meas_select_defaults();
-    CHECK("defaults restore both", meas_select_get(0) == MEAS_SELECT_CH1_DEFAULT &&
-          meas_select_get(1) == MEAS_SELECT_CH2_DEFAULT);
+    CHECK("defaults restore every set (FFT: Peak and Level)",
+          meas_select_get(MEAS_SET_CH1) == MEAS_SELECT_CH1_DEFAULT &&
+          meas_select_get(MEAS_SET_CH2) == MEAS_SELECT_CH2_DEFAULT &&
+          meas_select_get(MEAS_SET_FFT) == MEAS_SELECT_FFT_DEFAULT && MEAS_SELECT_FFT_DEFAULT == 0x3u);
     CHECK("scope_state_init's CH1 default is the same set", MEAS_SELECT_CH1_DEFAULT == SCOPE_PRM_DEFAULT_MASK);
     CHECK("CH2's default is CH1's (Freq, Peri, Duty+, Vp-p, Vrms)",
           MEAS_SELECT_CH2_DEFAULT == MEAS_SELECT_CH1_DEFAULT);
 }
 
 /* ── menu_frame scroll ──────────────────────────────────────────────── */
+/* The page's rail row pitch (osc_menu_ui.c RAIL_ROW_H, private to it). */
+#define OSC_RAIL_ROW_H  23u
 static void test_frame_scroll(void)
 {
     printf("menu_frame scroll rule (for System Settings' 14 rows)\n");
-    const menu_frame_t f = { 0, 16, 320, 208, 96, 26, 8, NULL, NULL };
-    CHECK("8 rows of 26 px fit 208 px: no scroll on this page", menu_frame_visible(&f) == 8 &&
-          menu_frame_first(7, 8, 8, 0) == 0);
+    const menu_frame_t f = { 0, 16, 320, 208, 96, OSC_RAIL_ROW_H, OSC_ROW_COUNT, NULL, NULL };
+    CHECK("the page's 9 rows of 23 px fit 208 px: no scroll on this page",
+          menu_frame_visible(&f) >= OSC_ROW_COUNT &&
+          menu_frame_first(OSC_ROW_COUNT - 1, OSC_ROW_COUNT, menu_frame_visible(&f), 0) == 0);
     CHECK("a selection already visible does not move the window", menu_frame_first(5, 14, 8, 3) == 3);
     CHECK("below the window: scroll just enough", menu_frame_first(10, 14, 8, 0) == 3);
     CHECK("above the window: it becomes the first row", menu_frame_first(1, 14, 8, 4) == 1);
@@ -459,6 +598,7 @@ int main(void)
     test_display();
     test_values();
     test_measure();
+    test_measure_panels();
     test_math();
     test_locked();
     test_meas_select();

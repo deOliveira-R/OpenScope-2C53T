@@ -7,8 +7,8 @@
  * globals, siggen_config_t, sys_prefs, meas_select, ...) and a setter that
  * validates, applies through the owner driver and stores ONLY on success.
  * A property never owns a value: the model adds no shadow copy. The one
- * exception is the stored-only block (sys.lang, fft.*), which nothing in the
- * firmware owns yet (props_sys.c says so).
+ * exception is the stored block (sys.lang, which nothing applies yet, and
+ * fft.*, whose owner exists only while a spectrum view runs: props_sys.c).
  *
  * The wire value is an int32_t. The unit and the number of decimals say how
  * it is printed and parsed ("gen.amp" = 15, UNIT_V, 1 decimal -> "1.5 V").
@@ -92,7 +92,7 @@ enum {                                   /* prop_desc_t.flags */
     PF_WRAP        = 1u << 2,            /* step wraps (enums the keys cycle); else saturates    */
     PF_PERSIST     = 1u << 3,            /* in the user profile / settings record                */
     PF_USERCAL     = 1u << 4,            /* in the usercal record (explicit `cal user save`)     */
-    PF_STORED_ONLY = 1u << 5,            /* persisted but nothing applies it yet (fft.*, lang)   */
+    PF_STORED_ONLY = 1u << 5,            /* persisted but nothing applies it yet (sys.lang)      */
     PF_HIDDEN      = 1u << 6,            /* a build profile hid it from the menus                */
     PF_SESSION     = 1u << 7,            /* session only: restored by "resume last session" only
                                           * (the session snapshot, model_session.h)             */
@@ -495,6 +495,7 @@ typedef struct {
     bool    (*persist_on)(uint8_t mode);               /* scope_apply_persist_on                */
     void    (*persist_off)(void);                      /* scope_apply_persist_off               */
     uint8_t (*persist_mode)(void);                     /* persist_get_mode                      */
+    void    (*fft_settings)(void);                     /* scope_apply_fft_settings: fft.* -> the live FFT */
     /* mask test (scope_mask.c, applied by the acquisition task) */
     bool    (*mask_present)(void);
     void    (*mask_get)(uint8_t *tol_v, uint8_t *tol_h, bool *stop_on_fail);  /* pending or applied */
@@ -588,6 +589,11 @@ unsigned model_table_check(void (*report)(const char *what, const prop_desc_t *p
                            void *ctx);
 
 /* ── Internal: what model_table.h names (model.c and props_*.c only) ─── */
+/* fft.avg value -> spectra averaged (0 = off): what the FFT and the settings
+ * record keep. */
+#define MODEL_FFT_AVG_STEPS 6
+extern const uint8_t model_fft_avg_counts[MODEL_FFT_AVG_STEPS];
+
 #ifdef MODEL_INTERNAL
 #define MODEL_PROP_FNS(x)                                                          \
     int32_t       x##_get(const prop_desc_t *p);                                   \
@@ -607,7 +613,7 @@ MODEL_PROP_FNS(view_mh)     MODEL_PROP_FNS(view_run)    MODEL_PROP_FNS(il_enable
 MODEL_PROP_FNS(il_gain)     MODEL_PROP_FNS(il_offset)   MODEL_PROP_FNS(il_skew)
 MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
-MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curpos)
+MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curpos) MODEL_PROP_FNS(view_scurpos)
 int32_t trig_code_get(const prop_desc_t *p);
 int32_t trig_held_get(const prop_desc_t *p);
 int32_t mask_state_get(const prop_desc_t *p);
@@ -620,6 +626,7 @@ prop_status_t model_mask_commit(prop_note_t *note);
 bool vdiv_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 bool tb_label(const prop_desc_t *p, int32_t v, char *out, size_t n);
 bool meas_label(const prop_desc_t *p, int32_t bit, char *out, size_t n);
+bool fft_meas_label(const prop_desc_t *p, int32_t bit, char *out, size_t n);
 extern const char *const lbl_view_mode[];
 extern const char *const lbl_view_persist[];
 extern const char *const lbl_view_math[];

@@ -15,6 +15,8 @@
 #include "ui.h"
 #if FEATURE_FFT
 #include "fft.h"
+#include "fft_live.h"        /* the spectrum's axes: what a cursor step is worth */
+void scope_ui_fft_axes(fft_axes_t *out);     /* scope_spectrum.c: the axes on screen */
 #endif
 
 #include <stdio.h>
@@ -22,28 +24,17 @@
 
 static int32_t G(const prop_desc_t *p) { return prop_get(p); }
 
-/* view.mode values (props_scope.c lbl_view_mode): the time views first. */
-enum { VM_YT = 0, VM_ROLL = 1, VM_XY = 2, VM_FFT = 3, VM_SPLIT = 4, VM_WATERFALL = 5 };
-
 /* ── UI state: the arrow stage and the active channel ──────────────── */
 
-/* What the arrow keys adjust in the time view (key_model.h). Short SELECT
- * cycles it: zoom -> channel move -> trigger move -> [cursor] -> [mask]. The
- * three bools are derived from it because the renderer reads them. */
+/* The job the arrow keys were last put on (view_table.h); short SELECT
+ * steps it through the view's list. The job in force is key_focus_get():
+ * this one while the view offers it, else the view's first. */
 volatile key_focus_t scope_key_focus = KF_ZOOM;
-volatile bool scope_trig_level_focus = false;
-volatile bool scope_hpos_focus = false;
-/* The mask stage, offered only while a mask exists: UP/DOWN = vertical
- * tolerance, LEFT/RIGHT = horizontal, MOVE = stop-on-fail. */
-volatile bool scope_mask_focus = false;
 
 static void set_focus(key_focus_t f)
 {
     if (f != scope_key_focus) model_touch(PG_UI);        /* ui.focus */
-    scope_key_focus        = f;
-    scope_trig_level_focus = (f == KF_TRIGMOVE);
-    scope_hpos_focus       = (f == KF_CHMOVE || f == KF_TRIGMOVE);
-    scope_mask_focus       = (f == KF_MASK);
+    scope_key_focus = f;
 }
 
 static void set_active_channel(uint8_t ch)
@@ -53,8 +44,20 @@ static void set_active_channel(uint8_t ch)
 }
 
 /* key_model.h: read-only views for the status bar and ui.focus / ui.ach. */
-uint8_t key_focus_get(void)          { return (uint8_t)scope_key_focus; }
+uint8_t key_focus_get(void)
+{
+    return (uint8_t)key_focus_sanitize((uint8_t)G(P(VIEW_MODE)), scope_key_focus,
+                                       G(P(VIEW_CURSOR)) != CURSOR_OFF,
+                                       G(P(MASK_STATE)) != MASK_PF_EMPTY);
+}
 uint8_t key_active_channel_get(void) { return active_channel; }
+
+/* Another view is on the screen (the view's owner, on the input task): the
+ * arrows start on its first job, the one the view is mostly used with. */
+void scope_screen_view_changed(void)
+{
+    set_focus((key_focus_t)view_desc((uint8_t)G(P(VIEW_MODE)))->jobs[0]);
+}
 
 /* The Oscilloscope Settings page changed the cursor mode by a key
  * (osc_menu_screen.h): cursors switched on from its Cursors row put the
@@ -63,16 +66,7 @@ uint8_t key_active_channel_get(void) { return active_channel; }
  * no longer exists (scope_screen_ctx). */
 void osc_menu_env_cursors(bool on)
 {
-    set_focus(key_focus_after_cursor_change(scope_key_focus, on));
-}
-
-static bool time_view(void)
-{
-#if FEATURE_FFT
-    return G(P(VIEW_MODE)) <= VM_ROLL;
-#else
-    return true;
-#endif
+    set_focus(key_focus_after_cursor_change((uint8_t)G(P(VIEW_MODE)), scope_key_focus, on));
 }
 
 key_ctx_t scope_screen_ctx(void)
@@ -80,12 +74,11 @@ key_ctx_t scope_screen_ctx(void)
     key_ctx_t c;
     memset(&c, 0, sizeof c);
     c.mode            = MODE_OSCILLOSCOPE;
-    c.scope_time_view = time_view();
+    c.view            = (uint8_t)G(P(VIEW_MODE));
     c.cursors_on      = (G(P(VIEW_CURSOR)) != CURSOR_OFF);
     c.mask_present    = (G(P(MASK_STATE)) != MASK_PF_EMPTY);
-    const key_focus_t f = key_focus_sanitize(scope_key_focus, c.cursors_on, c.mask_present);
-    if (f != scope_key_focus) set_focus(f);
-    c.focus           = f;
+    c.focus           = (key_focus_t)key_focus_get();
+    if (c.focus != scope_key_focus) set_focus(c.focus);   /* the job that went away is forgotten */
     c.active_channel  = active_channel;
     c.osc_menu_open   = screen_is_open(SCR_OSC_MENU);
     c.osc_menu_locked = c.osc_menu_open && osc_menu_is_locked();
@@ -174,6 +167,44 @@ static const prop_desc_t *cursor_prop(int32_t sel)
     }
 }
 
+#if FEATURE_FFT
+/* UP / DOWN in the spectrum's cursor job: the selected line by what
+ * SPECTRUM_CURSOR_STEP_PX pixels are worth on the spectrum's axes as they
+ * stand, so a step looks the same at every span and zooming in makes it
+ * finer. UP moves a frequency line down in frequency and a level line up, as
+ * the time cursors move left and up. A line that is off the plot comes to
+ * its nearest edge first. Nothing moves while no spectrum is drawn. */
+static void spectrum_cursor_move(int32_t sel, int dir)
+{
+    static const prop_desc_t *const k_prop[4] = {
+        [CURSOR_SEL_V1] = P(VIEW_CURF1), [CURSOR_SEL_V2] = P(VIEW_CURF2),
+        [CURSOR_SEL_H1] = P(VIEW_CURL1), [CURSOR_SEL_H2] = P(VIEW_CURL2),
+    };
+    fft_axes_t ax;
+    scope_ui_fft_axes(&ax);
+    if (!ax.on || sel < 0 || sel > CURSOR_SEL_H2) return;
+    const prop_desc_t *p = k_prop[sel];
+    int32_t v = G(p), lo, hi, step;
+    if (sel == CURSOR_SEL_V1 || sel == CURSOR_SEL_V2) {
+        lo = ax.bin0;
+        hi = ax.bin0 + ax.bins - 1;
+        step = dir * (int32_t)fft_axes_bins_per_cols(&ax, SPECTRUM_CURSOR_STEP_PX);
+    } else {
+        const float unit = (float)SPECTRUM_CURSOR_LEVEL_UNIT;
+        hi = (int32_t)(ax.ref_db * unit);
+        lo = (int32_t)((ax.ref_db - ax.range_db) * unit) + 1;
+        const int32_t s = (int32_t)(fft_axes_db_per_rows(&ax, SPECTRUM_CURSOR_STEP_PX) * unit + 0.5f);
+        step = -dir * (s ? s : 1);
+    }
+    if (v < lo) v = lo; else if (v > hi) v = hi; else v += step;
+    if (v < lo) v = lo;
+    if (v > hi) v = hi;
+    (void)prop_set_local(p, v, ORIGIN_KEY, NULL);
+}
+#else
+static void spectrum_cursor_move(int32_t sel, int dir) { (void)sel; (void)dir; }
+#endif
+
 /* LEFT / RIGHT in the cursor stage: the next line of the pair shown. */
 static int32_t cursor_next(int32_t mode, int32_t sel)
 {
@@ -237,7 +268,8 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
 
     /* -- short presses: UI state --------------------------------------- */
     case KA_FOCUS_NEXT: {
-        const key_focus_t f = key_focus_next(scope_key_focus, G(P(VIEW_CURSOR)) != CURSOR_OFF,
+        const key_focus_t f = key_focus_next((uint8_t)G(P(VIEW_MODE)), scope_key_focus,
+                                             G(P(VIEW_CURSOR)) != CURSOR_OFF,
                                              G(P(MASK_STATE)) != MASK_PF_EMPTY);
         set_focus(f);
         return popup_full(key_focus_popup(f));
@@ -319,6 +351,10 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
         (void)prop_step_local(cursor_prop(G(P(VIEW_CURSEL))), dir, ORIGIN_KEY, NULL);
         scope_ui_request_live();
         return SCR_HANDLED;
+    case KA_SPECTRUM_CURSOR_MOVE:
+        spectrum_cursor_move(G(P(VIEW_CURSEL)), dir);
+        scope_ui_request_live();
+        return SCR_HANDLED;
     case KA_CURSOR_NEXT:
         (void)prop_set_local(P(VIEW_CURSEL), cursor_next(G(P(VIEW_CURSOR)), G(P(VIEW_CURSEL))),
                              ORIGIN_KEY, NULL);
@@ -384,15 +420,11 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
         return scope_selfcal_request_autoset() ? SCR_HANDLED : popup_full("Busy");
 
 #if FEATURE_FFT
-    /* The spectrum views' own keys: the live FFT configuration, which has
+    /* The spectrum job's keys: the reference level and the span, which have
      * no property (scope_screen.h). AUTO fits the span to the record the
-     * view analyses: a request the display task serves on its next frame.
-     * X-Y analyses no spectrum: nothing to fit. */
+     * view analyses: a request the display task serves on its next frame. */
     case KA_FFT_AUTO:
-        if (G(P(VIEW_MODE)) != VM_XY) fft_auto_request();
-        return SCR_DRAW_FULL;
-    case KA_FFT_WINDOW:
-        (void)fft_cycle_window();
+        fft_auto_request();
         return SCR_DRAW_FULL;
     case KA_FFT_REF:
         (void)fft_adjust_ref_level(dir > 0 ? 5.0f : -5.0f);
@@ -431,8 +463,10 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
     h = redraw_epoch_mix(h, ((uint32_t)s->running << 8) | ((uint32_t)s->roll << 9)
                             | ((uint32_t)s->roll_step << 12));
     h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled | ((uint32_t)s->ch2.enabled << 1));
-    /* The measurement selection, both channels; long PRM hides the rows. */
-    h = redraw_epoch_mix(h, (uint32_t)meas_select_get(0) | ((uint32_t)meas_select_get(1) << 16));
+    /* The measurement selection, every set; long PRM hides the rows. */
+    h = redraw_epoch_mix(h, (uint32_t)meas_select_get(MEAS_SET_CH1) |
+                            ((uint32_t)meas_select_get(MEAS_SET_CH2) << 16));
+    h = redraw_epoch_mix(h, (uint32_t)meas_select_get(MEAS_SET_FFT));
     h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);
     /* Cursor mode only: it moves the strip (the AUX row). */
     h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode);
@@ -468,6 +502,10 @@ uint32_t scope_screen_cursor_epoch(void)
     h = redraw_epoch_mix(h, (uint32_t)c->active);
     h = redraw_epoch_mix(h, (uint32_t)c->v1_x | ((uint32_t)c->v2_x << 16));
     h = redraw_epoch_mix(h, (uint32_t)c->h1_y | ((uint32_t)c->h2_y << 16));
+    /* The same lines on a spectrum. */
+    const spectrum_cursor_t *sc = &scope_state_get()->spectrum_cursor;
+    h = redraw_epoch_mix(h, (uint32_t)sc->bin[0] | ((uint32_t)sc->bin[1] << 16));
+    h = redraw_epoch_mix(h, (uint32_t)(uint16_t)sc->level[0] | ((uint32_t)(uint16_t)sc->level[1] << 16));
     return h;
 }
 

@@ -1022,9 +1022,11 @@ static void test_live_settings_survive_a_power_cycle(void)
           config_load_result_name(settings_store_get_status()->load_result));
 }
 
-/* ARCH-1 M3: the record fields nothing applies yet (language, the FFT block,
+/* ARCH-1 M3: the record fields nothing applies yet (language,
  * display_persist_mode) are carried through load -> change -> save -> load
- * unchanged, including byte values no property can hold. */
+ * unchanged, including byte values no property can hold. The FFT block is
+ * live settings: a byte no property can hold loads as the property's default
+ * (any non-zero max-hold byte as on) and is saved as that value. */
 static void test_stored_only_fields_survive_a_load_save_cycle(void)
 {
     fresh_device();
@@ -1047,12 +1049,14 @@ static void test_stored_only_fields_survive_a_load_save_cycle(void)
     device_config_t out;
     CHECK(config_load(&out), "nothing to load");
     CHECK(out.scope_ch1_vdiv == 7, "the change did not land (%u)", out.scope_ch1_vdiv);
-    CHECK(out.language == 7 && out.fft_window == 9 && out.fft_avg_count == 3 &&
-          ((uint8_t *)&out)[offsetof(device_config_t, fft_max_hold)] == 0x40 &&
-          out.display_persist_mode == 2,
-          "stored-only bytes not carried: lang %u win %u avg %u hold 0x%02x persist %u",
-          out.language, out.fft_window, out.fft_avg_count,
-          ((uint8_t *)&out)[offsetof(device_config_t, fft_max_hold)], out.display_persist_mode);
+    CHECK(out.language == 7 && out.display_persist_mode == 2,
+          "stored-only bytes not carried: lang %u persist %u", out.language, out.display_persist_mode);
+    device_config_t def;                               /* the properties' defaults, as record bytes */
+    config_init_defaults(&def);
+    CHECK(out.fft_window == def.fft_window && out.fft_avg_count == def.fft_avg_count &&
+          ((uint8_t *)&out)[offsetof(device_config_t, fft_max_hold)] == 1u,
+          "FFT settings not saved as their values: win %u avg %u hold 0x%02x",
+          out.fft_window, out.fft_avg_count, ((uint8_t *)&out)[offsetof(device_config_t, fft_max_hold)]);
 }
 
 /* Parity G5: the generator's settings live in the settings store. Stock's
@@ -3064,7 +3068,7 @@ int main(void)
         run("measurement selection survives a power cycle (v5)",
             test_measurement_selection_survives_a_power_cycle);
         run("a v4 record is upgraded, not dropped", test_a_v4_record_is_upgraded_not_dropped);
-        run("stored-only fields survive a load/save cycle (M3)",
+        run("stored-only fields survive a load/save cycle (M3); FFT settings saved as loaded",
             test_stored_only_fields_survive_a_load_save_cycle);
 
         run("damage mid-log is never applied", test_damage_mid_log_is_never_applied);

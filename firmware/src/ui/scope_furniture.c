@@ -41,36 +41,50 @@ void cursor_row_paint(const scope_state_t *ss, bool force);
  * cannot disagree about where the strip starts. */
 uint16_t strip_top(const scope_state_t *ss)
 {
-    return measure_strip_top(meas_select_get(0), ss->ch1.enabled,
-                             meas_select_get(1), ss->ch2.enabled,
+    return measure_strip_top(meas_select_get(MEAS_SET_CH1), ss->ch1.enabled,
+                             meas_select_get(MEAS_SET_CH2), ss->ch2.enabled,
                              ss->prm_hidden, strip_aux(), STRIP_BOTTOM);
 }
 
 void strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
 {
-    measure_strip_layout(meas_select_get(0), ss->ch1.enabled,
-                         meas_select_get(1), ss->ch2.enabled,
+    measure_strip_layout(meas_select_get(MEAS_SET_CH1), ss->ch1.enabled,
+                         meas_select_get(MEAS_SET_CH2), ss->ch2.enabled,
                          ss->prm_hidden, strip_aux(), STRIP_BOTTOM, L);
 }
 
-/* One cell: label left in the dimmed channel colour, value right in the
- * channel colour (text_secondary "--" when refused). measure_strip_place()
- * guarantees the two never overlap; when they would not fit it keeps the
- * value only (the host test shows no label/value pair of the measurement set
- * gets there). */
-static void draw_strip_cell(const mstrip_cell_t *c, const scope_prm_t *p,
-                            const theme_t *th, bool boxed)
+#if FEATURE_FFT
+/* The spectrum's strip: the same rows and cells, holding the spectrum's
+ * measurement set (dsp/fft_live.h) as one block, since a spectrum view
+ * analyses one channel. */
+_Static_assert(MEAS_SELECT_FFT_COUNT == FFT_MEAS_COUNT &&
+               MEAS_SELECT_FFT_DEFAULT == FFT_MEAS_DEFAULT_MASK,
+               "meas_select.h counts the spectrum's measurements as fft_live.h has them");
+_Static_assert(FFT_MEAS_COUNT <= MSTRIP_MAX_PER_CH, "every spectrum measurement has a cell");
+
+/* Its AUX row is reserved while the cursors are on: their readout. */
+static void fft_strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
 {
-    char buf[16];
-    const uint16_t chc = c->ch ? th->ch2 : th->ch1;
-    uint16_t vc = chc;
-    if (p == NULL || p->unit == SCOPE_PRM_UNIT_NONE) {
-        snprintf(buf, sizeof(buf), "--");   /* this parameter cannot be measured */
-        vc = th->text_secondary;
-    } else {
-        scope_prm_format(p, buf, sizeof(buf));
-    }
-    const char *label = scope_prm_label(c->prm);
+    measure_strip_layout(meas_select_get(MEAS_SET_FFT), true, 0u, false,
+                         ss->prm_hidden, ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM, L);
+}
+
+uint16_t fft_strip_top(const scope_state_t *ss)
+{
+    return measure_strip_top(meas_select_get(MEAS_SET_FFT), true, 0u, false,
+                             ss->prm_hidden, ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM);
+}
+#endif
+
+/* One cell: label left in the dimmed channel colour chc, the value buf right
+ * in chc (text_secondary when it is not a measured value: "--").
+ * measure_strip_place() guarantees the two never overlap; when they would
+ * not fit it keeps the value only (the host test shows no label/value pair
+ * of the measurement sets gets there). */
+static void strip_cell_paint(const mstrip_cell_t *c, const char *label, const char *buf,
+                             bool measured, uint16_t chc, const theme_t *th, bool boxed)
+{
+    const uint16_t vc = measured ? chc : th->text_secondary;
     uint16_t lx, vx;
     const bool both = measure_strip_place(c->x, font_string_width(label, &font_small),
                                           font_string_width(buf, &font_small), &lx, &vx);
@@ -107,9 +121,34 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
     for (unsigned k = 0; k < L->n; k++) {
         const mstrip_cell_t *c = &L->cell[k];
         const scope_params_t *pp = c->ch ? p2 : p1;
-        draw_strip_cell(c, pp ? &pp->v[c->prm] : NULL, th, refresh);
+        const scope_prm_t *p = pp ? &pp->v[c->prm] : NULL;
+        char buf[16];
+        scope_prm_format(p, buf, sizeof(buf));          /* "--" when it cannot be measured */
+        strip_cell_paint(c, scope_prm_label(c->prm), buf, p != NULL && p->unit != SCOPE_PRM_UNIT_NONE,
+                         c->ch ? th->ch2 : th->ch1, th, refresh);
     }
 }
+
+#if FEATURE_FFT
+/* The spectrum's strip: m holds the spectrum's measurements (fft_live_measure),
+ * or is NULL when there is no spectrum; ch2: it is CH2's. refresh as
+ * draw_strip_cells. */
+void draw_fft_strip(const scope_state_t *ss, const theme_t *th, const fft_meas_t *m, bool ch2, bool refresh)
+{
+    mstrip_layout_t L;
+    fft_strip_layout(ss, &L);
+    if (!refresh && L.top < L.bottom)
+        lcd_fill_rect(0, L.top, LCD_WIDTH, (uint16_t)(L.bottom - L.top), th->background);
+    for (unsigned k = 0; k < L.n; k++) {
+        const mstrip_cell_t *c = &L.cell[k];
+        const fft_meas_t *v = m ? &m[c->prm] : NULL;
+        char buf[16];
+        fft_meas_format(v, buf, sizeof(buf));
+        strip_cell_paint(c, meas_select_label(MEAS_SET_FFT, c->prm), buf,
+                         v != NULL && v->unit != FFT_MEAS_UNIT_NONE, ch2 ? th->ch2 : th->ch1, th, refresh);
+    }
+}
+#endif
 
 /*
  * Measure one channel's live capture record.

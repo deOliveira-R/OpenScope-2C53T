@@ -58,7 +58,7 @@ FORMAT = 'openscope-profile/1'
 COLUMNS = ['sym', 'id', 'name', 'type', 'unit', 'decimals', 'group', 'inst', 'arg', 'min', 'max', 'step',
            'def', 'flags', 'labels', 'label_hook', 'get', 'set', 'store', 'owner']
 # A label hook whose text is a fixed name table (so the names are canonical, as for a label array).
-HOOK_TABLES = {'meas_label': 'prm_labels'}
+HOOK_TABLES = {'meas_label': 'prm_labels', 'fft_meas_label': 'fft_meas_labels'}
 STATUSES = ('OK', 'CLAMPED', 'INVALID', 'REFUSED', 'NOT_SET', 'BUSY', 'TIMEOUT')
 
 

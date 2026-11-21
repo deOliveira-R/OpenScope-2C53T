@@ -30,6 +30,7 @@
 #include "scope_screen.h"
 #include "osc_menu_screen.h"
 #include "gallery_screen.h"
+#include "fft_live.h"         /* fft_axes_t: the spectrum's axes the scope screen asks for */
 #include "gallery_store.h"
 #include "overlay_screens.h"
 #include "scope_mask.h"
@@ -90,8 +91,9 @@ bool scope_mask_key_auto(char *text, unsigned n)  { snprintf(text, n, "MASK"); r
 persist_mode_t persist_get_mode(void)             { return PERSIST_OFF; }
 float fft_adjust_ref_level(float d)               { (void)d; return 0.0f; }
 void fft_auto_request(void)                       { }
-fft_window_t fft_cycle_window(void)               { return (fft_window_t)0; }
 void fft_zoom_in(void)                            { }
+/* scope_spectrum.c: no spectrum is drawn here, so its axes are off */
+void scope_ui_fft_axes(fft_axes_t *out)           { memset(out, 0, sizeof *out); }
 void fft_zoom_out(void)                           { }
 void meter_ui_autoselect_cancel(void)             { }
 bool meter_ui_autoselect_running(void)            { return false; }
@@ -195,7 +197,6 @@ static void fw_boot(fw_state_t st, fw_over_t ov, bool busy)
     fw_busy = false;
     /* UI state the screens keep between boots of one test run */
     scope_key_focus = KF_ZOOM;
-    scope_trig_level_focus = scope_hpos_focus = scope_mask_focus = false;
     if (st == ST_HOME) {
         /* Home entered from the scope (it preselects the screen it was opened
          * from), so its selection is known: Oscilloscope. */

@@ -95,27 +95,29 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 #define CURSOR_HLABEL_ABOVE  13
 #define CURSOR_HLABEL_BELOW  2
 
-/* Build the cursor layer L from the cursor state: the
- * vertical lines with V1/V2 labels at the top, the horizontal lines with
- * H1/H2 labels at the right edge. The selected cursor is solid and
- * highlighted, the other dashed. Empty when cursors are off. */
-void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L)
+/* Build the cursor layer L: the vertical lines at columns vx with V1/V2
+ * labels at the plot's top row `top`, the horizontal lines at rows hy with
+ * H1/H2 labels at the right edge. A line whose position is negative is not
+ * on the plot and is left out. The selected cursor is solid and highlighted,
+ * the other dashed. Empty when cursors are off. */
+static void cursor_layer_lines(const cursor_state_t *c, const int16_t vx[2], const int16_t hy[2],
+                               int16_t top, const theme_t *th, cur_layer_t *L)
 {
     memset(L, 0, sizeof(*L));
-    const cursor_state_t *c = &ss->cursor;
     if (c->mode == CURSOR_OFF) return;
     if (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH) {
         L->v = true;
         for (uint8_t i = 0; i < 2u; i++) {
             const bool act = (c->active == (i ? CURSOR_SEL_V2 : CURSOR_SEL_V1));
-            L->vx[i] = (int16_t)(i ? c->v2_x : c->v1_x);
+            L->vx[i] = vx[i];
             L->vc[i] = act ? th->highlight : th->text_secondary;
             L->vsolid[i] = act;
+            if (vx[i] < 0) continue;
             typeof(L->lab[0]) *t = &L->lab[L->nlab++];
             t->s[0] = 'V'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
             t->w = (int16_t)font_string_width(t->s, &font_small);
             t->x = (int16_t)(L->vx[i] > CURSOR_VLABEL_MIN_X ? L->vx[i] - CURSOR_VLABEL_LEFT : 0);
-            t->y = SCOPE_TOP;
+            t->y = top;
             t->c = L->vc[i];
         }
     }
@@ -123,19 +125,47 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t 
         L->h = true;
         for (uint8_t i = 0; i < 2u; i++) {
             const bool act = (c->active == (i ? CURSOR_SEL_H2 : CURSOR_SEL_H1));
-            L->hy[i] = (int16_t)(i ? c->h2_y : c->h1_y);
+            L->hy[i] = hy[i];
             L->hc[i] = act ? th->highlight : th->text_secondary;
             L->hsolid[i] = act;
+            if (hy[i] < 0) continue;
             typeof(L->lab[0]) *t = &L->lab[L->nlab++];
             t->s[0] = 'H'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
             t->w = (int16_t)font_string_width(t->s, &font_small);
             t->x = (int16_t)(LCD_WIDTH - 1 - t->w);
-            t->y = (int16_t)(L->hy[i] > SCOPE_TOP + CURSOR_HLABEL_BELOW ? L->hy[i] - CURSOR_HLABEL_ABOVE
-                                                                        : L->hy[i] + CURSOR_HLABEL_BELOW);
+            t->y = (int16_t)(L->hy[i] > top + CURSOR_HLABEL_BELOW ? L->hy[i] - CURSOR_HLABEL_ABOVE
+                                                                  : L->hy[i] + CURSOR_HLABEL_BELOW);
             t->c = L->hc[i];
         }
     }
 }
+
+/* The cursor layer of the time views: the lines where the cursor state has
+ * them, in screen pixels. */
+void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L)
+{
+    const cursor_state_t *c = &ss->cursor;
+    const int16_t vx[2] = { (int16_t)c->v1_x, (int16_t)c->v2_x };
+    const int16_t hy[2] = { (int16_t)c->h1_y, (int16_t)c->h2_y };
+    cursor_layer_lines(c, vx, hy, SCOPE_TOP, th, L);
+}
+
+#if FEATURE_FFT
+/* The cursor layer of a spectrum: the lines where their bins and levels fall
+ * on the axes ax; a line outside the span or the level range is not drawn. */
+void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,
+                                 cur_layer_t *L)
+{
+    const spectrum_cursor_t *sc = &ss->spectrum_cursor;
+    int16_t vx[2] = { -1, -1 }, hy[2] = { -1, -1 };
+    if (ax->on)
+        for (uint8_t i = 0; i < 2u; i++) {
+            vx[i] = (int16_t)fft_axes_x(ax, sc->bin[i]);
+            hy[i] = (int16_t)fft_axes_y(ax, (float)sc->level[i] / (float)SPECTRUM_CURSOR_LEVEL_UNIT);
+        }
+    cursor_layer_lines(&ss->cursor, vx, hy, (int16_t)ax->y_top, th, L);
+}
+#endif
 
 /* The layer's colour at pixel (x, y) into *c, or false. Labels win over
  * lines; where two lines cross, V1, H1, V2, H2 in that order. This is the
@@ -152,8 +182,8 @@ bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
         }
     }
     for (uint8_t i = 0; i < 2u; i++) {
-        if (L->v && x == L->vx[i] && (L->vsolid[i] || CURSOR_DASH_ON(y))) { *c = L->vc[i]; return true; }
-        if (L->h && y == L->hy[i] && (L->hsolid[i] || CURSOR_DASH_ON(x))) { *c = L->hc[i]; return true; }
+        if (L->v && L->vx[i] >= 0 && x == L->vx[i] && (L->vsolid[i] || CURSOR_DASH_ON(y))) { *c = L->vc[i]; return true; }
+        if (L->h && L->hy[i] >= 0 && y == L->hy[i] && (L->hsolid[i] || CURSOR_DASH_ON(x))) { *c = L->hc[i]; return true; }
     }
     return false;
 }
@@ -165,7 +195,7 @@ bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c)
 void cursor_layer_paint(const cur_layer_t *L, uint16_t x, const canvas_strip_t *s)
 {
     for (int i = 1; i >= 0; i--) {
-        if (L->h && (L->hsolid[i] || CURSOR_DASH_ON(x)))
+        if (L->h && L->hy[i] >= 0 && (L->hsolid[i] || CURSOR_DASH_ON(x)))
             strip_put(s, L->hy[i], L->hc[i]);
         if (L->v && (int)x == L->vx[i])
             for (int y = s->lo; y < s->hi; y++)
@@ -259,3 +289,64 @@ void scope_ui_cursor_row_refresh(void)
     if (ss->cursor.mode == CURSOR_OFF || can_scope_screen_on() || ss->roll) return;
     cursor_row_paint(ss, false);
 }
+
+#if FEATURE_FFT
+/* The readout of the cursors on a spectrum, into out (n bytes): the mode,
+ * then the two frequencies and their difference, then the level difference
+ * (with the level lines alone, the two levels as well). Frequencies are in
+ * hertz when the axis is known, else bin numbers; levels are dB re one count
+ * of the transform's input, the unit of the plot's own scale. Differences
+ * are second minus first, as in the time views. */
+static void spectrum_cursor_readout(const scope_state_t *ss, const fft_axes_t *ax, char *out, size_t n)
+{
+    const cursor_state_t *c = &ss->cursor;
+    const spectrum_cursor_t *sc = &ss->spectrum_cursor;
+    const bool v = (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH);
+    const bool h = (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH);
+    char a[16], b[16], d[16];
+    size_t k = 0;
+    out[0] = '\0';
+    if (c->mode == CURSOR_OFF) return;
+    k += (size_t)snprintf(out + k, n - k, "%s", !h ? "CUR:F" : !v ? "CUR:L" : "CUR:FL");
+    if (v && k < n) {
+        const int32_t db = (int32_t)sc->bin[1] - (int32_t)sc->bin[0];
+        if (fft_live_axis_known(ax->sample_rate_hz) && ax->fft_size != 0u) {
+            fft_live_format_hz(fft_live_bin_hz(ax->sample_rate_hz, ax->fft_size, sc->bin[0]), a, sizeof a);
+            fft_live_format_hz(fft_live_bin_hz(ax->sample_rate_hz, ax->fft_size, sc->bin[1]), b, sizeof b);
+            fft_live_format_hz(fft_live_bin_hz(ax->sample_rate_hz, ax->fft_size,
+                                               (uint16_t)(db < 0 ? -db : db)), d, sizeof d);
+            k += (size_t)snprintf(out + k, n - k, "  F1=%s F2=%s dF=%s%s", a, b, db < 0 ? "-" : "", d);
+        } else {
+            k += (size_t)snprintf(out + k, n - k, "  F1=bin %u F2=bin %u dF=%ld bins",
+                                  (unsigned)sc->bin[0], (unsigned)sc->bin[1], (long)db);
+        }
+    }
+    if (h && k < n) {
+        const float unit = (float)SPECTRUM_CURSOR_LEVEL_UNIT;
+        fft_live_format_db((float)(sc->level[1] - sc->level[0]) / unit, "dB", d, sizeof d);
+        if (!v) {
+            fft_live_format_db((float)sc->level[0] / unit, "dB", a, sizeof a);
+            fft_live_format_db((float)sc->level[1] / unit, "dB", b, sizeof b);
+            (void)snprintf(out + k, n - k, "  L1=%s L2=%s dL=%s", a, b, d);
+        } else {
+            (void)snprintf(out + k, n - k, "  dL=%s", d);
+        }
+    }
+}
+
+/* The spectrum strip's AUX row: the cursor readout, repainted when its text
+ * changed or when force is set. y: the row's top. */
+void spectrum_cursor_row_paint(const scope_state_t *ss, const fft_axes_t *ax, uint16_t y, bool force)
+{
+    static uint32_t shown;                            /* hash of the text the row shows now */
+    char t[64];
+    spectrum_cursor_readout(ss, ax, t, sizeof(t));
+    uint32_t hsh = 2166136261u;                       /* FNV-1a */
+    for (const char *p = t; *p; p++) hsh = (hsh ^ (uint8_t)*p) * 16777619u;
+    if (!force && hsh == shown) return;
+    shown = hsh;
+    const theme_t *th = theme_get();
+    lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
+    font_draw_string(4, (uint16_t)(y + 1), t, th->highlight, th->background, &font_small);
+}
+#endif

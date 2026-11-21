@@ -19,6 +19,7 @@
 #include "fpga.h"
 #if FEATURE_FFT
 #include "fft.h"
+#include "model.h"           /* the fft.* properties */
 #include "scope_vpos.h"
 #include "scope_trigger.h"
 #endif
@@ -53,6 +54,17 @@ bool scope_view_uses_fft(scope_view_t v)
     return v == SCOPE_VIEW_FFT || v == SCOPE_VIEW_SPLIT || v == SCOPE_VIEW_WATERFALL;
 }
 
+/* The fft.* properties (window, averaging, max hold) into the live FFT.
+ * Nothing to do while no spectrum view holds its memory: the view takes
+ * them when it starts. The averaging and max-hold history restart. */
+void scope_apply_fft_settings(void)
+{
+    if (!fft_is_initialized()) return;
+    fft_set_window((fft_window_t)prop_get(P(FFT_WINDOW)));
+    fft_set_averaging(model_fft_avg_counts[prop_get(P(FFT_AVG))]);
+    fft_set_max_hold(prop_get(P(FFT_MAXHOLD)) != 0);
+}
+
 void scope_view_select(scope_view_t v)
 {
     if ((unsigned)v >= (unsigned)SCOPE_VIEW_COUNT || v == scope_view) return;
@@ -68,13 +80,13 @@ void scope_view_select(scope_view_t v)
          * of leaving persistence drawing from a buffer the FFT now owns. */
         scope_apply_persist_off();
         fft_config_t c;
-        c.window         = FFT_WINDOW_HANNING;
+        c.window         = (fft_window_t)prop_get(P(FFT_WINDOW));
         c.sample_rate_hz = 44100.0f;
         c.ref_level_db   = 0.0f;
         c.db_range       = 80.0f;
         c.peak_count     = 4;
-        c.avg_count      = 0;
-        c.max_hold       = false;
+        c.avg_count      = model_fft_avg_counts[prop_get(P(FFT_AVG))];
+        c.max_hold       = prop_get(P(FFT_MAXHOLD)) != 0;
         c.zoom_start_bin = 1;
         c.zoom_end_bin   = FFT_BINS - 1;
         fft_init(&c);

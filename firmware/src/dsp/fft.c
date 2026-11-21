@@ -617,13 +617,6 @@ void fft_set_window(fft_window_t window)
     compute_window(window);
 }
 
-fft_window_t fft_cycle_window(void)
-{
-    fft_window_t next = (fft_window_t)((current_cfg.window + 1) % FFT_WINDOW_COUNT);
-    fft_set_window(next);
-    return next;
-}
-
 void fft_set_averaging(uint8_t count)
 {
     current_cfg.avg_count = count;

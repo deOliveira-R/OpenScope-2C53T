@@ -43,7 +43,7 @@ _Static_assert(SYS_BRIGHT_MIN == 25u && SYS_BRIGHT_MAX == 100u && SYS_BRIGHT_STE
                SYS_BRIGHT_DEFAULT == 100u, "sys.brightness 25..100 step 5, default 100");
 _Static_assert(SYS_VOL_MAX == 10u && SYS_VOL_DEFAULT == 1u, "sys.volume 0..10, default 1");
 _Static_assert(SYS_AUTOOFF_COUNT == 4u, "sys.autooff: off/15/30/60 min");
-_Static_assert(KF_COUNT == 5, "ui.focus 0..4");
+_Static_assert(KF_COUNT == 7, "ui.focus 0..6");
 
 /* ═══ instrument / mode ══════════════════════════════════════════════ */
 
@@ -208,26 +208,37 @@ prop_status_t sys_lang_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop
 const char *const lbl_fft_window[5] = { "rect", "hanning", "hamming", "blackman", "flattop" };
 int32_t fft_window_get(const prop_desc_t *p) { (void)p; return g_stored.fft_window; }
 void    fft_window_store(const prop_desc_t *p, int32_t v) { (void)p; g_stored.fft_window = (uint8_t)v; }
+/* The three fft.* settings reach the live spectrum through one op, which
+ * does nothing while no spectrum view holds the FFT's memory: the view takes
+ * them when it starts (scope_view_select). */
+static prop_status_t fft_setting_set(void (*store)(const prop_desc_t *, int32_t),
+                                     const prop_desc_t *p, int32_t v)
+{
+    store(p, v);
+    if (HW->fft_settings) HW->fft_settings();
+    return PS_OK;
+}
 prop_status_t fft_window_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin; (void)note; fft_window_store(p, v); return PS_OK;
+    (void)origin; (void)note; return fft_setting_set(fft_window_store, p, v);
 }
 
 /* fft_config_t.avg_count: 0 = off, 2/4/8/16/32 (an index here; the record
- * keeps the count, the codec maps). */
-const char *const lbl_fft_avg[6] = { "off", "x2", "x4", "x8", "x16", "x32" };
+ * and the FFT keep the count: model_fft_avg_counts). */
+const char *const lbl_fft_avg[MODEL_FFT_AVG_STEPS] = { "off", "x2", "x4", "x8", "x16", "x32" };
+const uint8_t model_fft_avg_counts[MODEL_FFT_AVG_STEPS] = { 0u, 2u, 4u, 8u, 16u, 32u };
 int32_t fft_avg_get(const prop_desc_t *p) { (void)p; return g_stored.fft_avg; }
 void    fft_avg_store(const prop_desc_t *p, int32_t v) { (void)p; g_stored.fft_avg = (uint8_t)v; }
 prop_status_t fft_avg_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin; (void)note; fft_avg_store(p, v); return PS_OK;
+    (void)origin; (void)note; return fft_setting_set(fft_avg_store, p, v);
 }
 
 int32_t fft_maxhold_get(const prop_desc_t *p) { (void)p; return g_stored.fft_maxhold; }
 void    fft_maxhold_store(const prop_desc_t *p, int32_t v) { (void)p; g_stored.fft_maxhold = (uint8_t)(v != 0); }
 prop_status_t fft_maxhold_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
-    (void)origin; (void)note; fft_maxhold_store(p, v); return PS_OK;
+    (void)origin; (void)note; return fft_setting_set(fft_maxhold_store, p, v);
 }
 
 /* ═══ ui (read only) ═════════════════════════════════════════════════ */

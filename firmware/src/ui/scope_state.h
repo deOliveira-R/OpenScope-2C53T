@@ -134,6 +134,29 @@ typedef struct {
      */
 } cursor_state_t;
 
+/* The spectrum's cursors: each line is kept in the spectrum's own units (a
+ * bin of the transform, a level), so it stays on its frequency or its level
+ * when the span or the reference level moves. The mode and the selected line
+ * are the time cursors' (cursor_state_t): one cursor setting, read on the
+ * axes of the domain it is drawn in. */
+#define SPECTRUM_CURSOR_BIN_MIN      1        /* bin 0 is DC, never shown */
+#define SPECTRUM_CURSOR_BIN_MAX      2047     /* the last bin of the 4096-point transform */
+#define SPECTRUM_CURSOR_LEVEL_UNIT   10       /* levels are kept in tenths of a dB */
+#define SPECTRUM_CURSOR_LEVEL_MAX    2000     /* +-200 dB: beyond any level the transform gives */
+#define SPECTRUM_CURSOR_STEP_PX      4        /* one arrow step, in pixels of the plot: the time
+                                               * cursors' step (view.curv1's, model_table.h) */
+/* Where the lines start: a third and two thirds of the whole span, and two
+ * levels a spectrum of a signal that fills the converter's range has. */
+#define SPECTRUM_CURSOR_BIN1_DEFAULT   683
+#define SPECTRUM_CURSOR_BIN2_DEFAULT   1365
+#define SPECTRUM_CURSOR_LEVEL1_DEFAULT 400
+#define SPECTRUM_CURSOR_LEVEL2_DEFAULT 200
+
+typedef struct {
+    uint16_t bin[2];        /* the frequency lines (V1, V2) */
+    int16_t  level[2];      /* the level lines (H1, H2), SPECTRUM_CURSOR_LEVEL_UNIT per dB */
+} spectrum_cursor_t;
+
 /* Full oscilloscope state */
 typedef struct {
     channel_state_t ch1;
@@ -144,6 +167,7 @@ typedef struct {
                                      * scope_timebase.c. */
     bool            running;        /* Acquisition running/stopped */
     cursor_state_t  cursor;         /* Cursor measurement state */
+    spectrum_cursor_t spectrum_cursor;   /* where the cursor lines are on a spectrum */
 
     /* Vertical graticule mode (view.truescale). true (default) = TRUE SCALE:
      * stock's geometry over the full plot, both channels overlaid: 0 V at

@@ -18,22 +18,26 @@
 
 typedef struct {
     uint8_t prop[3];     /* VALUES: the property of each row. Others: [0] the pane's
-                          * (Measure: [0] CH1's page, [1] CH2's). PROP_IX_x, B_NONE = none */
+                          * (Measure: the selection of each set, in meas_set_t order).
+                          * PROP_IX_x, B_NONE = none */
 } osc_bind_t;
 
 static const osc_bind_t k_bind[OSC_ROW_COUNT] = {
     [OSC_ROW_DISPLAY] = { { PROP_IX_VIEW_MODE,    B_NONE,            B_NONE } },
     [OSC_ROW_CURSOR]  = { { PROP_IX_VIEW_CURSOR,  B_NONE,            B_NONE } },
-    [OSC_ROW_PARAM]   = { { PROP_IX_CH1_MEAS,     PROP_IX_CH2_MEAS,  B_NONE } },
+    [OSC_ROW_PARAM]   = { { PROP_IX_CH1_MEAS,     PROP_IX_CH2_MEAS,  PROP_IX_FFT_MEAS } },
     [OSC_ROW_CH1]     = { { PROP_IX_CH1_ENABLED,  PROP_IX_CH1_PROBE, PROP_IX_CH1_COUPLING } },
     [OSC_ROW_CH2]     = { { PROP_IX_CH2_ENABLED,  PROP_IX_CH2_PROBE, PROP_IX_CH2_COUPLING } },
     [OSC_ROW_TRIGGER] = { { PROP_IX_TRIG_MODE,    PROP_IX_TRIG_EDGE, PROP_IX_TRIG_SOURCE } },
     [OSC_ROW_PERSIST] = { { PROP_IX_VIEW_PERSIST, B_NONE,            B_NONE } },
     [OSC_ROW_MATH]    = { { PROP_IX_VIEW_MATH,    B_NONE,            B_NONE } },
+    [OSC_ROW_SPECTRUM] = { { PROP_IX_FFT_WINDOW,  PROP_IX_FFT_AVG,   PROP_IX_FFT_MAXHOLD } },
 };
 _Static_assert(PROP_IX_COUNT < 256, "a table index fits the binding's byte");
 _Static_assert(OSC_CH_ENABLE == 0 && OSC_CH_PROBE == 1 && OSC_CH_COUPLING == 2 && OSC_CH_COUNT == 3,
                "the CH panes' rows are enabled, probe, coupling");
+_Static_assert(OSC_SPEC_WINDOW == 0 && OSC_SPEC_AVG == 1 && OSC_SPEC_MAXHOLD == 2 && OSC_SPEC_COUNT == 3,
+               "the Spectrum pane's rows are window, average, max hold");
 _Static_assert(OSC_TRIG_MODE == 0 && OSC_TRIG_EDGE == 1 && OSC_TRIG_SOURCE == 2 && OSC_TRIG_COUNT == 3,
                "the Trigger pane's rows are mode, edge, source");
 /* item i = value i for the three RADIO panes. */
@@ -98,7 +102,8 @@ void osc_menu_bind_text(osc_row_t row, uint8_t item, char *out, size_t n)
 
 bool osc_menu_screen_paints(uint16_t groups)
 {
-    const uint16_t bound = (uint16_t)((1u << PG_CH1) | (1u << PG_CH2) | (1u << PG_TRIG) | (1u << PG_VIEW));
+    const uint16_t bound = (uint16_t)((1u << PG_CH1) | (1u << PG_CH2) | (1u << PG_TRIG) | (1u << PG_VIEW) |
+                                      (1u << PG_FFT));
     return groups != 0u && (groups & (uint16_t)~bound) == 0u;
 }
 
@@ -122,8 +127,22 @@ const char *osc_menu_screen_note(void)
 
 static void note(const char *t) { snprintf(s_note, sizeof s_note, "%s", t); }
 
+/* The Measure pane's panels for the view on screen: the measurement sets of
+ * the domains it shows (view_table.h), starting on the set of the domain the
+ * arrows are on. */
+static void meas_sets_of_view(void)
+{
+    const uint8_t view = (uint8_t)prop_get(P(VIEW_MODE));
+    uint8_t sets = 0u;
+    if (view_shows(view, VIEW_DOM_TIME)) sets |= (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2);
+    if (view_shows(view, VIEW_DOM_FREQ)) sets |= 1u << MEAS_SET_FFT;
+    const bool freq = view_key_domain(view, (key_focus_t)key_focus_get()) == VIEW_DOM_FREQ;
+    osc_menu_set_meas_sets(sets, freq ? MEAS_SET_FFT : MEAS_SET_CH1);
+}
+
 void osc_menu_screen_open(osc_row_t row, bool locked, uint8_t opener)
 {
+    meas_sets_of_view();
     if (locked) osc_menu_open_locked(row);
     else        osc_menu_open(row);
     s_opener = opener;
@@ -213,7 +232,8 @@ static void apply(const osc_action_t *a)
 static osc_result_t page_key(osc_key_t k)
 {
     const int32_t cur_was = prop_get(P(VIEW_CURSOR));
-    const uint16_t m1 = meas_select_get(0), m2 = meas_select_get(1);
+    const uint16_t m1 = meas_select_get(MEAS_SET_CH1), m2 = meas_select_get(MEAS_SET_CH2),
+                   mf = meas_select_get(MEAS_SET_FFT);
 
     osc_action_t a;
     const osc_result_t r = osc_menu_step(k, &a);
@@ -226,8 +246,9 @@ static osc_result_t page_key(osc_key_t k)
      * action, osc_menu_screen.h): tell the property model what moved. chN.meas
      * is a saved setting, so this is also what notes the settings (nothing
      * captures them per key any more). */
-    if (meas_select_get(0) != m1) model_changed_also(P(CH1_MEAS), ORIGIN_KEY);
-    if (meas_select_get(1) != m2) model_changed_also(P(CH2_MEAS), ORIGIN_KEY);
+    if (meas_select_get(MEAS_SET_CH1) != m1) model_changed_also(P(CH1_MEAS), ORIGIN_KEY);
+    if (meas_select_get(MEAS_SET_CH2) != m2) model_changed_also(P(CH2_MEAS), ORIGIN_KEY);
+    if (meas_select_get(MEAS_SET_FFT) != mf) model_changed_also(P(FFT_MEAS), ORIGIN_KEY);
     const int32_t cur = prop_get(P(VIEW_CURSOR));
     if (cur != cur_was) osc_menu_env_cursors(cur != CURSOR_OFF);
     return r;
@@ -293,7 +314,7 @@ static void oms_draw(scr_paint_t how, uint32_t frame)
 }
 
 /* Hash of everything osc_menu_draw() renders: the page's cursor, every
- * bound value (whoever set it), both measurement selections, the note and
+ * bound value (whoever set it), the measurement selections, the note and
  * the theme. */
 static uint32_t oms_epoch(void)
 {
@@ -301,7 +322,7 @@ static uint32_t oms_epoch(void)
     uint32_t h = REDRAW_EPOCH_SEED;
     h = redraw_epoch_mix(h, (uint32_t)theme_get_id());
     h = redraw_epoch_mix(h, (uint32_t)s.open | ((uint32_t)s.in_pane << 1) | ((uint32_t)s.locked << 2)
-                            | ((uint32_t)s.meas_ch << 3) | ((uint32_t)s.row << 8)
+                            | ((uint32_t)s.meas_set << 3) | ((uint32_t)s.row << 8)
                             | ((uint32_t)s.item << 16) | ((uint32_t)s.opens << 24));
     for (unsigned r = 0; r < OSC_ROW_COUNT; r++)
         for (unsigned i = 0; i < 3u; i++)
@@ -315,7 +336,7 @@ static uint32_t oms_epoch(void)
 /* ── any task ──────────────────────────────────────────────────────── */
 
 static const char *const k_row_name[OSC_ROW_COUNT] = {
-    "display", "cursor", "param", "ch1", "ch2", "trigger", "persist", "math",
+    "display", "cursor", "param", "ch1", "ch2", "trigger", "persist", "math", "spectrum",
 };
 
 /* `ui screen`: "row=ch1 pane=pane item=2". */

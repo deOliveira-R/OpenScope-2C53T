@@ -35,17 +35,17 @@
  * CH1/CH2), opening the Oscilloscope Settings page (MENU, PRM, TRIGGER).
  *
  * Procedures: one named request each, the one the shell's row makes too:
- *   AUTO (time view)   scope_selfcal_request_autoset()        `fpga scope autoset`
+ *   AUTO (time record) scope_selfcal_request_autoset()        `fpga scope autoset`
  *   long AUTO          scope_selfcal_request_basecal(0x03)    `fpga scope basecal`
  *   long OK            scope_selfcal_request_center50()       `fpga scope center50`
  *   AUTO, a mask or its stage up   scope_mask_key_auto()      `mask teach` / `mask clear`
  *   OK, a mask failure held        SCOPE_MASK_REQ_RELEASE     `mask run`
- *   AUTO (spectrum views)          fft_auto_request()         `fft auto`
+ *   AUTO (spectrum)                fft_auto_request()         `fft auto`
  *   OK in SINGLE, stopped or its record taken: `set view.run on` (re-arm)
  *
- * State with no property: the live FFT configuration (window, reference
- * level, zoom: SELECT and the arrows in the spectrum views). fft.window /
- * fft.avg / fft.maxhold are stored-only by design until an FFT pane exists.
+ * State with no property: the spectrum's reference level and span (the
+ * arrows in the spectrum job). Its window, averaging and max hold are the
+ * fft.* properties (the settings page's Spectrum pane).
  *
  * DISPLAY (display task). draw / tick / epoch are the scope's paint module
  * (scope_view_*, main.c in the firmware): the full and live frames, the
@@ -66,9 +66,10 @@
 
 extern const screen_t scope_screen;
 
-/* The arrow stage (key_model.h KF_*) and what the renderer reads of it. The
- * scope screen is their one writer. */
+/* The job the arrows were last put on (view_table.h KF_*); the scope screen
+ * is its one writer. Readers want key_focus_get(), the job in force. */
 extern volatile key_focus_t scope_key_focus;
+void scope_screen_view_changed(void);    /* the arrows to the new view's first job */
 
 /* The scope's key context as it stands (cursors, mask, view, page), mode
  * MODE_OSCILLOSCOPE. Input task. It also drops an arrow stage that no

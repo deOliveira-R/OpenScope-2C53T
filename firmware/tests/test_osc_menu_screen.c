@@ -61,6 +61,7 @@ static bool f_persist_on(uint8_t m)
 static void f_persist_off(void) { env_logf("persist_off;"); persist_enabled = false; }
 static uint8_t f_persist_mode(void) { return t_persist_mode; }
 static bool f_roll(void) { env_logf("roll(%d);", scope_state_get()->roll); return true; }
+static void f_fft_settings(void) { env_logf("fft_settings;"); }
 
 static model_hw_ops_t t_ops;
 
@@ -91,7 +92,7 @@ static void boot(void)
     t_ops.channel_enables = f_channel_enables; t_ops.interleave_active = f_interleave;
     t_ops.coupling = f_coupling; t_ops.trigger_source = f_trigsrc; t_ops.trigger_source_follow = f_trigsrc; t_ops.single_rearm = f_rearm;
     t_ops.view_select = f_view; t_ops.persist_on = f_persist_on; t_ops.persist_off = f_persist_off;
-    t_ops.persist_mode = f_persist_mode; t_ops.roll = f_roll;
+    t_ops.persist_mode = f_persist_mode; t_ops.roll = f_roll; t_ops.fft_settings = f_fft_settings;
     model_bind_hw(&t_ops);
     t_il = false; t_coupling_ok = t_trigsrc_ok = t_persist_ok = t_view_ok = true; t_persist_mode = 0;
     osc_menu_close();
@@ -156,6 +157,8 @@ static void test_table(void)
         { OSC_ROW_CH2, OSC_CH_COUPLING, "ch2.coupling" },
         { OSC_ROW_TRIGGER, OSC_TRIG_MODE, "trig.mode" }, { OSC_ROW_TRIGGER, OSC_TRIG_EDGE, "trig.edge" },
         { OSC_ROW_TRIGGER, OSC_TRIG_SOURCE, "trig.source" },
+        { OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, "fft.window" }, { OSC_ROW_SPECTRUM, OSC_SPEC_AVG, "fft.avg" },
+        { OSC_ROW_SPECTRUM, OSC_SPEC_MAXHOLD, "fft.maxhold" },
     };
     int ok = 1;
     for (unsigned i = 0; i < sizeof B / sizeof B[0]; i++) {
@@ -164,6 +167,7 @@ static void test_table(void)
     }
     CHECK("every pane and row names its property, and it is settable", ok);
 
+    /* every VALUES row wraps, fft.avg's ladder (off, x2 .. x32) too */
     int rows = 0; ok = 1;
     for (int r = 0; r < OSC_ROW_COUNT; r++) {
         const osc_pane_layout_t *l = osc_menu_layout((osc_row_t)r);
@@ -175,7 +179,8 @@ static void test_table(void)
         }
         ok &= osc_menu_bind_prop((osc_row_t)r, l->n_items) == NULL;
     }
-    CHECK("VALUES rows: 9, each a wrapping property stepped by 1; no row past the pane", ok && rows == 9);
+    CHECK("VALUES rows: CH1, CH2, Trigger, Spectrum, each stepped by 1 and wrapping; no row past the pane",
+          ok && rows == 2 * OSC_CH_COUNT + OSC_TRIG_COUNT + OSC_SPEC_COUNT);
 
     ok = 1;
     static const osc_row_t radio[] = { OSC_ROW_DISPLAY, OSC_ROW_CURSOR, OSC_ROW_PERSIST, OSC_ROW_MATH };
@@ -255,6 +260,27 @@ static void test_value_text(void)
         ok &= strcmp(t, trigger_source_labels[s]) == 0;
     }
     CHECK("Trigger: Auto Normal Single, Rising Falling, CH1 CH2", ok && TRIG_COUNT == 3);
+    /* Spectrum: the properties' own words (the shell's tokens) */
+    static const char *const win[] = { "rect", "hanning", "hamming", "blackman", "flattop" };
+    static const char *const avg[] = { "off", "x2", "x4", "x8", "x16", "x32" };
+    ok = (int)(sizeof win / sizeof win[0]) == P(FFT_WINDOW)->max + 1 &&
+         (int)(sizeof avg / sizeof avg[0]) == P(FFT_AVG)->max + 1;
+    for (int32_t v = 0; v <= P(FFT_WINDOW)->max; v++) {
+        (void)prop_set_local(P(FFT_WINDOW), v, ORIGIN_SHELL, NULL);
+        osc_menu_bind_text(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, t, sizeof t);
+        ok &= strcmp(t, win[v]) == 0;
+    }
+    for (int32_t v = 0; v <= P(FFT_AVG)->max; v++) {
+        (void)prop_set_local(P(FFT_AVG), v, ORIGIN_SHELL, NULL);
+        osc_menu_bind_text(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, t, sizeof t);
+        ok &= strcmp(t, avg[v]) == 0;
+    }
+    for (int32_t v = 0; v <= P(FFT_MAXHOLD)->max; v++) {
+        (void)prop_set_local(P(FFT_MAXHOLD), v, ORIGIN_SHELL, NULL);
+        osc_menu_bind_text(OSC_ROW_SPECTRUM, OSC_SPEC_MAXHOLD, t, sizeof t);
+        ok &= strcmp(t, v ? "ON" : "OFF") == 0;
+    }
+    CHECK("Spectrum: rect hanning hamming blackman flattop, off x2 .. x32, OFF ON", ok);
     osc_menu_bind_text(OSC_ROW_DISPLAY, 0, t, sizeof t);
     CHECK("a RADIO pane has no value text", t[0] == '\0');
 }
@@ -327,6 +353,28 @@ static void test_values_rows(void)
     ok &= values_step(OSC_ROW_TRIGGER, OSC_TRIG_SOURCE, BTN_LEFT, TRIG_SRC_CH1, "trigsrc(0);");
     ok &= values_step(OSC_ROW_TRIGGER, OSC_TRIG_SOURCE, BTN_OK, TRIG_SRC_CH2, "trigsrc(1);");
     CHECK("Trigger Channel: trig.source CH1 <-> CH2 through reg 0x06", ok);
+
+    /* Spectrum: live settings, each set goes to the FFT through its op */
+    open_in(OSC_ROW_SPECTRUM);
+    const prop_desc_t *win = P(FFT_WINDOW), *avg = P(FFT_AVG), *hold = P(FFT_MAXHOLD);
+    ok  = values_step(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, BTN_RIGHT, G(win) + 1, "fft_settings;");
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, BTN_LEFT, G(win) - 1, "fft_settings;");
+    (void)prop_set_local(win, win->max, ORIGIN_SHELL, NULL);
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, BTN_RIGHT, win->min, "fft_settings;");   /* wraps */
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, BTN_LEFT, win->max, "fft_settings;");    /* wraps back */
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_WINDOW, BTN_OK, win->min, "fft_settings;");
+    CHECK("Spectrum Window: fft.window, wrapping, into the live FFT", ok);
+    ok  = values_step(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, BTN_RIGHT, avg->min + 1, "fft_settings;");
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, BTN_LEFT, avg->min, "fft_settings;");
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, BTN_OK, avg->min + 1, "fft_settings;");
+    (void)prop_set_local(avg, avg->min, ORIGIN_SHELL, NULL);
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, BTN_LEFT, avg->max, "fft_settings;");   /* wraps */
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_AVG, BTN_RIGHT, avg->min, "fft_settings;");  /* wraps back */
+    CHECK("Spectrum Average: fft.avg off .. x32, wrapping, into the live FFT", ok);
+    ok  = values_step(OSC_ROW_SPECTRUM, OSC_SPEC_MAXHOLD, BTN_RIGHT, hold->max, "fft_settings;");
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_MAXHOLD, BTN_LEFT, hold->min, "fft_settings;");
+    ok &= values_step(OSC_ROW_SPECTRUM, OSC_SPEC_MAXHOLD, BTN_OK, hold->max, "fft_settings;");
+    CHECK("Spectrum Max hold: fft.maxhold OFF <-> ON, into the live FFT", ok);
 }
 
 /* Pick item `item` of a RADIO / Math pane by its keys; the cursor starts on
@@ -515,10 +563,10 @@ static void test_measure(void)
     open_in(OSC_ROW_PARAM);
     const uint16_t m0 = (uint16_t)G(P(CH1_MEAS));
     env_epochs_t e0 = env_epochs();
-    CHECK("the pane starts on Freq of CH1", S()->item == OSC_PRM_CHIP0 && S()->meas_ch == 0);
+    CHECK("the pane starts on Freq of CH1", S()->item == OSC_PRM_CHIP0 && S()->meas_set == MEAS_SET_CH1);
     scr_res_t r = env_key(BTN_OK);
     env_epochs_t e1 = env_epochs();
-    const uint16_t bit = (uint16_t)(1u << osc_menu_prm_of_chip(0));
+    const uint16_t bit = (uint16_t)(1u << osc_menu_meas_of_chip(MEAS_SET_CH1, 0));
     CHECK("OK on a chip toggles its bit of ch1.meas; `get` and the ch1 epoch follow, ch2's does not",
           r == SCR_DRAW && (uint16_t)G(P(CH1_MEAS)) == (uint16_t)(m0 ^ bit) &&
           env_epochs_moved(&e0, &e1) == (1u << PG_CH1));
@@ -535,7 +583,7 @@ static void test_measure(void)
     r = env_key(BTN_OK);
     e1 = env_epochs();
     CHECK("the channel tab flips the page: UI state, no property, no epoch",
-          r == SCR_DRAW && S()->meas_ch == 1 && env_epochs_moved(&e0, &e1) == 0);
+          r == SCR_DRAW && S()->meas_set == MEAS_SET_CH2 && env_epochs_moved(&e0, &e1) == 0);
     (void)env_key(BTN_RIGHT);
     e0 = env_epochs();
     (void)env_key(BTN_OK);
@@ -543,6 +591,48 @@ static void test_measure(void)
     CHECK("All on CH2's page: ch2.meas, the ch2 epoch", (uint16_t)G(P(CH2_MEAS)) == 0x0FFFu &&
           G(P(CH1_MEAS)) == 0 && env_epochs_moved(&e0, &e1) == (1u << PG_CH2));
     CHECK("no hardware, no note", env_log_is("") && note()[0] == '\0');
+}
+
+/* The Measure pane's panels come from the view on screen. */
+static void test_measure_by_view(void)
+{
+    printf("Measure pane: the panels of the view on screen\n");
+    static const struct { uint8_t view; uint8_t job; uint8_t sets, first; } V[] = {
+        { VIEW_MODE_YT, KF_ZOOM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_CH1 },
+        { VIEW_MODE_ROLL, KF_ZOOM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_CH1 },
+        { VIEW_MODE_XY, KF_ZOOM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_CH1 },
+        { VIEW_MODE_FFT, KF_SPECTRUM, 1u << MEAS_SET_FFT, MEAS_SET_FFT },
+        { VIEW_MODE_FFT, KF_ZOOM, 1u << MEAS_SET_FFT, MEAS_SET_FFT },
+        { VIEW_MODE_WATERFALL, KF_SPECTRUM, 1u << MEAS_SET_FFT, MEAS_SET_FFT },
+        { VIEW_MODE_SPLIT, KF_TRIGMOVE, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2) | (1u << MEAS_SET_FFT), MEAS_SET_CH1 },
+        { VIEW_MODE_SPLIT, KF_SPECTRUM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2) | (1u << MEAS_SET_FFT), MEAS_SET_FFT },
+    };
+    int ok = 1;
+    for (unsigned i = 0; i < sizeof V / sizeof V[0]; i++) {
+        boot();
+        (void)prop_set_local(P(VIEW_MODE), V[i].view, ORIGIN_SHELL, NULL);
+        env_focus = V[i].job;
+        open_page(OSC_ROW_PARAM, true, BTN_PRM);
+        const bool good = G(P(VIEW_MODE)) == V[i].view && S()->meas_sets == V[i].sets && S()->meas_set == V[i].first;
+        if (!good) printf("    view %u job %u: sets 0x%x on %u\n", V[i].view, V[i].job, S()->meas_sets, S()->meas_set);
+        ok &= good;
+    }
+    env_focus = KF_ZOOM;
+    CHECK("time views: CH1 + CH2 from CH1; FFT / waterfall: FFT; split: all three, from FFT on the spectrum job", ok);
+
+    /* the FFT panel edits fft.meas: its property, its group */
+    boot();
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
+    env_focus = KF_SPECTRUM;
+    open_page(OSC_ROW_PARAM, true, BTN_PRM);
+    const int32_t m0 = G(P(FFT_MEAS));
+    const env_epochs_t e0 = env_epochs();
+    const scr_res_t r = env_key(BTN_OK);                 /* on Peak */
+    const env_epochs_t e1 = env_epochs();
+    env_focus = KF_ZOOM;
+    CHECK("FFT panel, OK on Peak: fft.meas bit 0 flips, the fft epoch moves, the channels' do not",
+          r == SCR_DRAW && G(P(FFT_MEAS)) == (m0 ^ 1) && env_epochs_moved(&e0, &e1) == (1u << PG_FFT) &&
+          G(P(CH1_MEAS)) == MEAS_SELECT_CH1_DEFAULT);
 }
 
 /* ── a set from the shell while the page is open; idle ─────────────── */
@@ -576,6 +666,7 @@ static void test_shell_set_and_idle(void)
         { "trig.mode", 1 }, { "trig.edge", 1 }, { "trig.source", 1 },
         { "view.mode", 3 }, { "view.cursor", 2 }, { "view.persist", 2 }, { "view.math", 4 },
         { "ch1.meas", 0x0001 }, { "ch2.meas", 0x0800 },
+        { "fft.window", 3 }, { "fft.avg", 2 }, { "fft.maxhold", 1 }, { "fft.meas", 0x000F },
     };
     int ok = 1, inplace = 1;
     for (unsigned i = 0; i < sizeof SETS / sizeof SETS[0]; i++) {
@@ -595,7 +686,7 @@ static void test_shell_set_and_idle(void)
         const bool want_inplace = strcmp(SETS[i].name, "ch1.enabled") != 0;
         inplace &= osc_menu_screen_paints(touched) == want_inplace;
     }
-    CHECK("each of the 15 bound properties set from the shell: one in-place paint, then none", ok);
+    CHECK("each bound property set from the shell: one in-place paint, then none", ok);
     CHECK("... and the executor may post it as the page's own paint (a set that also moves ui.ach: not)",
           inplace);
     CHECK("a change of something the page does not draw is a full repaint: sys, tb, ui, gen, none",
@@ -744,8 +835,8 @@ static void test_draw_describe(void)
     open_page(OSC_ROW_PARAM, true, BTN_PRM);
     osc_menu_screen.describe(d, sizeof d);
     CHECK("locked: row=param pane=locked item=3", strcmp(d, "row=param pane=locked item=3") == 0);
-    static const char *const names[OSC_ROW_COUNT] = { "display", "cursor", "param", "ch1", "ch2", "trigger",
-                                                       "persist", "math" };
+    static const char *const names[] = { "display", "cursor", "param", "ch1", "ch2", "trigger",
+                                          "persist", "math", "spectrum" };
     int ok = 1;
     for (int r = 0; r < OSC_ROW_COUNT; r++) {
         char w[48];
@@ -755,7 +846,8 @@ static void test_draw_describe(void)
         snprintf(w, sizeof w, "row=%s pane=rail item=0", names[r]);
         ok &= strcmp(d, w) == 0;
     }
-    CHECK("the eight row names are the ones the walk scripts read", ok);
+    CHECK("the nine row names are the ones the walk scripts read (spectrum last)",
+          ok && sizeof names / sizeof names[0] == OSC_ROW_COUNT);
     char line[96];
     boot();
     open_page(OSC_ROW_CH2, false, BTN_CH2);
@@ -773,6 +865,7 @@ int main(void)
     test_radio_panes();
     test_rules_and_notes();
     test_measure();
+    test_measure_by_view();
     test_shell_set_and_idle();
     test_router_order();
     test_open_close();

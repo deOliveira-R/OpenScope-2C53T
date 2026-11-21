@@ -22,6 +22,7 @@
 #include "fuse_model.h"
 #include "math_channel.h"
 #include "ui.h"
+#include "view_table.h"     /* the jobs ui.focus reports */
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -170,6 +171,7 @@ static ppm_period_t f_il_skew_get(void)          { ppm_period_t s = { g_il_skew 
 static bool f_busy(void)                         { return g_busy; }
 static bool f_shell_persist(void)                { return g_shell_persist; }
 static void f_note(void)                         { g_notes++; }
+static void f_fft_settings(void)                 { logf_("fft_settings;"); }
 
 static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .channel_enables = f_enables, .trigger_source_follow = f_trig_src,
@@ -186,7 +188,7 @@ static const model_hw_ops_t k_fake = {
     .backlight = f_backlight, .autooff = f_autooff, .il_enable = f_il_en, .il_enabled = f_il_enabled,
     .il_corr_set = f_il_corr_set, .il_corr_get = f_il_corr_get, .il_knots = f_il_knots, .il_skew_set = f_il_skew_set,
     .il_skew_get = f_il_skew_get, .selfcal_busy = f_busy, .shell_persist = f_shell_persist,
-    .note_change = f_note,
+    .note_change = f_note, .fft_settings = f_fft_settings,
 };
 
 /* A device as a first boot leaves it, with the fake ops bound. */
@@ -395,6 +397,7 @@ static void test_parse_format(void)
     CHECK(strcmp(fmtv(P(CH1_MEAS), 0), "none") == 0);
     CHECK(strcmp(fmtv(P(SYS_INSTRUMENT), 2), "gen") == 0);
     CHECK(strcmp(fmtv(P(UI_FOCUS), 2), "trigmove") == 0);
+    CHECK(strcmp(fmtv(P(UI_FOCUS), KF_SPECTRUM), "spectrum") == 0 && P(UI_FOCUS)->max == KF_COUNT - 1);
     CHECK(strcmp(fmtv(P(METER_FUSERATING), 6), "10A") == 0);              /* ATO table, index 6 */
     char t[16];
     prop_format_value(P(CH1_VDIV), 3, t, sizeof t);
@@ -794,6 +797,72 @@ static void test_save_forms(void)
     CHECK(P(SYS_INSTRUMENT)->flags & PF_SESSION);
     CHECK(P(SYS_MODE)->flags & PF_ALIAS);
     CHECK((P(SYS_LANG)->flags & (PF_PERSIST | PF_STORED_ONLY)) == (PF_PERSIST | PF_STORED_ONLY));
+    /* the FFT settings are live: persisted, applied by their setter */
+    CHECK((P(FFT_WINDOW)->flags & (PF_PERSIST | PF_STORED_ONLY)) == PF_PERSIST);
+    CHECK((P(FFT_AVG)->flags & (PF_PERSIST | PF_STORED_ONLY)) == PF_PERSIST);
+    CHECK((P(FFT_MAXHOLD)->flags & (PF_PERSIST | PF_STORED_ONLY)) == PF_PERSIST);
+    bool only_lang = true;                                 /* sys.lang is the one stored-only property */
+    for (uint16_t i = 0; i < prop_count(); i++)
+        if (prop_at(i)->flags & PF_STORED_ONLY) only_lang &= prop_at(i) == P(SYS_LANG);
+    CHECK(only_lang);
+}
+
+/* The spectrum's session properties: its measurement selection and the four
+ * cursor lines in its own units (a bin, tenths of a dB). */
+static void test_spectrum_props(void)
+{
+    fresh();
+    prop_note_t n;
+    static const struct { const prop_desc_t *p; int32_t min, max, def; uint8_t dec; } S[] = {
+        { P(FFT_MEAS),   0, 0x000F, 0x0003, 0 },
+        { P(VIEW_CURF1), 1, 2047, 683, 0 },   { P(VIEW_CURF2), 1, 2047, 1365, 0 },
+        { P(VIEW_CURL1), -2000, 2000, 400, 1 }, { P(VIEW_CURL2), -2000, 2000, 200, 1 },
+    };
+    for (unsigned i = 0; i < sizeof S / sizeof S[0]; i++) {
+        const prop_desc_t *p = S[i].p;
+        CHECKF(p->min == S[i].min && p->max == S[i].max && prop_default(p) == S[i].def &&
+               p->decimals == S[i].dec && prop_get(p) == S[i].def, "%s: %ld..%ld def %ld now %ld", p->name,
+               (long)p->min, (long)p->max, (long)prop_default(p), (long)prop_get(p));
+        CHECKF((p->flags & (PF_SESSION | PF_PERSIST)) == PF_SESSION && prop_is_settable(p), "%s flags", p->name);
+        /* past the range: a mask refuses the bit it has not, a line stops at the end */
+        const bool mask = p->type == PT_MASK;
+        CHECKF(prop_set_local(p, S[i].max + 1, ORIGIN_SHELL, &n) == (mask ? PS_INVALID : PS_CLAMPED) &&
+               prop_get(p) == (mask ? S[i].def : S[i].max), "%s past max", p->name);
+        CHECK(prop_set_local(p, S[i].min, ORIGIN_SHELL, &n) == PS_OK && prop_get(p) == S[i].min);
+    }
+    CHECK(P(FFT_MEAS)->type == PT_MASK && P(FFT_MEAS)->group == PG_FFT);
+    /* the spectrum's cursor lines are scope_state's, one per property */
+    fresh();
+    CHECK(prop_set_local(P(VIEW_CURF2), 1000, ORIGIN_SHELL, &n) == PS_OK &&
+          prop_set_local(P(VIEW_CURL2), -555, ORIGIN_SHELL, &n) == PS_OK);
+    const spectrum_cursor_t *c = &scope_state_get()->spectrum_cursor;
+    CHECK(c->bin[0] == 683 && c->bin[1] == 1000 && c->level[0] == 400 && c->level[1] == -555);
+    /* fft.meas is the spectrum's measurement set; its labels are the set's */
+    CHECK(prop_set_local(P(FFT_MEAS), 0x5, ORIGIN_SHELL, &n) == PS_OK && meas_select_get(MEAS_SET_FFT) == 0x5);
+    CHECK(strcmp(fmtv(P(FFT_MEAS), 0x5), "Peak,H2") == 0);
+    CHECK(strcmp(fmtv(P(UI_FOCUS), KF_SPECTRUM_CURSOR), "scursor") == 0);
+}
+
+/* fft.window / fft.avg / fft.maxhold: each set stores the value, then hands
+ * the three to the live FFT through the one op; with no op bound the value
+ * is still stored. */
+static void test_fft_settings(void)
+{
+    fresh();
+    prop_note_t n;
+    static const struct { const prop_desc_t *p; int32_t v; } S[] = {
+        { P(FFT_WINDOW), 3 }, { P(FFT_AVG), 4 }, { P(FFT_MAXHOLD), 1 },
+    };
+    for (unsigned i = 0; i < sizeof S / sizeof S[0]; i++) {
+        log_clear();
+        CHECK(prop_set_local(S[i].p, S[i].v, ORIGIN_SHELL, &n) == PS_OK && prop_get(S[i].p) == S[i].v);
+        CHECKF(strcmp(g_log, "fft_settings;") == 0, "%s: [%s]", S[i].p->name, g_log);
+    }
+    model_hw_ops_t none = k_fake;
+    none.fft_settings = NULL;
+    model_bind_hw(&none);
+    CHECK(prop_set_local(P(FFT_WINDOW), 0, ORIGIN_SHELL, &n) == PS_OK && prop_get(P(FFT_WINDOW)) == 0);
+    model_bind_hw(&k_fake);
 }
 
 static void test_profile_lines(void)
@@ -1413,6 +1482,8 @@ int main(int argc, char **argv)
     test_fail_each_call();
     test_cross_group();
     test_save_forms();
+    test_fft_settings();
+    test_spectrum_props();
     test_profile_lines();
     test_profile_write_and_defaults();
     test_instruments();

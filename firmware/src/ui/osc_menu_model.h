@@ -6,7 +6,9 @@
  * left rail of eight categories and a right pane of options.
  *
  *   rail:  Display, Cursors, Measure, CH1, CH2, Trigger, Persist, Math
- *          (stock's labels, made to fit one line: no "Cursor Mea/surement")
+ *          (stock's labels, made to fit one line: no "Cursor Mea/surement"),
+ *          then Spectrum, ours: the window, averaging and max hold of the
+ *          spectrum views
  *
  * This file is the state machine only: no LCD, no FPGA, no FreeRTOS, so
  * tests/test_osc_menu.c runs the code the input task runs (make test-osc-menu).
@@ -17,22 +19,25 @@
  * rules).
  *
  * KEYS (study 1.4; stock where seen, ours where stock is silent)
- *   rail focus:   UP/DOWN   previous/next row, wrapping (all 8 rows are
- *                           visible at 26 px, so no scroll: stock shows 6)
+ *   rail focus:   UP/DOWN   previous/next row, wrapping (all the rows are
+ *                           visible, so no scroll: stock shows 6)
  *                 RIGHT/OK  enter the pane
  *                 LEFT      nothing
  *                 BACK      close the page (short MENU on stock: level 1 -> 0)
  *   pane focus, by pane kind:
  *     RADIO  (Display, Cursors, Persist): UP/DOWN move, OK picks, LEFT or
  *            BACK -> rail. RIGHT does nothing (picking applies, so it takes OK).
- *     VALUES (CH1, CH2, Trigger): UP/DOWN pick the row, LEFT/RIGHT change its
+ *     VALUES (CH1, CH2, Trigger, Spectrum): UP/DOWN pick the row, LEFT/RIGHT change its
  *            value (-1/+1), OK = +1. BACK -> rail (LEFT is taken by the value).
  *     CHIPS  (Measure, Math): a grid. Arrows move, clamped at the edges;
  *            LEFT at the left column or BACK -> rail; OK toggles/picks.
- *            Measure: row 0 is [CHx tab][All][None] over stock's 3x4 grid;
- *            OK on the tab flips CH1/CH2, DOWN past CH1's last row continues
- *            into CH2 and UP above CH2's first row back into CH1 (stock
- *            scrolls one long list of both panels).
+ *            Measure: one panel per measurement set (meas_select.h: CH1,
+ *            CH2, the spectrum), of the sets the view on screen has
+ *            (osc_menu_set_meas_sets). Row 0 is [tab][All][None] over the
+ *            set's grid (the channels': stock's 3x4). OK on the tab goes
+ *            to the next panel, DOWN past a panel's last row continues into
+ *            the next and UP above its first row back into the one before
+ *            (stock scrolls one long list of both channels' panels).
  *   osc_menu_open(row) while open jumps to that row, rail focus (another
  *   deep-link key pressed on the page goes to its row).
  *
@@ -51,7 +56,8 @@
 
 /* ── Fixed interface (research/ui/ROUND1_BRIEF.md) ─────────────────── */
 typedef enum { OSC_ROW_DISPLAY, OSC_ROW_CURSOR, OSC_ROW_PARAM, OSC_ROW_CH1, OSC_ROW_CH2,
-               OSC_ROW_TRIGGER, OSC_ROW_PERSIST, OSC_ROW_MATH, OSC_ROW_COUNT } osc_row_t;
+               OSC_ROW_TRIGGER, OSC_ROW_PERSIST, OSC_ROW_MATH, OSC_ROW_SPECTRUM,
+               OSC_ROW_COUNT } osc_row_t;
 typedef enum { OSC_KEY_UP, OSC_KEY_DOWN, OSC_KEY_LEFT, OSC_KEY_RIGHT, OSC_KEY_OK, OSC_KEY_BACK } osc_key_t;
 typedef enum { OSC_RES_NONE, OSC_RES_REDRAW, OSC_RES_CLOSE } osc_result_t;
 void         osc_menu_open(osc_row_t row);   /* opens the page with that row selected */
@@ -95,8 +101,13 @@ enum { OSC_DISP_YT = 0, OSC_DISP_ROLL, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_SPLIT
 enum { OSC_CUR_OFF = 0, OSC_CUR_TIME, OSC_CUR_VOLT, OSC_CUR_BOTH, OSC_CUR_COUNT };
 enum { OSC_CH_ENABLE = 0, OSC_CH_PROBE, OSC_CH_COUPLING, OSC_CH_COUNT };
 enum { OSC_TRIG_MODE = 0, OSC_TRIG_EDGE, OSC_TRIG_SOURCE, OSC_TRIG_COUNT };
+/* Spectrum (ours): how the spectrum of the FFT, split and waterfall views
+ * is computed. */
+enum { OSC_SPEC_WINDOW = 0, OSC_SPEC_AVG, OSC_SPEC_MAXHOLD, OSC_SPEC_COUNT };
 enum { OSC_PERS_OFF = 0, OSC_PERS_500MS, OSC_PERS_1S, OSC_PERS_2S, OSC_PERS_INF, OSC_PERS_COUNT };
-/* Measure: 0 = channel tab, 1 = All ("A-on"), 2 = None ("A-off"), 3.. = chips */
+/* Measure: 0 = the set's tab, 1 = All ("A-on"), 2 = None ("A-off"), 3.. = the
+ * set's chips (osc_menu_layout gives how many the panel on screen has;
+ * OSC_PRM_COUNT is a channel's panel, the largest). */
 enum { OSC_PRM_TAB = 0, OSC_PRM_ALL, OSC_PRM_NONE, OSC_PRM_CHIP0, OSC_PRM_COUNT = OSC_PRM_CHIP0 + 12 };
 /* Math: 0 = OFF, 1..8 = stock's 2x4 grid (osc_menu_math_op) */
 enum { OSC_MATH_OFF = 0, OSC_MATH_COUNT = 9 };
@@ -107,7 +118,8 @@ typedef struct {
     uint8_t row;         /* osc_row_t: the rail selection */
     bool    in_pane;     /* false = rail focus */
     uint8_t item;        /* pane item under the cursor */
-    uint8_t meas_ch;     /* Measure pane: 0 = CH1 page, 1 = CH2 */
+    uint8_t meas_set;    /* Measure pane: the panel on screen (meas_set_t) */
+    uint8_t meas_sets;   /* ... and the panels the view has, bit per meas_set_t */
     uint8_t opens;       /* bumped on every osc_menu_open*(): the drawer repaints all */
     bool    locked;      /* osc_menu_open_locked(): pane only, no rail */
 } osc_menu_state_t;
@@ -146,9 +158,10 @@ bool osc_menu_select_closes(osc_row_t row, uint8_t item);
 const char *osc_menu_row_label(osc_row_t row);    /* "Display" ... "Math" (rail) */
 const char *osc_menu_row_title(osc_row_t row);    /* "Display Mode" ... (pane title) */
 /* Item label for RADIO / CHIPS panes and the row label of VALUES panes
- * ("Channel", "Probe", ...); Measure chips use the stock measurement labels.
- * `ch` matters only for the Measure tab ("CH1"/"CH2"). "" out of range. */
-const char *osc_menu_item_label(osc_row_t row, uint8_t item, uint8_t ch);
+ * ("Channel", "Probe", ...); Measure chips use the measurements' labels.
+ * `set` matters only in the Measure pane: its tab ("CH1", "CH2", "FFT") and
+ * its chips. "" out of range. */
+const char *osc_menu_item_label(osc_row_t row, uint8_t item, uint8_t set);
 
 /* Display item -> the view.mode value it sets (0 yt, 1 roll, 2 xy, 3 fft,
  * 4 split, 5 waterfall: model_table.h), or -1 for an item that is no view. */
@@ -158,9 +171,16 @@ int8_t  osc_menu_disp_view_mode(uint8_t item);
  * OSC_DISP_COUNT (no item) for a value out of range. */
 uint8_t osc_menu_disp_item(int32_t view_mode);
 
-/* Measure chip `chip` (0..11, grid order) -> scope_prm_id_t. Stock's grid is
- * row-major Freq Wid+ Vp-p / Peri Wid- Amp / Duty+ Vmax Vrms / Duty- Vmin Avg. */
-uint8_t osc_menu_prm_of_chip(uint8_t chip);
+/* Measure chip `chip` (grid order) of a set's panel -> the measurement's id
+ * in the set; 0xFF for a chip the panel has not. The channels' grid is
+ * stock's, row-major Freq Wid+ Vp-p / Peri Wid- Amp / Duty+ Vmax Vrms /
+ * Duty- Vmin Avg; the spectrum's is its measurements in order. */
+uint8_t osc_menu_meas_of_chip(uint8_t set, uint8_t chip);
+
+/* The Measure pane's panels: the measurement sets the view on screen has
+ * (bit per meas_set_t; none given: the channels), and the one to start on.
+ * The screen says so before it opens the page (osc_menu_screen.c). */
+void osc_menu_set_meas_sets(uint8_t sets, uint8_t first);
 /* Math item 1..8 -> math_op_t (stock's 2x4: CH1+CH2 -CH1 / CH1-CH2 -CH2 /
  * CH1*CH2 |CH1| / CH1/CH2 |CH2|); 0xFF for OFF or out of range. */
 uint8_t osc_menu_math_op(uint8_t item);

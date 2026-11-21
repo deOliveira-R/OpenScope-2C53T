@@ -207,18 +207,6 @@ enum { SET_SOUND_ROW_VOLUME = 0, SET_SOUND_ROW_BRIGHTNESS, SET_SOUND_ROWS };
 #include "shared_mem.h"   /* waterfall history is a sub-tenant of the FFT pool region */
 extern volatile scope_view_t scope_view;
 
-/* Scope time view: what the arrow keys adjust, cycled by MOVE (key_model.h:
- * zoom -> channel move -> trigger move -> [cursor] -> [mask]). The three bools
- * below are DERIVED from it by the scope's screen (ui/scope_screen.c, their
- * one writer) and kept because the renderer and the shell read them: */
-/* true in the trigger-move stage (UP/DOWN = trigger level); the renderer
- * highlights the level marker. */
-extern volatile bool scope_trig_level_focus;
-/* true in the channel-move and trigger-move stages (LEFT/RIGHT = trigger
- * column). */
-extern volatile bool scope_hpos_focus;
-/* true in the mask stage, offered only while a mask exists. */
-extern volatile bool scope_mask_focus;
 /* Post a button press into the input queue (shell `btn`). */
 bool input_inject_button(button_id_t b);
 

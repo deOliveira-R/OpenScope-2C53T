@@ -33,6 +33,7 @@ bool scope_view_uses_fft(scope_view_t v);
  * claims the persistence buffer for its trail (cleared, short tail) and,
  * without the calibration page, brings the offset outputs up. */
 void scope_view_select(scope_view_t v);
+void scope_apply_fft_settings(void);   /* fft.window / fft.avg / fft.maxhold -> the live FFT */
 #endif
 
 /* Persistence on in mode m (or just the mode, if it is on already). The pool

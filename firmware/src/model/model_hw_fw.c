@@ -247,7 +247,9 @@ static bool op_view_select(uint8_t view)
     CTX();
 #if FEATURE_FFT
     if (view >= (uint8_t)SCOPE_VIEW_COUNT) return false;
+    const scope_view_t was = scope_view;
     scope_view_select((scope_view_t)view);
+    if (scope_view != was) scope_screen_view_changed();
     return scope_view == (scope_view_t)view;
 #else
     return view == 0u;
@@ -256,6 +258,13 @@ static bool op_view_select(uint8_t view)
 static bool    op_persist_on(uint8_t mode) { CTX(); return scope_apply_persist_on((persist_mode_t)mode); }
 static void    op_persist_off(void)        { CTX(); scope_apply_persist_off(); }
 static uint8_t op_persist_mode(void)       { return (uint8_t)persist_get_mode(); }
+static void    op_fft_settings(void)
+{
+#if FEATURE_FFT
+    CTX();
+    scope_apply_fft_settings();
+#endif
+}
 
 /* ═══ mask test (requests the acquisition task applies) ══════════════ */
 
@@ -444,7 +453,7 @@ static const model_hw_ops_t k_fw_ops = {
     .single_rearm = op_single_rearm, .single_done = op_single_done, .paused_latch = op_paused_latch,
     .trigger_code = op_trigger_code,
     .view_select = op_view_select, .persist_on = op_persist_on, .persist_off = op_persist_off,
-    .persist_mode = op_persist_mode,
+    .persist_mode = op_persist_mode, .fft_settings = op_fft_settings,
     .mask_present = op_mask_present, .mask_get = op_mask_get, .mask_tol = op_mask_tol,
     .mask_stopfail = op_mask_stopfail, .mask_state = op_mask_state, .mask_hold = op_mask_hold,
     .mask_pending = op_mask_pending, .mask_tol_pending = op_mask_tol_pending,
@@ -464,14 +473,9 @@ static const model_hw_ops_t k_fw_ops = {
 /* The reason fits a prop_note_t (23 characters). */
 static const struct { uint16_t id; const char *why; } k_unwired[] = {
     /* (view.run left this table with B7: its setter latches and re-arms.)
-     * Stored only: their record fields are carried by settings_store.c's own
-     * image until M3 moves them onto the model, so a set here would neither
-     * be saved nor read back from the record. fft.* stay so by design until
-     * an FFT pane binds them to the live FFT configuration. */
-    { PROP_ID_SYS_LANG,       "stored only until M3" },
-    { PROP_ID_FFT_WINDOW,     "stored only until M3" },
-    { PROP_ID_FFT_AVG,        "stored only until M3" },
-    { PROP_ID_FFT_MAXHOLD,    "stored only until M3" },
+     * Stored only: nothing applies the language yet, so a set would change
+     * nothing the user can see. */
+    { PROP_ID_SYS_LANG,       "no languages yet" },
 };
 
 static const char *fw_unwired(uint16_t id)

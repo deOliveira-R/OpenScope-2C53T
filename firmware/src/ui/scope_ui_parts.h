@@ -247,6 +247,12 @@ void strip_layout(const scope_state_t *ss, mstrip_layout_t *L);
 /* Paint the strip's cells; refresh repaints in place without clearing. */
 void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
                              const scope_params_t *p2, const theme_t *th, bool refresh);
+#if FEATURE_FFT
+/* The spectrum's strip: its top row, and its cells from the spectrum's
+ * measurements (NULL: none). */
+uint16_t fft_strip_top(const scope_state_t *ss);
+void draw_fft_strip(const scope_state_t *ss, const theme_t *th, const fft_meas_t *m, bool ch2, bool refresh);
+#endif
 /* Measure the record and paint the measurement strip. */
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh);
 
@@ -363,6 +369,16 @@ int16_t math_row(const math_frame_t *mf, uint16_t x);
 /* scope_cursor_draw.c */
 /* Build the cursor layer L from the cursor state. */
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L);
+#if FEATURE_FFT
+/* The cursor layer of a spectrum drawn on the axes ax. */
+void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,
+                                 cur_layer_t *L);
+/* The spectrum strip's AUX row at row y: the cursor readout. */
+void spectrum_cursor_row_paint(const scope_state_t *ss, const fft_axes_t *ax, uint16_t y, bool force);
+/* The axes of the spectrum the screen shows (on false: none), for the keys
+ * that move a cursor by what a pixel is worth (scope_screen.c). Any task. */
+void scope_ui_fft_axes(fft_axes_t *out);
+#endif
 /* Colour of cursor layer L at pixel (x, y), or false. */
 bool cursor_layer_px(const cur_layer_t *L, int x, int y, uint16_t *c);
 /* Paint cursor layer L's part of column x into strip s. */

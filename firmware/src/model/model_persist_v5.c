@@ -85,9 +85,9 @@ const v5_field_t model_persist_v5_fields[] = {
     ROW(PROP_ID_CH2_COUPLING, scope_ch2_coupling,   V5_U8,        V5_LOAD_DEFAULT,  0, 0, COUPLING_COUNT - 1),
     ROW(PROP_ID_CH1_ENABLED,  scope_ch1_enabled,    V5_CONST,     V5_LOAD_EXACT,    0, 1, 1),
     ROW(PROP_ID_CH2_ENABLED,  scope_ch2_enabled,    V5_CONST,     V5_LOAD_EXACT,    0, 1, 1),
-    ROW(PROP_ID_FFT_WINDOW,   fft_window,           V5_U8,        V5_LOAD_DEFAULT,  V5_F_STORED, 0, 4),
-    ROW(PROP_ID_FFT_AVG,      fft_avg_count,        V5_FFT_COUNT, V5_LOAD_DEFAULT,  V5_F_STORED, 0, 32),
-    ROW(PROP_ID_FFT_MAXHOLD,  fft_max_hold,         V5_BOOL8,     V5_LOAD_EXACT,    V5_F_STORED, 0, 1),
+    ROW(PROP_ID_FFT_WINDOW,   fft_window,           V5_U8,        V5_LOAD_DEFAULT,  0, 0, 4),
+    ROW(PROP_ID_FFT_AVG,      fft_avg_count,        V5_FFT_COUNT, V5_LOAD_DEFAULT,  0, 0, 32),
+    ROW(PROP_ID_FFT_MAXHOLD,  fft_max_hold,         V5_BOOL8,     V5_LOAD_EXACT,    0, 0, 1),
     ROW(PROP_ID_GEN_WAVE,     siggen_waveform,      V5_U8,        V5_LOAD_DEFAULT,  0, 0, SIGGEN_WAVEFORM_COUNT - 1),
     ROW(0,                    last_screen,          V5_SCREEN,    V5_LOAD_DEFAULT,  0, 0, STARTUP_SCREEN_MAX),
     ROW(PROP_ID_VIEW_MODE,    view_mode,            V5_VIEW,      V5_LOAD_DEFAULT,  0, 0, MODEL_VIEW_MODE_MAX),
@@ -125,7 +125,6 @@ const unsigned model_persist_v5_field_count =
 
 /* Record units <-> property values. */
 static const uint8_t k_autooff_mins[SYS_AUTOOFF_COUNT] = { 0u, 15u, 30u, 60u };   /* lbl_sys_autooff */
-static const uint8_t k_fft_counts[6] = { 0u, 2u, 4u, 8u, 16u, 32u };            /* lbl_fft_avg     */
 
 const v5_field_t *model_persist_v5_find(uint16_t prop_id)
 {
@@ -179,7 +178,7 @@ int32_t model_persist_v5_decode(const v5_field_t *f, const device_config_t *cfg)
         return i < 0 ? def : i;
     }
     case V5_FFT_COUNT: {
-        const int32_t i = index_of(k_fft_counts, sizeof k_fft_counts, rd_u8(cfg, f->offset));
+        const int32_t i = index_of(model_fft_avg_counts, sizeof model_fft_avg_counts, rd_u8(cfg, f->offset));
         return i < 0 ? def : i;
     }
     case V5_F32_INT: {       /* NaN fails both compares */
@@ -263,7 +262,7 @@ static void encode(const v5_field_t *f, device_config_t *cfg, int32_t v, int32_t
     case V5_CONST:     wr_u8(cfg, f->offset, (uint8_t)f->lo); break;
     case V5_STARTUP:   wr_u8(cfg, f->offset, startup_mode_to_config((startup_mode_t)v)); break;
     case V5_MINUTES:   wr_u8(cfg, f->offset, (v >= 0 && v < (int32_t)SYS_AUTOOFF_COUNT) ? k_autooff_mins[v] : 0u); break;
-    case V5_FFT_COUNT: wr_u8(cfg, f->offset, (v >= 0 && v < (int32_t)sizeof k_fft_counts) ? k_fft_counts[v] : 0u); break;
+    case V5_FFT_COUNT: wr_u8(cfg, f->offset, (v >= 0 && v < (int32_t)sizeof model_fft_avg_counts) ? model_fft_avg_counts[v] : 0u); break;
     case V5_F32_INT:   wr_f32(cfg, f->offset, (float)(uint32_t)v); break;
     case V5_F32_X10:   wr_f32(cfg, f->offset, (float)v / 10.0f); break;
     /* The enable is a saved setting only while the user wants it restored;

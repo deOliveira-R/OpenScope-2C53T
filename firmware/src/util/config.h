@@ -81,9 +81,8 @@
  * generator (siggen_waveform, siggen_frequency, siggen_amplitude, siggen_duty,
  * siggen_enabled, siggen_start_on) and language and FFT fields are stored
  * and round-tripped. The generator IS captured and applied (settings_store.c,
- * parity G5) and startup_mode too (M6), and brightness, sound volume and auto-shutdown (C15, sys_prefs.c); language and the FFT fields
- * are NOT yet applied at boot — nothing in the firmware currently owns them. Do not read those back expecting them to mean
- * anything on hardware yet. */
+ * parity G5) and startup_mode too (M6), and brightness, sound volume and auto-shutdown (C15, sys_prefs.c). The FFT fields
+ * are the fft.* settings a spectrum view starts with. The language is NOT applied: nothing in the firmware owns it yet. */
 typedef struct {
     uint32_t magic;              /* CONFIG_MAGIC for validation */
     uint16_t version;            /* CONFIG_VERSION */
