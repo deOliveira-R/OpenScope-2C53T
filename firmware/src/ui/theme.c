@@ -25,6 +25,8 @@ static const theme_t themes[THEME_COUNT] = {
         .highlight       = 0xFCA0, /* orange */
         .warning         = 0xF800, /* red */
         .success         = 0x07E0, /* green */
+        .clip_converter  = 0xF800, /* red */
+        .clip_screen     = 0xFCA0, /* orange */
         .name            = "Dark Blue",
     },
     /* THEME_CLASSIC_GREEN — Tektronix-style */
@@ -42,6 +44,8 @@ static const theme_t themes[THEME_COUNT] = {
         .highlight       = 0xFFE0, /* yellow */
         .warning         = 0xF800, /* red */
         .success         = 0x07E0, /* green */
+        .clip_converter  = 0xF800, /* red */
+        .clip_screen     = 0xFCA0, /* orange */
         .name            = "Classic Green",
     },
     /* THEME_HIGH_CONTRAST — white background */
@@ -59,6 +63,8 @@ static const theme_t themes[THEME_COUNT] = {
         .highlight       = 0x001F, /* blue */
         .warning         = 0xF800, /* red */
         .success         = 0x07E0, /* green */
+        .clip_converter  = 0xF81F, /* magenta: red is CH2 in this theme */
+        .clip_screen     = 0xFCA0, /* orange */
         .name            = "High Contrast",
     },
     /* THEME_NIGHT_RED — dark environment */
@@ -76,6 +82,8 @@ static const theme_t themes[THEME_COUNT] = {
         .highlight       = 0xFBE0, /* orange */
         .warning         = 0xFFE0, /* yellow (stands out on red theme) */
         .success         = 0xFBE0, /* orange */
+        .clip_converter  = 0xFFFF, /* white: red and orange are the traces in this theme */
+        .clip_screen     = 0xFFE0, /* yellow */
         .name            = "Night Red",
     },
 };

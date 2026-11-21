@@ -1,7 +1,7 @@
 # Display architecture
 
 Status: agreed design (2026-11-20). Steps 1, 2 and 4 of the order of work are
-done: the canvas (`firmware/src/ui/canvas.c`) and Y-T as the first display
+done and step 3 on the screen: the canvas (`firmware/src/ui/canvas.c`) and Y-T as the first display
 type (`firmware/src/ui/scope_yt.c`), whose full redraw and live update are
 the same frame. Every other view still has its own renderer.
 
@@ -133,7 +133,13 @@ from the screenshot copy after a full redraw and after a live update).
    plot is no longer blanked first). Where the two old renderers disagreed
    the live update's rule was kept. Its elements still read the Y-T maps
    directly; axes as an interface come with the second type (step 5).
-3. Clipping roles in the trace element; the record's clip flag in the stream.
+3. Done on the screen. Clipping roles in the Y-T trace element
+   (`clip_converter`, `clip_screen` in the theme): a column is at the
+   converter's limit when the trace sits on a rail for at least three
+   columns in a row, and off the plot when its sample lands beyond the map
+   or under the measurement strip, where it is then drawn on the last rows
+   that can be seen. Roll gets the same with step 5. Open: the record's clip
+   flag in the stream.
 4. Done. Cursors as a span element: the lines and labels are painted only
    on the rows they occupy (a frame with cursors takes 33 ms where it took
    80 to 89 ms, 20 redraws a second where it was 9.4). The per-pixel function

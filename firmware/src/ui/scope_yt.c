@@ -91,6 +91,9 @@ typedef struct {
     int16_t      mlab_w;                    /* width of its label, pixels */
     const uint8_t *pbuf;                    /* persistence intensities, or NULL */
     uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below SCOPE_MID_Y */
+    /* Columns where a trace sits on a converter rail: one bit per column,
+     * per channel (yt_rail_columns). */
+    uint8_t      rail[2][(SCOPE_GEOM_COLS + 7u) / 8u];
     int16_t      trig_y;                    /* the trigger line's row */
     uint16_t     trig_dots;                 /* its dot mask */
     int16_t      p1, p2, mp;
@@ -105,7 +108,7 @@ typedef struct {
     int16_t  y[2];                  /* its row */
     int16_t  lo[2], hi[2];          /* the rows its trace covers */
     int16_t  from[2];               /* the previous column's row, -1 at the first: the persistence feed */
-    uint16_t color[2];              /* the channel's, or the warning colour where it fails the mask */
+    uint16_t color[2];              /* the channel's, or what says the trace is wrong here (yt_column) */
     int16_t  bound_lo[2], bound_hi[2];   /* rows of the mask bounds, -1: none */
     uint16_t strip_color;           /* the mask verdict strip's colour here, 0: none */
     bool     strip_dotted;          /* ... on every other pixel only */
@@ -114,6 +117,30 @@ typedef struct {
     bool     tcol;                  /* ... the trigger-position pointer */
     bool     mcol;                  /* ... the math label */
 } yt_col_t;
+
+/* Mark in bits the columns of [first, end) where the window cols sits on a
+ * converter rail: record code 0 or REC_CODE_MAX (units.h) for at least
+ * REC_RAIL_RUN_MIN columns in a row. A run, as rec_rail_run asks of a
+ * record: fast edges carry single samples that touch a rail, and one sample
+ * is not a clipped input. */
+static void yt_rail_columns(const volatile uint8_t *cols, uint16_t first, uint16_t end, uint8_t *bits)
+{
+    memset(bits, 0, (SCOPE_GEOM_COLS + 7u) / 8u);
+    uint16_t run = 0;
+    int rail = 0, was = 0;                  /* -1 low, +1 high, 0 neither */
+    for (uint16_t x = first; x <= end; x++) {
+        rail = 0;
+        if (x < end) {
+            const uint8_t v = cols[x];
+            rail = (v == 0u) ? -1 : (v >= REC_CODE_MAX) ? 1 : 0;
+        }
+        if (rail != 0 && rail == was) { run++; continue; }
+        if (was != 0 && run >= REC_RAIL_RUN_MIN)
+            for (uint16_t k = (uint16_t)(x - run); k < x; k++) bits[k >> 3] |= (uint8_t)(1u << (k & 7u));
+        was = rail;
+        run = (rail != 0) ? 1u : 0u;
+    }
+}
 
 /* Build the frame: read the sources once and work out everything that does
  * not depend on the column.
@@ -159,6 +186,8 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
         /* The maps run against SCOPE_BOT though the band ends at band_bot:
          * the strip covers the plot's last rows, it does not rescale it. */
         yt_fits(ss, &f->a1, &f->a2);
+        yt_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
+        yt_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
         uint8_t slot = 0;
         if (f->a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f->a1, yt_vmap_counts_per_px(&f->a1));
         if (f->a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f->a2, yt_vmap_counts_per_px(&f->a2));
@@ -230,7 +259,14 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
     const uint16_t ch_color[2] = { th->ch1, th->ch2 };
     for (uint8_t ch = 0; ch < 2u; ch++) {
         c->on[ch] = a[ch]->on && c->trace;
-        const int16_t y = c->on[ch] ? autofit_y(a[ch], b[ch][x]) : (int16_t)SCOPE_MID_Y;
+        /* Where the sample lands, on or off the map's band, and that row
+         * kept on the band. What can be seen of the band ends where the
+         * measurement strip starts: a sample that lands under the strip is
+         * as much off the plot as one beyond the map. */
+        const int landed = c->on[ch] ? autofit_y_raw(a[ch], b[ch][x]) : (int)SCOPE_MID_Y;
+        const int seen_bot = (a[ch]->y_bot < (int)f->band_bot) ? a[ch]->y_bot : (int)f->band_bot;
+        const bool off_plot = c->on[ch] && (landed < a[ch]->y_top || landed >= seen_bot);
+        const int16_t y = c->on[ch] ? yt_vmap_clip(a[ch], landed) : (int16_t)SCOPE_MID_Y;
         c->y[ch] = y;
         c->lo[ch] = y;
         c->hi[ch] = (int16_t)(y + SCOPE_TRACE_ROWS - 1);
@@ -240,11 +276,21 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
             if (*prev[ch] > c->hi[ch]) c->hi[ch] = *prev[ch];
         }
         *prev[ch] = y;
+        /* A sample under the strip would paint nothing: its trace is drawn
+         * on the last rows that can be seen, in the off-plot colour. */
+        if (c->on[ch] && landed >= seen_bot && c->lo[ch] > seen_bot - SCOPE_TRACE_ROWS)
+            c->lo[ch] = (int16_t)(seen_bot - SCOPE_TRACE_ROWS);
 
-        /* Mask overlay: the trace takes the warning colour where it is
-         * outside the mask; the bounds are dotted (every other column),
-         * through the channel's own map. */
-        c->color[ch] = mask_px_fail((int8_t)ch, (int)x) ? th->warning : ch_color[ch];
+        /* The trace's colour says when it is wrong here, the worst case
+         * first: the converter clipped (the data is lost), it is outside
+         * the mask, it is valid but off the plot. */
+        const bool at_rail = c->on[ch] && (f->rail[ch][x >> 3] & (1u << (x & 7u))) != 0u;
+        c->color[ch] = at_rail ? th->clip_converter
+                     : mask_px_fail((int8_t)ch, (int)x) ? th->warning
+                     : off_plot ? th->clip_screen
+                     : ch_color[ch];
+        /* The mask's bounds are dotted (every other column), through the
+         * channel's own map. */
         c->bound_lo[ch] = c->bound_hi[ch] = -1;
         uint8_t lo, hi;
         if (g_mask_bounds_on && MASK_BOUND_DOT(x) && c->on[ch] &&

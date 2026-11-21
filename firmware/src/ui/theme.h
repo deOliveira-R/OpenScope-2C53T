@@ -32,6 +32,13 @@ typedef struct {
     uint16_t highlight;
     uint16_t warning;       /* Red for errors/warnings */
     uint16_t success;       /* Green for pass/OK */
+    /* A trace where its samples are cut off, two cases that ask for
+     * different things (docs/design/display_architecture.md):
+     * clip_converter: the sample is at the converter's limit, the data is
+     * lost and the range must change; clip_screen: the sample is valid but
+     * falls outside the plot, the position must change. */
+    uint16_t clip_converter;
+    uint16_t clip_screen;
     const char *name;
 } theme_t;
 
