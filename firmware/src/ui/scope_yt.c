@@ -91,7 +91,8 @@ typedef struct {
     bool         mth;                       /* math is on */
     int16_t      mlab_w;                    /* width of its label, pixels */
     const uint8_t *pbuf;                    /* persistence intensities, or NULL */
-    uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below SCOPE_MID_Y */
+    uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below pbase_mid */
+    uint16_t     pbase_mid;                 /* the row that splits the fitted bands */
     /* Columns where a trace sits on a converter rail: one bit per column,
      * per channel (plot_rail_columns). */
     uint8_t      rail[2][PLOT_RAIL_BYTES];
@@ -156,9 +157,10 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
         ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
         mask_overlay_begin();
         g_math_live = true;            /* yt_cols is this frame's window */
-        /* The maps run against SCOPE_BOT though the band ends at band_bot:
-         * the strip covers the plot's last rows, it does not rescale it. */
-        yt_fits(ss, &f->a1, &f->a2);
+        /* A fitted trace is stretched over the rows above the strip; a
+         * true-scale one keeps the graticule, and the strip covers its last
+         * rows. */
+        yt_fits(ss, f->band_bot, &f->a1, &f->a2);
         plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
         plot_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
         uint8_t slot = 0;
@@ -197,8 +199,9 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
      * the column's ghosts were read (yt_paint_column). */
     f->pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
     if (f->pbuf) persist_frame_decay();
-    f->pbase_top = persist_base(ss, th, SCOPE_TOP);
-    f->pbase_bot = persist_base(ss, th, (uint16_t)(SCOPE_BOT - 1));
+    f->pbase_top = persist_base(ss, th, false);
+    f->pbase_bot = persist_base(ss, th, true);
+    f->pbase_mid = (uint16_t)yt_vmap_band_mid(SCOPE_TOP, (int16_t)f->band_bot);
 
     /* The trigger line: on the trigger source's map, at the record code
      * where the hardware fires (trigger_marker_y). */
@@ -281,9 +284,9 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
 
 /* The colour of a persistence ghost of intensity in (not zero) at screen row
  * y, or bg when it scales to black. */
-static inline uint16_t yt_ghost(uint8_t in, uint16_t y, uint16_t base_top, uint16_t base_bot, uint16_t bg)
+static inline uint16_t yt_ghost(uint8_t in, uint16_t y, uint16_t mid, uint16_t base_top, uint16_t base_bot, uint16_t bg)
 {
-    const uint16_t g = persist_scale_rgb565((y < SCOPE_MID_Y) ? base_top : base_bot, in);
+    const uint16_t g = persist_scale_rgb565((y < mid) ? base_top : base_bot, in);
     return (g != 0x0000) ? g : bg;
 }
 
@@ -309,9 +312,9 @@ static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const 
     /* The frame's values in locals: the strip is written through a pointer
      * the compiler must assume could point at them. */
     const uint8_t *in = &f->pbuf[(s->lo - SCOPE_TOP) * PERSIST_WIDTH + x];
-    const uint16_t base_top = f->pbase_top, base_bot = f->pbase_bot;
+    const uint16_t base_top = f->pbase_top, base_bot = f->pbase_bot, mid = f->pbase_mid;
     for (uint16_t i = 0; i < rows; i++, in += PERSIST_WIDTH)
-        px[i] = *in ? yt_ghost(*in, (uint16_t)(s->lo + i), base_top, base_bot, bg) : bg;
+        px[i] = *in ? yt_ghost(*in, (uint16_t)(s->lo + i), mid, base_top, base_bot, bg) : bg;
 }
 
 /* The graticule (plot_elements.h). */
@@ -494,7 +497,7 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
             ;                                      /* graticule */
         else {
             const uint8_t in = f->pbuf ? f->pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x] : 0u;
-            want = in ? yt_ghost(in, y, f->pbase_top, f->pbase_bot, th->background) : th->background;
+            want = in ? yt_ghost(in, y, f->pbase_mid, f->pbase_top, f->pbase_bot, th->background) : th->background;
         }
         const uint16_t got = s->px[y - (uint16_t)s->lo];
         live_check_pixels++;

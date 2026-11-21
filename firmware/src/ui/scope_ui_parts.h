@@ -327,7 +327,7 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
 /* Row of the hardware trigger level through map a. */
 int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a);
 /* The two Y-T maps for the window in yt_cols. */
-void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2);
+void yt_fits(const scope_state_t *ss, uint16_t band_bot, autofit_t *a1, autofit_t *a2);
 /* Both maps off: nothing is plotted. */
 void yt_fits_none(autofit_t *a1, autofit_t *a2);
 /* Build the plot-edge tag set m from the maps as drawn. */
@@ -354,7 +354,7 @@ void persist_note(uint16_t x, int16_t prev_y, int16_t y);
 /* Clear persistence on a geometry change, then fade it by wall time. */
 void persist_frame_decay(void);
 /* A ghost's base colour at screen row y. */
-uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y);
+uint16_t persist_base(const scope_state_t *ss, const theme_t *th, bool lower);
 /* Prepare this frame's math trace: inputs, scale, label, cursor scale. */
 void math_prepare(const scope_state_t *ss, math_frame_t *mf);
 /* Row of the math trace at column x. */

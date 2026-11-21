@@ -95,7 +95,7 @@ uint16_t persist_intensity_to_color_ch2(uint8_t intensity);
  * drawn at its own scale, the live one is not). */
 /* view: the scope view (time, FFT, ...); merged: the record is the
  * two-converter 250 MS/s merge (twice the samples per division). */
-uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged);
+uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged, uint16_t band_bot);
 /* true: the buffer was cleared now. */
 bool     persist_follow_geometry(uint32_t key, bool running);
 

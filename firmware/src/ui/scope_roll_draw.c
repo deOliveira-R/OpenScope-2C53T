@@ -151,7 +151,7 @@ static void roll_prepare(roll_frame_t *f)
         } else {
             uint8_t lo = 0, hi = 0;
             int16_t top, bot;
-            yt_vmap_band(SCOPE_TOP, SCOPE_BOT, split, ch, &top, &bot);
+            yt_vmap_band(SCOPE_TOP, (int16_t)f->band_bot, split, ch, &top, &bot);
             f->on[ch] = en[ch] && scope_roll_fit(&roll_snap, ch, f->nvis, &lo, &hi);
             yt_vmap_autofit(&f->map[ch], lo, hi, top, bot);
         }

@@ -241,7 +241,7 @@ static uint32_t mix_ch(uint32_t h, const channel_state_t *c)
     return mix(h, (uint32_t)(uint16_t)c->position);
 }
 
-uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged)
+uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged, uint16_t band_bot)
 {
     uint32_t h = 2166136261u;
     h = mix_ch(h, &ss->ch1);
@@ -251,7 +251,7 @@ uint32_t persist_geometry_key(const scope_state_t *ss, uint8_t view, bool merged
     h = mix(h, (uint32_t)ss->trigger.edge | ((uint32_t)ss->trigger.source << 4) |
                ((uint32_t)ss->soft_trigger << 8));
     h = mix(h, (uint32_t)(uint16_t)ss->trigger.level | ((uint32_t)(uint16_t)ss->trig_x << 16));
-    return h;
+    return mix(h, band_bot);        /* a fitted trace is stretched to the strip's top */
 }
 
 /* The key the buffer was filled under, the one acquisition stopped with,

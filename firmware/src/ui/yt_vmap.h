@@ -100,12 +100,20 @@ static inline bool yt_vmap_split(bool en1, bool en2, bool fx1, bool fx2)
     return en1 && en2 && !fx1 && !fx2;
 }
 
+/* The row that separates the two halves of a split plot [top, bot). */
+static inline int16_t yt_vmap_band_mid(int16_t top, int16_t bot)
+{
+    return (int16_t)(top + (bot - top) / 2);
+}
+
 /* Channel ch's band on the plot [top, bot): the full plot, or its half
- * (CH1 above the middle row, CH2 below, the middle row itself left free). */
+ * (CH1 above the middle row, CH2 below, the middle row itself left free).
+ * bot is the first row the plot does not have: the measurement strip's top
+ * for a fitted trace, which is stretched over the rows that can be seen. */
 static inline void yt_vmap_band(int16_t top, int16_t bot, bool split, uint8_t ch,
                                 int16_t *t, int16_t *b)
 {
-    const int16_t mid = (int16_t)(top + (bot - top) / 2);
+    const int16_t mid = yt_vmap_band_mid(top, bot);
     *t = top;
     *b = bot;
     if (split) {

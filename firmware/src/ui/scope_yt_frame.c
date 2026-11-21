@@ -88,7 +88,7 @@ void yt_fits_none(autofit_t *a1, autofit_t *a2)
  * channels autofit (yt_vmap_split). A channel not drawn gets a map with
  * on == false. While running it also latches the ranges of the record on
  * screen (scope_ui_paused_latch). */
-void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
+void yt_fits(const scope_state_t *ss, uint16_t band_bot, autofit_t *a1, autofit_t *a2)
 {
     autofit_t *a[2] = { a1, a2 };
     /* A channel is drawn only when the published record holds its own
@@ -114,7 +114,7 @@ void yt_fits(const scope_state_t *ss, autofit_t *a1, autofit_t *a2)
                          yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
         } else if (en[ch]) {
             int16_t t, b;
-            yt_vmap_band(SCOPE_TOP, SCOPE_BOT, split, ch, &t, &b);
+            yt_vmap_band(SCOPE_TOP, (int16_t)band_bot, split, ch, &t, &b);
             autofit_prep(a[ch], yt_cols[ch], t, b, (int8_t)ch);
         }
     }
@@ -296,7 +296,7 @@ void persist_frame_decay(void)
 #else
     const uint8_t gview = 0u;
 #endif
-    (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss)),
+    (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss), strip_top(gss)),
                                   gss->running);
     static uint32_t last_tick;
     static bool     have_tick;
@@ -307,10 +307,11 @@ void persist_frame_decay(void)
 }
 
 /* A ghost's base colour at screen row y: the enabled channel's when only one
- * is on; with both on, by band (CH1 above SCOPE_MID_Y, CH2 below) when the
+ * is on; with both on, by band (CH1 above the split row, CH2 below) when the
  * bands are split, neutral when they overlap (one buffer cannot say whose a
- * ghost is). */
-uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y)
+ * ghost is). lower: the half below the row that splits the plot
+ * (yt_vmap_band_mid of the band the traces were fitted to). */
+uint16_t persist_base(const scope_state_t *ss, const theme_t *th, bool lower)
 {
     if (!(ss->ch1.enabled && ss->ch2.enabled))
         return ss->ch1.enabled ? th->ch1 : th->ch2;
@@ -318,7 +319,7 @@ uint16_t persist_base(const scope_state_t *ss, const theme_t *th, uint16_t y)
         ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
         ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx));
     if (!split) return th->text_secondary;
-    return (y < SCOPE_MID_Y) ? th->ch1 : th->ch2;
+    return lower ? th->ch2 : th->ch1;
 }
 
 /* ── Math trace ──

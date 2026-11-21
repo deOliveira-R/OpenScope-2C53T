@@ -369,16 +369,19 @@ static bool ghost_left(void)
     return persist_get_intensity(10, 100) != 0;
 }
 
+/* Any row: the key only has to move when it does. */
+#define BAND_BOT 200
+
 static void test_geometry_guard(void)
 {
     printf("Test: geometry guard...\n");
     persist_init();
     persist_set_mode(PERSIST_INFINITE);
     const scope_state_t b = geom_base();
-    const uint32_t k0 = persist_geometry_key(&b, 0, false);
+    const uint32_t k0 = persist_geometry_key(&b, 0, false, BAND_BOT);
     /* each field of the mapping, one at a time */
 #define MOVES(stmt) do { scope_state_t t = b; stmt; \
-        ASSERT(persist_geometry_key(&t, 0, false) != k0, "key ignores: " #stmt); } while (0)
+        ASSERT(persist_geometry_key(&t, 0, false, BAND_BOT) != k0, "key ignores: " #stmt); } while (0)
     MOVES(t.ch1.vdiv_idx = 4);      MOVES(t.ch2.vdiv_idx = 4);
     MOVES(t.ch1.position = 20);     MOVES(t.ch2.position = -20);
     MOVES(t.ch1.probe = PROBE_10X); MOVES(t.ch2.probe = PROBE_10X);
@@ -389,20 +392,21 @@ static void test_geometry_guard(void)
     MOVES(t.trigger.source = TRIG_SRC_CH2); MOVES(t.trigger.edge = TRIG_FALLING);
     MOVES(t.true_scale = false);
 #undef MOVES
-    ASSERT(persist_geometry_key(&b, 1, false) != k0, "key ignores the view");
-    ASSERT(persist_geometry_key(&b, 0, true) != k0, "key ignores the 250 MS/s merge");
+    ASSERT(persist_geometry_key(&b, 1, false, BAND_BOT) != k0, "key ignores the view");
+    ASSERT(persist_geometry_key(&b, 0, true, BAND_BOT) != k0, "key ignores the 250 MS/s merge");
+    ASSERT(persist_geometry_key(&b, 0, false, BAND_BOT - 1) != k0, "key ignores the band's end");
     /* not in the mapping: measurements, cursors, running */
     {
         scope_state_t t = b;
         t.prm_mask = 0x1; t.prm_hidden = true; t.cursor.mode = CURSOR_BOTH; t.running = false;
-        ASSERT(persist_geometry_key(&t, 0, false) == k0, "key moved on a non-geometry field");
+        ASSERT(persist_geometry_key(&t, 0, false, BAND_BOT) == k0, "key moved on a non-geometry field");
     }
     /* the guard: same key keeps the ghosts, a new key clears */
     (void)persist_follow_geometry(k0, true);
     persist_add_column(10, -1, 100);
     ASSERT(!persist_follow_geometry(k0, true) && ghost_left(), "same key cleared");
     scope_state_t v = b; v.ch1.vdiv_idx = 4;
-    const uint32_t k1 = persist_geometry_key(&v, 0, false);
+    const uint32_t k1 = persist_geometry_key(&v, 0, false, BAND_BOT);
     ASSERT(persist_follow_geometry(k1, true) && !ghost_left(), "V/div change left the ghosts");
     /* stop, change, back: one clear at the change; resume under the new key
      * clears again (the frozen record was at the old scale) */
