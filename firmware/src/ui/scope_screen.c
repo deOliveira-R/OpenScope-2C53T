@@ -477,6 +477,9 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
     h = redraw_epoch_mix(h, scope_view_fft_epoch());
 #endif
+    /* The domain the keys are on: a view of two domains marks it (it goes
+     * with the view, so it is layout as view.mode is). */
+    h = redraw_epoch_mix(h, (uint32_t)view_key_domain((uint8_t)G(P(VIEW_MODE)), (key_focus_t)key_focus_get()));
     *layout = h;
 
     h = REDRAW_EPOCH_SEED;

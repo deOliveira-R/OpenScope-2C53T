@@ -108,4 +108,17 @@ static inline view_domain_t view_key_domain(uint8_t view_mode, key_focus_t job)
     return view_shows(view_mode, VIEW_DOM_TIME) ? VIEW_DOM_TIME : VIEW_DOM_FREQ;
 }
 
+/* A view of two domains marks the half the keys are on (the split view's
+ * frame): the frame of rectangle (x0, y0, w, h), FOCUS_MARK_PX thick, covers
+ * pixel (x, y). One pixel is enough to see on this panel and costs the
+ * picture the least; the renderers draw it under the data, never over it. */
+#define FOCUS_MARK_PX  1
+
+static inline bool focus_mark_px(int x, int y, int x0, int y0, int w, int h)
+{
+    if (x < x0 || y < y0 || x >= x0 + w || y >= y0 + h) return false;
+    return x < x0 + FOCUS_MARK_PX || x >= x0 + w - FOCUS_MARK_PX ||
+           y < y0 + FOCUS_MARK_PX || y >= y0 + h - FOCUS_MARK_PX;
+}
+
 #endif /* VIEW_TABLE_H */

@@ -7,6 +7,7 @@
 
 #include "scope_ui_parts.h"
 #include "canvas.h"
+#include "key_model.h"         /* key_focus_get, the view table */
 
 #if FEATURE_FFT
 /* ═══════════════════════════════════════════════════════════════════
@@ -257,6 +258,8 @@ typedef struct {
     fft_axes_t   ax;                        /* what its columns and rows mean (on: bars) */
     cur_layer_t  cl;                        /* the cursor lines on those axes */
     bool         curs;                      /* it has something to draw */
+    bool         mark;                      /* the focus mark frames the region */
+    uint16_t     mark_c;
     ctext_set_t  T;                         /* every label: dB scale, header, axis ends, peak tags */
     uint16_t     gy[FFT_GRID_ROWS_MAX];     /* rows of the dB grid */
     uint8_t      ng;
@@ -298,10 +301,13 @@ static void fft_axes_publish(const fft_axes_t *ax)
  * When there is nothing to show the frame holds a message instead. */
 static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height);
 
-/* cursors: the frame draws the cursor lines (the full-screen spectrum). */
-static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height, bool cursors)
+/* cursors: the frame draws the cursor lines (the full-screen spectrum).
+ * mark: it draws the focus mark (the split view's half the keys are on). */
+static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height, bool cursors, bool mark)
 {
     fft_frame_build_plot(f, y_top, height);
+    f->mark = mark;
+    f->mark_c = theme_get()->text_primary;
     fft_axes_publish(&f->ax);
     f->curs = cursors && f->ax.on && scope_state_get()->cursor.mode != CURSOR_OFF;
     if (f->curs) cursor_layer_build_spectrum(scope_state_get(), &f->ax, theme_get(), &f->cl);
@@ -453,7 +459,7 @@ static inline bool fft_caret_px(int dx, int dy)
 #if FEATURE_BENCHSHELL
 /* `fpga scope livecheck` in the spectrum: every pixel of column x against the
  * per-pixel rule, top layer first: the cursors, labels, peak carets, the
- * max-hold dot, the dB grid, the bar, black. */
+ * max-hold dot, the focus mark, the dB grid, the bar, black. */
 static void fft_check_column(const fft_frame_t *f, const fft_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     for (int y = s->lo; y < s->hi; y++) {
@@ -463,6 +469,9 @@ static void fft_check_column(const fft_frame_t *f, const fft_col_t *c, uint16_t 
         for (uint8_t k = 0; !done && k < f->np; k++)
             if (fft_caret_px((int)x - f->pkx[k], y - f->pky[k])) { want = COLOR_RED; done = true; }
         if (!done && y == c->mh_y) { want = COLOR_RED; done = true; }
+        if (!done && f->mark && focus_mark_px((int)x, y, 0, f->y_top, LCD_WIDTH, f->height)) {
+            want = f->mark_c; done = true;
+        }
         if (!done && f->bars && x >= FFT_LMARGIN && FFT_GRID_DOT(x))
             for (uint8_t k = 0; k < f->ng; k++)
                 if (f->gy[k] == y) { want = COLOR_GRID; done = true; break; }
@@ -478,8 +487,8 @@ static void fft_check_column(const fft_frame_t *f, const fft_col_t *c, uint16_t 
 #endif
 
 /* Paint column x of the spectrum into s: the canvas's paint function. The
- * elements, lowest first: black, the bar, the dB grid, the max-hold dot,
- * the peak carets, the labels, the cursors. */
+ * elements, lowest first: black, the bar, the dB grid, the focus mark, the
+ * max-hold dot, the peak carets, the labels, the cursors. */
 static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
 {
     const fft_frame_t *const f = ctx;
@@ -490,6 +499,14 @@ static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
     strip_span(s, c.bar_top, s->hi - 1, c.bar_c);
     if (f->bars && x >= FFT_LMARGIN && FFT_GRID_DOT(x))
         for (uint8_t k = 0; k < f->ng; k++) strip_put(s, f->gy[k], COLOR_GRID);
+    if (f->mark) {
+        if (x < FOCUS_MARK_PX || x >= LCD_WIDTH - FOCUS_MARK_PX) {
+            strip_span(s, f->y_top, f->y_bot - 1, f->mark_c);
+        } else {
+            strip_span(s, f->y_top, f->y_top + FOCUS_MARK_PX - 1, f->mark_c);
+            strip_span(s, f->y_bot - FOCUS_MARK_PX, f->y_bot - 1, f->mark_c);
+        }
+    }
     strip_put(s, c.mh_y, COLOR_RED);
     for (int k = (int)f->np - 1; k >= 0; k--)
         for (int dy = -3; dy <= -2; dy++)
@@ -516,10 +533,10 @@ typedef struct {
 } fft_drawn_t;
 
 static void fft_region_compose(uint16_t y_top, uint16_t height, bool all, bool hole, bool cursors,
-                               fft_drawn_t *drawn)
+                               bool mark, fft_drawn_t *drawn)
 {
     fft_frame_t f;
-    fft_frame_build(&f, y_top, height, cursors);
+    fft_frame_build(&f, y_top, height, cursors, mark);
     if (drawn) {
         memcpy(drawn->meas, f.meas, sizeof f.meas);
         drawn->ch2 = f.ch2;
@@ -558,7 +575,7 @@ void draw_fft_screen(bool full)
     popup_hole_last = hole;
     fft_drawn_t d;
     fft_region_compose(SCOPE_TOP + FFT_VIEW_MARGIN, (uint16_t)(bot - SCOPE_TOP - 2u * FFT_VIEW_MARGIN),
-                       full, hole, true, &d);
+                       full, hole, true, false, &d);
     draw_fft_strip(ss, theme_get(), d.meas, d.ch2, !full);
     if (ss->cursor.mode != CURSOR_OFF) spectrum_cursor_row_paint(ss, &d.ax, bot, full);
     if (full) draw_popup(theme_get());
@@ -570,7 +587,8 @@ void draw_fft_screen(bool full)
 #define SPLIT_DIV_PX  13
 
 /* Split view: the Y-T window on top (8 divisions of SPLIT_DIV_PX), the
- * spectrum below. Both composed per column. Needs the live record for the
+ * spectrum below, the half the keys are on in a frame (the focus mark, under
+ * the traces). Both composed per column. Needs the live record for the
  * traces ("no record" otherwise). full: also paint the bottom margin row.
  * The frame argument is unused. */
 void draw_split_screen(uint32_t frame, bool full)
@@ -582,6 +600,8 @@ void draw_split_screen(uint32_t frame, bool full)
     const uint16_t mid = (uint16_t)(top + 4 * SPLIT_DIV_PX);       /* 8 divisions of 13 px */
     const volatile uint8_t *r1 = fpga_get_ch1_buf(), *r2 = fpga_get_ch2_buf();
     const bool live = fpga_data_ready() && r1 != NULL && r2 != NULL;
+    /* The half the keys and AUTO act on wears the focus mark. */
+    const bool time_focus = view_key_domain(VIEW_MODE_SPLIT, (key_focus_t)key_focus_get()) == VIEW_DOM_TIME;
     autofit_t m[2];
     bool on[2] = { false, false };
     if (live) {
@@ -627,6 +647,8 @@ void draw_split_screen(uint32_t frame, bool full)
                 c = th->ch2;
             else if (on[0] && (int16_t)y >= lo[0] && (int16_t)y <= hi[0])
                 c = th->ch1;
+            else if (time_focus && focus_mark_px((int)x, (int)y, 0, top, LCD_WIDTH, divider - top))
+                c = th->text_primary;
             else if (inwin && (y == mid || x == SCOPE_GEOM_CENTER_COL))
                 c = th->grid_center;
             else if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
@@ -639,7 +661,7 @@ void draw_split_screen(uint32_t frame, bool full)
     }
     if (full)
         lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - 1, LCD_WIDTH, 1, COLOR_BLACK);
-    fft_region_compose((uint16_t)(divider + 1), SCOPE_H / 2 - 2, true, false, false, NULL);
+    fft_region_compose((uint16_t)(divider + 1), SCOPE_H / 2 - 2, true, false, false, !time_focus, NULL);
 }
 
 #endif

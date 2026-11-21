@@ -893,8 +893,47 @@ static void test_global(void)
           key_map_global(NULL, BTN_MOVE, false).act == KA_LEGACY);
 }
 
+/* The focus mark: a view of two domains frames the half the keys are on. */
+static void test_focus_mark(void)
+{
+    /* The half is the domain AUTO acts on, for every job of every view; and
+     * a view of one domain never moves it (so its picture never changes). */
+    bool in_view = true, one_fixed = true, split_both = false;
+    for (uint8_t v = 0; v < VIEW_MODE_COUNT; v++) {
+        const view_desc_t *d = view_desc(v);
+        const bool one = d->domains == VIEW_TIME_ONLY || d->domains == VIEW_FREQ_ONLY;
+        const view_domain_t first = view_key_domain(v, (key_focus_t)d->jobs[0]);
+        bool seen[VIEW_DOM_COUNT] = { false, false };
+        for (int f = 0; f < KF_COUNT; f++) {
+            const view_domain_t k = view_key_domain(v, (key_focus_t)f);
+            in_view &= view_shows(v, k);
+            if (one) one_fixed &= k == first;
+        }
+        for (uint8_t i = 0; i < d->n_jobs; i++) seen[view_key_domain(v, (key_focus_t)d->jobs[i])] = true;
+        if (!one) split_both = seen[VIEW_DOM_TIME] && seen[VIEW_DOM_FREQ];
+    }
+    CHECK("the keys' domain is one the view shows, any view, any job", in_view);
+    CHECK("a view of one domain has one keys' domain whatever the job", one_fixed);
+    CHECK("split: SELECT reaches both halves", split_both);
+
+    /* The frame of a 10 x 6 rectangle at (3, 20): its border and nothing else. */
+    int on = 0, bad = 0;
+    for (int y = 15; y < 32; y++)
+        for (int x = 0; x < 20; x++) {
+            const bool in = x >= 3 && x < 13 && y >= 20 && y < 26;
+            const bool edge = in && (x < 3 + FOCUS_MARK_PX || x >= 13 - FOCUS_MARK_PX ||
+                                     y < 20 + FOCUS_MARK_PX || y >= 26 - FOCUS_MARK_PX);
+            const bool got = focus_mark_px(x, y, 3, 20, 10, 6);
+            on += got;
+            bad += got != edge;
+        }
+    CHECK("focus mark: the rectangle's border, FOCUS_MARK_PX thick, nothing outside", bad == 0 && on > 0);
+    CHECK("focus mark: a 1 px frame of 10 x 6 is 28 pixels", FOCUS_MARK_PX != 1 || on == 28);
+}
+
 int main(void)
 {
+    test_focus_mark();
     test_scan();
     test_long_map();
     test_short_map();

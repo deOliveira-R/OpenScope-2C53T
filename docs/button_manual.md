@@ -92,6 +92,10 @@ sense for what it shows (table below).
 | FFT, Waterfall | Spectrum, Zoom (the timebase sets the spectrum's range, V/div its level) |
 | Split | Zoom, Channel move, Trigger move, Spectrum: one list over both halves |
 
+In Split a thin frame surrounds the half the keys are on: the upper half
+(the traces) in the first three stages, the lower half (the spectrum) in the
+Spectrum stage. AUTO acts on the framed half.
+
 Switching cursors on (Settings -> Oscilloscope -> Cursors, or the Oscilloscope
 Settings page) selects the Cursor stage straight away; SELECT leaves it. Channel position moves only the channel's ground-reference marker
 for now: the live trace is autoscaled and ignores it, and it drives neither the

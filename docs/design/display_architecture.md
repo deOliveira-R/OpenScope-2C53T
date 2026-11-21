@@ -83,7 +83,9 @@ its domain (the measurement strip, cursors). The key model, the settings
 page and the furniture ask the table, never "is this the FFT view". Split
 shows both domains: its job list runs over both halves, and the job the
 arrows are on says which half the keys, AUTO, the strip and the cursors
-belong to.
+belong to. That half is drawn in a frame (the focus mark,
+`focus_mark_px` in `view_table.h`), under the data: a trace, a label or a
+cursor on the frame's pixels wins.
 
 ### Element library
 
