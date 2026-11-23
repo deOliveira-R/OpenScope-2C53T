@@ -199,17 +199,8 @@ flash_region_status_t usercal_store_save(const usercal_t *u)
     uint8_t buf[USERCAL_REC_LEN];
     if (!u || usercal_encode(u, buf, sizeof(buf)) != USERCAL_REC_LEN) return FLASH_REGION_ERR_BAD_ARG;
     if (!flash_regions_ready()) return FLASH_REGION_ERR_NOT_INIT;
-    flash_region_status_t st = flash_region_append(USERCAL_REGION, buf, sizeof(buf));
-    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
-        /* Same way out as config_save(): the log takes no more records
-         * (issue #57), so reset our own region and re-append the newest. A
-         * power cut in between loses the saved corrections — the unit then
-         * boots on the page alone, the safe failure — never anything else. */
-        const flash_region_status_t rst = flash_region_reset(USERCAL_REGION);
-        if (rst != FLASH_REGION_OK) return rst;
-        st = flash_region_append(USERCAL_REGION, buf, sizeof(buf));
-    }
-    return st;
+    /* The saved corrections stay readable until this record is whole. */
+    return flash_region_log_save(USERCAL_REGION, buf, sizeof(buf), NULL);
 }
 
 usercal_status_t usercal_store_load(usercal_t *out)

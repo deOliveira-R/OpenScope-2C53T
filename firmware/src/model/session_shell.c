@@ -78,7 +78,7 @@ void model_shell_session_status(model_emit_fn emit)
     else
         snprintf(line, sizeof line, "  last save: %s", session_save_text(st->save));
     emit(line);
-    snprintf(line, sizeof line, "  this session: %u saves, %u clears, %u log erases, last flash status %ld",
+    snprintf(line, sizeof line, "  this session: %u saves, %u clears, %u log moves, last flash status %ld",
              (unsigned)st->saves, (unsigned)st->clears, (unsigned)st->compactions,
              (long)st->last_flash_status);
     emit(line);
@@ -158,7 +158,7 @@ void cmd_session(const char *args)
         if (c.ok)
             (void)usb_debug_printf("session: saved seq %u, %u values, %u bytes, in %lu ms%s\r\n",
                                    (unsigned)st->save_seq, (unsigned)st->save_count, (unsigned)st->save_bytes,
-                                   (unsigned long)c.ms, st->compactions ? " (the log was erased first)" : "");
+                                   (unsigned long)c.ms, st->compactions ? " (the log moved to its other bank)" : "");
         else
             (void)usb_debug_printf("session: %s (flash status %ld)\r\n", session_save_text(st->save),
                                    (long)st->last_flash_status);

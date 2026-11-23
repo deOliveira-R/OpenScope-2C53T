@@ -124,20 +124,13 @@ void session_snapshot_boot_load(const device_config_t *loaded)
 }
 
 #if SETTINGS_PERSIST_WRITES
-/* One record; when the log takes no more (full, or it ends at a record the
- * scanner cannot read: a header torn by a power cut), the region is erased
- * and the record appended to the empty log. The one erase this file makes,
- * of its own region, by id. */
+/* One record. When the bank takes no more, the log's other bank is erased (one
+ * sector) and the record goes there: the last snapshot stays readable meanwhile. */
 static flash_region_status_t append_record(const uint8_t *buf, uint16_t len)
 {
-    flash_region_status_t st = flash_region_append(SESSION_REGION, buf, len);
-    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
-        st = flash_region_reset(SESSION_REGION);
-        if (st == FLASH_REGION_OK) {
-            g_st.compactions++;
-            st = flash_region_append(SESSION_REGION, buf, len);
-        }
-    }
+    bool moved = false;
+    const flash_region_status_t st = flash_region_log_save(SESSION_REGION, buf, len, &moved);
+    if (moved) g_st.compactions++;
     g_st.last_flash_status = (int32_t)st;
     return st;
 }
@@ -186,15 +179,9 @@ bool session_snapshot_clear(void)
     return false;
 #else
     const uint16_t len = model_session_encode_cleared(g_buf, sizeof g_buf, (uint16_t)(prev.seq + 1u));
-    flash_region_status_t st = flash_region_append(SESSION_REGION, g_buf, len);
-    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
-        /* No room for the tombstone: the empty log says the same. */
-        st = flash_region_reset(SESSION_REGION);
-        if (st == FLASH_REGION_OK) g_st.compactions++;
-    } else if (st == FLASH_REGION_OK) {
-        g_st.clears++;
-    }
-    g_st.last_flash_status = (int32_t)st;
+    const uint32_t compactions0 = g_st.compactions;
+    const flash_region_status_t st = append_record(g_buf, len);
+    if (st == FLASH_REGION_OK && g_st.compactions == compactions0) g_st.clears++;
     return st == FLASH_REGION_OK;
 #endif
 }

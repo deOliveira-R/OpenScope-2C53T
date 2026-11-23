@@ -13,7 +13,7 @@ its start value at every boot), user calibration (`U`: its own record, `cal user
 
 **Startup on Boot = Restore** adds one thing on top: the **session snapshot**. An orderly power-off writes the
 value of every settable property (the `P` ones again and the `S` ones) to a log of its own in the W25Q
-(`session`, one sector at 0xF20000; `firmware/src/util/session_store.h`), and the next boot, if Startup is
+(`session`, two sectors, 0xF20000 and 0xF6F000; `firmware/src/util/session_store.h`), and the next boot, if Startup is
 Restore, sets those values through the normal setters once the input task runs. Left out, each with a reason
 (`session list` prints them): calibration, the generator's output enable (it keeps `gen.bootout`), hold and
 relative, `view.run` (the scope always comes back running), `tb.roll` (it is `view.mode = roll`) and the

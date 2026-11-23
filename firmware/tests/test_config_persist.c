@@ -2373,16 +2373,18 @@ static void test_a_save_torn_after_its_length_does_not_stop_later_saves(void)
 /* Fill the log with saves until it has no room for one more record. Each save
  * differs from the one before (else it is elided). Returns the last config
  * saved — the newest record in a full log. */
+/* A log from before the two banks, filling the whole region: the one layout
+ * in which making room must erase the bank holding old records. */
 static device_config_t fill_log(void)
 {
     device_config_t cfg;
     config_init_defaults(&cfg);
+    uint32_t off = 0;
     for (uint32_t i = 0; i < settings_capacity(); i++) {
         cfg.scope_ch1_vdiv = (uint8_t)(i % VDIV_COUNT);
         cfg.scope_timebase = (uint8_t)(i % TIMEBASE_COUNT);
         cfg.checksum = config_compute_checksum(&cfg);   /* == the record's bytes */
-        CHECK(config_save(&cfg), "fill save %u failed", i);
-        if (current_failed) break;
+        off = forge_config(off, &cfg);
     }
     uint32_t used = 0, free_bytes = 0;
     CHECK(flash_region_log_info(FLASH_REGION_SETTINGS, &used, &free_bytes, NULL) ==
@@ -2881,20 +2883,12 @@ static void tiling_payload(uint8_t *p, uint32_t tag)
     memcpy(p, &tag, sizeof tag);
 }
 
-/* One save with config_save()'s policy (config.c): append; when the log takes
- * no more (FULL, or LOG_DAMAGED), reset the region and append again. */
+/* One save the way every store saves. */
 static flash_region_status_t tiling_save(uint32_t tag)
 {
     uint8_t p[TILING_PAYLOAD];
     tiling_payload(p, tag);
-    flash_region_status_t st = flash_region_append(FLASH_REGION_SETTINGS, p, TILING_PAYLOAD);
-    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
-        st = flash_region_reset(FLASH_REGION_SETTINGS);
-        if (st == FLASH_REGION_OK) {
-            st = flash_region_append(FLASH_REGION_SETTINGS, p, TILING_PAYLOAD);
-        }
-    }
-    return st;
+    return flash_region_log_save(FLASH_REGION_SETTINGS, p, TILING_PAYLOAD, NULL);
 }
 
 /* Tag of the newest record the boot would read, or 0 when none reads. */
@@ -2913,7 +2907,7 @@ static uint32_t tiling_newest_tag(void)
 static void check_tiling_log_never_resurrects(void)
 {
     const flash_region_t *set = flash_region_get(FLASH_REGION_SETTINGS);
-    const uint32_t sectors = set->length / FLASH_REGION_SECTOR_SIZE;
+    const uint32_t sectors = set->length / FLASH_REGION_SECTOR_SIZE / 2u;   /* the bank it erases */
     const uint32_t capacity = set->length / TILING_SLOT;
 
     /* k = 0 is a cut before any erase (the old log is untouched, tested above)
@@ -2961,6 +2955,63 @@ static void check_tiling_log_never_resurrects(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+ * A power cut while the log moves on must not lose the newest save
+ *
+ * The log is full and the next save has to make room. Wherever the power dies
+ * in that save (before, between or inside erases, or at any byte of its
+ * programming), the boot must load the newest save that completed, or the new
+ * one if it landed whole. Never an older record, never defaults.
+ * ═══════════════════════════════════════════════════════════════════ */
+#define ROOM_CUT_MAX_ERASES  17u     /* one more than the sectors of a whole region */
+#define ROOM_CUT_MAX_BYTES   96u     /* past every header and the record's payload */
+
+static void test_a_cut_while_making_room_keeps_the_newest_save(void)
+{
+    fresh_device();
+    device_config_t last;
+    config_init_defaults(&last);
+    uint32_t free_bytes = UINT32_MAX;
+    /* Past the first move, so the bank that must be erased holds old records. */
+    for (uint32_t i = 0; (free_bytes >= REC_SLOT || config_persist_stats()->compactions == 0u) &&
+                         !current_failed; i++) {
+        last.scope_trigger_level = (int16_t)(i % 100u) - 50;
+        last.scope_ch1_vdiv = (uint8_t)((i / 100u) % 8u);
+        CHECK(config_save(&last), "filling: save %u failed", i);
+        CHECK(flash_region_log_info(FLASH_REGION_SETTINGS, NULL, &free_bytes, NULL) ==
+              FLASH_REGION_OK, "filling: no log info");
+    }
+    uint8_t *full = snapshot();
+    const device_config_t next = compaction_cut_config();
+
+    for (uint32_t kind = 0; kind < 3u && !current_failed; kind++) {
+        const uint32_t cuts = kind == 2u ? ROOM_CUT_MAX_BYTES : ROOM_CUT_MAX_ERASES;
+        for (uint32_t k = 0; k < cuts && !current_failed; k++) {
+            memcpy(model.mem, full, MODEL_SIZE);
+            if (kind == 0u)      model_cut_power_after(UINT32_MAX, k);
+            else if (kind == 1u) model_cut_power_inside_erase(k);
+            else                 model_cut_power_after(k, UINT32_MAX);
+            const bool saved = config_save(&next);
+            power_cycle();
+
+            device_config_t got;
+            config_init_defaults(&got);
+            const config_load_result_t r = config_load_or_defaults(&got);
+            const bool is_next = got.scope_trigger_level == next.scope_trigger_level &&
+                                 got.scope_ch1_vdiv == next.scope_ch1_vdiv;
+            const bool is_last = got.scope_trigger_level == last.scope_trigger_level &&
+                                 got.scope_ch1_vdiv == last.scope_ch1_vdiv;
+            CHECK(r == CONFIG_LOAD_OK, "cut kind %u at %u: load result \"%s\"", kind, k,
+                  config_load_result_name(r));
+            CHECK(saved ? is_next : (is_last || is_next),
+                  "cut kind %u at %u (save %s): booted on level %d vdiv %u; newest was level %d vdiv %u",
+                  kind, k, saved ? "reported done" : "cut", got.scope_trigger_level,
+                  got.scope_ch1_vdiv, last.scope_trigger_level, last.scope_ch1_vdiv);
+        }
+    }
+    free(full);
+}
+
+/* ═══════════════════════════════════════════════════════════════════
  * A blank gap with old records behind it
  *
  * A real erase stopped part-way leaves each bit either old or set, so one slot
@@ -2982,12 +3033,7 @@ static flash_region_status_t gap_save(flash_region_id_t id, uint32_t tag, uint32
     uint8_t p[GAP_MAX_PAYLOAD];
     memset(p, TILING_PAYLOAD_FILL, len);
     memcpy(p, &tag, sizeof tag);
-    flash_region_status_t st = flash_region_append(id, p, len);
-    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
-        st = flash_region_reset(id);                /* the policy of all three stores */
-        if (st == FLASH_REGION_OK) st = flash_region_append(id, p, len);
-    }
-    return st;
+    return flash_region_log_save(id, p, len, NULL);
 }
 
 static uint32_t gap_newest_tag(flash_region_id_t id)
@@ -3030,6 +3076,93 @@ static void test_a_save_into_an_erase_gap_stays_the_newest(void)
             }
         }
     }
+}
+
+/* The same guarantee for every log and record size, through the layer itself:
+ * this is the path that protects the saved calibration. */
+static void test_every_log_keeps_its_newest_record_across_a_cut(void)
+{
+    static const flash_region_id_t logs[] = {
+        FLASH_REGION_USER_CAL, FLASH_REGION_SETTINGS, FLASH_REGION_SESSION,
+    };
+    static const uint32_t sizes[] = { sizeof(device_config_t), 64u, GAP_MAX_PAYLOAD };
+
+    for (uint32_t l = 0; l < sizeof logs / sizeof logs[0]; l++) {
+        for (uint32_t s = 0; s < sizeof sizes / sizeof sizes[0] && !current_failed; s++) {
+            const flash_region_t *r = flash_region_get(logs[l]);
+            const uint32_t len = sizes[s];
+            const uint32_t slot = REC_HDR_SIZE + ((len + 3u) & ~3u);
+            fresh_device();
+            uint32_t tag = GAP_TAG_OLD, moves = 0, free_bytes = UINT32_MAX;
+            while ((moves == 0u || free_bytes >= slot) && !current_failed) {
+                uint8_t p[GAP_MAX_PAYLOAD];
+                bool moved = false;
+                memset(p, TILING_PAYLOAD_FILL, len);
+                tag++;
+                memcpy(p, &tag, sizeof tag);
+                CHECK(flash_region_log_save(logs[l], p, len, &moved) == FLASH_REGION_OK,
+                      "%s, %u bytes: filling failed", r->name, len);
+                moves += moved ? 1u : 0u;
+                CHECK(flash_region_log_info(logs[l], NULL, &free_bytes, NULL) == FLASH_REGION_OK,
+                      "%s: no log info", r->name);
+            }
+            uint8_t *full = snapshot();
+            for (uint32_t kind = 0; kind < 3u && !current_failed; kind++) {
+                const uint32_t cuts = kind == 2u ? len + ROOM_CUT_MAX_BYTES : ROOM_CUT_MAX_ERASES;
+                for (uint32_t k = 0; k < cuts && !current_failed; k++) {
+                    memcpy(model.mem, full, MODEL_SIZE);
+                    if (kind == 0u)      model_cut_power_after(UINT32_MAX, k);
+                    else if (kind == 1u) model_cut_power_inside_erase(k);
+                    else                 model_cut_power_after(k, UINT32_MAX);
+                    const bool saved = gap_save(logs[l], GAP_TAG_NEW, len) == FLASH_REGION_OK;
+                    power_cycle();
+                    const uint32_t got = gap_newest_tag(logs[l]);
+                    CHECK(saved ? got == GAP_TAG_NEW : (got == tag || got == GAP_TAG_NEW),
+                          "%s, %u bytes, cut kind %u at %u: read 0x%08X, newest was 0x%08X",
+                          r->name, len, kind, k, got, tag);
+                }
+            }
+            free(full);
+        }
+    }
+}
+
+/* A log written before the banks existed is read where it is, keeps taking
+ * records, and its bytes are not touched when the log first moves on. */
+static void test_a_pre_bank_log_is_kept_in_place(void)
+{
+    const flash_region_t *set = flash_region_get(FLASH_REGION_SETTINGS);
+    fresh_device();
+    uint8_t p[sizeof(device_config_t)];
+    uint32_t off = 0, tag = GAP_TAG_OLD;
+    for (uint32_t i = 0; i < GAP_LOG_RECORDS; i++) {
+        memset(p, TILING_PAYLOAD_FILL, sizeof p);
+        tag++;
+        memcpy(p, &tag, sizeof tag);
+        off = forge_record(off, p, (uint16_t)sizeof p, crc32_of(p, sizeof p));
+    }
+    uint8_t *before = snapshot();
+    CHECK(gap_newest_tag(FLASH_REGION_SETTINGS) == tag, "the old log's newest record did not read");
+    CHECK(gap_save(FLASH_REGION_SETTINGS, GAP_TAG_NEW, sizeof p) == FLASH_REGION_OK, "first save failed");
+    CHECK(gap_newest_tag(FLASH_REGION_SETTINGS) == GAP_TAG_NEW, "the new record is not the newest");
+    CHECK(memcmp(model.mem + set->start, before + set->start, off) == 0, "the old records changed");
+
+    uint32_t free_bytes = UINT32_MAX, k = 0;
+    while (free_bytes >= REC_SLOT && !current_failed) {
+        k++;
+        CHECK(gap_save(FLASH_REGION_SETTINGS, GAP_TAG_NEW + k, sizeof p) == FLASH_REGION_OK, "fill failed");
+        CHECK(flash_region_log_info(FLASH_REGION_SETTINGS, NULL, &free_bytes, NULL) == FLASH_REGION_OK, "info");
+    }
+    bool moved = false;
+    memset(p, TILING_PAYLOAD_FILL, sizeof p);
+    const uint32_t last = GAP_TAG_NEW + k + 1u;
+    memcpy(p, &last, sizeof last);
+    CHECK(flash_region_log_save(FLASH_REGION_SETTINGS, p, sizeof p, &moved) == FLASH_REGION_OK && moved,
+          "the save into the full bank did not move on");
+    power_cycle();
+    CHECK(gap_newest_tag(FLASH_REGION_SETTINGS) == last, "the moved record is not the newest");
+    CHECK(memcmp(model.mem + set->start, before + set->start, off) == 0, "moving on changed the old records");
+    free(before);
 }
 
 static void test_a_compaction_cut_mid_erase_never_resurrects_old_settings(void)
@@ -3177,7 +3310,10 @@ int main(void)
             test_a_damaged_header_mid_log_does_not_stop_later_saves);
         run("a compaction cut inside the first sector's erase does not stop later saves",
             test_a_compaction_cut_inside_the_first_sectors_erase_does_not_stop_later_saves);
+        run("a cut while making room keeps the newest save", test_a_cut_while_making_room_keeps_the_newest_save);
         run("a save into an erase gap stays the newest", test_a_save_into_an_erase_gap_stays_the_newest);
+        run("every log keeps its newest record across a cut", test_every_log_keeps_its_newest_record_across_a_cut);
+        run("a log from before the banks is kept in place", test_a_pre_bank_log_is_kept_in_place);
         run("a compaction cut mid-erase never resurrects old settings",
             test_a_compaction_cut_mid_erase_never_resurrects_old_settings);
     }

@@ -729,8 +729,8 @@ static void test_owner_refuses(void)
     CHECK(nor_outside == 0 && everything_else_intact());
 }
 
-/* A log that is nearly full: the reset's write makes it compact (erase the
- * region, write again). Still nothing outside the settings region. */
+/* A bank that is nearly full: the reset's write makes the log move to its other
+ * bank, erasing it. Still nothing outside the settings region. */
 static void test_reset_when_the_log_compacts(void)
 {
     fresh_device();
@@ -740,9 +740,10 @@ static void test_reset_when_the_log_compacts(void)
         if (settings_store_flush(g_now)) writes++;
     }
     CHECKF(nor_erases > 0, "%u writes and the log never compacted", writes);
-    /* fill it again to one record short of the next compaction */
+    /* The first erase came with the second move, after two banks of writes. Fill
+     * this bank to just short of the next move. */
     const uint32_t erases_per = nor_erases;
-    const unsigned per_log = writes - 1u;
+    const unsigned per_log = writes / 2u;
     for (unsigned i = 0; i + 2u < per_log; i++) {
         CHECK(prop_set_local(P(GEN_FREQ), 3000 + (int32_t)(i % 2000u), ORIGIN_KEY, NULL) == PS_OK);
         (void)settings_store_flush(g_now);

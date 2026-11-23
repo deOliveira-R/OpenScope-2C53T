@@ -288,7 +288,7 @@ typedef struct {
     bool     writes_enabled;   /* mirrors SETTINGS_PERSIST_WRITES, so a reader
                                 * of these stats never has to guess which build
                                 * produced them. */
-    uint32_t compactions;      /* log full -> region reset -> re-append */
+    uint32_t compactions;      /* the log moved to its other bank       */
     uint32_t loads_ok;
     uint32_t loads_defaulted;
     int32_t  last_save_status; /* flash_region_status_t of the last append */

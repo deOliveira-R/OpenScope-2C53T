@@ -112,7 +112,8 @@ static bool in_region(flash_region_id_t id, uint32_t addr, uint32_t len)
 static int which(uint32_t addr, uint32_t len)
 {
     if (in_region(FLASH_REGION_SETTINGS, addr, len)) return 0;
-    if (in_region(FLASH_REGION_SESSION, addr, len))  return 1;
+    if (in_region(FLASH_REGION_SESSION, addr, len) ||
+        in_region(FLASH_REGION_SESSION_B, addr, len)) return 1;
     return -1;
 }
 
@@ -120,7 +121,7 @@ static int nor_read(void *ctx, uint32_t addr, void *buf, uint32_t len)
 {
     (void)ctx;
     if (addr >= NOR_SIZE || len > NOR_SIZE - addr) { printf("NOR: read out of range\n"); exit(3); }
-    if (in_region(FLASH_REGION_SESSION, addr, len)) nor_session_reads++;
+    if (which(addr, len) == 1) nor_session_reads++;
     memcpy(buf, nor + addr, len);
     return 0;
 }
@@ -160,7 +161,10 @@ flash_region_status_t flash_regions_bind_w25q(void) { return flash_regions_init(
  * stock volumes, the tail, modules. A different byte per region. The two
  * logs are blank, as on a device that never saved. */
 static uint8_t *nor_snap;
-static bool is_log(uint32_t i) { return i == FLASH_REGION_SETTINGS || i == FLASH_REGION_SESSION; }
+static bool is_log(uint32_t i)
+{
+    return i == FLASH_REGION_SETTINGS || i == FLASH_REGION_SESSION || i == FLASH_REGION_SESSION_B;
+}
 static void nor_fill_everything_else(void)
 {
     memset(nor, 0xFF, NOR_SIZE);
@@ -530,20 +534,23 @@ static uint32_t log_records(void)
 
 /* The two logs, kept and put back: one settings record + one snapshot can
  * be booted many ways. */
-static uint8_t g_logs[0x10000u + 0x1000u];
+static uint8_t g_logs[0x10000u + 0x1000u + 0x1000u];
 static void logs_keep(void)
 {
     memcpy(g_logs, region_bytes(FLASH_REGION_SETTINGS), region_len(FLASH_REGION_SETTINGS));
     memcpy(g_logs + 0x10000u, region_bytes(FLASH_REGION_SESSION), region_len(FLASH_REGION_SESSION));
+    memcpy(g_logs + 0x11000u, region_bytes(FLASH_REGION_SESSION_B), region_len(FLASH_REGION_SESSION_B));
 }
 static void logs_back(void)
 {
     memcpy(nor + flash_region_table[FLASH_REGION_SETTINGS].start, g_logs, region_len(FLASH_REGION_SETTINGS));
     memcpy(nor + flash_region_table[FLASH_REGION_SESSION].start, g_logs + 0x10000u, region_len(FLASH_REGION_SESSION));
+    memcpy(nor + flash_region_table[FLASH_REGION_SESSION_B].start, g_logs + 0x11000u, region_len(FLASH_REGION_SESSION_B));
 }
 static void session_log_blank(void)
 {
     memset(nor + flash_region_table[FLASH_REGION_SESSION].start, 0xFF, region_len(FLASH_REGION_SESSION));
+    memset(nor + flash_region_table[FLASH_REGION_SESSION_B].start, 0xFF, region_len(FLASH_REGION_SESSION_B));
 }
 
 static char g_out[4096];
@@ -673,8 +680,11 @@ static void test_round_trip(void)
         CHECK(set(P(SYS_STARTUP), STARTUP_RESTORE));
         take(was);
         const uint32_t recs = log_records(), er = nor_erases[1];
+        const uint32_t moves = session_snapshot_status()->compactions;
         CHECK(power_off());
-        CHECK(nor_erases[1] == er ? log_records() == recs + 1u : (nor_erases[1] == er + 1u && log_records() == 1u));
+        CHECK(session_snapshot_status()->compactions == moves
+                  ? (nor_erases[1] == er && log_records() == recs + 1u)
+                  : (nor_erases[1] <= er + 1u && log_records() == 1u));
         boot();
         const session_status_t *st = session_snapshot_status();
         CHECKF(st->load == SESSION_LOAD_OK, "round %d: %s", round, session_load_text(st->load));
@@ -1202,7 +1212,7 @@ static void test_reset(void)
     boot();
     CHECK(prop_get(P(VIEW_MODE)) == 0 && prop_get(P(VIEW_CURSOR)) == 0);
 
-    /* no room for the tombstone: the region is erased instead, which says the same */
+    /* no room for the tombstone: it goes to the other bank */
     fresh_device();
     a_session();
     CHECK(power_off());
@@ -1218,9 +1228,9 @@ static void test_reset(void)
     CHECK(nor_erases[1] == 0);
     uint32_t used = 0, total = 0;
     CHECK(session_snapshot_log_info(&used, &total, NULL) && total - used == 8u);
-    CHECK(session_snapshot_clear() && nor_erases[1] == 1 && session_snapshot_status()->compactions == 1);
+    CHECK(session_snapshot_clear() && nor_erases[1] == 0 && session_snapshot_status()->compactions == 1);
     boot();
-    CHECK(session_snapshot_status()->load == SESSION_LOAD_NONE);
+    CHECK(session_snapshot_status()->load == SESSION_LOAD_CLEARED);
     CHECK(nor_outside == 0 && everything_else_intact());
 }
 
@@ -1260,7 +1270,7 @@ static void test_flash(void)
     (void)status_text();
     CHECK(nor_programs[1] == p1 && strstr(g_out, "log: 2 records") && strstr(g_out, "1 saves, 1 clears"));
 
-    /* a year of power-offs: every save is one record, the log compacts inside its own sector,
+    /* a year of power-offs: every save is one record, the log moves between its two sectors,
      * the sequence number counts on across the erases, and the last state is the one restored */
     static int32_t was[NPROP];
     uint16_t seq = session_snapshot_status()->save_seq;
@@ -1268,13 +1278,19 @@ static void test_flash(void)
     for (int day = 0; day < 365; day++) {
         CHECK(set(P(CH1_POS), (day % 41) * 5 - 100) && set(P(VIEW_CURV2), 100 + day % 200));
         const uint32_t recs = log_records(), e0 = nor_erases[1], pr = nor_programs[1];
+        const uint32_t moves = session_snapshot_status()->compactions;
         CHECK(power_off());
         const session_status_t *st = session_snapshot_status();
         CHECK(st->save == SESSION_SAVE_OK && st->save_seq == (uint16_t)(seq + 2u));   /* a tombstone was 1 */
         seq = (uint16_t)(st->save_seq - 1u);
-        if (nor_erases[1] != e0) { erases++; CHECK(nor_erases[1] == e0 + 1u && log_records() == 1); }
-        else CHECK(log_records() == recs + 1u);
-        CHECK(nor_programs[1] - pr >= 2u && nor_programs[1] - pr <= 3u);
+        erases += nor_erases[1] - e0;
+        if (st->compactions != moves) {                 /* + the bank header */
+            CHECK(nor_erases[1] <= e0 + 1u && log_records() == 1);
+            CHECK(nor_programs[1] - pr >= 3u && nor_programs[1] - pr <= 4u);
+        } else {
+            CHECK(nor_erases[1] == e0 && log_records() == recs + 1u);
+            CHECK(nor_programs[1] - pr >= 2u && nor_programs[1] - pr <= 3u);
+        }
         seq = st->save_seq;
         if (day % 30 == 0) {
             take(was);
@@ -1289,10 +1305,12 @@ static void test_flash(void)
            (unsigned)erases, 365.0 / erases);
 
     /* a log that is not blank where the next record goes (damage, a header torn by a power cut):
-     * the save erases its own sector and goes on */
+     * the save erases the other bank and goes on there. Poked in both banks: the one
+     * in use is damaged, and the other then does need its erase. */
     uint32_t used = 0;
     (void)session_snapshot_log_info(&used, NULL, NULL);
     nor[flash_region_table[FLASH_REGION_SESSION].start + used + 1u] = 0x00u;
+    nor[flash_region_table[FLASH_REGION_SESSION_B].start + used + 1u] = 0x00u;
     const uint32_t e0 = nor_erases[1];
     CHECK(power_off() && nor_erases[1] == e0 + 1u && log_records() == 1);
     boot();

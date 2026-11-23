@@ -475,19 +475,23 @@ static void test_compaction(void)
     usercal_t a, out;
     unsigned saves = 0;
     uint32_t free_bytes = UINT32_MAX;
-    /* Distinct records until the log is too full for one more. */
-    for (int i = 0; free_bytes >= 8u + USERCAL_REC_LEN; i++) {
-        sample(&a, i);
-        CHECK(usercal_store_save(&a) == FLASH_REGION_OK, "fill save %d", i);
-        flash_region_log_info(USERCAL_REGION, NULL, &free_bytes, NULL);
-        saves++;
-        if (saves > 1000u) break;
+    /* Distinct records until a bank is too full for one more, twice: the second
+     * time the other bank holds old records, so making room has to erase it. */
+    for (int pass = 0, i = 0; pass < 2; pass++) {
+        free_bytes = UINT32_MAX;
+        for (; free_bytes >= 8u + USERCAL_REC_LEN; i++) {
+            sample(&a, i);
+            CHECK(usercal_store_save(&a) == FLASH_REGION_OK, "fill save %d", i);
+            flash_region_log_info(USERCAL_REGION, NULL, &free_bytes, NULL);
+            saves++;
+            if (saves > 1000u) break;
+        }
     }
-    CHECK(saves > 200u, "a 64 KB log holds >200 records, got %u", saves);
+    CHECK(saves > 200u, "two banks hold >200 records, got %u", saves);
     const uint32_t e0 = erases;
     sample(&a, 7777);
     CHECK(usercal_store_save(&a) == FLASH_REGION_OK, "save into a full log compacts");
-    CHECK(erases > e0 && erases - e0 <= 16u, "compaction erased only our 16 sectors (%u)",
+    CHECK(erases > e0 && erases - e0 <= 8u, "making room erased only the other bank's 8 sectors (%u)",
           (unsigned)(erases - e0));
     uint32_t nrec = 0;
     flash_region_log_info(USERCAL_REGION, NULL, NULL, &nrec);

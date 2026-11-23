@@ -33,7 +33,7 @@
  *
  * Frequently-updated values (user calibration, saved settings) use the append
  * log (`flash_region_append`), which packs fixed-header records into a region
- * until it fills instead of erase-rewriting one sector every save.
+ * and moves between two banks instead of erase-rewriting one sector every save.
  *
  * PORTABILITY: this file and flash_regions.c depend on nothing but the C
  * standard library, so the host test suite (firmware/tests/test_flash_regions.c)
@@ -104,6 +104,7 @@ typedef enum {
     FLASH_REGION_SETTINGS,     /* append: our saved settings                    */
     FLASH_REGION_SESSION,      /* append: the session snapshot (session_store.h) */
     FLASH_REGION_MODULES,      /* rw: module data assets                        */
+    FLASH_REGION_SESSION_B,    /* rw: second bank of the session log            */
     FLASH_REGION_LOGO,         /* rw: boot logo image (logo_store.h)            */
     FLASH_REGION_SCRATCH,      /* rw: screenshot gallery slots (gallery_store.h) */
     FLASH_REGION_FACTORY_CAL_BACKUP, /* rw: MCU factory-cal page mirror (cal_backup.c) */
@@ -193,18 +194,21 @@ flash_region_status_t flash_regions_erase_abs(uint32_t addr, uint32_t len);
  * fails: the scanner skips it and the log keeps working. Appending a payload
  * identical to the newest valid record is elided.
  *
- * When the region fills, append returns FLASH_REGION_ERR_FULL and changes
- * nothing. When anything from the log's end to the end of the region is not
- * blank (a header torn by a power cut, a half-erased sector with old records
- * behind a blank slot, or damage), nothing can safely be appended, and append returns
- * FLASH_REGION_ERR_LOG_DAMAGED, also changing nothing (issue #57). Either way
- * the log takes no more records: the caller decides when to flash_region_reset()
- * and re-append the live value. There is no automatic compaction, because
- * automatic compaction means an automatic erase. */
+ * A log has two banks. flash_region_log_save() is how a store saves: it appends,
+ * and when the bank takes no more it erases the OTHER bank and writes the record
+ * there, so a power cut at any moment leaves the newest complete record readable.
+ * flash_region_append() is the step that never erases: it returns
+ * FLASH_REGION_ERR_FULL, or FLASH_REGION_ERR_LOG_DAMAGED when anything after the
+ * log's end is not blank (issue #57), and changes nothing. */
 #define FLASH_REGION_RECORD_MAX  1024u
 
 flash_region_status_t flash_region_append(flash_region_id_t id,
                                           const void *data, uint32_t len);
+
+/* Append, moving to the other bank when this one takes no more. *moved (may be
+ * NULL) says whether it did. The only append-log path that erases. */
+flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *data,
+                                            uint32_t len, bool *moved);
 
 /* Newest CRC-valid record. *out_len gets the payload length. Returns
  * FLASH_REGION_ERR_NOT_FOUND on an empty (or entirely corrupt) log. */

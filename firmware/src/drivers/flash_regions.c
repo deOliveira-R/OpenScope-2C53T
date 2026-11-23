@@ -80,10 +80,9 @@ const flash_region_t flash_region_table[FLASH_REGION_COUNT] = {
     [FLASH_REGION_FWCACHE]  = { "fwcache",  0xD00000u, 0x200000u, FLASH_REGION_KIND_RW       },
     [FLASH_REGION_USER_CAL] = { "usercal",  0xF00000u, 0x010000u, FLASH_REGION_KIND_APPEND   },
     [FLASH_REGION_SETTINGS] = { "settings", 0xF10000u, 0x010000u, FLASH_REGION_KIND_APPEND   },
-    /* The session snapshot (util/session_store.h): ONE sector, the first of
-     * what was "modules" (0xF20000, 320 KB, never written by any build), so
-     * the only erase its log can need is a single 4 KB sector erase at
-     * power-off. An append log of its own and not a second record type in
+    /* The session snapshot (util/session_store.h): one sector, the first of
+     * what was "modules", and its second bank below, so the only erase its log
+     * can need is a single 4 KB sector erase at power-off. An append log of its own and not a second record type in
      * "settings": config.c takes the newest record of that log and rejects
      * it by length. */
     [FLASH_REGION_SESSION]  = { "session",  0xF20000u, 0x001000u, FLASH_REGION_KIND_APPEND   },
@@ -91,7 +90,11 @@ const flash_region_t flash_region_table[FLASH_REGION_COUNT] = {
      * 320x240 RGB565 image is 153,600 B = 38 sectors; the region is 48 sectors
      * so the header sector and a spare fit. Its first sector went to the
      * session snapshot above. Nothing used modules yet. */
-    [FLASH_REGION_MODULES]  = { "modules",  0xF21000u, 0x04F000u, FLASH_REGION_KIND_RW       },
+    [FLASH_REGION_MODULES]  = { "modules",  0xF21000u, 0x04E000u, FLASH_REGION_KIND_RW       },
+    /* The session log's second bank: the top sector of what was "modules". The
+     * sector after the session's first one holds the FPGA slot, so the two
+     * banks of this log are not adjacent. See "Append log" below. */
+    [FLASH_REGION_SESSION_B] = { "session2", 0xF6F000u, 0x001000u, FLASH_REGION_KIND_RW      },
     [FLASH_REGION_LOGO]     = { "logo",     0xF70000u, 0x030000u, FLASH_REGION_KIND_RW       },
     /* scratch loses its top 8 KB to the cal-backup region below (0x05F000 ->
      * 0x05D000). 8 KB out of ~380 KB of general scratch is negligible; the
@@ -547,25 +550,48 @@ flash_region_status_t flash_region_reset(flash_region_id_t id)
         g_stats.erases_refused++;
         return FLASH_REGION_ERR_BAD_ARG;
     }
-    /* An append log has no sequence number: the last CRC-valid record the scan
-     * walks to is the newest, which holds because flash_region_append() writes
-     * only when everything after its slot is blank. Erasing top down (issue
-     * #58) means a power cut leaves the old records as a prefix, so the device
-     * boots on an older setting, never on nothing when a prefix survives.
-     * Neither rule depends on how record slots fall on sectors. Tested by
-     * test_config_persist.c: "a compaction cut mid-erase never resurrects old
-     * settings" and "a save into an erase gap stays the newest". */
+    /* An explicit wipe. Saving never needs it (flash_region_log_save() moves to
+     * the other bank). An append log is erased top down, so a cut leaves its
+     * old records as a prefix and the boot still finds one. */
+    if (id == FLASH_REGION_SESSION) {
+        flash_region_status_t st = region_erase(FLASH_REGION_SESSION_B, 0u,
+                                                FLASH_REGION_SECTOR_SIZE, true);
+        if (st != FLASH_REGION_OK) return st;
+    }
     return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
  * Append log
  *
+ * Each log has two banks: the two halves of its region, or for the session
+ * log its region and FLASH_REGION_SESSION_B.
+ *
+ * Layout of a bank:
+ *   +0   u16  magic       LOG_BANK_MAGIC
+ *   +2   u16  reserved    0xFFFF
+ *   +4   u32  generation  one more than any generation seen when it was opened
+ *   +8   u32  crc32 of the 8 bytes above
+ *   +12  records
+ * A log written before banks existed has no bank header: its records start at
+ * offset 0 of the first bank and count as generation 0, so it is read in place
+ * and keeps taking records up to the end of that bank.
+ *
  * Layout per record:
  *   +0  u16  magic        0xA5C3, little-endian
  *   +2  u16  payload len
  *   +4  u32  crc32 of payload
  *   +8  payload, padded with 0xFF to a 4-byte boundary
+ *
+ * THE NEWEST RECORD is the last valid one of the bank with the highest
+ * generation that holds a valid record. Inside a bank, position is age, because
+ * a record is only ever written where everything after it is blank.
+ *
+ * MAKING ROOM never touches the bank holding the newest record: the OTHER bank
+ * is erased, its header written, then the new record. A power cut at any point
+ * leaves the newest record where it was, because a bank with no valid record is
+ * not chosen. The one exception is a pre-bank log that already ran past the
+ * middle of its region: no bank is free, so its first bank is erased, once.
  *
  * The header goes down BEFORE the payload. A power cut mid-payload then leaves
  * a record whose length is known and whose CRC fails: the scanner can step over
@@ -576,6 +602,11 @@ flash_region_status_t flash_region_reset(flash_region_id_t id)
 
 #define REC_MAGIC       0xA5C3u
 #define REC_HDR_SIZE    8u
+#define LOG_BANK_MAGIC     0x5AB7u   /* differs from REC_MAGIC and from blank */
+#define LOG_BANK_RESERVED  0xFFFFu
+#define LOG_BANK_HDR_SIZE  12u
+#define LOG_BANK_CRC_SPAN  8u        /* the header bytes its CRC covers */
+#define LOG_BANKS          2u
 
 static uint32_t crc32_update(uint32_t crc, const uint8_t *data, uint32_t len)
 {
@@ -646,47 +677,104 @@ static uint32_t rec_total(uint32_t payload_len)
 }
 
 typedef struct {
-    uint32_t next_offset;    /* first free byte in the log            */
-    uint32_t latest_offset;  /* offset of newest CRC-valid record, or */
-    uint32_t latest_len;     /* UINT32_MAX / 0 when there is none     */
+    flash_region_id_t id;    /* the region the bank is erased through  */
+    uint32_t offset;         /* of the bank in that region             */
+    uint32_t start;          /* absolute chip address                  */
+    uint32_t length;
+} log_bank_t;
+
+typedef struct {
+    bool     has_header;
+    uint32_t generation;     /* 0: no bank header (a pre-bank log)     */
+    uint32_t next_offset;    /* first free byte, from the bank's start */
+    uint32_t latest_offset;  /* offset of newest CRC-valid record, or  */
+    uint32_t latest_len;     /* UINT32_MAX / 0 when there is none      */
     uint32_t valid_records;
-} log_scan_t;
+} bank_scan_t;
 
-/* Walk the log. Stops at the first blank or unparsable header, which is what
- * makes a torn header self-limiting rather than a way to run off the end. */
-static flash_region_status_t log_scan(const flash_region_t *r, log_scan_t *out)
+typedef struct {
+    log_bank_t  bank[LOG_BANKS];
+    bank_scan_t scan[LOG_BANKS];
+    uint32_t    banks;           /* 1 for a region too small to halve        */
+    int         active;          /* bank of the newest record, or -1         */
+    uint32_t    max_generation;
+    bool        crossed;         /* a pre-bank log runs past its first bank  */
+} log_view_t;
+
+static flash_region_status_t log_banks(flash_region_id_t id, const flash_region_t *r,
+                                       log_view_t *v)
 {
-    uint8_t hdr[REC_HDR_SIZE];
+    if (id == FLASH_REGION_SESSION) {
+        const flash_region_t *alt = flash_region_get(FLASH_REGION_SESSION_B);
+        if (alt == NULL) return FLASH_REGION_ERR_TABLE;
+        v->bank[0] = (log_bank_t){ id, 0u, r->start, r->length };
+        v->bank[1] = (log_bank_t){ FLASH_REGION_SESSION_B, 0u, alt->start, alt->length };
+        v->banks = LOG_BANKS;
+        return FLASH_REGION_OK;
+    }
+    /* The first bank takes the odd sector, so an existing log keeps the most room. */
+    const uint32_t sectors = r->length / FLASH_REGION_SECTOR_SIZE;
+    const uint32_t first = ((sectors + 1u) / LOG_BANKS) * FLASH_REGION_SECTOR_SIZE;
+    v->bank[0] = (log_bank_t){ id, 0u, r->start, first };
+    v->bank[1] = (log_bank_t){ id, first, r->start + first, r->length - first };
+    v->banks = (r->length > first) ? LOG_BANKS : 1u;
+    return FLASH_REGION_OK;
+}
 
-    out->next_offset   = 0u;
+/* Walk one bank's records. Stops at the first blank or unparsable header, which
+ * is what makes a torn header self-limiting rather than a way to run off the
+ * end. Without a valid bank header the bank holds nothing unless headerless_ok:
+ * only the first bank can hold a pre-bank log, which may run past the bank. */
+static flash_region_status_t bank_walk(const log_bank_t *b, uint32_t region_len,
+                                       bool headerless_ok, bank_scan_t *out)
+{
+    uint8_t hdr[LOG_BANK_HDR_SIZE];
+
+    memset(out, 0, sizeof *out);
     out->latest_offset = UINT32_MAX;
-    out->latest_len    = 0u;
-    out->valid_records = 0u;
 
-    uint32_t off = 0u;
-    while (off + REC_HDR_SIZE <= r->length) {
-        flash_region_status_t st = backend_read(r->start + off, hdr, REC_HDR_SIZE);
+    flash_region_status_t st = backend_read(b->start, hdr, LOG_BANK_HDR_SIZE);
+    if (st != FLASH_REGION_OK) {
+        return st;
+    }
+    const uint32_t bank_magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8);
+    const uint32_t bank_crc = (uint32_t)hdr[8] | ((uint32_t)hdr[9] << 8) |
+                              ((uint32_t)hdr[10] << 16) | ((uint32_t)hdr[11] << 24);
+    uint32_t off = 0u, walk_len = region_len;
+    if (bank_magic == LOG_BANK_MAGIC && crc32_of(hdr, LOG_BANK_CRC_SPAN) == bank_crc) {
+        out->has_header = true;
+        out->generation = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
+                          ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+        off = LOG_BANK_HDR_SIZE;
+        walk_len = b->length;
+    } else if (!headerless_ok) {
+        return FLASH_REGION_OK;
+    }
+
+    uint8_t rec[REC_HDR_SIZE];
+    while (off + REC_HDR_SIZE <= walk_len) {
+        st = backend_read(b->start + off, rec, REC_HDR_SIZE);
         if (st != FLASH_REGION_OK) {
             return st;
         }
-        uint32_t magic = (uint32_t)hdr[0] | ((uint32_t)hdr[1] << 8);
+        uint32_t magic = (uint32_t)rec[0] | ((uint32_t)rec[1] << 8);
         if (magic != REC_MAGIC) {
             break;                       /* blank slot, or a torn header */
         }
-        uint32_t len = (uint32_t)hdr[2] | ((uint32_t)hdr[3] << 8);
+        uint32_t len = (uint32_t)rec[2] | ((uint32_t)rec[3] << 8);
         if (len == 0u || len > FLASH_REGION_RECORD_MAX) {
             break;                       /* nonsense length: stop, do not guess */
         }
         uint32_t total = rec_total(len);
-        if (!range_fits(off, total, r->length)) {
-            break;                       /* would run past the region */
+        if (!range_fits(off, total, walk_len)) {
+            break;                       /* would run past the bank */
         }
 
-        uint32_t crc = (uint32_t)hdr[4] | ((uint32_t)hdr[5] << 8) |
-                       ((uint32_t)hdr[6] << 16) | ((uint32_t)hdr[7] << 24);
+        uint32_t crc = (uint32_t)rec[4] | ((uint32_t)rec[5] << 8) |
+                       ((uint32_t)rec[6] << 16) | ((uint32_t)rec[7] << 24);
 
         uint32_t actual = 0u;
-        st = crc32_of_flash(r->start + off + REC_HDR_SIZE, len, &actual);
+        st = crc32_of_flash(b->start + off + REC_HDR_SIZE, len, &actual);
         if (st != FLASH_REGION_OK) {
             return st;
         }
@@ -704,78 +792,47 @@ static flash_region_status_t log_scan(const flash_region_t *r, log_scan_t *out)
     return FLASH_REGION_OK;
 }
 
-flash_region_status_t flash_region_append(flash_region_id_t id, const void *data, uint32_t len)
+static flash_region_status_t log_view(flash_region_id_t id, const flash_region_t *r,
+                                      log_view_t *v)
 {
-    const flash_region_t *r = flash_region_get(id);
-    if (!g_ready) return FLASH_REGION_ERR_NOT_INIT;
-    if (r == NULL || data == NULL || len == 0u || len > FLASH_REGION_RECORD_MAX) {
-        g_stats.writes_refused++;
-        return FLASH_REGION_ERR_BAD_ARG;
-    }
-    if (r->kind != FLASH_REGION_KIND_APPEND) {
-        g_stats.writes_refused++;
-        return (r->kind == FLASH_REGION_KIND_READONLY) ? FLASH_REGION_ERR_READ_ONLY
-                                                       : FLASH_REGION_ERR_BAD_ARG;
-    }
-
-    log_scan_t scan;
-    flash_region_status_t st = log_scan(r, &scan);
+    memset(v, 0, sizeof *v);
+    v->active = -1;
+    flash_region_status_t st = log_banks(id, r, v);
     if (st != FLASH_REGION_OK) {
         return st;
     }
-
-    /* No-op elision at the record level. This is the case that actually matters
-     * for a hot value: saving unchanged settings costs nothing at all. */
-    if (scan.latest_offset != UINT32_MAX && scan.latest_len == len) {
-        bool same = false;
-        st = flash_equals(r->start + scan.latest_offset + REC_HDR_SIZE,
-                          (const uint8_t *)data, len, &same);
+    st = bank_walk(&v->bank[0], r->length, true, &v->scan[0]);
+    if (st != FLASH_REGION_OK) {
+        return st;
+    }
+    v->crossed = !v->scan[0].has_header && v->scan[0].next_offset > v->bank[0].length;
+    if (v->banks > 1u && !v->crossed) {
+        st = bank_walk(&v->bank[1], v->bank[1].length, false, &v->scan[1]);
         if (st != FLASH_REGION_OK) {
             return st;
         }
-        if (same) {
-            g_stats.writes_elided++;
-            return FLASH_REGION_OK;
+    }
+    for (uint32_t i = 0; i < v->banks; i++) {
+        const bank_scan_t *s = &v->scan[i];
+        if (s->generation > v->max_generation) v->max_generation = s->generation;
+        if (s->valid_records != 0u &&
+            (v->active < 0 || s->generation > v->scan[v->active].generation)) {
+            v->active = (int)i;
         }
     }
+    return FLASH_REGION_OK;
+}
 
-    uint32_t total = rec_total(len);
-    if (!range_fits(scan.next_offset, total, r->length)) {
-        g_stats.writes_refused++;
-        return FLASH_REGION_ERR_FULL;
-    }
+/* Where records of this bank may end. */
+static uint32_t bank_limit(const log_view_t *v, uint32_t i, const flash_region_t *r)
+{
+    return (i == 0u && v->crossed) ? r->length : v->bank[i].length;
+}
 
-    uint32_t addr = r->start + scan.next_offset;
-
-    /* Everything from here to the end of the region must be blank, not only
-     * this slot. That is what makes position mean age: a record is only ever
-     * written behind all the others. A power cut inside an erase can leave a
-     * blank slot with whole old records after it; a record put in that gap
-     * would be followed by older ones, and the next scan would take the last
-     * of them as the newest. Anything not blank here is a torn header, a
-     * half-erased sector or damage, and nothing can safely be appended, so say
-     * so rather than NEEDS_ERASE, which a caller rightly will not act on
-     * (issue #57: every later save was refused, silently). */
-    {
-        uint8_t buf[IO_CHUNK];
-        const uint32_t tail = r->length - scan.next_offset;
-        for (uint32_t done = 0; done < tail; ) {
-            uint32_t n = tail - done;
-            if (n > IO_CHUNK) n = IO_CHUNK;
-            st = backend_read(addr + done, buf, n);
-            if (st != FLASH_REGION_OK) {
-                return st;
-            }
-            for (uint32_t i = 0; i < n; i++) {
-                if (buf[i] != 0xFFu) {
-                    g_stats.writes_refused++;
-                    return FLASH_REGION_ERR_LOG_DAMAGED;
-                }
-            }
-            done += n;
-        }
-    }
-
+/* Header first, then the payload: see "Append log". */
+static flash_region_status_t record_program(uint32_t addr, const void *data, uint32_t len)
+{
+    flash_region_status_t st;
     uint32_t crc = crc32_of((const uint8_t *)data, len);
     uint8_t hdr[REC_HDR_SIZE];
     hdr[0] = (uint8_t)(REC_MAGIC & 0xFFu);
@@ -799,6 +856,147 @@ flash_region_status_t flash_region_append(flash_region_id_t id, const void *data
     return FLASH_REGION_OK;
 }
 
+flash_region_status_t flash_region_append(flash_region_id_t id, const void *data, uint32_t len)
+{
+    const flash_region_t *r = flash_region_get(id);
+    if (!g_ready) return FLASH_REGION_ERR_NOT_INIT;
+    if (r == NULL || data == NULL || len == 0u || len > FLASH_REGION_RECORD_MAX) {
+        g_stats.writes_refused++;
+        return FLASH_REGION_ERR_BAD_ARG;
+    }
+    if (r->kind != FLASH_REGION_KIND_APPEND) {
+        g_stats.writes_refused++;
+        return (r->kind == FLASH_REGION_KIND_READONLY) ? FLASH_REGION_ERR_READ_ONLY
+                                                       : FLASH_REGION_ERR_BAD_ARG;
+    }
+
+    log_view_t v;
+    flash_region_status_t st = log_view(id, r, &v);
+    if (st != FLASH_REGION_OK) {
+        return st;
+    }
+
+    /* No-op elision at the record level. This is the case that actually matters
+     * for a hot value: saving unchanged settings costs nothing at all. */
+    if (v.active >= 0 && v.scan[v.active].latest_len == len) {
+        const bank_scan_t *newest = &v.scan[v.active];
+        bool same = false;
+        st = flash_equals(v.bank[v.active].start + newest->latest_offset + REC_HDR_SIZE,
+                          (const uint8_t *)data, len, &same);
+        if (st != FLASH_REGION_OK) {
+            return st;
+        }
+        if (same) {
+            g_stats.writes_elided++;
+            return FLASH_REGION_OK;
+        }
+    }
+
+    /* With nothing valid anywhere, the first bank takes the record, unless it
+     * was opened (a cut after its header): then the caller moves on. */
+    const uint32_t w = (v.active >= 0) ? (uint32_t)v.active : 0u;
+    if (v.active < 0 && v.scan[0].has_header) {
+        g_stats.writes_refused++;
+        return FLASH_REGION_ERR_LOG_DAMAGED;
+    }
+    const uint32_t limit = bank_limit(&v, w, r);
+    const uint32_t next = v.scan[w].next_offset;
+    uint32_t total = rec_total(len);
+    if (!range_fits(next, total, limit)) {
+        g_stats.writes_refused++;
+        return FLASH_REGION_ERR_FULL;
+    }
+
+    uint32_t addr = v.bank[w].start + next;
+
+    /* Everything from here to the end of the bank must be blank, not only this
+     * slot. That is what makes position mean age: a record is only ever written
+     * behind all the others. A power cut inside an erase can leave a blank slot
+     * with whole old records after it; a record put in that gap would be
+     * followed by older ones, and the next scan would take the last of them as
+     * the newest. Anything not blank here is a torn header, a half-erased
+     * sector or damage, and nothing can safely be appended, so say so rather
+     * than NEEDS_ERASE, which a caller rightly will not act on (issue #57:
+     * every later save was refused, silently). */
+    {
+        uint8_t buf[IO_CHUNK];
+        /* A pre-bank log's walk runs on across the middle of its region when a
+         * record ends exactly there, so old data in the second half counts as
+         * being behind this slot until that half has a bank header. */
+        const bool walk_continues = !v.scan[w].has_header && !v.crossed && v.banks > 1u &&
+                                    v.bank[1].id == id && !v.scan[1].has_header;
+        const uint32_t tail = (walk_continues ? r->length : limit) - next;
+        for (uint32_t done = 0; done < tail; ) {
+            uint32_t n = tail - done;
+            if (n > IO_CHUNK) n = IO_CHUNK;
+            st = backend_read(addr + done, buf, n);
+            if (st != FLASH_REGION_OK) {
+                return st;
+            }
+            for (uint32_t i = 0; i < n; i++) {
+                if (buf[i] != 0xFFu) {
+                    g_stats.writes_refused++;
+                    return FLASH_REGION_ERR_LOG_DAMAGED;
+                }
+            }
+            done += n;
+        }
+    }
+
+    return record_program(addr, data, len);
+}
+
+flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *data,
+                                            uint32_t len, bool *moved)
+{
+    if (moved != NULL) *moved = false;
+    flash_region_status_t st = flash_region_append(id, data, len);
+    if (st != FLASH_REGION_ERR_FULL && st != FLASH_REGION_ERR_LOG_DAMAGED) {
+        return st;
+    }
+
+    const flash_region_t *r = flash_region_get(id);
+    log_view_t v;
+    st = log_view(id, r, &v);
+    if (st != FLASH_REGION_OK) {
+        return st;
+    }
+    /* The bank that does not hold the newest record. */
+    const uint32_t target = (v.active == 0 && !v.crossed && v.banks > 1u) ? 1u : 0u;
+    const log_bank_t *b = &v.bank[target];
+    if (LOG_BANK_HDR_SIZE + rec_total(len) > b->length) {
+        g_stats.writes_refused++;
+        return FLASH_REGION_ERR_FULL;
+    }
+    st = region_erase(b->id, b->offset, b->length, true);
+    if (st != FLASH_REGION_OK) {
+        return st;
+    }
+
+    const uint32_t generation = v.max_generation + 1u;
+    uint8_t hdr[LOG_BANK_HDR_SIZE];
+    hdr[0] = (uint8_t)(LOG_BANK_MAGIC & 0xFFu);
+    hdr[1] = (uint8_t)(LOG_BANK_MAGIC >> 8);
+    hdr[2] = (uint8_t)(LOG_BANK_RESERVED & 0xFFu);
+    hdr[3] = (uint8_t)(LOG_BANK_RESERVED >> 8);
+    hdr[4] = (uint8_t)(generation & 0xFFu);
+    hdr[5] = (uint8_t)((generation >> 8) & 0xFFu);
+    hdr[6] = (uint8_t)((generation >> 16) & 0xFFu);
+    hdr[7] = (uint8_t)((generation >> 24) & 0xFFu);
+    const uint32_t hcrc = crc32_of(hdr, LOG_BANK_CRC_SPAN);
+    hdr[8]  = (uint8_t)(hcrc & 0xFFu);
+    hdr[9]  = (uint8_t)((hcrc >> 8) & 0xFFu);
+    hdr[10] = (uint8_t)((hcrc >> 16) & 0xFFu);
+    hdr[11] = (uint8_t)((hcrc >> 24) & 0xFFu);
+    st = program_verified(b->start, hdr, LOG_BANK_HDR_SIZE);
+    if (st != FLASH_REGION_OK) {
+        return st;
+    }
+    st = record_program(b->start + LOG_BANK_HDR_SIZE, data, len);
+    if (st == FLASH_REGION_OK && moved != NULL) *moved = true;
+    return st;
+}
+
 flash_region_status_t flash_region_read_latest(flash_region_id_t id, void *buf,
                                                uint32_t buf_size, uint32_t *out_len)
 {
@@ -807,23 +1005,24 @@ flash_region_status_t flash_region_read_latest(flash_region_id_t id, void *buf,
     if (r == NULL || buf == NULL || buf_size == 0u) return FLASH_REGION_ERR_BAD_ARG;
     if (r->kind != FLASH_REGION_KIND_APPEND)        return FLASH_REGION_ERR_BAD_ARG;
 
-    log_scan_t scan;
-    flash_region_status_t st = log_scan(r, &scan);
+    log_view_t v;
+    flash_region_status_t st = log_view(id, r, &v);
     if (st != FLASH_REGION_OK) {
         return st;
     }
-    if (scan.latest_offset == UINT32_MAX) {
+    if (v.active < 0) {
         return FLASH_REGION_ERR_NOT_FOUND;
     }
-    if (scan.latest_len > buf_size) {
+    const bank_scan_t *s = &v.scan[v.active];
+    if (s->latest_len > buf_size) {
         return FLASH_REGION_ERR_BOUNDS;
     }
-    st = backend_read(r->start + scan.latest_offset + REC_HDR_SIZE, buf, scan.latest_len);
+    st = backend_read(v.bank[v.active].start + s->latest_offset + REC_HDR_SIZE, buf, s->latest_len);
     if (st != FLASH_REGION_OK) {
         return st;
     }
     if (out_len != NULL) {
-        *out_len = scan.latest_len;
+        *out_len = s->latest_len;
     }
     return FLASH_REGION_OK;
 }
@@ -835,14 +1034,17 @@ flash_region_status_t flash_region_log_info(flash_region_id_t id, uint32_t *byte
     if (!g_ready) return FLASH_REGION_ERR_NOT_INIT;
     if (r == NULL || r->kind != FLASH_REGION_KIND_APPEND) return FLASH_REGION_ERR_BAD_ARG;
 
-    log_scan_t scan;
-    flash_region_status_t st = log_scan(r, &scan);
+    log_view_t v;
+    flash_region_status_t st = log_view(id, r, &v);
     if (st != FLASH_REGION_OK) {
         return st;
     }
-    if (bytes_used)    *bytes_used    = scan.next_offset;
-    if (bytes_free)    *bytes_free    = r->length - scan.next_offset;
-    if (valid_records) *valid_records = scan.valid_records;
+    const uint32_t w = (v.active >= 0) ? (uint32_t)v.active : 0u;
+    const uint32_t limit = bank_limit(&v, w, r);
+    const uint32_t used = v.scan[w].next_offset;
+    if (bytes_used)    *bytes_used    = used;
+    if (bytes_free)    *bytes_free    = (limit > used) ? limit - used : 0u;
+    if (valid_records) *valid_records = v.scan[w].valid_records;
     return FLASH_REGION_OK;
 }
 

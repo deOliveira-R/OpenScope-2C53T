@@ -754,7 +754,8 @@ static void test_append_and_read_latest(void)
     CHECK_ST(flash_region_log_info(FLASH_REGION_USER_CAL, &used, &freeb, &records),
              FLASH_REGION_OK);
     CHECK(records == 3, "expected 3 valid records, saw %u", records);
-    CHECK(used + freeb == R(FLASH_REGION_USER_CAL)->length, "log accounting is wrong");
+    CHECK(used + freeb == R(FLASH_REGION_USER_CAL)->length / 2u,   /* the bank in use */
+          "log accounting is wrong");
     CHECK(model.erases == 0, "appending must never erase");
 }
 
@@ -841,7 +842,8 @@ static void test_append_full_refuses_and_preserves(void)
 {
     fresh();
     uint8_t payload[248];              /* 256 bytes per record with the header */
-    const uint32_t region_len = R(FLASH_REGION_USER_CAL)->length;
+    /* Append alone never leaves the first bank. */
+    const uint32_t region_len = R(FLASH_REGION_USER_CAL)->length / 2u;
     const uint32_t capacity = region_len / 256u;
 
     uint32_t written = 0;

@@ -154,7 +154,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         return st;
     }
 """,
-        expect_fail=("a save torn after its length does not stop later saves",),
+        expect_fail=("a save torn at any byte is never applied",),
     ),
     Mutation(
         name="skip-and-continue over a CRC-failed record in log_scan()",
@@ -167,10 +167,7 @@ MUTATIONS: tuple[Mutation, ...] = (
             break;  /* mutant */
         }
 """,
-        expect_fail=(
-            "damage mid-log is never applied",
-            "a save torn after its length does not stop later saves",
-        ),
+        expect_fail=("damage mid-log is never applied",),
     ),
     Mutation(
         name="record CRC check in log_scan()",
@@ -183,10 +180,10 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
-        name="compaction of a full log in config_save()",
-        file="src/util/config.c",
-        old="    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {\n",
-        new="    if (st == FLASH_REGION_ERR_LOG_DAMAGED) {  /* mutant */\n",
+        name="moving on from a full bank in flash_region_log_save()",
+        file="src/drivers/flash_regions.c",
+        old="    if (st != FLASH_REGION_ERR_FULL && st != FLASH_REGION_ERR_LOG_DAMAGED) {\n",
+        new="    if (st != FLASH_REGION_ERR_LOG_DAMAGED) {  /* mutant */\n",
         expect_fail=(
             "changes survive power cycles across compaction",
             "a compaction cut before its erase keeps the old log",
@@ -195,10 +192,10 @@ MUTATIONS: tuple[Mutation, ...] = (
     Mutation(
         # #57: a log that ends at an unreadable record takes no more appends.
         # Without compaction on it, every later save is refused, forever.
-        name="compaction of a damaged log in config_save()",
-        file="src/util/config.c",
-        old="    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {\n",
-        new="    if (st == FLASH_REGION_ERR_FULL) {  /* mutant */\n",
+        name="moving on from a damaged bank in flash_region_log_save()",
+        file="src/drivers/flash_regions.c",
+        old="    if (st != FLASH_REGION_ERR_FULL && st != FLASH_REGION_ERR_LOG_DAMAGED) {\n",
+        new="    if (st != FLASH_REGION_ERR_FULL) {  /* mutant */\n",
         expect_fail=(
             "a save torn inside its magic or length does not stop later saves",
             "a damaged header mid-log does not stop later saves",
@@ -206,15 +203,29 @@ MUTATIONS: tuple[Mutation, ...] = (
         ),
     ),
     Mutation(
-        # #58: bottom-up, a cut leaves old records on the new log's grid past
-        # the erased sectors, and they come back once new saves refill them.
-        # Only when the record slot tiles a sector: the settings record's
-        # 68-byte slot (v5) does not, so the C test provokes it with a
-        # sector-tiling record of its own (its part 2).
-        name="top-down erase of an append region in flash_region_reset()",
+        # #58: a pre-bank log that already fills its region has no free bank, so
+        # its first bank is erased. Top down, a cut leaves its old records as a
+        # prefix and the boot still finds one.
+        name="top-down erase of a bank in flash_region_log_save()",
         file="src/drivers/flash_regions.c",
-        old="    return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);\n",
-        new="    return region_erase(id, 0u, r->length, false);  /* mutant */\n",
+        old="    st = region_erase(b->id, b->offset, b->length, true);\n",
+        new="    st = region_erase(b->id, b->offset, b->length, false);  /* mutant */\n",
+        expect_fail=("a compaction cut mid-erase never resurrects old settings",),
+    ),
+    Mutation(
+        # The whole point of the two banks.
+        name="making room in the bank that does not hold the newest record",
+        file="src/drivers/flash_regions.c",
+        old="    const uint32_t target = (v.active == 0 && !v.crossed && v.banks > 1u) ? 1u : 0u;\n",
+        new="    const uint32_t target = 0u;  /* mutant */\n",
+        expect_fail=("a cut while making room keeps the newest save",),
+    ),
+    Mutation(
+        # A pre-bank log's walk continues across the middle of the region.
+        name="old data in the second half counts as behind a pre-bank log",
+        file="src/drivers/flash_regions.c",
+        old="        const uint32_t tail = (walk_continues ? r->length : limit) - next;\n",
+        new="        (void)walk_continues; const uint32_t tail = limit - next;  /* mutant */\n",
         expect_fail=("a compaction cut mid-erase never resurrects old settings",),
     ),
     Mutation(

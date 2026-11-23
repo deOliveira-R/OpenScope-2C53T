@@ -2,24 +2,23 @@
  * session_store.h - where the session snapshot lives, and when it is read
  * and written (the format and the membership are model/model_session.h).
  *
- * WHERE. The external W25Q128JV, region FLASH_REGION_SESSION: ONE 4 KB
- * sector at 0xF20000..0xF20FFF, an append log of its own (flash_regions.h),
- * taken from the bottom of "modules", which nothing has ever used. Not the
+ * WHERE. The external W25Q128JV, an append log of its own (flash_regions.h)
+ * with two banks of one 4 KB sector each: FLASH_REGION_SESSION at 0xF20000 and
+ * FLASH_REGION_SESSION_B at 0xF6F000, both taken from "modules". Not the
  * settings log: config_try_load() takes the newest record of that log and
  * rejects it by length, so a snapshot there would default the settings (and
  * an older firmware would too). The 60-byte v5 settings record, its region
  * and its version are exactly as they were. Nothing here can reach any other
- * region (the region layer bounds every write and erase to this one), and
+ * region (the region layer bounds every write and erase to these two), and
  * the MCU's own flash (the application, the calibration page at 0x08006000,
  * the bootloader) is a different device this file has no call into. A
  * firmware update over HID programs MCU flash only, so the snapshot
  * survives it; the property ids make it readable by the new table.
  *
- * One sector on purpose: the only erase this file can ask for is of its own
- * region when the log takes no more records, and with one sector that is one
- * sector erase (the W25Q's erase unit, FLASH_REGION_SECTOR_SIZE = 4096; the
- * region layer refuses anything not aligned to it). A snapshot is about
- * 210 bytes, so the log takes ~18 saves between erases.
+ * One sector per bank on purpose: the only erase this file can cause is of the
+ * bank not holding the newest snapshot, when the other takes no more records,
+ * and that is one sector erase (the W25Q's erase unit, FLASH_REGION_SECTOR_SIZE
+ * = 4096). A snapshot is about 210 bytes, so a bank takes ~18 saves.
  *
  * WHEN IT IS WRITTEN. Only by session_snapshot_save() (the orderly power-off,
  * and the shell's `session save`) and by session_snapshot_clear() ("Reset to
@@ -107,7 +106,7 @@ typedef struct {
     uint16_t save_seq, save_count, save_bytes;
     uint16_t saves;             /* records appended by session_snapshot_save         */
     uint16_t clears;            /* tombstones appended by session_snapshot_clear     */
-    uint16_t compactions;       /* region erased because the log took no more        */
+    uint16_t compactions;       /* the log moved to its other bank                    */
     int32_t  last_flash_status; /* flash_region_status_t of the last append / erase  */
 } session_status_t;
 

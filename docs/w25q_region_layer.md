@@ -44,7 +44,8 @@ Derived from `reverse_engineering/analysis_v120/w25q128_flash_map_2026-06-13.md`
 | `usercal` | `0xF00000`–`0xF0FFFF` | 64 KB | append log — user calibration overlay |
 | `settings` | `0xF10000`–`0xF1FFFF` | 64 KB | append log — saved settings |
 | `session` | `0xF20000`–`0xF20FFF` | 4 KB | append log — the session snapshot (Startup on Boot = Restore), one sector taken from the bottom of `modules` (`session_store.h`) |
-| `modules` | `0xF21000`–`0xF6FFFF` | 316 KB | read/write — module data assets |
+| `modules` | `0xF21000`–`0xF6EFFF` | 312 KB | read/write — module data assets; the FPGA slot is its first 128 KB |
+| `session2` | `0xF6F000`–`0xF6FFFF` | 4 KB | second bank of the `session` log |
 | `logo` | `0xF70000`–`0xF9FFFF` | 192 KB | read/write — boot logo, one 320x240 RGB565 record (`logo_store.h`, [gallery.md](gallery.md)) |
 | `scratch` | `0xFA0000`–`0xFFCFFF` | 372 KB | read/write — on-device screenshot gallery: 9 slots of 40 KB at `0xFA0000 + k*0xA000` ([gallery.md](gallery.md)) |
 | `tail` | `0xFFF000`–`0xFFFFFF` | 4 KB | **read-only** — programmed (4096 zero bytes), purpose unknown |
@@ -101,16 +102,13 @@ known length whose CRC fails — the scanner steps over it and the log keeps
 working. Appending a payload identical to the newest valid record is elided
 entirely, which is what keeps a frequently-saved value off the erase path.
 
-A cut **before** the magic and length have both landed, or inside a sector
-erase, leaves a slot that is not blank but holds no header the scanner can
-read. Nothing can be appended after it, so `flash_region_append()` returns
-`FLASH_REGION_ERR_LOG_DAMAGED` and writes nothing; the settings writer compacts
-on it exactly as on `FLASH_REGION_ERR_FULL` (issue #57; until 2026-10-07 this
-returned `NEEDS_ERASE` and every later save failed). `flash_region_reset()` erases
-an append region **top down**, so a cut part-way through a compaction leaves the
-old records as an unbroken prefix rather than a gap that new saves refill and
-then walk past into stale records (issue #58). Other regions erase bottom up.
-Both cases are tested in `firmware/tests/test_config_persist.c` §9.
+Each log has **two banks**: the two halves of its region, and for `session` its region plus `session2`. A bank starts
+with a 12-byte header holding a generation number; the newest record is the last valid one of the highest generation
+that holds a valid record. When a bank takes no more (full, or `FLASH_REGION_ERR_LOG_DAMAGED`: something after the
+log's end is not blank), `flash_region_log_save()` erases the **other** bank, writes its header, then the record, so
+a power cut at any moment leaves the newest complete record readable. A log from before the banks has no header, counts
+as generation 0, is read in place and keeps taking records up to the end of its first bank. The one exception: such a
+log that already ran past the middle of its region has no free bank, so its first bank is erased, top down, once.
 
 ## Verification
 
