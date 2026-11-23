@@ -77,7 +77,8 @@ void fault_init(void)
      * record is distinguishable from one produced this boot. */
     uint32_t boots = prev_valid ? prev.boot_count : 0u;
     g_fault.boot_count = boots + 1u;
-    g_fault.magic = 0u;          /* reported once: the next run starts clean */
+    /* The record stays valid until a healthy run (fault_note_uptime_ms): a
+     * crash loop that stops in the bootloader must still be readable after. */
 
     /* Enable MemManage / BusFault / UsageFault. Without these every fault
      * escalates to HardFault and the specific cause is lost — which is exactly
@@ -117,7 +118,10 @@ bool fault_restart_limit_reached(void)
 
 void fault_note_uptime_ms(uint32_t uptime_ms)
 {
-    if (uptime_ms >= CRASH_HEALTHY_MS) crash_policy_healthy(&crash_state);
+    if (uptime_ms >= CRASH_HEALTHY_MS) {
+        crash_policy_healthy(&crash_state);
+        g_fault.magic = 0u;      /* this run still reports it, from its own copy */
+    }
 }
 
 const char *fault_last_summary(void)
@@ -255,8 +259,8 @@ static void fault_capture(uint32_t *frame, uint32_t exc_return, uint32_t kind)
      * destroyed the whole handler. That function runs
      * portASSERT_IF_INTERRUPT_PRIORITY_INVALID(), which ALWAYS fails in a fault
      * handler (priority -1/-2, above configMAX_SYSCALL_INTERRUPT_PRIORITY), and
-     * this project's configASSERT calls fault_display() — i.e. it drives the
-     * LCD over EXMC from inside a fault handler. That faulted again, escalated,
+     * this project's configASSERT then drove the LCD over EXMC from inside a
+     * fault handler. That faulted again, escalated,
      * and locked the core up at 0xFFFFFFFE with the record already invalidated
      * by the magic=0 above. Measured: SHCSR showed USGFAULTACT set with
      * CFSR = UNDEFINSTR and HFSR = FORCED, and g_fault was never written.

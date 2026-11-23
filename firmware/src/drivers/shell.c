@@ -730,18 +730,6 @@ static void vUsbDebugTask(void *pvParameters)
         bool did_work = false;
         dbg_shell_loops++;
 
-#if defined(FAULT_SELFTEST) && FAULT_SELFTEST
-        /* Fault self-test (build with FAULT_SELFTEST=1): a deliberate fault
-         * on the 1000th pass (about 10 s after boot when idle), from a task,
-         * so the exception frame lands on the PSP. It checks that the fault
-         * handler records a valid g_fault, and that the unit stops with no
-         * debugger attached. udf #0 is the permanently undefined encoding:
-         * UNDEFINSTR -> UsageFault, with no memory access involved. */
-        if (dbg_shell_loops == 1000u) {
-            __asm volatile ("udf #0");
-        }
-#endif
-
         /* ---- RTT (SWD) transport ---- */
         if (!rtt_banner_sent && rtt_host_attached()) {
             usb_send_str(shell_banner);

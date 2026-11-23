@@ -392,7 +392,7 @@ vpath %.s $(sort $(dir $(ASM_SOURCES)))
 vpath %.S $(sort $(dir $(ASM_SOURCES)))
 
 # Objects of different images share build/: without this, plain `make` after
-# `make app-faulttest`, or a change of WITH=/WITHOUT=, links objects compiled
+# `make app-rtt`, or a change of WITH=/WITHOUT=, links objects compiled
 # for the other image. build/image.stamp holds what the objects were compiled
 # as (IMAGE_ID, features.mk, plus WATCHDOG); if it differs, or is missing,
 # the objects are deleted while the Makefile is read, before any rule runs (a
@@ -1699,7 +1699,6 @@ test-measure-strip: $(BUILD_DIR)/test_measure_strip
 #                          -> live capture, meter submodes, bench profile
 #   app-full               the user image (profile `full`)
 #   app-rtt                app-coldtrace-meter, debug shell on RTT only
-#   app-faulttest          app-coldtrace-meter, fault-handler self-test
 #   app-re                 app-coldtrace-meter plus the reverse-engineering
 #                          toolkit (profile `re`, src/re/, docs/re/README.md)
 #   guest-coldtrace-meter  app-coldtrace-meter linked for the
@@ -1753,18 +1752,9 @@ app-full: clean all
 # nothing followed. RTT exists to bypass that transport; this stops the tee
 # re-introducing it. It needs a debugger attached, so it is of no use on a
 # unit with read-out protection set (bench unit #1: attaching kills the CPU).
-.PHONY: app-rtt app-faulttest
+.PHONY: app-rtt
 app-rtt: CFLAGS += -DDEBUG_SHELL_RTT_ONLY=1
 app-rtt: clean all
-
-# app-faulttest: app-coldtrace-meter with the fault-handler self-test
-# (FAULT_SELFTEST, 2026-08-11). Fires `udf #0` from a task ~10 s after boot.
-# Answers (a) does the fault handler record anything at all, and (b) does the
-# device freeze on its own with NO debugger attached -- the confound that made
-# the "~55 s HardFault" reading suspect, since that freeze had only ever been
-# observed after an OpenOCD attach.
-app-faulttest: CFLAGS += -DFAULT_SELFTEST=1
-app-faulttest: clean all
 
 # app-re: app-coldtrace-meter plus the reverse-engineering toolkit (profile
 # `re`, features.mk): shell commands that pulse pins and probe buses to find

@@ -354,7 +354,6 @@ Build knobs for bench work on the configuration path:
 |---|---|
 | `make guest-coldtrace-la` | `FPGA_BB_HALF_DELAY=60`: the bit-bang configuration clock slowed to 1-2 MHz, so a 24 MS/s logic analyser decodes the whole upload |
 | `make app-rtt` | `DEBUG_SHELL_RTT_ONLY`: the shell on RTT only, for a board whose USB does not enumerate yet (needs a debug probe) |
-| `make app-faulttest` | `FAULT_SELFTEST`: raises a fault 10 s after boot, to check the fault record without a probe |
 | `make guest-caldump` | `CAL_DUMP_MODE`: step 8's read-only dump of one internal flash sector |
 
 ## Other documents in this directory

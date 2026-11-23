@@ -219,7 +219,6 @@ DAILY_PROFILE := bench
 DAILY_GOALS   := all flash flash-dfu flash-all disasm size features app-coldtrace-meter
 $(foreach g,$(DAILY_GOALS),$(eval PROFILE_OF_$(g) := $(DAILY_PROFILE)))
 PROFILE_OF_app-rtt := bench
-PROFILE_OF_app-faulttest := bench
 PROFILE_OF_app-full := full
 PROFILE_OF_app-re := re
 
