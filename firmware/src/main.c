@@ -1198,7 +1198,7 @@ int main(void)
     /* Clock init to 240MHz */
     system_clock_config();
 
-    wdt_counter_reload();
+    watchdog_boot_feed();
 
     /* Enable peripheral clocks */
     crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
@@ -1236,7 +1236,7 @@ int main(void)
     /* Initialize battery ADC (PB1) */
     battery_adc_init();
 
-    wdt_counter_reload();
+    watchdog_boot_feed();
 
     /* Initialize theme system */
     theme_init(THEME_DARK_BLUE);
@@ -1295,7 +1295,7 @@ int main(void)
         #undef _GPIO_CFG
     }
 
-    wdt_counter_reload();
+    watchdog_boot_feed();
 
     /* First frame, then light the backlight. Painting before PB8 goes HIGH is
      * what eliminates the boot static (uninitialized GRAM was visible from
@@ -1377,9 +1377,9 @@ int main(void)
      * once the scheduler starts. */
     usb_debug_init();
 
-    wdt_counter_reload();
+    watchdog_boot_feed();
     fpga_init();
-    wdt_counter_reload();
+    watchdog_boot_feed();
 #endif
 
     /* User settings: bind the W25Q region layer, load the newest saved record
@@ -1529,6 +1529,7 @@ int main(void)
      * Skipped in GUEST_BUILD so interactive SPI3 shell sessions on unit #2
      * can't trip a watchdog reset mid-experiment, and with NO_WATCHDOG for the
      * same reason in app-layout bench builds (app-coldtrace). */
+    watchdog_boot_feed();    /* closes the last boot gap */
 #if !defined(GUEST_BUILD) && !defined(NO_WATCHDOG)
     watchdog_init();
 #endif

@@ -17,6 +17,7 @@
 #include <stdbool.h>
 #include "FreeRTOS.h"
 #include "task.h"
+#include "health_gap.h"
 
 /* Maximum number of tasks that can register with the health monitor */
 #define HEALTH_MAX_TASKS    6
@@ -34,6 +35,11 @@ void watchdog_init(void);
 /* Feed the watchdog — only called by the health monitor, not by tasks */
 void watchdog_feed(void);
 
+/* main() before the scheduler: feed, and record the longest time between two
+ * feeds. A watchdog left running across a direct jump has to survive that. */
+void watchdog_boot_feed(void);
+uint32_t watchdog_boot_max_gap_ms(void);
+
 /* ═══════════════════════════════════════════════════════════════════
  * Task Health Monitor — cooperative check-in pattern
  * ═══════════════════════════════════════════════════════════════════ */
@@ -41,7 +47,7 @@ void watchdog_feed(void);
 typedef struct {
     const char    *name;               /* Task name (for diagnostics) */
     TaskHandle_t   handle;             /* FreeRTOS task handle */
-    TickType_t     last_checkin;        /* Tick count of last check-in */
+    health_gap_t   gap;                 /* last check-in, longest gap (ticks) */
     UBaseType_t    stack_hwm;           /* Stack high water mark (words) */
     bool           registered;         /* Slot in use */
 } task_health_t;
@@ -66,6 +72,10 @@ const task_health_t *health_get_tasks(void);
 
 /* Get count of registered tasks */
 int health_get_count(void);
+
+/* The health timer's own check-in gaps; clear all the recorded maxima. */
+const health_gap_t *health_timer_gap(void);
+void health_clear_gaps(void);
 
 /* Check if a specific task is stalled */
 bool health_is_stalled(int slot);

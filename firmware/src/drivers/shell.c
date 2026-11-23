@@ -6,6 +6,7 @@
  */
 
 #include "shell_parts.h"
+#include "watchdog.h"
 
 /* ── Number parsing ─────────────────────────────────────────────────── */
 
@@ -256,6 +257,40 @@ typedef struct {
 } shell_cmd_t;
 
 /* Row flags */
+/* The watchdog dry run: the longest each monitored task went quiet. */
+static void health_gap_row(const char *name, const health_gap_t *g, uint32_t now)
+{
+    usb_debug_printf("  %-12s %8lu %10lu %6lu %8lu\r\n", name,
+                     (unsigned long)(g->max * portTICK_PERIOD_MS),
+                     (unsigned long)(g->max_at * portTICK_PERIOD_MS / 1000u),
+                     (unsigned long)g->over,
+                     (unsigned long)(health_gap_quiet(g, now) * portTICK_PERIOD_MS));
+}
+
+static void cmd_health(void)
+{
+    const uint32_t now = (uint32_t)xTaskGetTickCount();
+#ifdef NO_WATCHDOG
+    usb_send_str("health: dry run, the hardware watchdog is OFF in this image\r\n");
+#else
+    usb_send_str("health: the hardware watchdog is ON in this image\r\n");
+#endif
+    usb_debug_printf("  deadline %u ms; uptime %lu s\r\n", (unsigned)HEALTH_DEADLINE_MS,
+                     (unsigned long)(now * portTICK_PERIOD_MS / 1000u));
+    usb_send_str("  name          max ms   at uptime s  over  quiet ms\r\n");
+    const task_health_t *t = health_get_tasks();
+    for (int i = 0; i < health_get_count(); i++) health_gap_row(t[i].name, &t[i].gap, now);
+    health_gap_row("health timer", health_timer_gap(), now);
+    usb_debug_printf("  boot: longest gap between feeds %lu ms\r\n",
+                     (unsigned long)watchdog_boot_max_gap_ms());
+}
+
+static void cmd_health_clear(void)
+{
+    health_clear_gaps();
+    usb_send_str("health: recorded gaps cleared\r\n");
+}
+
 #define SC_EXACT    0x01u   /* takes no arguments: matches only the whole line */
 
 #define SC_NEEDARGS 0x02u   /* refused with its usage when no arguments follow */
@@ -418,6 +453,10 @@ static const shell_cmd_t shell_cmds[] = {
           "uptime                          Show uptime\r\n"),
     CMD_V("tasks", cmd_tasks, SC_EXACT,
           "tasks                           FreeRTOS tasks: priority, state, stack size and least free (words); heap\r\n"),
+    CMD_V("health clear", cmd_health_clear, SC_EXACT,
+          "health clear                    Clear the recorded gaps\r\n"),
+    CMD_V("health", cmd_health, SC_EXACT,
+          "health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n"),
     BENCHSHELL_SHELL_ROWS   /* the bench shell: src/drivers/shell_bench.h, empty when the feature is off */
     RETOOLS_SHELL_ROWS      /* the reverse-engineering toolkit: src/re/shell_re.h, empty when off */
     METERDEBUG_SHELL_ROWS   /* the meter diagnostics: src/drivers/shell_meterdebug.h, empty when off */

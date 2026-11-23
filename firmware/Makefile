@@ -78,6 +78,7 @@ C_SOURCES += src/drivers/flash_fs.c
 C_SOURCES += src/drivers/flash_regions.c
 C_SOURCES += src/drivers/flash_regions_w25q.c
 C_SOURCES += src/drivers/watchdog.c
+C_SOURCES += src/util/health_gap.c
 C_SOURCES += src/drivers/button_scan.c
 C_SOURCES += src/drivers/continuity_buzzer.c
 C_SOURCES += src/drivers/dfu_boot.c
@@ -1084,6 +1085,13 @@ $(BUILD_DIR)/test_fft: tests/test_fft.c src/dsp/fft.c src/dsp/fft.h src/dsp/fft_
 
 $(BUILD_DIR)/test_theme: tests/test_theme.c src/ui/theme.c src/ui/theme.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/drivers $< src/ui/theme.c -o $@
+
+$(BUILD_DIR)/test_health_gap: tests/test_health_gap.c src/util/health_gap.c src/util/health_gap.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/health_gap.c -o $@
+
+.PHONY: test-health-gap
+test-health-gap: $(BUILD_DIR)/test_health_gap
+	$<
 
 $(BUILD_DIR)/test_config: tests/test_config.c $(CONFIG_TEST_SRCS) src/util/config.h | $(BUILD_DIR)
 	$(CONFIG_PERSIST_CC) -DSETTINGS_PERSIST_WRITES=1 $< $(CONFIG_TEST_SRCS) -lm -o $@

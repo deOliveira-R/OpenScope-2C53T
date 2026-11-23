@@ -29,6 +29,9 @@
 
 static task_health_t health_tasks[HEALTH_MAX_TASKS];
 static int health_count = 0;
+static health_gap_t health_timer;      /* the monitor itself, one mark per health_check() */
+
+#define HEALTH_DEADLINE_TICKS  ((uint32_t)pdMS_TO_TICKS(HEALTH_DEADLINE_MS))
 
 /* ═══════════════════════════════════════════════════════════════════
  * Watchdog (FWDGT) — low-level
@@ -61,6 +64,34 @@ void watchdog_feed(void)
 #endif
 }
 
+/* Timed by the DWT cycle counter (started by fault_init), as no tick runs yet.
+ * Its 17.9 s wrap at 240 MHz is far above any gap that could be survived. */
+#ifndef EMULATOR_BUILD
+static bool     boot_fed;
+static uint32_t boot_last_cycles, boot_max_cycles;
+#endif
+
+void watchdog_boot_feed(void)
+{
+#ifndef EMULATOR_BUILD
+    wdt_counter_reload();
+    const uint32_t now = DWT->CYCCNT;
+    if (boot_fed && now - boot_last_cycles > boot_max_cycles)
+        boot_max_cycles = now - boot_last_cycles;
+    boot_last_cycles = now;
+    boot_fed = true;
+#endif
+}
+
+uint32_t watchdog_boot_max_gap_ms(void)
+{
+#ifndef EMULATOR_BUILD
+    return boot_max_cycles / (system_core_clock / 1000u);
+#else
+    return 0u;
+#endif
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * Task Health Monitor
  * ═══════════════════════════════════════════════════════════════════ */
@@ -73,7 +104,7 @@ int health_register(const char *name, TaskHandle_t handle)
     int slot = health_count;
     health_tasks[slot].name         = name;
     health_tasks[slot].handle       = handle;
-    health_tasks[slot].last_checkin = xTaskGetTickCount();
+    health_gap_start(&health_tasks[slot].gap, xTaskGetTickCount());
     health_tasks[slot].stack_hwm    = 0;
     health_tasks[slot].registered   = true;
     health_count++;
@@ -83,7 +114,7 @@ int health_register(const char *name, TaskHandle_t handle)
 void health_checkin(int slot)
 {
     if (slot >= 0 && slot < HEALTH_MAX_TASKS && health_tasks[slot].registered) {
-        health_tasks[slot].last_checkin = xTaskGetTickCount();
+        health_gap_mark(&health_tasks[slot].gap, xTaskGetTickCount(), HEALTH_DEADLINE_TICKS);
     }
 }
 
@@ -92,7 +123,7 @@ void health_checkin_self(void)
     const TaskHandle_t me = xTaskGetCurrentTaskHandle();
     for (int i = 0; i < HEALTH_MAX_TASKS; i++) {
         if (health_tasks[i].registered && health_tasks[i].handle == me) {
-            health_tasks[i].last_checkin = xTaskGetTickCount();
+            health_gap_mark(&health_tasks[i].gap, xTaskGetTickCount(), HEALTH_DEADLINE_TICKS);
             return;
         }
     }
@@ -103,14 +134,14 @@ bool health_is_stalled(int slot)
     if (slot < 0 || slot >= HEALTH_MAX_TASKS || !health_tasks[slot].registered)
         return false;
 
-    TickType_t now = xTaskGetTickCount();
-    TickType_t elapsed = now - health_tasks[slot].last_checkin;
-    return elapsed > pdMS_TO_TICKS(HEALTH_DEADLINE_MS);
+    return health_gap_quiet(&health_tasks[slot].gap, xTaskGetTickCount()) > HEALTH_DEADLINE_TICKS;
 }
 
 void health_check(void)
 {
     bool all_healthy = true;
+
+    health_gap_mark(&health_timer, xTaskGetTickCount(), HEALTH_DEADLINE_TICKS);
 
     for (int i = 0; i < health_count; i++) {
         if (!health_tasks[i].registered)
@@ -141,6 +172,18 @@ const task_health_t *health_get_tasks(void)
 int health_get_count(void)
 {
     return health_count;
+}
+
+const health_gap_t *health_timer_gap(void)
+{
+    return &health_timer;
+}
+
+void health_clear_gaps(void)
+{
+    for (int i = 0; i < health_count; i++)
+        health_gap_clear(&health_tasks[i].gap);
+    health_gap_clear(&health_timer);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
