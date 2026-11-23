@@ -194,9 +194,9 @@ flash_region_status_t flash_regions_erase_abs(uint32_t addr, uint32_t len);
  * identical to the newest valid record is elided.
  *
  * When the region fills, append returns FLASH_REGION_ERR_FULL and changes
- * nothing. When the log ends at a slot that is not blank but holds no record
- * the scanner can read (a header torn by a power cut, a half-erased sector, or
- * damage), nothing can ever be appended after it, and append returns
+ * nothing. When anything from the log's end to the end of the region is not
+ * blank (a header torn by a power cut, a half-erased sector with old records
+ * behind a blank slot, or damage), nothing can safely be appended, and append returns
  * FLASH_REGION_ERR_LOG_DAMAGED, also changing nothing (issue #57). Either way
  * the log takes no more records: the caller decides when to flash_region_reset()
  * and re-append the live value. There is no automatic compaction, because

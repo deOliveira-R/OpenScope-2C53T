@@ -231,7 +231,7 @@ static struct {
  * old content with some bits set: OR-ing a fixed pattern over the whole sector
  * models that deterministically. 0x3C is chosen so that no record header in
  * the sector parses afterwards — magic C3 A5 becomes FF BD (neither blank nor
- * REC_MAGIC) and the length 38 00 becomes 3C 3C (15420, over the record max) —
+ * REC_MAGIC) and the length 3C 00 becomes 3C 3C (15420, over the record max) —
  * while every slot that held a record is still visibly not blank. */
 #define ERASE_DISTURB  0x3Cu
 
@@ -1949,7 +1949,7 @@ static uint32_t forge_config(uint32_t offset, const device_config_t *c)
 }
 
 /* Was `c` a whole, CRC-valid record in the settings log of `image` (a chip
- * snapshot)? Walks the 64-byte grid every record this suite writes sits on. */
+ * snapshot)? Walks the REC_SLOT grid every record this suite writes sits on. */
 static bool record_existed_in(const uint8_t *image, const device_config_t *c)
 {
     const flash_region_t *set = flash_region_get(FLASH_REGION_SETTINGS);
@@ -2030,16 +2030,22 @@ static void check_erase_cut_landed(const uint8_t *before, const char *what)
     CHECK(!blank, "%s: the cut sector 0x%X reads blank — the erase finished", what, sec);
     CHECK(memcmp(model.mem + sec, before + sec, FLASH_REGION_SECTOR_SIZE) != 0,
           "%s: the cut sector 0x%X is unchanged — the erase never started", what, sec);
-    uint32_t readable = 0, first = UINT32_MAX;
-    for (uint32_t off = 0; off < FLASH_REGION_SECTOR_SIZE; off += REC_SLOT) {
+    /* Slots sit on a grid from the region's start, which does not line up with
+     * a later sector's start: begin at the first slot inside this sector. */
+    const uint32_t into_slot = (sec - set->start) % REC_SLOT;
+    const uint32_t first_slot = into_slot ? REC_SLOT - into_slot : 0u;
+    uint32_t readable = 0, examined = 0, first = UINT32_MAX;
+    for (uint32_t off = first_slot; off + 1u < FLASH_REGION_SECTOR_SIZE; off += REC_SLOT) {
         const uint8_t *was = before + sec + off, *now = model.mem + sec + off;
         if ((was[0] | (was[1] << 8)) != REC_MAGIC) continue;     /* held no record */
+        examined++;
         uint32_t magic = (uint32_t)now[0] | ((uint32_t)now[1] << 8);
         if (magic == REC_MAGIC || magic == 0xFFFFu) {
             readable++;
             if (first == UINT32_MAX) first = sec + off;
         }
     }
+    CHECK(examined > 0, "%s: no record header of the cut sector was examined", what);
     CHECK(readable == 0, "%s: %u slot(s) of the cut sector still read as a record header "
           "or as blank (first 0x%X)", what, readable, first);
 }
@@ -2948,6 +2954,78 @@ static void check_tiling_log_never_resurrects(void)
     }
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+ * A blank gap with old records behind it
+ *
+ * A real erase stopped part-way leaves each bit either old or set, so one slot
+ * of a sector can read blank while later slots of that sector still hold whole,
+ * valid records. The scan stops at the gap. A record written there would sit in
+ * front of older ones, and the next scan would walk through it and take the
+ * last of them as the newest. Checked for each log and each record size in use,
+ * and for a size that tiles nothing in particular: safety must not depend on
+ * how slots fall on sectors.
+ * ═══════════════════════════════════════════════════════════════════ */
+#define GAP_LOG_RECORDS  12u      /* few enough to stay in one sector at every size */
+#define GAP_SLOT_INDEX   (GAP_LOG_RECORDS / 2u)
+#define GAP_TAG_OLD      0x11000000u
+#define GAP_TAG_NEW      0x22000000u
+#define GAP_MAX_PAYLOAD  304u     /* USERCAL_REC_LEN, the largest size below */
+
+static flash_region_status_t gap_save(flash_region_id_t id, uint32_t tag, uint32_t len)
+{
+    uint8_t p[GAP_MAX_PAYLOAD];
+    memset(p, TILING_PAYLOAD_FILL, len);
+    memcpy(p, &tag, sizeof tag);
+    flash_region_status_t st = flash_region_append(id, p, len);
+    if (st == FLASH_REGION_ERR_FULL || st == FLASH_REGION_ERR_LOG_DAMAGED) {
+        st = flash_region_reset(id);                /* the policy of all three stores */
+        if (st == FLASH_REGION_OK) st = flash_region_append(id, p, len);
+    }
+    return st;
+}
+
+static uint32_t gap_newest_tag(flash_region_id_t id)
+{
+    uint8_t p[GAP_MAX_PAYLOAD];
+    uint32_t len = 0, tag = 0;
+    if (flash_region_read_latest(id, p, sizeof p, &len) != FLASH_REGION_OK) return 0u;
+    memcpy(&tag, p, sizeof tag);
+    return tag;
+}
+
+static void test_a_save_into_an_erase_gap_stays_the_newest(void)
+{
+    static const flash_region_id_t logs[] = {
+        FLASH_REGION_USER_CAL, FLASH_REGION_SETTINGS, FLASH_REGION_SESSION,
+    };
+    static const uint32_t sizes[] = { sizeof(device_config_t), 64u, GAP_MAX_PAYLOAD };
+
+    for (uint32_t l = 0; l < sizeof logs / sizeof logs[0]; l++) {
+        for (uint32_t s = 0; s < sizeof sizes / sizeof sizes[0] && !current_failed; s++) {
+            const flash_region_t *r = flash_region_get(logs[l]);
+            const uint32_t len = sizes[s];
+            const uint32_t slot = REC_HDR_SIZE + ((len + 3u) & ~3u);
+            fresh_device();
+            for (uint32_t i = 0; i < GAP_LOG_RECORDS; i++) {
+                CHECK(gap_save(logs[l], GAP_TAG_OLD + i, len) == FLASH_REGION_OK,
+                      "%s, %u bytes: filling the log failed", r->name, len);
+            }
+            memset(model.mem + r->start + GAP_SLOT_INDEX * slot, 0xFF, slot);
+            power_cycle();
+
+            for (uint32_t k = 0; k < 2u && !current_failed; k++) {
+                CHECK(gap_save(logs[l], GAP_TAG_NEW + k, len) == FLASH_REGION_OK,
+                      "%s, %u bytes: save %u after the gap failed", r->name, len, k);
+                power_cycle();
+                const uint32_t got = gap_newest_tag(logs[l]);
+                CHECK(got == GAP_TAG_NEW + k,
+                      "%s, %u bytes: after save %u the boot read 0x%08X, not the newest 0x%08X",
+                      r->name, len, k, got, GAP_TAG_NEW + k);
+            }
+        }
+    }
+}
+
 static void test_a_compaction_cut_mid_erase_never_resurrects_old_settings(void)
 {
     /* Part 1: the settings record as it is. */
@@ -3093,6 +3171,7 @@ int main(void)
             test_a_damaged_header_mid_log_does_not_stop_later_saves);
         run("a compaction cut inside the first sector's erase does not stop later saves",
             test_a_compaction_cut_inside_the_first_sectors_erase_does_not_stop_later_saves);
+        run("a save into an erase gap stays the newest", test_a_save_into_an_erase_gap_stays_the_newest);
         run("a compaction cut mid-erase never resurrects old settings",
             test_a_compaction_cut_mid_erase_never_resurrects_old_settings);
     }

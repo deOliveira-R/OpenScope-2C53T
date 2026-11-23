@@ -547,23 +547,14 @@ flash_region_status_t flash_region_reset(flash_region_id_t id)
         g_stats.erases_refused++;
         return FLASH_REGION_ERR_BAD_ARG;
     }
-    /* An append log is erased top down (issue #58). The log has no sequence
-     * number: log_scan() takes the last CRC-valid record it walks to as the
-     * newest. Bottom up, a power cut after k sector erases leaves sectors k..
-     * holding the old log; new saves refill the erased sectors from offset 0,
-     * and when the record slot tiles a sector (the 64-byte v4 slot did) a new
-     * record ends exactly where an old header starts, the scan walks on into
-     * the old log, and the boot loads settings from before the compaction.
-     * Top down, a cut leaves the old records as a prefix ending at the first
-     * erased sector; the device boots on one of them (an older setting, never
-     * a resurrected one) and appends after it, whatever the record size.
-     * Today's records (settings 68 B, usercal 312 B slots) tile no sector
-     * boundary in their regions, so even bottom up the new slot that reaches
-     * the boundary straddles it, the scan stops at its blank header and the
-     * caller compacts (LOG_DAMAGED). This order is what keeps a record that
-     * does tile safe (a 64-byte payload, 72 B slot: 9 x 4096 = 512 x 72).
-     * Tested by test_config_persist.c, "a compaction cut mid-erase never
-     * resurrects old settings". */
+    /* An append log has no sequence number: the last CRC-valid record the scan
+     * walks to is the newest, which holds because flash_region_append() writes
+     * only when everything after its slot is blank. Erasing top down (issue
+     * #58) means a power cut leaves the old records as a prefix, so the device
+     * boots on an older setting, never on nothing when a prefix survives.
+     * Neither rule depends on how record slots fall on sectors. Tested by
+     * test_config_persist.c: "a compaction cut mid-erase never resurrects old
+     * settings" and "a save into an erase gap stays the newest". */
     return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);
 }
 
@@ -756,13 +747,20 @@ flash_region_status_t flash_region_append(flash_region_id_t id, const void *data
 
     uint32_t addr = r->start + scan.next_offset;
 
-    /* The slot must be blank. If it is not, something already lives here and
-     * this layer does not overwrite by guessing — it refuses, and the caller
-     * decides whether to reset the region. */
+    /* Everything from here to the end of the region must be blank, not only
+     * this slot. That is what makes position mean age: a record is only ever
+     * written behind all the others. A power cut inside an erase can leave a
+     * blank slot with whole old records after it; a record put in that gap
+     * would be followed by older ones, and the next scan would take the last
+     * of them as the newest. Anything not blank here is a torn header, a
+     * half-erased sector or damage, and nothing can safely be appended, so say
+     * so rather than NEEDS_ERASE, which a caller rightly will not act on
+     * (issue #57: every later save was refused, silently). */
     {
         uint8_t buf[IO_CHUNK];
-        for (uint32_t done = 0; done < total; ) {
-            uint32_t n = total - done;
+        const uint32_t tail = r->length - scan.next_offset;
+        for (uint32_t done = 0; done < tail; ) {
+            uint32_t n = tail - done;
             if (n > IO_CHUNK) n = IO_CHUNK;
             st = backend_read(addr + done, buf, n);
             if (st != FLASH_REGION_OK) {
@@ -770,12 +768,6 @@ flash_region_status_t flash_region_append(flash_region_id_t id, const void *data
             }
             for (uint32_t i = 0; i < n; i++) {
                 if (buf[i] != 0xFFu) {
-                    /* The scan stopped here and the slot is not blank, so it
-                     * holds no record the scanner can read: a header torn by a
-                     * power cut, a half-erased sector, or damage. Nothing can
-                     * be appended after it, ever, so say so rather than
-                     * NEEDS_ERASE, which a caller rightly will not act on
-                     * (issue #57: every later save was refused, silently). */
                     g_stats.writes_refused++;
                     return FLASH_REGION_ERR_LOG_DAMAGED;
                 }
