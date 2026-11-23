@@ -9,6 +9,7 @@
 
 #include "fpga_internal.h"
 #include "fpga_bitstream_core.h"
+#include "watchdog.h"            /* watchdog_boot_feed between the upload's stages */
 
 fpga_boot_state_t fboot;
 
@@ -98,6 +99,14 @@ uint32_t fpga_cfg_status(void)
            ((uint32_t)fboot.cfg_status_reg[2] << 8)  |  (uint32_t)fboot.cfg_status_reg[3];
 }
 
+/* At boot, before the scheduler, no health timer feeds the watchdog, so the
+ * upload does it between stages, never inside the open CS frame. A runtime
+ * reload must not: the health timer alone decides there. */
+static void bb_boot_stage(int sched_running, const char *stage_done)
+{
+    if (!sched_running) watchdog_boot_feed(stage_done);
+}
+
 uint8_t fpga_bitbang_config_sequence(void)
 {
     gpio_init_type gpio_cfg;
@@ -160,6 +169,7 @@ uint8_t fpga_bitbang_config_sequence(void)
         fboot.h2_bytes_sent = off;
     }
     GPIOB->scr = BB_CS;
+    bb_boot_stage(sched_running, "fpga design sent");
     fboot.upload_result = (bb_outcome == 0) ? FPGA_UPLOAD_SENT : FPGA_UPLOAD_SOURCE_FAILED;
 
     /* STATUS after the upload; bit 13 is DONE (the design started). */
@@ -173,6 +183,7 @@ uint8_t fpga_bitbang_config_sequence(void)
 
     bb_cmd16(0x3A, 0x00);   /* CONFIG_DISABLE */
     fpga_scope_delay_ms(100);
+    bb_boot_stage(sched_running, "fpga config close");
 
 bb_restore_pins:
     /* The pins go back to SPI3, so the acquisition task reads records over
@@ -200,6 +211,7 @@ bb_restore_pins:
      * trigger level and source are put back by main() at boot and by
      * fpga_reload() at runtime. */
     fpga_scope_delay_ms(600);
+    bb_boot_stage(sched_running, "fpga start wait");
     spi3_set_br(7);                      /* /256 */
     {
         static const uint8_t arm_cfg[][2] = {
@@ -392,6 +404,7 @@ void fpga_boot_upload(void)
                 if (ok) c = cal_backup_crc32_update(c, buf, n);
             }
             slot_ok = ok && cal_backup_crc32_final(c) == info.crc;
+            watchdog_boot_feed("fpga slot check");
         }
     }
 
@@ -409,9 +422,12 @@ void fpga_boot_upload(void)
         g.gpio_pull = GPIO_PULL_NONE;
         gpio_init(GPIOB, &g);            /* Hi-Z: no back-feed through the SPI lines */
         GPIOC->clr = PC6_MASK;           /* FPGA supply off */
+        watchdog_boot_feed("fpga first try");
         fpga_scope_delay_ms(FPGA_RELOAD_OFF_MS);
+        watchdog_boot_feed("fpga supply off");
         GPIOC->scr = PC6_MASK;
         fpga_scope_delay_ms(FPGA_RELOAD_ON_MS);
+        watchdog_boot_feed("fpga supply on");
         fpga_boot_live_state = (fpga_boot_upload_once(slot_ok, &info, true) == 1) ? 2 : 1;
     }
 }

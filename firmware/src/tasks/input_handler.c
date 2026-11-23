@@ -86,7 +86,9 @@ static void autooff_touch(void)
  * leave that byte as the last power-off wrote it. */
 static void power_off_now(void)
 {
+    health_checkin_self();      /* each flash save starts with a full deadline */
     (void)settings_store_flush_power_off(settings_now_ms(), startup_screen_of_mode(current_mode));
+    health_checkin_self();
     /* The session snapshot (Startup on Boot = Restore brings every instrument
      * back as it was): after the flush, so it is stamped with the settings
      * record just written and the last screen is already noted. Bounded: a
@@ -504,6 +506,7 @@ void ui_env_power_key(void)
                 /* Wait 1 second, polling button every 50ms */
                 for (int i = 0; i < 20; i++) {
                     vTaskDelay(pdMS_TO_TICKS(50));
+                    health_checkin_self();   /* waiting on the key is not a stall */
                     /* PC8 active LOW — if released, cancel */
                     if (GPIOC->idt & (1U << 8)) {
                         /* Button released — cancel: the layer goes and the

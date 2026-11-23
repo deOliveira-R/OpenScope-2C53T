@@ -35,10 +35,12 @@ void watchdog_init(void);
 /* Feed the watchdog — only called by the health monitor, not by tasks */
 void watchdog_feed(void);
 
-/* main() before the scheduler: feed, and record the longest time between two
- * feeds. A watchdog left running across a direct jump has to survive that. */
-void watchdog_boot_feed(void);
+/* main() before the scheduler: feed at the end of a boot stage, and record the
+ * longest time between two feeds and the stage that took it. A watchdog left
+ * running across a direct jump has to survive that. */
+void watchdog_boot_feed(const char *stage_done);
 uint32_t watchdog_boot_max_gap_ms(void);
+const char *watchdog_boot_max_gap_stage(void);
 
 /* ═══════════════════════════════════════════════════════════════════
  * Task Health Monitor — cooperative check-in pattern

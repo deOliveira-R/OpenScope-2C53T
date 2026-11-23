@@ -281,8 +281,8 @@ static void cmd_health(void)
     const task_health_t *t = health_get_tasks();
     for (int i = 0; i < health_get_count(); i++) health_gap_row(t[i].name, &t[i].gap, now);
     health_gap_row("health timer", health_timer_gap(), now);
-    usb_debug_printf("  boot: longest gap between feeds %lu ms\r\n",
-                     (unsigned long)watchdog_boot_max_gap_ms());
+    usb_debug_printf("  boot: longest gap between feeds %lu ms (stage: %s)\r\n",
+                     (unsigned long)watchdog_boot_max_gap_ms(), watchdog_boot_max_gap_stage());
 }
 
 static void cmd_health_clear(void)

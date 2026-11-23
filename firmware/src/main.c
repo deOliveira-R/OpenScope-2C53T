@@ -1198,7 +1198,7 @@ int main(void)
     /* Clock init to 240MHz */
     system_clock_config();
 
-    watchdog_boot_feed();
+    watchdog_boot_feed("clock");
 
     /* Enable peripheral clocks */
     crm_periph_clock_enable(CRM_GPIOA_PERIPH_CLOCK, TRUE);
@@ -1236,7 +1236,7 @@ int main(void)
     /* Initialize battery ADC (PB1) */
     battery_adc_init();
 
-    watchdog_boot_feed();
+    watchdog_boot_feed("battery adc");
 
     /* Initialize theme system */
     theme_init(THEME_DARK_BLUE);
@@ -1295,7 +1295,7 @@ int main(void)
         #undef _GPIO_CFG
     }
 
-    watchdog_boot_feed();
+    watchdog_boot_feed("lcd init");
 
     /* First frame, then light the backlight. Painting before PB8 goes HIGH is
      * what eliminates the boot static (uninitialized GRAM was visible from
@@ -1312,6 +1312,7 @@ int main(void)
 #ifndef EMULATOR_BUILD
     GPIOB->scr = (1 << 8);  /* PB8 = backlight ON, panel already showing splash */
 #endif
+    watchdog_boot_feed("splash");
 
 #if CAL_DUMP_MODE
     /* `make guest-caldump` only. Reports MCU flash 0x08006000..0x08006FFF —
@@ -1365,6 +1366,7 @@ int main(void)
      * consuming invented filenames or low-voltage coefficients. */
     (void)flash_fs_init();
     (void)flash_fs_load_factory_cal();
+    watchdog_boot_feed("flash fs");
 
 #ifndef EMULATOR_BUILD
     /* Initialize FPGA communication (USART2 + SPI3 + boot sequence).
@@ -1377,9 +1379,9 @@ int main(void)
      * once the scheduler starts. */
     usb_debug_init();
 
-    watchdog_boot_feed();
+    watchdog_boot_feed("usb init");
     fpga_init();
-    watchdog_boot_feed();
+    watchdog_boot_feed("fpga arm");
 #endif
 
     /* User settings: bind the W25Q region layer, load the newest saved record
@@ -1399,6 +1401,7 @@ int main(void)
      * And BEFORE the fpga_set_meter_mode(meter_submode) call below, which
      * consumes the restored meter submode, and before the display task exists. */
     settings_store_init();
+    watchdog_boot_feed("settings");
     scope_freq_lock_init();     /* shell + display share the estimator's FFT scratch */
     /* Startup-on-Boot, now restored (M6): the mode the display and FPGA tasks
      * and the mode entry below start in. Restore needs the record's last
@@ -1446,6 +1449,7 @@ int main(void)
      * measured against a different page table are refused, not applied.
      * Read-only on flash — saving is `cal user save` only. */
     usercal_boot_load();
+    watchdog_boot_feed("calibration");
 #endif
 
     /* Create queues */
@@ -1469,6 +1473,7 @@ int main(void)
      * tasks so the display task starts behind it (it claims the screen until
      * vInputTask releases it after the ~1 s hold). No logo stored: no-op. */
     (void)logo_ui_boot_show();
+    watchdog_boot_feed("boot logo");
 
     /* Create tasks */
     xTaskCreate(vDisplayTask, "display", 768, NULL, 1, &xDisplayTaskHandle);
@@ -1529,7 +1534,7 @@ int main(void)
      * Skipped in GUEST_BUILD so interactive SPI3 shell sessions on unit #2
      * can't trip a watchdog reset mid-experiment, and with NO_WATCHDOG for the
      * same reason in app-layout bench builds (app-coldtrace). */
-    watchdog_boot_feed();    /* closes the last boot gap */
+    watchdog_boot_feed("tasks");    /* closes the last boot gap */
 #if !defined(GUEST_BUILD) && !defined(NO_WATCHDOG)
     watchdog_init();
 #endif

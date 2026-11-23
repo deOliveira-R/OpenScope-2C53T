@@ -25,6 +25,7 @@
  */
 
 #include "fpga_internal.h"
+#include "watchdog.h"       /* watchdog_boot_feed around the upload */
 
 /* ═══════════════════════════════════════════════════════════════════
  * Global State
@@ -130,7 +131,9 @@ void fpga_init(void)
     gpio_init(GPIOB, &gpio_cfg);
     GPIOB->scr = PB11_MASK;   /* PB11 HIGH */
 
+    watchdog_boot_feed("fpga setup");
     fpga_boot_upload();
+    watchdog_boot_feed("fpga upload");
 
     /* ---------------------------------------------------------------
      * Step 5: record-ready line, offset references, relays, coupling.

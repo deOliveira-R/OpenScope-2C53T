@@ -69,17 +69,31 @@ void watchdog_feed(void)
 #ifndef EMULATOR_BUILD
 static bool     boot_fed;
 static uint32_t boot_last_cycles, boot_max_cycles;
+static const char *boot_max_stage = "none";
 #endif
 
-void watchdog_boot_feed(void)
+void watchdog_boot_feed(const char *stage_done)
 {
 #ifndef EMULATOR_BUILD
     wdt_counter_reload();
     const uint32_t now = DWT->CYCCNT;
-    if (boot_fed && now - boot_last_cycles > boot_max_cycles)
+    if (boot_fed && now - boot_last_cycles > boot_max_cycles) {
         boot_max_cycles = now - boot_last_cycles;
+        boot_max_stage = stage_done;
+    }
     boot_last_cycles = now;
     boot_fed = true;
+#else
+    (void)stage_done;
+#endif
+}
+
+const char *watchdog_boot_max_gap_stage(void)
+{
+#ifndef EMULATOR_BUILD
+    return boot_max_stage;
+#else
+    return "none";
 #endif
 }
 
