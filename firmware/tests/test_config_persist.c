@@ -2936,6 +2936,12 @@ static void check_tiling_log_never_resurrects(void)
               k, model.erases - erases0);
         power_cycle();
 
+        /* What the top-down erase buys now that append refuses a dirty tail: the
+         * old records left by the cut are a prefix, so the boot still finds one.
+         * Bottom up, the log would start with a blank sector and read as empty. */
+        CHECK((tiling_newest_tag() & TILING_TAG_BASE_MASK) == TILING_TAG_OLD,
+              "cut after %u erases: the boot found no record of the old log", k);
+
         /* The k blank sectors hold k x TILING_SLOTS_PER_SECTOR records: one
          * more save than that has crossed the boundary into the old log in
          * the bottom-up layout, and compacted in either layout. */
