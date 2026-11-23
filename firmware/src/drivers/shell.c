@@ -9,6 +9,7 @@
 #include "watchdog.h"
 #include "fault.h"
 #include "crash_policy.h"
+#include "wdt_clock.h"
 #include "FreeRTOS.h"
 
 /* ── Number parsing ─────────────────────────────────────────────────── */
@@ -292,6 +293,19 @@ static void cmd_health(void)
                      (unsigned long)watchdog_boot_max_gap_ms(), watchdog_boot_max_gap_stage());
 }
 
+static void cmd_health_wdtclock(void)
+{
+    const uint32_t hz = wdt_clock_measure_hz();
+    if (hz == 0u) {
+        usb_send_str("health: the watchdog clock could not be measured\r\n");
+        return;
+    }
+    const uint32_t timeout_ms =
+        (uint32_t)((uint64_t)WATCHDOG_RELOAD * WATCHDOG_DIVIDER * 1000u / hz);
+    usb_debug_printf("health: watchdog clock %lu Hz, real timeout %lu ms\r\n",
+                     (unsigned long)hz, (unsigned long)timeout_ms);
+}
+
 static void cmd_health_clear(void)
 {
     health_clear_gaps();
@@ -503,6 +517,8 @@ static const shell_cmd_t shell_cmds[] = {
           "uptime                          Show uptime\r\n"),
     CMD_V("tasks", cmd_tasks, SC_EXACT,
           "tasks                           FreeRTOS tasks: priority, state, stack size and least free (words); heap\r\n"),
+    CMD_V("health wdtclock", cmd_health_wdtclock, SC_EXACT,
+          "health wdtclock                 Measure the watchdog clock and real timeout\r\n"),
     CMD_V("health clear", cmd_health_clear, SC_EXACT,
           "health clear                    Clear the recorded gaps\r\n"),
     CMD_V("health", cmd_health, SC_EXACT,

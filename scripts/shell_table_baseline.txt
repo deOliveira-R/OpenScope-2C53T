@@ -110,6 +110,7 @@ spi3 xfer	cmd_spi3_xfer	0x04	spi3 xfer <hex...>              Send arbitrary MOSI
 status	cmd_status	0x01	status                          FPGA & system status, the timebase in force\r\n
 stream	cmd_stream	0x00	stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n
 tasks	cmd_tasks	0x01	tasks                           FreeRTOS tasks: priority, state, stack size and least free (words); heap\r\n
+health wdtclock	cmd_health_wdtclock	0x01	health wdtclock                 Measure the watchdog clock and real timeout\r\n
 health clear	cmd_health_clear	0x01	health clear                    Clear the recorded gaps\r\n
 health	cmd_health	0x01	health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n
 crash	cmd_crash	0x00	crash [test task|irq|assert|heap|boot CONFIRM]  Last crash; crash on purpose\r\n

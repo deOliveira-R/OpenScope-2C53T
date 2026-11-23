@@ -43,3 +43,4 @@ SPI2         drivers/fw_loader.c:rf_spi2_xfer drivers/fw_loader.c:rf_w25q_read_r
 FLASH        drivers/fw_loader.c:fwl_ram_install
 CRM          drivers/fw_loader.c
 SCS          drivers/fw_loader.c:fwl_ram_install
+TMR5  drivers/wdt_clock.c

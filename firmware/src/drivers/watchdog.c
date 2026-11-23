@@ -45,7 +45,7 @@ void watchdog_init(void)
     /*
      * FWDGT clock = IRC40K (~40kHz).
      * Prescaler DIV64: 40000 / 64 = 625 Hz per tick.
-     * Reload 1875: 1875 / 625 = 3.0 seconds timeout.
+     * WATCHDOG_RELOAD ticks at that rate: 3.0 seconds nominal.
      *
      * This gives us a 3-second window. The health monitor runs every
      * 500ms and feeds the WDT if all tasks are healthy, so under
@@ -53,7 +53,7 @@ void watchdog_init(void)
      */
     wdt_register_write_enable(TRUE);
     wdt_divider_set(WDT_CLK_DIV_64);
-    wdt_reload_value_set(1875);
+    wdt_reload_value_set(WATCHDOG_RELOAD);
     wdt_counter_reload();
     wdt_enable();
 #endif

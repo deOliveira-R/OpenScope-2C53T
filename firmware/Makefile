@@ -78,6 +78,7 @@ C_SOURCES += src/drivers/flash_fs.c
 C_SOURCES += src/drivers/flash_regions.c
 C_SOURCES += src/drivers/flash_regions_w25q.c
 C_SOURCES += src/drivers/watchdog.c
+C_SOURCES += src/drivers/wdt_clock.c
 C_SOURCES += src/util/health_gap.c
 C_SOURCES += src/util/crash_policy.c
 C_SOURCES += src/drivers/button_scan.c

@@ -29,6 +29,11 @@
  * Watchdog (FWDGT) — low-level
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* The hardware timeout: RELOAD x DIVIDER cycles of LICK, 3 s at a nominal 40 kHz.
+ * LICK is imprecise: `health wdtclock` measures this unit's real timeout. */
+#define WATCHDOG_DIVIDER    64u
+#define WATCHDOG_RELOAD     1875u
+
 /* Initialize FWDGT with ~3 second timeout (must be > HEALTH_DEADLINE_MS) */
 void watchdog_init(void);
 

@@ -10,6 +10,7 @@ drivers/shell_bench.c	spi3_gowin_read_reg	GPIOB.out	2
 drivers/shell_bench.c	spi3_opread_window	GPIOB.out	2
 drivers/shell_bench.c	spi3_raw_xfer	SPI3	1
 drivers/shell_bench.c	spi3_set_baud	SPI3	3
+drivers/wdt_clock.c	wdt_clock_measure_hz	IOMUX	2
 main.c	main	CRM	10
 main.c	main	GPIOB.cfg	2
 main.c	main	GPIOB.out	3
