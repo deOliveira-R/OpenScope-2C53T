@@ -1194,6 +1194,10 @@ int main(void)
      * survives reset in .noinit — the point of the whole exercise for a fault
      * that only shows up ~55s in. */
     fault_init();
+    /* A crash restart keeps the power on, so a crash in every boot would loop
+     * for ever: at the limit, stop in the update screen (POWER held there
+     * starts the app again). */
+    if (fault_restart_limit_reached()) dfu_request_reboot();
 
     /* Clock init to 240MHz */
     system_clock_config();
@@ -1552,17 +1556,22 @@ void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
     (void)xTask;
     taskDISABLE_INTERRUPTS();
-    fault_display("STACK OVERFLOW", pcTaskName);
-    /* Watchdog will reset us */
+#ifndef EMULATOR_BUILD
+    fault_crash(FAULT_KIND_STACK, pcTaskName, (uint32_t)__builtin_return_address(0));
+#else
+    (void)pcTaskName;
     for (;;) {}
+#endif
 }
 
 void vApplicationMallocFailedHook(void)
 {
     taskDISABLE_INTERRUPTS();
-    fault_display("HEAP EXHAUSTED", "pvPortMalloc returned NULL");
-    /* Watchdog will reset us */
+#ifndef EMULATOR_BUILD
+    fault_crash(FAULT_KIND_HEAP, "pvPortMalloc", (uint32_t)__builtin_return_address(0));
+#else
     for (;;) {}
+#endif
 }
 
 /* ═══════════════════════════════════════════════════════════════════

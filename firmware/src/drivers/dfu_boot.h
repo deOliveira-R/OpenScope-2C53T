@@ -25,6 +25,12 @@
 void dfu_request_reboot(void);
 
 /*
+ * Restart the app through the bootloader, without its update screen: the power
+ * latch stays held. For a crash, from thread mode. Does not return.
+ */
+void dfu_restart_app(void);
+
+/*
  * Check for the DFU magic word in RAM (set by dfu_request_reboot).
  * If found, clears it and jumps to bootloader. Call before main().
  * Returns normally if no magic word found.

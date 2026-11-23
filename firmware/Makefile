@@ -79,6 +79,7 @@ C_SOURCES += src/drivers/flash_regions.c
 C_SOURCES += src/drivers/flash_regions_w25q.c
 C_SOURCES += src/drivers/watchdog.c
 C_SOURCES += src/util/health_gap.c
+C_SOURCES += src/util/crash_policy.c
 C_SOURCES += src/drivers/button_scan.c
 C_SOURCES += src/drivers/continuity_buzzer.c
 C_SOURCES += src/drivers/dfu_boot.c
@@ -1088,6 +1089,13 @@ $(BUILD_DIR)/test_theme: tests/test_theme.c src/ui/theme.c src/ui/theme.h | $(BU
 
 $(BUILD_DIR)/test_health_gap: tests/test_health_gap.c src/util/health_gap.c src/util/health_gap.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/health_gap.c -o $@
+
+$(BUILD_DIR)/test_crash_policy: tests/test_crash_policy.c src/util/crash_policy.c src/util/crash_policy.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/util $< src/util/crash_policy.c -o $@
+
+.PHONY: test-crash-policy
+test-crash-policy: $(BUILD_DIR)/test_crash_policy
+	$(BUILD_DIR)/test_crash_policy
 
 .PHONY: test-health-gap
 test-health-gap: $(BUILD_DIR)/test_health_gap

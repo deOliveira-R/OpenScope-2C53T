@@ -7,6 +7,9 @@
 
 #include "shell_parts.h"
 #include "watchdog.h"
+#include "fault.h"
+#include "crash_policy.h"
+#include "FreeRTOS.h"
 
 /* ── Number parsing ─────────────────────────────────────────────────── */
 
@@ -267,6 +270,10 @@ static void health_gap_row(const char *name, const health_gap_t *g, uint32_t now
                      (unsigned long)(health_gap_quiet(g, now) * portTICK_PERIOD_MS));
 }
 
+/* Lets the crash test's message reach the host before the USB link goes. */
+#define CRASH_TEST_FLUSH_MS  100u
+extern void vApplicationMallocFailedHook(void);
+
 static void cmd_health(void)
 {
     const uint32_t now = (uint32_t)xTaskGetTickCount();
@@ -289,6 +296,42 @@ static void cmd_health_clear(void)
 {
     health_clear_gaps();
     usb_send_str("health: recorded gaps cleared\r\n");
+}
+
+/* `crash`: what the previous run died of. `crash test <how> CONFIRM` crashes
+ * on purpose, to prove the restart path on the bench. */
+static void cmd_crash(const char *args)
+{
+    const char *const last = fault_last_summary();
+    if (args == NULL || args[0] == '\0') {
+        usb_debug_printf("crash: last run: %s\r\n", last != NULL ? last : "no crash recorded");
+        usb_debug_printf("  restarts in a row: %lu of %u\r\n",
+                         (unsigned long)fault_restarts_in_a_row(), CRASH_RESTART_LIMIT);
+        return;
+    }
+#if defined(FEATURE_BENCHSHELL) && FEATURE_BENCHSHELL
+    if (strcmp(args, "test task CONFIRM") == 0) {
+        usb_send_str("crash: undefined instruction in this task\r\n");
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+        __asm volatile ("udf #0");
+    } else if (strcmp(args, "test irq CONFIRM") == 0) {
+        usb_send_str("crash: undefined instruction in an interrupt\r\n");
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+        fault_test_in_irq = true;
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+    } else if (strcmp(args, "test assert CONFIRM") == 0) {
+        usb_send_str("crash: failed assertion\r\n");
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+        configASSERT(args == NULL);
+    } else if (strcmp(args, "test heap CONFIRM") == 0) {
+        usb_send_str("crash: out-of-memory hook\r\n");
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+        vApplicationMallocFailedHook();
+    } else
+#endif
+    {
+        usb_send_str("usage: crash | crash test task|irq|assert|heap CONFIRM\r\n");
+    }
 }
 
 #define SC_EXACT    0x01u   /* takes no arguments: matches only the whole line */
@@ -457,6 +500,8 @@ static const shell_cmd_t shell_cmds[] = {
           "health clear                    Clear the recorded gaps\r\n"),
     CMD_V("health", cmd_health, SC_EXACT,
           "health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n"),
+    CMD_A("crash", cmd_crash, 0,
+          "crash [test task|irq|assert|heap CONFIRM]  Last crash; crash on purpose\r\n"),
     BENCHSHELL_SHELL_ROWS   /* the bench shell: src/drivers/shell_bench.h, empty when the feature is off */
     RETOOLS_SHELL_ROWS      /* the reverse-engineering toolkit: src/re/shell_re.h, empty when off */
     METERDEBUG_SHELL_ROWS   /* the meter diagnostics: src/drivers/shell_meterdebug.h, empty when off */

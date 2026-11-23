@@ -83,12 +83,10 @@ void health_clear_gaps(void);
 bool health_is_stalled(int slot);
 
 /* ═══════════════════════════════════════════════════════════════════
- * Fault display — show error on LCD before reset
+ * Failed assertions
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Display a fatal error on the LCD (red screen of death).
- * This bypasses FreeRTOS and writes directly to the LCD. */
-void fault_display(const char *title, const char *detail);
+/* configASSERT: record file:line and end as any crash does (fault.h). */
 void fault_assert(const char *file, int line);
 
 #endif /* WATCHDOG_H */

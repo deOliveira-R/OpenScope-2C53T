@@ -14,6 +14,7 @@
  */
 
 #include "button_scan.h"
+#include "fault.h"
 #include "key_model.h"
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -180,6 +181,10 @@ static uint16_t matrix_scan(void) {
 void TMR3_GLOBAL_IRQHandler(void) {
     if (!(TMR3->ists & 0x01)) return;
     TMR3->ists &= ~0x01;
+
+#if defined(FEATURE_BENCHSHELL) && FEATURE_BENCHSHELL
+    if (fault_test_in_irq) __asm volatile ("udf #0");   /* `crash test irq` */
+#endif
 
     if (!s_started || s_button_queue == NULL) {
         return;

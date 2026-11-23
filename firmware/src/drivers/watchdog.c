@@ -15,9 +15,8 @@
  */
 
 #include "watchdog.h"
-#include "lcd.h"
+#include "fault.h"
 #include <string.h>
-#include <stdio.h>
 
 #ifndef EMULATOR_BUILD
 #include "at32f403a_407_wdt.h"
@@ -32,6 +31,9 @@ static int health_count = 0;
 static health_gap_t health_timer;      /* the monitor itself, one mark per health_check() */
 
 #define HEALTH_DEADLINE_TICKS  ((uint32_t)pdMS_TO_TICKS(HEALTH_DEADLINE_MS))
+
+/* Decimal digits of the largest source line an assert can name. */
+#define ASSERT_LINE_DIGITS     5u
 
 /* ═══════════════════════════════════════════════════════════════════
  * Watchdog (FWDGT) — low-level
@@ -156,6 +158,9 @@ void health_check(void)
     bool all_healthy = true;
 
     health_gap_mark(&health_timer, xTaskGetTickCount(), HEALTH_DEADLINE_TICKS);
+#ifndef EMULATOR_BUILD
+    fault_note_uptime_ms(xTaskGetTickCount() * portTICK_PERIOD_MS);
+#endif
 
     for (int i = 0; i < health_count; i++) {
         if (!health_tasks[i].registered)
@@ -201,68 +206,35 @@ void health_clear_gaps(void)
 }
 
 /* ═══════════════════════════════════════════════════════════════════
- * Fault display — red screen of death
+ * configASSERT
  * ═══════════════════════════════════════════════════════════════════ */
-
-void fault_display(const char *title, const char *detail)
-{
-    /*
-     * This runs outside FreeRTOS (interrupts disabled or from a hook).
-     * Write directly to LCD — no queues, no RTOS calls.
-     */
-    lcd_fill_rect(0, 0, LCD_WIDTH, LCD_HEIGHT, COLOR_RED);
-
-    /* Title bar */
-    lcd_fill_rect(0, 0, LCD_WIDTH, 30, 0x8000); /* Dark red */
-    lcd_draw_string(10, 8, "SYSTEM FAULT", COLOR_WHITE, 0x8000);
-
-    /* Error details */
-    lcd_draw_string(10, 50, title, COLOR_WHITE, COLOR_RED);
-
-    if (detail != NULL) {
-        lcd_draw_string(10, 80, detail, COLOR_YELLOW, COLOR_RED);
-    }
-
-    lcd_draw_string(10, 130, "The system will restart", COLOR_WHITE, COLOR_RED);
-    lcd_draw_string(10, 155, "automatically in ~3 seconds.", COLOR_WHITE, COLOR_RED);
-
-    lcd_draw_string(10, 200, "If this persists, hold POWER+PRM",
-                    COLOR_GRAY, COLOR_RED);
-    lcd_draw_string(10, 218, "at boot for recovery.",
-                    COLOR_GRAY, COLOR_RED);
-
-    /*
-     * Don't loop forever here — let the watchdog do the reset.
-     * The FWDGT is running on its own clock and will fire regardless.
-     * Spin just long enough for the user to see the screen.
-     */
-    volatile uint32_t count = 120000 * 2000; /* ~2 seconds at 120MHz */
-    while (count--) {
-        __asm volatile("nop");
-    }
-}
 
 void fault_assert(const char *file, int line)
 {
-    char detail[64];
-    const char *base = file;
-    const char *p = file;
-
-    while (p != NULL && *p != '\0') {
-        if (*p == '/' || *p == '\\') {
-            base = p + 1;
-        }
-        p++;
-    }
-
-    snprintf(detail, sizeof(detail), "%s:%d", base, line);
-    fault_display("ASSERT FAIL", detail);
 #ifndef EMULATOR_BUILD
-    /* Reset rather than hang forever on the red screen (PR #13). The emulator
-     * build has no CMSIS core header and therefore no NVIC_SystemReset; halting
-     * there is also more useful than resetting, since the assert text stays on
-     * screen for inspection. */
-    NVIC_SystemReset();
+    const char *base = file;
+    for (const char *p = file; p != NULL && *p != '\0'; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+
+    /* file:line, keeping the line when the name is long. No printf: this can
+     * run in any context. */
+    char detail[sizeof(g_fault.task)];
+    char digits[ASSERT_LINE_DIGITS];
+    unsigned nd = 0u;
+    for (unsigned v = (unsigned)line; nd < sizeof digits; v /= 10u) {
+        digits[nd++] = (char)('0' + v % 10u);
+        if (v < 10u) break;
+    }
+    const size_t room = sizeof detail - 2u - nd;    /* ':' and the terminator */
+    size_t n = 0u;
+    while (base != NULL && base[n] != '\0' && n < room) { detail[n] = base[n]; n++; }
+    detail[n++] = ':';
+    while (nd > 0u) detail[n++] = digits[--nd];
+    detail[n] = '\0';
+    fault_crash(FAULT_KIND_ASSERT, detail, (uint32_t)__builtin_return_address(0));
+#else
+    (void)file;
+    (void)line;
+    for (;;) { }    /* the emulator stops here, for inspection */
 #endif
-    for (;;) { }
 }

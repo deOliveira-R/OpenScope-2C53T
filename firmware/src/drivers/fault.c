@@ -3,6 +3,8 @@
  */
 
 #include "fault.h"
+#include "crash_policy.h"
+#include "dfu_boot.h"
 #include "at32f403a_407.h"
 /* Deliberately NOT including FreeRTOS headers: nothing in the fault path
  * may call a FreeRTOS API. See the note in fault_capture(). */
@@ -21,6 +23,27 @@ static char  prev_summary[80];
  * what the PREVIOUS one did. */
 static fault_record_t prev;
 
+/* Survives the jump through the bootloader, like the record. */
+static crash_policy_t crash_state __attribute__((section(".noinit")));
+
+volatile bool fault_test_in_irq;
+
+/* Room below the top of the main stack for the frame that leaves the handler
+ * and for the restart code; the old stack is abandoned by then. Double-word
+ * aligned, as an exception frame must be. */
+#define FAULT_RESTART_STACK_BYTES  64u
+#define FAULT_FRAME_WORDS          8u
+#define FAULT_XPSR_THUMB                 0x01000000u
+#define FAULT_EXC_RETURN_THREAD      0xFFFFFFF9u
+/* PC8, the POWER key: active low. PC9 is the power latch. */
+#define FAULT_POWER_KEY_MASK       (1u << 8)
+#define FAULT_POWER_HOLD_MASK      (1u << 9)
+/* Reads of the key in a row that count as a level: tens of ms at 240 MHz, past
+ * contact bounce. */
+#define FAULT_KEY_STABLE_READS     1000000u
+
+extern uint32_t _estack;
+
 static const char *kind_name(uint32_t k)
 {
     switch (k) {
@@ -28,6 +51,9 @@ static const char *kind_name(uint32_t k)
         case FAULT_KIND_MEMMANAGE:  return "MEM";
         case FAULT_KIND_BUS:        return "BUS";
         case FAULT_KIND_USAGE:      return "USAGE";
+        case FAULT_KIND_STACK:      return "STACK";
+        case FAULT_KIND_HEAP:       return "HEAP";
+        case FAULT_KIND_ASSERT:     return "ASSERT";
         default:                    return "?";
     }
 }
@@ -51,6 +77,7 @@ void fault_init(void)
      * record is distinguishable from one produced this boot. */
     uint32_t boots = prev_valid ? prev.boot_count : 0u;
     g_fault.boot_count = boots + 1u;
+    g_fault.magic = 0u;          /* reported once: the next run starts clean */
 
     /* Enable MemManage / BusFault / UsageFault. Without these every fault
      * escalates to HardFault and the specific cause is lost — which is exactly
@@ -83,8 +110,117 @@ void fault_init(void)
     DWT->CTRL  |= 1u;            /* CYCCNTENA */
 }
 
+bool fault_restart_limit_reached(void)
+{
+    return crash_policy_boot(&crash_state) == CRASH_BOOT_STOP;
+}
+
+void fault_note_uptime_ms(uint32_t uptime_ms)
+{
+    if (uptime_ms >= CRASH_HEALTHY_MS) crash_policy_healthy(&crash_state);
+}
+
+const char *fault_last_summary(void)
+{
+    return prev_valid ? prev_summary : NULL;
+}
+
+uint32_t fault_restarts_in_a_row(void)
+{
+    return crash_policy_restarts(&crash_state);
+}
+
+/* Returns once the POWER key has read `pressed` for a stable stretch. */
+static void fault_wait_key(bool pressed)
+{
+    for (uint32_t same = 0u; same < FAULT_KEY_STABLE_READS; ) {
+        const bool now = (GPIOC->idt & FAULT_POWER_KEY_MASK) == 0u;
+        same = (now == pressed) ? same + 1u : 0u;
+    }
+}
+
+/* The nested case: no way back to thread mode. The screen stays as it was and
+ * POWER still switches the unit off (release first: it may be held already). */
+static void fault_stop(void) __attribute__((noreturn));
+static void fault_stop(void)
+{
+    fault_wait_key(false);
+    fault_wait_key(true);
+    GPIOC->clr = FAULT_POWER_HOLD_MASK;
+    for (;;) { }
+}
+
+/* Leave Handler mode: an exception return into the restart code, on a fresh
+ * frame at the top of the main stack. The bootloader and the app must start in
+ * thread mode with nothing active, or no interrupt would ever be taken. */
+static void fault_return_to_restart(void) __attribute__((noreturn));
+static void fault_return_to_restart(void)
+{
+    SCB->ICSR   = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
+    SCB->SHCSR &= ~(SCB_SHCSR_MEMFAULTPENDED_Msk | SCB_SHCSR_BUSFAULTPENDED_Msk |
+                    SCB_SHCSR_USGFAULTPENDED_Msk);
+    FPU->FPCCR &= ~FPU_FPCCR_LSPACT_Msk;   /* no lazy FP state to save any more */
+    __set_BASEPRI(0u);
+
+    /* volatile: the CPU reads this frame, which the compiler cannot see, so
+     * plain stores would be dropped as dead and the return would go to 0. */
+    volatile uint32_t *const frame =
+        (volatile uint32_t *)(((uint32_t)&_estack - FAULT_RESTART_STACK_BYTES) & ~7u);
+    for (unsigned i = 0u; i < FAULT_FRAME_WORDS; i++) frame[i] = 0u;
+    frame[5] = 0xFFFFFFFFu;                                /* LR: nothing to return to */
+    frame[6] = (uint32_t)(uintptr_t)dfu_restart_app & ~1u; /* PC */
+    frame[7] = FAULT_XPSR_THUMB;
+
+    __asm volatile (
+        "msr msp, %0 \n"
+        "dsb         \n"
+        "isb         \n"
+        "bx  %1      \n"
+        :: "r" (frame), "r" (FAULT_EXC_RETURN_THREAD) : "memory");
+    __builtin_unreachable();
+}
+
+/* Every crash ends here, with the record already written. */
+static void fault_end(void) __attribute__((noreturn));
+static void fault_end(void)
+{
+    __disable_irq();
+    crash_policy_note_crash(&crash_state);
+    if (__get_IPSR() == 0u) dfu_restart_app();
+    if (SCB->ICSR & SCB_ICSR_RETTOBASE_Msk) fault_return_to_restart();
+    fault_stop();
+}
+
+void fault_crash(uint32_t kind, const char *detail, uint32_t lr)
+{
+    __disable_irq();
+    g_fault.magic = 0u;
+    g_fault.kind  = kind;
+    g_fault.cfsr  = g_fault.hfsr = g_fault.dfsr = g_fault.afsr = 0u;
+    g_fault.mmfar = g_fault.bfar = 0u;
+    g_fault.r0 = g_fault.r1 = g_fault.r2 = g_fault.r3 = g_fault.r12 = 0u;
+    g_fault.lr = lr;
+    g_fault.pc = lr;
+    g_fault.xpsr = __get_IPSR();
+    g_fault.exc_return = 0u;
+    g_fault.sp = __get_PSP();
+    g_fault.cyccnt = DWT->CYCCNT;
+
+    size_t n = 0u;
+    while (detail != NULL && detail[n] != '\0' && n < sizeof(g_fault.task) - 1u) {
+        g_fault.task[n] = detail[n];
+        n++;
+    }
+    g_fault.task[n] = '\0';
+
+    __DMB();
+    g_fault.magic = FAULT_MAGIC;
+    __DMB();
+    fault_end();
+}
+
 /*
- * Record and stop. Deliberately minimal and allocation-free: the record is
+ * Record, then restart. Deliberately minimal and allocation-free: the record is
  * written FIRST, so if anything later in this function faults again (which is
  * how the core ends up in LOCKUP with pc=0xFFFFFFFE) the evidence is already
  * safe in .noinit.
@@ -140,10 +276,7 @@ static void fault_capture(uint32_t *frame, uint32_t exc_return, uint32_t kind)
     g_fault.magic = FAULT_MAGIC;
     __DMB();
 
-    /* Stop here rather than resetting: the frozen state is what we have been
-     * reading over SWD, and the record is in .noinit either way. If the IWDG is
-     * running it will reset us and the record still survives. */
-    for (;;) { }
+    fault_end();
 }
 
 /*

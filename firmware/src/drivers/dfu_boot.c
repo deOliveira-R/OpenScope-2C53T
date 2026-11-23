@@ -42,9 +42,11 @@ static void dfu_jump_to_bootloader(void)
     uint32_t pc = *(const volatile uint32_t *)(base + 4u);
 
     __disable_irq();
+    __set_BASEPRI(0u);           /* a crash hook may arrive with it raised */
     SysTick->CTRL = 0;
     SysTick->LOAD = 0;
     SysTick->VAL  = 0;
+    SCB->ICSR = SCB_ICSR_PENDSVCLR_Msk | SCB_ICSR_PENDSTCLR_Msk;
     for (int i = 0; i < 8; i++) {
         NVIC->ICER[i] = 0xFFFFFFFFu;
         NVIC->ICPR[i] = 0xFFFFFFFFu;
@@ -72,6 +74,13 @@ static void dfu_jump_to_bootloader(void)
 
 void dfu_request_reboot(void) {
     *DFU_MAGIC_ADDR = DFU_MAGIC_VALUE;
+    __DSB();
+    dfu_jump_to_bootloader();
+}
+
+void dfu_restart_app(void) {
+    *DFU_MAGIC_ADDR = 0u;        /* a plain boot of the app, not the updater */
+    *BOOT_COUNTER_ADDR = 0u;     /* the stack reuses this word: never read it as a count */
     __DSB();
     dfu_jump_to_bootloader();
 }

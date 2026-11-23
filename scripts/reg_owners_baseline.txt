@@ -1,3 +1,4 @@
+drivers/fault.c	fault_stop	GPIOC.out	1
 drivers/fw_loader.c	fwl_ram_install	WDT	1
 drivers/shell_bench.c	cmd_bench_restore	?PTR	2
 drivers/shell_bench.c	cmd_fpga_selftest	SPI3	2
@@ -14,7 +15,7 @@ main.c	main	GPIOB.cfg	2
 main.c	main	GPIOB.out	3
 main.c	main	GPIOC.cfg	3
 main.c	main	GPIOC.out	3
-main.c	main	WDT	6
+main.c	main	WDT	1
 main.c	main	XMC	4
 main.c	vApplicationMallocFailedHook	PRIMASK	1
 main.c	vApplicationStackOverflowHook	PRIMASK	1

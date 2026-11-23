@@ -34,6 +34,9 @@ typedef enum {
     FAULT_KIND_MEMMANAGE,
     FAULT_KIND_BUS,
     FAULT_KIND_USAGE,
+    FAULT_KIND_STACK,      /* FreeRTOS stack overflow check; detail = task */
+    FAULT_KIND_HEAP,       /* pvPortMalloc returned NULL */
+    FAULT_KIND_ASSERT,     /* configASSERT; detail = file:line */
 } fault_kind_t;
 
 typedef struct {
@@ -51,8 +54,9 @@ typedef struct {
     uint32_t sp;           /* the stack the frame was found on */
     uint32_t cyccnt;       /* DWT cycle counter at fault. NOT a FreeRTOS tick:
                             * the handler must not call FreeRTOS (see fault.c). */
-    char     task[16];     /* left empty by the handler on purpose — identify the
-                            * task offline from `sp`, which lands in its stack. */
+    char     task[16];     /* the detail of a software crash (task, file:line). Empty
+                            * for a CPU fault: identify the task offline from
+                            * `sp`, which lands in its stack. */
 } fault_record_t;
 
 /* Non-static so the address comes out of the ELF with nm and the record can be
@@ -65,5 +69,32 @@ extern volatile fault_record_t g_fault;
  * could fault. Safe before the scheduler starts.
  */
 void fault_init(void);
+
+/*
+ * True when too many crash restarts came in a row (crash_policy.h). Call once,
+ * right after fault_init(); the caller then stops in the bootloader.
+ */
+bool fault_restart_limit_reached(void);
+
+/* A run that lasted CRASH_HEALTHY_MS: earlier crashes no longer count. */
+void fault_note_uptime_ms(uint32_t uptime_ms);
+
+/*
+ * A crash found by software: record it, then end as a CPU fault does.
+ *
+ * How every crash ends:
+ *   - from a task, or a handler with nothing beneath it: the CPU leaves the
+ *     handler and restarts through the bootloader, power held, record kept;
+ *   - inside a nested interrupt, which cannot be left safely: it stops, and
+ *     a press of POWER switches the unit off. Never a chip reset.
+ */
+void fault_crash(uint32_t kind, const char *detail, uint32_t lr) __attribute__((noreturn));
+
+/* What the previous run died of, or NULL; restarts in a row so far. */
+const char *fault_last_summary(void);
+uint32_t    fault_restarts_in_a_row(void);
+
+/* Bench test: the next button-scan interrupt executes an undefined instruction. */
+extern volatile bool fault_test_in_irq;
 
 #endif /* FAULT_H */
