@@ -28,6 +28,23 @@ static crash_policy_t crash_state __attribute__((section(".noinit")));
 
 volatile bool fault_test_in_irq;
 
+/* Set at a crash, consumed by the next fault_init: the restart time is only
+ * meaningful for the boot right after a crash. */
+static uint32_t restart_mark __attribute__((section(".noinit")));
+static uint32_t restart_cycles;
+
+/* From the bootloader's SystemInit until the app's clock setup the core runs
+ * on the HICK, so nearly all of a restart is counted at this rate. The few
+ * cycles at 240 MHz before it only make the figure slightly pessimistic. */
+#define FAULT_RESTART_CLOCK_HZ     HICK_VALUE
+
+/* Startup crash test. With the crash that arms it, this makes
+ * CRASH_RESTART_LIMIT crashes in a row, so the loop limit is what ends it. */
+#define FAULT_TEST_BOOT_CRASHES    (CRASH_RESTART_LIMIT - 1u)
+#define FAULT_TEST_BOOT_MAGIC      0xB0070E00u
+#define FAULT_TEST_BOOT_COUNT_MASK 0xFFu
+static uint32_t boot_test __attribute__((section(".noinit")));
+
 /* Room below the top of the main stack for the frame that leaves the handler
  * and for the restart code; the old stack is abandoned by then. Double-word
  * aligned, as an exception frame must be. */
@@ -61,6 +78,9 @@ static const char *kind_name(uint32_t k)
 void fault_init(void)
 {
     prev_valid = (g_fault.magic == FAULT_MAGIC);
+    /* DWT keeps counting through the jump; it is restarted further down. */
+    restart_cycles = (prev_valid && restart_mark == FAULT_MAGIC) ? DWT->CYCCNT - g_fault.cyccnt : 0u;
+    restart_mark = 0u;
     if (prev_valid) {
         memcpy(&prev, (const void *)&g_fault, sizeof(prev));
         snprintf(prev_summary, sizeof(prev_summary),
@@ -129,6 +149,26 @@ const char *fault_last_summary(void)
     return prev_valid ? prev_summary : NULL;
 }
 
+uint32_t fault_last_restart_ms(void)
+{
+    return restart_cycles / (FAULT_RESTART_CLOCK_HZ / 1000u);
+}
+
+void fault_test_boot_arm(void)
+{
+    boot_test = FAULT_TEST_BOOT_MAGIC | FAULT_TEST_BOOT_CRASHES;
+}
+
+void fault_test_boot_point(void)
+{
+#if defined(FEATURE_BENCHSHELL) && FEATURE_BENCHSHELL
+    if ((boot_test & ~FAULT_TEST_BOOT_COUNT_MASK) != FAULT_TEST_BOOT_MAGIC) return;
+    const uint32_t left = boot_test & FAULT_TEST_BOOT_COUNT_MASK;
+    boot_test = (left > 1u) ? FAULT_TEST_BOOT_MAGIC | (left - 1u) : 0u;
+    if (left > 0u) __asm volatile ("udf #0");
+#endif
+}
+
 uint32_t fault_restarts_in_a_row(void)
 {
     return crash_policy_restarts(&crash_state);
@@ -189,6 +229,7 @@ static void fault_end(void) __attribute__((noreturn));
 static void fault_end(void)
 {
     __disable_irq();
+    restart_mark = FAULT_MAGIC;
     crash_policy_note_crash(&crash_state);
     if (__get_IPSR() == 0u) dfu_restart_app();
     if (SCB->ICSR & SCB_ICSR_RETTOBASE_Msk) fault_return_to_restart();

@@ -1406,6 +1406,7 @@ int main(void)
      * consumes the restored meter submode, and before the display task exists. */
     settings_store_init();
     watchdog_boot_feed("settings");
+    fault_test_boot_point();    /* `crash test boot`: a crash before the scheduler */
     scope_freq_lock_init();     /* shell + display share the estimator's FFT scratch */
     /* Startup-on-Boot, now restored (M6): the mode the display and FPGA tasks
      * and the mode entry below start in. Restore needs the record's last

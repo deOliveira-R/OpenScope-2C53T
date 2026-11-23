@@ -307,6 +307,8 @@ static void cmd_crash(const char *args)
         usb_debug_printf("crash: last run: %s\r\n", last != NULL ? last : "no crash recorded");
         usb_debug_printf("  restarts in a row: %lu of %u\r\n",
                          (unsigned long)fault_restarts_in_a_row(), CRASH_RESTART_LIMIT);
+        usb_debug_printf("  this restart: %lu ms from the crash to the first watchdog feed\r\n",
+                         (unsigned long)fault_last_restart_ms());
         return;
     }
 #if defined(FEATURE_BENCHSHELL) && FEATURE_BENCHSHELL
@@ -323,6 +325,11 @@ static void cmd_crash(const char *args)
         usb_send_str("crash: failed assertion\r\n");
         vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
         configASSERT(args == NULL);
+    } else if (strcmp(args, "test boot CONFIRM") == 0) {
+        usb_send_str("crash: this task, then during the next startups\r\n");
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+        fault_test_boot_arm();
+        __asm volatile ("udf #0");
     } else if (strcmp(args, "test heap CONFIRM") == 0) {
         usb_send_str("crash: out-of-memory hook\r\n");
         vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
@@ -330,7 +337,7 @@ static void cmd_crash(const char *args)
     } else
 #endif
     {
-        usb_send_str("usage: crash | crash test task|irq|assert|heap CONFIRM\r\n");
+        usb_send_str("usage: crash | crash test task|irq|assert|heap|boot CONFIRM\r\n");
     }
 }
 
@@ -501,7 +508,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_V("health", cmd_health, SC_EXACT,
           "health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n"),
     CMD_A("crash", cmd_crash, 0,
-          "crash [test task|irq|assert|heap CONFIRM]  Last crash; crash on purpose\r\n"),
+          "crash [test task|irq|assert|heap|boot CONFIRM]  Last crash; crash on purpose\r\n"),
     BENCHSHELL_SHELL_ROWS   /* the bench shell: src/drivers/shell_bench.h, empty when the feature is off */
     RETOOLS_SHELL_ROWS      /* the reverse-engineering toolkit: src/re/shell_re.h, empty when off */
     METERDEBUG_SHELL_ROWS   /* the meter diagnostics: src/drivers/shell_meterdebug.h, empty when off */

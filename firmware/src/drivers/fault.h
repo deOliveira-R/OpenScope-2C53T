@@ -94,7 +94,15 @@ void fault_crash(uint32_t kind, const char *detail, uint32_t lr) __attribute__((
 const char *fault_last_summary(void);
 uint32_t    fault_restarts_in_a_row(void);
 
+/* Crash to the first watchdog feed of the restart, in ms; 0 if this boot was
+ * not a crash restart. The watchdog is not fed in that time. */
+uint32_t fault_last_restart_ms(void);
+
 /* Bench test: the next button-scan interrupt executes an undefined instruction. */
 extern volatile bool fault_test_in_irq;
+
+/* Bench test: the next FAULT_TEST_BOOT_CRASHES boots crash during startup. */
+void fault_test_boot_arm(void);
+void fault_test_boot_point(void);
 
 #endif /* FAULT_H */
