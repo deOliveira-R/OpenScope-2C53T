@@ -208,8 +208,8 @@ MUTATIONS: tuple[Mutation, ...] = (
         # prefix and the boot still finds one.
         name="top-down erase of a bank in flash_region_log_save()",
         file="src/drivers/flash_regions.c",
-        old="    st = region_erase(b->id, b->offset, b->length, true);\n",
-        new="    st = region_erase(b->id, b->offset, b->length, false);  /* mutant */\n",
+        old="    st = erase_checked(b->start, b->length, true);\n",
+        new="    st = erase_checked(b->start, b->length, false);  /* mutant */\n",
         expect_fail=("a compaction cut mid-erase never resurrects old settings",),
     ),
     Mutation(

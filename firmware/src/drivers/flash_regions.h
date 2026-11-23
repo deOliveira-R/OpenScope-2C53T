@@ -81,7 +81,9 @@ const char *flash_region_strerror(flash_region_status_t st);
 typedef enum {
     FLASH_REGION_KIND_READONLY = 0,
     FLASH_REGION_KIND_RW       = 1,  /* bulk data: explicit erase, then write  */
-    FLASH_REGION_KIND_APPEND   = 2,  /* record log: flash_region_append()      */
+    FLASH_REGION_KIND_APPEND   = 2,  /* record log: flash_region_log_save()    */
+    FLASH_REGION_KIND_LOG_BANK = 3,  /* second bank of a log: written only by
+                                      * the log, refused to everything else   */
 } flash_region_kind_t;
 
 typedef struct {
@@ -104,7 +106,7 @@ typedef enum {
     FLASH_REGION_SETTINGS,     /* append: our saved settings                    */
     FLASH_REGION_SESSION,      /* append: the session snapshot (session_store.h) */
     FLASH_REGION_MODULES,      /* rw: module data assets                        */
-    FLASH_REGION_SESSION_B,    /* rw: second bank of the session log            */
+    FLASH_REGION_SESSION_B,    /* log bank: second bank of the session log      */
     FLASH_REGION_LOGO,         /* rw: boot logo image (logo_store.h)            */
     FLASH_REGION_SCRATCH,      /* rw: screenshot gallery slots (gallery_store.h) */
     FLASH_REGION_FACTORY_CAL_BACKUP, /* rw: MCU factory-cal page mirror (cal_backup.c) */
@@ -174,10 +176,8 @@ flash_region_status_t flash_region_write(flash_region_id_t id, uint32_t offset,
  * range must lie inside the region. Already-erased sectors are skipped. */
 flash_region_status_t flash_region_erase(flash_region_id_t id, uint32_t offset, uint32_t len);
 
-/* Erase an entire writable region. An append region is erased from its top
- * sector down, so a power cut part-way leaves old records only as an unbroken
- * prefix of the log (issue #58); any other region bottom up, which keeps a
- * header-at-offset-0 layout (cal_backup.c) invalidated first. */
+/* Erase an entire writable region, bottom up, which keeps a header-at-offset-0
+ * layout (cal_backup.c) invalidated first; for a log, both its banks. */
 flash_region_status_t flash_region_reset(flash_region_id_t id);
 
 /* ── Absolute-address access ─────────────────────────────────────────

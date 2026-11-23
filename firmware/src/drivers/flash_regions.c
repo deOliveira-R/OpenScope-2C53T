@@ -94,7 +94,7 @@ const flash_region_t flash_region_table[FLASH_REGION_COUNT] = {
     /* The session log's second bank: the top sector of what was "modules". The
      * sector after the session's first one holds the FPGA slot, so the two
      * banks of this log are not adjacent. See "Append log" below. */
-    [FLASH_REGION_SESSION_B] = { "session2", 0xF6F000u, 0x001000u, FLASH_REGION_KIND_RW      },
+    [FLASH_REGION_SESSION_B] = { "session2", 0xF6F000u, 0x001000u, FLASH_REGION_KIND_LOG_BANK },
     [FLASH_REGION_LOGO]     = { "logo",     0xF70000u, 0x030000u, FLASH_REGION_KIND_RW       },
     /* scratch loses its top 8 KB to the cal-backup region below (0x05F000 ->
      * 0x05D000). 8 KB out of ~380 KB of general scratch is negligible; the
@@ -198,7 +198,8 @@ flash_region_status_t flash_regions_check_table(const flash_region_t *table, uin
         }
         if (r->kind != FLASH_REGION_KIND_READONLY &&
             r->kind != FLASH_REGION_KIND_RW &&
-            r->kind != FLASH_REGION_KIND_APPEND) {
+            r->kind != FLASH_REGION_KIND_APPEND &&
+            r->kind != FLASH_REGION_KIND_LOG_BANK) {
             return FLASH_REGION_ERR_TABLE;
         }
         /* Ascending and non-overlapping. Ascending order is what makes a single
@@ -542,6 +543,26 @@ flash_region_status_t flash_regions_erase_abs(uint32_t addr, uint32_t len)
     return erase_checked(addr, len, false);
 }
 
+/* Logs whose second bank is a region of its own, because the sector after the
+ * log's region belongs to something else. Every other log uses its two halves. */
+static const struct {
+    flash_region_id_t log;
+    flash_region_id_t second_bank;
+} LOG_SEPARATE_BANKS[] = {
+    { FLASH_REGION_SESSION, FLASH_REGION_SESSION_B },
+};
+
+static const flash_region_t *log_second_region(flash_region_id_t id)
+{
+    for (uint32_t i = 0; i < sizeof LOG_SEPARATE_BANKS / sizeof LOG_SEPARATE_BANKS[0]; i++) {
+        if (LOG_SEPARATE_BANKS[i].log == id) {
+            const flash_region_t *b = flash_region_get(LOG_SEPARATE_BANKS[i].second_bank);
+            return (b != NULL && b->kind == FLASH_REGION_KIND_LOG_BANK) ? b : NULL;
+        }
+    }
+    return NULL;
+}
+
 flash_region_status_t flash_region_reset(flash_region_id_t id)
 {
     const flash_region_t *r = flash_region_get(id);
@@ -550,15 +571,14 @@ flash_region_status_t flash_region_reset(flash_region_id_t id)
         g_stats.erases_refused++;
         return FLASH_REGION_ERR_BAD_ARG;
     }
-    /* An explicit wipe. Saving never needs it (flash_region_log_save() moves to
-     * the other bank). An append log is erased top down, so a cut leaves its
-     * old records as a prefix and the boot still finds one. */
-    if (id == FLASH_REGION_SESSION) {
-        flash_region_status_t st = region_erase(FLASH_REGION_SESSION_B, 0u,
-                                                FLASH_REGION_SECTOR_SIZE, true);
+    /* An explicit wipe. Saving never needs it: flash_region_log_save() moves to
+     * the log's other bank. */
+    const flash_region_t *second = log_second_region(id);
+    if (second != NULL && region_writable(r)) {
+        flash_region_status_t st = erase_checked(second->start, second->length, false);
         if (st != FLASH_REGION_OK) return st;
     }
-    return region_erase(id, 0u, r->length, r->kind == FLASH_REGION_KIND_APPEND);
+    return region_erase(id, 0u, r->length, false);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -677,9 +697,7 @@ static uint32_t rec_total(uint32_t payload_len)
 }
 
 typedef struct {
-    flash_region_id_t id;    /* the region the bank is erased through  */
-    uint32_t offset;         /* of the bank in that region             */
-    uint32_t start;          /* absolute chip address                  */
+    uint32_t start;          /* absolute chip address */
     uint32_t length;
 } log_bank_t;
 
@@ -701,24 +719,21 @@ typedef struct {
     bool        crossed;         /* a pre-bank log runs past its first bank  */
 } log_view_t;
 
-static flash_region_status_t log_banks(flash_region_id_t id, const flash_region_t *r,
-                                       log_view_t *v)
+static void log_banks(flash_region_id_t id, const flash_region_t *r, log_view_t *v)
 {
-    if (id == FLASH_REGION_SESSION) {
-        const flash_region_t *alt = flash_region_get(FLASH_REGION_SESSION_B);
-        if (alt == NULL) return FLASH_REGION_ERR_TABLE;
-        v->bank[0] = (log_bank_t){ id, 0u, r->start, r->length };
-        v->bank[1] = (log_bank_t){ FLASH_REGION_SESSION_B, 0u, alt->start, alt->length };
+    const flash_region_t *second = log_second_region(id);
+    if (second != NULL) {
+        v->bank[0] = (log_bank_t){ r->start, r->length };
+        v->bank[1] = (log_bank_t){ second->start, second->length };
         v->banks = LOG_BANKS;
-        return FLASH_REGION_OK;
+        return;
     }
     /* The first bank takes the odd sector, so an existing log keeps the most room. */
     const uint32_t sectors = r->length / FLASH_REGION_SECTOR_SIZE;
     const uint32_t first = ((sectors + 1u) / LOG_BANKS) * FLASH_REGION_SECTOR_SIZE;
-    v->bank[0] = (log_bank_t){ id, 0u, r->start, first };
-    v->bank[1] = (log_bank_t){ id, first, r->start + first, r->length - first };
+    v->bank[0] = (log_bank_t){ r->start, first };
+    v->bank[1] = (log_bank_t){ r->start + first, r->length - first };
     v->banks = (r->length > first) ? LOG_BANKS : 1u;
-    return FLASH_REGION_OK;
 }
 
 /* Walk one bank's records. Stops at the first blank or unparsable header, which
@@ -797,11 +812,8 @@ static flash_region_status_t log_view(flash_region_id_t id, const flash_region_t
 {
     memset(v, 0, sizeof *v);
     v->active = -1;
-    flash_region_status_t st = log_banks(id, r, v);
-    if (st != FLASH_REGION_OK) {
-        return st;
-    }
-    st = bank_walk(&v->bank[0], r->length, true, &v->scan[0]);
+    log_banks(id, r, v);
+    flash_region_status_t st = bank_walk(&v->bank[0], r->length, true, &v->scan[0]);
     if (st != FLASH_REGION_OK) {
         return st;
     }
@@ -924,7 +936,8 @@ flash_region_status_t flash_region_append(flash_region_id_t id, const void *data
          * record ends exactly there, so old data in the second half counts as
          * being behind this slot until that half has a bank header. */
         const bool walk_continues = !v.scan[w].has_header && !v.crossed && v.banks > 1u &&
-                                    v.bank[1].id == id && !v.scan[1].has_header;
+                                    v.bank[1].start == v.bank[0].start + v.bank[0].length &&
+                                    !v.scan[1].has_header;
         const uint32_t tail = (walk_continues ? r->length : limit) - next;
         for (uint32_t done = 0; done < tail; ) {
             uint32_t n = tail - done;
@@ -968,7 +981,7 @@ flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *da
         g_stats.writes_refused++;
         return FLASH_REGION_ERR_FULL;
     }
-    st = region_erase(b->id, b->offset, b->length, true);
+    st = erase_checked(b->start, b->length, true);
     if (st != FLASH_REGION_OK) {
         return st;
     }

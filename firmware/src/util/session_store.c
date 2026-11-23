@@ -179,9 +179,8 @@ bool session_snapshot_clear(void)
     return false;
 #else
     const uint16_t len = model_session_encode_cleared(g_buf, sizeof g_buf, (uint16_t)(prev.seq + 1u));
-    const uint32_t compactions0 = g_st.compactions;
     const flash_region_status_t st = append_record(g_buf, len);
-    if (st == FLASH_REGION_OK && g_st.compactions == compactions0) g_st.clears++;
+    if (st == FLASH_REGION_OK) g_st.clears++;
     return st == FLASH_REGION_OK;
 #endif
 }

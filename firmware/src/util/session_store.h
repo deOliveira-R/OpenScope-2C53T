@@ -124,22 +124,24 @@ void session_snapshot_boot_load(const device_config_t *loaded);
  *              SPI2 is taken per primitive under the flash_fs mutex like
  *              every other W25Q access. Not reentrant (one static buffer).
  *   Memory:    no allocation; MODEL_SESSION_MAX_BYTES static.
- *   Stack:     0.45 KB of frames below the caller on the deepest chain
- *              (-fstack-usage, -Os: this function 104, flash_region_append
- *              112, its program-and-verify 96, the flash_fs program wrapper
- *              and its read-back 120), plus the FreeRTOS mutex call: budget
- *              0.6 KB. The settings flush that runs from the same place
+ *   Stack:     0.65 KB of frames below the caller on the deepest chain
+ *              (-fstack-usage, -Os: this function 104, flash_region_log_save
+ *              120, flash_region_append 184, the record's 24, its
+ *              program-and-verify 96, the flash_fs program wrapper and its
+ *              read-back 120), plus the FreeRTOS mutex call: budget 0.8 KB.
+ *              A move to the other bank does not go through the append's
+ *              frame, so it is shallower. The settings flush that runs from the same place
  *              goes as deep.
  *   Time:      NOT MEASURED ON A DEVICE YET (`session save` prints the
- *              milliseconds of this call). Estimated: with no compaction it
+ *              milliseconds of this call). Estimated: with no move to the other bank it
  *              is two scans of the log (<= 4 KB each, in 64-byte SPI2
  *              reads; settings_store.h puts a 64 KB scan at ~100 ms, so
  *              ~7 ms each at most), one header and one payload program (2
  *              page programs, 3 when the payload crosses a page) and their
  *              read-backs: ~15 ms typical, < 40 ms with every page program
- *              at its maximum. With a compaction (the log is full: about
- *              one save in 18) one 4 KB sector erase and two 4 KB
- *              read-backs are added: < 0.5 s. The flash figures are the
+ *              at its maximum. When the log moves to its other bank (about
+ *              one save in 18) one 4 KB sector erase, its blank check and
+ *              one more program are added: < 0.5 s. The flash figures are the
  *              Winbond W25Q128JV datasheet's (rev. I, AC characteristics):
  *              page program tPP 0.4 ms typical, 3 ms maximum; sector erase
  *              tSE 45 ms typical, 400 ms maximum. A unit with another part

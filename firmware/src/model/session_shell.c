@@ -147,8 +147,9 @@ void cmd_session(const char *args)
         else
             (void)usb_debug_printf("settings: flush request timed out (the input task saves when it is free)\r\n");
     }
+    const uint16_t moves0 = session_snapshot_status()->compactions;
     session_call_t c = { clear, false, 0u };
-    /* A full log makes the save erase its sector first (<= 0.4 s). */
+    /* A full bank makes the save erase the other one first (<= 0.4 s). */
     if (!input_call_sync(session_call_run, &c, 3000u)) {
         (void)usb_debug_printf("TIMEOUT: input task busy (gallery/countdown/selfcal?); nothing written\r\n");
         return;
@@ -158,7 +159,7 @@ void cmd_session(const char *args)
         if (c.ok)
             (void)usb_debug_printf("session: saved seq %u, %u values, %u bytes, in %lu ms%s\r\n",
                                    (unsigned)st->save_seq, (unsigned)st->save_count, (unsigned)st->save_bytes,
-                                   (unsigned long)c.ms, st->compactions ? " (the log moved to its other bank)" : "");
+                                   (unsigned long)c.ms, st->compactions != moves0 ? " (the log moved to its other bank)" : "");
         else
             (void)usb_debug_printf("session: %s (flash status %ld)\r\n", session_save_text(st->save),
                                    (long)st->last_flash_status);

@@ -897,6 +897,21 @@ static void test_append_rejects_non_append_regions(void)
     free(snap);
 }
 
+/* The session log's second bank belongs to the log: only saving reaches it. */
+static void test_a_log_bank_refuses_direct_access(void)
+{
+    const flash_region_t *b = R(FLASH_REGION_SESSION_B);
+    const uint8_t data[4] = { 1, 2, 3, 4 };
+    const uint32_t programs0 = model.programs, erases0 = model.erases;
+    CHECK_ST(flash_region_write(FLASH_REGION_SESSION_B, 0, data, sizeof data), FLASH_REGION_ERR_READ_ONLY);
+    CHECK_ST(flash_region_erase(FLASH_REGION_SESSION_B, 0, FLASH_REGION_SECTOR_SIZE), FLASH_REGION_ERR_READ_ONLY);
+    CHECK_ST(flash_region_reset(FLASH_REGION_SESSION_B), FLASH_REGION_ERR_READ_ONLY);
+    CHECK_ST(flash_regions_write_abs(b->start, data, sizeof data), FLASH_REGION_ERR_READ_ONLY);
+    CHECK_ST(flash_regions_erase_abs(b->start, FLASH_REGION_SECTOR_SIZE), FLASH_REGION_ERR_READ_ONLY);
+    CHECK_ST(flash_region_append(FLASH_REGION_SESSION_B, data, sizeof data), FLASH_REGION_ERR_BAD_ARG);
+    CHECK(model.programs == programs0 && model.erases == erases0, "a refused call touched the chip");
+}
+
 static void test_read_latest_on_empty_log(void)
 {
     fresh();
@@ -956,6 +971,7 @@ int main(void)
     run("a full log refuses and preserves", test_append_full_refuses_and_preserves);
     run("append rejects non-append regions", test_append_rejects_non_append_regions);
     run("read_latest on an empty log", test_read_latest_on_empty_log);
+    run("a log's second bank refuses direct access", test_a_log_bank_refuses_direct_access);
 
     printf("\n%d tests, %d failed\n", tests_run, tests_failed);
     if (tests_failed == 0) {
