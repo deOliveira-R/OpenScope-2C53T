@@ -257,7 +257,7 @@ static uint32_t parse_kwp_message(const uint8_t *bytes, uint32_t num_bytes,
     frame->end_sample = sample_positions[msg_len - 1];
 
     /* Copy raw bytes */
-    uint8_t copy_len = (msg_len > DECODE_MAX_DATA) ? DECODE_MAX_DATA : (uint8_t)msg_len;
+    const uint8_t copy_len = (uint8_t)((msg_len > DECODE_MAX_DATA) ? DECODE_MAX_DATA : msg_len);
     memcpy(frame->data, bytes, copy_len);
     frame->data_len = copy_len;
 

@@ -1,9 +1,7 @@
 /*
  * FFT Unit Test - Phase 2: 4096-point, 5 windows, averaging, max hold
  *
- * Build and run:
- *   gcc -o test_fft test_fft.c ../src/dsp/fft.c ../src/dsp/fft_test_signals.c -lm -I../src/dsp
- *   ./test_fft
+ * Build and run: make test-fft
  */
 
 #include <stdio.h>

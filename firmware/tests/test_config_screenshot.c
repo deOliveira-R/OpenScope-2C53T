@@ -1,14 +1,7 @@
 /*
  * OpenScope 2C53T - Tests for Config and Screenshot modules
  *
- * Build (native):
- *   gcc -o tests/test_config_screenshot tests/test_config_screenshot.c \
- *       src/util/config.c src/util/screenshot.c src/dsp/shared_mem.c \
- *       src/drivers/flash_regions.c \
- *       -DFEATURE_SCREENSHOT -Isrc/util -Isrc/dsp -Isrc/drivers -lm
- *
- * Run:
- *   ./tests/test_config_screenshot
+ * Build and run: make test-config-screenshot
  */
 
 #include <stdio.h>

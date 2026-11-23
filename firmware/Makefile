@@ -1064,6 +1064,55 @@ test-model-persist: $(BUILD_DIR)/test_model_persist $(BUILD_DIR)/test_model_pers
 # called, the record byte for byte the defaults', the confirm step, and no
 # program or erase outside the settings region of a NOR model of the whole
 # W25Q (calibration, gallery, logo, firmware cache), a compaction included.
+# Protocol decoders, FFT, theme, component maths, config and screenshot cores.
+DECODE_TEST_SRCS = src/decode/decode_uart.c src/decode/decode_i2c.c src/decode/decode_spi.c src/decode/decode_can.c
+DECODE_TEST_DEPS = $(DECODE_TEST_SRCS) src/decode/decoder.h src/decode/decode_uart.h src/decode/decode_i2c.h \
+                   src/decode/decode_spi.h src/decode/decode_can.h
+# The screenshot core needs a whole 320x240 RGB565 frame; the device pool is smaller.
+SCREENSHOT_TEST_POOL_BYTES = 153600
+CONFIG_SHOT_SRCS = $(sort $(CONFIG_PERSIST_SRCS) src/util/screenshot.c src/dsp/shared_mem.c tests/config_screenshot_env.c)
+
+$(BUILD_DIR)/test_decode: tests/test_decode.c $(DECODE_TEST_DEPS) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/decode $< $(DECODE_TEST_SRCS) -lm -o $@
+
+$(BUILD_DIR)/test_decode_noisy: tests/test_decode_noisy.c $(DECODE_TEST_DEPS) | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/decode $< $(DECODE_TEST_SRCS) -lm -o $@
+
+$(BUILD_DIR)/test_decode_kline: tests/test_decode_kline.c src/decode/decode_kline.c src/decode/decode_kline.h \
+                                src/decode/decode_uart.c src/decode/decode_uart.h src/decode/decoder.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/decode $< src/decode/decode_kline.c src/decode/decode_uart.c -lm -o $@
+
+$(BUILD_DIR)/test_fft: tests/test_fft.c src/dsp/fft.c src/dsp/fft.h src/dsp/fft_test_signals.c src/dsp/fft_test_signals.h \
+                       src/dsp/shared_mem.c src/dsp/shared_mem.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp $< src/dsp/fft.c src/dsp/fft_test_signals.c src/dsp/shared_mem.c -lm -o $@
+
+$(BUILD_DIR)/test_theme: tests/test_theme.c src/ui/theme.c src/ui/theme.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/drivers $< src/ui/theme.c -o $@
+
+$(BUILD_DIR)/test_component: tests/test_component.c src/tasks/component_test.c src/tasks/component_test.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/tasks $< src/tasks/component_test.c -lm -o $@
+
+$(BUILD_DIR)/test_config_screenshot: tests/test_config_screenshot.c $(CONFIG_SHOT_SRCS) src/util/config.h \
+                                     src/util/screenshot.h | $(BUILD_DIR)
+	$(CONFIG_PERSIST_CC) -DSETTINGS_PERSIST_WRITES=1 -DFEATURE_SCREENSHOT \
+		-DSHMEM_POOL_SIZE=$(SCREENSHOT_TEST_POOL_BYTES) $< $(CONFIG_SHOT_SRCS) -lm -o $@
+
+.PHONY: test-decode test-decode-noisy test-decode-kline test-fft test-theme test-component test-config-screenshot
+test-decode: $(BUILD_DIR)/test_decode
+	$<
+test-decode-noisy: $(BUILD_DIR)/test_decode_noisy
+	$<
+test-decode-kline: $(BUILD_DIR)/test_decode_kline
+	$<
+test-fft: $(BUILD_DIR)/test_fft
+	$<
+test-theme: $(BUILD_DIR)/test_theme
+	$<
+test-component: $(BUILD_DIR)/test_component
+	$<
+test-config-screenshot: $(BUILD_DIR)/test_config_screenshot
+	$<
+
 $(BUILD_DIR)/test_settings_reset: tests/test_settings_reset.c $(MODEL_SRCS) src/model/model_persist_v5.c \
                                   src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
                                   src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \

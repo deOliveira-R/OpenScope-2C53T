@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #define DECODE_MAX_FRAMES 64
-#define DECODE_MAX_DATA   256
+#define DECODE_MAX_DATA   16   /* decoded bytes a frame holds; a longer message is cut to this */
 #define DECODE_MAX_LABEL  16
 
 typedef enum {
@@ -19,11 +19,11 @@ typedef enum {
 typedef struct {
     uint32_t start_sample;   /* Sample index where frame starts */
     uint32_t end_sample;     /* Sample index where frame ends */
-    uint8_t  data[16];       /* Decoded bytes */
+    uint8_t  data[DECODE_MAX_DATA]; /* Decoded bytes */
     uint8_t  data_len;       /* Number of decoded bytes */
     uint8_t  flags;          /* Protocol-specific flags (error, ACK, etc.) */
     uint32_t id;             /* Protocol address/identifier where one exists (CAN ID) */
-    char     label[16];      /* Human-readable label ("0x48 W", "ACK", etc.) */
+    char     label[DECODE_MAX_LABEL]; /* Human-readable label ("0x48 W", "ACK", etc.) */
 } decode_frame_t;
 
 /* Decode result */

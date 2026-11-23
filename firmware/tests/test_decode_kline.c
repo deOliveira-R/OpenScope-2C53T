@@ -434,6 +434,41 @@ static void test_service_names(void)
     PASS();
 }
 
+/* A message longer than a frame's data[] keeps what fits and nothing past it. */
+static void test_long_message_stays_inside_the_frame(void)
+{
+    TEST(long_message_stays_inside_the_frame);
+
+    enum { LONG_DATA_BYTES = 40, LONG_SAMPLES = 60000 };
+    static int16_t samples[LONG_SAMPLES];
+    fill_idle(samples, LONG_SAMPLES);
+
+    uint8_t data[LONG_DATA_BYTES];
+    memset(data, 0x5A, sizeof data);
+    data[0] = 0x3E;
+    gen_kwp_message(samples, 500, 0xC0, 0x33, 0xF1, data, LONG_DATA_BYTES, SAMPLE_RATE);
+
+    kline_config_t cfg = { .threshold = 0, .protocol = 0, .address_mode = 0 };
+    static decode_result_t result;
+    decode_kline(samples, LONG_SAMPLES, SAMPLE_RATE, &cfg, &result);
+
+    if (result.num_frames < 1) {
+        FAIL("expected at least 1 frame, got %d", result.num_frames);
+        return;
+    }
+    if (result.frames[0].data_len != sizeof result.frames[0].data) {
+        FAIL("data_len %d, the frame holds %d", result.frames[0].data_len,
+             (int)sizeof result.frames[0].data);
+        return;
+    }
+    if (!(result.frames[0].flags & KLINE_FLAG_CHECKSUM_OK)) {
+        FAIL("flags overwritten or checksum wrong: 0x%04X", result.frames[0].flags);
+        return;
+    }
+
+    PASS();
+}
+
 static void test_multiple_messages(void)
 {
     TEST(multiple_messages);
@@ -503,6 +538,7 @@ int main(void)
     test_5baud_init();
     test_service_names();
     test_multiple_messages();
+    test_long_message_stays_inside_the_frame();
 
     printf("\nResults: %d/%d passed\n", tests_passed, tests_run);
 
