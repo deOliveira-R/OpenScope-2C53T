@@ -1,7 +1,7 @@
 /*
- * OpenScope 2C53T - Tests for Config and Screenshot modules
+ * OpenScope 2C53T - Tests for the Config module
  *
- * Build and run: make test-config-screenshot
+ * Build and run: make test-config
  */
 
 #include <stdio.h>
@@ -10,7 +10,6 @@
 #include <assert.h>
 
 #include "config.h"
-#include "screenshot.h"
 
 /* ========================================================================
  * Test helpers
@@ -198,194 +197,6 @@ static void test_config_save_without_storage_refuses(void)
     PASS();
 }
 
-/* ========================================================================
- * Screenshot tests
- * ======================================================================== */
-
-static void test_screenshot_clear_red(void)
-{
-    TEST("clear with red fills all pixels with 0xF800");
-    screenshot_init();
-    screenshot_clear(0xF800);
-
-    const uint8_t *fb = screenshot_get_framebuffer();
-    ASSERT_TRUE(fb != NULL, "framebuffer should not be NULL");
-
-    /* Check first, middle, and last pixel */
-    /* 0xF800 LE: low byte = 0x00, high byte = 0xF8 */
-    ASSERT_EQ(fb[0], 0x00, "pixel 0 low byte");
-    ASSERT_EQ(fb[1], 0xF8, "pixel 0 high byte");
-
-    uint32_t mid = (SCREENSHOT_SIZE / 2) & ~1u;
-    ASSERT_EQ(fb[mid], 0x00, "mid pixel low byte");
-    ASSERT_EQ(fb[mid + 1], 0xF8, "mid pixel high byte");
-
-    uint32_t last = SCREENSHOT_SIZE - 2;
-    ASSERT_EQ(fb[last], 0x00, "last pixel low byte");
-    ASSERT_EQ(fb[last + 1], 0xF8, "last pixel high byte");
-    PASS();
-}
-
-static void test_screenshot_set_pixel(void)
-{
-    TEST("set_pixel writes to correct position");
-    screenshot_init();
-    screenshot_clear(0x0000);
-
-    /* Set pixel at (10, 5) to green (0x07E0) */
-    screenshot_set_pixel(10, 5, 0x07E0);
-
-    const uint8_t *fb = screenshot_get_framebuffer();
-    uint32_t offset = (5 * SCREENSHOT_WIDTH + 10) * SCREENSHOT_BPP;
-    ASSERT_EQ(fb[offset], 0xE0, "green low byte");
-    ASSERT_EQ(fb[offset + 1], 0x07, "green high byte");
-
-    /* Verify neighboring pixel is still black */
-    uint32_t neighbor = (5 * SCREENSHOT_WIDTH + 11) * SCREENSHOT_BPP;
-    ASSERT_EQ(fb[neighbor], 0x00, "neighbor should be black");
-    PASS();
-}
-
-static void test_screenshot_fill_rect(void)
-{
-    TEST("fill_rect fills correct area");
-    screenshot_init();
-    screenshot_clear(0x0000);
-
-    /* Fill a 3x2 rect at (100, 50) with blue (0x001F) */
-    screenshot_fill_rect(100, 50, 3, 2, 0x001F);
-
-    const uint8_t *fb = screenshot_get_framebuffer();
-
-    /* Check all 6 pixels in the rect */
-    for (int row = 0; row < 2; row++) {
-        for (int col = 0; col < 3; col++) {
-            uint32_t offset = ((50 + row) * SCREENSHOT_WIDTH + (100 + col)) * SCREENSHOT_BPP;
-            ASSERT_EQ(fb[offset], 0x1F, "blue low byte");
-            ASSERT_EQ(fb[offset + 1], 0x00, "blue high byte");
-        }
-    }
-
-    /* Check pixel just outside the rect */
-    uint32_t outside = (50 * SCREENSHOT_WIDTH + 103) * SCREENSHOT_BPP;
-    ASSERT_EQ(fb[outside], 0x00, "outside should be black");
-    PASS();
-}
-
-static void test_screenshot_fill_rect_clips_at_edge(void)
-{
-    TEST("fill_rect clips at framebuffer edge");
-    screenshot_init();
-    screenshot_clear(0x0000);
-
-    screenshot_fill_rect(SCREENSHOT_WIDTH - 1, SCREENSHOT_HEIGHT - 1, 4, 4, 0xF800);
-
-    const uint8_t *fb = screenshot_get_framebuffer();
-    uint32_t corner = ((SCREENSHOT_HEIGHT - 1) * SCREENSHOT_WIDTH +
-                       (SCREENSHOT_WIDTH - 1)) * SCREENSHOT_BPP;
-    ASSERT_EQ(fb[corner], 0x00, "red low byte at clipped corner");
-    ASSERT_EQ(fb[corner + 1], 0xF8, "red high byte at clipped corner");
-
-    uint32_t before = ((SCREENSHOT_HEIGHT - 1) * SCREENSHOT_WIDTH +
-                       (SCREENSHOT_WIDTH - 2)) * SCREENSHOT_BPP;
-    ASSERT_EQ(fb[before], 0x00, "neighbor low byte remains black");
-    ASSERT_EQ(fb[before + 1], 0x00, "neighbor high byte remains black");
-    PASS();
-}
-
-static void test_screenshot_bmp_header(void)
-{
-    TEST("BMP header has correct signature, size, dimensions");
-    screenshot_init();
-    screenshot_clear(0x0000);
-
-    uint8_t *bmp = (uint8_t *)malloc(BMP_FILE_SIZE);
-    ASSERT_TRUE(bmp != NULL, "malloc failed");
-
-    uint32_t size = screenshot_capture_bmp(bmp, BMP_FILE_SIZE);
-    ASSERT_EQ(size, (uint32_t)BMP_FILE_SIZE, "BMP size");
-
-    /* Signature */
-    ASSERT_EQ(bmp[0], 'B', "BMP sig B");
-    ASSERT_EQ(bmp[1], 'M', "BMP sig M");
-
-    /* File size (LE) */
-    uint32_t file_size = bmp[2] | (bmp[3] << 8) | (bmp[4] << 16) | (bmp[5] << 24);
-    ASSERT_EQ(file_size, (uint32_t)BMP_FILE_SIZE, "file size in header");
-
-    /* Pixel data offset */
-    uint32_t px_offset = bmp[10] | (bmp[11] << 8) | (bmp[12] << 16) | (bmp[13] << 24);
-    ASSERT_EQ(px_offset, (uint32_t)BMP_HEADER_SIZE, "pixel offset");
-
-    /* Width */
-    uint32_t width = bmp[18] | (bmp[19] << 8) | (bmp[20] << 16) | (bmp[21] << 24);
-    ASSERT_EQ(width, (uint32_t)SCREENSHOT_WIDTH, "width");
-
-    /* Height (negative for top-down, stored as 2's complement) */
-    int32_t height;
-    memcpy(&height, bmp + 22, 4);
-    ASSERT_EQ(height, -(int32_t)SCREENSHOT_HEIGHT, "height (top-down)");
-
-    /* BPP */
-    uint16_t bpp = bmp[28] | (bmp[29] << 8);
-    ASSERT_EQ(bpp, 16, "bits per pixel");
-
-    /* Compression = BI_BITFIELDS (3) */
-    uint32_t compression = bmp[30] | (bmp[31] << 8) | (bmp[32] << 16) | (bmp[33] << 24);
-    ASSERT_EQ(compression, 3u, "BI_BITFIELDS compression");
-
-    free(bmp);
-    PASS();
-}
-
-static void test_screenshot_bmp_pixel_data(void)
-{
-    TEST("BMP pixel data matches shadow framebuffer");
-    screenshot_init();
-    screenshot_clear(0x0000);
-
-    /* Set a known pixel */
-    screenshot_set_pixel(0, 0, 0xF800); /* Red */
-    screenshot_set_pixel(1, 0, 0x07E0); /* Green */
-
-    uint8_t *bmp = (uint8_t *)malloc(BMP_FILE_SIZE);
-    ASSERT_TRUE(bmp != NULL, "malloc failed");
-
-    screenshot_capture_bmp(bmp, BMP_FILE_SIZE);
-
-    /* Verify pixel data at correct offset */
-    const uint8_t *fb = screenshot_get_framebuffer();
-    ASSERT_EQ(memcmp(bmp + BMP_HEADER_SIZE, fb, SCREENSHOT_SIZE), 0,
-              "pixel data should match framebuffer");
-
-    /* Verify specific pixels */
-    uint8_t *px = bmp + BMP_HEADER_SIZE;
-    /* Pixel (0,0) = 0xF800 LE */
-    ASSERT_EQ(px[0], 0x00, "red low");
-    ASSERT_EQ(px[1], 0xF8, "red high");
-    /* Pixel (1,0) = 0x07E0 LE */
-    ASSERT_EQ(px[2], 0xE0, "green low");
-    ASSERT_EQ(px[3], 0x07, "green high");
-
-    free(bmp);
-    PASS();
-}
-
-static void test_screenshot_bmp_too_small_buffer(void)
-{
-    TEST("BMP capture fails with too-small buffer");
-    screenshot_init();
-
-    uint8_t buf[64];
-    uint32_t size = screenshot_capture_bmp(buf, sizeof(buf));
-    ASSERT_EQ(size, 0u, "should return 0 for small buffer");
-    PASS();
-}
-
-/* ========================================================================
- * Main
- * ======================================================================== */
-
 int main(void)
 {
     printf("\n=== Config Tests ===\n");
@@ -399,15 +210,6 @@ int main(void)
     test_config_deserialize_bad_checksum();
     test_config_serialize_buffer_too_small();
     test_config_save_without_storage_refuses();
-
-    printf("\n=== Screenshot Tests ===\n");
-    test_screenshot_clear_red();
-    test_screenshot_set_pixel();
-    test_screenshot_fill_rect();
-    test_screenshot_fill_rect_clips_at_edge();
-    test_screenshot_bmp_header();
-    test_screenshot_bmp_pixel_data();
-    test_screenshot_bmp_too_small_buffer();
 
     printf("\n=== Results: %d passed, %d failed ===\n\n",
            tests_passed, tests_failed);

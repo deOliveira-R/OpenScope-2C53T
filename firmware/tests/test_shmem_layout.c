@@ -31,7 +31,6 @@ int main(void)
     CHECK(SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE == shared_mem_size(),
           "waterfall ends at the top of the pool");
     CHECK(SHMEM_NEED_PERSISTENCE <= shared_mem_size(), "persistence fits");
-    CHECK(SHMEM_NEED_SCREENSHOT > shared_mem_size(), "legacy screenshot still fails closed");
 
     /* Whole pool is addressable and zeroed on an owner change. */
     uint8_t *p = shared_mem_acquire(SHMEM_OWNER_FFT);

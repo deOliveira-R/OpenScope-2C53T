@@ -5,6 +5,7 @@
  */
 
 #include "scope_ui_parts.h"
+#include "waterfall_blit.h"
 
 #if FEATURE_FFT
 /* Waterfall
@@ -30,7 +31,7 @@ static uint32_t waterfall_pool_generation = 0;
 /* The blit in draw_waterfall_screen() sets one window across the full plot
  * width per screen line and streams into it, so a history row must be exactly
  * one screen line wide. */
-_Static_assert(WATERFALL_COLS == LCD_WIDTH,
+_Static_assert(WATERFALL_COLS == WATERFALL_BLIT_COLS,
                "waterfall row blit assumes one history column per screen pixel");
 
 /*
@@ -43,23 +44,18 @@ _Static_assert(WATERFALL_COLS == LCD_WIDTH,
  */
 #define waterfall_line (ui_draw_scratch.waterfall)   /* shared, see ui_draw_scratch */
 
-/*
- * Intensity -> colour, with a BLACK floor.
- *
- * intensity 0 = at/above the display reference, 255 = at/below the floor
- * (reference - db_range). The ramp runs black -> blue -> cyan -> yellow ->
- * red in four equal 64-step segments, the conventional spectrogram ordering,
- * and puts "nothing here" (the noise floor) at black.
- */
-static uint16_t intensity_to_color(uint8_t intensity)
+/* The text the blit composes into its lines (waterfall_blit.h). */
+static bool wf_text_line(const void *text, int y)
 {
-    uint16_t level = (uint16_t)(255u - intensity);   /* 0 = floor, 255 = hot */
-    uint8_t  t = (uint8_t)((level & 63u) * 4u);      /* position in segment  */
+    const ctext_set_t *T = (const ctext_set_t *)text;
+    for (uint8_t k = 0; k < T->n; k++)
+        if (y >= T->t[k].y && y < T->t[k].y + (int)font_small.height) return true;
+    return false;
+}
 
-    if (level < 64)  return RGB565(0, 0, t);                        /* black->blue  */
-    if (level < 128) return RGB565(0, t, 255);                      /* blue ->cyan  */
-    if (level < 192) return RGB565(t, 255, (uint8_t)(255 - t));     /* cyan ->yellow*/
-    return RGB565(255, (uint8_t)(255 - t), 0);                      /* yellow->red  */
+static bool wf_text_px(const void *text, int x, int y, uint16_t *c)
+{
+    return ctext_px((const ctext_set_t *)text, x, y, c);
 }
 
 /* What the last waterfall frame did, for the shell screen diagnostic
@@ -117,7 +113,7 @@ void draw_waterfall_screen(void)
         (uint8_t (*)[WATERFALL_COLS])(wf_pool + SHMEM_FFT_WATERFALL_OFFSET);
 
     /* shared_mem_acquire() zeroes the pool whenever the owner changes, so a
-     * round trip through screenshot/persistence wipes the history. Detect that
+     * round trip through persistence wipes the history. Detect that
      * and restart from row 0 instead of scrolling through a zeroed tail.
      *
      * Refill with 0xFF rather than leaving the pool's zeros: intensity 0 maps
@@ -159,39 +155,6 @@ void draw_waterfall_screen(void)
     uint8_t newest_row = waterfall_row_idx;
     waterfall_row_idx = (uint8_t)((waterfall_row_idx + 1) % WATERFALL_ROWS);
 
-    /* ── Blit ───────────────────────────────────────────────────────
-     *
-     * The plot is not cleared first. Every screen line of the plot is written
-     * once: a history row is converted once into waterfall_line and streamed
-     * row_height times, one window and one lcd_write_pixels() call per screen
-     * line. The residual lines under the block (SCOPE_H is not a multiple of
-     * WATERFALL_ROWS: 14 lines at 206/64) are written black, or with the axis
-     * labels.
-     *
-     * One window for the WHOLE block would need far fewer set_windows, but the
-     * window is global driver state and vInputTask runs at priority 4 against
-     * the display task's 1: its power-off countdown overlay (the POWER loop in
-     * tasks/input_handler.c) calls lcd_fill_rect() and so re-points the window
-     * from under a stream in progress. A window per line bounds that to one
-     * corrupted line for one frame.
-     *
-     * Why not scroll-and-append, which would be O(1 row)? The history scrolls
-     * by exactly one row per frame, so 63 of 64 rows are unchanged in content,
-     * but they all MOVE, and with no framebuffer on this side of the bus there
-     * is nothing to shift. The ST7789's own vertical scroll works on panel
-     * rows, which MADCTL = 0xA0 (MV = 1) maps to screen COLUMNS, i.e. it would
-     * scroll the waterfall sideways. An O(1)-per-frame waterfall needs either
-     * a RAM framebuffer (the shared pool is already used by the FFT) or a
-     * different history layout that lets the newest row wrap in place instead
-     * of the image scrolling. That changes what is drawn. */
-    uint16_t row_height = SCOPE_H / WATERFALL_ROWS;
-    if (row_height < 1) row_height = 1;
-
-    uint16_t rows_drawn = WATERFALL_ROWS;
-    if ((uint32_t)rows_drawn * row_height > SCOPE_H)
-        rows_drawn = (uint16_t)(SCOPE_H / row_height);
-    const uint16_t block_h = (uint16_t)(rows_drawn * row_height);
-
     /* The header and the axis labels are composed into the lines they
      * cross (font_text_px) instead of drawn over the streamed rows, so
      * nothing is painted twice and nothing blinks; the residual strip under
@@ -213,34 +176,14 @@ void draw_waterfall_screen(void)
                   COLOR_WHITE, COLOR_BLACK, true);
     }
 
-    for (uint16_t sy = 0; sy < SCOPE_H; sy++) {
-        const uint16_t y = (uint16_t)(SCOPE_TOP + sy);
-        const bool in_block = sy < block_h;
-        const uint16_t r = (uint16_t)(sy / row_height);
-        /* A history row is converted once and reused for its row_height
-         * lines unless a label crosses this line. */
-        const bool row_first = in_block && (sy % row_height) == 0u;
-        bool text_line = false;
-        for (uint8_t k = 0; k < T.n; k++)
-            if ((int)y >= T.t[k].y && (int)y < T.t[k].y + (int)font_small.height) text_line = true;
-        if (row_first || text_line || !in_block) {
-            const uint8_t *src = in_block
-                ? waterfall_buf[(newest_row + WATERFALL_ROWS - r) % WATERFALL_ROWS] : NULL;
-            for (x = 0; x < WATERFALL_COLS; x++) {
-                uint16_t c = src ? intensity_to_color(src[x]) : COLOR_BLACK;
-                if (text_line) (void)ctext_px(&T, x, y, &c);
-                waterfall_line[x] = c;
-            }
-        }
-        lcd_set_window(0, y, WATERFALL_COLS, 1);
-        lcd_write_pixels(waterfall_line, WATERFALL_COLS);
-        if (text_line && in_block && (sy + 1u) % row_height != 0u) {
-            /* the next line of this row has no text: rebuild it plain */
-            const uint8_t *src = waterfall_buf[(newest_row + WATERFALL_ROWS - r) % WATERFALL_ROWS];
-            for (x = 0; x < WATERFALL_COLS; x++)
-                waterfall_line[x] = intensity_to_color(src[x]);
-        }
-    }
+    const waterfall_frame_t frame = {
+        .history = (const uint8_t (*)[WATERFALL_BLIT_COLS])waterfall_buf,
+        .rows = WATERFALL_ROWS, .newest = newest_row,
+        .top = SCOPE_TOP, .height = SCOPE_H,
+        .line = waterfall_line,
+        .text = &T, .text_line = wf_text_line, .text_px = wf_text_px,
+    };
+    waterfall_blit(&frame);
 }
 
 #endif

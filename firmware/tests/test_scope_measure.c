@@ -8,9 +8,7 @@
  *       firmware/tests/test_scope_measure.c firmware/src/ui/scope_measure.c \
  *       -lm -o /tmp/t && /tmp/t
  *
- * This compiles the SHIPPED src/ui/scope_measure.c — not a transcription of
- * it (contrast test_waterfall_blit.c, which has to copy its two blit loops
- * because they are entangled with the FFT, the fonts and the AT32 headers).
+ * This compiles the SHIPPED src/ui/scope_measure.c.
  * scope_measure.c was deliberately written free of all of that so this test
  * exercises the same object the firmware links.
  *

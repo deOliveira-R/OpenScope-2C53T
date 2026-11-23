@@ -18,9 +18,7 @@ static const char *owner_names[SHMEM_OWNER_COUNT] = {
     "Free",
     "FFT",
     "Persistence",
-    "Screenshot",
     "Decode",
-    "Component",
     "Bode",
     "Module",
     "Display",
@@ -31,9 +29,7 @@ static const uint32_t owner_needs[SHMEM_OWNER_COUNT] = {
     0,
     SHMEM_NEED_FFT_TOTAL,   /* FFT proper + the waterfall sub-tenant */
     SHMEM_NEED_PERSISTENCE,
-    SHMEM_NEED_SCREENSHOT,
     SHMEM_NEED_DECODE,
-    SHMEM_NEED_COMPONENT,
     SHMEM_NEED_BODE,
     0, /* Module — variable, not known at compile time */
     SHMEM_NEED_DISPLAY,

@@ -1,5 +1,5 @@
 /*
- * What test_config_screenshot links against in place of main.c and the drivers.
+ * What test_config links against in place of main.c and the drivers.
  * config.c saves through the property table, so the model links in, and the
  * model reads this state. None of it is under test here.
  */

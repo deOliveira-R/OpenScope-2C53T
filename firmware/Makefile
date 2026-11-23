@@ -46,6 +46,7 @@ C_SOURCES += src/ui/scope_xy.c
 C_SOURCES += src/ui/scope_roll_draw.c
 C_SOURCES += src/ui/scope_spectrum.c
 C_SOURCES += src/ui/scope_waterfall.c
+C_SOURCES += src/ui/waterfall_blit.c
 C_SOURCES += src/ui/meter_ui.c
 C_SOURCES += src/ui/softkey.c
 C_SOURCES += src/ui/softkey_draw.c
@@ -123,10 +124,8 @@ C_SOURCES += src/ui/scope_geom.c
 C_SOURCES += src/dsp/sinc_interp.c
 C_SOURCES += src/dsp/math_channel.c
 C_SOURCES += src/dsp/paused_view.c
-# src/dsp/bode.c (host test: make test-bode) and src/tasks/component_test.c are
-# not linked: their only callers were demo screens on synthetic data (the
-# Settings entries "Bode Plot" and "Component Tester"), removed. The meter
-# measures R, C, diode and continuity for real.
+# src/dsp/bode.c (host test: make test-bode) is not linked: its only caller was
+# a demo screen on synthetic data (the Settings entry "Bode Plot"), removed.
 C_SOURCES += src/dsp/mask_pf.c
 C_SOURCES += src/ui/scope_mask.c
 C_SOURCES += src/util/config.c
@@ -142,7 +141,6 @@ C_SOURCES += src/util/usercal_rec.c
 C_SOURCES += src/util/usercal.c
 C_SOURCES += src/util/sys_prefs.c
 C_SOURCES += src/drivers/sys_pwm.c
-C_SOURCES += src/util/screenshot.c
 C_SOURCES += src/util/gallery_store.c
 C_SOURCES += src/ui/gallery_nav.c
 C_SOURCES += src/ui/gallery_ui.c
@@ -1064,13 +1062,11 @@ test-model-persist: $(BUILD_DIR)/test_model_persist $(BUILD_DIR)/test_model_pers
 # called, the record byte for byte the defaults', the confirm step, and no
 # program or erase outside the settings region of a NOR model of the whole
 # W25Q (calibration, gallery, logo, firmware cache), a compaction included.
-# Protocol decoders, FFT, theme, component maths, config and screenshot cores.
+# Protocol decoders, FFT, theme, config core, the waterfall drawing.
 DECODE_TEST_SRCS = src/decode/decode_uart.c src/decode/decode_i2c.c src/decode/decode_spi.c src/decode/decode_can.c
 DECODE_TEST_DEPS = $(DECODE_TEST_SRCS) src/decode/decoder.h src/decode/decode_uart.h src/decode/decode_i2c.h \
                    src/decode/decode_spi.h src/decode/decode_can.h
-# The screenshot core needs a whole 320x240 RGB565 frame; the device pool is smaller.
-SCREENSHOT_TEST_POOL_BYTES = 153600
-CONFIG_SHOT_SRCS = $(sort $(CONFIG_PERSIST_SRCS) src/util/screenshot.c src/dsp/shared_mem.c tests/config_screenshot_env.c)
+CONFIG_TEST_SRCS = $(sort $(CONFIG_PERSIST_SRCS) tests/config_test_env.c)
 
 $(BUILD_DIR)/test_decode: tests/test_decode.c $(DECODE_TEST_DEPS) | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/decode $< $(DECODE_TEST_SRCS) -lm -o $@
@@ -1089,15 +1085,14 @@ $(BUILD_DIR)/test_fft: tests/test_fft.c src/dsp/fft.c src/dsp/fft.h src/dsp/fft_
 $(BUILD_DIR)/test_theme: tests/test_theme.c src/ui/theme.c src/ui/theme.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/drivers $< src/ui/theme.c -o $@
 
-$(BUILD_DIR)/test_component: tests/test_component.c src/tasks/component_test.c src/tasks/component_test.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/tasks $< src/tasks/component_test.c -lm -o $@
+$(BUILD_DIR)/test_config: tests/test_config.c $(CONFIG_TEST_SRCS) src/util/config.h | $(BUILD_DIR)
+	$(CONFIG_PERSIST_CC) -DSETTINGS_PERSIST_WRITES=1 $< $(CONFIG_TEST_SRCS) -lm -o $@
 
-$(BUILD_DIR)/test_config_screenshot: tests/test_config_screenshot.c $(CONFIG_SHOT_SRCS) src/util/config.h \
-                                     src/util/screenshot.h | $(BUILD_DIR)
-	$(CONFIG_PERSIST_CC) -DSETTINGS_PERSIST_WRITES=1 -DFEATURE_SCREENSHOT \
-		-DSHMEM_POOL_SIZE=$(SCREENSHOT_TEST_POOL_BYTES) $< $(CONFIG_SHOT_SRCS) -lm -o $@
+$(BUILD_DIR)/test_waterfall_blit: tests/test_waterfall_blit.c src/ui/waterfall_blit.c src/ui/waterfall_blit.h \
+                                  src/drivers/lcd.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/drivers $< src/ui/waterfall_blit.c -o $@
 
-.PHONY: test-decode test-decode-noisy test-decode-kline test-fft test-theme test-component test-config-screenshot
+.PHONY: test-decode test-decode-noisy test-decode-kline test-fft test-theme test-config test-waterfall-blit
 test-decode: $(BUILD_DIR)/test_decode
 	$<
 test-decode-noisy: $(BUILD_DIR)/test_decode_noisy
@@ -1108,9 +1103,9 @@ test-fft: $(BUILD_DIR)/test_fft
 	$<
 test-theme: $(BUILD_DIR)/test_theme
 	$<
-test-component: $(BUILD_DIR)/test_component
+test-config: $(BUILD_DIR)/test_config
 	$<
-test-config-screenshot: $(BUILD_DIR)/test_config_screenshot
+test-waterfall-blit: $(BUILD_DIR)/test_waterfall_blit
 	$<
 
 $(BUILD_DIR)/test_settings_reset: tests/test_settings_reset.c $(MODEL_SRCS) src/model/model_persist_v5.c \

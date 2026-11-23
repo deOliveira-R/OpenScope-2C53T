@@ -9,12 +9,11 @@
  * Design rules:
  *   1. Core signal paths (scope time-domain, DMM sampling, siggen) do not
  *      depend on the pool.
- *   2. On-demand features (FFT, persistence, screenshot, decode) claim it.
+ *   2. On-demand features (FFT, persistence, decode) claim it.
  *   3. Display code may opportunistically claim it for an off-screen tile, but
  *      must fall back to direct drawing when another feature owns the pool.
  *   4. Only one feature holds the pool at a time.
  *   5. Claiming auto-releases the previous holder (with notification).
- *   6. Screenshot is a brief claim-use-release cycle (~500ms).
  */
 
 #ifndef SHARED_MEM_H
@@ -33,9 +32,7 @@ typedef enum {
     SHMEM_OWNER_NONE = 0,
     SHMEM_OWNER_FFT,
     SHMEM_OWNER_PERSISTENCE,
-    SHMEM_OWNER_SCREENSHOT,
     SHMEM_OWNER_DECODE,
-    SHMEM_OWNER_COMPONENT,
     SHMEM_OWNER_BODE,
     SHMEM_OWNER_MODULE,      /* External loaded module */
     SHMEM_OWNER_DISPLAY,
@@ -43,13 +40,11 @@ typedef enum {
 } shmem_owner_t;
 
 /* Size of the shared pool. Keep this above the largest enabled consumer.
- * The old RGB565 screenshot utility needs 150KB and must fail closed unless
- * this pool is deliberately restored to that size.
  *
  * Since the 2026-11-11 RAM diet the default is DERIVED: exactly the FFT
  * owner's footprint (SHMEM_NEED_FFT_TOTAL, below), which is the largest
  * consumer that actually claims the pool (FFT 100 KB under CMSIS, persistence
- * 64.4 KB; screenshot fails closed). It used to be a flat 118784, the radix-2
+ * 64.4 KB). It used to be a flat 118784, the radix-2
  * footprint, which under USE_CMSIS_DSP (every build) left 16 KB that nothing
  * could use. Static asserts at the end of this block keep every claimant
  * inside it. */
@@ -79,9 +74,7 @@ typedef enum {
 #define SHMEM_NEED_FFT          (FFT_SIZE * 18 + FFT_BINS * 12)   /* 96 KB */
 #endif
 #define SHMEM_NEED_PERSISTENCE  65920   /* 320 * 206 = 64.4 KB */
-#define SHMEM_NEED_SCREENSHOT   153600  /* legacy RGB565 screenshot */
 #define SHMEM_NEED_DECODE       32768   /* 32 KB */
-#define SHMEM_NEED_COMPONENT    8192    /* 8 KB */
 #define SHMEM_NEED_BODE         4096    /* 4 KB */
 #define SHMEM_NEED_DISPLAY      44400   /* Meter waveform panel: 300 * 74 * RGB565 */
 
@@ -127,13 +120,11 @@ _Static_assert(SHMEM_NEED_FFT_TOTAL <= SHMEM_POOL_SIZE,
 _Static_assert((SHMEM_FFT_WATERFALL_OFFSET % 4) == 0,
                "waterfall sub-tenant must stay word-aligned in the pool");
 /* The other claimants must fit too, now that the pool is no bigger than FFT
- * needs. Screenshot (153600) is NOT asserted: it checks shared_mem_size() and
- * fails closed, by design (see above). */
+ * needs. */
 _Static_assert(SHMEM_NEED_PERSISTENCE <= SHMEM_POOL_SIZE,
                "persistence buffer no longer fits the shared pool");
 _Static_assert(SHMEM_NEED_DISPLAY <= SHMEM_POOL_SIZE &&
                SHMEM_NEED_DECODE <= SHMEM_POOL_SIZE &&
-               SHMEM_NEED_COMPONENT <= SHMEM_POOL_SIZE &&
                SHMEM_NEED_BODE <= SHMEM_POOL_SIZE,
                "a declared pool claimant no longer fits the shared pool");
 

@@ -37,8 +37,6 @@ tools/re/board-probes/build-gate-*/
 
 # Compiled test binaries (keep .c source, ignore executables)
 firmware/tests/test_bode_mask
-firmware/tests/test_component
-firmware/tests/test_config_screenshot
 firmware/tests/test_decode
 firmware/tests/test_decode_kline
 firmware/tests/test_decode_noisy
