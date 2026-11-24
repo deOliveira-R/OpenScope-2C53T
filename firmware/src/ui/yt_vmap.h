@@ -39,6 +39,8 @@ typedef struct {
     int16_t y0;             /* row of code mn */
     int     h, span;        /* h rows per span counts */
     uint8_t mn;
+    bool    as_stored;      /* the codes are drawn as stored (roll points); else a record's,
+                             * which a held view rescales to the scale now selected */
 } yt_vmap_t;
 
 /* centre_code on row y_mid, codes_per_div codes per div_px rows (kept to
@@ -56,6 +58,7 @@ static inline void yt_vmap_true(yt_vmap_t *a, int16_t y_top, int16_t y_bot, int1
     a->h     = div_px * 100;
     a->span  = span;
     a->mn    = centre_code;
+    a->as_stored = false;
 }
 
 static inline void yt_vmap_autofit(yt_vmap_t *a, uint8_t mn, uint8_t mx,
@@ -73,6 +76,7 @@ static inline void yt_vmap_autofit(yt_vmap_t *a, uint8_t mn, uint8_t mx,
     a->h     = h;
     a->span  = span;
     a->mn    = mn;
+    a->as_stored = false;
 }
 
 /* Unclipped: where a code lands, on or off the band (the tags use this). */

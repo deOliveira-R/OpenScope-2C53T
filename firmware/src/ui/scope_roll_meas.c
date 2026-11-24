@@ -2,7 +2,7 @@
 #include "scope_roll_meas.h"
 #include <string.h>
 
-bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
+bool scope_roll_measure(const uint8_t *codes, uint16_t n,
                         uint8_t step, volts_per_count_t volts_per_count, rec_code_t zero,
                         scope_params_t *out, scope_measure_t *raw)
 {
@@ -10,12 +10,9 @@ bool scope_roll_measure(const scope_roll_fifo_t *lin, uint8_t ch, uint16_t n,
     if (out != NULL)
         memset(out, 0, sizeof(*out));
     const uint32_t period_ms = scope_roll_period_ms(step).ms;
-    if (lin == NULL || out == NULL || ch > 1u || period_ms == 0u || lin->count < 2u)
+    if (codes == NULL || out == NULL || period_ms == 0u || n < 2u)
         return false;
-    if (n > lin->count || n == 0u)
-        n = lin->count;
-    /* Linearised: oldest at 0, newest at count - 1. */
-    scope_measure_record(&lin->pt[ch][lin->count - n], n, &m);
+    scope_measure_record(codes, n, &m);
     if (raw != NULL)
         *raw = m;
 

@@ -3,7 +3,7 @@
  *
  * The layout constants, shared types and cross-file symbols of scope_ui.c
  * and the scope_*.c drawing files (scope_view, scope_yt, scope_yt_frame,
- * scope_cursor_draw, scope_xy, scope_roll_draw, scope_spectrum,
+ * scope_cursor_draw, scope_xy, scope_spectrum,
  * scope_waterfall, scope_furniture, scope_popup). Nothing else includes this; the public
  * interface is ui.h.
  */
@@ -211,7 +211,6 @@ typedef enum {
 /* scope_ui.c */
 /* Display-task scratch for draw paths that never run at the same time. */
 typedef union {
-    scope_roll_fifo_t roll;
     uint16_t          waterfall[SHMEM_FFT_WATERFALL_COLS];
     uint8_t           yt[2][SCOPE_GEOM_COLS];
 } ui_draw_scratch_t;
@@ -251,7 +250,8 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
  * measurements (NULL: none). */
 uint16_t fft_strip_top(const scope_state_t *ss);
 void draw_fft_strip(const scope_state_t *ss, const theme_t *th, const fft_meas_t *m, bool ch2, bool refresh);
-/* Measure the record and paint the measurement strip. */
+/* Measure what the time view shows (the record, or the roll points the last
+ * frame laid out) and paint the measurement strip. */
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh);
 
 /* scope_view.c */
@@ -306,6 +306,9 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
 /* Place the window and fill yt_cols and g_span for both channels. */
 void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2);
+/* The roll FIFO as the window: fill yt_cols and g_span, no placement.
+ * Returns the points shown. */
+uint16_t view_build_roll(void);
 
 /* scope_yt.c */
 /* Draw the Y-T plot into pane p through its canvas: every column (all) or
@@ -335,6 +338,8 @@ int16_t trigger_marker_y(const scope_state_t *ss, const plot_pane_t *p, const au
 void yt_fits(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autofit_t *a2);
 /* Both maps off: nothing is plotted. */
 void yt_fits_none(autofit_t *a1, autofit_t *a2);
+/* The two maps for the roll points in yt_cols, in pane p. */
+void yt_fits_roll(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autofit_t *a2);
 /* Build the plot-edge tag set m from the maps as drawn in pane p. */
 void markers_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p,
                    const autofit_t *a1, const autofit_t *a2, pm_set_t *m);

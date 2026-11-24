@@ -60,7 +60,8 @@ static void test_table(void)
 
 static void test_fifo(void)
 {
-    static scope_roll_fifo_t f, snap;
+    static scope_roll_fifo_t f;
+    static uint8_t cols[2][SCOPE_ROLL_POINTS];
     memset(&f, 0x5A, sizeof f);
     f.seq = 0;
     scope_roll_fifo_reset(&f);
@@ -90,17 +91,19 @@ static void test_fifo(void)
     CHECK("bad channel refused", !scope_roll_fifo_get(&f, 2, 0, &a));
     CHECK("seq even after pushes (no writer in flight)", (f.seq & 1u) == 0);
 
-    bool s = scope_roll_fifo_snapshot(&f, &snap);
-    ok = s && snap.count == f.count;
-    for (uint16_t age = 0; age < SCOPE_ROLL_POINTS; age++) {
-        uint8_t x = 0, y = 1;
-        scope_roll_fifo_get(&f, 0, age, &x);
-        scope_roll_fifo_get(&snap, 0, age, &y);
-        ok &= x == y;
+    uint16_t n = 0;
+    uint32_t total = 0;
+    bool s = scope_roll_fifo_columns(&f, cols, &n, &total);
+    ok = s && n == SCOPE_ROLL_POINTS && total == 1000;
+    for (uint16_t x = 0; x < SCOPE_ROLL_POINTS; x++) {
+        uint8_t y0 = 1, y1 = 1;
+        scope_roll_fifo_get(&f, 0, scope_roll_age_at_column(x, SCOPE_ROLL_POINTS), &y0);
+        scope_roll_fifo_get(&f, 1, scope_roll_age_at_column(x, SCOPE_ROLL_POINTS), &y1);
+        ok &= cols[0][x] == y0 && cols[1][x] == y1;
     }
-    CHECK("snapshot = source", ok);
+    CHECK("columns = the point of each column's age, both channels", ok);
     f.seq |= 1u;                       /* a writer stuck mid-push */
-    CHECK("snapshot refuses a torn source", !scope_roll_fifo_snapshot(&f, &snap));
+    CHECK("columns refuse a torn source", !scope_roll_fifo_columns(&f, cols, &n, &total));
     f.seq++;
 
     CHECK("record code = raw - 28, clamped (Y-T read domain)",
@@ -148,23 +151,26 @@ static void test_geometry(void)
     CHECK("off-trace column refused", scope_roll_age_at_column(301, 301) == 0xFFFF);
 
     static scope_roll_fifo_t f;
+    static uint8_t cols[2][SCOPE_ROLL_POINTS];
+    uint16_t n = 0;
     scope_roll_fifo_reset(&f);
     for (int i = 0; i < 100; i++) roll_push(&f, 1, 2);
-    CHECK("visible = count while filling", scope_roll_visible(&f, 301) == 100);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    CHECK("shown = count while filling", n == 100);
     for (int i = 0; i < 400; i++) roll_push(&f, 1, 2);
-    CHECK("visible capped at 301 when full", scope_roll_visible(&f, 301) == 301);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    CHECK("shown capped at 301 when full", n == 301);
 
     scope_roll_fifo_reset(&f);
     for (int i = 0; i < 50; i++) roll_push(&f, (uint8_t)(60 + i), 0);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
     uint8_t lo = 0, hi = 0;
-    bool fit = scope_roll_fit(&f, 0, scope_roll_visible(&f, 301), &lo, &hi);
-    CHECK("fit: min..max of the visible points", fit && lo == 60 && hi == 109);
-    scope_roll_fifo_reset(&f);
-    for (int i = 0; i < 5; i++) roll_push(&f, 0, 100);
-    fit = scope_roll_fit(&f, 1, 5, &lo, &hi);
+    bool fit = scope_roll_fit_codes(&cols[0][SCOPE_ROLL_POINTS - n], n, &lo, &hi);
+    CHECK("fit: min..max of the points shown", fit && lo == 60 && hi == 109);
+    const uint8_t flat[5] = { 100, 100, 100, 100, 100 };
+    fit = scope_roll_fit_codes(flat, 5, &lo, &hi);
     CHECK("fit: a flat input is spread over 16 counts about it", fit && hi - lo == 16 && lo <= 100 && hi >= 100);
-    scope_roll_fifo_reset(&f);
-    CHECK("fit: empty FIFO refused", !scope_roll_fit(&f, 0, 250, &lo, &hi));
+    CHECK("fit: no points refused", !scope_roll_fit_codes(flat, 0, &lo, &hi));
 }
 
 /* The amplitude correction. Range 7, nominal 80 mV/count (stock 0x0804BFB8);
@@ -207,34 +213,33 @@ static void fill(scope_roll_fifo_t *f, unsigned n, uint8_t (*gen)(unsigned i))
 }
 static uint8_t g_ramp(unsigned i) { return (uint8_t)(i & 0xFF); }
 
-static void test_linearize(void)
+/* The columns are the points oldest first, whatever the ring's head. */
+static void test_column_order(void)
 {
     static scope_roll_fifo_t f;
+    static uint8_t cols[2][SCOPE_ROLL_POINTS];
+    uint16_t n = 0;
     /* wrapped: 400 pushes into 301 slots, so head != 0 */
     fill(&f, 400, g_ramp);
-    scope_roll_fifo_linearize(&f);
-    int ok = (f.count == 301);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    int ok = (n == 301);
     for (unsigned i = 0; i < 301; i++) {
-        ok &= f.pt[0][i] == g_ramp(99 + i);            /* oldest = push #99 */
-        ok &= f.pt[1][i] == (uint8_t)(255u - g_ramp(99 + i));
+        ok &= cols[0][i] == g_ramp(99 + i);            /* oldest = push #99 */
+        ok &= cols[1][i] == (uint8_t)(255u - g_ramp(99 + i));
     }
-    CHECK("linearize (wrapped): oldest first, both channels", ok);
-    uint8_t v = 0;
-    CHECK("linearize keeps fifo_get valid (newest = push #399)",
-          scope_roll_fifo_get(&f, 0, 0, &v) && v == g_ramp(399) &&
-          scope_roll_fifo_get(&f, 0, 300, &v) && v == g_ramp(99));
+    CHECK("columns (wrapped): oldest first, both channels", ok);
     fill(&f, 40, g_ramp);
-    scope_roll_fifo_linearize(&f);
-    ok = (f.count == 40);
-    for (unsigned i = 0; i < 40; i++) ok &= f.pt[0][i] == i;
-    CHECK("linearize (not full): unchanged order", ok);
-    CHECK("linearize (not full): fifo_get still returns the newest",
-          scope_roll_fifo_get(&f, 0, 0, &v) && v == 39);
+    memset(cols, 0xEE, sizeof cols);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    ok = (n == 40);
+    for (unsigned i = 0; i < 40; i++) ok &= cols[0][301 - 40 + i] == i;
+    for (unsigned x = 0; x < 301 - 40; x++) ok &= cols[0][x] == 0xEE;
+    CHECK("columns (not full): at the right, the left ones untouched", ok);
     fill(&f, 301, g_ramp);
-    scope_roll_fifo_linearize(&f);
-    ok = 1;
-    for (unsigned i = 0; i < 301; i++) ok &= f.pt[0][i] == g_ramp(i);
-    CHECK("linearize (exactly full, head 0): unchanged", ok);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    ok = (n == 301);
+    for (unsigned i = 0; i < 301; i++) ok &= cols[0][i] == g_ramp(i);
+    CHECK("columns (exactly full, head 0): in push order", ok);
 }
 
 /* Square-ish: low (60) with a single step to high (200) at push index `edge`. */
@@ -335,11 +340,14 @@ static uint8_t g_sq(unsigned i) { return (i % 20u) < 10u ? 150 : 90; }
 static void test_measure(void)
 {
     static scope_roll_fifo_t f;
+    static uint8_t cols[2][SCOPE_ROLL_POINTS];
+    uint16_t n = 0;
     scope_params_t p;
     scope_measure_t raw;
     fill(&f, 450, g_sq);                    /* wrapped */
-    scope_roll_fifo_linearize(&f);
-    CHECK("measure ok on a linearised FIFO", scope_roll_measure(&f, 0, 250, 0, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, &raw));
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    const uint8_t *const newest250 = &cols[0][SCOPE_ROLL_POINTS - 250];
+    CHECK("measure ok on the columns", scope_roll_measure(newest250, 250, 0, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, &raw));
     CHECK("Freq = rate / period = 500/20 = 25 Hz",
           p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_HZ && fabsf(p.v[SCOPE_PRM_FREQ].value - 25.0f) < 0.3f);
     CHECK("Peri = 40 ms (seconds, from the point rate)",
@@ -352,11 +360,11 @@ static void test_measure(void)
           fabsf(p.v[SCOPE_PRM_VPP].value - 60.0f) < 1.0f);
 
     /* the time base follows the step: step 3 = 20 ms/point, same samples -> 1/10 000 th... */
-    scope_roll_measure(&f, 0, 250, 3, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, NULL);
+    scope_roll_measure(newest250, 250, 3, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, NULL);
     CHECK("step 3 (20 ms/point): 20 points = 400 ms, Freq 2.5 Hz",
           fabsf(p.v[SCOPE_PRM_FREQ].value - 2.5f) < 0.03f);
     CHECK("bad step refused, params zeroed",
-          !scope_roll_measure(&f, 0, 250, 9, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, NULL) && p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE);
+          !scope_roll_measure(newest250, 250, 9, (volts_per_count_t){ 0.0f }, (rec_code_t){ 100 }, &p, NULL) && p.v[SCOPE_PRM_FREQ].unit == SCOPE_PRM_UNIT_NONE);
 
     /* per-channel zero and scale: the same code reads a different volts on
      * channels whose zero (position) and gain differ, by the Y-T rule. */
@@ -365,16 +373,17 @@ static void test_measure(void)
     CHECK("zero follows the position per channel (71 vs 100)", z1 == 71 && z2 == 100);
     scope_roll_fifo_reset(&f);
     for (unsigned i = 0; i < 100; i++) roll_push(&f, 71, 71);
-    scope_roll_fifo_linearize(&f);
+    (void)scope_roll_fifo_columns(&f, cols, &n, NULL);
+    const uint8_t *const c1 = &cols[0][SCOPE_ROLL_POINTS - 100], *const c2 = &cols[1][SCOPE_ROLL_POINTS - 100];
     scope_params_t a, b;
-    scope_roll_measure(&f, 0, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ z1 }, &a, NULL);
-    scope_roll_measure(&f, 1, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ z2 }, &b, NULL);
+    scope_roll_measure(c1, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ z1 }, &a, NULL);
+    scope_roll_measure(c2, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ z2 }, &b, NULL);
     CHECK("CH1 at its own zero reads 0 V (Avg)", a.v[SCOPE_PRM_AVG].unit == SCOPE_PRM_UNIT_VOLTS &&
           fabsf(a.v[SCOPE_PRM_AVG].value) < 1e-6f);
     CHECK("CH2 with ITS zero 100 reads -0.571 V at code 71 (the bench symptom)",
           fabsf(b.v[SCOPE_PRM_AVG].value + 29.0f * 0.0197f) < 1e-4f);
     CHECK("... and 0 V once CH2's zero is its real code",
-          (scope_roll_measure(&f, 1, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ 71 }, &b, NULL), fabsf(b.v[SCOPE_PRM_AVG].value) < 1e-6f));
+          (scope_roll_measure(c2, 100, 0, (volts_per_count_t){ 0.0197f }, (rec_code_t){ 71 }, &b, NULL), fabsf(b.v[SCOPE_PRM_AVG].value) < 1e-6f));
 }
 
 int main(void)
@@ -385,7 +394,7 @@ int main(void)
     test_tb_step();
     test_geometry();
     test_volts();
-    test_linearize();
+    test_column_order();
     test_trig();
     test_measure();
     printf("%d/%d passed\n", passed, run);

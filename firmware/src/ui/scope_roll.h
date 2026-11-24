@@ -39,7 +39,8 @@
  * The pure half: the step table, the FIFO, the step state machine, the
  * screen geometry and the volts of one point. No FreeRTOS, no hardware, so
  * all of it is host-tested (tests/test_scope_roll.c). The op03 read and the
- * pacing loop live in fpga_acq.c; the drawing in scope_roll_draw.c.
+ * pacing loop live in fpga_acq.c; the time view draws the points as its
+ * roll source (scope_yt.c, view_build_roll in scope_view.c).
  *
  * Deliberate differences from stock, each for a stated reason:
  *  - Pacing is the RTOS tick, not TMR3: OpenScope's TMR3 already runs the
@@ -114,9 +115,16 @@ void scope_roll_fifo_push(scope_roll_fifo_t *f, rec_code_t ch1, rec_code_t ch2);
 bool scope_roll_fifo_get(const scope_roll_fifo_t *f, uint8_t ch, uint16_t age,
                          uint8_t *out);
 
-/* Copy a FIFO another task is writing into `dst`, retrying while a push is in
- * flight. True when the copy is consistent (it always is with no writer). */
-bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *dst);
+/* Lay out a FIFO another task is writing as the columns of the 301-column
+ * window, both channels: column x gets the point of age
+ * scope_roll_age_at_column(x, SCOPE_ROLL_POINTS), so the newest is at the
+ * right and the columns from SCOPE_ROLL_POINTS - n on hold the n points
+ * shown, oldest first (the order the measurements want). The columns left of
+ * them are not written. *n_out: the points laid out; *total_out: the points
+ * ever pushed. Retries while a push is in flight; true when the copy is
+ * consistent (it always is with no writer). */
+bool scope_roll_fifo_columns(const scope_roll_fifo_t *src, uint8_t cols[2][SCOPE_ROLL_POINTS],
+                             uint16_t *n_out, uint32_t *total_out);
 
 /* Record code to store for one op03 byte: rec_from_raw() (units.h), raw -
  * ADC_REC_OFFSET clamped to 0..REC_CODE_MAX — the same transform the Y-T read
@@ -125,13 +133,6 @@ bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *d
 rec_code_t scope_roll_record_code(adc_raw_t raw);
 
 /* ── FIFO order and the roll trigger ────────────────────────────────── */
-
-/* Rotate both channels in place so the oldest point is at pt[ch][0] and the
- * newest at pt[ch][count - 1] (head = count mod SCOPE_ROLL_POINTS), for the
- * consumers that need a time-ordered array (the measurements). The FIFO
- * stays valid for scope_roll_fifo_get(). Meant for a snapshot copy, never
- * the live FIFO (the writer owns that). */
-void scope_roll_fifo_linearize(scope_roll_fifo_t *f);
 
 /* Stock's roll trigger (0x0803EC2E..0x0803ED18, after every op03 point).
  * Armed only when the FIFO is FULL (ms[0xDB6] == 301) and the mode is not AUTO
@@ -197,14 +198,10 @@ bool scope_roll_tb_step(uint8_t *yt_idx, bool *roll, uint8_t *step, int dir,
  * (one point per column; the window is SCOPE_GEOM_COLS = 301 wide). */
 uint16_t scope_roll_age_at_column(uint16_t x, uint16_t width);
 
-/* Visible points of a `width`-px trace: the ages scope_roll_age_at_column()
- * can return, capped by what the FIFO holds. */
-uint16_t scope_roll_visible(const scope_roll_fifo_t *f, uint16_t width);
-
-/* The code range a fitted band maps onto: min..max of the newest `n` points
- * of channel `ch`, widened to at least 16 counts about its middle so a quiet
- * input is not blown up into noise. false when the FIFO holds none. */
-bool    scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n, uint8_t *lo, uint8_t *hi);
+/* The code range a fitted band maps onto: min..max of the n codes, widened
+ * to at least 16 counts about its middle so a quiet input is not blown up
+ * into noise. false when there are none. */
+bool    scope_roll_fit_codes(const uint8_t *codes, uint16_t n, uint8_t *lo, uint8_t *hi);
 
 /* ── Volts ──────────────────────────────────────────────────────────── */
 

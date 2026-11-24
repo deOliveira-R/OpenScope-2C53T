@@ -54,6 +54,13 @@ volatile uint32_t ui_scope_view_us_last;
 #define TRIG_LINE_DOTS_FOCUS   1u
 #define TRIG_LINE_DOTS         3u
 
+/* The roll source's fill counter, top left: "ROLL 301/301" in font_small
+ * over its own box, and where its text starts in the box. */
+#define ROLL_LABEL_W           96u
+#define ROLL_LABEL_H           16u
+#define ROLL_LABEL_TEXT_X      4
+#define ROLL_LABEL_TEXT_DY     2       /* rows under the pane's top */
+
 /* The math trace's zero tick: this many columns of the centre line, from the
  * left edge. */
 #define MATH_ZERO_TICK_W       6u
@@ -80,7 +87,12 @@ typedef struct {
     const theme_t          *th;
     const scope_state_t    *ss;
     plot_pane_t  p;                         /* the pane it is drawn in */
-    bool         record;                    /* a record is shown (else nothing, or the demo) */
+    /* The source: the record, or the roll points (scope_roll.h). It says
+     * which elements the frame has: roll has no placement on a trigger, so
+     * no trigger line, tags, cursors, math, mask, persistence or demo yet. */
+    bool         roll;
+    char         roll_label[24];            /* its fill counter */
+    bool         record;                    /* data is shown (else nothing, or the demo) */
     bool         demo;                      /* no record has ever arrived: the demo picture */
     uint32_t     demo_phase;
     const volatile uint8_t *b1, *b2;        /* the window's columns (yt_cols) */
@@ -98,6 +110,7 @@ typedef struct {
      * per channel (plot_rail_columns). */
     uint8_t      rail[2][PLOT_RAIL_BYTES];
     uint8_t      off_plot;                  /* bit per channel: a column's sample was off the plot this frame */
+    bool         trig_line;                 /* the trigger line is drawn */
     int16_t      trig_y;                    /* the trigger line's row */
     uint16_t     trig_dots;                 /* its dot mask */
     int16_t      p1, p2, mp;
@@ -137,14 +150,29 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     const scope_state_t *const ss = f->ss = scope_state_get();
     const volatile uint8_t *b1 = fpga_get_ch1_buf();
     const volatile uint8_t *b2 = fpga_get_ch2_buf();
-    f->record = fpga_data_ready() && b1 != NULL && b2 != NULL;
+    f->roll = ss->roll;
+    uint16_t roll_n = 0u;
+    if (f->roll) roll_n = view_build_roll();
+    f->record = f->roll ? roll_n > 0u : (fpga_data_ready() && b1 != NULL && b2 != NULL);
 
     /* Forget last frame's vertical scales: a band that is not plotted this
      * frame must leave the cursors reporting pixels, not converting through
      * the scale of a trace that is no longer on the screen. */
     vband_clear();
 
-    if (f->record) {
+    if (f->roll) {
+        mask_overlay_off();
+        g_math_live = false;
+        if (f->record) {
+            yt_fits_roll(ss, p, &f->a1, &f->a2);
+            plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
+            plot_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
+        } else {
+            yt_fits_none(&f->a1, &f->a2);
+        }
+        snprintf(f->roll_label, sizeof f->roll_label, "ROLL %3u/%u", (unsigned)roll_n,
+                 (unsigned)SCOPE_ROLL_POINTS);
+    } else if (f->record) {
         scope_mark_acquisition_ready();
         /* The window: placed on the trigger source's crossing and filled into
          * yt_cols for both channels, so the trace holds still and the
@@ -176,18 +204,19 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
      * at the last running frame while stopped. */
     static uint32_t demo_frozen;
     if (ss->running) demo_frozen = frame;
-    f->demo = !f->record && !scope_acquisition_ready();
+    f->demo = !f->roll && !f->record && !scope_acquisition_ready();
     f->demo_phase = demo_frozen;
 
     /* The tags, on the same maps. */
-    markers_build(ss, th, p, &f->a1, &f->a2, &f->pm);
+    if (f->roll) memset(&f->pm, 0, sizeof f->pm);
+    else         markers_build(ss, th, p, &f->a1, &f->a2, &f->pm);
 
     cursor_layer_build(ss, th, p, &f->cl);
-    f->curs = f->cl.v || f->cl.h;
+    f->curs = !f->roll && (f->cl.v || f->cl.h);
 
     /* Math: one row per column, its label as per-pixel text. After
      * vband_clear, which also forgets the math scale math_prepare sets. */
-    f->mth = math_enabled;
+    f->mth = math_enabled && !f->roll;
     if (f->mth) math_prepare(ss, p, &f->mf);
     f->mlab_w = f->mth ? (int16_t)font_string_width(f->mf.label, &font_small) : 0;
 
@@ -195,7 +224,7 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
      * (PERSIST_WIDTH x PERSIST_HEIGHT intensities, not .bss), decayed once
      * per frame; this frame's traces are added to it column by column after
      * the column's ghosts were read (yt_paint_column). */
-    f->pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
+    f->pbuf = (!f->roll && persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
     if (f->pbuf) persist_frame_decay(p);
     f->pbase_top = persist_base(ss, th, false);
     f->pbase_bot = persist_base(ss, th, true);
@@ -207,6 +236,7 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     if (f->trig_y < p->top + TRIG_LINE_MARGIN_TOP) f->trig_y = (int16_t)(p->top + TRIG_LINE_MARGIN_TOP);
     if (f->trig_y > p->bot - TRIG_LINE_MARGIN_BOT) f->trig_y = (int16_t)(p->bot - TRIG_LINE_MARGIN_BOT);
     f->trig_dots = (key_focus_get() == KF_TRIGMOVE) ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
+    f->trig_line = !f->roll;
 
     f->p1 = f->p2 = f->mp = 0;
     f->off_plot = 0;
@@ -326,7 +356,7 @@ static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
 static void el_trigger_line(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)c;
-    if ((x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
+    if (f->trig_line && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
         strip_put(s, f->trig_y, f->th->trigger);
 }
 
@@ -438,6 +468,24 @@ static void el_cursors(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const
     if (f->curs) cursor_layer_paint(&f->cl, x, s);
 }
 
+/* The fill counter at pixel (x, y) of its box: the text's colour or the
+ * box's background. */
+static inline uint16_t roll_label_px(const yt_frame_t *f, uint16_t x, int y)
+{
+    return font_text_px(f->roll_label, &font_small, (int)x - ROLL_LABEL_TEXT_X,
+                        y - (f->p.top + ROLL_LABEL_TEXT_DY))
+           ? f->th->highlight : f->th->background;
+}
+
+/* The roll source's fill counter, over everything. */
+static void el_roll_label(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    if (!f->roll || x >= ROLL_LABEL_W) return;
+    for (int y = f->p.top; y < f->p.top + (int)ROLL_LABEL_H; y++)
+        strip_put(s, y, roll_label_px(f, x, y));
+}
+
 /* What Y-T draws, lowest layer first. */
 static const yt_element_fn yt_elements[] = {
     el_ground,
@@ -451,6 +499,7 @@ static const yt_element_fn yt_elements[] = {
     el_tags,
     el_trigger_pointer,
     el_cursors,
+    el_roll_label,
 };
 
 #if FEATURE_BENCHSHELL
@@ -467,7 +516,9 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
     const bool mdot = c->strip_dotted;
     for (uint16_t y = (uint16_t)s->lo; y < (uint16_t)s->hi; y++) {
         uint16_t want;
-        if (f->curs && cursor_layer_px(&f->cl, (int)x, (int)y, &want))
+        if (f->roll && x < ROLL_LABEL_W && y < f->p.top + ROLL_LABEL_H)
+            want = roll_label_px(f, x, (int)y);    /* roll's fill counter */
+        else if (f->curs && cursor_layer_px(&f->cl, (int)x, (int)y, &want))
             ;                                      /* cursor lines and labels */
         else if (c->tcol && y < f->p.top + PM_TPOS_H && tpos_px(g_place.trig_x, (int)x, (int)y - f->p.top))
             want = th->trigger;                    /* trigger-position pointer */
@@ -489,7 +540,8 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
         else if ((int16_t)y == c->bound_lo[0] || (int16_t)y == c->bound_hi[0] ||
                  (int16_t)y == c->bound_lo[1] || (int16_t)y == c->bound_hi[1])
             want = th->text_secondary;
-        else if ((int16_t)y == f->trig_y && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
+        else if (f->trig_line && (int16_t)y == f->trig_y && (x & f->trig_dots) == 0 &&
+                 x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
             want = th->trigger;
         else if (plot_grid_px(th, &f->p, x, (int)y, &want))
             ;                                      /* graticule */

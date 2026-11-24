@@ -89,25 +89,36 @@ bool scope_roll_fifo_get(const scope_roll_fifo_t *f, uint8_t ch, uint16_t age,
     return true;
 }
 
-bool scope_roll_fifo_snapshot(const scope_roll_fifo_t *src, scope_roll_fifo_t *dst)
+/* The points must be read between the two reads of seq: no compiler may move
+ * them across either. */
+#define ROLL_COMPILER_BARRIER()  __asm__ __volatile__("" ::: "memory")
+
+bool scope_roll_fifo_columns(const scope_roll_fifo_t *src, uint8_t cols[2][SCOPE_ROLL_POINTS],
+                             uint16_t *n_out, uint32_t *total_out)
 {
-    if (src == NULL || dst == NULL)
-        return false;
-    for (int attempt = 0; attempt < 4; attempt++) {
-        uint32_t s0 = src->seq;
+    uint16_t n = 0u;
+    uint32_t total = 0u;
+    bool whole = false;
+    for (int attempt = 0; src != NULL && cols != NULL && attempt < 4 && !whole; attempt++) {
+        const uint32_t s0 = src->seq;
         if (s0 & 1u)
             continue;
-        memcpy(dst->pt, src->pt, sizeof(dst->pt));
-        dst->head = src->head;
-        dst->count = src->count;
-        dst->total = src->total;
-        if (src->seq == s0) {
-            dst->seq = 0u;
-            return true;
+        ROLL_COMPILER_BARRIER();
+        const uint16_t width = SCOPE_ROLL_POINTS;
+        const uint16_t shown = (uint16_t)(scope_roll_age_at_column(0u, width) + 1u);
+        n = (src->count < shown) ? src->count : shown;
+        total = src->total;
+        for (uint16_t x = (uint16_t)(width - n); x < width; x++) {
+            const uint16_t age = scope_roll_age_at_column(x, width);
+            for (uint8_t ch = 0u; ch < 2u; ch++)
+                (void)scope_roll_fifo_get(src, ch, age, &cols[ch][x]);
         }
+        ROLL_COMPILER_BARRIER();
+        whole = (src->seq == s0);
     }
-    dst->seq = 0u;
-    return false;
+    if (n_out) *n_out = n;
+    if (total_out) *total_out = total;
+    return whole;
 }
 
 rec_code_t scope_roll_record_code(adc_raw_t raw)
@@ -155,29 +166,17 @@ uint16_t scope_roll_age_at_column(uint16_t x, uint16_t width)
                       / SCOPE_ROLL_PX_PER_DIV);
 }
 
-uint16_t scope_roll_visible(const scope_roll_fifo_t *f, uint16_t width)
-{
-    if (f == NULL || width == 0u)
-        return 0u;
-    uint16_t n = (uint16_t)(scope_roll_age_at_column(0u, width) + 1u);
-    return (f->count < n) ? f->count : n;
-}
-
 #define ROLL_FIT_MIN_SPAN 16
 
-bool scope_roll_fit(const scope_roll_fifo_t *f, uint8_t ch, uint16_t n, uint8_t *lo_out, uint8_t *hi_out)
+bool scope_roll_fit_codes(const uint8_t *codes, uint16_t n, uint8_t *lo_out, uint8_t *hi_out)
 {
-    if (f == NULL || lo_out == NULL || hi_out == NULL || ch > 1u)
+    if (codes == NULL || lo_out == NULL || hi_out == NULL || n == 0u)
         return false;
-    uint8_t lo = 255u, hi = 0u, v;
-    uint16_t got = 0u;
-    for (uint16_t age = 0u; age < n && scope_roll_fifo_get(f, ch, age, &v); age++) {
-        if (v < lo) lo = v;
-        if (v > hi) hi = v;
-        got++;
+    uint8_t lo = 255u, hi = 0u;
+    for (uint16_t i = 0u; i < n; i++) {
+        if (codes[i] < lo) lo = codes[i];
+        if (codes[i] > hi) hi = codes[i];
     }
-    if (got == 0u)
-        return false;
     if ((int)hi - (int)lo < ROLL_FIT_MIN_SPAN) {
         int mid = ((int)hi + (int)lo) / 2;
         int a = mid - ROLL_FIT_MIN_SPAN / 2;
@@ -199,33 +198,6 @@ volts_t scope_roll_point_volts(rec_code_t code, rec_code_t zero,
         return v;
     v.v = ((float)code.v - (float)zero.v) * volts_per_count.vpc;
     return v;
-}
-
-/* Reverse a[lo..hi] (inclusive). */
-static void rev(uint8_t *a, uint16_t lo, uint16_t hi)
-{
-    while (lo < hi) {
-        uint8_t t = a[lo];
-        a[lo++] = a[hi];
-        a[hi--] = t;
-    }
-}
-
-void scope_roll_fifo_linearize(scope_roll_fifo_t *f)
-{
-    if (f == NULL)
-        return;
-    /* Not full: the ring has never wrapped, so slot 0 is the oldest already.
-     * Full: the oldest sits at `head`; rotating left by head is three
-     * reversals, no scratch (RAM is the scarce thing here). */
-    if (f->count >= SCOPE_ROLL_POINTS && f->head != 0u) {
-        for (unsigned ch = 0; ch < 2u; ch++) {
-            rev(f->pt[ch], 0u, (uint16_t)(f->head - 1u));
-            rev(f->pt[ch], f->head, (uint16_t)(SCOPE_ROLL_POINTS - 1u));
-            rev(f->pt[ch], 0u, (uint16_t)(SCOPE_ROLL_POINTS - 1u));
-        }
-    }
-    f->head = (uint16_t)(f->count % SCOPE_ROLL_POINTS);
 }
 
 bool scope_roll_trig_hit(const scope_roll_fifo_t *f, uint8_t ch, int col_shift,

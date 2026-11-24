@@ -12,15 +12,41 @@
  * this is what keeps the badges (Freq included) current. The cells are
  * repainted in place (draw_strip_cell boxed), never blanked. The measurement
  * passes are tear-checked against the acquisition's frame generation
- * (measure_live_channel, freq_held), as in the full path. Does nothing in
- * roll mode or before the first record. */
+ * (measure_live_channel, freq_held), as in the full path. In roll, the
+ * points the last frame laid out. Does nothing before the first record. */
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh);
 
 void scope_ui_strip_refresh(void)
 {
     const scope_state_t *ss = scope_state_get();
-    if (ss->roll || !fpga_data_ready()) return;
+    if (!ss->roll && !fpga_data_ready()) return;
     draw_measurement_badges(ss, theme_get(), true);
+}
+
+/* The 12 measurements over the roll points the time view shows (yt_cols from
+ * g_view_first, oldest first; scope_roll_meas.h): the same badge slots, order
+ * and units as the record's, the time base being the roll point rate. Zero
+ * and scale are per channel, exactly the record's inputs: chan_zero_code()
+ * and the scope_cal gain. refresh: repaint the cells in place. */
+static void draw_roll_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
+{
+    if (ss->prm_hidden)
+        return;
+    const uint16_t n = (uint16_t)(g_view_end - g_view_first);
+    scope_params_t p1, p2;
+    const uint8_t z1 = (uint8_t)chan_zero_code(ss, 0u);   /* the one zero (chan_zero_code) */
+    const uint8_t z2 = (uint8_t)chan_zero_code(ss, 1u);
+    const bool have1 = ss->ch1.enabled &&
+        scope_roll_measure(&yt_cols[0][g_view_first], n, ss->roll_step,
+                           (volts_per_count_t){ scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx) },
+                           (rec_code_t){ z1 }, &p1, NULL);
+    const bool have2 = ss->ch2.enabled &&
+        scope_roll_measure(&yt_cols[1][g_view_first], n, ss->roll_step,
+                           (volts_per_count_t){ scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx) },
+                           (rec_code_t){ z2 }, &p2, NULL);
+    mstrip_layout_t L;
+    strip_layout(ss, &L);
+    draw_strip_cells(&L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th, refresh);
 }
 
 /* ═══ Measurement strip (geometry in measure_strip.h) ═══ */
@@ -414,6 +440,10 @@ uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
  */
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
 {
+    if (ss->roll) {
+        draw_roll_badges(ss, th, refresh);
+        return;
+    }
     mstrip_layout_t L;
     strip_layout(ss, &L);   /* long PRM (prm_hidden) = no rows; the AUX row stays */
 

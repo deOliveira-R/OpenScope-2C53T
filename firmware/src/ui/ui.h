@@ -304,8 +304,6 @@ void draw_xy_screen(bool full);
  * 3 waiting for a capture, 4 the shared pool is not the FFT's. */
 uint8_t scope_ui_waterfall_status(void);
 uint8_t scope_ui_waterfall_row(void);
-/* Roll view (C11): the roll FIFO right-to-left; full = with labels/STOP/popup. */
-void draw_roll_screen(bool full);
 
 /* meter_ui.c: the meter page's paint module. The screen is
  * ui/meter_screen.c (its keys, its softkey tables, when to repaint);

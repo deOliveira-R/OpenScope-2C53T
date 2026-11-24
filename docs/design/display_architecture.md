@@ -177,7 +177,8 @@ from the screenshot copy after a full redraw and after a live update).
    stays as the rule `fpga scope livecheck` compares the painting with.
 5. Roll: done. It is a display type on the canvas and shares the graticule
    and the trace element with Y-T (`firmware/src/ui/plot_elements.c`), which
-   gave it the clip colours; its fitted band uses the Y-T map. The spectrum:
+   gave it the clip colours; its fitted band uses the Y-T map. Since step
+   10 (b) it is no longer a type of its own but a source of the Y-T type. The spectrum:
    done as a frame painted through the canvas, with the popup box as a hole
    (the split view's halves still send every column until they are two
    canvases, step 7). Its axes are an interface (`fft_axes_t`,
@@ -212,5 +213,15 @@ from the screenshot copy after a full redraw and after a live update).
     full size only: 11 states read back from the screen before and after,
     every difference a trace or a reading that moves with the signal;
     livecheck 0 of 1.8 M pixels with cursors and math on; 18.6 frames a
-    second before and after. (b) Roll as a source of the Y-T type, not a
-    `view.mode`. (c) Split as a pair of views in two panes.
+    second before and after. (b) Roll as a source of the Y-T type: done
+    for the drawing. `view_build_roll()` lays the FIFO out in the Y-T window
+    (newest at the right), the frame says which elements the source has,
+    and the fill counter is a Y-T element; roll's own renderer is gone.
+    Roll points are drawn as stored (`as_stored` on the map), never
+    rescaled like a held record. The picture is the old roll picture: 11
+    roll states read back, every difference a trace, a reading or a setting
+    the capture order left different; livecheck 0 in roll. The measurement
+    cells now refresh at the Y-T rate (twice a second) instead of every 8
+    points, and roll draws 18.6 frames a second where it drew 15.6. Still to
+    come: the trigger line, the tags, cursors and math in roll, then roll
+    out of `view.mode`. (c) Split as a pair of views in two panes.

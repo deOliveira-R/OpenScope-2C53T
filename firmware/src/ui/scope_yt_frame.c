@@ -120,6 +120,37 @@ void yt_fits(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autof
     }
 }
 
+/* The two maps of the roll points view_build_roll() laid out in yt_cols, in
+ * pane p: true scale as Y-T's, so a switch into roll does not move the
+ * trace; else fitted to the points shown (scope_roll_fit_codes), in split
+ * bands by the Y-T rule. A fitted channel with no point is not drawn. The
+ * codes are drawn as stored: a roll point is never rescaled to the scale now
+ * selected. */
+void yt_fits_roll(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autofit_t *a2)
+{
+    autofit_t *a[2] = { a1, a2 };
+    const bool en[2] = { ss->ch1.enabled, ss->ch2.enabled };
+    const bool fx[2] = { ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
+                         ss->true_scale && scope_cal_true_scale_ok(2u, ss->ch2.vdiv_idx) };
+    const bool split = yt_vmap_split(en[0], en[1], fx[0], fx[1]);
+    const uint16_t n = (uint16_t)(g_view_end - g_view_first);
+    yt_fits_none(a1, a2);
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        if (!en[ch]) continue;
+        if (fx[ch]) {
+            yt_vmap_true(a[ch], p->top, p->bot, p->grid_mid, p->div_px, (int8_t)ch, yt_centre_code(),
+                         scope_cal_codes_per_div((uint8_t)(ch + 1u), ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx));
+        } else {
+            uint8_t lo = 0, hi = 0;
+            if (!scope_roll_fit_codes((const uint8_t *)&yt_cols[ch][g_view_first], n, &lo, &hi)) continue;
+            int16_t t, b;
+            yt_vmap_band(p->top, p->band_bot, split, ch, &t, &b);
+            yt_vmap_autofit(a[ch], lo, hi, t, b);
+        }
+        a[ch]->as_stored = true;
+    }
+}
+
 /* Place one tag for level row inside band [top, bot) at column x0: pointing
  * horiz with its label when the row is on the band, up or down on the band
  * edge (no label) when it is off. Off when the band is shorter than a tag. */

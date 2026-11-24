@@ -524,8 +524,6 @@ static void render_yt(uint32_t frame, bool full)
     if (us > ui_scope_live_us_max) ui_scope_live_us_max = us;
 }
 
-/* Roll (C11): its own frame over the roll FIFO, not the 1024-sample record. */
-static void render_roll(uint32_t frame, bool full) { (void)frame; draw_roll_screen(full); }
 static void render_xy(uint32_t frame, bool full)    { (void)frame; draw_xy_screen(full); }
 static void render_fft(uint32_t frame, bool full)   { (void)frame; draw_fft_screen(full); }
 static void render_split(uint32_t frame, bool full) { draw_split_screen(frame, full); }
@@ -540,7 +538,7 @@ typedef struct {
 
 static const scope_renderer_t k_renderers[VIEW_MODE_COUNT] = {
     [VIEW_MODE_YT]        = { render_yt,        true,  true,  false },
-    [VIEW_MODE_ROLL]      = { render_roll,      true,  true,  false },
+    [VIEW_MODE_ROLL]      = { render_yt,        true,  true,  false },   /* Y-T on the roll source */
     [VIEW_MODE_XY]        = { render_xy,        true,  false, true  },
     [VIEW_MODE_FFT]       = { render_fft,       true,  false, false },
     [VIEW_MODE_SPLIT]     = { render_split,     true,  false, false },

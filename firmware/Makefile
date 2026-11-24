@@ -43,7 +43,6 @@ C_SOURCES += src/ui/scope_cursor_draw.c
 C_SOURCES += src/ui/canvas.c
 C_SOURCES += src/ui/plot_elements.c
 C_SOURCES += src/ui/scope_xy.c
-C_SOURCES += src/ui/scope_roll_draw.c
 C_SOURCES += src/ui/scope_spectrum.c
 C_SOURCES += src/ui/scope_waterfall.c
 C_SOURCES += src/ui/waterfall_blit.c

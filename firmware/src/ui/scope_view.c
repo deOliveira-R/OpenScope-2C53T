@@ -297,7 +297,7 @@ void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
  * to the one now selected (pv_vscale). */
 int autofit_y_raw(const autofit_t *a, int v)
 {
-    if (a->fx_ch >= 0)
+    if (a->fx_ch >= 0 && !a->as_stored)
         v = pv_vscale((uint8_t)v, a->fx_ch);
     return yt_vmap_raw(a, v);
 }
@@ -456,6 +456,24 @@ uint16_t scope_soft_trigger_offset(const scope_state_t *ss,
                                               0, N);
     pl->anchor = VIEW_ANCHOR_SOFT;
     return (uint16_t)scope_geom_first_sample(&pl->win);
+}
+
+/* The roll FIFO is laid out one point per column of the graticule. */
+_Static_assert(SCOPE_ROLL_POINTS == SCOPE_GEOM_COLS, "one roll point per plot column");
+
+/* The roll source (scope_roll.h): the FIFO the acquisition task is filling,
+ * laid out in yt_cols as the time view shows it, newest at the right edge.
+ * g_span is the columns that hold a point; g_place has no placement (no
+ * trigger column, nothing anchored: the mask overlay stays off). Returns the
+ * points shown. */
+uint16_t view_build_roll(void)
+{
+    uint16_t n = 0u;
+    (void)scope_roll_fifo_columns(fpga_roll_fifo(), yt_cols, &n, NULL);
+    g_span.first = (uint16_t)(SCOPE_GEOM_COLS - n);
+    g_span.end   = SCOPE_GEOM_COLS;
+    g_place = (scope_placement_t){ .trig_x = -1, .anchor = VIEW_ANCHOR_NONE };
+    return n;
 }
 
 /* Place the window on the trigger source and fill yt_cols for BOTH channels
