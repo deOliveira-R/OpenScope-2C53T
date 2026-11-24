@@ -63,6 +63,7 @@ extern void system_clock_config(void);
 #include "settings_screen.h"
 #include "gallery_ui.h"
 #include "overlay_screens.h"
+#include "view_table.h"
 #include "meas_select.h"
 #include "sys_pwm.h"
 #include "logo_ui.h"
@@ -340,15 +341,6 @@ uint32_t scope_view_fft_epoch(void)
     return h;
 }
 
-/* Is the scope showing the roll view (C11)? Time view with roll on. */
-static bool s_roll_view(void)
-{
-#if FEATURE_FFT
-    if (scope_view != SCOPE_VIEW_TIME) return false;
-#endif
-    return scope_state_get()->roll;
-}
-
 /* ── What changed on the scope, for its redraw gate (ARCH-1 B7) ──────
  * ui/scope_screen.c hashes what the scope shows in two parts. A LAYOUT
  * change (a channel on or off, the cursor mode, the measurement rows, math,
@@ -520,52 +512,69 @@ static void redraw_all(uint32_t frame)
     g_screen_painted = true;
 }
 
+/* ── The scope's views, as a table (docs/design/display_architecture.md,
+ * step 8): view.mode selects the renderer, and what the frame around it
+ * does, instead of tests for one view or another. ── */
+
+/* The Y-T view: the live frame (timed for `ui dump`) or the full render. */
+static void render_yt(uint32_t frame, bool full)
+{
+    if (full) {
+        UI_TIMED(UI_PERF_FULL, draw_scope_screen(frame));
+        return;
+    }
+    const uint32_t c0 = DWT->CYCCNT;
+    draw_scope_live_frame(frame);
+    const uint32_t us = (DWT->CYCCNT - c0) / (system_core_clock / 1000000u);
+    ui_scope_live_us_last = us;
+    if (us > ui_scope_live_us_max) ui_scope_live_us_max = us;
+}
+
+/* Roll (C11): its own frame over the roll FIFO, not the 1024-sample record. */
+static void render_roll(uint32_t frame, bool full) { (void)frame; draw_roll_screen(full); }
+#if FEATURE_FFT
+static void render_xy(uint32_t frame, bool full)    { (void)frame; draw_xy_screen(full); }
+static void render_fft(uint32_t frame, bool full)   { (void)frame; draw_fft_screen(full); }
+static void render_split(uint32_t frame, bool full) { draw_split_screen(frame, full); }
+static void render_waterfall(uint32_t frame, bool full) { (void)frame; (void)full; draw_waterfall_screen(); }
+#endif
+
+typedef struct {
+    void (*draw)(uint32_t frame, bool full);
+    bool popup_hole;    /* the frame steps around the popup box (else the box is put back each frame) */
+    bool time_rows;     /* the Y-T furniture: mask slot, CAN row, cursor row, measurement strip refresh */
+    bool animates;      /* the picture moves without new data (X-Y's phosphor decay) */
+} scope_renderer_t;
+
+static const scope_renderer_t k_renderers[VIEW_MODE_COUNT] = {
+    [VIEW_MODE_YT]        = { render_yt,        true,  true,  false },
+    [VIEW_MODE_ROLL]      = { render_roll,      true,  true,  false },
+#if FEATURE_FFT
+    [VIEW_MODE_XY]        = { render_xy,        true,  false, true  },
+    [VIEW_MODE_FFT]       = { render_fft,       true,  false, false },
+    [VIEW_MODE_SPLIT]     = { render_split,     true,  false, false },
+    [VIEW_MODE_WATERFALL] = { render_waterfall, false, false, false },
+#endif
+};
+
+/* The renderer of the view on screen; Y-T's for a view this build lacks. */
+static const scope_renderer_t *scope_renderer(void)
+{
+    const int32_t v = prop_get(P(VIEW_MODE));
+    const scope_renderer_t *r = (v >= 0 && v < (int32_t)VIEW_MODE_COUNT) ? &k_renderers[v] : NULL;
+    return (r != NULL && r->draw != NULL) ? r : &k_renderers[VIEW_MODE_YT];
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
-#if FEATURE_FFT
-    /* The other views compose every pixel and never blank: an incremental
-     * frame is the same drawing without the once-only margins and titles. */
-    if (scope_view != SCOPE_VIEW_TIME) {
-        const bool full = (action != REDRAW_INCREMENTAL);
-        if (full) ui_scope_full_draws++; else ui_scope_live_draws++;
-        switch (scope_view) {
-        case SCOPE_VIEW_FFT:       draw_fft_screen(full);          break;
-        case SCOPE_VIEW_SPLIT:     draw_split_screen(frame, full); break;
-        case SCOPE_VIEW_WATERFALL: draw_waterfall_screen();        break;
-        case SCOPE_VIEW_XY:        draw_xy_screen(full);           break;
-        default:                                                   break;
-        }
-        /* The canvas views keep a hole for the popup box, as Y-T does; the
-         * waterfall paints over it, so the box is put back each frame. */
-        if (scope_view != SCOPE_VIEW_WATERFALL) {
-            if (!full) scope_popup_overlay_tick();
-        } else {
-            scope_popup_view_tick();
-        }
-        return;
-    }
-#endif
-    /* Roll (C11) has its own compositor over the roll FIFO; the Y-T paths
-     * below would draw the stale 1024-sample record. */
-    if (s_roll_view()) {
-        const bool inc = (action == REDRAW_INCREMENTAL);
-        if (inc) ui_scope_live_draws++; else ui_scope_full_draws++;
-        draw_roll_screen(!inc);
-        if (inc) scope_popup_overlay_tick();
-        return;
-    }
-    if (action == REDRAW_INCREMENTAL) {
-        ui_scope_live_draws++;
-        const uint32_t c0 = DWT->CYCCNT;
-        draw_scope_live_frame(frame);
-        const uint32_t us = (DWT->CYCCNT - c0) / (system_core_clock / 1000000u);
-        ui_scope_live_us_last = us;
-        if (us > ui_scope_live_us_max) ui_scope_live_us_max = us;
-        scope_popup_overlay_tick();
-        return;
-    }
-    ui_scope_full_draws++;
-    UI_TIMED(UI_PERF_FULL, draw_scope_screen(frame));
+    const scope_renderer_t *const r = scope_renderer();
+    const bool full = (action != REDRAW_INCREMENTAL);
+    if (full) ui_scope_full_draws++; else ui_scope_live_draws++;
+    r->draw(frame, full);
+    /* A full frame paints the box itself (draw_popup); a live frame that
+     * kept the hole paints it once and repaints the band when it ends. */
+    if (r->popup_hole) { if (!full) scope_popup_overlay_tick(); }
+    else               scope_popup_view_tick();
 }
 
 /* ── The scope's paint module (ui/scope_screen.h) ────────────────────
@@ -621,11 +630,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
     {
         static uint32_t g_mask_slot_epoch;
         uint32_t me = scope_mask_epoch();
-#if FEATURE_FFT
-        const bool time_view = (scope_view == SCOPE_VIEW_TIME);
-#else
-        const bool time_view = true;
-#endif
+        const bool time_view = scope_renderer()->time_rows;
         if (me != g_mask_slot_epoch && time_view && !page_up) {
             scope_ui_mask_slot_refresh();
             g_mask_slot_epoch = me;
@@ -659,9 +664,9 @@ redraw_action_t scope_view_tick(uint32_t frame)
         /* Pictures that move without new data: the demo before the first
          * record (a function of `frame`), persistence ghosts (they fade on
          * wall time) and X-Y's phosphor decay. */
-        q.animating        = !scope_acquisition_ready() || persist_enabled
-                             || scope_view == SCOPE_VIEW_XY;
-        q.anim_tick_frames = (scope_view == SCOPE_VIEW_XY || persist_enabled)
+        const bool view_anim = scope_renderer()->animates;
+        q.animating        = !scope_acquisition_ready() || persist_enabled || view_anim;
+        q.anim_tick_frames = (view_anim || persist_enabled)
                              ? SCOPE_ANIM_FAST_FRAMES
                              : SCOPE_ANIM_TICK_FRAMES;
         /* Stopped, nothing a hash cannot see changes: no heartbeat. */
@@ -674,11 +679,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
         else
             scope_render(frame, act);
         if (!page_up) g_scope_seen = now;
-#if FEATURE_FFT
-        const bool yt_view = !page_up && scope_view == SCOPE_VIEW_TIME;
-#else
-        const bool yt_view = !page_up;
-#endif
+        const bool yt_view = !page_up && scope_renderer()->time_rows;
         if (act != REDRAW_SKIP && yt_view)
             UI_TIMED(UI_PERF_CURSOR_ROW, scope_ui_cursor_row_refresh());   /* only when its text changed */
         /* The badges between full frames (the live frame does not
