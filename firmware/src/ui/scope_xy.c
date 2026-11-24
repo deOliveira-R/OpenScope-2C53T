@@ -93,6 +93,7 @@ typedef struct {
     int      cxr, cyr;          /* its centre, in the square */
     bool     have;              /* a record was drawn into the trail */
     ctext_set_t T;              /* the title in the left margin */
+    int      text_x1;           /* the columns left of this hold the title */
 } xy_frame_t;
 
 static const char xy_nosig[] = "no signal";
@@ -122,11 +123,14 @@ static uint16_t xy_px(const xy_frame_t *f, int rx, int ry)
 static void xy_paint(void *ctx, uint16_t x, const canvas_strip_t *s)
 {
     const xy_frame_t *const f = ctx;
-    const bool margin = x < f->x0 || x >= f->x0 + f->side;
+    if (x >= f->x0 && x < f->x0 + f->side) {
+        for (int y = s->lo; y < s->hi; y++)
+            s->px[y - s->lo] = xy_px(f, (int)x - (int)f->x0, y - s->lo);
+        return;
+    }
     for (int y = s->lo; y < s->hi; y++) {
         uint16_t c = f->th->background;
-        if (margin) (void)ctext_px(&f->T, (int)x, y, &c);
-        else        c = xy_px(f, (int)x - (int)f->x0, y - s->lo);
+        if ((int)x < f->text_x1) (void)ctext_px(&f->T, (int)x, y, &c);
         s->px[y - s->lo] = c;
     }
 }
@@ -213,6 +217,9 @@ void draw_xy_screen(bool full)
     ctext_add(&f.T, 4, SCOPE_TOP + 2, "X-Y", th->text_secondary, th->background, true);
     ctext_add(&f.T, 4, SCOPE_TOP + 16, "X=CH1", th->ch1, th->background, true);
     ctext_add(&f.T, 4, SCOPE_TOP + 30, "Y=CH2", th->ch2, th->background, true);
+    f.text_x1 = 0;
+    for (uint8_t k = 0; k < f.T.n; k++)
+        if (f.T.t[k].x + f.T.t[k].w > f.text_x1) f.text_x1 = f.T.t[k].x + f.T.t[k].w;
     const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
     const canvas_frame_t cf = {
         .id = CANVAS_PLOT,
