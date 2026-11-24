@@ -259,6 +259,7 @@ C_SOURCES += $(AT32_DRV)/src/at32f403a_407_misc.c
 C_SOURCES += $(AT32_DRV)/src/at32f403a_407_exint.c
 C_SOURCES += $(AT32_DRV)/src/at32f403a_407_xmc.c
 C_SOURCES += $(AT32_DRV)/src/at32f403a_407_wdt.c
+C_SOURCES += $(AT32_DRV)/src/at32f403a_407_debug.c
 C_SOURCES += $(AT32_DRV)/src/at32f403a_407_adc.c
 C_SOURCES += $(AT32_DRV)/src/at32f403a_407_dac.c
 C_SOURCES += $(AT32_DRV)/src/at32f403a_407_tmr.c
@@ -367,14 +368,13 @@ TARGET = firmware
 # app-coldtrace-meter builds (profile bench from features.mk, watchdog off),
 # without the `clean` that target does first. `make flash` sends it.
 #
-# WATCHDOG: 0 = the hardware watchdog is never started (every image we have
-# run on the unit; long shell experiments cannot trip a reset). 1 = main.c
-# starts it after the tasks are created. WATCHDOG=1 has passed the crash, hang,
-# update and normal-use tests on the unit; a long bench command can still
-# starve the display task and trip it, so the bench image keeps it off for now.
+# WATCHDOG: 1 = main.c starts the hardware watchdog after the tasks are created
+# (tested on the unit: crashes, a hang, updates, normal use, the bench commands).
+# 0 = never started: the dry run, whose `health` counters show what would have
+# tripped it without switching the unit off. Use it to study a new long command.
 # The emulator image keeps its (empty) watchdog call: it cannot be run here
 # to confirm a change.
-WATCHDOG ?= 0
+WATCHDOG ?= 1
 ifneq ($(WATCHDOG),1)
 ifeq ($(filter emu,$(MAKECMDGOALS)),)
 CFLAGS += -DNO_WATCHDOG

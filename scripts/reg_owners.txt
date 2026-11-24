@@ -44,3 +44,4 @@ FLASH        drivers/fw_loader.c:fwl_ram_install
 CRM          drivers/fw_loader.c
 SCS          drivers/fw_loader.c:fwl_ram_install
 TMR5  drivers/wdt_clock.c
+DEBUG  drivers/watchdog.c

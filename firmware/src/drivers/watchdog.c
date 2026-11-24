@@ -51,6 +51,8 @@ void watchdog_init(void)
      * 500ms and feeds the WDT if all tasks are healthy, so under
      * normal operation the WDT is fed ~6 times per timeout period.
      */
+    /* A debugger holding the core must not get the unit switched off. */
+    debug_periph_mode_set(DEBUG_WDT_PAUSE, TRUE);
     wdt_register_write_enable(TRUE);
     wdt_divider_set(WDT_CLK_DIV_64);
     wdt_reload_value_set(WATCHDOG_RELOAD);
