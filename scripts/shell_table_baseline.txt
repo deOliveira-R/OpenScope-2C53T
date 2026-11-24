@@ -113,7 +113,7 @@ tasks	cmd_tasks	0x01	tasks                           FreeRTOS tasks: priority, s
 health wdtclock	cmd_health_wdtclock	0x01	health wdtclock                 Measure the watchdog clock and real timeout\r\n
 health clear	cmd_health_clear	0x01	health clear                    Clear the recorded gaps\r\n
 health	cmd_health	0x01	health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n
-crash	cmd_crash	0x00	crash [test task|irq|assert|heap|boot CONFIRM]  Last crash; crash on purpose\r\n
+crash	cmd_crash	0x00	crash [test task|irq|assert|heap|boot|hang CONFIRM]  Last crash; crash on purpose\r\n
 trig	cmd_scope_trig	0x02	trig raw <0-4095>               Write DAC1 (PA4) directly + sw trigger\r\ntrig <range> <level>            Scope trigger DAC: range 0-9, level -100..100\r\n
 trig2	cmd_scope_trig2	0x02	trig2 raw <0-4095>              Write CH2 ref: TMR13 CH1 PWM-DAC (PA6)\r\ntrig2 <range> <level>           CH2 vertical-offset ref via the CH1 cal formula\r\n
 ui dump	cmd_ui_dump	0x01	ui dump                         UI state: mode, redraws, meter page, measurement strip, graticule, key timing\r\n

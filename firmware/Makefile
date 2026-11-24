@@ -369,8 +369,9 @@ TARGET = firmware
 #
 # WATCHDOG: 0 = the hardware watchdog is never started (every image we have
 # run on the unit; long shell experiments cannot trip a reset). 1 = main.c
-# starts it after the tasks are created. An image with WATCHDOG=1 has not been
-# run on the unit.
+# starts it after the tasks are created. WATCHDOG=1 has passed the crash, hang,
+# update and normal-use tests on the unit; a long bench command can still
+# starve the display task and trip it, so the bench image keeps it off for now.
 # The emulator image keeps its (empty) watchdog call: it cannot be run here
 # to confirm a change.
 WATCHDOG ?= 0

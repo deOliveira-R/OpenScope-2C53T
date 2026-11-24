@@ -344,6 +344,20 @@ static void cmd_crash(const char *args)
         vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
         fault_test_boot_arm();
         __asm volatile ("udf #0");
+    } else if (strcmp(args, "test hang CONFIRM") == 0) {
+#ifdef NO_WATCHDOG
+        usb_send_str("crash: refused, this image has no watchdog to end the hang\r\n");
+#else
+        /* A stall, not a crash: the key task stops checking in, the health
+         * timer stops feeding, and the watchdog switches the unit off. */
+        const task_health_t *const t = health_get_tasks();
+        for (int i = 0; i < health_get_count(); i++) {
+            if (strcmp(t[i].name, "key") == 0) {
+                usb_send_str("crash: the key task is stopped, watchdog next\r\n");
+                vTaskSuspend(t[i].handle);
+            }
+        }
+#endif
     } else if (strcmp(args, "test heap CONFIRM") == 0) {
         usb_send_str("crash: out-of-memory hook\r\n");
         vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
@@ -351,7 +365,7 @@ static void cmd_crash(const char *args)
     } else
 #endif
     {
-        usb_send_str("usage: crash | crash test task|irq|assert|heap|boot CONFIRM\r\n");
+        usb_send_str("usage: crash | crash test task|irq|assert|heap|boot|hang CONFIRM\r\n");
     }
 }
 
@@ -524,7 +538,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_V("health", cmd_health, SC_EXACT,
           "health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n"),
     CMD_A("crash", cmd_crash, 0,
-          "crash [test task|irq|assert|heap|boot CONFIRM]  Last crash; crash on purpose\r\n"),
+          "crash [test task|irq|assert|heap|boot|hang CONFIRM]  Last crash; crash on purpose\r\n"),
     BENCHSHELL_SHELL_ROWS   /* the bench shell: src/drivers/shell_bench.h, empty when the feature is off */
     RETOOLS_SHELL_ROWS      /* the reverse-engineering toolkit: src/re/shell_re.h, empty when off */
     METERDEBUG_SHELL_ROWS   /* the meter diagnostics: src/drivers/shell_meterdebug.h, empty when off */
