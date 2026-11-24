@@ -14,7 +14,9 @@
  *      which switches the unit off: the last resort
  *
  * The FWDGT timeout (~3s) is deliberately longer than the health deadline, so
- * the monitor acts first whenever it is still running.
+ * the monitor acts first whenever it is still running. An image that cannot
+ * get through a boot at all is left by holding POWER+PRM at power-on, which
+ * opens the bootloader's update screen before the app runs.
  */
 
 #include "watchdog.h"

@@ -1,5 +1,9 @@
 /*
  * OpenScope 2C53T - entry into our bootloader, and its boot handshake
+ *
+ * From the app: MENU+POWER, Settings > Firmware Update, the shell's `reboot
+ * bootloader`. Without a working app: hold POWER+PRM at power-on (POWER
+ * alone is the normal power-on and must never enter the bootloader).
  */
 
 #ifndef DFU_BOOT_H
