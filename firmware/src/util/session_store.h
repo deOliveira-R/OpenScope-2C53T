@@ -44,7 +44,7 @@
  * (settings_store_peek_image). At boot it is used only when the settings
  * image just loaded has that CRC. Otherwise the settings record moved after
  * the snapshot was taken (a change that was autosaved and then a shutdown
- * that saves nothing: the battery-critical one, a crash, a reset; a record
+ * that saves nothing: a crash, a reset; a record
  * written by another firmware; a settings write that failed at power-off),
  * the snapshot is older than the settings and applying it would put old
  * values over newer ones: it is left alone and reported. The order of the

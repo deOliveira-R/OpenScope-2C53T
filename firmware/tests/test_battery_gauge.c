@@ -75,6 +75,25 @@ int main(void)
     run(&g, 3500, false, 1);
     CHECK(!g.critical);
 
+    /* Shutdown: 30 s in a row of critical, counted from the critical state. */
+    memset(&g, 0, sizeof g);
+    run(&g, 3250, false, BATT_CRITICAL_COUNT + BATT_SHUTDOWN_S - 2);
+    CHECK(g.critical && !batt_gauge_shutdown_due(&g));
+    run(&g, 3250, false, 1);
+    CHECK(batt_gauge_shutdown_due(&g));
+    run(&g, 3250, false, 300);
+    CHECK(batt_gauge_shutdown_due(&g));              /* the count does not wrap */
+
+    /* A recovery, or the cable, starts the count again. */
+    memset(&g, 0, sizeof g);
+    run(&g, 3250, false, BATT_CRITICAL_COUNT + BATT_SHUTDOWN_S - 2);
+    run(&g, 3500, false, 1);
+    CHECK(!batt_gauge_shutdown_due(&g) && g.critical_seconds == 0u);
+    run(&g, 3250, false, BATT_CRITICAL_COUNT + BATT_SHUTDOWN_S - 2);
+    CHECK(!batt_gauge_shutdown_due(&g));
+    run(&g, 3250, true, 1);
+    CHECK(g.critical_seconds == 0u);
+
     if (fails) { printf("test_battery_gauge: %d FAILED\n", fails); return 1; }
     printf("test_battery_gauge: OK\n");
     return 0;

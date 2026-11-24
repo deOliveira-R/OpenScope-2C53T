@@ -530,7 +530,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_A("persist", cmd_persist, 0,
           "persist [on|off]                Shell commands save settings (off: bench sweeps, RAM only)\r\n"),
     CMD_A("batt", cmd_batt, 0,
-          "batt                            Battery gauge: raw/resting mV, percent, external power\r\n"),
+          "batt [test low CONFIRM|test off] Battery gauge: raw/resting mV, percent, external power\r\n"),
     CMD_A("meter auto", cmd_meter_auto_async, 0,
           "meter auto [start|status|cancel] Async DMM function auto-select\r\n"),
     CMD_V("ui dump", cmd_ui_dump, SC_EXACT,

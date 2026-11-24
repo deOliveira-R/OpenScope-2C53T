@@ -52,4 +52,12 @@ void batt_gauge_step(batt_gauge_t *g, uint16_t raw_mv, bool ext_now)
         g->critical_count = 0u;
         g->critical = false;
     }
+
+    if (!g->critical) g->critical_seconds = 0u;
+    else if (g->critical_seconds < BATT_SHUTDOWN_S) g->critical_seconds++;
+}
+
+bool batt_gauge_shutdown_due(const batt_gauge_t *g)
+{
+    return g->critical_seconds >= BATT_SHUTDOWN_S;
 }

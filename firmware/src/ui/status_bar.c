@@ -14,7 +14,6 @@
 
 #include "ui.h"
 #include "status_bar.h"
-#include "power.h"
 #include "icons.h"
 #include "key_model.h"          /* key_focus_t (read only) */
 #include "lcd.h"
@@ -389,17 +388,6 @@ static uint8_t info_clip(void)
     return m;
 }
 
-/* Seconds of critical battery so far (the timer service task writes, the
- * display task reads). Like the counter it replaces, it never counts back
- * down when the battery recovers. */
-static volatile uint8_t s_critical_seconds;
-
-void status_bar_second_tick(void)
-{
-    if (battery_is_critical() && s_critical_seconds < 0xFFu)
-        s_critical_seconds++;
-}
-
 uint32_t status_bar_live_key(void)
 {
     if (current_mode != MODE_OSCILLOSCOPE)
@@ -442,21 +430,6 @@ void draw_status_bar(void)
     }
     slot_battery(th);
 
-    /* Auto-shutdown at critical battery — protect the LiPo cell. The seconds
-     * are counted by status_bar_second_tick() (the 1 s timer), not per draw. */
-    if (battery_is_critical()) {
-        if (s_critical_seconds >= 30u) {  /* 30 seconds of critical = shutdown */
-            lcd_fill_rect(40, 80, 240, 80, 0x0000);
-            font_draw_string_center(160, 95, "Battery Critical",
-                                    th->warning, 0x0000, &font_large);
-            font_draw_string_center(160, 130, "Shutting down...",
-                                    th->text_secondary, 0x0000, &font_medium);
-            /* Brief delay so user can see the message */
-            for (volatile uint32_t d = 0; d < 100000000; d++);
-            power_hold_release();
-            while (1);
-        }
-    }
 }
 
 /* Force full redraw on next status bar update (call on theme/mode change) */

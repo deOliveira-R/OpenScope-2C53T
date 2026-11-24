@@ -34,6 +34,10 @@ void power_prompt_ui_paint(power_prompt_view_t v)
         font_draw_string_center(160, 100, "Firmware update", th->warning, bg, &font_medium);
         font_draw_string_center(160, 126, "Release POWER", th->text_primary, bg, &font_medium);
         break;
+    case POWER_PROMPT_BATTERY:
+        font_draw_string_center(160, 100, "Battery critical", th->warning, bg, &font_medium);
+        font_draw_string_center(160, 126, "Shutting down", th->text_primary, bg, &font_medium);
+        break;
     default:
         break;
     }

@@ -1124,7 +1124,6 @@ static void vOneSecondTimerCallback(TimerHandle_t xTimer)
     uptime_seconds++;
     battery_update();
     usb_debug_pinlog_tick();
-    status_bar_second_tick();     /* the critical-battery countdown: per second, not per draw */
     uint8_t cmd = DCMD_DRAW_STATUS_BAR;
     /* Zero timeout is intentional: timer service task is highest priority,
      * so blocking here would stall all timers including the health check.

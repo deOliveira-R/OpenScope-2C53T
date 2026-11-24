@@ -4,7 +4,7 @@
 # The state commands the property model replaced were
 # retired from it on purpose (docs/shell_profiles.md has the table).
 ?	cmd_help	0x01	-
-batt	cmd_batt	0x00	batt                            Battery gauge: raw/resting mV, percent, external power\r\n
+batt	cmd_batt	0x00	batt [test low CONFIRM|test off] Battery gauge: raw/resting mV, percent, external power\r\n
 bench restore	cmd_bench_restore	0x01	bench restore                   Put that saved pin posture back (hermetic tests)\r\n
 bench snapshot	cmd_bench_snapshot	0x01	bench snapshot                  Save frontend/FPGA pin modes+levels\r\n
 buzzer test	cmd_buzzer_test	0x00	buzzer test [ms]                Force continuity buzzer briefly\r\n

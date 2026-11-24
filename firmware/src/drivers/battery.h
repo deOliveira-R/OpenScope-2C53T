@@ -7,6 +7,7 @@
 #define BATTERY_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* Initialize ADC1 for battery voltage reading on PB1 */
 void battery_adc_init(void);
@@ -27,7 +28,13 @@ uint8_t battery_percent(void);
 /* Returns 1 while on external (USB) power: PC7 low, debounced 3 s */
 uint8_t battery_is_charging(void);
 
-/* Returns 1 if voltage critically low (< 3.3V) — should auto-shutdown */
+/* Returns 1 if voltage critically low (< 3.3V) */
 uint8_t battery_is_critical(void);
+
+/* Critical for long enough: the input task must power off (any task may ask). */
+bool battery_shutdown_due(void);
+
+/* Bench: gauge a cell below the critical level, on battery, until turned off. */
+void battery_test_low(bool on);
 
 #endif

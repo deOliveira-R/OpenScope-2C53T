@@ -20,6 +20,7 @@
 #define BATT_EXT_DEBOUNCE    3u    /* seconds before the symbol follows PC7 */
 #define BATT_CRITICAL_MV     3300u
 #define BATT_CRITICAL_COUNT  10u
+#define BATT_SHUTDOWN_S      30u   /* seconds in a row critical before the power-off */
 #define BATT_AVG_SIZE        16u
 
 typedef struct {
@@ -27,6 +28,7 @@ typedef struct {
     uint8_t  avg_idx, avg_count;
     uint8_t  ext_count;                /* consecutive seconds PC7 disagreed with `external` */
     uint8_t  critical_count;
+    uint8_t  critical_seconds;         /* in a row; back to 0 when the cell recovers */
     bool     external;                 /* debounced: on external power */
     bool     critical;
     uint16_t raw_mv;                   /* last reading as measured */
@@ -39,5 +41,8 @@ uint8_t batt_gauge_percent(uint16_t rest_mv);
 
 /* One reading per second: the measured cell voltage and PC7's meaning. */
 void batt_gauge_step(batt_gauge_t *g, uint16_t raw_mv, bool ext_now);
+
+/* Critical for BATT_SHUTDOWN_S in a row: the unit must switch off. */
+bool batt_gauge_shutdown_due(const batt_gauge_t *g);
 
 #endif

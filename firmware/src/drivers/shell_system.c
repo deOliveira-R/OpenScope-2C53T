@@ -615,7 +615,20 @@ void cmd_persist(const char *args)
 /* batt: the gauge's inputs and outputs in one line. */
 void cmd_batt(const char *args)
 {
+#if defined(FEATURE_BENCHSHELL) && FEATURE_BENCHSHELL
+    if (args != NULL && strcmp(args, "test low CONFIRM") == 0) {
+        battery_test_low(true);
+        usb_send_str("batt: gauging a critical cell; the unit powers off in about 40 s\r\n");
+        return;
+    }
+    if (args != NULL && strcmp(args, "test off") == 0) {
+        battery_test_low(false);
+        usb_send_str("batt: gauging the real cell again\r\n");
+        return;
+    }
+#else
     (void)args;
+#endif
     usb_debug_printf("batt: raw %u mV, rest %u mV, %u%%, external %u (PC7=%u), critical %u\r\n",
                      (unsigned)battery_raw_mv(), (unsigned)battery_read_mv(), (unsigned)battery_percent(),
                      (unsigned)battery_is_charging(), (unsigned)((GPIOC->idt >> 7) & 1u),

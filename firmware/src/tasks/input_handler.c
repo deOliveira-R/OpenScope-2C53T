@@ -43,6 +43,7 @@
 #endif
 #include "task.h"
 #include "power.h"
+#include "battery.h"
 #include "dfu_boot.h"
 #include "flash_regions.h"
 #include <stdio.h>
@@ -89,6 +90,8 @@ static void autooff_touch(void)
  * entered after the key is let go. A key stuck down must not block it. */
 #define UPDATER_KEY_WAIT_MS     10000u
 #define UPDATER_KEY_POLL_MS     50u
+/* Time to read the critical-battery message; the cell is already low. */
+#define BATTERY_MESSAGE_MS      1000u
 
 static QueueHandle_t g_dq;      /* set before the first key (input_router_init) */
 
@@ -129,7 +132,7 @@ static void enter_updater(void)
 
 /* The one orderly power-off: flush settings FIRST (the rail is about to stop),
  * backlight to 0 like stock's saver (0x080293EE), then release the PC9 hold.
- * The POWER hold and the auto power-off end here. It is also the only place
+ * The POWER hold, the auto power-off and a critical battery end here. It is also the only place
  * the last screen is saved (Startup on Boot = Restore): a screen change by
  * itself writes no record. The resets (MENU + POWER into the bootloader,
  * Settings > Firmware Update, the shell's reboot) flush the settings and
@@ -213,6 +216,11 @@ void input_autooff_poll(void)
     if (!g_autooff_ready) {
         sys_autooff_init(&g_autooff, sys_prefs_autooff_mins(), now);
         g_autooff_ready = true;
+    }
+    if (battery_shutdown_due()) {
+        power_prompt_show(POWER_PROMPT_BATTERY, 0);
+        vTaskDelay(pdMS_TO_TICKS(BATTERY_MESSAGE_MS));
+        power_off_now();
     }
     if (!sys_autooff_poll(&g_autooff, now)) return;
 

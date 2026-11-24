@@ -87,12 +87,20 @@ static uint16_t adc_read_mv_once(void)
     return last_good_mv;  /* timeout — use last good */
 }
 
+/* `batt test low`: a cell below the critical level, on battery. */
+#define BATTERY_TEST_LOW_MV  (BATT_CRITICAL_MV - 100u)
+static volatile bool test_low;
+
+void battery_test_low(bool on) { test_low = on; }
+
 void battery_update(void)
 {
     if (!adc_ready) return;
     /* PC7 is low while USB power is present. */
     const bool ext_now = (GPIOC->idt & GPIO_PINS_7) == 0u;
-    batt_gauge_step(&gauge, adc_read_mv_once(), ext_now);
+    const uint16_t mv = adc_read_mv_once();
+    if (test_low) batt_gauge_step(&gauge, BATTERY_TEST_LOW_MV, false);
+    else          batt_gauge_step(&gauge, mv, ext_now);
 }
 
 uint16_t battery_read_mv(void)       { return gauge.rest_mv; }
@@ -100,3 +108,4 @@ uint16_t battery_raw_mv(void)        { return gauge.raw_mv; }
 uint8_t  battery_percent(void)       { return gauge.percent; }
 uint8_t  battery_is_critical(void)   { return gauge.critical ? 1u : 0u; }
 uint8_t  battery_is_charging(void)   { return gauge.external ? 1u : 0u; }
+bool     battery_shutdown_due(void)  { return batt_gauge_shutdown_due(&gauge); }
