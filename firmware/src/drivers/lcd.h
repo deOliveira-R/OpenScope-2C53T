@@ -180,13 +180,15 @@ void lcd_bus_timing_spec(void);    /* EXMC write/read timing within the ST7789V 
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
 
 /* Watched rows. Every drawing call starts with lcd_set_window(), so a window
- * that touches the rows [y0, y1) marks them as drawn on. A painter that
- * remembers what it put there (the scope's live band) names the rows, asks
- * with lcd_watch_take() before it trusts its memory, and calls it again when
- * it has finished to discard the marks of its own windows. Changing the rows
- * marks them too. One watcher: the display task. */
-void lcd_watch_rows(uint16_t y0, uint16_t y1);
-bool lcd_watch_take(void);      /* drawn on since the last call? (clears the mark) */
+ * that touches the rows [y0, y1) of a watch slot marks that slot as drawn on.
+ * A painter that remembers what it put there (a canvas) names its rows in its
+ * own slot, asks with lcd_watch_take() before it trusts its memory, and calls
+ * it again when it has finished to discard the marks of its own windows.
+ * Another painter's windows, another slot's included, mark every slot whose
+ * rows they touch. Changing a slot's rows marks it too. Display task only. */
+#define LCD_WATCH_SLOTS  2u
+void lcd_watch_rows(uint8_t slot, uint16_t y0, uint16_t y1);
+bool lcd_watch_take(uint8_t slot);  /* drawn on since the last call? (clears the mark) */
 
 /* ── The one drawer (ARCH-1 V2b) ────────────────────────────────────────
  * Only the display task may draw: two drawers interleave a multi-write

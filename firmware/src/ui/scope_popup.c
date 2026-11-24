@@ -155,7 +155,7 @@ void draw_popup(const theme_t *th)
     else                 popup_on = false;
 }
 
-/* Popup upkeep for the FFT / split / waterfall / X-Y views. Their frames
+/* Popup upkeep for the waterfall view. Their frames
  * compose the plot with no hole for the box, so the box is put back over
  * each frame while it lives. The popup ends when it expires. */
 void scope_popup_view_tick(void)

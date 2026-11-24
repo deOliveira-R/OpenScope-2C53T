@@ -28,25 +28,30 @@ static int run, passed;
 #define UNTOUCHED 0xDEADu
 static uint16_t glass[LCD_HEIGHT][LCD_WIDTH];
 static unsigned column_writes;
-static uint16_t watch_y0, watch_y1;
-static bool     watch_dirty = true;
+static uint16_t watch_y0[LCD_WATCH_SLOTS], watch_y1[LCD_WATCH_SLOTS];
+static bool     watch_dirty[LCD_WATCH_SLOTS] = { true, true };
 
-void lcd_watch_rows(uint16_t y0, uint16_t y1)
+void lcd_watch_rows(uint8_t slot, uint16_t y0, uint16_t y1)
 {
-    if (y0 != watch_y0 || y1 != watch_y1) watch_dirty = true;
-    watch_y0 = y0; watch_y1 = y1;
+    if (y0 != watch_y0[slot] || y1 != watch_y1[slot]) watch_dirty[slot] = true;
+    watch_y0[slot] = y0; watch_y1[slot] = y1;
 }
-bool lcd_watch_take(void) { const bool d = watch_dirty; watch_dirty = false; return d; }
+bool lcd_watch_take(uint8_t slot) { const bool d = watch_dirty[slot]; watch_dirty[slot] = false; return d; }
+static void watch_mark(uint16_t y, uint32_t h)
+{
+    for (unsigned i = 0; i < LCD_WATCH_SLOTS; i++)
+        if (y < watch_y1[i] && (uint32_t)y + h > watch_y0[i]) watch_dirty[i] = true;
+}
 void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count)
 {
     column_writes++;
-    if (y < watch_y1 && (uint32_t)y + count > watch_y0) watch_dirty = true;
+    watch_mark(y, count);
     for (uint16_t i = 0; i < count; i++) glass[y + i][x] = pixels[i];
 }
 /* Another painter: one pixel, as lcd_set_pixel would. */
 static void foreign_pixel(uint16_t x, uint16_t y, uint16_t c)
 {
-    if (y < watch_y1 && y + 1u > watch_y0) watch_dirty = true;
+    watch_mark(y, 1u);
     glass[y][x] = c;
 }
 
@@ -140,7 +145,7 @@ int main(void)
     const canvas_rect_t box = { 60, 102, 200, 36 };
     for (uint16_t y = box.y; y < box.y + box.h; y++)
         for (uint16_t x = box.x; x < box.x + box.w; x++) foreign_pixel(x, y, 0x0BB0u);
-    (void)lcd_watch_take();
+    (void)lcd_watch_take(CANVAS_PLOT);
     f.holes = &box; f.nholes = 1;
     n = draw(&f);
     bool box_kept = true;
@@ -185,6 +190,41 @@ int main(void)
     glass_fill(UNTOUCHED); foreign_pixel(100, 50, UNTOUCHED);
     n = draw(&g);
     CHECK("a rectangle inside the screen: 64 columns, nothing outside", n == 64 && glass_ok(&g, UNTOUCHED));
+
+    /* Two canvases drawn in turn, as the split view's halves: each keeps its
+     * own memory, so neither resends what did not change. */
+    version = 0; ver_x0 = ver_x1 = 0;
+    canvas_frame_t top = { .id = CANVAS_SPLIT_TIME, .rect = { 0, 18, 320, 104 }, .paint = paint };
+    canvas_frame_t bot = { .id = CANVAS_PLOT, .rect = { 0, 122, 320, 101 }, .paint = paint };
+    glass_fill(UNTOUCHED);
+    (void)draw(&top); (void)draw(&bot);
+    n = draw(&top);
+    const uint16_t nb = draw(&bot);
+    CHECK("two canvases in turn: neither resends an unchanged picture", n == 0 && nb == 0);
+    version = 3; ver_x0 = 10; ver_x1 = 13;
+    n = draw(&top);
+    bool top_ok = true;
+    for (uint16_t y = top.rect.y; y < top.rect.y + top.rect.h; y++)
+        for (uint16_t x = 0; x < LCD_WIDTH; x++) top_ok = top_ok && glass[y][x] == picture(x, y);
+    CHECK("... a change sends only its columns of that canvas", n == 3 && top_ok);
+    (void)draw(&bot);
+
+    foreign_pixel(7, 50, 0x0002u);          /* on the upper half's rows only */
+    n = draw(&bot);
+    CHECK("another painter on one canvas's rows: the other is not disturbed", n == 0);
+    n = draw(&top);
+    CHECK("... and that canvas resends everything", n == 320);
+
+    /* The full plot drawn over the upper half's rows (a view change and back). */
+    canvas_frame_t plot = { .id = CANVAS_PLOT, .rect = { 0, 18, 320, 206 }, .paint = paint };
+    (void)draw(&plot);
+    n = draw(&top);
+    CHECK("another canvas painted the same rows: this one resends everything", n == 320);
+    n = draw(&bot);
+    CHECK("... and so does the canvas whose rectangle changed", n == 320);
+
+    canvas_frame_t badid = { .id = CANVAS_COUNT, .rect = { 0, 18, 320, 10 }, .paint = paint };
+    CHECK("an unknown canvas draws nothing", draw(&badid) == 0 && paints == 0);
 
     canvas_frame_t bad = { .rect = { 300, 0, 40, 10 }, .paint = paint };
     CHECK("a rectangle off the screen draws nothing", draw(&bad) == 0 && paints == 0);

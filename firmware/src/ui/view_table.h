@@ -10,9 +10,9 @@
  *
  * So the key model, the settings page and the furniture ask this table
  * instead of testing for a particular view. An entry lists only what the
- * view's renderer really draws today: X-Y and the waterfall get a strip and
- * cursors when they are display types on the canvas (docs/design/
- * display_architecture.md, steps 6 and 7).
+ * view's renderer really draws today: X-Y, split's halves and the waterfall
+ * have no strip or cursors yet (docs/design/display_architecture.md, steps 6
+ * and 7).
  *
  * Pure: a header, so every host test that links the key model has it.
  */

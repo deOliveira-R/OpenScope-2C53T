@@ -12,9 +12,10 @@
  * Strips are columns (canvas_draw_columns); row strips come with the first
  * display type that needs them (the waterfall).
  *
- * One canvas is drawn at a time (the scope's plot), so the strip buffer and
- * the memory of what was sent are one static set, not one per canvas.
- * Display task only.
+ * Each canvas (canvas_id_t) has its own memory of what it sent and its own
+ * watch of its rows, so two canvases drawn in turn (the split view's halves)
+ * each skip what did not change. The strip buffer is shared: one strip is
+ * painted at a time. Display task only.
  */
 
 #ifndef CANVAS_H
@@ -26,6 +27,14 @@
 typedef struct {
     uint16_t x, y, w, h;
 } canvas_rect_t;
+
+/* The canvases. A rectangle drawn by two of them (the full plot, then a
+ * split half over the same rows) makes each resend everything next time. */
+typedef enum {
+    CANVAS_PLOT = 0,      /* the scope's plot: Y-T, roll, X-Y, the spectrum, split's lower half */
+    CANVAS_SPLIT_TIME,    /* split's upper half */
+    CANVAS_COUNT
+} canvas_id_t;
 
 /* Holes a frame may have: rectangles inside the canvas that belong to
  * somebody else (a popup box) and are stepped around. */
@@ -59,6 +68,7 @@ static inline void strip_span(const canvas_strip_t *s, int first, int last, uint
 typedef void (*canvas_paint_fn)(void *ctx, uint16_t index, const canvas_strip_t *s);
 
 typedef struct {
+    uint8_t              id;        /* canvas_id_t: whose memory */
     canvas_rect_t        rect;      /* the canvas, in screen coordinates */
     const canvas_rect_t *holes;     /* nholes rectangles, or NULL */
     uint8_t              nholes;    /* at most CANVAS_MAX_HOLES */
@@ -69,8 +79,8 @@ typedef struct {
 
 /* Draw one frame in column strips. Returns the number of columns sent; the
  * others were unchanged. Strips are trusted as unchanged only while the
- * rectangle and the holes are the ones of the last frame and nobody else has
- * drawn on the rectangle's rows since (lcd_watch_rows); otherwise every
+ * rectangle and the holes are the ones of this canvas's last frame and nobody
+ * else has drawn on the rectangle's rows since (lcd_watch_rows); otherwise every
  * strip is sent. A hole clipped to nothing by the rectangle is ignored. */
 uint16_t canvas_draw_columns(const canvas_frame_t *f);
 

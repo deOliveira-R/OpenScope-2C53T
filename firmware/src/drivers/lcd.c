@@ -602,27 +602,38 @@ static inline void lcd_note_drawer(void)
 
 /* The watched rows (lcd.h): a painter that skips what it drew before must
  * know when somebody else drew there. */
-static uint16_t lcd_watch_y0, lcd_watch_y1;   /* [y0, y1), empty when equal */
-static bool     lcd_watch_dirty = true;
+static struct {
+    uint16_t y0, y1;              /* [y0, y1), empty when equal */
+    bool     dirty;
+} lcd_watch[LCD_WATCH_SLOTS] = { [0 ... LCD_WATCH_SLOTS - 1] = { 0u, 0u, true } };
 
-void lcd_watch_rows(uint16_t y0, uint16_t y1)
+void lcd_watch_rows(uint8_t slot, uint16_t y0, uint16_t y1)
 {
-    if (y0 != lcd_watch_y0 || y1 != lcd_watch_y1) lcd_watch_dirty = true;
-    lcd_watch_y0 = y0;
-    lcd_watch_y1 = y1;
+    if (slot >= LCD_WATCH_SLOTS) return;
+    if (y0 != lcd_watch[slot].y0 || y1 != lcd_watch[slot].y1) lcd_watch[slot].dirty = true;
+    lcd_watch[slot].y0 = y0;
+    lcd_watch[slot].y1 = y1;
 }
 
-bool lcd_watch_take(void)
+bool lcd_watch_take(uint8_t slot)
 {
-    const bool d = lcd_watch_dirty;
-    lcd_watch_dirty = false;
+    if (slot >= LCD_WATCH_SLOTS) return true;
+    const bool d = lcd_watch[slot].dirty;
+    lcd_watch[slot].dirty = false;
     return d;
+}
+
+/* A window over rows [y, y + h) is being drawn. */
+static inline void lcd_watch_mark(uint16_t y, uint32_t h)
+{
+    for (uint8_t i = 0; i < LCD_WATCH_SLOTS; i++)
+        if (y < lcd_watch[i].y1 && (uint32_t)y + h > lcd_watch[i].y0) lcd_watch[i].dirty = true;
 }
 
 void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
     lcd_note_drawer();
-    if (y < lcd_watch_y1 && (uint32_t)y + h > lcd_watch_y0) lcd_watch_dirty = true;
+    lcd_watch_mark(y, h);
     uint16_t x_end = x + w - 1;
     uint16_t y_end = y + h - 1;
 
@@ -793,7 +804,7 @@ void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t c
     const uint32_t w0 = DWT->CYCCNT;
     lcd_note_drawer();
     const uint16_t y_end = (uint16_t)(y + count - 1u);
-    if (y < lcd_watch_y1 && (uint32_t)y + count > lcd_watch_y0) lcd_watch_dirty = true;
+    lcd_watch_mark(y, count);
     *LCD_CMD_ADDR  = ST7789_CASET;
     *LCD_DATA_ADDR = (uint16_t)(x >> 8);
     *LCD_DATA_ADDR = (uint16_t)(x & 0xFF);

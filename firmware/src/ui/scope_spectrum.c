@@ -586,82 +586,114 @@ void draw_fft_screen(bool full)
  * volts/div. */
 #define SPLIT_DIV_PX  13
 
-/* Split view: the Y-T window on top (8 divisions of SPLIT_DIV_PX), the
- * spectrum below, the half the keys are on in a frame (the focus mark, under
- * the traces). Both composed per column. Needs the live record for the
- * traces ("no record" otherwise). full: also paint the bottom margin row.
- * The frame argument is unused. */
+/* The split view's upper half, as a frame of its canvas: the Y-T window (8
+ * divisions of SPLIT_DIV_PX), the divider row under it, the focus mark when
+ * the keys are on this half. */
+typedef struct {
+    const theme_t *th;
+    uint16_t top, divider, mid;
+    bool     live, time_focus;
+    bool     on[2];
+    autofit_t m[2];
+    int16_t  prev[2];           /* the last column's row, per channel: columns come in order */
+} split_time_frame_t;
+
+static const char split_nrec[] = "no record";
+
+/* Pixel (x, y) of the upper half, given column x's trace spans lo..hi. */
+static uint16_t split_time_px(const split_time_frame_t *f, uint16_t x, uint16_t y,
+                              const int16_t lo[2], const int16_t hi[2])
+{
+    const theme_t *th = f->th;
+    const bool inwin = (x < SCOPE_GEOM_COLS);
+    if (y == f->divider)
+        return th->grid_center;
+    if (!f->live && x >= 4u && y >= f->top + 2u && y < f->top + 2u + font_small.height &&
+        font_text_px(split_nrec, &font_small, (int)x - 4, (int)y - (int)f->top - 2))
+        return COLOR_ORANGE;
+    if (f->on[1] && (int16_t)y >= lo[1] && (int16_t)y <= hi[1])
+        return th->ch2;
+    if (f->on[0] && (int16_t)y >= lo[0] && (int16_t)y <= hi[0])
+        return th->ch1;
+    if (f->time_focus && focus_mark_px((int)x, (int)y, 0, f->top, LCD_WIDTH, f->divider - f->top))
+        return th->text_primary;
+    if (inwin && (y == f->mid || x == SCOPE_GEOM_CENTER_COL))
+        return th->grid_center;
+    if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
+                  (((y - f->top) % SPLIT_DIV_PX) == 0 && (x & 1u) == 0)))
+        return th->grid;
+    return th->background;
+}
+
+/* The canvas's paint function for the upper half. */
+static void split_time_paint(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    split_time_frame_t *const f = ctx;
+    const bool tr = f->live && x >= g_view_first && x < g_view_end;
+    int16_t lo[2] = { 1, 1 }, hi[2] = { 0, 0 };
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        if (!f->on[ch] || !tr) continue;
+        const int16_t y = autofit_y(&f->m[ch], yt_cols[ch][x]);
+        lo[ch] = y; hi[ch] = y;
+        if (x > g_view_first) {
+            if (f->prev[ch] < lo[ch]) lo[ch] = f->prev[ch];
+            if (f->prev[ch] > hi[ch]) hi[ch] = f->prev[ch];
+        }
+        f->prev[ch] = y;
+    }
+    for (int y = s->lo; y < s->hi; y++)
+        s->px[y - s->lo] = split_time_px(f, x, (uint16_t)y, lo, hi);
+}
+
+/* Split view: the Y-T window on top, the spectrum below, each its own canvas,
+ * so each sends only the columns that changed; the half the keys are on in a
+ * frame (the focus mark, under the traces). The popup box is a hole of both.
+ * Needs the live record for the traces ("no record" otherwise). full: every
+ * column, the bottom margin row and the popup box. The frame argument is
+ * unused. */
 void draw_split_screen(uint32_t frame, bool full)
 {
     (void)frame;
-    const theme_t *th = theme_get();
     const scope_state_t *ss = scope_state_get();
-    const uint16_t top = SCOPE_TOP, divider = SCOPE_TOP + SCOPE_H / 2;
-    const uint16_t mid = (uint16_t)(top + 4 * SPLIT_DIV_PX);       /* 8 divisions of 13 px */
+    split_time_frame_t f = {
+        .th = theme_get(),
+        .top = SCOPE_TOP, .divider = SCOPE_TOP + SCOPE_H / 2,
+        .mid = (uint16_t)(SCOPE_TOP + 4 * SPLIT_DIV_PX),        /* 8 divisions of 13 px */
+    };
     const volatile uint8_t *r1 = fpga_get_ch1_buf(), *r2 = fpga_get_ch2_buf();
-    const bool live = fpga_data_ready() && r1 != NULL && r2 != NULL;
+    f.live = fpga_data_ready() && r1 != NULL && r2 != NULL;
     /* The half the keys and AUTO act on wears the focus mark. */
-    const bool time_focus = view_key_domain(VIEW_MODE_SPLIT, (key_focus_t)key_focus_get()) == VIEW_DOM_TIME;
-    autofit_t m[2];
-    bool on[2] = { false, false };
-    if (live) {
+    f.time_focus = view_key_domain(VIEW_MODE_SPLIT, (key_focus_t)key_focus_get()) == VIEW_DOM_TIME;
+    if (f.live) {
         view_build(ss, r1, r2);
         for (uint8_t ch = 0; ch < 2u; ch++) {
             const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
-            on[ch] = ch ? ss->ch2.enabled : ss->ch1.enabled;
-            if (!on[ch]) continue;
+            f.on[ch] = ch ? ss->ch2.enabled : ss->ch1.enabled;
+            if (!f.on[ch]) continue;
             if (ss->true_scale && scope_cal_true_scale_ok((uint8_t)(ch + 1u), r)) {
-                yt_vmap_true(&m[ch], (int16_t)top, (int16_t)divider, (int16_t)mid, (int8_t)ch,
+                yt_vmap_true(&f.m[ch], (int16_t)f.top, (int16_t)f.divider, (int16_t)f.mid, (int8_t)ch,
                              yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
-                m[ch].h = SPLIT_DIV_PX * 100;           /* half-height divisions */
+                f.m[ch].h = SPLIT_DIV_PX * 100;         /* half-height divisions */
             } else {
-                autofit_prep(&m[ch], yt_cols[ch], (int16_t)top, (int16_t)divider, (int8_t)ch);
+                autofit_prep(&f.m[ch], yt_cols[ch], (int16_t)f.top, (int16_t)f.divider, (int8_t)ch);
             }
         }
     }
-    static const char nrec[] = "no record";
-    int16_t prev[2] = { 0, 0 };
-    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
-        const bool inwin = (x < SCOPE_GEOM_COLS);
-        const bool tr = live && x >= g_view_first && x < g_view_end;
-        int16_t lo[2] = { 1, 1 }, hi[2] = { 0, 0 };
-        for (uint8_t ch = 0; ch < 2u; ch++) {
-            if (!on[ch] || !tr) continue;
-            const int16_t y = autofit_y(&m[ch], yt_cols[ch][x]);
-            lo[ch] = y; hi[ch] = y;
-            if (x > g_view_first) {
-                if (prev[ch] < lo[ch]) lo[ch] = prev[ch];
-                if (prev[ch] > hi[ch]) hi[ch] = prev[ch];
-            }
-            prev[ch] = y;
-        }
-        lcd_set_window(x, top, 1, (uint16_t)(divider - top + 1));
-        for (uint16_t y = top; y <= divider; y++) {
-            uint16_t c;
-            if (y == divider)
-                c = th->grid_center;
-            else if (!live && x >= 4u && y >= top + 2u && y < top + 2u + font_small.height &&
-                     font_text_px(nrec, &font_small, (int)x - 4, (int)y - (int)top - 2))
-                c = COLOR_ORANGE;
-            else if (on[1] && (int16_t)y >= lo[1] && (int16_t)y <= hi[1])
-                c = th->ch2;
-            else if (on[0] && (int16_t)y >= lo[0] && (int16_t)y <= hi[0])
-                c = th->ch1;
-            else if (time_focus && focus_mark_px((int)x, (int)y, 0, top, LCD_WIDTH, divider - top))
-                c = th->text_primary;
-            else if (inwin && (y == mid || x == SCOPE_GEOM_CENTER_COL))
-                c = th->grid_center;
-            else if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
-                               (((y - top) % SPLIT_DIV_PX) == 0 && (x & 1u) == 0)))
-                c = th->grid;
-            else
-                c = th->background;
-            lcd_write_data(c);
-        }
-    }
+    const bool hole = popup_live();
+    popup_hole_last = hole;
+    const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
+    const canvas_frame_t cf = {
+        .id = CANVAS_SPLIT_TIME,
+        .rect = { 0, f.top, LCD_WIDTH, (uint16_t)(f.divider - f.top + 1u) },
+        .holes = &popup, .nholes = hole ? 1u : 0u,
+        .all = full,
+        .paint = split_time_paint, .ctx = &f,
+    };
+    (void)canvas_draw_columns(&cf);
     if (full)
         lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - 1, LCD_WIDTH, 1, COLOR_BLACK);
-    fft_region_compose((uint16_t)(divider + 1), SCOPE_H / 2 - 2, true, false, false, !time_focus, NULL);
+    fft_region_compose((uint16_t)(f.divider + 1), SCOPE_H / 2 - 2, full, hole, false, !f.time_focus, NULL);
+    if (full) draw_popup(f.th);
 }
 
 #endif

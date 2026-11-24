@@ -5,6 +5,7 @@
  */
 
 #include "scope_ui_parts.h"
+#include "canvas.h"
 
 /* Text laid out in column order: ctext_add records a string with its
  * position and colours (used by the spectrum and waterfall views), and
@@ -82,14 +83,63 @@ static void xy_axis(const scope_state_t *ss, uint8_t ch, uint8_t mn, uint8_t mx,
     }
 }
 
+/* What one X-Y frame streams: the trail (the persistence buffer) over a
+ * graticule of SCOPE_DIV_PX divisions about the centre (0 V at position 0 on
+ * both axes in true scale). A "no signal" note is composed into it. */
+typedef struct {
+    const theme_t *th;
+    const uint8_t *pb;          /* the persistence buffer, or NULL */
+    uint16_t x0, side;          /* the square: screen column of its left edge, side */
+    int      cxr, cyr;          /* its centre, in the square */
+    bool     have;              /* a record was drawn into the trail */
+    ctext_set_t T;              /* the title in the left margin */
+} xy_frame_t;
+
+static const char xy_nosig[] = "no signal";
+
+/* Pixel (rx, ry) of the square. */
+static uint16_t xy_px(const xy_frame_t *f, int rx, int ry)
+{
+    const theme_t *th = f->th;
+    const int nsx = f->cxr - 30, nsy = f->cyr - 16;
+    const int dxc = rx - f->cxr, dyc = ry - f->cyr;
+    const bool vline = (dxc % SCOPE_DIV_PX) == 0;
+    const uint8_t inten = f->pb ? f->pb[ry * PERSIST_WIDTH + (int)f->x0 + rx] : 0;
+    if (!f->have && rx >= nsx && ry >= nsy && ry < nsy + (int)font_small.height &&
+        font_text_px(xy_nosig, &font_small, rx - nsx, ry - nsy))
+        return th->warning;
+    if (inten)
+        return persist_intensity_to_color_ch1(inten);
+    if (dxc == 0 || dyc == 0)
+        return th->grid_center;
+    if ((vline && (ry & 1) == 0) || ((dyc % SCOPE_DIV_PX) == 0 && (rx & 1) == 0))
+        return th->grid;
+    return th->background;
+}
+
+/* The canvas's paint function: column x of the screen, the margins with
+ * their title included, so nothing in the band is left to another painter. */
+static void xy_paint(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    const xy_frame_t *const f = ctx;
+    const bool margin = x < f->x0 || x >= f->x0 + f->side;
+    for (int y = s->lo; y < s->hi; y++) {
+        uint16_t c = f->th->background;
+        if (margin) (void)ctext_px(&f->T, (int)x, y, &c);
+        else        c = xy_px(f, (int)x - (int)f->x0, y - s->lo);
+        s->px[y - s->lo] = c;
+    }
+}
+
 /*
  * Draw the X-Y view: CH1 on X, CH2 on Y, in a square at the centre of the
- * glass. Streams the whole square column by column, so there is no blank
- * phase. `full` also paints the side margins and the title text.
+ * glass, through the plot's canvas over the whole band (the margins and the
+ * title too): only the columns that changed are sent, and the popup box is a
+ * hole. `full` sends every column and paints the popup box.
  *
  * Steps: snapshot both records (re-copied when the frame generation moved),
  * find each axis scale, join consecutive samples with lines into the
- * persistence buffer, then stream the square from the buffer over a graticule.
+ * persistence buffer, then draw the square from the buffer over a graticule.
  */
 void draw_xy_screen(bool full)
 {
@@ -104,15 +154,6 @@ void draw_xy_screen(bool full)
      * scope_view_select (tasks/scope_apply.c) claims and clears when the view
      * is entered, on the input task. Nothing is initialised here. Without the
      * buffer the square says "no signal". */
-
-    if (full) {                                    /* margins and title, once */
-        lcd_fill_rect(0, SCOPE_TOP, x0, SCOPE_H, th->background);
-        lcd_fill_rect((uint16_t)(x0 + side), SCOPE_TOP,
-                      (uint16_t)(LCD_WIDTH - (x0 + side)), SCOPE_H, th->background);
-        font_draw_string(4, SCOPE_TOP + 2, "X-Y", th->text_secondary, th->background, &font_small);
-        font_draw_string(4, SCOPE_TOP + 16, "X=CH1", th->ch1, th->background, &font_small);
-        font_draw_string(4, SCOPE_TOP + 30, "Y=CH2", th->ch2, th->background, &font_small);
-    }
 
     const volatile uint8_t *xb = fpga_get_ch1_buf();
     const volatile uint8_t *yb = fpga_get_ch2_buf();
@@ -164,32 +205,22 @@ void draw_xy_screen(bool full)
         }
     }
 
-    /* Stream the square: the trail over a graticule of SCOPE_DIV_PX divisions
-     * about the centre (0 V at position 0 on both axes in true scale), no
-     * blank phase. A "no signal" note is composed into it, not drawn over it. */
-    static const char nosig[] = "no signal";
-    const int nsx = cxr - 30, nsy = cyr - 16;      /* in the square */
-    const uint8_t *pb = persist_get_buffer();
-    for (int rx = 0; rx < (int)side; rx++) {
-        const int dxc = rx - cxr;
-        const bool vline = (dxc % SCOPE_DIV_PX) == 0;
-        lcd_set_window((uint16_t)(x0 + rx), y0, 1, side);
-        for (int ry = 0; ry < (int)side; ry++) {
-            const int dyc = ry - cyr;
-            const uint8_t inten = pb ? pb[ry * PERSIST_WIDTH + (int)x0 + rx] : 0;
-            uint16_t c;
-            if (!have && rx >= nsx && ry >= nsy && ry < nsy + (int)font_small.height &&
-                font_text_px(nosig, &font_small, rx - nsx, ry - nsy))
-                c = th->warning;
-            else if (inten)
-                c = persist_intensity_to_color_ch1(inten);
-            else if (dxc == 0 || dyc == 0)
-                c = th->grid_center;
-            else if ((vline && (ry & 1) == 0) || ((dyc % SCOPE_DIV_PX) == 0 && (rx & 1) == 0))
-                c = th->grid;
-            else
-                c = th->background;
-            lcd_write_data(c);
-        }
-    }
+    const bool hole = popup_live();
+    popup_hole_last = hole;
+    xy_frame_t f = { .th = th, .pb = persist_get_buffer(), .x0 = x0, .side = side,
+                     .cxr = cxr, .cyr = cyr, .have = have };
+    f.T.n = 0;
+    ctext_add(&f.T, 4, SCOPE_TOP + 2, "X-Y", th->text_secondary, th->background, true);
+    ctext_add(&f.T, 4, SCOPE_TOP + 16, "X=CH1", th->ch1, th->background, true);
+    ctext_add(&f.T, 4, SCOPE_TOP + 30, "Y=CH2", th->ch2, th->background, true);
+    const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
+    const canvas_frame_t cf = {
+        .id = CANVAS_PLOT,
+        .rect = { 0, y0, LCD_WIDTH, side },
+        .holes = &popup, .nholes = hole ? 1u : 0u,
+        .all = full,
+        .paint = xy_paint, .ctx = &f,
+    };
+    (void)canvas_draw_columns(&cf);
+    if (full) draw_popup(th);
 }

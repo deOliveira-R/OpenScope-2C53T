@@ -2,8 +2,9 @@
 
 Status: agreed design (2026-11-20). Steps 1 to 5 of the order of work are
 done (the canvas, and Y-T, roll and the spectrum as display types on it), and
-the view table of step 8 exists (`firmware/src/ui/view_table.h`). X-Y, the
-waterfall and the split view's upper half still have their own renderers.
+the view table of step 8 exists (`firmware/src/ui/view_table.h`). Step 7's
+port is done: X-Y and both halves of split draw through canvases. The
+waterfall still has its own renderer.
 
 ## Why
 
@@ -190,7 +191,11 @@ from the screenshot copy after a full redraw and after a live update).
    frequency cursor; measure the hardware scroll.
 7. X-Y from the intensity buffer; split as two canvases, each half then
    with its domain's strip and cursors (the keys already follow the job the
-   arrows are on).
+   arrows are on). The port is done: each canvas has its own memory and its
+   own watch of its rows (`canvas_id_t`, `LCD_WATCH_SLOTS`), so split's halves
+   each skip what did not change; X-Y paints its whole band (the margins and
+   title too) from the trail; both keep the popup box as a hole. Open: the
+   strips and cursors of the halves and of X-Y, which change the picture.
 8. The view table: done for the keys (`view_table.h`: domains and jobs per
    `view.mode`). Open: the table also selects the renderer (today a switch
    on `scope_view` in `main.c`, with roll as a flag beside it), and the

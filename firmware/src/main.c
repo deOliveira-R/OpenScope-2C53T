@@ -535,10 +535,13 @@ static void scope_render(uint32_t frame, redraw_action_t action)
         case SCOPE_VIEW_XY:        draw_xy_screen(full);           break;
         default:                                                   break;
         }
-        /* The spectrum keeps a hole for the popup box, as Y-T does; the
-         * other views paint over it, so the box is put back each frame. */
-        if (scope_view == SCOPE_VIEW_FFT) { if (!full) scope_popup_overlay_tick(); }
-        else                              scope_popup_view_tick();
+        /* The canvas views keep a hole for the popup box, as Y-T does; the
+         * waterfall paints over it, so the box is put back each frame. */
+        if (scope_view != SCOPE_VIEW_WATERFALL) {
+            if (!full) scope_popup_overlay_tick();
+        } else {
+            scope_popup_view_tick();
+        }
         return;
     }
 #endif

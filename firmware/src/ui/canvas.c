@@ -13,17 +13,24 @@ static uint16_t s_strip[LCD_HEIGHT];
  * with a steady picture that is most of them. Two different strips hashing
  * alike would leave the old one on the glass until it changes again (one
  * chance in 2^32 for each change). */
-static uint32_t s_hash[LCD_WIDTH];
 
 #define CANVAS_HASH_SEED   2166136261u     /* FNV-1a offset basis */
 #define CANVAS_HASH_PRIME  16777619u       /* FNV-1a prime */
 
-/* What s_hash describes: the rectangle and holes of the last frame. Not
- * valid before the first frame. */
-static bool          s_valid;
-static canvas_rect_t s_rect;
-static canvas_rect_t s_holes[CANVAS_MAX_HOLES];
-static uint8_t       s_nholes;
+/* One canvas's memory: what each strip held when last sent (hash, indexed
+ * by screen column) and the rectangle and holes that describes. Not valid
+ * before its first frame. */
+typedef struct {
+    bool          valid;
+    canvas_rect_t rect;
+    canvas_rect_t holes[CANVAS_MAX_HOLES];
+    uint8_t       nholes;
+    uint32_t      hash[LCD_WIDTH];
+} canvas_mem_t;
+
+static canvas_mem_t s_mem[CANVAS_COUNT];
+
+_Static_assert(CANVAS_COUNT <= LCD_WATCH_SLOTS, "a watch slot per canvas");
 
 static bool rect_equal(const canvas_rect_t *a, const canvas_rect_t *b)
 {
@@ -47,6 +54,8 @@ static bool hole_clip(const canvas_rect_t *rect, const canvas_rect_t *hole, canv
 uint16_t canvas_draw_columns(const canvas_frame_t *f)
 {
     const canvas_rect_t *r = &f->rect;
+    if (f->id >= CANVAS_COUNT) return 0;
+    canvas_mem_t *const m = &s_mem[f->id];
     if (r->w == 0u || r->h == 0u || r->h > LCD_HEIGHT || r->x + r->w > LCD_WIDTH)
         return 0;
 
@@ -56,11 +65,11 @@ uint16_t canvas_draw_columns(const canvas_frame_t *f)
         if (hole_clip(r, &f->holes[i], &holes[nholes])) nholes++;
 
     /* May the memory of the last frame be trusted? */
-    bool same = s_valid && !f->all && rect_equal(r, &s_rect) && nholes == s_nholes;
+    bool same = m->valid && !f->all && rect_equal(r, &m->rect) && nholes == m->nholes;
     for (uint8_t i = 0; same && i < nholes; i++)
-        same = rect_equal(&holes[i], &s_holes[i]);
-    lcd_watch_rows(r->y, (uint16_t)(r->y + r->h));
-    if (lcd_watch_take()) same = false;
+        same = rect_equal(&holes[i], &m->holes[i]);
+    lcd_watch_rows(f->id, r->y, (uint16_t)(r->y + r->h));
+    if (lcd_watch_take(f->id)) same = false;
 
     const canvas_strip_t strip = { s_strip, (int16_t)r->y, (int16_t)(r->y + r->h) };
     uint16_t sent = 0;
@@ -69,8 +78,8 @@ uint16_t canvas_draw_columns(const canvas_frame_t *f)
 
         uint32_t hash = CANVAS_HASH_SEED;
         for (uint16_t i = 0; i < r->h; i++) hash = (hash ^ s_strip[i]) * CANVAS_HASH_PRIME;
-        if (same && hash == s_hash[x]) continue;
-        s_hash[x] = hash;
+        if (same && hash == m->hash[x]) continue;
+        m->hash[x] = hash;
         sent++;
 
         /* The column's rows in runs, top to bottom, stepping over each hole
@@ -97,10 +106,10 @@ uint16_t canvas_draw_columns(const canvas_frame_t *f)
 
     /* Discard the watch marks this frame's own writes left, so the next
      * frame sees only other painters'; the memory now describes the glass. */
-    (void)lcd_watch_take();
-    s_valid = true;
-    s_rect = *r;
-    s_nholes = nholes;
-    for (uint8_t i = 0; i < nholes; i++) s_holes[i] = holes[i];
+    (void)lcd_watch_take(f->id);
+    m->valid = true;
+    m->rect = *r;
+    m->nholes = nholes;
+    for (uint8_t i = 0; i < nholes; i++) m->holes[i] = holes[i];
     return sent;
 }
