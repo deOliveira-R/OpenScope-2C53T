@@ -1,13 +1,10 @@
 /*
- * OpenScope 2C53T - DFU Boot Entry
+ * OpenScope 2C53T - entry into our bootloader, and its boot handshake
  *
- * Writes a magic word to a fixed RAM address, then resets.
- * The bootloader at 0x08000000 checks this same address on startup.
- *
- * Address 0x20037FE0 is chosen to be:
- *   - Below _estack (0x20037FF0) — not touched by initial SP
- *   - Well above BSS end (~0x20036914) — not zeroed by startup
- *   - In the stack growth area, but only used momentarily before reset
+ * Two RAM words are shared with the bootloader at 0x08000000: the update
+ * request and its count of boots that have not checked in. Both sit just below
+ * _estack, which startup does not clear. Interrupts use that stack later, so
+ * the words only mean something across a hand-over.
  */
 
 #include "dfu_boot.h"
@@ -16,8 +13,9 @@
 #define DFU_MAGIC_ADDR   ((volatile uint32_t *)0x20037FE0)
 #define DFU_MAGIC_VALUE  0xDEADBEEF
 
-/* Boot validation counter — must match bootloader's definition */
+/* The boot count, as the bootloader defines it: magic in the upper half. */
 #define BOOT_COUNTER_ADDR    ((volatile uint32_t *)0x20037FDC)
+#define BOOT_COUNTER_MAGIC   0xB0070000
 
 /* Hand the chip to the bootloader at 0x08000000 WITHOUT a reset.
  *
@@ -85,27 +83,10 @@ void dfu_restart_app(void) {
     dfu_jump_to_bootloader();
 }
 
-void dfu_check_magic(void) {
-}
-
-/* Must match bootloader's definition */
-#define BOOT_COUNTER_MAGIC   0xB0070000
-
 void boot_validate(void) {
-    /* Reset the boot attempt counter to zero while preserving the magic
-     * marker. The bootloader checks (val & 0xFFFF0000) == BOOT_COUNTER_MAGIC
-     * to recognize a valid counter.
-     *
-     * Previously this wrote plain 0, which broke the 3-strike system:
-     * the bootloader wouldn't recognize 0 as a valid counter, so the
-     * fail count never accumulated across crashes that happen AFTER
-     * boot_validate() (e.g., FreeRTOS task crashes, watchdog resets).
-     *
-     * With the magic preserved, the flow is:
-     *   Boot 1: bootloader writes MAGIC|1, app writes MAGIC|0 (success)
-     *   Boot 2: bootloader writes MAGIC|1, app crashes → watchdog reset
-     *   Boot 3: bootloader writes MAGIC|2, app crashes → watchdog reset
-     *   Boot 4: bootloader sees count=3 ≥ BOOT_FAIL_MAX → safe mode */
+    /* The bootloader adds one before every jump here and opens SAFE MODE at
+     * three, on an entry where RAM survived. Without this write, successive
+     * updates in one power-on would add up to a false SAFE MODE. */
     *BOOT_COUNTER_ADDR = BOOT_COUNTER_MAGIC;  /* count = 0, magic preserved */
     __DSB();
 }

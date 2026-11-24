@@ -1,27 +1,11 @@
 /*
- * OpenScope 2C53T - Software DFU Boot Entry
- *
- * Provides two ways to enter the AT32's built-in USB DFU bootloader
- * without needing physical access to the BOOT0 pad:
- *
- *   1. dfu_request_reboot() — called from Settings menu "Firmware Update"
- *      Writes a magic word to RAM, resets, early boot code detects it
- *      and jumps to the ROM bootloader.
- *
- *   2. The HID bootloader checks POWER+PRM during reset. POWER alone is the
- *      normal battery power-on gesture and must not force recovery.
- *
- * After entering DFU mode, flash with:
- *   dfu-util -a 0 -d 2e3c:df11 -s 0x08000000:leave -D firmware.bin
+ * OpenScope 2C53T - entry into our bootloader, and its boot handshake
  */
 
 #ifndef DFU_BOOT_H
 #define DFU_BOOT_H
 
-/*
- * Request reboot into DFU mode. Writes magic word to RAM and resets.
- * This function does not return.
- */
+/* Open the bootloader's update screen, power held. Does not return. */
 void dfu_request_reboot(void);
 
 /*
@@ -31,20 +15,8 @@ void dfu_request_reboot(void);
 void dfu_restart_app(void);
 
 /*
- * Check for the DFU magic word in RAM (set by dfu_request_reboot).
- * If found, clears it and jumps to bootloader. Call before main().
- * Returns normally if no magic word found.
- */
-void dfu_check_magic(void);
-
-/*
- * Boot validation: signal to the bootloader that the app started successfully.
- * Clears the boot attempt counter in RAM. Must be called once during init,
- * after LCD is confirmed working and FreeRTOS is about to start.
- *
- * If the app crashes before calling this, the IWDG fires, the MCU resets,
- * and the bootloader's counter increments. After 3 consecutive failures,
- * the bootloader enters safe mode (USB flash) automatically.
+ * Tell the bootloader this boot succeeded: its count of unconfirmed boots goes
+ * back to zero. Call once, after the tasks are created.
  */
 void boot_validate(void);
 

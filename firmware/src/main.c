@@ -1170,7 +1170,6 @@ int main(void)
 
     /* Check if previous run requested DFU reboot (magic word in RAM).
      * RAM persists across soft reset, so the magic word survives. */
-    dfu_check_magic();
 
     /* There is no boot-button entry to DFU: PC8 (POWER) reads low during
      * power-on, being the button that turns the unit on. Settings > Firmware
