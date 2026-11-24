@@ -42,6 +42,7 @@
 #include "usb_debug.h"      /* Settings "USB Sharing" */
 #endif
 #include "task.h"
+#include "power.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -94,9 +95,12 @@ static void power_off_now(void)
      * record just written and the last screen is already noted. Bounded: a
      * failed or refused save ends the call, the power-off goes on. */
     (void)session_snapshot_save();
+    /* POWER may still be down, which keeps the rail up until it is let go. */
+    health_powering_off();
     sys_pwm_backlight_off();
-    GPIOC->clr = (1U << 9);
-    while (1) { }
+    power_hold_release();
+    vTaskSuspend(NULL);
+    for (;;) { }                /* not reached */
 }
 
 /* A setting changed from the shell (e.g. `set sys.startup`) has no key press

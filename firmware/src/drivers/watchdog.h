@@ -81,6 +81,10 @@ void health_checkin_self(void);
  * called from the health timer's callback. */
 void health_check(void);
 
+/* The unit is switching off and only a held POWER key still keeps it up: there
+ * is nothing left to judge, so the monitor just feeds until the rail goes. */
+void health_powering_off(void);
+
 /* Get read-only pointer to task health array (for diagnostics display) */
 const task_health_t *health_get_tasks(void);
 

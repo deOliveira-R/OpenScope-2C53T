@@ -5,6 +5,7 @@
 #include "fault.h"
 #include "crash_policy.h"
 #include "dfu_boot.h"
+#include "power.h"
 #include "at32f403a_407.h"
 /* Deliberately NOT including FreeRTOS headers: nothing in the fault path
  * may call a FreeRTOS API. See the note in fault_capture(). */
@@ -52,9 +53,6 @@ static uint32_t boot_test __attribute__((section(".noinit")));
 #define FAULT_FRAME_WORDS          8u
 #define FAULT_XPSR_THUMB                 0x01000000u
 #define FAULT_EXC_RETURN_THREAD      0xFFFFFFF9u
-/* PC8, the POWER key: active low. PC9 is the power latch. */
-#define FAULT_POWER_KEY_MASK       (1u << 8)
-#define FAULT_POWER_HOLD_MASK      (1u << 9)
 /* Reads of the key in a row that count as a level: tens of ms at 240 MHz, past
  * contact bounce. */
 #define FAULT_KEY_STABLE_READS     1000000u
@@ -179,7 +177,7 @@ uint32_t fault_restarts_in_a_row(void)
 static void fault_wait_key(bool pressed)
 {
     for (uint32_t same = 0u; same < FAULT_KEY_STABLE_READS; ) {
-        const bool now = (GPIOC->idt & FAULT_POWER_KEY_MASK) == 0u;
+        const bool now = power_key_down();
         same = (now == pressed) ? same + 1u : 0u;
     }
 }
@@ -191,7 +189,7 @@ static void fault_stop(void)
 {
     fault_wait_key(false);
     fault_wait_key(true);
-    GPIOC->clr = FAULT_POWER_HOLD_MASK;
+    power_hold_release();
     for (;;) { }
 }
 

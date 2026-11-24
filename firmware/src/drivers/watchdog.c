@@ -32,6 +32,7 @@
 static task_health_t health_tasks[HEALTH_MAX_TASKS];
 static int health_count = 0;
 static health_gap_t health_timer;      /* the monitor itself, one mark per health_check() */
+static volatile bool health_off;      /* health_powering_off() */
 
 #define HEALTH_DEADLINE_TICKS  ((uint32_t)pdMS_TO_TICKS(HEALTH_DEADLINE_MS))
 
@@ -158,11 +159,20 @@ bool health_is_stalled(int slot)
     return health_gap_quiet(&health_tasks[slot].gap, xTaskGetTickCount()) > HEALTH_DEADLINE_TICKS;
 }
 
+void health_powering_off(void)
+{
+    health_off = true;
+}
+
 void health_check(void)
 {
     const task_health_t *stalled = NULL;
 
     health_gap_mark(&health_timer, xTaskGetTickCount(), HEALTH_DEADLINE_TICKS);
+    if (health_off) {
+        watchdog_feed();
+        return;
+    }
 
     for (int i = 0; i < health_count; i++) {
         if (!health_tasks[i].registered)

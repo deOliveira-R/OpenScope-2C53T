@@ -26,6 +26,7 @@ extern void system_clock_config(void);
 #include "signal_gen.h"
 #include "ui/scope_freq.h"
 #include "watchdog.h"
+#include "power.h"
 #include "scope_state.h"
 #include "scope_cal.h"
 #include "scope_vpos.h"
@@ -1158,7 +1159,7 @@ int main(void)
     /* Power hold — PC9 HIGH to keep device on (MUST be first!) */
     crm_periph_clock_enable(CRM_GPIOC_PERIPH_CLOCK, TRUE);
     GPIOC->cfghr = (GPIOC->cfghr & ~(0xF << 4)) | (0x3 << 4); /* PC9 push-pull 50MHz */
-    GPIOC->scr = (1 << 9);  /* PC9 HIGH */
+    power_hold_set();
 
     /* Set VTOR. Normal build runs at 0x08004000 under our HID bootloader;
      * GUEST_BUILD runs at 0x08007000 under the FNIRSI stock bootloader (unit #2). */

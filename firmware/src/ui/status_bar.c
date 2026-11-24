@@ -14,6 +14,7 @@
 
 #include "ui.h"
 #include "status_bar.h"
+#include "power.h"
 #include "icons.h"
 #include "key_model.h"          /* key_focus_t (read only) */
 #include "lcd.h"
@@ -452,7 +453,7 @@ void draw_status_bar(void)
                                     th->text_secondary, 0x0000, &font_medium);
             /* Brief delay so user can see the message */
             for (volatile uint32_t d = 0; d < 100000000; d++);
-            GPIOC->clr = (1U << 9);  /* PC9 LOW = power off */
+            power_hold_release();
             while (1);
         }
     }

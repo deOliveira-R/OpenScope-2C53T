@@ -7,7 +7,7 @@ src/model/   -
 src/stream/  -
 # GPIO: per-port .cfg (CFGLR/CFGHR, read-modify-write) and .out (SCR/CLR/ODT). Pin ownership: src/drivers/pins.h (review).
 GPIO*.*      drivers/fpga.c drivers/fpga_boot.c drivers/scope_frontend.c drivers/meter_link.c drivers/fpga_internal.h drivers/button_scan.c drivers/lcd.c drivers/sys_pwm.c drivers/flash_fs.c
-             drivers/power.c drivers/dac.c drivers/dac_output.c drivers/scope_trigger.c drivers/battery.c drivers/continuity_buzzer.c
+             drivers/power.c drivers/power.h drivers/dac.c drivers/dac_output.c drivers/scope_trigger.c drivers/battery.c drivers/continuity_buzzer.c
              drivers/usb_cdc.c:usb_debug_init
 ?PTR         drivers/fpga.c drivers/meter_link.c drivers/button_scan.c drivers/sys_pwm.c drivers/continuity_buzzer.c
 DAC          drivers/dac.c                         # both channels: CH1 offset (PA4) and generator (PA5)
