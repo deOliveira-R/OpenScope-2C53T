@@ -829,7 +829,7 @@ test-canvas: $(BUILD_DIR)/test_canvas
 # position 0 on the centre line, one division = the range's nominal volts/div,
 # rails, clipping); autofit equal to the former autofit, code for code; split
 # bands only when both channels autofit.
-$(BUILD_DIR)/test_yt_vmap: tests/test_yt_vmap.c src/ui/yt_vmap.h src/ui/scope_cal.c \
+$(BUILD_DIR)/test_yt_vmap: tests/test_yt_vmap.c src/ui/yt_vmap.h src/ui/plot_pane.h src/ui/scope_cal.c \
                            src/ui/scope_cal.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< src/ui/scope_cal.c -lm -o $@
 

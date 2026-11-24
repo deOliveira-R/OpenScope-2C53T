@@ -670,9 +670,8 @@ void draw_split_screen(uint32_t frame, bool full)
             f.on[ch] = ch ? ss->ch2.enabled : ss->ch1.enabled;
             if (!f.on[ch]) continue;
             if (ss->true_scale && scope_cal_true_scale_ok((uint8_t)(ch + 1u), r)) {
-                yt_vmap_true(&f.m[ch], (int16_t)f.top, (int16_t)f.divider, (int16_t)f.mid, (int8_t)ch,
-                             yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
-                f.m[ch].h = SPLIT_DIV_PX * 100;         /* half-height divisions */
+                yt_vmap_true(&f.m[ch], (int16_t)f.top, (int16_t)f.divider, (int16_t)f.mid, SPLIT_DIV_PX,
+                             (int8_t)ch, yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
             } else {
                 autofit_prep(&f.m[ch], yt_cols[ch], (int16_t)f.top, (int16_t)f.divider, (int8_t)ch);
             }

@@ -15,13 +15,14 @@
 #include "canvas.h"
 #include "theme.h"
 #include "yt_vmap.h"
+#include "plot_pane.h"
 
-/* The graticule of the time views (scope_geom.h): dotted lines every
- * division, a solid centre cross, in the 301 columns from 0. Columns right
- * of them carry none. */
-void plot_grid_paint(const theme_t *th, uint16_t x, const canvas_strip_t *s);
+/* The graticule of the time views in pane p (scope_geom.h, plot_pane.h):
+ * dotted lines every division, a solid centre cross, in the 301 columns from
+ * 0. Columns right of them carry none. */
+void plot_grid_paint(const theme_t *th, const plot_pane_t *p, uint16_t x, const canvas_strip_t *s);
 /* The same as a rule for one pixel: its colour into *c, or false. */
-bool plot_grid_px(const theme_t *th, uint16_t x, int y, uint16_t *c);
+bool plot_grid_px(const theme_t *th, const plot_pane_t *p, uint16_t x, int y, uint16_t *c);
 
 /* What one column of one trace shows. */
 typedef struct {

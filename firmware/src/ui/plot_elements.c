@@ -7,26 +7,26 @@
 
 _Static_assert(PLOT_RAIL_COLS == SCOPE_GEOM_COLS, "one rail bit per graticule column");
 
-void plot_grid_paint(const theme_t *th, uint16_t x, const canvas_strip_t *s)
+void plot_grid_paint(const theme_t *th, const plot_pane_t *p, uint16_t x, const canvas_strip_t *s)
 {
     if (x >= SCOPE_GEOM_COLS) return;
     if (scope_geom_vgrid((int)x))                           /* dotted vertical line: every other row */
-        for (int y = SCOPE_TOP; y < s->hi; y++)
+        for (int y = p->top; y < s->hi; y++)
             if ((y & 1) == 0) strip_put(s, y, th->grid);
     if ((x & 1u) == 0)                                      /* dotted horizontal lines: every other column */
-        for (int y = SCOPE_TOP; y < s->hi; y += SCOPE_DIV_PX) strip_put(s, y, th->grid);
+        for (int y = p->top; y < s->hi; y += p->div_px) strip_put(s, y, th->grid);
     if (x == SCOPE_GEOM_CENTER_COL)
         strip_span(s, s->lo, s->hi - 1, th->grid_center);
     else
-        strip_put(s, SCOPE_GRID_MID_Y, th->grid_center);
+        strip_put(s, p->grid_mid, th->grid_center);
 }
 
-bool plot_grid_px(const theme_t *th, uint16_t x, int y, uint16_t *c)
+bool plot_grid_px(const theme_t *th, const plot_pane_t *p, uint16_t x, int y, uint16_t *c)
 {
     if (x >= SCOPE_GEOM_COLS) return false;
-    if (y == SCOPE_GRID_MID_Y || x == SCOPE_GEOM_CENTER_COL) { *c = th->grid_center; return true; }
+    if (y == p->grid_mid || x == SCOPE_GEOM_CENTER_COL) { *c = th->grid_center; return true; }
     if ((scope_geom_vgrid((int)x) && (y & 1) == 0) ||
-        (((y - SCOPE_TOP) % SCOPE_DIV_PX) == 0 && (x & 1u) == 0)) { *c = th->grid; return true; }
+        (((y - p->top) % p->div_px) == 0 && (x & 1u) == 0)) { *c = th->grid; return true; }
     return false;
 }
 

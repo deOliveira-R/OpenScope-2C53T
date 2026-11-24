@@ -38,6 +38,15 @@ void scope_ui_plot_clip_set(uint8_t at_limit, uint8_t off_plot)
 uint8_t scope_ui_plot_at_limit(void) { return s_at_limit; }
 uint8_t scope_ui_off_plot(void)      { return s_off_plot; }
 
+/* The cursor state keeps its horizontal lines as rows of this pane. */
+_Static_assert(CURSOR_SCOPE_TOP == SCOPE_TOP && CURSOR_SCOPE_BOT == SCOPE_BOT,
+               "the cursor rows (view.curh) are rows of the full plot");
+
+plot_pane_t scope_pane_full(const scope_state_t *ss)
+{
+    return plot_pane_make(CANVAS_PLOT, SCOPE_TOP, SCOPE_BOT, (int16_t)strip_top(ss));
+}
+
 /* The rows between the status bar and the plot belong to the scope screen:
  * a full paint of any of its views starts with them. */
 void scope_ui_paint_margin(void)
@@ -62,7 +71,8 @@ void draw_scope_screen(uint32_t frame)
     const theme_t *th = theme_get();
     const scope_state_t *ss = scope_state_get();
 
-    scope_yt_draw(true, frame);
+    const plot_pane_t pane = scope_pane_full(ss);
+    scope_yt_draw(&pane, true, frame);
 
     /* The measurement strip's rows, between the band and the info bar: its
      * cells and its AUX row (the CAN line, the cursor readout or the mask
@@ -81,5 +91,6 @@ void draw_scope_screen(uint32_t frame)
  * box is kept up by scope_popup_overlay_tick. */
 void draw_scope_live_frame(uint32_t frame)
 {
-    scope_yt_draw(false, frame);
+    const plot_pane_t pane = scope_pane_full(scope_state_get());
+    scope_yt_draw(&pane, false, frame);
 }

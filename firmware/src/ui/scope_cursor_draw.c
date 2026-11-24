@@ -7,6 +7,30 @@
 #include "scope_ui_parts.h"
 #include "canvas.h"
 
+/* The pane the time view last drew its cursors in (cursor_layer_build):
+ * the cursor state keeps its horizontal lines as rows of the full plot, and
+ * the lines and the readout put them on this pane's graticule. Before the
+ * first frame, the full plot. */
+static plot_pane_t s_cur_pane;
+static bool        s_cur_pane_set;
+
+static const plot_pane_t *cursor_pane(void)
+{
+    if (!s_cur_pane_set) {
+        s_cur_pane = scope_pane_full(scope_state_get());
+        s_cur_pane_set = true;
+    }
+    return &s_cur_pane;
+}
+
+/* Cursor row y (a row of the full plot, as the cursor state keeps it) on
+ * the pane the cursors are drawn in. */
+static int16_t cursor_row(const plot_pane_t *p, uint16_t y)
+{
+    const plot_pane_t full = scope_pane_full(scope_state_get());
+    return plot_pane_row_to(&full, p, (int)y);
+}
+
 /* The vertical transform for cursor rows y_a and y_b, as the renderer last
  * drew it: the math trace's scale while math is on, otherwise the band that
  * contains BOTH rows (g_vband). counts_per_pixel 0 when there is none, so a
@@ -20,7 +44,7 @@ static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
          * any other math unit leaves counts_per_pixel 0 -> pixels. */
         vm.channel   = 0u;                 /* named "m" by cursor_readout */
         vm.mid_known = 1u;
-        vm.mid_row   = (int16_t)SCOPE_GRID_MID_Y;
+        vm.mid_row   = cursor_pane()->grid_mid;
         vm.direct         = g_math_cur.direct;
         vm.direct_conf    = g_math_cur.conf;
         vm.unit_per_pixel = g_math_cur.unit_per_px;
@@ -71,10 +95,12 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
     r = scope_cursor_one_over_dt_fs(fs, cf, c->v1_x, c->v2_x, ord);
     scope_cursor_format(&r, ix, 16);
 
-    scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
-    r = scope_cursor_y(&vm, c->h1_y);                 scope_cursor_format(&r, y1, 16);
-    r = scope_cursor_y(&vm, c->h2_y);                 scope_cursor_format(&r, y2, 16);
-    r = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y, ord);   /* Y1-Y2 */
+    const uint16_t h1 = (uint16_t)cursor_row(cursor_pane(), c->h1_y);
+    const uint16_t h2 = (uint16_t)cursor_row(cursor_pane(), c->h2_y);
+    scope_cursor_vmap_t vm = cursor_vmap_for(h1, h2);
+    r = scope_cursor_y(&vm, h1);                      scope_cursor_format(&r, y1, 16);
+    r = scope_cursor_y(&vm, h2);                      scope_cursor_format(&r, y2, 16);
+    r = scope_cursor_delta_v(&vm, h1, h2, ord);       /* Y1-Y2 */
     scope_cursor_format(&r, dy, 16);
     if (fs_out) *fs_out = fs.hz;
 }
@@ -140,14 +166,18 @@ static void cursor_layer_lines(const cursor_state_t *c, const int16_t vx[2], con
     }
 }
 
-/* The cursor layer of the time views: the lines where the cursor state has
- * them, in screen pixels. */
-void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L)
+/* The cursor layer of the time views in pane p: the vertical lines on the
+ * columns the cursor state has, the horizontal ones at the same place on
+ * the pane's graticule as on the full plot's. p becomes the pane the readout
+ * converts with. */
+void cursor_layer_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p, cur_layer_t *L)
 {
+    s_cur_pane = *p;
+    s_cur_pane_set = true;
     const cursor_state_t *c = &ss->cursor;
     const int16_t vx[2] = { (int16_t)c->v1_x, (int16_t)c->v2_x };
-    const int16_t hy[2] = { (int16_t)c->h1_y, (int16_t)c->h2_y };
-    cursor_layer_lines(c, vx, hy, SCOPE_TOP, th, L);
+    const int16_t hy[2] = { cursor_row(p, c->h1_y), cursor_row(p, c->h2_y) };
+    cursor_layer_lines(c, vx, hy, p->top, th, L);
 }
 
 /* The cursor layer of a spectrum: the lines where their bins and levels fall
@@ -248,9 +278,10 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
     if (k < n && (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH)) {
         /* Second minus first, as dt; screen y grows downward. A delta that
          * straddles two differently-scaled bands stays in pixels. */
-        scope_cursor_vmap_t vm = cursor_vmap_for(c->h1_y, c->h2_y);
-        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, c->h1_y, c->h2_y,
-                                                         CUR_SECOND_MINUS_FIRST);
+        const uint16_t h1 = (uint16_t)cursor_row(cursor_pane(), c->h1_y);
+        const uint16_t h2 = (uint16_t)cursor_row(cursor_pane(), c->h2_y);
+        scope_cursor_vmap_t vm = cursor_vmap_for(h1, h2);
+        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, h1, h2, CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&dv, buf, sizeof(buf));
         if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
             (void)snprintf(out + k, n - k, "  dVm=%s", buf);

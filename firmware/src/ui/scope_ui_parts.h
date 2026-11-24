@@ -25,6 +25,7 @@
 #include "scope_freq.h"
 #include "scope_geom.h"
 #include "yt_vmap.h"
+#include "plot_pane.h"
 #include "math_channel.h"
 #include "paused_view.h"
 #include "persistence.h"
@@ -59,7 +60,7 @@
 
 #define SCOPE_MID_Y     (SCOPE_TOP + SCOPE_H / 2)  /* plot middle row; the pixel convention's 0 */
 
-#define SCOPE_DIV_PX    26      /* graticule division, rows (grid + math scale) */
+#define SCOPE_DIV_PX    PLOT_PANE_DIV_PX(SCOPE_H)  /* the full plot's graticule division: 26 rows */
 
 /* A trace is this many rows thick: the sample's row and the rows under it
  * (Y-T, roll and the demo picture). */
@@ -176,6 +177,7 @@ typedef struct {
     math_op_t  op;
     math_in_t  in;
     float      step;
+    plot_pane_t pane;           /* the pane it is drawn in: step per division about its centre line */
     char       label[24];
 } math_frame_t;
 
@@ -217,6 +219,9 @@ typedef union {
 extern ui_draw_scratch_t ui_draw_scratch;
 
 /* scope_ui.c */
+/* The time view's pane when it fills the plot: SCOPE_TOP to SCOPE_BOT, its
+ * traces ending at the measurement strip's top, on the plot's canvas. */
+plot_pane_t scope_pane_full(const scope_state_t *ss);
 /* A time view's frame reports the channels it drew at the converter's limit
  * and off the plot (bit 0 CH1, bit 1 CH2). */
 void scope_ui_plot_clip_set(uint8_t at_limit, uint8_t off_plot);
@@ -275,8 +280,9 @@ int16_t autofit_y(const autofit_t *a, uint8_t v);
 uint8_t yt_centre_code(void);
 /* Record code of channel ch's 0 V at its current position. */
 int chan_zero_code(const scope_state_t *ss, uint8_t ch);
-/* The trigger-position pointer covers pixel (x, y) for trigger column trig_x. */
-bool tpos_px(int trig_x, int x, int y);
+/* The trigger-position pointer covers column x, row dy under the plot's top,
+ * for trigger column trig_x. */
+bool tpos_px(int trig_x, int x, int dy);
 /* How a record is placed in the plot: the window, the column where the
  * trigger point landed and what the placement was anchored on. */
 typedef enum {
@@ -302,9 +308,9 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
                        const volatile uint8_t *b2);
 
 /* scope_yt.c */
-/* Draw the Y-T plot through the canvas: every column (all) or only the
- * columns that changed. frame: the display's frame counter. */
-void scope_yt_draw(bool all, uint32_t frame);
+/* Draw the Y-T plot into pane p through its canvas: every column (all) or
+ * only the columns that changed. frame: the display's frame counter. */
+void scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame);
 
 /* scope_yt_frame.c */
 /* Each plotted band's vertical transform this frame, for the cursors. */
@@ -323,16 +329,15 @@ void vband_clear(void);
 /* Record the map band slot was drawn with, for the cursors. */
 void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
                        const autofit_t *a, float counts_per_pixel);
-/* Row of the hardware trigger level through map a. */
-int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a);
-/* The two Y-T maps for the window in yt_cols. */
-void yt_fits(const scope_state_t *ss, uint16_t band_bot, autofit_t *a1, autofit_t *a2);
+/* Row of the hardware trigger level through map a, in pane p. */
+int16_t trigger_marker_y(const scope_state_t *ss, const plot_pane_t *p, const autofit_t *a);
+/* The two Y-T maps for the window in yt_cols, in pane p. */
+void yt_fits(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autofit_t *a2);
 /* Both maps off: nothing is plotted. */
 void yt_fits_none(autofit_t *a1, autofit_t *a2);
-/* Build the plot-edge tag set m from the maps as drawn. */
-void markers_build(const scope_state_t *ss, const theme_t *th,
-                          const autofit_t *a1, const autofit_t *a2,
-                          int band_bot, pm_set_t *m);
+/* Build the plot-edge tag set m from the maps as drawn in pane p. */
+void markers_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p,
+                   const autofit_t *a1, const autofit_t *a2, pm_set_t *m);
 /* Colour of tag set m at pixel (x, y), or false. */
 bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
                               uint16_t *c);
@@ -348,20 +353,23 @@ bool mask_px_fail(int8_t ch, int x);
 uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted);
 /* A record is drawn this frame, so yt_cols is valid for the math trace. */
 extern bool     g_math_live;
-/* Add trace rows prev_y..y at column x to the persistence buffer. */
-void persist_note(uint16_t x, int16_t prev_y, int16_t y);
-/* Clear persistence on a geometry change, then fade it by wall time. */
-void persist_frame_decay(void);
+/* Add trace rows prev_y..y (screen rows of pane p) at column x to the
+ * persistence buffer. */
+void persist_note(const plot_pane_t *p, uint16_t x, int16_t prev_y, int16_t y);
+/* Clear persistence on a geometry change (pane p's among it), then fade it
+ * by wall time. */
+void persist_frame_decay(const plot_pane_t *p);
 /* A ghost's base colour at screen row y. */
 uint16_t persist_base(const scope_state_t *ss, const theme_t *th, bool lower);
-/* Prepare this frame's math trace: inputs, scale, label, cursor scale. */
-void math_prepare(const scope_state_t *ss, math_frame_t *mf);
+/* Prepare this frame's math trace in pane p: inputs, scale, label, cursor scale. */
+void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *mf);
 /* Row of the math trace at column x. */
 int16_t math_row(const math_frame_t *mf, uint16_t x);
 
 /* scope_cursor_draw.c */
-/* Build the cursor layer L from the cursor state. */
-void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t *L);
+/* Build the cursor layer L from the cursor state, in pane p (which the
+ * readout then converts with). */
+void cursor_layer_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p, cur_layer_t *L);
 /* The cursor layer of a spectrum drawn on the axes ax. */
 void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,
                                  cur_layer_t *L);

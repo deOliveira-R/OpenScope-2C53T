@@ -69,7 +69,7 @@ volatile uint32_t ui_scope_view_us_last;
 #define DEMO_SQUARE_OFFSET     50      /* the square sits this many rows under the middle */
 #define DEMO_SQUARE_AMP_ROWS   25
 #define DEMO_LABEL_X           4
-#define DEMO_LABEL_Y           (SCOPE_TOP + 14)
+#define DEMO_LABEL_DY          14      /* rows under the pane's top */
 
 /* ── One frame ── */
 
@@ -79,11 +79,11 @@ volatile uint32_t ui_scope_view_us_last;
 typedef struct {
     const theme_t          *th;
     const scope_state_t    *ss;
+    plot_pane_t  p;                         /* the pane it is drawn in */
     bool         record;                    /* a record is shown (else nothing, or the demo) */
     bool         demo;                      /* no record has ever arrived: the demo picture */
     uint32_t     demo_phase;
     const volatile uint8_t *b1, *b2;        /* the window's columns (yt_cols) */
-    uint16_t     band_bot;                  /* the band's end: the measurement strip's top */
     autofit_t    a1, a2;                    /* the two maps (yt_fits); off without a record */
     pm_set_t     pm;                        /* the edge tags */
     cur_layer_t  cl;                        /* the cursor layer */
@@ -130,17 +130,14 @@ typedef struct {
  * (vband, g_math_cur), the mask overlay, persistence (decay), the latch that
  * says a record has been seen. frame: the display's frame counter, the
  * demo's phase. */
-static void yt_prepare(yt_frame_t *f, uint32_t frame)
+static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
 {
+    f->p = *p;
     const theme_t *const th = f->th = theme_get();
     const scope_state_t *const ss = f->ss = scope_state_get();
     const volatile uint8_t *b1 = fpga_get_ch1_buf();
     const volatile uint8_t *b2 = fpga_get_ch2_buf();
     f->record = fpga_data_ready() && b1 != NULL && b2 != NULL;
-
-    /* The band stops at the measurement strip's top, which moves with the
-     * selection (strip_top, scope_furniture.c). The strip paints itself. */
-    f->band_bot = strip_top(ss);
 
     /* Forget last frame's vertical scales: a band that is not plotted this
      * frame must leave the cursors reporting pixels, not converting through
@@ -158,10 +155,10 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
         ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
         mask_overlay_begin();
         g_math_live = true;            /* yt_cols is this frame's window */
-        /* A fitted trace is stretched over the rows above the strip; a
-         * true-scale one keeps the graticule, and the strip covers its last
-         * rows. */
-        yt_fits(ss, f->band_bot, &f->a1, &f->a2);
+        /* A fitted trace is stretched over the pane's rows above
+         * band_bot; a true-scale one keeps the graticule, and anything under
+         * band_bot (the measurement strip) covers its last rows. */
+        yt_fits(ss, p, &f->a1, &f->a2);
         plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
         plot_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
         uint8_t slot = 0;
@@ -183,15 +180,15 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
     f->demo_phase = demo_frozen;
 
     /* The tags, on the same maps. */
-    markers_build(ss, th, &f->a1, &f->a2, f->band_bot, &f->pm);
+    markers_build(ss, th, p, &f->a1, &f->a2, &f->pm);
 
-    cursor_layer_build(ss, th, &f->cl);
+    cursor_layer_build(ss, th, p, &f->cl);
     f->curs = f->cl.v || f->cl.h;
 
     /* Math: one row per column, its label as per-pixel text. After
      * vband_clear, which also forgets the math scale math_prepare sets. */
     f->mth = math_enabled;
-    if (f->mth) math_prepare(ss, &f->mf);
+    if (f->mth) math_prepare(ss, p, &f->mf);
     f->mlab_w = f->mth ? (int16_t)font_string_width(f->mf.label, &font_small) : 0;
 
     /* Persistence: the ghosts are read from the shared-pool buffer
@@ -199,16 +196,16 @@ static void yt_prepare(yt_frame_t *f, uint32_t frame)
      * per frame; this frame's traces are added to it column by column after
      * the column's ghosts were read (yt_paint_column). */
     f->pbuf = (persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
-    if (f->pbuf) persist_frame_decay();
+    if (f->pbuf) persist_frame_decay(p);
     f->pbase_top = persist_base(ss, th, false);
     f->pbase_bot = persist_base(ss, th, true);
-    f->pbase_mid = (uint16_t)yt_vmap_band_mid(SCOPE_TOP, (int16_t)f->band_bot);
+    f->pbase_mid = (uint16_t)yt_vmap_band_mid(p->top, p->band_bot);
 
     /* The trigger line: on the trigger source's map, at the record code
      * where the hardware fires (trigger_marker_y). */
-    f->trig_y = trigger_marker_y(ss, (ss->trigger.source == TRIG_SRC_CH2) ? &f->a2 : &f->a1);
-    if (f->trig_y < SCOPE_TOP + TRIG_LINE_MARGIN_TOP) f->trig_y = SCOPE_TOP + TRIG_LINE_MARGIN_TOP;
-    if (f->trig_y > SCOPE_BOT - TRIG_LINE_MARGIN_BOT) f->trig_y = SCOPE_BOT - TRIG_LINE_MARGIN_BOT;
+    f->trig_y = trigger_marker_y(ss, p, (ss->trigger.source == TRIG_SRC_CH2) ? &f->a2 : &f->a1);
+    if (f->trig_y < p->top + TRIG_LINE_MARGIN_TOP) f->trig_y = (int16_t)(p->top + TRIG_LINE_MARGIN_TOP);
+    if (f->trig_y > p->bot - TRIG_LINE_MARGIN_BOT) f->trig_y = (int16_t)(p->bot - TRIG_LINE_MARGIN_BOT);
     f->trig_dots = (key_focus_get() == KF_TRIGMOVE) ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
 
     f->p1 = f->p2 = f->mp = 0;
@@ -238,7 +235,7 @@ static void yt_column(yt_frame_t *f, uint16_t x, yt_col_t *c)
         plot_trace_col_t *const t = &c->tr[ch];
         t->on = a[ch]->on && c->trace;
         if (t->on) {
-            plot_trace_col(t, a[ch], autofit_y_raw(a[ch], b[ch][x]), joined, *prev[ch], (int)f->band_bot,
+            plot_trace_col(t, a[ch], autofit_y_raw(a[ch], b[ch][x]), joined, *prev[ch], (int)f->p.band_bot,
                            plot_rail_at(f->rail[ch], x),
                            mask_px_fail((int8_t)ch, (int)x) ? th->warning : ch_color[ch], th);
             *prev[ch] = t->y;
@@ -312,7 +309,7 @@ static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const 
     }
     /* The frame's values in locals: the strip is written through a pointer
      * the compiler must assume could point at them. */
-    const uint8_t *in = &f->pbuf[(s->lo - SCOPE_TOP) * PERSIST_WIDTH + x];
+    const uint8_t *in = &f->pbuf[(s->lo - f->p.top) * PERSIST_WIDTH + x];
     const uint16_t base_top = f->pbase_top, base_bot = f->pbase_bot, mid = f->pbase_mid;
     for (uint16_t i = 0; i < rows; i++, in += PERSIST_WIDTH)
         px[i] = *in ? yt_ghost(*in, (uint16_t)(s->lo + i), mid, base_top, base_bot, bg) : bg;
@@ -322,7 +319,7 @@ static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const 
 static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)c;
-    plot_grid_paint(f->th, x, s);
+    plot_grid_paint(f->th, &f->p, x, s);
 }
 
 /* The trigger level, a dotted line across the plot. */
@@ -370,17 +367,17 @@ static void el_demo(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
     if (lx >= 0 && lx < (int)font_string_width(label, &font_small))
         for (int dy = 0; dy < (int)font_small.height; dy++)
             if (font_text_px(label, &font_small, lx, dy))
-                strip_put(s, DEMO_LABEL_Y + dy, th->warning);
+                strip_put(s, f->p.top + DEMO_LABEL_DY + dy, th->warning);
 
     const uint8_t phase = (uint8_t)((x * DEMO_STEPS_PER_COLUMN + f->demo_phase) % DEMO_STEPS);
     if (ss->ch1.enabled) {              /* a sine, smaller at higher range indexes */
         int amp = DEMO_SINE_AMP_ROWS - (int)ss->ch1.vdiv_idx * DEMO_SINE_AMP_PER_RANGE;
         if (amp < DEMO_SINE_AMP_MIN) amp = DEMO_SINE_AMP_MIN;
-        const int y = SCOPE_MID_Y - ss->ch1.position - sine_percent[phase] * amp / 100;
+        const int y = f->p.mid - ss->ch1.position - sine_percent[phase] * amp / 100;
         if (y >= s->lo) strip_span(s, y, y + SCOPE_TRACE_ROWS - 1, th->ch1);
     }
     if (ss->ch2.enabled) {              /* a square, its edges joined */
-        const int mid = SCOPE_MID_Y + DEMO_SQUARE_OFFSET - ss->ch2.position;
+        const int mid = f->p.mid + DEMO_SQUARE_OFFSET - ss->ch2.position;
         const bool high = phase < DEMO_STEPS / 2u;
         strip_put(s, mid + (high ? -DEMO_SQUARE_AMP_ROWS : DEMO_SQUARE_AMP_ROWS), th->ch2);
         if (x > 0) {
@@ -405,12 +402,12 @@ static void el_math(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
 {
     if (!f->mth) return;
     const uint16_t color = f->th->warning;
-    if (f->mf.ok && x < MATH_ZERO_TICK_W) strip_put(s, SCOPE_GRID_MID_Y, color);
+    if (f->mf.ok && x < MATH_ZERO_TICK_W) strip_put(s, f->p.grid_mid, color);
     if (c->mhi >= c->mlo) strip_span(s, c->mlo, c->mhi, color);
     if (c->mcol)
         for (int dy = 0; dy < (int)font_small.height; dy++)
             if (font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, dy))
-                strip_put(s, SCOPE_TOP + dy, color);
+                strip_put(s, f->p.top + dy, color);
 }
 
 /* The ground tags (left edge) and the trigger-level tag (right edge). */
@@ -429,8 +426,8 @@ static void el_tags(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
 static void el_trigger_pointer(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     if (!c->tcol) return;
-    for (int y = SCOPE_TOP; y < SCOPE_TOP + PM_TPOS_H; y++)
-        if (tpos_px(g_place.trig_x, (int)x, y)) strip_put(s, y, f->th->trigger);
+    for (int y = f->p.top; y < f->p.top + PM_TPOS_H; y++)
+        if (tpos_px(g_place.trig_x, (int)x, y - f->p.top)) strip_put(s, y, f->th->trigger);
 }
 
 /* Cursor lines and their labels, over everything (the readout is in the
@@ -472,16 +469,16 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
         uint16_t want;
         if (f->curs && cursor_layer_px(&f->cl, (int)x, (int)y, &want))
             ;                                      /* cursor lines and labels */
-        else if (c->tcol && y < SCOPE_TOP + PM_TPOS_H && tpos_px(g_place.trig_x, (int)x, (int)y))
+        else if (c->tcol && y < f->p.top + PM_TPOS_H && tpos_px(g_place.trig_x, (int)x, (int)y - f->p.top))
             want = th->trigger;                    /* trigger-position pointer */
         else if (c->edge && markers_px(&f->pm, (int)x, (int)y, th->background, &want))
             ;                                      /* ground / trigger tags */
-        else if (c->mcol && y < SCOPE_TOP + font_small.height &&
-                 font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - SCOPE_TOP))
+        else if (c->mcol && y < f->p.top + font_small.height &&
+                 font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - f->p.top))
             want = th->warning;                    /* math label */
         else if ((int16_t)y >= c->mlo && (int16_t)y <= c->mhi)
             want = th->warning;                    /* math trace */
-        else if (f->mth && f->mf.ok && x < MATH_ZERO_TICK_W && y == SCOPE_GRID_MID_Y)
+        else if (f->mth && f->mf.ok && x < MATH_ZERO_TICK_W && (int16_t)y == f->p.grid_mid)
             want = th->warning;                    /* math zero tick */
         else if (mstrip && y >= (uint16_t)s->hi - MASK_STRIP_H && (!mdot || ((x + y) & 1u) == 0u))
             want = mstrip;
@@ -494,10 +491,10 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
             want = th->text_secondary;
         else if ((int16_t)y == f->trig_y && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
             want = th->trigger;
-        else if (plot_grid_px(th, x, (int)y, &want))
+        else if (plot_grid_px(th, &f->p, x, (int)y, &want))
             ;                                      /* graticule */
         else {
-            const uint8_t in = f->pbuf ? f->pbuf[(y - SCOPE_TOP) * PERSIST_WIDTH + x] : 0u;
+            const uint8_t in = f->pbuf ? f->pbuf[(y - f->p.top) * PERSIST_WIDTH + x] : 0u;
             want = in ? yt_ghost(in, y, f->pbase_mid, f->pbase_top, f->pbase_bot, th->background) : th->background;
         }
         const uint16_t got = s->px[y - (uint16_t)s->lo];
@@ -526,30 +523,31 @@ static void yt_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
      * it. */
     if (f->pbuf && c.trace)
         for (uint8_t ch = 0; ch < 2u; ch++)
-            if (c.tr[ch].on) persist_note(x, c.tr[ch].from, c.tr[ch].y);
+            if (c.tr[ch].on) persist_note(&f->p, x, c.tr[ch].from, c.tr[ch].y);
 }
 
-/* Draw the Y-T plot: one canvas frame in column strips over the band
- * (SCOPE_TOP down to the measurement strip's top), all LCD_WIDTH columns.
- * all: send every column (a full redraw); otherwise only the columns whose
- * pixels changed. The glass never shows a blank band either way. The popup
- * box is a hole of the frame, not a layer: its glyphs are the one thing the
- * elements cannot recompute per pixel, so the canvas steps around it, and
- * when the popup ends the hole closes and the next frame paints the band
- * back. Not drawn here: the measurement strip and the popup box itself.
+/* Draw the Y-T plot into pane p: one canvas frame in column strips over
+ * the pane's rows down to its band_bot, all LCD_WIDTH columns, on the pane's
+ * canvas. all: send every column (a full redraw); otherwise only the columns
+ * whose pixels changed. The glass never shows a blank band either way. The
+ * popup box is a hole of the frame, not a layer: its glyphs are the one
+ * thing the elements cannot recompute per pixel, so the canvas steps around
+ * it, and when the popup ends the hole closes and the next frame paints the
+ * band back. Not drawn here: the measurement strip and the popup box itself.
  * Changes: what yt_prepare changes, the persistence buffer (feed),
  * popup_hole_last and the `ui dump` counters. */
-void scope_yt_draw(bool all, uint32_t frame)
+void scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
 {
     yt_frame_t f;
-    yt_prepare(&f, frame);
+    yt_prepare(&f, p, frame);
 
     const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
-    const bool hole = popup_live() && POPUP_Y < f.band_bot && POPUP_Y + POPUP_H > SCOPE_TOP;
+    const bool hole = popup_live() && POPUP_Y < p->band_bot && POPUP_Y + POPUP_H > p->top;
     popup_hole_last = hole;         /* the box has rows inside the band and was left alone */
 
     const canvas_frame_t cf = {
-        .rect = { 0, SCOPE_TOP, LCD_WIDTH, (uint16_t)(f.band_bot - SCOPE_TOP) },
+        .id = p->canvas,
+        .rect = { 0, (uint16_t)p->top, LCD_WIDTH, (uint16_t)(p->band_bot - p->top) },
         .holes = &popup, .nholes = hole ? 1u : 0u,
         .all = all,
         .paint = yt_paint_column, .ctx = &f,

@@ -325,10 +325,10 @@ int chan_zero_code(const scope_state_t *ss, uint8_t ch)
 
 /* The trigger-position pointer: over the column where the trigger point
  * actually landed (g_place.trig_x), at the top of the plot. */
-bool tpos_px(int trig_x, int x, int y)
+bool tpos_px(int trig_x, int x, int dy)
 {
     return trig_x >= 0 &&
-           plot_marker_tpos_px(x - (trig_x - PM_TPOS_W / 2), y - SCOPE_TOP) == PM_PX_FILL;
+           plot_marker_tpos_px(x - (trig_x - PM_TPOS_W / 2), dy) == PM_PX_FILL;
 }
 
 /* The placement the display draws with (scope_ui_parts.h). */

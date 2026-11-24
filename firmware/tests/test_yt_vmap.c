@@ -10,6 +10,9 @@
  *     range of windows and both band layouts (unchanged when true scale is off).
  * [4] band layout: split halves only when both channels autofit.
  * [5] cursor scale: counts per row of each map.
+ * [6] the draw spans stay on the plot.
+ * [7] panes (plot_pane.h): the full plot's numbers, a half pane's
+ *     graticule and true scale on it, cursor rows carried between panes.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -17,6 +20,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include "yt_vmap.h"
+#include "plot_pane.h"
 #include "scope_cal.h"
 
 /* scope_ui.c's plot: SCOPE_TOP 18, SCOPE_BOT LCD_HEIGHT - 16 = 224. */
@@ -24,7 +28,8 @@
 #define BOT   224
 #define H     (BOT - TOP)
 #define MID   (TOP + H / 2)
-#define GMID  (TOP + 4 * 26)      /* SCOPE_GRID_MID_Y */
+#define DIV   26                  /* the full plot's division (plot_pane.h) */
+#define GMID  (TOP + 4 * DIV)     /* SCOPE_GRID_MID_Y */
 #define ZERO  100                 /* record 0 V at position 0, page in use */
 
 static int fails = 0;
@@ -54,7 +59,7 @@ int main(void)
     scope_cal_set_stock_gain(2, 1.032f);
     const float cpd = scope_cal_codes_per_div(1, 6);
     yt_vmap_t t;
-    yt_vmap_true(&t, TOP, BOT, GMID, 0, ZERO, cpd);
+    yt_vmap_true(&t, TOP, BOT, GMID, DIV, 0, ZERO, cpd);
 
     printf("[1] true scale: stock geometry, 0 V on the centre line\n");
     CHECK(GMID == 122 && (GMID - TOP) % 26 == 0, "centre line on the 4th grid line (row %d)", GMID);
@@ -73,7 +78,7 @@ int main(void)
     }
     {
         yt_vmap_t n;
-        yt_vmap_true(&n, TOP, BOT, GMID, 0, ZERO, 25.0f);       /* nominal gain */
+        yt_vmap_true(&n, TOP, BOT, GMID, DIV, 0, ZERO, 25.0f);       /* nominal gain */
         int bad = 0;
         for (int k = -4; k <= 4; k++) {
             const int c = ZERO + 25 * k;
@@ -90,7 +95,7 @@ int main(void)
     CHECK(yt_vmap_clip(&t, TOP - 50) == TOP && yt_vmap_clip(&t, BOT + 50) == BOT - 1,
           "clipped to [%d, %d)", TOP, BOT);
     yt_vmap_t t2;
-    yt_vmap_true(&t2, TOP, BOT, GMID, 1, ZERO, scope_cal_codes_per_div(2, 6));
+    yt_vmap_true(&t2, TOP, BOT, GMID, DIV, 1, ZERO, scope_cal_codes_per_div(2, 6));
     {
         int diff = 0;
         for (int v = 0; v < 256; v++) diff += (y_of(&t, v) != y_of(&t2, v));
@@ -118,7 +123,7 @@ int main(void)
             for (int pos = -100; pos <= 100; pos += 5) {
                 yt_vmap_t m;
                 const float c = scope_cal_codes_per_div(2, r);
-                yt_vmap_true(&m, TOP, BOT, GMID, 1, ZERO, c);
+                yt_vmap_true(&m, TOP, BOT, GMID, DIV, 1, ZERO, c);
                 const int want = GMID - (int)lroundf((float)pos * 26.0f / c);
                 const int got = yt_vmap_raw(&m, ZERO + pos);
                 if (abs(got - want) > 1) bad++;
@@ -198,8 +203,8 @@ int main(void)
          * codes (0, 255), noise windows and empty-looking bands included. */
         yt_vmap_t maps[8];
         int nm = 0;
-        yt_vmap_true(&maps[nm++], TOP, BOT, GMID, 0, ZERO, cpd);
-        yt_vmap_true(&maps[nm++], TOP, BOT, GMID, 1, 128, 25.0f);
+        yt_vmap_true(&maps[nm++], TOP, BOT, GMID, DIV, 0, ZERO, cpd);
+        yt_vmap_true(&maps[nm++], TOP, BOT, GMID, DIV, 1, 128, 25.0f);
         yt_vmap_autofit(&maps[nm++], 0, 255, TOP, BOT);
         yt_vmap_autofit(&maps[nm++], 0, 255, TOP, MID - 1);
         yt_vmap_autofit(&maps[nm++], 255, 255, MID + 1, BOT);
@@ -217,6 +222,33 @@ int main(void)
                     for (int16_t r = (int16_t)lo; r <= (int16_t)hi; r++) steps++;
                 }
         CHECK(bad == 0 && steps > 0, "%d maps x 65536 code pairs: %d spans off the band, %ld rows", nm, bad, steps);
+    }
+
+    printf("[7] panes\n");
+    {
+        const plot_pane_t full = plot_pane_make(CANVAS_PLOT, TOP, BOT, 200);
+        CHECK(full.div_px == DIV && full.grid_mid == GMID && full.mid == MID && full.band_bot == 200,
+              "full plot: %d rows a division, centre line %d, middle row %d (the fixed layout)",
+              full.div_px, full.grid_mid, full.mid);
+        /* The split view's upper half: rows 18..120, the divider on 121. */
+        const plot_pane_t half = plot_pane_make(CANVAS_SPLIT_TIME, TOP, TOP + H / 2, TOP + H / 2);
+        CHECK(half.div_px == 13 && half.grid_mid == TOP + 4 * 13,
+              "half pane: %d rows a division, centre line %d", half.div_px, half.grid_mid);
+        yt_vmap_t m;
+        yt_vmap_true(&m, half.top, half.bot, half.grid_mid, half.div_px, 0, ZERO, 25.0f);
+        int bad = 0;
+        for (int k = -4; k <= 3; k++) {
+            const int c = ZERO + 25 * k;
+            if (c >= 0 && c <= 255 && yt_vmap_raw(&m, c) != half.grid_mid - half.div_px * k) bad++;
+        }
+        CHECK(bad == 0, "half pane, nominal gain: 25 codes = one 13 px division exactly");
+        CHECK(fabsf(yt_vmap_counts_per_px(&m) - 2.0f * 25.0f / 26.0f) < 1e-4f,
+              "half pane: twice the counts per row of the full plot");
+        int same = 1, ongrid = 1;
+        for (int y = TOP; y < BOT; y++) same &= (plot_pane_row_to(&full, &full, y) == y);
+        for (int k = 0; k <= 7; k++)
+            ongrid &= (plot_pane_row_to(&full, &half, TOP + DIV * k) == half.top + half.div_px * k);
+        CHECK(same && ongrid, "cursor rows: the identity on the full plot, grid line k to grid line k on the half");
     }
 
     if (fails) { printf("test_yt_vmap: %d FAILED\n", fails); return 1; }

@@ -185,12 +185,10 @@ static bool measure_live_channel(const volatile uint8_t *buf,
  * the reason the table is tiered rather than flat are in scope_cal.h.
  *
  * The volts/div label is the range's nominal value; true scale draws one
- * SCOPE_DIV_PX-row division as scope_cal_codes_per_div() codes (yt_vmap.h),
- * so the grid means what the label says. The renderer and the map must agree
- * on the division height.
+ * division of the pane's graticule as scope_cal_codes_per_div() codes
+ * (yt_vmap.h), the grid and the map taking the division from the same pane
+ * (plot_pane.h), so the grid means what the label says.
  */
-_Static_assert(SCOPE_DIV_PX == YT_VMAP_DIV_PX,
-               "grid pitch no longer matches the true-scale map's division");
 
 /* The cal table is indexed by the frontend range index, so its length and
  * the UI's range count are the same quantity counted twice. */

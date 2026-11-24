@@ -65,13 +65,13 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
  *
  * The code is the one fpga_acq.c records as written (fpga_acq_trig_code_get),
  * not recomputed from the UI level: report the wire, not the intent.
- * a NULL or off (no data): the pixel convention, level in rows above
- * SCOPE_MID_Y.
+ * a NULL or off (no data): the pixel convention, level in rows above the
+ * pane's middle row.
  */
-int16_t trigger_marker_y(const scope_state_t *ss, const autofit_t *a)
+int16_t trigger_marker_y(const scope_state_t *ss, const plot_pane_t *p, const autofit_t *a)
 {
     if (a == NULL || !a->on)
-        return (int16_t)(SCOPE_MID_Y - ss->trigger.level);
+        return (int16_t)(p->mid - ss->trigger.level);
     return autofit_y(a, trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
 }
 
@@ -81,14 +81,14 @@ void yt_fits_none(autofit_t *a1, autofit_t *a2)
     *a1 = *a2 = (autofit_t){ .fx_ch = -1, .span = YT_VMAP_MIN_SPAN };
 }
 
-/* The two Y-T maps, the only place that decides them (from the window
- * view_build() last filled into yt_cols). True scale where the range has a
- * calibrated volts/div, over the full plot; autofit elsewhere (an
+/* The two Y-T maps in pane p, the only place that decides them (from the
+ * window view_build() last filled into yt_cols). True scale where the range
+ * has a calibrated volts/div, over the whole pane; autofit elsewhere (an
  * uncalibrated range, or view.truescale off), split into halves when both
  * channels autofit (yt_vmap_split). A channel not drawn gets a map with
  * on == false. While running it also latches the ranges of the record on
  * screen (scope_ui_paused_latch). */
-void yt_fits(const scope_state_t *ss, uint16_t band_bot, autofit_t *a1, autofit_t *a2)
+void yt_fits(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autofit_t *a2)
 {
     autofit_t *a[2] = { a1, a2 };
     /* A channel is drawn only when the published record holds its own
@@ -110,11 +110,11 @@ void yt_fits(const scope_state_t *ss, uint16_t band_bot, autofit_t *a1, autofit_
     for (uint8_t ch = 0; ch < 2u; ch++) {
         if (fx[ch]) {
             const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
-            yt_vmap_true(a[ch], SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, (int8_t)ch,
+            yt_vmap_true(a[ch], p->top, p->bot, p->grid_mid, p->div_px, (int8_t)ch,
                          yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
         } else if (en[ch]) {
             int16_t t, b;
-            yt_vmap_band(SCOPE_TOP, (int16_t)band_bot, split, ch, &t, &b);
+            yt_vmap_band(p->top, p->band_bot, split, ch, &t, &b);
             autofit_prep(a[ch], yt_cols[ch], t, b, (int8_t)ch);
         }
     }
@@ -137,15 +137,15 @@ static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
     t->color = color;
 }
 
-/* Build the plot-edge tag set m: a ground tag per enabled channel at the
- * left edge, the trigger-level tag at the right edge. a1/a2: the maps as
- * drawn (NULL or off = nothing plotted: the pixel convention, position and
- * level in rows about SCOPE_MID_Y). band_bot: the
- * measurement strip's top. */
-void markers_build(const scope_state_t *ss, const theme_t *th,
-                          const autofit_t *a1, const autofit_t *a2,
-                          int band_bot, pm_set_t *m)
+/* Build the plot-edge tag set m in pane p: a ground tag per enabled channel
+ * at the left edge, the trigger-level tag at the right edge, on the rows down
+ * to the pane's band_bot. a1/a2: the maps as drawn (NULL or off = nothing
+ * plotted: the pixel convention, position and level in rows about the pane's
+ * middle row). */
+void markers_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p,
+                   const autofit_t *a1, const autofit_t *a2, pm_set_t *m)
 {
+    const int band_bot = p->band_bot;
     memset(m, 0, sizeof(*m));
     const uint8_t act = active_channel ? 1u : 0u;
     for (uint8_t ch = 0; ch < 2u; ch++) {
@@ -154,13 +154,13 @@ void markers_build(const scope_state_t *ss, const theme_t *th,
         if (!c->enabled)
             continue;
         const autofit_t *a = ch ? a2 : a1;
-        int top = SCOPE_TOP, bot = band_bot, row;
+        int top = p->top, bot = band_bot, row;
         if (a != NULL && a->on) {
             top = a->y_top;
             if (a->y_bot < bot) bot = a->y_bot;
             row = autofit_y_raw(a, rec_zero(ss, ch));
         } else {
-            row = SCOPE_MID_Y - c->position;
+            row = p->mid - c->position;
         }
         tag_put(t, row, top, bot, PM_POINT_RIGHT, 0,
                 ch ? PM_LABEL_2 : PM_LABEL_1, ch ? th->ch2 : th->ch1);
@@ -169,13 +169,13 @@ void markers_build(const scope_state_t *ss, const theme_t *th,
     /* Trigger level: the record code where the hardware fires
      * (trigger_marker_y), on the trigger source's band. */
     const autofit_t *src = (ss->trigger.source == TRIG_SRC_CH2) ? a2 : a1;
-    int top = SCOPE_TOP, bot = band_bot, row;
+    int top = p->top, bot = band_bot, row;
     if (src != NULL && src->on) {
         row = autofit_y_raw(src, (int)trig_level_rec((adc_raw_t){ fpga_acq_trig_code_get() }).v);
         top = src->y_top;
         if (src->y_bot < bot) bot = src->y_bot;
     } else {
-        row = SCOPE_MID_Y - ss->trigger.level;
+        row = p->mid - ss->trigger.level;
     }
     tag_put(&m->t[0], row, top, bot, PM_POINT_LEFT, LCD_WIDTH - PM_TAG_W,
             PM_LABEL_T, th->trigger);
@@ -274,25 +274,27 @@ uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted)
  * buffer holds both channels, so a ghost's colour comes from its row
  * (persist_base). */
 
-/* Add one trace column to the persistence buffer: rows prev_y..y at column x
- * (prev_y < 0: first column). Called as the column is painted, so a ghost
- * is exactly where the trace was, through whichever map drew it, and needs
- * no per-column storage (RAM is tight). */
-void persist_note(uint16_t x, int16_t prev_y, int16_t y)
+/* Add one trace column to the persistence buffer: screen rows prev_y..y of
+ * pane p at column x (prev_y < 0: first column). The buffer's row 0 is the
+ * pane's top. Called as the column is painted, so a ghost is exactly where
+ * the trace was, through whichever map drew it, and needs no per-column
+ * storage (RAM is tight). */
+void persist_note(const plot_pane_t *p, uint16_t x, int16_t prev_y, int16_t y)
 {
     if (persist_enabled && persist_is_initialized())
-        persist_add_column(x, prev_y < 0 ? -1 : (int)prev_y - SCOPE_TOP,
-                           (int)y - SCOPE_TOP);
+        persist_add_column(x, prev_y < 0 ? -1 : (int)prev_y - p->top,
+                           (int)y - p->top);
 }
 
 /* Before the ghosts are read, every frame: clear them if the signal-to-screen mapping moved (persist_follow_geometry: one
  * place that sees keys, shell sets, autoset and loads alike), then fade by
  * the wall time since the last call. */
-void persist_frame_decay(void)
+void persist_frame_decay(const plot_pane_t *p)
 {
     const scope_state_t *gss = scope_state_get();
     const uint8_t gview = (uint8_t)scope_view;
-    (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss), strip_top(gss)),
+    (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss), (uint16_t)p->top,
+                                                       (uint16_t)p->band_bot),
                                   gss->running);
     static uint32_t last_tick;
     static bool     have_tick;
@@ -334,9 +336,10 @@ bool     g_math_live;    /* a record is drawn this frame (yt_cols is its window)
  *   3. the peak over the window, the 1-2-5 step that fits it, never finer
  *      than the source channel's own division;
  *   4. the cursors' view of that scale (g_math_cur) and the label. */
-void math_prepare(const scope_state_t *ss, math_frame_t *mf)
+void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *mf)
 {
     memset(mf, 0, sizeof(*mf));
+    mf->pane = *p;
     mf->op = ((math_op_t)math_op < MATH_COUNT) ? (math_op_t)math_op : MATH_ADD;
     const math_op_t op = mf->op;
     const volatile uint8_t *s1 = fpga_get_ch1_buf();
@@ -384,12 +387,12 @@ void math_prepare(const scope_state_t *ss, math_frame_t *mf)
     if (scale_idx < floor_idx) scale_idx = floor_idx;
     mf->step = math_scale_value(scale_idx);
 
-    /* The cursors' view of this scale: `step` per SCOPE_DIV_PX rows. */
+    /* The cursors' view of this scale: `step` per division of the pane. */
     g_math_cur.on = true;
     g_math_cur.direct = (unit == MATH_UNIT_VOLTS)  ? SCOPE_CURSOR_DIRECT_VOLTS
                       : (unit == MATH_UNIT_COUNTS) ? SCOPE_CURSOR_DIRECT_COUNTS
                                                    : SCOPE_CURSOR_DIRECT_NONE;
-    g_math_cur.unit_per_px = mf->step / (float)SCOPE_DIV_PX;
+    g_math_cur.unit_per_px = mf->step / (float)p->div_px;
     {
         scope_cursor_conf_t c = SCOPE_CURSOR_MEASURED;
         if (math_op_uses_a(op)) {
@@ -414,6 +417,7 @@ int16_t math_row(const math_frame_t *mf, uint16_t x)
     float v;
     int16_t row;
     math_compute(mf->op, &a, &b, 1u, &mf->in, &v);
-    math_to_rows(&v, 1u, mf->step, SCOPE_DIV_PX, SCOPE_GRID_MID_Y, SCOPE_TOP, SCOPE_BOT, &row);
+    const plot_pane_t *const p = &mf->pane;
+    math_to_rows(&v, 1u, mf->step, p->div_px, p->grid_mid, p->top, p->bot, &row);
     return row;
 }

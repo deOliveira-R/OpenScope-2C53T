@@ -202,3 +202,15 @@ from the screenshot copy after a full redraw and after a live update).
    (2026-11-24): the spectrum views and X-Y are in every image, and the
    feature's bit 1 in `features.mk` is retired.
 9. Panel driver in layers; the measurement strip computed outside the paint.
+10. Panes, so split can pair any two views and each half has the furniture
+    of its view. (a) Done: the Y-T type draws into a pane it is given
+    (`firmware/src/ui/plot_pane.h`: a full-width band of rows, its canvas,
+    its graticule division derived from its height), and its grid, maps,
+    tags, trigger line, math, persistence and cursor lines take their rows
+    from it. Cursors keep their rows on the full plot (`view.curh1`/`2`) and
+    are put on a pane's graticule at the same place in divisions. Checked at
+    full size only: 11 states read back from the screen before and after,
+    every difference a trace or a reading that moves with the signal;
+    livecheck 0 of 1.8 M pixels with cursors and math on; 18.6 frames a
+    second before and after. (b) Roll as a source of the Y-T type, not a
+    `view.mode`. (c) Split as a pair of views in two panes.

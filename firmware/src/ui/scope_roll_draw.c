@@ -86,6 +86,7 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th,
 typedef struct {
     const theme_t       *th;
     const scope_state_t *ss;
+    plot_pane_t p;                              /* the full plot (scope_pane_full) */
     uint16_t  band_bot;                         /* the band's end: the measurement strip's top */
     uint16_t  nvis;                             /* points on the glass */
     uint16_t  first;                            /* the first column that has a point; SCOPE_GEOM_COLS: none */
@@ -137,7 +138,8 @@ static void roll_prepare(roll_frame_t *f)
     const scope_state_t *const ss = f->ss = scope_state_get();
     (void)scope_roll_fifo_snapshot(fpga_roll_fifo(), &roll_snap);
     f->nvis = scope_roll_visible(&roll_snap, SCOPE_GEOM_COLS);
-    f->band_bot = strip_top(ss);
+    f->p = scope_pane_full(ss);
+    f->band_bot = (uint16_t)f->p.band_bot;
 
     const bool en[2] = { ss->ch1.enabled, ss->ch2.enabled };
     const bool fx[2] = { ss->true_scale && scope_cal_true_scale_ok(1u, ss->ch1.vdiv_idx),
@@ -146,7 +148,7 @@ static void roll_prepare(roll_frame_t *f)
     for (uint8_t ch = 0; ch < 2u; ch++) {
         f->on[ch] = en[ch];
         if (fx[ch]) {
-            yt_vmap_true(&f->map[ch], SCOPE_TOP, SCOPE_BOT, SCOPE_GRID_MID_Y, (int8_t)ch, yt_centre_code(),
+            yt_vmap_true(&f->map[ch], f->p.top, f->p.bot, f->p.grid_mid, f->p.div_px, (int8_t)ch, yt_centre_code(),
                          scope_cal_codes_per_div((uint8_t)(ch + 1u), ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx));
         } else {
             uint8_t lo = 0, hi = 0;
@@ -205,7 +207,7 @@ static void roll_check_column(const roll_frame_t *f, const roll_col_t *c, uint16
             ;
         else if (plot_trace_px(&c->tr[0], y, &want))
             ;
-        else if (plot_grid_px(f->th, x, y, &want))
+        else if (plot_grid_px(f->th, &f->p, x, y, &want))
             ;
         else
             want = f->th->background;
@@ -230,7 +232,7 @@ static void roll_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
 
     const uint16_t bg = f->th->background;
     for (int i = 0; i < s->hi - s->lo; i++) s->px[i] = bg;
-    plot_grid_paint(f->th, x, s);
+    plot_grid_paint(f->th, &f->p, x, s);
     plot_trace_paint(&c.tr[0], s);
     plot_trace_paint(&c.tr[1], s);
     if (c.in_label)
