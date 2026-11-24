@@ -196,8 +196,9 @@ from the screenshot copy after a full redraw and after a live update).
    each skip what did not change; X-Y paints its whole band (the margins and
    title too) from the trail; both keep the popup box as a hole. Open: the
    strips and cursors of the halves and of X-Y, which change the picture.
-8. The view table: done for the keys (`view_table.h`: domains and jobs per
-   `view.mode`). Open: the table also selects the renderer (today a switch
-   on `scope_view` in `main.c`, with roll as a flag beside it), and the
-   `FEATURE_FFT` build switch goes.
+8. The view table: done. `view_table.h` holds the domains and jobs per
+   `view.mode`, and `main.c` selects the renderer from a table indexed by
+   `view.mode`. The FFT build switch (`make WITHOUT=fft`) is gone
+   (2026-11-24): the spectrum views and X-Y are in every image, and the
+   feature's bit 1 in `features.mk` is retired.
 9. Panel driver in layers; the measurement strip computed outside the paint.

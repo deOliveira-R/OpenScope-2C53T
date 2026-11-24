@@ -427,8 +427,7 @@ bool    prop_value_in_range(const prop_desc_t *p, int32_t v);
  * model_boot_apply_one(view.mode): true when the kept view is the one in
  * force. model_view_record() is the value every capture writes into the
  * record: the kept one until it is in force, then the live view.mode. A
- * boot whose apply was refused (no pool, the Roll write failed, a build
- * without the FFT views holding a record that names one) therefore comes up
+ * boot whose apply was refused (no pool, the Roll write failed) therefore comes up
  * in yt and still saves the view it could not show, whatever else is saved
  * in that session, until the view changes: a set of view.mode that succeeds
  * (the value in force included), tb.roll changing, view.persist evicting a

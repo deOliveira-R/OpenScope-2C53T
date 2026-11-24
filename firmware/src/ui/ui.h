@@ -82,7 +82,6 @@ typedef enum {
  * posts the same with `btn <name> long`. input_handle_button() strips it. */
 #define BTN_LONG_FLAG  0x80
 
-#if FEATURE_FFT
 /* Oscilloscope sub-view (time domain vs FFT) */
 typedef enum {
     SCOPE_VIEW_TIME = 0,
@@ -92,7 +91,6 @@ typedef enum {
     SCOPE_VIEW_XY,          /* Lissajous: CH1 -> X, CH2 -> Y */
     SCOPE_VIEW_COUNT
 } scope_view_t;
-#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * Extern globals (defined in main.c, used by UI modules)
@@ -201,7 +199,6 @@ enum { SET_SOUND_ROW_VOLUME = 0, SET_SOUND_ROW_BRIGHTNESS, SET_SOUND_ROWS };
 #define FUSE_VIEW_TYPES         3   /* "Which fuse is this?" reference page */
 #define FUSE_VIEW_COUNT         4
 
-#if FEATURE_FFT
 #include "fft.h"
 #include "fft_test_signals.h"
 #include "shared_mem.h"   /* waterfall history is a sub-tenant of the FFT pool region */
@@ -252,7 +249,6 @@ uint8_t scope_ui_trig_anchor(void);
 uint16_t scope_ui_fft_last_n(void);         /* record samples the last live spectrum analysed */
 bool    scope_ui_trig_anchor_exact(void);   /* hardware anchor taken at the core's index, not searched */
 extern fft_result_t     fft_result;
-#endif
 
 /* ═══════════════════════════════════════════════════════════════════
  * UI Drawing Function Prototypes
@@ -298,7 +294,6 @@ uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf, int16_t *
  * so the box is never repainted while it is up and the band restores itself
  * once the countdown ends. draw_scope_screen() paints the box itself. */
 void scope_popup_overlay_tick(void);
-#if FEATURE_FFT
 /* The other views compose every pixel and never blank; `full` adds what
  * changes only on entry or a setting (margins, titles). */
 void draw_fft_screen(bool full);
@@ -309,7 +304,6 @@ void draw_xy_screen(bool full);
  * 3 waiting for a capture, 4 the shared pool is not the FFT's. */
 uint8_t scope_ui_waterfall_status(void);
 uint8_t scope_ui_waterfall_row(void);
-#endif
 /* Roll view (C11): the roll FIFO right-to-left; full = with labels/STOP/popup. */
 void draw_roll_screen(bool full);
 

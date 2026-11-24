@@ -216,7 +216,7 @@ M3_PERSIST_SRCS  = src/model/model_persist_v5.c src/model/model.c src/model/prop
 M3_PERSIST_LINK  = src/ui/scope_measure.c src/ui/scope_cursor.c src/ui/key_model.c \
                    src/ui/osc_menu_model.c
 M3_CONFIG_PERSIST_EXTRA = $(M3_PERSIST_SRCS) $(M3_PERSIST_LINK)
-M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -DFEATURE_FFT=1 -Isrc/model
+M3_CONFIG_PERSIST_FLAGS = -std=gnu11 -Isrc/model
 # ── end M3 block ──
 
 # ── ARCH-1 M2: the UI route (one block, for the merge) ──
@@ -230,13 +230,52 @@ C_SOURCES += src/model/ui_shell.c
 # ARCH-1 B8: a call made on the task that owns the state (util/task_call.h).
 C_SOURCES += src/util/task_call.c
 
+# ── Spectrum views: FFT, waterfall, split (core, every image) ──
+# The FFT engine and the live spectrum (src/dsp/fft*.c); the views
+# themselves are src/ui/scope_spectrum.c and scope_waterfall.c above. Until
+# 2026-11-24 this was the feature FFT (features.mk, bit 1, now retired).
+# CMSIS-DSP is used when the library is present (auto-detected).
+C_SOURCES += src/dsp/fft.c src/dsp/fft_live.c src/dsp/fft_source.c src/dsp/fft_test_signals.c
+CMSIS_DSP = CMSIS-DSP
+ifneq ($(wildcard $(CMSIS_DSP)/Include/arm_math.h),)
+  C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_f32.c
+  C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_init_f32.c
+  C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_f32.c
+  C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_init_f32.c
+  C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c
+  C_SOURCES += $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c
+  C_SOURCES += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_radix8_f32.c
+  C_SOURCES += $(CMSIS_DSP)/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c
+  C_SOURCES += $(CMSIS_DSP)/Source/BasicMathFunctions/arm_scale_f32.c
+  C_INCLUDES_FFT = -I$(CMSIS_DSP)/Include
+  # Only the tables the one transform size needs. FFT_SIZE is a compile-time
+  # 4096 (src/dsp/fft.h), but arm_rfft_fast_init_f32() picks its tables with
+  # a run-time switch over 32..4096, so without this every size's tables are
+  # linked (about 80 KB that no code path reaches). With ARM_DSP_CONFIG_TABLES
+  # CMSIS builds only what is named:
+  #   ARM_FFT_ALLOW_TABLES                  opens the table blocks at all
+  #                                         (arm_common_tables.c, arm_const_structs.c)
+  #   ARM_TABLE_TWIDDLECOEF_F32_2048   \    the 2048-point complex FFT inside a
+  #   ARM_TABLE_BITREVIDX_FLT_2048     /    4096-point real one (arm_cfft_init_f32.c)
+  #   ARM_TABLE_TWIDDLECOEF_RFFT_F32_4096   the real FFT's own twiddles
+  # which is exactly the guard of the 4096 case in arm_rfft_fast_init_f32.c.
+  # Any other length now makes the init return ARM_MATH_ARGUMENT_ERROR, which
+  # fft_init() checks (fft_engine_ok). Host test on these tables:
+  # make test-fft-cmsis-tables.
+  FFT_TABLE_DEFS = -DARM_DSP_CONFIG_TABLES -DARM_FFT_ALLOW_TABLES \
+                   -DARM_TABLE_TWIDDLECOEF_F32_2048 -DARM_TABLE_BITREVIDX_FLT_2048 \
+                   -DARM_TABLE_TWIDDLECOEF_RFFT_F32_4096
+  C_DEFS_FFT = -DUSE_CMSIS_DSP -DARM_MATH_CM4 $(FFT_TABLE_DEFS)
+endif
+# ── end spectrum block ──
+
 # ── Features (features.mk: the manifest) ──
 # Which features this image has is decided here, once, while the Makefile is
 # read: every FEATURE_<NAME> becomes -DFEATURE_<NAME>=0 or =1 (FEATURE_DEFS),
 # and only the sources of the features that are on are compiled. Stream:
 # src/stream/ (docs/stream_protocol.md), on in the bench image
 # (app-coldtrace-meter), host test `make test-stream`. Old spellings still
-# accepted: STREAM_BENCH=0, USB_MSC=0, FEATURES= (see features.mk).
+# accepted: STREAM_BENCH=0, USB_MSC=0 (see features.mk).
 include features.mk
 C_SOURCES += $(FEATURE_SRCS)
 # The feature table of this build (src/util/features.h: `version`, `features`,
@@ -310,6 +349,7 @@ C_INCLUDES += -Isrc/fonts
 C_INCLUDES += -Isrc
 C_INCLUDES += $(C_INCLUDES_M1)
 C_INCLUDES += $(FEATURE_INCS)
+C_INCLUDES += $(C_INCLUDES_FFT)
 C_INCLUDES += -I$(AT32_DRV)/inc
 C_INCLUDES += -I$(AT32_CMSIS)/device_support
 C_INCLUDES += -I$(AT32_CMSIS)/core_support
@@ -331,6 +371,7 @@ MCU = $(CPU) -mthumb $(FPU) $(FLOAT-ABI)
 # C defines
 C_DEFS  = -DAT32F403AVGT7
 C_DEFS += $(FEATURE_DEFS)
+C_DEFS += $(C_DEFS_FFT)
 
 # Compiler flags
 CFLAGS  = $(MCU) $(C_DEFS) $(C_INCLUDES)
@@ -519,7 +560,7 @@ size: $(BUILD_DIR)/$(TARGET).elf
 
 # ── Feature tools (features.mk is the manifest) ──
 # features         the manifest and what THIS invocation would build
-#                  (`make features PROFILE=bench`, `make features WITHOUT=fft`)
+#                  (`make features PROFILE=bench`, `make features WITHOUT=stream`)
 # features-report  what the image in $(BUILD_DIR) contains, per feature, from
 #                  its map and the record the link wrote (features.built);
 #                  fails unless the totals equal arm-none-eabi-size
@@ -586,7 +627,7 @@ test-features:
 	@$(_ft) PROFILE=bench | grep -E '^stream +on ' >/dev/null || { echo "FAIL: bench profile"; exit 1; }
 	@$(_ft) PROFILE=bench WITHOUT=STREAM | grep -E '^stream +off ' >/dev/null || { echo "FAIL: WITHOUT over profile"; exit 1; }
 	@o="$$($(_ft) WITH=stream USB_MSC=0)"; echo "$$o" | grep -E '^stream +on ' >/dev/null && echo "$$o" | grep -E '^usbdrive +off ' >/dev/null || { echo "FAIL: WITH + USB_MSC=0"; exit 1; }
-	@o="$$($(_ft) PROFILE=bench STREAM_BENCH=0 FEATURES=)"; echo "$$o" | grep -E '^stream +off ' >/dev/null && echo "$$o" | grep -E '^fft +off ' >/dev/null || { echo "FAIL: old spellings"; exit 1; }
+	@$(_ft) PROFILE=bench STREAM_BENCH=0 | grep -E '^stream +off ' >/dev/null || { echo "FAIL: old spellings"; exit 1; }
 	@$(_ft) WITHOUT=stream | grep -E '^mask: 0x[0-9a-f]*[02468ace]$$' >/dev/null || { echo "FAIL: stream bit (0) set in the mask with the stream off"; exit 1; }
 	@$(_ft) WITH=stream | grep -E '^mask: 0x[0-9a-f]*[13579bdf]$$' >/dev/null || { echo "FAIL: stream bit (0) clear in the mask with the stream on"; exit 1; }
 	@! $(_ft) WITH=nosuch >/dev/null 2>&1 || { echo "FAIL: unknown feature accepted"; exit 1; }
@@ -594,8 +635,8 @@ test-features:
 	@! $(_ft) WITH=stream WITHOUT=stream >/dev/null 2>&1 || { echo "FAIL: WITH and WITHOUT accepted"; exit 1; }
 	@! $(_ft) PROFILE=default USBDRIVE_requires=STREAM >/dev/null 2>&1 || { echo "FAIL: requires not enforced"; exit 1; }
 	@$(_ft) USBDRIVE_requires=STREAM WITH=stream >/dev/null 2>&1 || { echo "FAIL: requires met but refused"; exit 1; }
-	@! $(_ft) USBDRIVE_conflicts=FFT >/dev/null 2>&1 || { echo "FAIL: conflicts not enforced"; exit 1; }
-	@! $(_ft) FFT_bit=0 >/dev/null 2>&1 || { echo "FAIL: a bit used twice accepted"; exit 1; }
+	@! $(_ft) PROFILE=bench USBDRIVE_conflicts=STREAM >/dev/null 2>&1 || { echo "FAIL: conflicts not enforced"; exit 1; }
+	@! $(_ft) USBDRIVE_bit=0 >/dev/null 2>&1 || { echo "FAIL: a bit used twice accepted"; exit 1; }
 	@echo "features manifest: rules OK"
 # ── end feature tools ──
 
@@ -968,7 +1009,7 @@ MODEL_TEST_LINK = src/ui/scope_state.c src/ui/scope_roll.c src/ui/scope_cal.c sr
 
 $(BUILD_DIR)/test_model: tests/test_model.c $(MODEL_SRCS) src/model/model.h src/model/model_table.h \
                          src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) $(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-model
@@ -989,7 +1030,7 @@ $(BUILD_DIR)/test_model_profile: tests/test_model.c $(MODEL_SRCS) src/model/mode
                                  tests/fixtures/profile_lab.json ../scripts/model_config.py \
                                  $(MODEL_TEST_LINK) | $(BUILD_DIR)
 	python3 -I ../scripts/model_config.py build tests/fixtures/profile_lab.json -o $(BUILD_DIR)/test_model_profile.h
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers -include $(BUILD_DIR)/test_model_profile.h $< $(MODEL_SRCS) \
 		$(MODEL_TEST_LINK) -lm -o $@
 
@@ -1022,7 +1063,7 @@ MODEL_EXEC_SRCS = src/model/model_exec.c src/model/model_shell.c
 $(BUILD_DIR)/test_model_exec: tests/test_model_exec.c $(MODEL_SRCS) $(MODEL_EXEC_SRCS) \
                               src/model/model.h src/model/model_table.h src/model/model_exec.h \
                               src/model/model_shell.h src/util/units.h $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DMODEL_EXEC_TEST -Isrc/model \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DMODEL_EXEC_TEST -Isrc/model \
 		-Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) $(MODEL_EXEC_SRCS) \
 		$(MODEL_TEST_LINK) -lm -lpthread -o $@
 
@@ -1040,26 +1081,14 @@ $(BUILD_DIR)/test_model_persist: tests/test_model_persist.c $(MODEL_SRCS) src/mo
                                  src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
                                  src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
                                  src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -Isrc/model -Isrc/util \
-		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
-		src/util/config.c src/util/settings_store.c src/util/session_store.c src/drivers/flash_regions.c \
-		$(MODEL_TEST_LINK) -lm -o $@
-
-# The same test as a build without the spectrum views (FEATURE_FFT=0): what
-# such an image does with a record whose view.mode byte names one of them.
-$(BUILD_DIR)/test_model_persist_nofft: tests/test_model_persist.c $(MODEL_SRCS) src/model/model_persist_v5.c \
-                                 src/model/model_persist_v5.h src/model/model.h src/model/model_table.h \
-                                 src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
-                                 src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=0 -Isrc/model -Isrc/util \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/model -Isrc/util \
 		-Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) src/model/model_persist_v5.c \
 		src/util/config.c src/util/settings_store.c src/util/session_store.c src/drivers/flash_regions.c \
 		$(MODEL_TEST_LINK) -lm -o $@
 
 .PHONY: test-model-persist
-test-model-persist: $(BUILD_DIR)/test_model_persist $(BUILD_DIR)/test_model_persist_nofft
+test-model-persist: $(BUILD_DIR)/test_model_persist
 	$(BUILD_DIR)/test_model_persist
-	$(BUILD_DIR)/test_model_persist_nofft
 
 # Reset to defaults (ARCH-1 M5): the built-in defaults over the user settings
 # through the setters; every property back to its default, the hardware ops
@@ -1131,7 +1160,7 @@ $(BUILD_DIR)/test_settings_reset: tests/test_settings_reset.c $(MODEL_SRCS) src/
                                   src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
                                   src/util/settings_store.h src/ui/settings_reset.h \
                                   src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DSETTINGS_PERSIST_WRITES=1 \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DSETTINGS_PERSIST_WRITES=1 \
 		-Isrc/model -Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) \
 		src/model/model_persist_v5.c src/util/config.c src/util/settings_store.c src/util/session_store.c \
 		src/drivers/flash_regions.c $(MODEL_TEST_LINK) -lm -o $@
@@ -1154,7 +1183,7 @@ $(BUILD_DIR)/test_session: tests/test_session.c $(MODEL_SRCS) src/model/model_pe
                            src/util/config.c src/util/config.h src/util/settings_store.c src/util/session_store.c \
                            src/util/settings_store.h src/util/session_store.h \
                            src/drivers/flash_regions.c $(MODEL_TEST_LINK) | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT=1 -DSETTINGS_PERSIST_WRITES=1 \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DSETTINGS_PERSIST_WRITES=1 \
 		-DSESSION_SHELL_HOST -Isrc/model -Isrc/util -Isrc/ui -Isrc/dsp -Isrc/drivers $< $(MODEL_SRCS) \
 		src/model/model_persist_v5.c src/model/session_shell.c src/util/config.c src/util/settings_store.c src/util/session_store.c \
 		src/drivers/flash_regions.c $(MODEL_TEST_LINK) -lm -o $@
@@ -1168,7 +1197,7 @@ test-session: $(BUILD_DIR)/test_session
 # checked before any press). The firmware half (presses, waits) is not built.
 $(BUILD_DIR)/test_ui_shell: tests/test_ui_shell.c src/model/ui_shell.c src/model/ui_shell.h \
                            src/ui/key_model.h src/ui/ui.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DUI_SHELL_TEST -Isrc/model -Isrc/ui -Isrc/util \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DUI_SHELL_TEST -Isrc/model -Isrc/ui -Isrc/util -Isrc/dsp \
 		$< src/model/ui_shell.c -o $@
 
 .PHONY: test-ui-shell
@@ -1434,7 +1463,7 @@ test-calpage: $(BUILD_DIR)/test_calpage
 # key -> action map the input task asks (src/ui/key_model.h). Both are pure.
 $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/key_model.h \
                              src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< \
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< \
 		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@
 
 .PHONY: test-key-model
@@ -1447,7 +1476,7 @@ test-key-model: $(BUILD_DIR)/test_key_model
 # home/siggen choices (startup_policy.h).
 $(BUILD_DIR)/test_home_model: tests/test_home_model.c src/ui/home_model.c src/ui/home_model.h \
                               src/ui/startup_policy.h src/ui/ui.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/util $< src/ui/home_model.c -o $@
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/util -Isrc/dsp $< src/ui/home_model.c -o $@
 
 .PHONY: test-home-model
 test-home-model: $(BUILD_DIR)/test_home_model
@@ -1852,7 +1881,7 @@ test-settings-notify: $(BUILD_DIR)/test_settings_notify
 # sys.mode set, the wrap over the entry table, open()'s preselection.
 SCREEN_TEST_DEPS = tests/screen_test_env.h src/ui/screen.c src/ui/screen.h $(MODEL_SRCS) \
                    src/model/model.h src/model/model_table.h $(MODEL_TEST_LINK)
-SCREEN_TEST_CC   = $(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -DFEATURE_FFT -Isrc/model -Isrc/util \
+SCREEN_TEST_CC   = $(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/model -Isrc/util \
                    -Isrc/ui -Isrc/dsp -Isrc/drivers
 
 $(BUILD_DIR)/test_home_screen: tests/test_home_screen.c src/ui/home_screen.c src/ui/home_screen.h \
@@ -1936,7 +1965,7 @@ GALLERY_SCREEN_TEST_SRCS = src/ui/gallery_screen.c src/ui/gallery_nav.c src/ui/s
                            src/util/gallery_store.c src/drivers/flash_regions.c src/util/cal_backup_core.c
 $(BUILD_DIR)/test_gallery_screen: tests/test_gallery_screen.c $(GALLERY_SCREEN_TEST_SRCS) \
                                   src/ui/gallery_screen.h src/ui/gallery_nav.h src/ui/screen.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/util -Isrc/drivers $< \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/util -Isrc/drivers -Isrc/dsp $< \
 		$(GALLERY_SCREEN_TEST_SRCS) -o $@
 
 .PHONY: test-gallery-screen
@@ -1948,7 +1977,7 @@ test-gallery-screen: $(BUILD_DIR)/test_gallery_screen
 # them, POWER to the globals, and what is repainted when a layer goes.
 $(BUILD_DIR)/test_overlay_screens: tests/test_overlay_screens.c src/ui/overlay_screens.c \
                                    src/ui/overlay_screens.h src/ui/screen.c src/ui/screen.h src/ui/theme.c | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui $< src/ui/overlay_screens.c \
+	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< src/ui/overlay_screens.c \
 		src/ui/screen.c src/ui/theme.c -o $@
 
 .PHONY: test-overlay-screens

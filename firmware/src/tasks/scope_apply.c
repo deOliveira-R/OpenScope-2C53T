@@ -17,15 +17,12 @@
 #include "scope_state.h"
 #include "persistence.h"
 #include "fpga.h"
-#if FEATURE_FFT
 #include "fft.h"
 #include "model.h"           /* the fft.* properties */
 #include "scope_vpos.h"
 #include "scope_trigger.h"
-#endif
 #include <stdio.h>
 
-#if FEATURE_FFT
 /* X-Y: what its view needs before it is drawn. The phosphor trail lives in
  * the shared persistence buffer (X-Y and the time-domain persistence overlay
  * never run at once): claimed here with a short tail and cleared. Without
@@ -93,18 +90,15 @@ void scope_view_select(scope_view_t v)
     }
     scope_view = v;
 }
-#endif
 
 void scope_apply_persist_off(void)
 {
     if (!persist_enabled) return;
     persist_enabled = false;
     persist_deinit();
-#if FEATURE_FFT
     /* Persistence switched on and off again inside X-Y took the buffer its
      * trail is drawn in: X-Y gets it back. */
     if (scope_view == SCOPE_VIEW_XY) xy_prepare();
-#endif
 }
 
 bool scope_apply_persist_on(persist_mode_t m)
@@ -113,11 +107,9 @@ bool scope_apply_persist_on(persist_mode_t m)
         persist_set_mode(m);
         return true;
     }
-#if FEATURE_FFT
     if (scope_view_uses_fft(scope_view))
         scope_view_select(SCOPE_VIEW_TIME);   /* releases the FFT's pool */
     if (fft_is_initialized()) fft_deinit();
-#endif
     persist_init();
     if (!persist_is_initialized()) return false;
     persist_set_mode(m);

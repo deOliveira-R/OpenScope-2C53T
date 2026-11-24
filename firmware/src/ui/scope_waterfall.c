@@ -7,7 +7,6 @@
 #include "scope_ui_parts.h"
 #include "waterfall_blit.h"
 
-#if FEATURE_FFT
 /* Waterfall
  *
  * The 20 KB history buffer (WATERFALL_ROWS x WATERFALL_COLS bytes) lives in
@@ -185,5 +184,3 @@ void draw_waterfall_screen(void)
     };
     waterfall_blit(&frame);
 }
-
-#endif

@@ -245,25 +245,19 @@ static uint8_t op_trigger_code(void)                  { return fpga_acq_trig_cod
 static bool op_view_select(uint8_t view)
 {
     CTX();
-#if FEATURE_FFT
     if (view >= (uint8_t)SCOPE_VIEW_COUNT) return false;
     const scope_view_t was = scope_view;
     scope_view_select((scope_view_t)view);
     if (scope_view != was) scope_screen_view_changed();
     return scope_view == (scope_view_t)view;
-#else
-    return view == 0u;
-#endif
 }
 static bool    op_persist_on(uint8_t mode) { CTX(); return scope_apply_persist_on((persist_mode_t)mode); }
 static void    op_persist_off(void)        { CTX(); scope_apply_persist_off(); }
 static uint8_t op_persist_mode(void)       { return (uint8_t)persist_get_mode(); }
 static void    op_fft_settings(void)
 {
-#if FEATURE_FFT
     CTX();
     scope_apply_fft_settings();
-#endif
 }
 
 /* ═══ mask test (requests the acquisition task applies) ══════════════ */

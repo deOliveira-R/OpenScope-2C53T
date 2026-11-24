@@ -66,51 +66,10 @@ STREAM_defs      :=
 STREAM_shared    := usb_cdc.o:usb_debug_stream_
 STREAM_bit       := 0
 
-# ── FFT, waterfall, split view ────────────────────────────────────────
-# Does NOT build when off today (main.c uses names ui.h declares only with
-# the FFT); making the off state build is a later task. CMSIS-DSP is used
-# when the library is present (auto-detected).
-FEATURE_LIST += FFT
-FFT_desc      := FFT and waterfall and split views
-FFT_default   := 1
-FFT_requires  :=
-FFT_conflicts :=
-FFT_srcs      := src/dsp/fft.c src/dsp/fft_live.c src/dsp/fft_source.c src/dsp/fft_test_signals.c
-FFT_incs      :=
-FFT_defs      :=
-FFT_shared    := scope_spectrum.o:. scope_waterfall.o:. scope_ui.o:fft_|waterfall|draw_split main.o:fft_|waterfall arm_bitreversal2.o:.
-FFT_bit       := 1
-CMSIS_DSP = CMSIS-DSP
-ifneq ($(wildcard $(CMSIS_DSP)/Include/arm_math.h),)
-  FFT_srcs += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_f32.c
-  FFT_srcs += $(CMSIS_DSP)/Source/TransformFunctions/arm_rfft_fast_init_f32.c
-  FFT_srcs += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_f32.c
-  FFT_srcs += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_init_f32.c
-  FFT_srcs += $(CMSIS_DSP)/Source/CommonTables/arm_common_tables.c
-  FFT_srcs += $(CMSIS_DSP)/Source/CommonTables/arm_const_structs.c
-  FFT_srcs += $(CMSIS_DSP)/Source/TransformFunctions/arm_cfft_radix8_f32.c
-  FFT_srcs += $(CMSIS_DSP)/Source/ComplexMathFunctions/arm_cmplx_mag_f32.c
-  FFT_srcs += $(CMSIS_DSP)/Source/BasicMathFunctions/arm_scale_f32.c
-  FFT_incs += -I$(CMSIS_DSP)/Include
-  # Only the tables the one transform size needs. FFT_SIZE is a compile-time
-  # 4096 (src/dsp/fft.h), but arm_rfft_fast_init_f32() picks its tables with
-  # a run-time switch over 32..4096, so without this every size's tables are
-  # linked (about 80 KB that no code path reaches). With ARM_DSP_CONFIG_TABLES
-  # CMSIS builds only what is named:
-  #   ARM_FFT_ALLOW_TABLES                  opens the table blocks at all
-  #                                         (arm_common_tables.c, arm_const_structs.c)
-  #   ARM_TABLE_TWIDDLECOEF_F32_2048   \    the 2048-point complex FFT inside a
-  #   ARM_TABLE_BITREVIDX_FLT_2048     /    4096-point real one (arm_cfft_init_f32.c)
-  #   ARM_TABLE_TWIDDLECOEF_RFFT_F32_4096   the real FFT's own twiddles
-  # which is exactly the guard of the 4096 case in arm_rfft_fast_init_f32.c.
-  # Any other length now makes the init return ARM_MATH_ARGUMENT_ERROR, which
-  # fft_init() checks (fft_engine_ok). Host test on these tables:
-  # make test-fft-cmsis-tables.
-  FFT_TABLE_DEFS = -DARM_DSP_CONFIG_TABLES -DARM_FFT_ALLOW_TABLES \
-                   -DARM_TABLE_TWIDDLECOEF_F32_2048 -DARM_TABLE_BITREVIDX_FLT_2048 \
-                   -DARM_TABLE_TWIDDLECOEF_RFFT_F32_4096
-  FFT_defs += -DUSE_CMSIS_DSP -DARM_MATH_CM4 $(FFT_TABLE_DEFS)
-endif
+# ── bit 1: retired ────────────────────────────────────────────────
+# Bit 1 was FFT (FFT, waterfall and split views), retired 2026-11-24: the
+# spectrum views are core and every image builds them (firmware/Makefile).
+# The number is never reused.
 
 # ── USB drive ─────────────────────────────────────────────────────────
 # USB Sharing (parity C16). On: the unit BOOTS AS THE PLAIN CDC DEVICE (the
@@ -247,18 +206,13 @@ ifeq ($(origin PROFILE_$(PROFILE)_with),undefined)
 $(error features.mk: unknown PROFILE '$(PROFILE)')
 endif
 
-# Old spellings, kept for one release: STREAM_BENCH=0, USB_MSC=0, FEATURES=
-# (without the word FFT).
-FEATURES ?= FFT
+# Old spellings, kept for one release: STREAM_BENCH=0, USB_MSC=0.
 _fm_legacy_without :=
 ifeq ($(strip $(STREAM_BENCH)),0)
 _fm_legacy_without += stream
 endif
 ifeq ($(strip $(USB_MSC)),0)
 _fm_legacy_without += usbdrive
-endif
-ifeq ($(findstring FFT,$(FEATURES)),)
-_fm_legacy_without += fft
 endif
 
 _fm_names        := $(call _fm_lc,$(FEATURE_LIST))

@@ -234,18 +234,16 @@ config_save();  // writes to flash
 
 ## Build System
 
-The Makefile should support feature flags:
+The Makefile should support feature flags. (Today the manifest is
+`firmware/features.mk`, chosen with `make WITH=... WITHOUT=...` or a
+profile; the spectrum views are core, not a feature. The sketch below is the
+original idea.)
 
 ```makefile
 # Enable/disable features at compile time
-FEATURES ?= FFT DECODE_UART DECODE_I2C DECODE_CAN MODULES
+FEATURES ?= DECODE_UART DECODE_I2C DECODE_CAN MODULES
 
 # Conditional compilation
-ifeq ($(findstring FFT,$(FEATURES)),FFT)
-  SRCS += src/dsp/fft.c
-  CFLAGS += -DFEATURE_FFT
-endif
-
 ifeq ($(findstring DECODE_UART,$(FEATURES)),DECODE_UART)
   SRCS += src/decode/uart_decode.c
   CFLAGS += -DFEATURE_DECODE_UART
@@ -254,9 +252,9 @@ endif
 
 This lets us produce different firmware builds:
 ```bash
-make FEATURES="FFT DECODE_UART DECODE_I2C"           # electronics bench
-make FEATURES="FFT DECODE_CAN MODULES"                # automotive
-make FEATURES="FFT"                                     # minimal
+make FEATURES="DECODE_UART DECODE_I2C"               # electronics bench
+make FEATURES="DECODE_CAN MODULES"                    # automotive
+make FEATURES=""                                        # minimal
 make                                                    # everything
 ```
 

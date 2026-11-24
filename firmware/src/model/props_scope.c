@@ -383,7 +383,6 @@ const char *const lbl_view_mode[VM_COUNT] = { "yt", "roll", "xy", "fft", "split"
 int32_t view_mode_get(const prop_desc_t *p)
 {
     (void)p;
-#if FEATURE_FFT
     switch (scope_view) {
     case SCOPE_VIEW_XY:        return VM_XY;
     case SCOPE_VIEW_FFT:       return VM_FFT;
@@ -391,20 +390,14 @@ int32_t view_mode_get(const prop_desc_t *p)
     case SCOPE_VIEW_WATERFALL: return VM_WATERFALL;
     default: break;
     }
-#endif
     return scope_state_get()->roll ? VM_ROLL : VM_YT;
 }
 
-#if FEATURE_FFT
-/* view.mode -> scope_view_t (scope_view exists only in an FFT build). */
+/* view.mode -> scope_view_t. */
 static const uint8_t k_view_of[VM_COUNT] = {
     SCOPE_VIEW_TIME, SCOPE_VIEW_TIME, SCOPE_VIEW_XY, SCOPE_VIEW_FFT, SCOPE_VIEW_SPLIT,
     SCOPE_VIEW_WATERFALL,
 };
-#define VIEW_OF(v) k_view_of[(v)]
-#else
-#define VIEW_OF(v) ((void)(v), 0u)     /* the time view: yt and roll only */
-#endif
 
 /* view.mode across a power cycle (model.h): the settings record's view is a
  * sticky keep of the general boot apply (model_boot_keep). */
@@ -432,9 +425,7 @@ static void view_moved(uint8_t origin)
 void view_mode_store(const prop_desc_t *p, int32_t v)
 {
     (void)p;
-#if FEATURE_FFT
-    scope_view = (scope_view_t)VIEW_OF(v);
-#endif
+    scope_view = (scope_view_t)k_view_of[v];
     scope_state_get()->roll = (v == VM_ROLL);
 }
 
@@ -443,12 +434,8 @@ void view_mode_store(const prop_desc_t *p, int32_t v)
 static bool view_switch(uint8_t view)
 {
     if (HW->view_select) return HW->view_select(view);
-#if FEATURE_FFT
     scope_view = (scope_view_t)view;
     return true;
-#else
-    return view == 0u;
-#endif
 }
 
 /* The Display pane's selection (osc_menu_ui.c display_select calls this
@@ -458,14 +445,11 @@ static bool view_switch(uint8_t view)
  * channel_change does), then the view, then Roll on for Roll. */
 static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, prop_note_t *note)
 {
-#if !FEATURE_FFT
-    if (v != VM_YT && v != VM_ROLL) { model_note(note, "Not in this build"); return PS_REFUSED; }
-#endif
     scope_state_t *ss = scope_state_get();
     const int32_t was = view_mode_get(p);
     if (v == was) return PS_OK;
     const bool was_roll = ss->roll, want_roll = (v == VM_ROLL);
-    const uint8_t was_view = VIEW_OF(was), want_view = VIEW_OF(v);
+    const uint8_t was_view = k_view_of[was], want_view = k_view_of[v];
 
     if (was_roll && !want_roll && roll_apply(false, ss->roll_step, note) != PS_OK)
         return PS_NOT_SET;

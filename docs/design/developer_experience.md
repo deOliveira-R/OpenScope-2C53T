@@ -122,7 +122,7 @@ $ python tools/configure.py
 
 **Prerequisites:** Python 3, `arm-none-eabi-gcc` (script checks and provides install instructions).
 
-Under the hood, this just sets the `FEATURES` Makefile variable and runs `make`. The Makefile already supports `FEATURES ?= FFT` — extend this to all modules.
+Under the hood, this just sets the `FEATURES` Makefile variable and runs `make`. The Makefile's feature manifest (`firmware/features.mk`, `make WITH=... WITHOUT=...`) is where this plugs in.
 
 ---
 
@@ -496,7 +496,7 @@ The Miniware DS213 does this with 4 firmware slots. But it adds significant comp
 ## Implementation Roadmap
 
 ### Now (pre-hardware)
-- [x] Makefile `FEATURES` flag for FFT (already exists)
+- [x] Makefile feature manifest (`firmware/features.mk`; the FFT is core since 2026-11-24)
 - [ ] Extend `FEATURES` to cover all modules and decoders
 - [ ] Define `module_api.h` interface
 - [ ] Create `src/modules/template.c`

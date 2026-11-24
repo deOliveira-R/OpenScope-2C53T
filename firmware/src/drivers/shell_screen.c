@@ -510,7 +510,7 @@ void cmd_screen_shadow(const char *args)
 }
 
 /* `ui dump`: the UI state and its counters: mode and settings selection,
- * scope draw counts and timings, the FFT pool and engine (FFT builds), the
+ * scope draw counts and timings, the FFT pool and engine, the
  * meter screen and autoselect, the measurement strip, the graticule per
  * channel and the long-press timing. */
 void cmd_ui_dump(void)
@@ -558,7 +558,6 @@ void cmd_ui_dump(void)
                                  (unsigned long)ui_perf[i].max_us);
         }
         usb_debug_printf("lcd foreign_calls=%lu\r\n", (unsigned long)lcd_foreign_calls);
-#if FEATURE_FFT
         static const char *const wfs[] = { "never drawn", "drawn", "no FFT", "waiting for capture",
                                            "pool not FFT's" };
         const uint8_t w = scope_ui_waterfall_status();
@@ -578,7 +577,6 @@ void cmd_ui_dump(void)
                          !fft_is_initialized() ? "not initialized (enter the FFT view)"
                          : fft_engine_ok() ? "ok" : "INIT FAILED (no tables for this FFT size)",
                          (unsigned)scope_ui_fft_last_n());
-#endif
     }
     usb_debug_printf("meter_ui draws=%lu full_clears=%lu partial_clears=%lu draw_us=%lu max_draw_us=%lu over_budget=%lu rendered_update=%lu last_full=%u live=%u continuity_flash=%u reading_valid=%u "
                      "reading_submode=%u updates=%lu display_updates=%lu\r\n",

@@ -43,18 +43,6 @@ static const menu_frame_t k_frame = {
  * Live values: the properties the page is bound to (osc_menu_screen.h)
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* A Display item this build cannot show is drawn disabled (picking it is
- * refused by the view.mode setter: "Not in this build"). */
-static bool display_available(uint8_t item)
-{
-#if FEATURE_FFT
-    (void)item;
-    return true;
-#else
-    return item == OSC_DISP_YT || item == OSC_DISP_ROLL;
-#endif
-}
-
 /* ═══════════════════════════════════════════════════════════════════
  * Draw
  * ═══════════════════════════════════════════════════════════════════ */
@@ -75,9 +63,8 @@ static void draw_radio(const osc_menu_state_t *s)
     const uint8_t n = osc_menu_layout(row)->n_items;
     const uint8_t cur = osc_menu_bind_current(row);
     for (uint8_t i = 0; i < n; i++) {
-        const bool ok = (row != OSC_ROW_DISPLAY) || display_available(i);
         menu_frame_radio(&k_frame, (uint16_t)(CONTENT_Y + i * RADIO_PITCH), 24, osc_menu_item_label(row, i, 0),
-                         s->in_pane && s->item == i, cur == i, ok);
+                         s->in_pane && s->item == i, cur == i, true);
     }
 }
 

@@ -208,9 +208,6 @@ ui_press_t ui_press_one(const ui_press_port_t *p, uint32_t *target, uint8_t id)
 #include <stdio.h>
 #include <stdlib.h>
 
-/* ui.h declares it only with FEATURE_FFT; main.c defines it in every build. */
-bool input_inject_button(button_id_t b);
-
 /* The handled count the last press made us wait for (ui_press_one). 4
  * bytes: the only static state of the route. */
 static uint32_t g_target;

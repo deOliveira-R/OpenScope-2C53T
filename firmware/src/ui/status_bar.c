@@ -554,7 +554,6 @@ void draw_info_bar(void)
     uint16_t ib = th->status_bar_bg;
     switch (current_mode) {
     case MODE_OSCILLOSCOPE:
-#if FEATURE_FFT
         if (scope_view == SCOPE_VIEW_FFT) {
             const char *win_names[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
             const fft_config_t *cfg = fft_get_config();
@@ -592,9 +591,7 @@ void draw_info_bar(void)
             s_info_drawn_epoch = status_bar_info_epoch();
             s_info_drawn_clip = clip;
             s_info_drawn = true;
-        } else
-#endif
-        {
+        } else {
             const scope_state_t *ss = scope_state_get();
             /*
              * Channel badges (S7): "1.37V X1 DC". The volts/div shown is

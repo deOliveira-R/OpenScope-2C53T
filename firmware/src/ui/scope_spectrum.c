@@ -9,7 +9,6 @@
 #include "canvas.h"
 #include "key_model.h"         /* key_focus_get, the view table */
 
-#if FEATURE_FFT
 /* ═══════════════════════════════════════════════════════════════════
  * FFT views: the spectrum, its source and reference level
  * ═══════════════════════════════════════════════════════════════════ */
@@ -695,5 +694,3 @@ void draw_split_screen(uint32_t frame, bool full)
     fft_region_compose((uint16_t)(f.divider + 1), SCOPE_H / 2 - 2, full, hole, false, !f.time_focus, NULL);
     if (full) draw_popup(f.th);
 }
-
-#endif

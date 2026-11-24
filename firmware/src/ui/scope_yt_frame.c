@@ -291,11 +291,7 @@ void persist_note(uint16_t x, int16_t prev_y, int16_t y)
 void persist_frame_decay(void)
 {
     const scope_state_t *gss = scope_state_get();
-#if FEATURE_FFT
     const uint8_t gview = (uint8_t)scope_view;
-#else
-    const uint8_t gview = 0u;
-#endif
     (void)persist_follow_geometry(persist_geometry_key(gss, gview, view_merged(gss), strip_top(gss)),
                                   gss->running);
     static uint32_t last_tick;

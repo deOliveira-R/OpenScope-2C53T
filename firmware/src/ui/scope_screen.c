@@ -13,11 +13,9 @@
 #include "model.h"
 #include "theme.h"
 #include "ui.h"
-#if FEATURE_FFT
 #include "fft.h"
 #include "fft_live.h"        /* the spectrum's axes: what a cursor step is worth */
 void scope_ui_fft_axes(fft_axes_t *out);     /* scope_spectrum.c: the axes on screen */
-#endif
 
 #include <stdio.h>
 #include <string.h>
@@ -167,7 +165,6 @@ static const prop_desc_t *cursor_prop(int32_t sel)
     }
 }
 
-#if FEATURE_FFT
 /* UP / DOWN in the spectrum's cursor job: the selected line by what
  * SPECTRUM_CURSOR_STEP_PX pixels are worth on the spectrum's axes as they
  * stand, so a step looks the same at every span and zooming in makes it
@@ -201,9 +198,6 @@ static void spectrum_cursor_move(int32_t sel, int dir)
     if (v > hi) v = hi;
     (void)prop_set_local(p, v, ORIGIN_KEY, NULL);
 }
-#else
-static void spectrum_cursor_move(int32_t sel, int dir) { (void)sel; (void)dir; }
-#endif
 
 /* LEFT / RIGHT in the cursor stage: the next line of the pair shown. */
 static int32_t cursor_next(int32_t mode, int32_t sel)
@@ -419,7 +413,6 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
         }
         return scope_selfcal_request_autoset() ? SCR_HANDLED : popup_full("Busy");
 
-#if FEATURE_FFT
     /* The spectrum job's keys: the reference level and the span, which have
      * no property (scope_screen.h). AUTO fits the span to the record the
      * view analyses: a request the display task serves on its next frame. */
@@ -432,7 +425,6 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
     case KA_FFT_ZOOM:
         if (dir < 0) fft_zoom_in(); else fft_zoom_out();
         return SCR_DRAW_FULL;
-#endif
 
     /* Claimed with nothing to do (KA_NONE: a long key the view does not
      * use), an arrow in a stage that is gone (KA_LEGACY), and the answers
@@ -473,10 +465,8 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
     h = redraw_epoch_mix(h, (uint32_t)math_enabled | ((uint32_t)math_op << 1)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));
-#if FEATURE_FFT
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
     h = redraw_epoch_mix(h, scope_view_fft_epoch());
-#endif
     /* The domain the keys are on: a view of two domains marks it (it goes
      * with the view, so it is layout as view.mode is). */
     h = redraw_epoch_mix(h, (uint32_t)view_key_domain((uint8_t)G(P(VIEW_MODE)), (key_focus_t)key_focus_get()));
@@ -519,19 +509,13 @@ static uint32_t s_epoch(void)
     return redraw_epoch_mix(redraw_epoch_mix(layout, soft), scope_screen_cursor_epoch());
 }
 
-#if FEATURE_FFT
 _Static_assert(SCOPE_VIEW_TIME == 0, "scope_shown_t.kind 0 is the Y-T view (scope_screen_changed)");
-#endif
 void scope_screen_shown(scope_shown_t *now)
 {
     const scope_state_t *s = scope_state_get();
     scope_screen_epochs(&now->layout, &now->soft);
     now->cursor = scope_screen_cursor_epoch();
-#if FEATURE_FFT
     now->kind = (uint8_t)(((uint8_t)scope_view << 1) | (s->roll ? 1u : 0u));
-#else
-    now->kind = s->roll ? 1u : 0u;
-#endif
 }
 
 scope_change_t scope_screen_changed(const scope_shown_t *seen, const scope_shown_t *now,

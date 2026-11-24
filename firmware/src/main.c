@@ -135,10 +135,8 @@ static device_mode_t startup_target_mode(uint8_t last_screen)
     return startup_boot_mode(startup_mode, last_screen);
 }
 
-#if FEATURE_FFT
 volatile scope_view_t scope_view = SCOPE_VIEW_TIME;
 fft_result_t fft_result;
-#endif
 
 /* FreeRTOS handles */
 static TaskHandle_t  xDisplayTaskHandle = NULL;
@@ -259,12 +257,10 @@ static uint32_t info_bar_epoch(void)
          * repaints its own slots. */
         h = redraw_epoch_mix(h, status_bar_info_epoch());
         /* The FFT view's own bar (window, averaging, max hold). */
-#if FEATURE_FFT
         const fft_config_t *cfg = fft_get_config();
         if (cfg)
             h = redraw_epoch_mix(h, (uint32_t)cfg->window | ((uint32_t)cfg->avg_count << 8)
                                     | ((uint32_t)cfg->max_hold << 24));
-#endif
     } else if (current_mode == MODE_MULTIMETER) {
         h = redraw_epoch_mix(h, (uint32_t)meter_submode);
         h = redraw_epoch_mix(h, meter_softkeys_epoch());
@@ -324,7 +320,6 @@ void meter_link_status(bool *usb_host, bool *background, bool *want_on)
 uint32_t scope_view_fft_epoch(void)
 {
     uint32_t h = REDRAW_EPOCH_SEED;
-#if FEATURE_FFT
     const fft_config_t *fc = fft_get_config();
     if (fc != NULL) {
         h = redraw_epoch_mix_f(h, fc->ref_level_db);
@@ -337,7 +332,6 @@ uint32_t scope_view_fft_epoch(void)
         h = redraw_epoch_mix(h, ((uint32_t)fc->zoom_start_bin << 16)
                                 | fc->zoom_end_bin);
     }
-#endif
     return h;
 }
 
@@ -532,12 +526,10 @@ static void render_yt(uint32_t frame, bool full)
 
 /* Roll (C11): its own frame over the roll FIFO, not the 1024-sample record. */
 static void render_roll(uint32_t frame, bool full) { (void)frame; draw_roll_screen(full); }
-#if FEATURE_FFT
 static void render_xy(uint32_t frame, bool full)    { (void)frame; draw_xy_screen(full); }
 static void render_fft(uint32_t frame, bool full)   { (void)frame; draw_fft_screen(full); }
 static void render_split(uint32_t frame, bool full) { draw_split_screen(frame, full); }
 static void render_waterfall(uint32_t frame, bool full) { (void)frame; (void)full; draw_waterfall_screen(); }
-#endif
 
 typedef struct {
     void (*draw)(uint32_t frame, bool full);
@@ -549,20 +541,17 @@ typedef struct {
 static const scope_renderer_t k_renderers[VIEW_MODE_COUNT] = {
     [VIEW_MODE_YT]        = { render_yt,        true,  true,  false },
     [VIEW_MODE_ROLL]      = { render_roll,      true,  true,  false },
-#if FEATURE_FFT
     [VIEW_MODE_XY]        = { render_xy,        true,  false, true  },
     [VIEW_MODE_FFT]       = { render_fft,       true,  false, false },
     [VIEW_MODE_SPLIT]     = { render_split,     true,  false, false },
     [VIEW_MODE_WATERFALL] = { render_waterfall, false, false, false },
-#endif
 };
 
-/* The renderer of the view on screen; Y-T's for a view this build lacks. */
+/* The renderer of the view on screen. */
 static const scope_renderer_t *scope_renderer(void)
 {
     const int32_t v = prop_get(P(VIEW_MODE));
-    const scope_renderer_t *r = (v >= 0 && v < (int32_t)VIEW_MODE_COUNT) ? &k_renderers[v] : NULL;
-    return (r != NULL && r->draw != NULL) ? r : &k_renderers[VIEW_MODE_YT];
+    return &k_renderers[(v >= 0 && v < (int32_t)VIEW_MODE_COUNT) ? v : VIEW_MODE_YT];
 }
 
 static void scope_render(uint32_t frame, redraw_action_t action)

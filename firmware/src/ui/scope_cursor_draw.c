@@ -150,7 +150,6 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, cur_layer_t 
     cursor_layer_lines(c, vx, hy, SCOPE_TOP, th, L);
 }
 
-#if FEATURE_FFT
 /* The cursor layer of a spectrum: the lines where their bins and levels fall
  * on the axes ax; a line outside the span or the level range is not drawn. */
 void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,
@@ -165,7 +164,6 @@ void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, 
         }
     cursor_layer_lines(&ss->cursor, vx, hy, (int16_t)ax->y_top, th, L);
 }
-#endif
 
 /* The layer's colour at pixel (x, y) into *c, or false. Labels win over
  * lines; where two lines cross, V1, H1, V2, H2 in that order. This is the
@@ -290,7 +288,6 @@ void scope_ui_cursor_row_refresh(void)
     cursor_row_paint(ss, false);
 }
 
-#if FEATURE_FFT
 /* The readout of the cursors on a spectrum, into out (n bytes): the mode,
  * then the two frequencies and their difference, then the level difference
  * (with the level lines alone, the two levels as well). Frequencies are in
@@ -349,4 +346,3 @@ void spectrum_cursor_row_paint(const scope_state_t *ss, const fft_axes_t *ax, ui
     lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, th->background);
     font_draw_string(4, (uint16_t)(y + 1), t, th->highlight, th->background, &font_small);
 }
-#endif

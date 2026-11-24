@@ -1082,15 +1082,11 @@ void cmd_fpga_scope_autoset(void)
  * display task fits the span to the record of its next spectrum frame. */
 void cmd_fft_auto(void)
 {
-#if FEATURE_FFT
     extern void fft_auto_request(void);
     extern bool fft_is_initialized(void);
     if (!fft_is_initialized()) { usb_send_str("refused: no spectrum view (set view.mode fft|split|waterfall)\r\n"); return; }
     fft_auto_request();
     usb_send_str("fft auto requested (next spectrum frame)\r\n");
-#else
-    usb_send_str("refused: not in this build\r\n");
-#endif
 }
 
 /* `fpga scope basecal [banks]`: queue a baseline correction over the banks

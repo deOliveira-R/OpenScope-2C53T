@@ -20,7 +20,6 @@
 #include "ui.h"            /* scope_view_t */
 #include "persistence.h"   /* persist_mode_t */
 
-#if FEATURE_FFT
 /* The views that need the FFT's half of the shared pool (FFT, split,
  * waterfall). X-Y does not: its phosphor trail borrows persistence's. */
 bool scope_view_uses_fft(scope_view_t v);
@@ -34,7 +33,6 @@ bool scope_view_uses_fft(scope_view_t v);
  * without the calibration page, brings the offset outputs up. */
 void scope_view_select(scope_view_t v);
 void scope_apply_fft_settings(void);   /* fft.window / fft.avg / fft.maxhold -> the live FFT */
-#endif
 
 /* Persistence on in mode m (or just the mode, if it is on already). The pool
  * is shared: a spectrum view goes back to the time view first. False (and

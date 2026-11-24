@@ -53,7 +53,6 @@ void strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
                          ss->prm_hidden, strip_aux(), STRIP_BOTTOM, L);
 }
 
-#if FEATURE_FFT
 /* The spectrum's strip: the same rows and cells, holding the spectrum's
  * measurement set (dsp/fft_live.h) as one block, since a spectrum view
  * analyses one channel. */
@@ -74,7 +73,6 @@ uint16_t fft_strip_top(const scope_state_t *ss)
     return measure_strip_top(meas_select_get(MEAS_SET_FFT), true, 0u, false,
                              ss->prm_hidden, ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM);
 }
-#endif
 
 /* One cell: label left in the dimmed channel colour chc, the value buf right
  * in chc (text_secondary when it is not a measured value: "--").
@@ -129,7 +127,6 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
     }
 }
 
-#if FEATURE_FFT
 /* The spectrum's strip: m holds the spectrum's measurements (fft_live_measure),
  * or is NULL when there is no spectrum; ch2: it is CH2's. refresh as
  * draw_strip_cells. */
@@ -148,7 +145,6 @@ void draw_fft_strip(const scope_state_t *ss, const theme_t *th, const fft_meas_t
                          v != NULL && v->unit != FFT_MEAS_UNIT_NONE, ch2 ? th->ch2 : th->ch1, th, refresh);
     }
 }
-#endif
 
 /*
  * Measure one channel's live capture record.
