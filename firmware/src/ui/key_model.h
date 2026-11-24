@@ -176,7 +176,7 @@ typedef enum {
     KA_OSCMENU_PANE,      /* arg = osc_row_t: open it locked inside that pane (PRM, TRIGGER) */
     KA_OSCMENU_KEY,       /* arg = osc_key_t: arrows/OK, MENU = OSC_KEY_BACK */
     KA_OSCMENU_CLOSE,     /* the key that opened it, pressed again */
-    KA_POWER_PROMPT,      /* short POWER, every screen: MENU+POWER IAP reset, else the
+    KA_POWER_PROMPT,      /* short POWER, every screen: MENU+POWER update screen, else the
                            * hold-to-power-off countdown (key_map_global only) */
     /* The rest of the scope's plot keys (ARCH-1 B7: until then KA_LEGACY and
      * a per-key switch). ui/scope_screen.c executes every scope action. */

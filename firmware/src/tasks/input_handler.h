@@ -16,8 +16,8 @@
 #include <stdbool.h>
 #include "settings_store.h"
 
-/* Handle a debounced key (it may carry BTN_LONG_FLAG): MENU + POWER resets
- * into the bootloader; everything else goes to the screen router
+/* Handle a debounced key (it may carry BTN_LONG_FLAG): MENU + POWER opens
+ * the bootloader's update screen; everything else goes to the screen router
  * (ui/ui_router.h). Input task. */
 void input_handle_button(button_id_t button, QueueHandle_t display_queue);
 

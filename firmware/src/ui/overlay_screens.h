@@ -41,6 +41,7 @@ typedef enum {
     POWER_PROMPT_HOLD,       /* "Hold to power off" and the count 3..1 */
     POWER_PROMPT_GOODBYE,    /* "Goodbye!" (POWER held to the end)     */
     POWER_PROMPT_AUTOOFF,    /* "Auto power off" / "Goodbye!"          */
+    POWER_PROMPT_UPDATE,     /* "Firmware update" / "Release POWER"    */
 } power_prompt_kind_t;
 
 typedef struct {

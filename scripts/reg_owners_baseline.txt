@@ -32,6 +32,5 @@ re/re_spi3.c	cmd_spi3_probe	SPI3	3
 re/re_spi3.c	spi3_canary_span	GPIOB.out	2
 re/shell_re.c	cmd_re_pinsweep	?PTR	5
 re/shell_re.c	cmd_re_pinsweep	GPIOB.out	2
-tasks/input_handler.c	input_handle_button	SCS	1
 util/cal_backup.c	mcu_flash_restore_from_region	FLASH	2
 util/cal_dump.c	diag_delay_ms	WDT	1

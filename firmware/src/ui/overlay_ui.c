@@ -30,6 +30,10 @@ void power_prompt_ui_paint(power_prompt_view_t v)
         font_draw_string_center(160, 100, "Auto power off", th->warning, bg, &font_medium);
         font_draw_string_center(160, 126, "Goodbye!", th->success, bg, &font_large);
         break;
+    case POWER_PROMPT_UPDATE:
+        font_draw_string_center(160, 100, "Firmware update", th->warning, bg, &font_medium);
+        font_draw_string_center(160, 126, "Release POWER", th->text_primary, bg, &font_medium);
+        break;
     default:
         break;
     }

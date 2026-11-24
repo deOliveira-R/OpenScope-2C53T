@@ -36,7 +36,7 @@ the FPGA scanner is compiled out.
 |---|---|
 | MENU | Next mode: **Scope → Meter → SigGen → Settings → Scope**. Inside a Settings sub-menu it goes back to the top level first. Saves pending settings. |
 | POWER (hold) | "Hold to power off" with a 3-2-1 countdown; release to cancel; "Goodbye!" then off. |
-| MENU + POWER | Reboots into the factory IAP drive, for firmware updates. Not in the manual. |
+| MENU + POWER | Saves settings and opens the bootloader's update screen once POWER is released. Hold POWER there about 2 s to return. Not in the manual. |
 | UP/DOWN/LEFT/RIGHT (hold) | Auto-repeat after 500 ms, every 150 ms. No other button has a hold action. |
 
 The status bar shows `SCOPE` / `METER` / `SIGGEN` / `SETUP`, battery %, `CHG` while charging,
@@ -217,7 +217,7 @@ only 7 rows show at a time.
 | Startup on Boot | Scope / Meter | yes (MCU flash, written on every change) | **INERT in release**: always boots Scope. The default shows "Meter". |
 | About › | static text | | LIVE. Says "Custom Firmware v0.2". |
 | FPGA SPI Scanner | — | | **INERT** (compiled out) |
-| Firmware Update | DFU | | Resets via the old HID-bootloader handshake; under the factory bootloader probably just reboots (**confirm**). The working path is MENU+POWER. |
+| Firmware Update | DFU | | Saves settings and opens the bootloader's update screen, as MENU+POWER does. |
 | Factory Reset | — | | **INERT**, no reset exists |
 
 **Oscilloscope Settings** (OK cycles, LEFT/RIGHT ±1):
@@ -260,7 +260,7 @@ after a change, on the next button press, and on MENU, power-off or MENU+POWER.
 | Backlight | on/off only | no brightness control |
 | Buzzer | continuity only | no key clicks, no mute setting |
 | Screenshot | USB only: `scripts/screenshot.py` (needs a held screen; 16-colour palette, so don't judge theme contrast from it) | LIVE |
-| Firmware update | MENU+POWER → IAP drive; or USB `fwload` + `fwapply` (from v0.4.1) | LIVE |
+| Firmware update | MENU+POWER → update screen; or USB `fwload` + `fwapply` (from v0.4.1) | LIVE |
 | Fault screen | "SYSTEM FAULT". In release the watchdog isn't started, so most faults freeze rather than restart. | — |
 
 ## 8. Compiled in but unreachable

@@ -210,6 +210,9 @@ flash_region_status_t flash_region_append(flash_region_id_t id,
 flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *data,
                                             uint32_t len, bool *moved);
 
+/* A log save is running in some task right now. */
+bool flash_region_save_active(void);
+
 /* Newest CRC-valid record. *out_len gets the payload length. Returns
  * FLASH_REGION_ERR_NOT_FOUND on an empty (or entirely corrupt) log. */
 flash_region_status_t flash_region_read_latest(flash_region_id_t id,

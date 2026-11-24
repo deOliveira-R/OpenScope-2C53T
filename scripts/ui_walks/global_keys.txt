@@ -142,4 +142,4 @@ k10_end        | set sys.mode scope ; wait 2
 #     the screen that was under the gallery comes back, not the gallery.
 #   - hold POWER to the end once: 3, 2, 1, "Goodbye!", off; at the next power-on with Startup on
 #     Boot = Last Used the screen shown at power-off comes up (Home for Home and Settings).
-#   - MENU + POWER resets into the bootloader (upgrade mode).
+#   - MENU + POWER opens the bootloader's update screen.

@@ -43,6 +43,8 @@
 #endif
 #include "task.h"
 #include "power.h"
+#include "dfu_boot.h"
+#include "flash_regions.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -78,6 +80,53 @@ static void autooff_touch(void)
     sys_autooff_activity(&g_autooff, now);
 }
 
+/* How long a shutdown waits for a self-calibration to cancel and for a flash
+ * save in another task to end: a W25Q128 sector erase (400 ms maximum) and the
+ * records around it. Bounded, as the power-off must happen regardless. */
+#define SHUTDOWN_SETTLE_MS      1500u
+#define SHUTDOWN_POLL_MS        10u
+/* The bootloader reads POWER held for 2 s as "boot the app", so the updater is
+ * entered after the key is let go. A key stuck down must not block it. */
+#define UPDATER_KEY_WAIT_MS     10000u
+#define UPDATER_KEY_POLL_MS     50u
+
+static QueueHandle_t g_dq;      /* set before the first key (input_router_init) */
+
+/* Before the last saves: no self-calibration mid-run (its temporary ranges
+ * would be saved) and no flash save running in another task. The run is
+ * served here because this task is the one that serves it. */
+static void shutdown_settle(void)
+{
+#ifndef EMULATOR_BUILD
+    if (!scope_selfcal_quiet()) scope_selfcal_request_cancel();
+    for (uint32_t waited = 0u;
+         waited < SHUTDOWN_SETTLE_MS && (!scope_selfcal_quiet() || flash_region_save_active());
+         waited += SHUTDOWN_POLL_MS) {
+        scope_selfcal_service(g_dq);
+        vTaskDelay(pdMS_TO_TICKS(SHUTDOWN_POLL_MS));
+        health_checkin_self();
+    }
+#endif
+}
+
+/* The updater, from the keys: the settings are saved, power stays held. */
+static void enter_updater(void)
+{
+    shutdown_settle();
+    health_checkin_self();
+    (void)settings_store_flush(settings_now_ms());
+    health_checkin_self();
+    if (power_key_down()) {
+        power_prompt_show(POWER_PROMPT_UPDATE, 0);
+        for (uint32_t waited = 0u; waited < UPDATER_KEY_WAIT_MS && power_key_down();
+             waited += UPDATER_KEY_POLL_MS) {
+            vTaskDelay(pdMS_TO_TICKS(UPDATER_KEY_POLL_MS));
+            health_checkin_self();
+        }
+    }
+    dfu_request_reboot();
+}
+
 /* The one orderly power-off: flush settings FIRST (the rail is about to stop),
  * backlight to 0 like stock's saver (0x080293EE), then release the PC9 hold.
  * The POWER hold and the auto power-off end here. It is also the only place
@@ -87,6 +136,7 @@ static void autooff_touch(void)
  * leave that byte as the last power-off wrote it. */
 static void power_off_now(void)
 {
+    shutdown_settle();
     health_checkin_self();      /* each flash save starts with a full deadline */
     (void)settings_store_flush_power_off(settings_now_ms(), startup_screen_of_mode(current_mode));
     health_checkin_self();
@@ -254,17 +304,13 @@ void settings_env_usb_share_toggle(void)
  * anything still inside the settle window would be lost. */
 void settings_env_fw_update(void)
 {
-    extern void dfu_request_reboot(void);
-    (void)settings_store_flush(settings_now_ms());
-    dfu_request_reboot();
+    enter_updater();
 }
 
 /* ═══════════════════════════════════════════════════════════════════
  * The display queue
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Set before the first key (input_router_init). */
-static QueueHandle_t g_dq;
 
 static void send_cmd(QueueHandle_t q, uint8_t cmd)
 {
@@ -455,24 +501,10 @@ volatile bool input_key_in_flight;
 
 void input_handle_button(button_id_t button, QueueHandle_t dq)
 {
-    /* MENU + POWER → clean handoff to the factory IAP bootloader.
-     * The FNIRSI bootloader at 0x08000000 checks the MENU key at
-     * reset; the user is holding it, so a plain reset (NOT the DFU
-     * magic-word path — that was for our retired HID bootloader)
-     * lands in stock upgrade mode. Replaces the old behavior where
-     * POWER alone hit the shutdown countdown and MENU+POWER froze.
-     * The bootloader draws its own "firmware upgrade" screen, so no
-     * delay/message here — reset immediately while MENU is still down.
-     * Until the router this sat at the top of the POWER case; it is taken
-     * first now, before any screen sees the key. What it skips (the key
-     * click, the auto-off restart, a gallery closing itself) is RAM state
-     * the reset discards anyway; the settings flush is the same. */
+    /* MENU + POWER opens our bootloader's update screen. Taken before any
+     * screen sees the key. */
     if (button == BTN_POWER && (button_scan_get_raw() & BTN_SCAN_MENU_MASK)) {
-        /* Reboot boundary — same reasoning as the DFU entry above. */
-        (void)settings_store_flush(settings_now_ms());
-        __DSB();
-        NVIC_SystemReset();
-        while (1) { }
+        enter_updater();
     }
 
     g_dq = dq;
@@ -488,7 +520,7 @@ void input_handle_button(button_id_t button, QueueHandle_t dq)
 void ui_env_power_key(void)
 {
         {
-            /* MENU + POWER (the IAP reset) never gets here: input_handle_button()
+            /* MENU + POWER (the update screen) never gets here: input_handle_button()
              * takes it before the router. */
 
             /* The countdown is a layer of the screen router (ui/

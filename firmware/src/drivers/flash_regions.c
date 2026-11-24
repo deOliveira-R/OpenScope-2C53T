@@ -959,7 +959,7 @@ flash_region_status_t flash_region_append(flash_region_id_t id, const void *data
     return record_program(addr, data, len);
 }
 
-flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *data,
+static flash_region_status_t log_save_locked_out(flash_region_id_t id, const void *data,
                                             uint32_t len, bool *moved)
 {
     if (moved != NULL) *moved = false;
@@ -1007,6 +1007,23 @@ flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *da
     }
     st = record_program(b->start + LOG_BANK_HDR_SIZE, data, len);
     if (st == FLASH_REGION_OK && moved != NULL) *moved = true;
+    return st;
+}
+
+/* Saves in progress, from any task: a shutdown waits for them. */
+static volatile uint32_t g_log_saves_active;
+
+bool flash_region_save_active(void)
+{
+    return g_log_saves_active != 0u;
+}
+
+flash_region_status_t flash_region_log_save(flash_region_id_t id, const void *data,
+                                            uint32_t len, bool *moved)
+{
+    (void)__atomic_add_fetch(&g_log_saves_active, 1u, __ATOMIC_SEQ_CST);
+    const flash_region_status_t st = log_save_locked_out(id, data, len, moved);
+    (void)__atomic_sub_fetch(&g_log_saves_active, 1u, __ATOMIC_SEQ_CST);
     return st;
 }
 

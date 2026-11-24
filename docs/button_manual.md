@@ -431,7 +431,7 @@ Home -> Meter -> Scope -> Signal Gen -> Last Used -> Home
 screen when the device was last switched off (POWER held, or the auto
 power-off): the scope, the meter or the generator. Only a power-off records
 the screen, so powering off on the meter boots the meter, and changing
-screens writes nothing. A reset (MENU + POWER, a firmware update) does not
+screens writes nothing. Opening the update screen (MENU + POWER) does not
 record it. If the device was switched off on Home or in Settings, or the
 saved record is older than this choice, it boots to Home.
 
