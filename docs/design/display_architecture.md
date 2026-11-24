@@ -218,7 +218,7 @@ from the screenshot copy after a full redraw and after a live update).
     (newest at the right), the frame says which elements the source has,
     and the fill counter is a Y-T element; roll's own renderer is gone.
     Roll points are drawn as stored (`as_stored` on the map), never
-    rescaled like a held record. The picture is the old roll picture: 11
+    rescaled like a held record. The picture is the old roll picture: 6
     roll states read back, every difference a trace, a reading or a setting
     the capture order left different; livecheck 0 in roll. The measurement
     cells now refresh at the Y-T rate (twice a second) instead of every 8

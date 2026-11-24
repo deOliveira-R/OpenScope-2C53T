@@ -488,7 +488,8 @@ static inline uint16_t roll_label_px(const yt_frame_t *f, uint16_t x, int y)
            ? f->th->highlight : f->th->background;
 }
 
-/* The roll source's fill counter, over everything. */
+/* The roll source's fill counter: an opaque box over the plot, under the
+ * tags and the cursors. */
 static void el_roll_label(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)c;
@@ -507,10 +508,10 @@ static const yt_element_fn yt_elements[] = {
     el_demo,
     el_mask_strip,
     el_math,
+    el_roll_label,
     el_tags,
     el_trigger_pointer,
     el_cursors,
-    el_roll_label,
 };
 
 #if FEATURE_BENCHSHELL
@@ -527,14 +528,14 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
     const bool mdot = c->strip_dotted;
     for (uint16_t y = (uint16_t)s->lo; y < (uint16_t)s->hi; y++) {
         uint16_t want;
-        if (f->roll && x < ROLL_LABEL_W && y < f->p.top + ROLL_LABEL_H)
-            want = roll_label_px(f, x, (int)y);    /* roll's fill counter */
-        else if (f->curs && cursor_layer_px(&f->cl, (int)x, (int)y, &want))
+        if (f->curs && cursor_layer_px(&f->cl, (int)x, (int)y, &want))
             ;                                      /* cursor lines and labels */
         else if (c->tcol && y < f->p.top + PM_TPOS_H && tpos_px(g_place.trig_x, (int)x, (int)y - f->p.top))
             want = th->trigger;                    /* trigger-position pointer */
         else if (c->edge && markers_px(&f->pm, (int)x, (int)y, th->background, &want))
             ;                                      /* ground / trigger tags */
+        else if (f->roll && x < ROLL_LABEL_W && y < f->p.top + ROLL_LABEL_H)
+            want = roll_label_px(f, x, (int)y);    /* roll's fill counter */
         else if (c->mcol && y < f->p.top + font_small.height &&
                  font_text_px(f->mf.label, &font_small, (int)x - (int)MATH_LABEL_X, (int)y - f->p.top))
             want = th->warning;                    /* math label */
