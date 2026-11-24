@@ -1540,7 +1540,7 @@ int main(void)
      * can't trip a watchdog reset mid-experiment, and with NO_WATCHDOG for the
      * same reason in app-layout bench builds (app-coldtrace). */
     watchdog_boot_feed("tasks");    /* closes the last boot gap */
-#if !defined(GUEST_BUILD) && !defined(NO_WATCHDOG)
+#ifdef WATCHDOG_ARMED
     watchdog_init();
 #endif
 

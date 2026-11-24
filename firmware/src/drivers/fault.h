@@ -37,6 +37,7 @@ typedef enum {
     FAULT_KIND_STACK,      /* FreeRTOS stack overflow check; detail = task */
     FAULT_KIND_HEAP,       /* pvPortMalloc returned NULL */
     FAULT_KIND_ASSERT,     /* configASSERT; detail = file:line */
+    FAULT_KIND_STALL,      /* a task missed its health deadline; detail = task */
 } fault_kind_t;
 
 typedef struct {

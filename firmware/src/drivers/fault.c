@@ -71,6 +71,7 @@ static const char *kind_name(uint32_t k)
         case FAULT_KIND_STACK:      return "STACK";
         case FAULT_KIND_HEAP:       return "HEAP";
         case FAULT_KIND_ASSERT:     return "ASSERT";
+        case FAULT_KIND_STALL:      return "STALL";
         default:                    return "?";
     }
 }

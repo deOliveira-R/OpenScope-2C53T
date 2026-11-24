@@ -11,6 +11,7 @@
 #include "crash_policy.h"
 #include "wdt_clock.h"
 #include "FreeRTOS.h"
+#include "timers.h"
 
 /* ── Number parsing ─────────────────────────────────────────────────── */
 
@@ -278,10 +279,10 @@ extern void vApplicationMallocFailedHook(void);
 static void cmd_health(void)
 {
     const uint32_t now = (uint32_t)xTaskGetTickCount();
-#ifdef NO_WATCHDOG
-    usb_send_str("health: dry run, the hardware watchdog is OFF in this image\r\n");
-#else
+#ifdef WATCHDOG_ARMED
     usb_send_str("health: the hardware watchdog is ON in this image\r\n");
+#else
+    usb_send_str("health: dry run, the hardware watchdog is OFF in this image\r\n");
 #endif
     usb_debug_printf("  deadline %u ms; uptime %lu s\r\n", (unsigned)HEALTH_DEADLINE_MS,
                      (unsigned long)(now * portTICK_PERIOD_MS / 1000u));
@@ -345,18 +346,27 @@ static void cmd_crash(const char *args)
         fault_test_boot_arm();
         __asm volatile ("udf #0");
     } else if (strcmp(args, "test hang CONFIRM") == 0) {
-#ifdef NO_WATCHDOG
-        usb_send_str("crash: refused, this image has no watchdog to end the hang\r\n");
-#else
-        /* A stall, not a crash: the key task stops checking in, the health
-         * timer stops feeding, and the watchdog switches the unit off. */
+#ifdef WATCHDOG_ARMED
+        /* The key task stops checking in; the health monitor restarts the unit. */
         const task_health_t *const t = health_get_tasks();
         for (int i = 0; i < health_get_count(); i++) {
             if (strcmp(t[i].name, "key") == 0) {
-                usb_send_str("crash: the key task is stopped, watchdog next\r\n");
+                usb_send_str("crash: the key task is stopped, restart next\r\n");
                 vTaskSuspend(t[i].handle);
             }
         }
+#else
+        usb_send_str("crash: refused, this image has no watchdog to end the hang\r\n");
+#endif
+    } else if (strcmp(args, "test timer CONFIRM") == 0) {
+#ifdef WATCHDOG_ARMED
+        /* The monitor itself dies: nothing feeds, and the hardware watchdog
+         * resets the chip, which switches the unit off. */
+        usb_send_str("crash: the timer task is stopped, the watchdog powers off next\r\n");
+        vTaskDelay(pdMS_TO_TICKS(CRASH_TEST_FLUSH_MS));
+        vTaskSuspend(xTimerGetTimerDaemonTaskHandle());
+#else
+        usb_send_str("crash: refused, this image has no watchdog to end the hang\r\n");
 #endif
     } else if (strcmp(args, "test heap CONFIRM") == 0) {
         usb_send_str("crash: out-of-memory hook\r\n");
@@ -365,7 +375,7 @@ static void cmd_crash(const char *args)
     } else
 #endif
     {
-        usb_send_str("usage: crash | crash test task|irq|assert|heap|boot|hang CONFIRM\r\n");
+        usb_send_str("usage: crash | crash test task|irq|assert|heap|boot|hang|timer CONFIRM\r\n");
     }
 }
 
@@ -538,7 +548,7 @@ static const shell_cmd_t shell_cmds[] = {
     CMD_V("health", cmd_health, SC_EXACT,
           "health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n"),
     CMD_A("crash", cmd_crash, 0,
-          "crash [test task|irq|assert|heap|boot|hang CONFIRM]  Last crash; crash on purpose\r\n"),
+          "crash [test task|irq|assert|heap|boot|hang|timer CONFIRM]  Last crash; crash on purpose\r\n"),
     BENCHSHELL_SHELL_ROWS   /* the bench shell: src/drivers/shell_bench.h, empty when the feature is off */
     RETOOLS_SHELL_ROWS      /* the reverse-engineering toolkit: src/re/shell_re.h, empty when off */
     METERDEBUG_SHELL_ROWS   /* the meter diagnostics: src/drivers/shell_meterdebug.h, empty when off */

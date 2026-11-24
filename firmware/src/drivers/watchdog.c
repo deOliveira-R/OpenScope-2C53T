@@ -8,10 +8,13 @@
  *      - Updates stack high water marks
  *      - Checks if any task has missed its deadline
  *      - Feeds the FWDGT only if all tasks are healthy
- *   4. If any task is stalled, the FWDGT starves and resets the MCU
+ *   4. If a task is stalled, it records which one and restarts through the
+ *      crash path, which keeps the power latch and the record
+ *   5. If the monitor itself stops, the FWDGT starves and resets the MCU,
+ *      which switches the unit off: the last resort
  *
- * The FWDGT timeout (~3s) is deliberately longer than the health check
- * interval so the monitor has time to detect and report the problem.
+ * The FWDGT timeout (~3s) is deliberately longer than the health deadline, so
+ * the monitor acts first whenever it is still running.
  */
 
 #include "watchdog.h"
@@ -157,12 +160,9 @@ bool health_is_stalled(int slot)
 
 void health_check(void)
 {
-    bool all_healthy = true;
+    const task_health_t *stalled = NULL;
 
     health_gap_mark(&health_timer, xTaskGetTickCount(), HEALTH_DEADLINE_TICKS);
-#ifndef EMULATOR_BUILD
-    fault_note_uptime_ms(xTaskGetTickCount() * portTICK_PERIOD_MS);
-#endif
 
     for (int i = 0; i < health_count; i++) {
         if (!health_tasks[i].registered)
@@ -173,16 +173,23 @@ void health_check(void)
             health_tasks[i].handle);
 
         /* Check deadline */
-        if (health_is_stalled(i)) {
-            all_healthy = false;
+        if (stalled == NULL && health_is_stalled(i)) {
+            stalled = &health_tasks[i];
         }
     }
 
-    if (all_healthy) {
+    if (stalled == NULL) {
+        /* Only a run with every task alive counts towards "healthy", or a hang
+         * near that mark would clear the crash count and loop for ever. */
+#ifndef EMULATOR_BUILD
+        fault_note_uptime_ms(xTaskGetTickCount() * portTICK_PERIOD_MS);
+#endif
         watchdog_feed();
+        return;
     }
-    /* If not all healthy, we deliberately don't feed the watchdog.
-     * The FWDGT will reset the MCU after its timeout expires. */
+#ifdef WATCHDOG_ARMED
+    fault_crash(FAULT_KIND_STALL, stalled->name, (uint32_t)__builtin_return_address(0));
+#endif
 }
 
 const task_health_t *health_get_tasks(void)

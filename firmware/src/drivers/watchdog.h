@@ -3,8 +3,9 @@
  *
  * Uses the GD32F307 FWDGT (Free Watchdog Timer) with a cooperative
  * health-check pattern: the watchdog is only fed when ALL registered
- * tasks have checked in within the deadline. If any task hangs, the
- * system resets cleanly instead of freezing forever.
+ * tasks have checked in within the deadline. If a task hangs, the monitor
+ * records it and restarts through the crash path, power held. If the monitor
+ * itself dies, the unfed watchdog resets the chip, which switches the unit off.
  *
  * This directly addresses community issues #1 (auto-measurement hang),
  * #2 (GUI lockup), and #7 (unexpected restarts/freezes).
@@ -18,6 +19,11 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "health_gap.h"
+
+/* Images that run the hardware watchdog; the others only measure (dry run). */
+#if !defined(GUEST_BUILD) && !defined(NO_WATCHDOG) && !defined(EMULATOR_BUILD)
+#define WATCHDOG_ARMED
+#endif
 
 /* Maximum number of tasks that can register with the health monitor */
 #define HEALTH_MAX_TASKS    6
@@ -70,8 +76,9 @@ void health_checkin(int slot);
  * its caller's slot, e.g. a screenshot save from the key task or the shell. */
 void health_checkin_self(void);
 
-/* Run one health check cycle: update HWMs, check deadlines, feed or starve WDT.
- * Called from a timer callback or dedicated low-priority task. */
+/* Run one health check cycle: update HWMs, check deadlines, then feed the WDT,
+ * or restart through fault_crash() if a task is stalled. Thread mode only:
+ * called from the health timer's callback. */
 void health_check(void);
 
 /* Get read-only pointer to task health array (for diagnostics display) */
