@@ -29,12 +29,13 @@ void vband_clear(void)
 }
 
 /* Record in g_vband[slot] the map a band was drawn with: channel 1/2, its
- * range, the map a, and the counts one row is worth (0 = nothing plotted).
+ * range, the map a, the counts one row is worth (0 = nothing plotted) and
+ * the channel's 0 V code in the data drawn (the source's, yt_frame_t).
  * True scale anchors the channel's 0 V code to a row, so absolute Y is known
  * (mid_counts = 0 at the ground tag's row); autofit re-anchors every frame
  * and leaves it unknown. */
 void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
-                       const autofit_t *a, float counts_per_pixel)
+                const autofit_t *a, float counts_per_pixel, uint8_t zero)
 {
     if (slot > 1u) return;
     vband_t *b = &g_vband[slot];
@@ -46,7 +47,7 @@ void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
     b->range_idx        = range_idx;
     b->mid_known        = b->on && a->fx_ch >= 0;
     b->mid_row          = b->mid_known
-        ? (int16_t)autofit_y_raw(a, rec_zero(scope_state_get(), (uint8_t)(channel - 1u)))
+        ? (int16_t)autofit_y_raw(a, zero)
         : 0;
     b->mid_counts       = 0.0f;
 }
@@ -172,9 +173,9 @@ static void tag_put(pm_tag_t *t, int row, int top, int bot, pm_dir_t horiz,
  * at the left edge, the trigger-level tag at the right edge, on the rows down
  * to the pane's band_bot. a1/a2: the maps as drawn (NULL or off = nothing
  * plotted: the pixel convention, position and level in rows about the pane's
- * middle row). */
+ * middle row). zero: each channel's 0 V code in the data drawn. */
 void markers_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p,
-                   const autofit_t *a1, const autofit_t *a2, pm_set_t *m)
+                   const autofit_t *a1, const autofit_t *a2, const uint8_t zero[2], pm_set_t *m)
 {
     const int band_bot = p->band_bot;
     memset(m, 0, sizeof(*m));
@@ -189,7 +190,7 @@ void markers_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t
         if (a != NULL && a->on) {
             top = a->y_top;
             if (a->y_bot < bot) bot = a->y_bot;
-            row = autofit_y_raw(a, rec_zero(ss, ch));
+            row = autofit_y_raw(a, zero[ch]);
         } else {
             row = p->mid - c->position;
         }

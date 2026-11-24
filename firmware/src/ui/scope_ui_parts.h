@@ -265,6 +265,15 @@ typedef struct { uint16_t first, end; } g_span_t;
 extern g_span_t g_span;
 /* What one plot column is worth in samples per second, for the cursors. */
 float column_rate_for_display(const scope_state_t *ss);
+/* The time axis of the time view's columns, for the cursors: what a column
+ * is worth, how well that is known, and the column time is counted from
+ * (the trigger point; in roll the newest point, so earlier is negative). */
+typedef struct {
+    sample_rate_t       rate;
+    scope_cursor_conf_t conf;
+    int32_t             ref_col;
+} view_time_axis_t;
+void view_time_axis(const scope_state_t *ss, view_time_axis_t *ax);
 /* Volts per count of channel ch's record (the capture's when held). */
 float rec_vpc(const scope_state_t *ss, uint8_t ch);
 /* 0 V code of channel ch's record (the capture's when held). */
@@ -331,7 +340,7 @@ extern g_math_cur_t g_math_cur;
 void vband_clear(void);
 /* Record the map band slot was drawn with, for the cursors. */
 void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
-                       const autofit_t *a, float counts_per_pixel);
+                const autofit_t *a, float counts_per_pixel, uint8_t zero);
 /* Row of the hardware trigger level through map a, in pane p. */
 int16_t trigger_marker_y(const scope_state_t *ss, const plot_pane_t *p, const autofit_t *a);
 /* The two Y-T maps for the window in yt_cols, in pane p. */
@@ -342,7 +351,7 @@ void yt_fits_none(autofit_t *a1, autofit_t *a2);
 void yt_fits_roll(const scope_state_t *ss, const plot_pane_t *p, autofit_t *a1, autofit_t *a2);
 /* Build the plot-edge tag set m from the maps as drawn in pane p. */
 void markers_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p,
-                   const autofit_t *a1, const autofit_t *a2, pm_set_t *m);
+                   const autofit_t *a1, const autofit_t *a2, const uint8_t zero[2], pm_set_t *m);
 /* Colour of tag set m at pixel (x, y), or false. */
 bool markers_px(const pm_set_t *m, int x, int y, uint16_t bg,
                               uint16_t *c);

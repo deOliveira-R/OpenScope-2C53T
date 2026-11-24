@@ -88,9 +88,12 @@ typedef struct {
     const scope_state_t    *ss;
     plot_pane_t  p;                         /* the pane it is drawn in */
     /* The source: the record, or the roll points (scope_roll.h). It says
-     * which elements the frame has: roll has no placement on a trigger, so
-     * no trigger line, tags, cursors, math, mask, persistence or demo yet. */
+     * what the frame has. Roll has no placement on a trigger (no trigger
+     * pointer, no mask overlay), no demo, no persistence (the ghosts would
+     * be screen columns, and roll moves every point along them) and no math
+     * yet (the math inputs are the record's own scale). */
     bool         roll;
+    uint8_t      zero[2];                   /* each channel's 0 V code in the data drawn */
     char         roll_label[24];            /* its fill counter */
     bool         record;                    /* data is shown (else nothing, or the demo) */
     bool         demo;                      /* no record has ever arrived: the demo picture */
@@ -110,7 +113,6 @@ typedef struct {
      * per channel (plot_rail_columns). */
     uint8_t      rail[2][PLOT_RAIL_BYTES];
     uint8_t      off_plot;                  /* bit per channel: a column's sample was off the plot this frame */
-    bool         trig_line;                 /* the trigger line is drawn */
     int16_t      trig_y;                    /* the trigger line's row */
     uint16_t     trig_dots;                 /* its dot mask */
     int16_t      p1, p2, mp;
@@ -163,6 +165,10 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     if (f->roll) {
         mask_overlay_off();
         g_math_live = false;
+        /* Roll points are taken at the settings now in force (a change
+         * empties the FIFO's meaning only as the points scroll out). */
+        f->zero[0] = (uint8_t)chan_zero_code(ss, 0u);
+        f->zero[1] = (uint8_t)chan_zero_code(ss, 1u);
         if (f->record) {
             yt_fits_roll(ss, p, &f->a1, &f->a2);
             plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
@@ -173,6 +179,8 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
         snprintf(f->roll_label, sizeof f->roll_label, "ROLL %3u/%u", (unsigned)roll_n,
                  (unsigned)SCOPE_ROLL_POINTS);
     } else if (f->record) {
+        f->zero[0] = rec_zero(ss, 0u);
+        f->zero[1] = rec_zero(ss, 1u);
         scope_mark_acquisition_ready();
         /* The window: placed on the trigger source's crossing and filled into
          * yt_cols for both channels, so the trace holds still and the
@@ -189,13 +197,18 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
         yt_fits(ss, p, &f->a1, &f->a2);
         plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
         plot_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
-        uint8_t slot = 0;
-        if (f->a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f->a1, yt_vmap_counts_per_px(&f->a1));
-        if (f->a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f->a2, yt_vmap_counts_per_px(&f->a2));
     } else {
         mask_overlay_off();
         g_math_live = false;
+        f->zero[0] = (uint8_t)chan_zero_code(ss, 0u);
+        f->zero[1] = (uint8_t)chan_zero_code(ss, 1u);
         yt_fits_none(&f->a1, &f->a2);
+    }
+    /* The bands' scales, for the cursor readout. */
+    if (f->record) {
+        uint8_t slot = 0;
+        if (f->a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f->a1, yt_vmap_counts_per_px(&f->a1), f->zero[0]);
+        if (f->a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f->a2, yt_vmap_counts_per_px(&f->a2), f->zero[1]);
     }
     f->b1 = yt_cols[0];
     f->b2 = yt_cols[1];
@@ -208,11 +221,10 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     f->demo_phase = demo_frozen;
 
     /* The tags, on the same maps. */
-    if (f->roll) memset(&f->pm, 0, sizeof f->pm);
-    else         markers_build(ss, th, p, &f->a1, &f->a2, &f->pm);
+    markers_build(ss, th, p, &f->a1, &f->a2, f->zero, &f->pm);
 
     cursor_layer_build(ss, th, p, &f->cl);
-    f->curs = !f->roll && (f->cl.v || f->cl.h);
+    f->curs = f->cl.v || f->cl.h;
 
     /* Math: one row per column, its label as per-pixel text. After
      * vband_clear, which also forgets the math scale math_prepare sets. */
@@ -236,7 +248,6 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     if (f->trig_y < p->top + TRIG_LINE_MARGIN_TOP) f->trig_y = (int16_t)(p->top + TRIG_LINE_MARGIN_TOP);
     if (f->trig_y > p->bot - TRIG_LINE_MARGIN_BOT) f->trig_y = (int16_t)(p->bot - TRIG_LINE_MARGIN_BOT);
     f->trig_dots = (key_focus_get() == KF_TRIGMOVE) ? TRIG_LINE_DOTS_FOCUS : TRIG_LINE_DOTS;
-    f->trig_line = !f->roll;
 
     f->p1 = f->p2 = f->mp = 0;
     f->off_plot = 0;
@@ -356,7 +367,7 @@ static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
 static void el_trigger_line(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)c;
-    if (f->trig_line && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
+    if ((x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
         strip_put(s, f->trig_y, f->th->trigger);
 }
 
@@ -540,8 +551,7 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
         else if ((int16_t)y == c->bound_lo[0] || (int16_t)y == c->bound_hi[0] ||
                  (int16_t)y == c->bound_lo[1] || (int16_t)y == c->bound_hi[1])
             want = th->text_secondary;
-        else if (f->trig_line && (int16_t)y == f->trig_y && (x & f->trig_dots) == 0 &&
-                 x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
+        else if ((int16_t)y == f->trig_y && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
             want = th->trigger;
         else if (plot_grid_px(th, &f->p, x, (int)y, &want))
             ;                                      /* graticule */

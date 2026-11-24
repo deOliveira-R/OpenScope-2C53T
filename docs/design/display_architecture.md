@@ -222,6 +222,14 @@ from the screenshot copy after a full redraw and after a live update).
     roll states read back, every difference a trace, a reading or a setting
     the capture order left different; livecheck 0 in roll. The measurement
     cells now refresh at the Y-T rate (twice a second) instead of every 8
-    points, and roll draws 18.6 frames a second where it drew 15.6. Still to
-    come: the trigger line, the tags, cursors and math in roll, then roll
-    out of `view.mode`. (c) Split as a pair of views in two panes.
+    points, and roll draws 18.6 frames a second where it drew 15.6. Then roll
+    gained what the source can support: the trigger line and the tags (the
+    roll trigger compares against the same level), and cursors with their
+    readout, on the roll point rate (`view_time_axis()`: one point per
+    column, time counted back from the newest point; 100 columns at
+    50 ms/div read 200 ms). The ground tags and the cursors' absolute volts
+    use the source's 0 V code (`chan_zero_code` in roll, the record's own
+    otherwise). Not in roll, by the source: the trigger pointer and the mask
+    (no placement on a trigger), persistence (roll moves every point along
+    the screen columns the ghosts are kept in), math (its inputs are the
+    record's own scale; to do). Still to come: roll out of `view.mode`. (c) Split as a pair of views in two panes.

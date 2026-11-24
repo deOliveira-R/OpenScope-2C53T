@@ -78,10 +78,11 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 {
     const scope_state_t *ss = scope_state_get();
     const cursor_state_t *c = &ss->cursor;
-    const sample_rate_t fs = { column_rate_for_display(ss) };   /* columns, not samples */
-    const scope_cursor_conf_t cf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
-    const int16_t ta = scope_ui_trig_x_actual();
-    const int32_t ref = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
+    view_time_axis_t ax;
+    view_time_axis(ss, &ax);
+    const sample_rate_t fs = ax.rate;               /* columns, not samples */
+    const scope_cursor_conf_t cf = ax.conf;
+    const int32_t ref = ax.ref_col;
     /* The readouts carry stock's labels (X1-X2, Y1-Y2), so they are FIRST
      * minus SECOND: the on-screen dt/dV are second minus first (v2-v1, and
      * h1-h2 rows = Y2-Y1) and read with the opposite sign. */
@@ -262,8 +263,10 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
                           c->mode == CURSOR_VERTICAL ? "CUR:T" :
                           c->mode == CURSOR_HORIZONTAL ? "CUR:V" : "CUR:TV");
     if (k < n && (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH)) {
-        const sample_rate_t cfs = { column_rate_for_display(ss) };
-        const scope_cursor_conf_t cconf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
+        view_time_axis_t ax;
+        view_time_axis(ss, &ax);
+        const sample_rate_t cfs = ax.rate;
+        const scope_cursor_conf_t cconf = ax.conf;
         scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, c->v1_x, c->v2_x,
                                                            CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&r, buf, sizeof(buf));
@@ -315,7 +318,7 @@ void cursor_row_paint(const scope_state_t *ss, bool force)
 void scope_ui_cursor_row_refresh(void)
 {
     const scope_state_t *ss = scope_state_get();
-    if (ss->cursor.mode == CURSOR_OFF || can_scope_screen_on() || ss->roll) return;
+    if (ss->cursor.mode == CURSOR_OFF || can_scope_screen_on()) return;
     cursor_row_paint(ss, false);
 }
 

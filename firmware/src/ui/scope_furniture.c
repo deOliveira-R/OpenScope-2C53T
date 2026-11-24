@@ -24,14 +24,13 @@ void scope_ui_strip_refresh(void)
 }
 
 /* The 12 measurements over the roll points the time view shows (yt_cols from
- * g_view_first, oldest first; scope_roll_meas.h): the same badge slots, order
- * and units as the record's, the time base being the roll point rate. Zero
- * and scale are per channel, exactly the record's inputs: chan_zero_code()
- * and the scope_cal gain. refresh: repaint the cells in place. */
-static void draw_roll_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
+ * g_view_first, oldest first; scope_roll_meas.h) into the cells of L: the
+ * same slots, order and units as the record's, the time base being the roll
+ * point rate. Zero and scale are per channel, the settings in force (the
+ * points were taken with them): chan_zero_code() and the scope_cal gain.
+ * refresh: repaint the cells in place. */
+static void draw_roll_cells(const scope_state_t *ss, const mstrip_layout_t *L, const theme_t *th, bool refresh)
 {
-    if (ss->prm_hidden)
-        return;
     const uint16_t n = (uint16_t)(g_view_end - g_view_first);
     scope_params_t p1, p2;
     const uint8_t z1 = (uint8_t)chan_zero_code(ss, 0u);   /* the one zero (chan_zero_code) */
@@ -44,9 +43,7 @@ static void draw_roll_badges(const scope_state_t *ss, const theme_t *th, bool re
         scope_roll_measure(&yt_cols[1][g_view_first], n, ss->roll_step,
                            (volts_per_count_t){ scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx) },
                            (rec_code_t){ z2 }, &p2, NULL);
-    mstrip_layout_t L;
-    strip_layout(ss, &L);
-    draw_strip_cells(&L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th, refresh);
+    draw_strip_cells(L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th, refresh);
 }
 
 /* ═══ Measurement strip (geometry in measure_strip.h) ═══ */
@@ -440,14 +437,12 @@ uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
  */
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
 {
-    if (ss->roll) {
-        draw_roll_badges(ss, th, refresh);
-        return;
-    }
     mstrip_layout_t L;
     strip_layout(ss, &L);   /* long PRM (prm_hidden) = no rows; the AUX row stays */
 
-    if (L.rows > 0u) {
+    if (L.rows > 0u && ss->roll) {
+        draw_roll_cells(ss, &L, th, refresh);
+    } else if (L.rows > 0u) {
         /* Which channels have cells, and whether any of them is time-based on
          * the spectral estimate (Freq, Peri). */
         bool cells[2] = { false, false }, need_f[2] = { false, false };

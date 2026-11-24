@@ -135,6 +135,23 @@ static uint8_t view_plan(const scope_state_t *ss, uint32_t *ratio, float *fs_rec
  * column-domain readouts (cursor dt, 1/dt, X) use it; everything measured on
  * the record itself (Freq, the measurement parameters) keeps the record rate,
  * so a zoom can never leak into a measurement. */
+void view_time_axis(const scope_state_t *ss, view_time_axis_t *ax)
+{
+    if (ss->roll) {
+        /* One point per column, paced by the MCU's own tick: the period is
+         * set, not looked up in a table that could be provisional. */
+        const uint32_t ms = scope_roll_period_ms(ss->roll_step).ms;
+        ax->rate = (sample_rate_t){ ms ? 1000.0f / (float)ms : 0.0f };
+        ax->conf = SCOPE_CURSOR_RAW;
+        ax->ref_col = (int32_t)SCOPE_GEOM_COLS - 1;
+        return;
+    }
+    ax->rate = (sample_rate_t){ column_rate_for_display(ss) };
+    ax->conf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
+    const int16_t ta = g_place.trig_x;
+    ax->ref_col = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
+}
+
 float column_rate_for_display(const scope_state_t *ss)
 {
     uint32_t r = PV_RATIO_ONE;
