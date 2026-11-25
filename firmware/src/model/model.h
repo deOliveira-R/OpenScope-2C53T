@@ -479,6 +479,7 @@ void     model_changed_also(const prop_desc_t *p, uint8_t origin);
 uint16_t model_touched_take(void);
 
 /* ── Hardware ops (bound once at boot; fake in the host tests) ───────── */
+struct scope_cursor_axes;           /* scope_cursor.h */
 /* Each is the owner API the setter calls (model_hw_fw.c binds the real ones
  * in M1). Channels are 0 = CH1, 1 = CH2. bool = the owner did it. Getters
  * here are for state an owner keeps in its own file (fpga.c, scope_mask.c,
@@ -500,6 +501,8 @@ typedef struct {
     void    (*single_rearm)(void);                     /* fpga_acq_single_rearm                 */
     bool    (*single_done)(void);                      /* fpga_acq_single_done: SINGLE holds its record */
     void    (*paused_latch)(void);                     /* scope_ui_paused_latch: the ranges at STOP */
+    void    (*cursor_axes)(struct scope_cursor_axes *ax); /* scope_ui_cursor_axes: the plot the
+                                                        * cursor lines are put on now             */
     uint8_t (*trigger_code)(void);                     /* fpga_acq_trig_code_get (trig.code)    */
     /* views and the shared pool (scope_apply.c) */
     bool    (*view_select)(uint8_t view);              /* scope_view_select; false = not in build */
@@ -624,7 +627,8 @@ MODEL_PROP_FNS(view_mh)     MODEL_PROP_FNS(view_run)    MODEL_PROP_FNS(il_enable
 MODEL_PROP_FNS(il_gain)     MODEL_PROP_FNS(il_offset)   MODEL_PROP_FNS(il_skew)
 MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
-MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curpos) MODEL_PROP_FNS(view_scurpos)
+MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curt) MODEL_PROP_FNS(view_curr) MODEL_PROP_FNS(view_cury)
+MODEL_PROP_FNS(view_scurpos)
 int32_t trig_code_get(const prop_desc_t *p);
 int32_t trig_held_get(const prop_desc_t *p);
 int32_t mask_state_get(const prop_desc_t *p);

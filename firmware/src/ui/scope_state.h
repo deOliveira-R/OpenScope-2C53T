@@ -33,6 +33,9 @@ typedef enum {
     PROBE_COUNT
 } probe_t;
 
+/* The attenuation of the 10X setting: the largest probe factor. */
+#define SCOPE_PROBE_10X_FACTOR  10
+
 typedef enum {
     TRIG_AUTO = 0,
     TRIG_NORMAL,
@@ -86,13 +89,9 @@ typedef struct {
  * Cursor measurement types
  * ═══════════════════════════════════════════════════════════════════ */
 
-/* Scope waveform area boundaries (for cursor clamping) */
-#define CURSOR_SCOPE_TOP       18
-#define CURSOR_SCOPE_BOT       224
-#define CURSOR_SCOPE_LEFT      0
-#define CURSOR_SCOPE_RIGHT     319
-#define CURSOR_SCOPE_HEIGHT    (CURSOR_SCOPE_BOT - CURSOR_SCOPE_TOP)
-#define CURSOR_SCOPE_WIDTH     (CURSOR_SCOPE_RIGHT - CURSOR_SCOPE_LEFT + 1)
+/* One arrow press moves the selected line this many pixels of the plot it
+ * is drawn on, in every domain (time, roll, spectrum) and at every scale. */
+#define CURSOR_STEP_PX  4
 
 typedef enum {
     CURSOR_OFF = 0,
@@ -109,29 +108,23 @@ typedef enum {
     CURSOR_SEL_H2,
 } cursor_sel_t;
 
+/* The time views' cursors: each line is kept in the unit of what it marks,
+ * so it stays on its time and its level when the time base, the range or
+ * the position moves (scope_cursor.h has the units, the ranges and the
+ * conversions to the screen). Y-T and roll keep a time pair each; the level
+ * pair is shared. A line starts at the end of its range, off the plot at
+ * every scale, and is put on the plot when its pair comes onto the screen. */
 typedef struct {
     cursor_mode_t mode;
     cursor_sel_t  active;
 
-    uint16_t v1_x;
-    uint16_t v2_x;
-    uint16_t h1_y;
-    uint16_t h2_y;
+    int32_t t_tick[2];      /* Y-T V1/V2: from the trigger point, SCOPE_TIMEBASE_TICK_HZ ticks */
+    int32_t roll_ms[2];     /* roll V1/V2: ms back from the newest point (0 = newest) */
+    int32_t level_uv[2];    /* H1/H2: microvolts at the probe tip of the active channel */
 
-    /*
-     * NO SCALE FIELDS HERE, DELIBERATELY (2026-09-12).
-     *
-     * This struct used to carry `time_per_pixel` and `volts_per_pixel`,
-     * seeded once with 10 ms across the screen and 8 V down it and updated by
-     * nothing — so every dt and dV the instrument printed was a function of
-     * the cursor positions alone. They were zeroed in August, which made the
-     * readout honest but left it disconnected from the measured tables.
-     *
-     * The readout now derives from scope_timebase.c (seconds per sample) and
-     * scope_cal.c (volts per ADC count) at draw time, via scope_cursor.c.
-     * Caching either here would be a second copy of a measured number, which
-     * is how the first one came to be wrong. Do not add them back.
-     */
+    /* No scale here: a line's pixel is worked out at draw time from the
+     * time axis and the vertical map on the screen (scope_cursor.h), never
+     * cached beside the values it converts. */
 } cursor_state_t;
 
 /* The spectrum's cursors: each line is kept in the spectrum's own units (a
@@ -143,8 +136,6 @@ typedef struct {
 #define SPECTRUM_CURSOR_BIN_MAX      2047     /* the last bin of the 4096-point transform */
 #define SPECTRUM_CURSOR_LEVEL_UNIT   10       /* levels are kept in tenths of a dB */
 #define SPECTRUM_CURSOR_LEVEL_MAX    2000     /* +-200 dB: beyond any level the transform gives */
-#define SPECTRUM_CURSOR_STEP_PX      4        /* one arrow step, in pixels of the plot: the time
-                                               * cursors' step (view.curv1's, model_table.h) */
 /* Where the lines start: a third and two thirds of the whole span, and two
  * levels a spectrum of a signal that fills the converter's range has. */
 #define SPECTRUM_CURSOR_BIN1_DEFAULT   683

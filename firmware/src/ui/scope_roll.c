@@ -11,7 +11,7 @@
 /* Stock TMR3 auto-reload values, table 0x080465A4 (nine words, then a
  * non-table word), indexed by ms[0x2D] - 0x14 at 0x0800B6E0..0x0800B700. */
 static const uint16_t roll_arr[SCOPE_ROLL_STEPS] = {
-    19u, 39u, 79u, 199u, 399u, 799u, 1999u, 3999u, 7999u,
+    19u, 39u, 79u, 199u, 399u, 799u, 1999u, 3999u, SCOPE_ROLL_ARR_SLOWEST,
 };
 
 uint16_t scope_roll_arr(uint8_t step)

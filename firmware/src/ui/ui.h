@@ -232,10 +232,15 @@ uint32_t scope_ui_view_ratio(void);
 int16_t  scope_ui_lowest_visible_pos(uint8_t ch);
 bool     scope_ui_view_merged(void);
 /* Cursor readouts (X1 X2 X1-X2 1/|dX| Y1 Y2 Y1-Y2) as the screen computes
- * them, formatted into 16-byte buffers ("--" = refused); *fs_out = the column
- * rate used (record rate x zoom). For `fpga scope cursor`. */
+ * them from the stored lines, formatted into 16-byte buffers ("--" =
+ * refused); *fs_out = the column rate of the time axis on the screen. For
+ * `fpga scope cursor`. */
 void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
                             char y1[16], char y2[16], char dy[16], float *fs_out);
+/* The plot the time cursors are put on now (scope_cursor.h): the time axis
+ * of the source on the screen and the active channel's map as last drawn. */
+struct scope_cursor_axes;
+void scope_ui_cursor_axes(struct scope_cursor_axes *ax);
 /* Repaint the mask pass/fail readout slot (badge row 2) -- main.c calls it
  * when scope_mask_epoch() moves. */
 void scope_ui_mask_slot_refresh(void);

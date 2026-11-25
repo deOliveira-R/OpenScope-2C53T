@@ -28,6 +28,7 @@
 #include "siggen_edit.h"
 #include "meter_screen.h"
 #include "scope_screen.h"
+#include "scope_cursor.h"
 #include "osc_menu_screen.h"
 #include "gallery_screen.h"
 #include "fft_live.h"         /* fft_axes_t: the spectrum's axes the scope screen asks for */
@@ -94,6 +95,9 @@ void fft_auto_request(void)                       { }
 void fft_zoom_in(void)                            { }
 /* scope_spectrum.c: no spectrum is drawn here, so its axes are off */
 void scope_ui_fft_axes(fft_axes_t *out)           { memset(out, 0, sizeof *out); }
+/* scope_cursor_draw.c: no time view is drawn here either: no axes, so the
+ * cursor keys move nothing */
+void scope_ui_cursor_axes(struct scope_cursor_axes *ax) { memset(ax, 0, sizeof *ax); }
 void fft_zoom_out(void)                           { }
 void meter_ui_autoselect_cancel(void)             { }
 bool meter_ui_autoselect_running(void)            { return false; }

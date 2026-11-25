@@ -80,6 +80,9 @@ extern "C" {
 #define SCOPE_ROLL_PX_PER_DIV       25u    /* C5 grid pitch (scope_geom.h): one point per column */
 #define SCOPE_ROLL_TICK_HZ          10000u /* stock TMR3 tick: PSC = clk/10000 - 1 */
 #define SCOPE_ROLL_STOCK_CODE_BASE  0x14u  /* stock ms[0x2D] of the first roll step */
+#define SCOPE_ROLL_ARR_SLOWEST      7999u  /* the last step's ARR (table 0x080465A4) */
+/* The slowest point period, ms: (ARR + 1) / 10 kHz = 800 ms (20 s/div). */
+#define SCOPE_ROLL_SLOWEST_PERIOD_MS ((SCOPE_ROLL_ARR_SLOWEST + 1u) * 1000u / SCOPE_ROLL_TICK_HZ)
 
 /* ── Step table ─────────────────────────────────────────────────────── */
 

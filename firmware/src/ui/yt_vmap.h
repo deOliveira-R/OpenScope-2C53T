@@ -4,7 +4,7 @@
  * One map per channel, built once per frame by scope_yt_frame.c (yt_fits) and
  * read by every consumer: the trace, the mask bounds, the
  * persistence feed, the ground / trigger tags, the trigger line and the
- * cursor scale. Two kinds, one formula:
+ * cursor lines. Two kinds, one formula:
  *
  *   row = y0 - ((code - mn) * h) / span          (C division, toward zero)
  *
@@ -85,17 +85,25 @@ static inline int yt_vmap_raw(const yt_vmap_t *a, int v)
     return (int)a->y0 - ((v - (int)a->mn) * a->h) / a->span;
 }
 
+/* The same line for a code between codes, and back: the row (not rounded,
+ * not clipped) of a fractional code, and the code of a row. One code spans
+ * h / span rows, many on a zoomed fit, so a level kept between codes needs
+ * these to land on the row it was put on (the cursors, scope_cursor.c). */
+static inline float yt_vmap_row_of(const yt_vmap_t *a, float code)
+{
+    return (float)a->y0 - (code - (float)a->mn) * (float)a->h / (float)a->span;
+}
+
+static inline float yt_vmap_code_of(const yt_vmap_t *a, float row)
+{
+    return (float)a->mn + ((float)a->y0 - row) * (float)a->span / (float)a->h;
+}
+
 static inline int16_t yt_vmap_clip(const yt_vmap_t *a, int y)
 {
     if (y < a->y_top)  y = a->y_top;
     if (y >= a->y_bot) y = a->y_bot - 1;
     return (int16_t)y;
-}
-
-/* ADC counts one row is worth (the cursor scale); 0 when nothing is drawn. */
-static inline float yt_vmap_counts_per_px(const yt_vmap_t *a)
-{
-    return (a->on && a->h > 0) ? (float)a->span / (float)a->h : 0.0f;
 }
 
 /* Split bands only when both channels are on and both autofit. */

@@ -1,56 +1,34 @@
 /*
- * OpenScope 2C53T — cursor delta readouts
+ * OpenScope 2C53T — the time views' cursors: units, screen and readout
  *
  * WHAT THIS IS
  * ------------
- * The arithmetic between "the user put two cursors N pixels apart" and the
- * string on the glass. It owns NO constants of its own: seconds come from
- * scope_timebase.c, volts come from scope_cal.c, and the pixel->sample and
- * pixel->count transforms are supplied by the renderer that actually drew the
- * trace. If neither table has an entry, this module refuses to name a unit it
- * cannot support and hands back the exact raw quantity instead.
+ * The arithmetic between a cursor line, kept in the unit of what it marks,
+ * and the screen: where the line falls on the plot as drawn now, which value
+ * a pixel is, what one arrow press does, where a line starts, and the
+ * readout strings. It owns no scale of its own: seconds come from
+ * scope_timebase.c (the core's exact rates, as whole ticks), volts from
+ * scope_cal.c, and the vertical map is the one the renderer drew the active
+ * channel with (yt_vmap.h), handed in as scope_cursor_axes_t.
  *
- * WHY IT EXISTS
- * -------------
- * The cursor readout used to be driven by two floats in cursor_state_t,
- * `time_per_pixel` and `volts_per_pixel`. They were seeded with 10 ms across
- * the screen and 8 V down it, and nothing ever updated them — not the
- * timebase control, not the range control. Every "dt = 1.2 ms" and
- * "dV = 340 mV" the instrument ever printed came from those two numbers, so
- * the readout tracked the CURSOR POSITIONS and nothing else, in a feature
- * whose only purpose is measurement. That is the same defect the volts/div
- * labels had (docs/devlog/2026-08-18-the-labels-were-never-measured.md) and
- * the same one the two hardcoded mV/count constants in scope_ui.c had.
- *
- * On 2026-08-18 the two floats were zeroed rather than fixed, which made the
- * readout honest (it fell back to samples and counts) but left it
- * permanently disconnected from the measured tables that had just landed:
- * with a real 12,490 S/s rate and a real 42.95 mV/count gain in the build,
- * the cursor still said "45smp" and "37cnt". This module connects them, and
- * keeps the refusal for the cases where there is genuinely nothing to
- * connect.
+ * THE UNITS (cursor_state_t, the view.cur* properties)
+ * -----------------------------------------------------
+ *   Y-T time   ticks of the finest column (SCOPE_TIMEBASE_TICK_HZ, 0.4 ns)
+ *              from the trigger point. Every column of every code, held or
+ *              running, is a whole number of ticks, so a line put on a
+ *              column comes back to it at every timebase.
+ *   roll time  milliseconds back from the newest point: the roll periods
+ *              are whole milliseconds.
+ *   level      microvolts at the probe tip of the active channel.
  *
  * THE RULES
  * ---------
- *   - A calibrated axis prints its real unit, with a leading '~' when the
- *     table row it came from is PROVISIONAL. Same marker, same meaning as
- *     scope_cal_range_label() and scope_timebase_label().
- *   - An uncalibrated axis prints the exact raw quantity — samples, ADC
- *     counts or screen pixels — never a converted one.
- *   - Where not even a raw quantity is meaningful (1/dt with the cursors on
- *     the same column, or with no sample rate at all) it prints "--", the
- *     same string the measurement badges use.
- *
- * WHY THE VERTICAL MAP IS AN ARGUMENT
- * -----------------------------------
- * Pixels mean a fixed number of ADC counts only in the TRUE-SCALE render
- * path (the default). An autofit band (no calibration for the range, or
- * view.truescale off) rescales every frame from the record's own min/max, so pixels-per-count is a property of the frame that
- * was drawn, not of the hardware. The renderer therefore reports the
- * transform it used (see scope_yt.c) and this module converts with THAT.
- * Assuming the fixed transform while autofit is on the screen would be a
- * plausible wrong number of exactly the kind this module exists to stop —
- * and it is what the old code did.
+ *   - A line whose pixel is off the plot, or has no conversion (no band for
+ *     the active channel, or a range with no volts), is not drawn.
+ *   - The readout reads the stored values, never the pixels: exact, with a
+ *     leading '~' when the table row it rests on is PROVISIONAL. A level
+ *     with no volts to convert through reads "--", as does 1/dt with the
+ *     two lines on one time.
  *
  * Host-testable: no hardware, no RTOS. See tests/test_scope_cursor.c.
  */
@@ -58,29 +36,54 @@
 #ifndef SCOPE_CURSOR_H
 #define SCOPE_CURSOR_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
-#include "../util/units.h"   /* sample_rate_t, tb_code_t, cursor_order_t */
+#include "../util/units.h"   /* tb_code_t, cursor_order_t, microvolts_t */
+#include "scope_state.h"     /* cursor_sel_t, CURSOR_STEP_PX, SCOPE_PROBE_10X_FACTOR */
+#include "scope_geom.h"      /* SCOPE_GEOM_COLS */
+#include "scope_roll.h"      /* SCOPE_ROLL_POINTS, SCOPE_ROLL_SLOWEST_PERIOD_MS */
+#include "scope_timebase.h"  /* SCOPE_TIMEBASE_TICK_HZ, SCOPE_TIMEBASE_SLOWEST_COLUMN_TICKS */
+#include "yt_vmap.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*
- * One screen column is one sample. This is a property of the RENDERER —
- * the Y-T plot draws buf[x] at column x (yt_column, scope_yt.c) — not
- * of the capture. scope_furniture.c carries a compile-time assertion tying the two
- * together, so changing the plot without changing this is a build error
- * rather than a silently wrong dt.
- */
-#define SCOPE_CURSOR_SAMPLES_PER_PIXEL   1.0f
+/* ── The ranges of the lines (model_table.h holds them as literals) ──── */
+
+/* Y-T: +- the plot's columns at the slowest column, 1.505e9 ticks (0.6 s). */
+#define SCOPE_CURSOR_TIME_MAX \
+    ((int32_t)((uint32_t)SCOPE_GEOM_COLS * SCOPE_TIMEBASE_SLOWEST_COLUMN_TICKS))
+_Static_assert((uint64_t)SCOPE_GEOM_COLS * SCOPE_TIMEBASE_SLOWEST_COLUMN_TICKS <= (uint64_t)INT32_MAX,
+               "the Y-T cursor time range must fit an int32 property");
+
+/* Roll: 0 (the newest point) back to the FIFO's points at the slowest
+ * period, -240800 ms. */
+#define SCOPE_CURSOR_ROLL_MIN_MS \
+    (-(int32_t)(SCOPE_ROLL_POINTS * SCOPE_ROLL_SLOWEST_PERIOD_MS))
+
+/* Level: the highest range's full scale (the converter's 256 codes at
+ * stock's 400 mV a count, scope_cal_nominal_mv(9)) at the 10X probe is
+ * 1024 V. A row of the plot reads up to a whole code span from the 0 V code
+ * (a position at a rail), and a unit's own gain reads up to 1 / 0.8 of the
+ * nominal ladder (calpage.h CALPAGE_M_MIN), so the range is twice that:
+ * +-2048 V, which holds every level the plot can show (test_scope_cursor). */
+#define SCOPE_CURSOR_ADC_CODES          256
+#define SCOPE_CURSOR_TOP_RANGE_UV_PER_CODE  400000
+#define SCOPE_CURSOR_LEVEL_HEADROOM     2
+#define SCOPE_CURSOR_LEVEL_MAX \
+    ((int32_t)(SCOPE_CURSOR_LEVEL_HEADROOM * SCOPE_CURSOR_ADC_CODES * \
+               SCOPE_CURSOR_TOP_RANGE_UV_PER_CODE * SCOPE_PROBE_10X_FACTOR))
+_Static_assert((int64_t)SCOPE_CURSOR_LEVEL_HEADROOM * SCOPE_CURSOR_ADC_CODES *
+               SCOPE_CURSOR_TOP_RANGE_UV_PER_CODE * SCOPE_PROBE_10X_FACTOR <= (int64_t)INT32_MAX,
+               "the level range must fit an int32 property");
 
 /* What a reading is expressed in. */
 typedef enum {
     SCOPE_CURSOR_UNIT_NONE = 0,   /* nothing honest to print — renders "--" */
-    SCOPE_CURSOR_UNIT_SAMPLES,    /* raw fallback for the time axis         */
-    SCOPE_CURSOR_UNIT_COUNTS,     /* raw fallback for the vertical axis     */
-    SCOPE_CURSOR_UNIT_PIXELS,     /* raw fallback when even counts are unknown */
+    SCOPE_CURSOR_UNIT_SAMPLES,    /* raw time (the measurement badges) */
+    SCOPE_CURSOR_UNIT_COUNTS,     /* raw level (the measurement badges) */
     SCOPE_CURSOR_UNIT_SECONDS,
     SCOPE_CURSOR_UNIT_VOLTS,
     SCOPE_CURSOR_UNIT_HERTZ,
@@ -100,99 +103,82 @@ typedef struct {
     float               value;   /* signed, in `unit`; 0 when unit is NONE */
 } scope_cursor_reading_t;
 
-/*
- * The vertical pixel -> ADC count transform the renderer ACTUALLY USED for
- * the band the cursors sit in, plus which (channel, range) that band shows.
- *
- * counts_per_pixel <= 0 means "the transform is unknown" — no trace drawn,
- * the demo waveform, or the two cursors straddling two differently-scaled
- * bands. The reading then stays in pixels.
- */
-typedef struct {
-    float   counts_per_pixel;
-    uint8_t channel;            /* 1 or 2; anything else => no volts */
-    uint8_t range_idx;
-
-    /* Absolute Y (C7). Where mid_row sits relative to 0 V, in counts: known
-     * (mid_known != 0) only for a renderer that anchors a fixed ADC code to
-     * that row (the true-scale path puts mid_row on the channel's 0 V code,
-     * so mid_counts = 0). Autofit rescales and
-     * re-anchors every frame, so it leaves this zero and absolute Y is "--".
-     * Zero-initialised by the existing `{ cpp, ch, rng }` initialisers. */
-    int16_t mid_row;
-    uint8_t mid_known;
-    float   mid_counts;
-
-    /* DIRECT scale (math trace). The math overlay is drawn on its own scale
-     * about the graticule centre (value = rows from mid / px_per_div x step),
-     * not through an ADC code and a (channel, range) gain, so the renderer
-     * reports the result in its own unit: direct = DIRECT_VOLTS / DIRECT_COUNTS
-     * and the readout is `unit_per_pixel` x rows from mid_row (mid_counts is
-     * the zero, unused). Other math units (V^2, counts^2, A/B) have no unit
-     * this module can format: counts_per_pixel stays 0 and the readout is in
-     * pixels, never a converted number. direct_conf is the worst tier of the
-     * source channels' calibration. Zero = not a direct scale. */
-    uint8_t             direct;
-    scope_cursor_conf_t direct_conf;
-    float               unit_per_pixel;
-} scope_cursor_vmap_t;
-
-#define SCOPE_CURSOR_DIRECT_NONE    0u
-#define SCOPE_CURSOR_DIRECT_VOLTS   1u
-#define SCOPE_CURSOR_DIRECT_COUNTS  2u
-
-/* Confidence of a (channel, range) calibration row, for direct scales. */
+/* Confidence of a timebase code's rate, and of a (channel, range) gain. */
+scope_cursor_conf_t scope_cursor_tb_conf(tb_code_t tb_code);
 scope_cursor_conf_t scope_cursor_cal_conf(uint8_t channel, uint8_t range_idx);
 
 /*
- * Rate-explicit forms. The record's sample rate is NOT always the table's:
- * an interleaved record is published at twice the per-converter rate, so the
- * caller passes fpga_record_sample_rate() (when the record in hand is the one
- * the timebase code describes) and the table tier of that code as `conf`.
- * fs.hz <= 0 behaves as "no rate" exactly like an unmeasured code. The
- * tb_code forms below are these with the table's own rate.
- *
- * THE SIGN IS AN ARGUMENT (units.h cursor_order_t). The two cursors go in as
- * positions, first then second, and the caller names the order of the
- * difference: the screen's dt/dV are CUR_SECOND_MINUS_FIRST, the shell
- * report's stock-labelled X1-X2 / Y1-Y2 are CUR_FIRST_MINUS_SECOND. A caller
- * can no longer subtract the wrong way round before the call (69b47cc).
+ * The plot as drawn now, for the lines: the time axis of the source on the
+ * screen and the active channel's vertical map. The display fills it
+ * (scope_ui_cursor_axes, scope_cursor_draw.c); everything below is pure.
  */
-scope_cursor_conf_t scope_cursor_tb_conf(tb_code_t tb_code);
-scope_cursor_reading_t scope_cursor_delta_t_fs(sample_rate_t fs, scope_cursor_conf_t conf,
-                                               int32_t first_col, int32_t second_col,
-                                               cursor_order_t order);
-scope_cursor_reading_t scope_cursor_one_over_dt_fs(sample_rate_t fs, scope_cursor_conf_t conf,
-                                                   int32_t first_col, int32_t second_col,
-                                                   cursor_order_t order);
+typedef struct scope_cursor_axes {
+    /* time: column ref_col is time 0, one column is per_col of the unit */
+    bool                roll;        /* roll's milliseconds, else Y-T's ticks */
+    uint32_t            per_col;     /* ticks or ms per column */
+    int32_t             ref_col;     /* the trigger point's column; roll: the newest point's */
+    scope_cursor_conf_t t_conf;
+    int16_t             cols;        /* the plot's columns [0, cols) */
+    /* level: the active channel's map; level_ok false = no conversion */
+    bool                level_ok;
+    uint8_t             channel;     /* 1 or 2 */
+    yt_vmap_t           map;         /* the map its band was drawn with */
+    float               zero_code;   /* its 0 V, in the map's codes */
+    float               volts_per_code;   /* at the probe tip, in the map's codes */
+    scope_cursor_conf_t v_conf;
+    int16_t             row_top, row_end; /* the band's visible rows [row_top, row_end) */
+} scope_cursor_axes_t;
 
-/* X1 / X2 (C7): time of a screen column relative to the reference column
- * (the trigger point), signed; samples when there is no rate. */
-scope_cursor_reading_t scope_cursor_x_fs(sample_rate_t fs, scope_cursor_conf_t conf,
-                                         int32_t col, int32_t ref_col);
+/* The range of the property behind line sel (roll's or Y-T's time pair, the
+ * level pair). */
+void scope_cursor_range(const scope_cursor_axes_t *ax, cursor_sel_t sel, int32_t *lo, int32_t *hi);
 
-/* Y1 / Y2 (C7): level of a screen row relative to 0 V — volts when the range
- * is calibrated, counts otherwise, NONE (--) unless map->mid_known. */
-scope_cursor_reading_t scope_cursor_y(const scope_cursor_vmap_t *map, int32_t row);
+/* The pixel (column for V1/V2, row for H1/H2) of value v, on or off the
+ * plot; false when there is no conversion. */
+bool scope_cursor_px(const scope_cursor_axes_t *ax, cursor_sel_t sel, int32_t v, int32_t *px);
 
-/* Time between two vertical cursors, dx screen columns apart (signed), at
- * the table rate of `tb_code`. */
-scope_cursor_reading_t scope_cursor_delta_t(tb_code_t tb_code, int32_t dx_px);
+/* The value at pixel px, inside the property's range; false when there is
+ * no conversion. scope_cursor_px of the result is px again. */
+bool scope_cursor_at(const scope_cursor_axes_t *ax, cursor_sel_t sel, int32_t px, int32_t *v);
 
-/* 1/dt — always positive, and NONE when dx is 0 or the code has no rate. */
-scope_cursor_reading_t scope_cursor_one_over_dt(tb_code_t tb_code, int32_t dx_px);
+/* Pixel px is on the plot for line sel. */
+bool scope_cursor_on_plot(const scope_cursor_axes_t *ax, cursor_sel_t sel, int32_t px);
 
-/* Voltage between two horizontal cursors at screen rows first_row and
- * second_row, in `order`. Rows grow downwards and volts upwards: the row
- * difference is taken by cursor_dy_volts_sign() (units.h), so the second
- * cursor BELOW the first reads negative under CUR_SECOND_MINUS_FIRST. */
-scope_cursor_reading_t scope_cursor_delta_v(const scope_cursor_vmap_t *map,
-                                            int32_t first_row, int32_t second_row,
-                                            cursor_order_t order);
+/* One arrow press (dir -1 = UP: left / up, +1 = DOWN: right / down): the
+ * line CURSOR_STEP_PX pixels on, kept on the plot; a line that is off the
+ * plot comes to the edge on its side first. False (and *out = v) when there
+ * is no conversion. */
+bool scope_cursor_key(const scope_cursor_axes_t *ax, cursor_sel_t sel, int32_t v, int dir, int32_t *out);
+
+/* Where line sel starts: a third (V1, H1) and two thirds (V2, H2) across
+ * the plot's columns or down the band's rows. False with no conversion. */
+#define SCOPE_CURSOR_DEFAULT_PARTS  3   /* the plot in thirds: line 1 at one, line 2 at two */
+bool scope_cursor_default(const scope_cursor_axes_t *ax, cursor_sel_t sel, int32_t *v);
+
+/* A pair coming onto the screen (first = V1 or H1): each of its two lines
+ * that is off the plot, or not convertible, goes to its default where there
+ * is one. */
+void scope_cursor_place(const scope_cursor_axes_t *ax, cursor_sel_t first, int32_t v[2]);
+
+/* Readouts from stored values. X: a time (seconds from the trigger point,
+ * or back from the newest point); dt and 1/dt of two times in `order`
+ * (1/dt NONE on one time); Y: a level; dV of two levels (NONE without a
+ * conversion for the level pair). */
+scope_cursor_reading_t scope_cursor_x(const scope_cursor_axes_t *ax, int32_t t);
+scope_cursor_reading_t scope_cursor_dt(const scope_cursor_axes_t *ax, int32_t first, int32_t second,
+                                       cursor_order_t order);
+scope_cursor_reading_t scope_cursor_inv_dt(const scope_cursor_axes_t *ax, int32_t first, int32_t second,
+                                           cursor_order_t order);
+scope_cursor_reading_t scope_cursor_y(const scope_cursor_axes_t *ax, microvolts_t level);
+scope_cursor_reading_t scope_cursor_dv(const scope_cursor_axes_t *ax, microvolts_t first, microvolts_t second,
+                                       cursor_order_t order);
+
+/* The column rate of the time axis, Hz (the shell's fs). */
+float scope_cursor_col_rate(const scope_cursor_axes_t *ax);
 
 /*
  * Render a reading: "1.23ms", "~213us" (provisional), "-45smp", "37cnt",
- * "12px", "--". Always NUL-terminated; 16 bytes is enough for every case.
+ * "--". Always NUL-terminated; 16 bytes is enough for every case.
  * The '~' leads, as it does in scope_cal_range_label().
  */
 void scope_cursor_format(const scope_cursor_reading_t *r, char *out, uint32_t n);

@@ -194,8 +194,39 @@ static void test_core_rates(void)
     CHECK(scope_timebase_sample_rate(SCOPE_TIMEBASE_CODE_COUNT) == 0.0f, "out of range stays 0");
 }
 
+/* The cursors' ticks: every column of every code, merged or not, is a whole
+ * number of them, the integer form agrees with the float rate the view draws
+ * at (the code's rate x2 merged x the zoom), and the slowest column is the
+ * named one. */
+static void test_column_ticks(void)
+{
+    CHECK(SCOPE_TIMEBASE_TICK_HZ == 2500000000u, "a tick is 0.4 ns");
+    uint32_t slowest = 0u;
+    for (uint8_t c = 0; c < SCOPE_TIMEBASE_CODE_COUNT; c++) {
+        for (int il = 0; il < 2; il++) {
+            const uint32_t own = scope_timebase_sample_ticks(c, false);
+            const uint32_t s = scope_timebase_sample_ticks(c, il != 0);
+            const uint8_t L = scope_timebase_interp_factor(c, il != 0);
+            const uint32_t col = scope_timebase_column_ticks(c, il != 0);
+            CHECK(!il || own % 2u == 0u, "code 0x%02X: the merged sample is not whole ticks", c);
+            CHECK(s % L == 0u && col == s / L && col >= 1u, "code 0x%02X il %d: column %u ticks not exact", c, il, col);
+            const double rate = (double)scope_timebase_sample_rate(c) * (il ? 2.0 : 1.0) * (double)L;
+            const double from_ticks = (double)SCOPE_TIMEBASE_TICK_HZ / (double)col;
+            CHECK(fabs(from_ticks / rate - 1.0) < 1e-6, "code 0x%02X il %d: %u ticks = %.1f Hz, the view draws %.1f Hz",
+                  c, il, col, from_ticks, rate);
+            if (col > slowest) slowest = col;
+        }
+    }
+    CHECK(slowest == SCOPE_TIMEBASE_SLOWEST_COLUMN_TICKS && scope_timebase_column_ticks(0x14, false) == slowest,
+          "the slowest column is %u ticks", slowest);
+    CHECK(scope_timebase_column_ticks(0x00, false) == 1u && scope_timebase_column_ticks(0x00, true) == 1u,
+          "the finest column is one tick, merged or not");
+    CHECK(scope_timebase_sample_ticks(SCOPE_TIMEBASE_CODE_COUNT, false) == 0u, "no code, no ticks");
+}
+
 int main(void)
 {
+    test_column_ticks();
     test_view_zoom();
     test_out_of_range();
     test_derived_quantities();

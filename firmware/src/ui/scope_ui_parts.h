@@ -103,28 +103,21 @@ typedef yt_vmap_t autofit_t;
 #define g_view_end   (g_span.end)
 
 /*
- * What the renderer ACTUALLY did to the vertical axis, recorded per band for
- * the cursor readout.
+ * The vertical map each channel's band was drawn with this frame, and what
+ * its codes are worth, for the cursor lines (scope_cursor_draw.c). A level
+ * line is put on the active channel's band through the very map its trace
+ * was drawn with, true scale or a fit alike (yt_fits); a fit rescales every
+ * frame, so the map is read off the drawing, never assumed.
  *
- * The cursor cannot assume the true-scale transform, because a band may be
- * autofit (a range without calibration, or view.truescale off), and
- * autofit's counts per row belong to the frame that was drawn: it rescales
- * from the record's own min/max every frame. So the scale is read off the
- * drawing, the same "one copy, two callers" rule as the maps themselves
- * (yt_fits).
- *
- * on == false means "nothing was plotted in this band", which the cursor
- * reports as pixels rather than converting.
+ * on == false: the channel's band was not drawn this frame.
  */
 typedef struct {
-    bool    on;
-    int16_t y_top, y_bot;
-    float   counts_per_pixel;
-    uint8_t channel;            /* 1 or 2 */
-    uint8_t range_idx;
-    bool    mid_known;          /* mid_row is the channel's 0 V (true scale) */
-    int16_t mid_row;
-    float   mid_counts;         /* that code relative to 0 V (centred = 0)   */
+    bool                on;
+    yt_vmap_t           map;
+    float               zero_code;        /* 0 V in the map's codes */
+    float               volts_per_code;   /* at the probe tip; 0 = the range has no volts */
+    scope_cursor_conf_t conf;             /* the gain's tier */
+    int16_t             row_end;          /* the band's last visible row + 1 (the strip covers the rest) */
 } vband_t;
 
 /* ── Plot-edge markers (plot_markers.h) ──
@@ -263,13 +256,13 @@ bool view_merged(const scope_state_t *ss);
 typedef struct { uint16_t first, end; } g_span_t;
 /* The columns of the last window that show the record (view_build). */
 extern g_span_t g_span;
-/* What one plot column is worth in samples per second, for the cursors. */
-float column_rate_for_display(const scope_state_t *ss);
 /* The time axis of the time view's columns, for the cursors: what a column
- * is worth, how well that is known, and the column time is counted from
+ * is worth in the source's time unit (Y-T: ticks, SCOPE_TIMEBASE_TICK_HZ;
+ * roll: ms), how well that is known, and the column time is counted from
  * (the trigger point; in roll the newest point, so earlier is negative). */
 typedef struct {
-    sample_rate_t       rate;
+    bool                roll;
+    uint32_t            per_col;
     scope_cursor_conf_t conf;
     int32_t             ref_col;
 } view_time_axis_t;
@@ -325,22 +318,13 @@ uint16_t view_build_roll(void);
 void scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame);
 
 /* scope_yt_frame.c */
-/* Each plotted band's vertical transform this frame, for the cursors. */
+/* Each channel's band as drawn this frame ([0] CH1, [1] CH2), for the cursors. */
 extern vband_t g_vband[2];
-/* The math trace's scale as the cursors read it. */
-typedef struct {
-    bool                on;
-    uint8_t             direct;        /* SCOPE_CURSOR_DIRECT_*: volts, counts or none */
-    float               unit_per_px;   /* math units per screen row */
-    scope_cursor_conf_t conf;
-} g_math_cur_t;
-/* The math trace's scale this frame (math_prepare). */
-extern g_math_cur_t g_math_cur;
-/* Forget all recorded band and math scales. */
-void vband_clear(void);
-/* Record the map band slot was drawn with, for the cursors. */
-void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
-                const autofit_t *a, float counts_per_pixel, uint8_t zero);
+/* Record channel ch's (0/1) band in pane p, once a frame, drawn or not: its
+ * map a (off: not drawn), its 0 V code and volts per code in a's codes, the
+ * range whose gain they come from. */
+void vband_note(uint8_t ch, const plot_pane_t *p, const autofit_t *a, float zero_code,
+                float volts_per_code, uint8_t range_idx);
 /* Row of the hardware trigger level through map a, in pane p. */
 int16_t trigger_marker_y(const scope_state_t *ss, const plot_pane_t *p, const autofit_t *a);
 /* The two Y-T maps for the window in yt_cols, in pane p. */
@@ -381,8 +365,8 @@ void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *m
 int16_t math_row(const math_frame_t *mf, uint16_t x);
 
 /* scope_cursor_draw.c */
-/* Build the cursor layer L from the cursor state, in pane p (which the
- * readout then converts with). */
+/* Build the cursor layer L from the cursor state, in pane p: each line
+ * where its time and level fall on the plot as drawn this frame. */
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p, cur_layer_t *L);
 /* The cursor layer of a spectrum drawn on the axes ax. */
 void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,

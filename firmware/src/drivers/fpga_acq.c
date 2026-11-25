@@ -556,9 +556,15 @@ bool fpga_apply_trigger_source(void)
  * doubled when the record is the two-converter merge. 0 = no rate. */
 float fpga_record_sample_rate(void)
 {
-    const uint8_t idx = (acq_pub_idx == 0xFFu) ? acq_rate_idx : acq_pub_idx;
-    const float fs = scope_timebase_sample_rate(idx);
+    const float fs = scope_timebase_sample_rate(fpga_acq_record_rate_idx());
     return acq_pub_il ? 2.0f * fs : fs;
+}
+
+/* The code the PUBLISHED record was captured at (the code in force before
+ * the first record). */
+uint8_t fpga_acq_record_rate_idx(void)
+{
+    return (acq_pub_idx == 0xFFu) ? acq_rate_idx : acq_pub_idx;
 }
 
 

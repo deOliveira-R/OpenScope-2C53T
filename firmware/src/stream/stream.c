@@ -233,7 +233,7 @@ static void rec_channel(sf_rec_ch_t *c, const acq_cfg_t *cap, uint8_t ch)
 {
     const uint8_t chn = (uint8_t)(ch + 1u);
     const uint8_t idx = cap->vdiv[ch];
-    const float pf_cap = (cap->probe[ch] == (uint8_t)PROBE_10X) ? 10.0f : 1.0f;
+    const float pf_cap = (cap->probe[ch] == (uint8_t)PROBE_10X) ? (float)SCOPE_PROBE_10X_FACTOR : 1.0f;
     const float pf_now = scope_cal_probe_factor(chn);
     c->ch              = ch;
     c->vdiv_idx        = idx;

@@ -977,19 +977,19 @@ void prm_print_status(void)
     }
 }
 
-/* `fpga scope cursor`: the cursor readouts as the screen computes them:
- * X1 X2 X1-X2 1/|dX| from the PUBLISHED record's rate, Y1 Y2 Y1-Y2 from the
- * last drawn band. Y1/Y2 are "--" unless the true-scale graticule is on (the
- * autofit render re-anchors the vertical every frame). Move the cursors first
- * with the CUR key; the cursors' mode does not matter here. */
+/* `fpga scope cursor`: the cursor readouts as the screen computes them, from
+ * the stored lines: X1 X2 X1-X2 1/|dX| from their times, Y1 Y2 Y1-Y2 from
+ * their levels ("--" while the active channel's band has no volts). Move the
+ * cursors first (the arrows in the Cursor stage, or set view.curt / curr /
+ * cury); the cursors' mode does not matter here. */
 void cmd_fpga_scope_cursor(const char *args)
 {
     (void)args;
     char x1[16], x2[16], dx[16], ix[16], y1[16], y2[16], dy[16];
     float fs = 0.0f;
     scope_ui_cursor_report(x1, x2, dx, ix, y1, y2, dy, &fs);
-    /* fs is the column rate, 1000 x record rate / R: record rate x zoom L,
-     * or the selected code's rate on a re-sampled held record (L = 0). */
+    /* fs is the column rate of the time axis on screen: record rate x zoom L,
+     * or 1000 x record rate / R on a re-sampled held record (L = 0). */
     usb_debug_printf("cursor fs=%lu L=%u R=%lu X1=%s X2=%s X1-X2=%s Y1=%s Y2=%s Y1-Y2=%s 1/dX=%s\r\n",
                      (unsigned long)(fs + 0.5f), (unsigned)scope_ui_view_factor(),
                      (unsigned long)scope_ui_view_ratio(), x1, x2, dx, y1, y2, dy, ix);

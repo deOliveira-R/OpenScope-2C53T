@@ -12,8 +12,9 @@
 # It runs unchanged on the image before B7 (fd20895) and on the B7 image: it
 # uses only what both have (`ui seq`, `get`, `set`, `wait`, and `mask teach` /
 # `mask clear` to make and drop a mask: no key can make the first one). So it
-# never sets view.run and never reads a property B7 added (view.cursel,
-# view.curv1.., trig.code, trig.held, mask.state / hold / pending); cursor
+# never sets view.run and never reads a property B7 or later added
+# (view.cursel, view.curt1.., trig.code, trig.held, mask.state / hold /
+# pending); cursor
 # moves and the spectrum views' keys are judged from the screenshots. Run it
 # on both images with --shots and compare, step by step: the `ui screen`
 # line, the `get` answers, the pictures, the redraw rates.

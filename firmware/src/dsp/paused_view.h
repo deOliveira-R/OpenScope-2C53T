@@ -125,6 +125,14 @@ uint8_t pv_view_plan(bool held, float fs_rec, float fs_col, uint8_t L_code,
 int pv_y_map(int raw, int centre, int pos_cap, int pos_now,
              float v_cap, float v_now, int lo, int hi);
 
+/* A column of the view with ratio R in the time unit a record sample is
+ * rec_ticks of: R x rec_ticks / 1000. Whole for every held record and code
+ * the scope has (test_paused_view [7]), and never shorter than one tick. */
+static inline uint32_t pv_col_ticks(uint32_t ratio_x1000, uint32_t rec_ticks)
+{
+    return (uint32_t)(((uint64_t)ratio_x1000 * rec_ticks) / PV_RATIO_ONE);
+}
+
 #ifdef __cplusplus
 }
 #endif

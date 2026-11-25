@@ -9,10 +9,10 @@
  * [3] autofit == the former autofit_prep()/autofit_y(), code for code, for a
  *     range of windows and both band layouts (unchanged when true scale is off).
  * [4] band layout: split halves only when both channels autofit.
- * [5] cursor scale: counts per row of each map.
+ * [5] fractional codes: the row of a code between codes and back.
  * [6] the draw spans stay on the plot.
  * [7] panes (plot_pane.h): the full plot's numbers, a half pane's
- *     graticule and true scale on it, cursor rows carried between panes.
+ *     graticule and true scale on it.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -185,15 +185,23 @@ int main(void)
         CHECK(e == TOP && f == BOT, "unsplit: the full plot");
     }
 
-    printf("[5] cursor scale\n");
-    CHECK(fabsf(yt_vmap_counts_per_px(&t) - 25.8f / 26.0f) < 1e-4f,
-          "true scale: codes/div / 26 counts per row");
+    printf("[5] fractional codes: row of a code and code of a row\n");
     {
-        yt_vmap_t a;
+        yt_vmap_t a, z;
         yt_vmap_autofit(&a, 40, 200, TOP, BOT);
-        yt_vmap_t off = { .on = false, .fx_ch = -1, .span = 8 };
-        CHECK(fabsf(yt_vmap_counts_per_px(&a) - 160.0f / (float)(H - 3)) < 1e-6f &&
-              yt_vmap_counts_per_px(&off) == 0.0f, "autofit: span/h; nothing drawn: 0");
+        yt_vmap_autofit(&z, 120, 121, TOP, BOT);           /* a fit zoomed to its 8-count floor */
+        const yt_vmap_t *m[3] = { &t, &a, &z };
+        int bad = 0, off = 0;
+        for (int i = 0; i < 3; i++) {
+            for (int y = TOP; y < BOT; y++) {
+                const float c = yt_vmap_code_of(m[i], (float)y);
+                if (fabsf(yt_vmap_row_of(m[i], c) - (float)y) > 1e-3f) bad++;
+            }
+            for (int c = 0; c <= 255; c++)          /* on whole codes, the integer map to a row */
+                if (fabsf(yt_vmap_row_of(m[i], (float)c) - (float)yt_vmap_raw(m[i], c)) >= 1.0f) off++;
+        }
+        CHECK(bad == 0, "row -> code -> row is the identity on every map (%d rows off)", bad);
+        CHECK(off == 0, "a whole code's row is within a row of yt_vmap_raw's (%d off)", off);
     }
 
     printf("[6] every map kind, every code pair: the draw spans stay on the plot\n");
@@ -242,13 +250,6 @@ int main(void)
             if (c >= 0 && c <= 255 && yt_vmap_raw(&m, c) != half.grid_mid - half.div_px * k) bad++;
         }
         CHECK(bad == 0, "half pane, nominal gain: 25 codes = one 13 px division exactly");
-        CHECK(fabsf(yt_vmap_counts_per_px(&m) - 2.0f * 25.0f / 26.0f) < 1e-4f,
-              "half pane: twice the counts per row of the full plot");
-        int same = 1, ongrid = 1;
-        for (int y = TOP; y < BOT; y++) same &= (plot_pane_row_to(&full, &full, y) == y);
-        for (int k = 0; k <= 7; k++)
-            ongrid &= (plot_pane_row_to(&full, &half, TOP + DIV * k) == half.top + half.div_px * k);
-        CHECK(same && ongrid, "cursor rows: the identity on the full plot, grid line k to grid line k on the half");
     }
 
     if (fails) { printf("test_yt_vmap: %d FAILED\n", fails); return 1; }

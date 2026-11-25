@@ -209,8 +209,13 @@ from the screenshot copy after a full redraw and after a live update).
     (`firmware/src/ui/plot_pane.h`: a full-width band of rows, its canvas,
     its graticule division derived from its height), and its grid, maps,
     tags, trigger line, math, persistence and cursor lines take their rows
-    from it. Cursors keep their rows on the full plot (`view.curh1`/`2`) and
-    are put on a pane's graticule at the same place in divisions. Checked at
+    from it. Cursors are kept in the units of what they mark (Y-T times in
+    0.4 ns ticks from the trigger point, `view.curt1`/`2`; roll's in ms back
+    from the newest point, `view.curr1`/`2`; levels in microvolts at the
+    active channel's probe tip, `view.cury1`/`2`) and are put on the pane
+    they are drawn in through its time axis and the active channel's map as
+    drawn there, so a line stays on its time and its level when the time
+    base, the range or the position moves. Checked at
     full size only: 11 states read back from the screen before and after,
     every difference a trace or a reading that moves with the signal;
     livecheck 0 of 1.8 M pixels with cursors and math on; 18.6 frames a
@@ -228,9 +233,9 @@ from the screenshot copy after a full redraw and after a live update).
     roll trigger compares against the same level), and cursors with their
     readout, on the roll point rate (`view_time_axis()`: one point per
     column, time counted back from the newest point; 100 columns at
-    50 ms/div read 200 ms). The ground tags and the cursors' absolute volts
-    use the source's 0 V code (`chan_zero_code` in roll, the record's own
-    otherwise). Not in roll, by the source: the trigger pointer and the mask
+    50 ms/div read 200 ms). The ground tags use the source's 0 V code
+    (`chan_zero_code` in roll, the record's own otherwise), and the level
+    cursors the 0 V of the codes their band draws. Not in roll, by the source: the trigger pointer and the mask
     (no placement on a trigger), persistence (roll moves every point along
     the screen columns the ghosts are kept in), math (its inputs are the
     record's own scale; to do). Roll is out of `view.mode` (2026-11-24): the

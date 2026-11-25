@@ -566,7 +566,7 @@ static void a_session(void)
     CHECK(set(P(TRIG_SOFT), 0));
     CHECK(set(P(VIEW_CURSOR), 3));
     CHECK(set(P(VIEW_CURSEL), 3));
-    CHECK(set(P(VIEW_CURV1), 22));
+    CHECK(set(P(VIEW_CURT1), -987654321));  /* a five-byte varint */
     CHECK(set(P(VIEW_PERSIST), 2));
     CHECK(set(P(METER_BEEP), 3));
     CHECK(set(P(METER_DEGF), 1));
@@ -618,7 +618,9 @@ static void test_membership(void)
     static const uint16_t in[] = { PROP_ID_CH1_ENABLED, PROP_ID_CH2_ENABLED, PROP_ID_CH1_POS, PROP_ID_VIEW_MODE,
         PROP_ID_VIEW_PERSIST, PROP_ID_TB_ROLLSTEP, PROP_ID_TRIG_X, PROP_ID_VIEW_CURSOR, PROP_ID_GEN_BOOTOUT,
         PROP_ID_GEN_FREQ, PROP_ID_METER_FUNC, PROP_ID_METER_DEGF, PROP_ID_MASK_TOLV, PROP_ID_IL_ENABLED,
-        PROP_ID_SYS_STARTUP, PROP_ID_SYS_BRIGHTNESS, PROP_ID_TB_ROLL };
+        PROP_ID_SYS_STARTUP, PROP_ID_SYS_BRIGHTNESS, PROP_ID_TB_ROLL,
+        PROP_ID_VIEW_CURT1, PROP_ID_VIEW_CURT2, PROP_ID_VIEW_CURR1, PROP_ID_VIEW_CURR2,
+        PROP_ID_VIEW_CURY1, PROP_ID_VIEW_CURY2 };   /* the time cursors, in their units */
     for (unsigned k = 0; k < sizeof in / sizeof in[0]; k++) CHECK(!model_session_excluded(prop_by_id(in[k])));
     printf("  %u properties: %u in the snapshot, %u left out with a reason, %u read only\n",
            (unsigned)NPROP, members, excluded, ro);
@@ -908,7 +910,7 @@ static void test_other_tables(void)
     CHECK(g_il_gain == 1000000 && !logged("il_corr(") && !logged("mode(") && !logged("gen_out(1)"));
     g_il_knots = 0;
     /* everything both tables share is back */
-    CHECK(prop_get(P(VIEW_CURSOR)) == 3 && prop_get(P(VIEW_CURSEL)) == 3 && prop_get(P(VIEW_CURV1)) == 22 &&
+    CHECK(prop_get(P(VIEW_CURSOR)) == 3 && prop_get(P(VIEW_CURSEL)) == 3 && prop_get(P(VIEW_CURT1)) == -987654321 &&
           prop_get(P(VIEW_PERSIST)) == 2 && prop_get(P(METER_BEEP)) == 3 && prop_get(P(METER_DEGF)) == 1 &&
           prop_get(P(MASK_TOLV)) == 20 && prop_get(P(TRIG_SOFT)) == 0);
     CHECK(strstr(status_text(), "skipped 3 unknown id, 7 not restored by this build, 4 out of range"));
@@ -961,6 +963,35 @@ static void test_retired_view_id(void)
     CHECK(model_boot_report()->refused == 0);
     CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_XY && prop_get(P(TB_ROLL)) == 0);   /* the record's pair */
     CHECK(model_view_record() == 2u);
+}
+
+/* A snapshot an older firmware wrote, with the time cursors as screen
+ * pixels under 0x0509..0x050C: released ids, skipped as unknown; the lines
+ * the snapshot also holds under their own ids come back. */
+static void test_retired_cursor_ids(void)
+{
+    printf("a snapshot with the pixel cursors' retired ids\n");
+    static uint8_t rec[1024];
+    static ent_t e[NPROP + 16];
+    model_session_info_t info;
+
+    for (uint16_t id = 0x0509; id <= 0x050C; id++) CHECK(prop_by_id(id) == NULL);
+    fresh_device();
+    a_session();
+    CHECK(power_off());
+    (void)newest(&info);
+    uint16_t n = live_entries(e);
+    for (uint16_t id = 0x0509; id <= 0x050C; id++) e[n++] = (ent_t){ id, 106 };
+    for (uint16_t i = 1; i < n; i++)                       /* in id order, as a writer lays them */
+        for (uint16_t j = i; j > 0 && e[j - 1].id > e[j].id; j--) {
+            const ent_t t = e[j]; e[j] = e[j - 1]; e[j - 1] = t;
+        }
+    append_raw(rec, craft(rec, 1, 0, (uint16_t)(info.seq + 1u), info.stamp, e, n));
+    boot();
+    const session_status_t *st = session_snapshot_status();
+    CHECKF(st->load == SESSION_LOAD_OK && st->unknown == 4 && st->excluded == 0 && st->out_of_range == 0,
+           "load %u unknown %u excluded %u", st->load, st->unknown, st->excluded);
+    CHECK(prop_get(P(VIEW_CURT1)) == -987654321 && prop_get(P(VIEW_CURSOR)) == 3);
 }
 
 /* A boot with owners that never answer stays bounded: once more than the
@@ -1315,7 +1346,7 @@ static void test_flash(void)
     uint16_t seq = session_snapshot_status()->save_seq;
     uint32_t erases = 0;
     for (int day = 0; day < 365; day++) {
-        CHECK(set(P(CH1_POS), (day % 41) * 5 - 100) && set(P(VIEW_CURV2), 100 + day % 200));
+        CHECK(set(P(CH1_POS), (day % 41) * 5 - 100) && set(P(VIEW_CURT2), 100 + day % 200));
         const uint32_t recs = log_records(), e0 = nor_erases[1], pr = nor_programs[1];
         const uint32_t moves = session_snapshot_status()->compactions;
         CHECK(power_off());
@@ -1406,6 +1437,7 @@ int main(void)
     test_fallbacks();
     test_other_tables();
     test_retired_view_id();
+    test_retired_cursor_ids();
     test_refused();
     test_refused_bound();
     test_order();

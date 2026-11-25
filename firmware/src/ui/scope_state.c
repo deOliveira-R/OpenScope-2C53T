@@ -6,6 +6,7 @@
 #include "scope_measure.h"
 #include "scope_roll.h"
 #include "scope_geom.h"
+#include "scope_cursor.h"
 
 /* ═══════════════════════════════════════════════════════════════════
  * Lookup tables
@@ -98,23 +99,18 @@ void scope_state_init(scope_state_t *s)
     /* Cursor defaults */
     s->cursor.mode   = CURSOR_OFF;
     s->cursor.active = CURSOR_SEL_V1;
-    s->cursor.v1_x = CURSOR_SCOPE_LEFT + CURSOR_SCOPE_WIDTH / 3;
-    s->cursor.v2_x = CURSOR_SCOPE_LEFT + (CURSOR_SCOPE_WIDTH * 2) / 3;
-    s->cursor.h1_y = CURSOR_SCOPE_TOP + CURSOR_SCOPE_HEIGHT / 3;
-    s->cursor.h2_y = CURSOR_SCOPE_TOP + (CURSOR_SCOPE_HEIGHT * 2) / 3;
+    /* Each line at the low end of its range: off the plot at every scale,
+     * so the first time its pair is shown it goes to its default place
+     * (scope_cursor_place). */
+    for (int i = 0; i < 2; i++) {
+        s->cursor.t_tick[i]   = -SCOPE_CURSOR_TIME_MAX;
+        s->cursor.roll_ms[i]  = SCOPE_CURSOR_ROLL_MIN_MS;
+        s->cursor.level_uv[i] = -SCOPE_CURSOR_LEVEL_MAX;
+    }
     s->spectrum_cursor.bin[0]   = SPECTRUM_CURSOR_BIN1_DEFAULT;
     s->spectrum_cursor.bin[1]   = SPECTRUM_CURSOR_BIN2_DEFAULT;
     s->spectrum_cursor.level[0] = SPECTRUM_CURSOR_LEVEL1_DEFAULT;
     s->spectrum_cursor.level[1] = SPECTRUM_CURSOR_LEVEL2_DEFAULT;
-    /*
-     * No cursor scale factors are initialised here any more, and that is the
-     * point — see cursor_state_t. The two that used to live here (10 ms
-     * across the screen, 8 V down it) were never updated by anything, so the
-     * cursor readout was a function of the cursor positions alone. Seconds
-     * now come from scope_timebase.c and volts from scope_cal.c, read at
-     * draw time by scope_cursor.c, which refuses to print a unit when
-     * neither table has an entry.
-     */
 }
 
 void scope_trigger_summary(const scope_state_t *s, char *buf, unsigned n)

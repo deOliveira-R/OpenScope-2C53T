@@ -54,6 +54,7 @@ uint16_t fpga_acq_cfg_settle_get(void);
 
 uint8_t fpga_acq_record_kind(void);            /* trig_acq_t (dsp/trig_policy.h) */
 float   fpga_record_sample_rate(void);         /* rate of the published record, 0 = none */
+uint8_t fpga_acq_record_rate_idx(void);        /* the code the published record was captured at */
 uint8_t fpga_acq_rate_idx_get(void);
 bool    fpga_acq_record_interleaved(void);     /* published CH1 record is the merge of both converters */
 /* The published record is in time order with the trigger at index 512, and

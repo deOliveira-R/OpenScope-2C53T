@@ -9,8 +9,7 @@
  *
  * Boundaries with a bug history that these types close:
  *   - ADC raw <-> record code (the 28-count offset)
- *   - cursor sign (screen: second - first; shell: first - second; pixel rows
- *     grow downwards while volts grow upwards)
+ *   - cursor sign (screen: second - first; shell: first - second)
  *   - ppm of a period vs a gain x 1e6
  *   - per-mille vs percent
  *   - x100 fixed point printed by hand ("-0.60" printed as "0.60")
@@ -184,21 +183,11 @@ static inline ms_t ms_from_ticks(uint32_t ticks)
 
 /* ---- cursors ------------------------------------------------------------ */
 
-static inline int32_t cursor_delta(int32_t first, int32_t second, cursor_order_t o)
+/* Two cursor values (times or levels, never pixels) in order `o`; 64 bits,
+ * as the difference of two int32 values can need. */
+static inline int64_t cursor_delta(int32_t first, int32_t second, cursor_order_t o)
 {
-    return o == CUR_FIRST_MINUS_SECOND ? first - second : second - first;
-}
-
-/*
- * Rows grow downwards, volts grow upwards: the result is the distance in rows
- * in the direction of rising voltage, ordered by `o`. Multiply by volts per
- * row for the voltage delta. Second below first on screen (greater row) under
- * SECOND_MINUS_FIRST is negative.
- */
-static inline int32_t cursor_dy_volts_sign(int32_t first_row, int32_t second_row,
-                                           cursor_order_t o)
-{
-    return cursor_delta(-first_row, -second_row, o);
+    return o == CUR_FIRST_MINUS_SECOND ? (int64_t)first - second : (int64_t)second - first;
 }
 
 /* ---- fixed-point text --------------------------------------------------- */

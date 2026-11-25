@@ -15,6 +15,10 @@
  * [6] the two fills agree: pv_fill at ratio 1000/L over a window inside the
  *     record is scope_geom_fill byte for byte, for every zoom stock uses, and
  *     the blank span of a zoomed-out / edge window is reported exactly.
+ * [7] the column in the cursors' ticks: for every record (code x merged) held
+ *     and viewed at every code (x merged), the plan's R gives a whole number
+ *     of ticks, never under one tick (0.4 ns) nor over the slowest column,
+ *     and its rate is the column rate the plan implies (1000 fs_rec / R).
  */
 #include <math.h>
 #include <stdio.h>
@@ -22,6 +26,7 @@
 #include <string.h>
 #include "paused_view.h"
 #include "scope_geom.h"
+#include "scope_timebase.h"
 #include <stdlib.h>
 
 static int fails = 0;
@@ -212,6 +217,39 @@ int main(void)
         CHECK(f == 0 && e == 150 + 40, "zoom in: last shown column %u (want 190: n = 1023 up to frac .9)", e);
         pv_fill(rec, 0, N, 5000000, 1000, b, SCOPE_GEOM_COLS, &f, &e);
         CHECK(f == 0 && e == 0, "nothing in view -> empty span");
+    }
+
+    printf("[7] the held column in ticks\n");
+    {
+        enum { FAST_CODE_LAST = 3 };       /* 0x00-0x03: the converters at their top rate */
+        int inexact = 0, finer = 0, coarser = 0, rate = 0, clamped = 0;
+        uint32_t finest = UINT32_MAX;
+        for (uint8_t rc = 0; rc < SCOPE_TIMEBASE_CODE_COUNT; rc++)
+            for (int ril = 0; ril < 2; ril++)
+                for (uint8_t nc = 0; nc < SCOPE_TIMEBASE_CODE_COUNT; nc++)
+                    for (int nil = 0; nil < 2; nil++) {
+                        /* the merge runs at the fast codes only (fpga_interleave_active) */
+                        if ((ril && rc > FAST_CODE_LAST) || (nil && nc > FAST_CODE_LAST)) continue;
+                        const uint8_t Lc = scope_timebase_interp_factor(nc, nil != 0);
+                        const float fr = scope_timebase_sample_rate(rc) * (ril ? 2.0f : 1.0f);
+                        const float fc = scope_timebase_sample_rate(nc) * (nil ? 2.0f : 1.0f) * (float)Lc;
+                        uint32_t R = 0;
+                        (void)pv_view_plan(true, fr, fc, Lc, &R);
+                        const uint32_t rt = scope_timebase_sample_ticks(rc, ril != 0);
+                        if (((uint64_t)R * rt) % PV_RATIO_ONE != 0u) inexact++;
+                        const uint32_t t = pv_col_ticks(R, rt);
+                        if (t < 1u) finer++;
+                        if (t > SCOPE_TIMEBASE_SLOWEST_COLUMN_TICKS) coarser++;
+                        if (t < finest) finest = t;
+                        if (t != scope_timebase_column_ticks(nc, nil != 0)) clamped++;
+                        const double want = 1000.0 * (double)fr / (double)R;
+                        if (fabs((double)SCOPE_TIMEBASE_TICK_HZ / (double)t / want - 1.0) > 1e-5) rate++;
+                    }
+        CHECK(inexact == 0, "held columns are whole ticks (%d are not)", inexact);
+        CHECK(finer == 0 && finest == 1u, "no held column finer than one tick (%d; finest %u)", finer, finest);
+        CHECK(coarser == 0, "no held column slower than the slowest code's (%d)", coarser);
+        CHECK(rate == 0, "the ticks are the plan's column rate (%d differ)", rate);
+        printf("  [7] %d held views take a column other than the code's (the ratio clamp)\n", clamped);
     }
 
     printf(fails ? "\n%d FAILED\n" : "\nALL PASS\n", fails);

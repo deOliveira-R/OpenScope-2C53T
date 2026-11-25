@@ -60,6 +60,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#include "../drivers/fpga_core_regs.h"   /* FPGA_CORE_CLK_HZ: generated from the capture core's package */
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -124,6 +126,31 @@ void scope_timebase_label_scaled(uint8_t code, uint8_t rate_factor, char *out, u
  * whose merge is off still gets the per-converter row.
  */
 uint8_t scope_timebase_interp_factor(uint8_t code, bool interleaved);
+
+/* The largest of those factors: a converter's own record at code 0x00. */
+#define SCOPE_TIMEBASE_INTERP_MAX   20u
+
+/*
+ * The time unit of the cursors: one TICK is the finest screen column, the
+ * core clock's period over the largest zoom: 8 ns / 20 = 0.4 ns (a merged
+ * record at 0x00 gives the same, 4 ns / 10). Every column period of every
+ * code, merged or not, is a whole number of ticks (test_scope_timebase), so
+ * a time kept in ticks lands on the column it was put on at any timebase.
+ */
+#define SCOPE_TIMEBASE_TICK_HZ      (FPGA_CORE_CLK_HZ * SCOPE_TIMEBASE_INTERP_MAX)
+
+/* The slowest column, in ticks: code 0x14, 250000 core cycles a sample at
+ * zoom 1 = 2 ms (test_scope_timebase checks it is the largest). */
+#define SCOPE_TIMEBASE_SLOWEST_COLUMN_TICKS  5000000u
+
+/* Ticks per stored sample of a record captured at code, the merge or a
+ * converter's own (interleaved); 0 for a code with no rate. Exact: the
+ * integers the core runs on, no float. */
+uint32_t scope_timebase_sample_ticks(uint8_t code, bool interleaved);
+
+/* Ticks per screen column of the running view at code: a sample's ticks
+ * over the zoom (scope_timebase_interp_factor). 0 for a code with no rate. */
+uint32_t scope_timebase_column_ticks(uint8_t code, bool interleaved);
 
 /* The status-bar label for what the screen shows: the code's rate, x2 for a
  * merged record, times the zoom above ("10ns" at 0x00 either way). */

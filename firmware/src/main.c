@@ -1096,7 +1096,7 @@ static float probe_factor_from_state(uint8_t ch)
 {
     const scope_state_t *ss = scope_state_get();
     const channel_state_t *c = (ch == 2u) ? &ss->ch2 : &ss->ch1;
-    return (c->probe == PROBE_10X) ? 10.0f : 1.0f;
+    return (c->probe == PROBE_10X) ? (float)SCOPE_PROBE_10X_FACTOR : 1.0f;
 }
 
 bool input_inject_button(button_id_t b)

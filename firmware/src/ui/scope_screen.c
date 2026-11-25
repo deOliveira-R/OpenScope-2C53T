@@ -15,6 +15,7 @@
 #include "ui.h"
 #include "fft.h"
 #include "fft_live.h"        /* the spectrum's axes: what a cursor step is worth */
+#include "scope_cursor.h"    /* the time cursors' axes: what a cursor step is worth */
 void scope_ui_fft_axes(fft_axes_t *out);     /* scope_spectrum.c: the axes on screen */
 
 #include <stdio.h>
@@ -158,18 +159,31 @@ static scr_res_t tb_step(int dir)
     return popup_full(pb);
 }
 
-static const prop_desc_t *cursor_prop(int32_t sel)
+/* UP / DOWN in the time cursors' job: the selected line CURSOR_STEP_PX
+ * pixels of the plot it is drawn on (left / up for UP), converted to its
+ * unit at the scale on the screen, so a press looks the same at every
+ * timebase and range; a line off the plot comes to its edge first
+ * (scope_cursor_key). The line's property is roll's or Y-T's time, or the
+ * level. Nothing moves a line that has no place on the screen. */
+static void time_cursor_move(int32_t sel, int dir)
 {
-    switch (sel) {
-    case CURSOR_SEL_V1: return P(VIEW_CURV1);
-    case CURSOR_SEL_V2: return P(VIEW_CURV2);
-    case CURSOR_SEL_H1: return P(VIEW_CURH1);
-    default:            return P(VIEW_CURH2);
-    }
+    static const prop_desc_t *const k_prop[2][4] = {
+        { [CURSOR_SEL_V1] = P(VIEW_CURT1), [CURSOR_SEL_V2] = P(VIEW_CURT2),
+          [CURSOR_SEL_H1] = P(VIEW_CURY1), [CURSOR_SEL_H2] = P(VIEW_CURY2) },
+        { [CURSOR_SEL_V1] = P(VIEW_CURR1), [CURSOR_SEL_V2] = P(VIEW_CURR2),
+          [CURSOR_SEL_H1] = P(VIEW_CURY1), [CURSOR_SEL_H2] = P(VIEW_CURY2) },
+    };
+    if (sel < CURSOR_SEL_V1 || sel > CURSOR_SEL_H2) return;
+    scope_cursor_axes_t ax;
+    scope_ui_cursor_axes(&ax);
+    const prop_desc_t *p = k_prop[ax.roll ? 1 : 0][sel];
+    int32_t v;
+    if (scope_cursor_key(&ax, (cursor_sel_t)sel, G(p), dir, &v))
+        (void)prop_set_local(p, v, ORIGIN_KEY, NULL);
 }
 
 /* UP / DOWN in the spectrum's cursor job: the selected line by what
- * SPECTRUM_CURSOR_STEP_PX pixels are worth on the spectrum's axes as they
+ * CURSOR_STEP_PX pixels are worth on the spectrum's axes as they
  * stand, so a step looks the same at every span and zooming in makes it
  * finer. UP moves a frequency line down in frequency and a level line up, as
  * the time cursors move left and up. A line that is off the plot comes to
@@ -188,12 +202,12 @@ static void spectrum_cursor_move(int32_t sel, int dir)
     if (sel == CURSOR_SEL_V1 || sel == CURSOR_SEL_V2) {
         lo = ax.bin0;
         hi = ax.bin0 + ax.bins - 1;
-        step = dir * (int32_t)fft_axes_bins_per_cols(&ax, SPECTRUM_CURSOR_STEP_PX);
+        step = dir * (int32_t)fft_axes_bins_per_cols(&ax, CURSOR_STEP_PX);
     } else {
         const float unit = (float)SPECTRUM_CURSOR_LEVEL_UNIT;
         hi = (int32_t)(ax.ref_db * unit);
         lo = (int32_t)((ax.ref_db - ax.range_db) * unit) + 1;
-        const int32_t s = (int32_t)(fft_axes_db_per_rows(&ax, SPECTRUM_CURSOR_STEP_PX) * unit + 0.5f);
+        const int32_t s = (int32_t)(fft_axes_db_per_rows(&ax, CURSOR_STEP_PX) * unit + 0.5f);
         step = -dir * (s ? s : 1);
     }
     if (v < lo) v = lo; else if (v > hi) v = hi; else v += step;
@@ -345,7 +359,7 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
     /* The live frame draws the cursors and the AUX row their readout, so a
      * move is one live frame, not a full repaint (scope_yt.c). */
     case KA_CURSOR_MOVE:
-        (void)prop_step_local(cursor_prop(G(P(VIEW_CURSEL))), dir, ORIGIN_KEY, NULL);
+        time_cursor_move(G(P(VIEW_CURSEL)), dir);
         scope_ui_request_live();
         return SCR_HANDLED;
     case KA_SPECTRUM_CURSOR_MOVE:
@@ -496,8 +510,11 @@ uint32_t scope_screen_cursor_epoch(void)
     const cursor_state_t *c = &scope_state_get()->cursor;
     uint32_t h = REDRAW_EPOCH_SEED;
     h = redraw_epoch_mix(h, (uint32_t)c->active);
-    h = redraw_epoch_mix(h, (uint32_t)c->v1_x | ((uint32_t)c->v2_x << 16));
-    h = redraw_epoch_mix(h, (uint32_t)c->h1_y | ((uint32_t)c->h2_y << 16));
+    for (uint8_t i = 0; i < 2u; i++) {
+        h = redraw_epoch_mix(h, (uint32_t)c->t_tick[i]);
+        h = redraw_epoch_mix(h, (uint32_t)c->roll_ms[i]);
+        h = redraw_epoch_mix(h, (uint32_t)c->level_uv[i]);
+    }
     /* The same lines on a spectrum. */
     const spectrum_cursor_t *sc = &scope_state_get()->spectrum_cursor;
     h = redraw_epoch_mix(h, (uint32_t)sc->bin[0] | ((uint32_t)sc->bin[1] << 16));

@@ -208,10 +208,23 @@ failure is held. Full design: `docs/specs/scope/mask-pass-fail.md`.
 | Button | Action |
 |--------|--------|
 | Settings -> Oscilloscope -> **Cursors** | Cycle cursor mode: Off -> Vertical -> Horizontal -> Both -> Off (stock keeps them in its menu, "Cursor Measurement"; TRIGGER cycled them until parity C3) |
-| **UP/DOWN** | Move active cursor (Cursor stage) |
+| **UP/DOWN** | Move active cursor 4 pixels (Cursor stage) |
 | **LEFT/RIGHT** | Switch between cursor pairs (V1/V2 or H1/H2) (Cursor stage) |
 
 Switching cursors on puts the arrow keys in the Cursor stage; SELECT steps on to the others. The cursor readout shows delta-time (dt), frequency (1/dt), and delta-voltage (dV).
+
+Each time-view line is kept at its time or level, not at a place on the
+screen: a vertical line at its time from the trigger point (in roll, back
+from the newest point; roll and Y-T keep a pair each), a horizontal line at
+its voltage at the active channel's probe tip. Change the time base, the
+range or the position and the lines move with what they mark; one that
+leaves the plot is not drawn, and its readout stays. UP on a vertical line
+moves it left, UP on a horizontal line moves it up, 4 pixels of the plot at
+the scale in force; a line off the plot comes to the edge first. Lines off
+the plot when the cursors are switched on start at a third and two thirds of
+the plot. With a range that has no volts (uncalibrated) the horizontal lines
+are not drawn and dV reads "--". The shell sets them as `view.curt1`/`2`
+(ticks of 0.4 ns), `view.curr1`/`2` (ms) and `view.cury1`/`2` (volts).
 
 **On a spectrum (FFT view)** the same four lines are cursors on frequency
 (V1, V2) and level (H1, H2), with the readout in the same row above the

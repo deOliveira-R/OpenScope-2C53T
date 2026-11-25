@@ -232,16 +232,6 @@ _Static_assert(SCOPE_GEOM_COLS <= LCD_WIDTH, "the Y-T window must fit the glass"
 _Static_assert(SCOPE_TIMEBASE_CODE_COUNT == TIMEBASE_COUNT,
                "timebase rate table length must match TIMEBASE_COUNT");
 
-/* The cursor readout converts a pixel delta into a time with this and the
- * rate it is handed. Since the window can be zoomed (the fast-code zoom and
- * the re-sampled held record), that rate is the COLUMN rate,
- * 1000 x record rate / R (column_rate_for_display), so one pixel stays one
- * unit of the rate passed in. Handing the cursor the record rate while the
- * plot is zoomed would silently rescale every dt by the zoom. */
-_Static_assert(SCOPE_CURSOR_SAMPLES_PER_PIXEL == 1.0f,
-               "the cursor is fed the column rate, one column per unit — "
-               "cursor dt and 1/dt would be wrong");
-
 /*
  * Mask readout: the strip's AUX row (measure_strip.h), reserved while a mask
  * exists. It lies below the live band, so the live frame never paints over

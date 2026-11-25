@@ -86,16 +86,9 @@ static void test_cursor(void)
     CHECK(cursor_delta(10, 30, CUR_FIRST_MINUS_SECOND) == -20);
     CHECK(cursor_delta(30, 10, CUR_SECOND_MINUS_FIRST) == -20);
     CHECK(cursor_delta(5, 5, CUR_FIRST_MINUS_SECOND) == 0);
-    /* rows grow down: second cursor lower on screen (row 80 vs 20) = lower
-     * voltage, so second - first in volts is negative */
-    CHECK(cursor_dy_volts_sign(20, 80, CUR_SECOND_MINUS_FIRST) == -60);
-    CHECK(cursor_dy_volts_sign(20, 80, CUR_FIRST_MINUS_SECOND) == 60);
-    CHECK(cursor_dy_volts_sign(80, 20, CUR_SECOND_MINUS_FIRST) == 60);
-    /* the two orders are exact negatives */
-    for (int a = 0; a < 200; a += 17)
-        for (int b = 0; b < 200; b += 13)
-            CHECK(cursor_dy_volts_sign(a, b, CUR_SECOND_MINUS_FIRST) ==
-                  -cursor_dy_volts_sign(a, b, CUR_FIRST_MINUS_SECOND));
+    /* the ends of int32 apart: the difference does not wrap */
+    CHECK(cursor_delta(INT32_MIN, INT32_MAX, CUR_SECOND_MINUS_FIRST) == (int64_t)UINT32_MAX);
+    CHECK(cursor_delta(INT32_MIN, INT32_MAX, CUR_FIRST_MINUS_SECOND) == -(int64_t)UINT32_MAX);
 }
 
 static void test_fmt(void)

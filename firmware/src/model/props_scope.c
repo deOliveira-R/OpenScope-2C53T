@@ -17,6 +17,7 @@
 #include "scope_measure.h"
 #include "scope_geom.h"
 #include "scope_roll.h"
+#include "scope_cursor.h"
 #include "meas_select.h"
 #include "persistence.h"
 #include "math_channel.h"
@@ -228,7 +229,10 @@ bool tb_label(const prop_desc_t *p, int32_t v, char *out, size_t n)
     return out[0] != '\0';
 }
 
-/* scope_apply_roll: Roll through the FPGA, the old mode kept on refusal. */
+static bool cursor_shows_time(cursor_mode_t m);
+static void cursor_pairs_arrive(bool time, bool level);
+/* scope_apply_roll: Roll through the FPGA, the old mode kept on refusal.
+ * Roll and Y-T keep their own time cursors: the other pair comes on. */
 static prop_status_t roll_apply(bool want, uint8_t step, prop_note_t *note)
 {
     scope_state_t *ss = scope_state_get();
@@ -244,7 +248,11 @@ static prop_status_t roll_apply(bool want, uint8_t step, prop_note_t *note)
     }
     /* tb.roll, and PG_VIEW for the picture: another source is a whole
      * redraw of the view (main.c scope_view_tick, chg.whole). */
-    if (want != was) { model_touch(PG_TB); model_touch(PG_VIEW); }
+    if (want != was) {
+        model_touch(PG_TB);
+        model_touch(PG_VIEW);
+        cursor_pairs_arrive(cursor_shows_time(ss->cursor.mode), false);
+    }
     return PS_OK;
 }
 
@@ -567,6 +575,24 @@ prop_status_t view_math_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
 }
 
 const char *const lbl_view_cursor[CURSOR_MODE_COUNT] = { "off", "time", "volt", "both" };
+
+/* The pairs of lines mode m shows: the time pair, the level pair. */
+static bool cursor_shows_time(cursor_mode_t m)  { return m == CURSOR_VERTICAL || m == CURSOR_BOTH; }
+static bool cursor_shows_level(cursor_mode_t m) { return m == CURSOR_HORIZONTAL || m == CURSOR_BOTH; }
+
+/* A pair that comes onto the screen (view.cursor shows it now, or roll
+ * swaps the time pair): each of its lines that is off the plot, or has no
+ * place on it, goes to its default place at the scale on the screen
+ * (scope_cursor_place). */
+static void cursor_pairs_arrive(bool time, bool level)
+{
+    if (!(time || level) || !HW->cursor_axes) return;
+    scope_cursor_axes_t ax;
+    HW->cursor_axes(&ax);
+    cursor_state_t *c = &scope_state_get()->cursor;
+    if (time)  scope_cursor_place(&ax, CURSOR_SEL_V1, ax.roll ? c->roll_ms : c->t_tick);
+    if (level) scope_cursor_place(&ax, CURSOR_SEL_H1, c->level_uv);
+}
 int32_t view_cursor_get(const prop_desc_t *p) { (void)p; return (int32_t)scope_state_get()->cursor.mode; }
 /* cursor_select: the horizontal pair starts on H1, the others on V1. */
 void view_cursor_store(const prop_desc_t *p, int32_t v)
@@ -579,7 +605,11 @@ void view_cursor_store(const prop_desc_t *p, int32_t v)
 prop_status_t view_cursor_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)origin; (void)note;
+    const cursor_mode_t was = scope_state_get()->cursor.mode;
     view_cursor_store(p, v);
+    const cursor_mode_t now = scope_state_get()->cursor.mode;
+    cursor_pairs_arrive(!cursor_shows_time(was) && cursor_shows_time(now),
+                        !cursor_shows_level(was) && cursor_shows_level(now));
     return PS_OK;
 }
 
@@ -638,9 +668,7 @@ prop_status_t view_run_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop
  * the four with both. */
 const char *const lbl_view_cursel[4] = { "v1", "v2", "h1", "h2" };
 _Static_assert(CURSOR_SEL_V1 == 0 && CURSOR_SEL_V2 == 1 && CURSOR_SEL_H1 == 2 && CURSOR_SEL_H2 == 3,
-               "view.cursel values = cursor_sel_t; view.curv1..curh2 are arg 0..3");
-_Static_assert(CURSOR_SCOPE_LEFT == 0 && CURSOR_SCOPE_RIGHT == 319 && CURSOR_SCOPE_TOP == 18 &&
-               CURSOR_SCOPE_BOT == 224, "view.curv 0..319, view.curh 18..224 (model_table.h)");
+               "view.cursel values = cursor_sel_t");
 int32_t view_cursel_get(const prop_desc_t *p) { (void)p; return (int32_t)scope_state_get()->cursor.active; }
 void    view_cursel_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->cursor.active = (cursor_sel_t)v; }
 prop_status_t view_cursel_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
@@ -658,25 +686,38 @@ prop_status_t view_cursel_set(const prop_desc_t *p, int32_t v, uint8_t origin, p
     return PS_OK;
 }
 
-/* view.curv1 / curv2 (screen columns) and curh1 / curh2 (screen rows):
- * arg = cursor_sel_t. Kept whatever view.cursor is (the lines keep their
- * place while the cursors are off). */
-static uint16_t *curpos(const prop_desc_t *p)
-{
-    cursor_state_t *c = &scope_state_get()->cursor;
-    switch (p->arg) {
-    case CURSOR_SEL_V1: return &c->v1_x;
-    case CURSOR_SEL_V2: return &c->v2_x;
-    case CURSOR_SEL_H1: return &c->h1_y;
-    default:            return &c->h2_y;
-    }
-}
-int32_t view_curpos_get(const prop_desc_t *p) { return *curpos(p); }
-void    view_curpos_store(const prop_desc_t *p, int32_t v) { *curpos(p) = (uint16_t)v; }
-prop_status_t view_curpos_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+/* The time views' cursor lines, each in the unit of what it marks
+ * (cursor_state_t, scope_cursor.h): view.curt1 / curt2 the Y-T times in
+ * ticks, view.curr1 / curr2 roll's in ms, view.cury1 / cury2 the levels in
+ * microvolts; arg = the line of the pair. Kept whatever view.cursor is (a
+ * line keeps its place while the cursors are off); a shell set takes any
+ * value in range, on the plot or not. */
+_Static_assert(SCOPE_CURSOR_TIME_MAX == 1505000000 && SCOPE_CURSOR_ROLL_MIN_MS == -240800 &&
+               SCOPE_CURSOR_LEVEL_MAX == 2048000000,
+               "view.curt +-1505000000, view.curr -240800..0, view.cury +-2048000000, each starting at "
+               "its low end (scope_state_init): model_table.h holds literals");
+int32_t view_curt_get(const prop_desc_t *p) { return scope_state_get()->cursor.t_tick[p->arg]; }
+void    view_curt_store(const prop_desc_t *p, int32_t v) { scope_state_get()->cursor.t_tick[p->arg] = v; }
+prop_status_t view_curt_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)origin; (void)note;
-    view_curpos_store(p, v);
+    view_curt_store(p, v);
+    return PS_OK;
+}
+int32_t view_curr_get(const prop_desc_t *p) { return scope_state_get()->cursor.roll_ms[p->arg]; }
+void    view_curr_store(const prop_desc_t *p, int32_t v) { scope_state_get()->cursor.roll_ms[p->arg] = v; }
+prop_status_t view_curr_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    view_curr_store(p, v);
+    return PS_OK;
+}
+int32_t view_cury_get(const prop_desc_t *p) { return scope_state_get()->cursor.level_uv[p->arg]; }
+void    view_cury_store(const prop_desc_t *p, int32_t v) { scope_state_get()->cursor.level_uv[p->arg] = v; }
+prop_status_t view_cury_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    view_cury_store(p, v);
     return PS_OK;
 }
 

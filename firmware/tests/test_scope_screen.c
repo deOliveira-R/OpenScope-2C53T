@@ -45,6 +45,7 @@
 #include "math_channel.h"
 #include "fft.h"
 #include "fft_live.h"
+#include "scope_cursor.h"
 
 #define LONG(b) ((uint8_t)((b) | BTN_LONG_FLAG))
 static int32_t G(const prop_desc_t *p) { return prop_get(p); }
@@ -130,6 +131,14 @@ void  fft_auto_request(void)               { env_logf("fft_auto;"); }
 /* scope_spectrum.c: the axes of the spectrum on screen, as a test sets them */
 static fft_axes_t g_axes;
 void scope_ui_fft_axes(fft_axes_t *out)    { *out = g_axes; }
+/* scope_cursor_draw.c: the plot the time cursors are on, as a test sets it;
+ * the time source follows the state, as view_time_axis's does */
+static scope_cursor_axes_t g_caxes;
+void scope_ui_cursor_axes(struct scope_cursor_axes *out)
+{
+    *out = g_caxes;
+    out->roll = scope_state_get()->roll;
+}
 
 /* The driver calls of the pre-B7 key handlers (fpga.c, scope_vpos.c,
  * scope_ui.c), logged as the ops below log theirs. Channels: 0 = CH1. */
@@ -219,11 +228,12 @@ static const screen_t S_METER = ENV_BASE("meter", SCR_METER, MODE_MULTIMETER, 1)
 static void boot(void)
 {
     env_fresh(MODE_OSCILLOSCOPE);
+    memset(&g_caxes, 0, sizeof g_caxes);     /* no time view drawn yet */
     t_ops = env_ops;
     t_ops.vdiv = d_vdiv; t_ops.coupling = d_coupling; t_ops.channel_enables = d_enables;
     t_ops.interleave_active = f_il; t_ops.vpos = d_vpos; t_ops.timebase = d_timebase; t_ops.roll = d_roll;
     t_ops.trigger_source = f_trigsrc; t_ops.trigger_source_follow = f_trigsrc; t_ops.trigger_level = d_trig_level; t_ops.single_rearm = d_rearm;
-    t_ops.single_done = f_single_done; t_ops.paused_latch = d_latch; t_ops.trigger_code = f_trig_code;
+    t_ops.single_done = f_single_done; t_ops.paused_latch = d_latch; t_ops.cursor_axes = scope_ui_cursor_axes; t_ops.trigger_code = f_trig_code;
     t_ops.view_select = f_view; t_ops.persist_on = f_persist_on; t_ops.persist_off = f_persist_off;
     t_ops.persist_mode = f_persist_mode;
     t_ops.mask_get = f_mask_get; t_ops.mask_tol = f_mask_tol; t_ops.mask_stopfail = f_mask_sf;
@@ -398,6 +408,21 @@ static void o_spectrum_cursor_move(int dir)
     else      ss->spectrum_cursor.level[sel == CURSOR_SEL_H2] = (int16_t)v;
 }
 
+/* UP / DOWN in the time cursors' job: the selected line one arrow press on
+ * the plot on screen (scope_cursor_key, test_scope_cursor), kept in roll's
+ * time pair while roll is on, else in Y-T's; the levels are shared. */
+static void o_cursor_move(int dir)
+{
+    scope_state_t *ss = scope_state_get();
+    scope_cursor_axes_t a;
+    scope_ui_cursor_axes(&a);
+    const cursor_sel_t sel = ss->cursor.active;
+    const int i = (sel == CURSOR_SEL_V2 || sel == CURSOR_SEL_H2) ? 1 : 0;
+    int32_t *v = (sel == CURSOR_SEL_H1 || sel == CURSOR_SEL_H2) ? &ss->cursor.level_uv[i]
+               : ss->roll ? &ss->cursor.roll_ms[i] : &ss->cursor.t_tick[i];
+    (void)scope_cursor_key(&a, sel, *v, dir, v);
+}
+
 static void o_exec(key_cmd_t k, button_id_t btn)
 {
     scope_state_t *ss = scope_state_get();
@@ -447,6 +472,13 @@ static void o_exec(key_cmd_t k, button_id_t btn)
         const bool roll_changed = scope_adjust_timebase(ss, dir, view_takes_roll(o_view_mode()));
         const bool tb_ok = roll_changed ? d_roll() : (was_roll ? true : d_timebase(ss->timebase_idx));
         if (roll_changed && !tb_ok) { ss->roll = was_roll; ss->roll_step = was_step; }
+        /* roll and Y-T keep their own time pair: the one coming on is placed */
+        if (roll_changed && tb_ok && ss->roll != was_roll &&
+            (ss->cursor.mode == CURSOR_VERTICAL || ss->cursor.mode == CURSOR_BOTH)) {
+            scope_cursor_axes_t a;
+            scope_ui_cursor_axes(&a);
+            scope_cursor_place(&a, CURSOR_SEL_V1, ss->roll ? ss->cursor.roll_ms : ss->cursor.t_tick);
+        }
         if (tb_ok) { o_cmd = 'F'; break; }
         char tb[12];
         if (ss->roll) scope_roll_label(ss->roll_step, tb, sizeof(tb));
@@ -489,7 +521,7 @@ static void o_exec(key_cmd_t k, button_id_t btn)
         break;
     }
     case KA_CURSOR_MOVE:
-        scope_cursor_move((int16_t)(dir * 4));
+        o_cursor_move(dir);
         scope_ui_request_live();
         break;
     case KA_CURSOR_NEXT:
@@ -616,6 +648,7 @@ typedef struct {
     uint8_t  ach, view, focus;
     uint8_t  mask_state; bool mask_hold, mask_slow, single_done, il, busy_req, fail;
     fft_axes_t axes;                    /* the spectrum on screen (on: one is drawn) */
+    scope_cursor_axes_t caxes;          /* the time view on screen */
 } st_t;
 
 typedef struct {
@@ -629,6 +662,9 @@ typedef struct {
 
 static unsigned rnd_s = 2463534242u;
 #define O_LEVEL_SPREAD  600     /* random level lines: +-60 dB, in tenths */
+#define O_TICKS_SPREAD  4000000u  /* random Y-T times: +-2 ms, a column or two at the slowest code */
+#define O_ROLL_SPREAD   300000u   /* random roll times: back to 300 s, past the FIFO at 800 ms */
+#define O_UV_SPREAD     40000000u /* random levels: +-20 V */
 static unsigned rnd(unsigned n) { rnd_s ^= rnd_s << 13; rnd_s ^= rnd_s >> 17; rnd_s ^= rnd_s << 5; return rnd_s % n; }
 
 static void st_random(st_t *s)
@@ -653,10 +689,15 @@ static void st_random(st_t *s)
     s->ss.cursor.mode = (cursor_mode_t)rnd(4);
     s->ss.cursor.active = s->ss.cursor.mode == CURSOR_HORIZONTAL ? (cursor_sel_t)(2 + rnd(2))
                         : s->ss.cursor.mode == CURSOR_BOTH ? (cursor_sel_t)rnd(4) : (cursor_sel_t)rnd(2);
-    s->ss.cursor.v1_x = rnd(6) == 0 ? (rnd(2) ? 0 : 319) : (uint16_t)rnd(320);
-    s->ss.cursor.v2_x = (uint16_t)rnd(320);
-    s->ss.cursor.h1_y = rnd(6) == 0 ? (rnd(2) ? 18 : 224) : (uint16_t)(18 + rnd(207));
-    s->ss.cursor.h2_y = (uint16_t)(18 + rnd(207));
+    /* the time cursors anywhere in their ranges, mostly near the plot (a
+     * line off it, on its edge or one press from it, the ends of the ranges) */
+    for (int i = 0; i < 2; i++) {
+        s->ss.cursor.t_tick[i]   = rnd(6) == 0 ? (rnd(2) ? -SCOPE_CURSOR_TIME_MAX : SCOPE_CURSOR_TIME_MAX)
+                                               : (int32_t)rnd(O_TICKS_SPREAD) - (int32_t)(O_TICKS_SPREAD / 2u);
+        s->ss.cursor.roll_ms[i]  = rnd(6) == 0 ? SCOPE_CURSOR_ROLL_MIN_MS : -(int32_t)rnd(O_ROLL_SPREAD);
+        s->ss.cursor.level_uv[i] = rnd(6) == 0 ? (rnd(2) ? -SCOPE_CURSOR_LEVEL_MAX : SCOPE_CURSOR_LEVEL_MAX)
+                                               : (int32_t)rnd(O_UV_SPREAD) - (int32_t)(O_UV_SPREAD / 2u);
+    }
     s->ach = (uint8_t)rnd(2);
     s->view = rnd(3) == 0 ? (uint8_t)(1 + rnd(4)) : (uint8_t)SCOPE_VIEW_TIME;
     if (s->view != SCOPE_VIEW_TIME) s->ss.roll = false;
@@ -681,6 +722,22 @@ static void st_random(st_t *s)
     s->axes.height = heights[rnd(3)];
     s->axes.ref_db = refs[rnd(3)];
     s->axes.range_db = ranges[rnd(5)];
+    /* the time view: a column of a few codes, any trigger column; a level
+     * band true-scale or fitted, or none (the active channel not drawn) */
+    static const uint32_t per_col[] = { 1u, 20u, 2000u, 5000000u };
+    static const uint32_t roll_ms[] = { 2u, 40u, 800u };
+    memset(&s->caxes, 0, sizeof s->caxes);
+    s->caxes.per_col = s->ss.roll ? roll_ms[rnd(3)] : per_col[rnd(4)];
+    s->caxes.ref_col = s->ss.roll ? (int32_t)SCOPE_GEOM_COLS - 1 : (int32_t)rnd(SCOPE_GEOM_COLS);
+    s->caxes.cols = (int16_t)SCOPE_GEOM_COLS;
+    s->caxes.level_ok = rnd(4) != 0;
+    s->caxes.channel = (uint8_t)(s->ach + 1u);
+    if (rnd(2)) yt_vmap_true(&s->caxes.map, 18, 224, 122, 26, (int8_t)s->ach, 100, 25.0f);
+    else        yt_vmap_autofit(&s->caxes.map, (uint8_t)rnd(128), (uint8_t)(128 + rnd(128)), 18, 200);
+    s->caxes.zero_code = (float)rnd(228);
+    s->caxes.volts_per_code = rnd(2) ? 0.04f : 0.4f;
+    s->caxes.row_top = s->caxes.map.y_top;
+    s->caxes.row_end = 200;
 }
 
 static void st_load(const st_t *s)
@@ -692,6 +749,7 @@ static void st_load(const st_t *s)
     t_mask_state = s->mask_state; t_mask_hold = s->mask_hold; t_mask_slow = s->mask_slow;
     t_single_done = s->single_done; t_il = s->il; t_busy_req = s->busy_req; t_fail = s->fail;
     g_axes = s->axes;
+    g_caxes = s->caxes;
     o_tol_pending_seq = 0;
     g_popup[0] = '\0'; env_notes = 0;
     env_log_clear();
@@ -875,17 +933,44 @@ static void test_key_table(void)
     CHECK("UP with CH2 active: ch2.vdiv, not ch1's",
           env_key(BTN_UP) == SCR_DRAW_FULL && G(P(CH2_VDIV)) == 6 && G(P(CH1_VDIV)) == 3 && env_log_is("vdiv(1,6);"));
 
-    /* cursors: each line is a property; the selection is one */
+    /* cursors: each line is a property in its unit; the selection is one.
+     * The plot: 20 ticks a column, the trigger at 150; a true-scale band of
+     * 25 codes a 26-row division at 40 mV a code, 0 V on the centre line. */
     boot();
+    memset(&g_caxes, 0, sizeof g_caxes);
+    g_caxes.per_col = 20u;
+    g_caxes.ref_col = 150;
+    g_caxes.cols = (int16_t)SCOPE_GEOM_COLS;
+    g_caxes.level_ok = true;
+    g_caxes.channel = 1u;
+    yt_vmap_true(&g_caxes.map, 18, 224, 122, 26, 0, 100, 25.0f);
+    g_caxes.zero_code = 100.0f;
+    g_caxes.volts_per_code = 0.04f;
+    g_caxes.row_top = 18;
+    g_caxes.row_end = 200;
     (void)prop_set_local(P(VIEW_CURSOR), CURSOR_BOTH, ORIGIN_SHELL, NULL);
+    CHECK("view.cursor on: the lines at a third and two thirds (columns 100 and 200, rows 78 and 139)",
+          G(P(VIEW_CURT1)) == -1000 && G(P(VIEW_CURT2)) == 1000 &&
+          G(P(VIEW_CURY1)) == 1692308 && G(P(VIEW_CURY2)) == -653846);
     scope_key_focus = KF_CURSOR; env_log_clear();
-    CHECK("UP (cursor): view.curv1 -4, one live frame, no repaint command",
-          env_key(BTN_UP) == SCR_HANDLED && G(P(VIEW_CURV1)) == 102 && env_log_is("live;") && g_popup[0] == '\0');
+    CHECK("UP (cursor): view.curt1 4 columns left (-80 ticks), one live frame, no repaint command",
+          env_key(BTN_UP) == SCR_HANDLED && G(P(VIEW_CURT1)) == -1080 && env_log_is("live;") && g_popup[0] == '\0');
     CHECK("RIGHT (cursor): view.cursel v1 -> v2 -> h1 -> h2 -> v1",
           (env_key(BTN_RIGHT), G(P(VIEW_CURSEL)) == CURSOR_SEL_V2) && (env_key(BTN_LEFT), G(P(VIEW_CURSEL)) == CURSOR_SEL_H1) &&
           (env_key(BTN_RIGHT), G(P(VIEW_CURSEL)) == CURSOR_SEL_H2) && (env_key(BTN_RIGHT), G(P(VIEW_CURSEL)) == CURSOR_SEL_V1));
     (void)prop_set_local(P(VIEW_CURSEL), CURSOR_SEL_H2, ORIGIN_SHELL, NULL);
-    CHECK("DOWN with h2 selected: view.curh2 +4", (env_key(BTN_DOWN), G(P(VIEW_CURH2)) == 159) && G(P(VIEW_CURV1)) == 102);
+    CHECK("DOWN with h2 selected: view.cury2 4 rows down (row 143: -21 rows from the centre)",
+          (env_key(BTN_DOWN), G(P(VIEW_CURY2)) == -807692) && G(P(VIEW_CURT1)) == -1080);
+    g_caxes.per_col = 5000000u;
+    CHECK("the time base moves: the line keeps its time, one press is still 4 columns",
+          ((void)prop_set_local(P(VIEW_CURSEL), CURSOR_SEL_V2, ORIGIN_SHELL, NULL), env_key(BTN_DOWN),
+           G(P(VIEW_CURT2)) == 4 * 5000000));
+    g_caxes.per_col = 40u;
+    g_caxes.ref_col = (int32_t)SCOPE_GEOM_COLS - 1;
+    (void)prop_set_local(P(TB_ROLL), 1, ORIGIN_SHELL, NULL);
+    CHECK("roll: its own time pair, a press moves curr2 4 points (160 ms) and leaves curt2",
+          (env_key(BTN_UP), G(P(VIEW_CURR2)) == (200 - 300) * 40 - 4 * 40) && G(P(VIEW_CURT2)) == 4 * 5000000);
+    memset(&g_caxes, 0, sizeof g_caxes);
 
     /* the page: UI state, opened by the screen, painted as a layer */
     boot();
@@ -1337,7 +1422,8 @@ static void test_epochs(void)
         { "view.math", P(VIEW_MATH), 2, true, false },   { "view.persist", P(VIEW_PERSIST), 2, true, false },
         { "view.run", P(VIEW_RUN), 0, true, false },     { "tb.roll", P(TB_ROLL), 1, true, false },
         { "view.mode", P(VIEW_MODE), VIEW_MODE_FFT, true, false },
-        { "view.curv1", P(VIEW_CURV1), 10, false, false }, { "view.curh2", P(VIEW_CURH2), 200, false, false },
+        { "view.curt1", P(VIEW_CURT1), 10, false, false }, { "view.cury2", P(VIEW_CURY2), 200, false, false },
+        { "view.curr1", P(VIEW_CURR1), -10, false, false },
     };
     bool ok = true;
     for (unsigned i = 0; i < sizeof F / sizeof F[0]; i++) {
@@ -1390,7 +1476,8 @@ static void test_direct_route_paint(void)
         { "view.run", P(VIEW_RUN), 0, LAYOUT },
         { "tb.roll", P(TB_ROLL), 1, WHOLE },          { "view.mode fft", P(VIEW_MODE), VIEW_MODE_FFT, WHOLE },
         { "view.mode xy", P(VIEW_MODE), VIEW_MODE_XY, WHOLE },
-        { "view.curv1", P(VIEW_CURV1), 10, CURSOR },  { "view.curh2", P(VIEW_CURH2), 200, CURSOR },
+        { "view.curt1", P(VIEW_CURT1), 10, CURSOR },  { "view.cury2", P(VIEW_CURY2), 200, CURSOR },
+        { "view.curr1", P(VIEW_CURR1), -10, CURSOR },
     };
     bool ok = true;
     for (unsigned i = 0; i < sizeof F / sizeof F[0]; i++) {

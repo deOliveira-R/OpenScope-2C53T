@@ -71,10 +71,27 @@ uint8_t scope_timebase_interp_factor(uint8_t code, bool interleaved)
      * div_ns = 10/20/50/100 and record_ns = 4 (merged) or 8 (0x08030A70);
      * these rows are 1000 / ratio. */
     static const uint8_t merged[4]  = { 10u, 5u, 2u, 1u };
-    static const uint8_t per_adc[4] = { 20u, 10u, 4u, 2u };
+    static const uint8_t per_adc[4] = { SCOPE_TIMEBASE_INTERP_MAX, 10u, 4u, 2u };
     if (code >= 4u)
         return 1u;
     return interleaved ? merged[code] : per_adc[code];
+}
+
+_Static_assert(SCOPE_TIMEBASE_TICK_HZ % FPGA_CORE_RATE50_HZ == 0u, "the 50 MS/s sample must be whole ticks");
+
+uint32_t scope_timebase_sample_ticks(uint8_t code, bool interleaved)
+{
+    if (code >= SCOPE_TIMEBASE_CODE_COUNT)
+        return 0u;
+    const uint32_t own = (code == FPGA_CORE_TB_50MS)
+                       ? SCOPE_TIMEBASE_TICK_HZ / FPGA_CORE_RATE50_HZ
+                       : core_divider[code] * SCOPE_TIMEBASE_INTERP_MAX;
+    return interleaved ? own / 2u : own;
+}
+
+uint32_t scope_timebase_column_ticks(uint8_t code, bool interleaved)
+{
+    return scope_timebase_sample_ticks(code, interleaved) / scope_timebase_interp_factor(code, interleaved);
 }
 
 void scope_timebase_view_label(uint8_t code, bool interleaved, char *out, uint32_t n)

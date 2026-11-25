@@ -8,7 +8,7 @@
 #include "scope_ui_parts.h"
 
 /* Sample rate of the record on screen, for everything measured on the record
- * itself (Freq, widths; the cursors use column_rate_for_display instead).
+ * itself (Freq, widths; the cursors use the column's ticks, view_time_axis).
  * The published record's rate (fpga_record_sample_rate, doubled for the
  * two-converter merge) when the record is held or the hardware runs the code
  * the UI shows; the table rate of the selected code otherwise. */
@@ -59,7 +59,7 @@ static uint8_t view_factor(const scope_state_t *ss)
 /* ── The Y-T window's mapping ─────────────────────────────────────────
  * ONE window, yt_cols, built once per frame by view_build() and read by every
  * consumer (full redraw, live frame, trigger marker, math trace, split view;
- * the cursors read the column rate it implies, the mask overlay is gated on
+ * the cursors read the column it implies, the mask overlay is gated on
  * it). Its horizontal mapping comes from one plan (pv_view_plan,
  * dsp/paused_view.c):
  *
@@ -89,8 +89,9 @@ static uint8_t view_factor(const scope_state_t *ss)
  * position enters through the two 0 V codes. Measurements of a held record
  * use the capture's volts/count and 0 V (rec_vpc / rec_zero).
  *
- * Rates: the cursors read the column rate (1000 fs_rec / R); the
- * measurements read the record's own (record_rate_for_display). */
+ * Rates: the cursors read the column (view_time_axis: 1000 fs_rec / R, in
+ * whole ticks); the measurements read the record's own
+ * (record_rate_for_display). */
 
 /* The span of the last build that shows the record, [first, end): all 301
  * columns except on the general path. Zero-initialised on purpose (bss, not
@@ -108,56 +109,53 @@ static struct {
 } g_cap;
 
 
-/* The plan for the current state: returns L (0 = general path), *ratio = R,
- * *fs_rec = the rate R was taken against (both may be NULL). Depends only on
- * the state and the published record, so the cursor shell command and the
- * readouts answer without a draw having run. */
-static uint8_t view_plan(const scope_state_t *ss, uint32_t *ratio, float *fs_rec)
+/* The plan for the current state: returns L (0 = general path), *ratio = R
+ * (may be NULL). R of a held record is taken against its own rate and the
+ * column rate of the code now selected; running, the plan needs no rate.
+ * Depends only on the state and the published record, so the cursor shell
+ * command and the readouts answer without a draw having run. */
+static uint8_t view_plan(const scope_state_t *ss, uint32_t *ratio)
 {
     const bool held = view_held(ss);
     const uint8_t L_code = view_factor(ss);
-    float fr, fc = 0.0f;
+    float fr = 0.0f, fc = 0.0f;
     if (held) {
         fr = fpga_record_sample_rate();
         fc = scope_timebase_sample_rate(ss->timebase_idx) *
              (view_merged(ss) ? 2.0f : 1.0f) * (float)L_code;
-    } else {
-        fr = record_rate_for_display(ss);
     }
-    const uint8_t L = pv_view_plan(held, fr, fc, L_code, ratio);
-    if (fs_rec) *fs_rec = fr;
-    return L;
+    return pv_view_plan(held, fr, fc, L_code, ratio);
 }
 
-/* What one COLUMN is worth for the cursors: 1000 fs_rec / R, which is the
- * record rate x L on the integer window and the selected code's column rate
- * on a re-sampled held record (up to the 100x clamp, PV_RATIO_MIN). Only the
- * column-domain readouts (cursor dt, 1/dt, X) use it; everything measured on
- * the record itself (Freq, the measurement parameters) keeps the record rate,
- * so a zoom can never leak into a measurement. */
+/* What one COLUMN is worth for the cursors, in whole ticks of the finest
+ * column (SCOPE_TIMEBASE_TICK_HZ): running, the selected code's column
+ * (scope_timebase_column_ticks); held, R x the held record's sample, which
+ * is the selected code's column unless R hit its clamp (PV_RATIO_MIN/MAX).
+ * Roll: the point period in ms. Only the cursors use it; everything measured
+ * on the record itself (Freq, the measurement parameters) keeps the record
+ * rate, so a zoom can never leak into a measurement. */
 void view_time_axis(const scope_state_t *ss, view_time_axis_t *ax)
 {
+    ax->roll = ss->roll;
     if (ss->roll) {
         /* One point per column, paced by the MCU's own tick: the period is
          * set, not looked up in a table that could be provisional. */
-        const uint32_t ms = scope_roll_period_ms(ss->roll_step).ms;
-        ax->rate = (sample_rate_t){ ms ? 1000.0f / (float)ms : 0.0f };
+        ax->per_col = scope_roll_period_ms(ss->roll_step).ms;
         ax->conf = SCOPE_CURSOR_RAW;
         ax->ref_col = (int32_t)SCOPE_GEOM_COLS - 1;
         return;
     }
-    ax->rate = (sample_rate_t){ column_rate_for_display(ss) };
+    if (view_held(ss)) {
+        uint32_t r = PV_RATIO_ONE;
+        (void)view_plan(ss, &r);
+        ax->per_col = pv_col_ticks(r, scope_timebase_sample_ticks(fpga_acq_record_rate_idx(),
+                                                                  fpga_acq_record_interleaved()));
+    } else {
+        ax->per_col = scope_timebase_column_ticks(ss->timebase_idx, view_merged(ss));
+    }
     ax->conf = scope_cursor_tb_conf((tb_code_t){ ss->timebase_idx });
     const int16_t ta = g_place.trig_x;
     ax->ref_col = (ta >= 0) ? (int32_t)ta : (int32_t)ss->trig_x;
-}
-
-float column_rate_for_display(const scope_state_t *ss)
-{
-    uint32_t r = PV_RATIO_ONE;
-    float fs = 0.0f;
-    (void)view_plan(ss, &r, &fs);
-    return (r > 0u) ? fs * (float)PV_RATIO_ONE / (float)r : fs;
 }
 
 /* The published record's OWN volts/count and 0 V code (the configuration it
@@ -170,7 +168,7 @@ static bool rec_own_scale(uint8_t ch, float *k, int *z)
     const acq_cfg_t *c = fpga_acq_record_cfg_ptr();
     if (c->mask == 0u || ch > 1u)
         return false;
-    const float pf = (c->probe[ch] == (uint8_t)PROBE_10X) ? 10.0f : 1.0f;
+    const float pf = (c->probe[ch] == (uint8_t)PROBE_10X) ? (float)SCOPE_PROBE_10X_FACTOR : 1.0f;
     *k = scope_cal_mv_per_count((uint8_t)(ch + 1u), c->vdiv[ch]) / 1000.0f * pf;
     *z = scope_measure_zero_for(scope_vpos_active(), c->pos[ch]).v;
     return true;
@@ -250,7 +248,7 @@ int16_t scope_ui_lowest_visible_pos(uint8_t ch)
 uint32_t scope_ui_view_ratio(void)
 {
     uint32_t r = PV_RATIO_ONE;
-    (void)view_plan(scope_state_get(), &r, NULL);
+    (void)view_plan(scope_state_get(), &r);
     return r;
 }
 
@@ -507,7 +505,7 @@ void view_build(const scope_state_t *ss, const volatile uint8_t *b1,
         (ss->trigger.source == TRIG_SRC_CH2 && b2) ? b2 : (b1 ? b1 : b2);
     const int32_t N = (int32_t)FPGA_ADC_BUF_SIZE;
     uint32_t r = PV_RATIO_ONE;
-    const uint8_t L = view_plan(ss, &r, NULL);
+    const uint8_t L = view_plan(ss, &r);
     g_view_first = 0;
     g_view_end = SCOPE_GEOM_COLS;
     if (L != 0u) {
@@ -541,7 +539,7 @@ int16_t scope_ui_trig_x_actual(void) { return g_place.trig_x; }
 /* The plan's L: the integer zoom, 0 on the general held-record path. */
 uint8_t scope_ui_view_factor(void)
 {
-    return view_plan(scope_state_get(), NULL, NULL);
+    return view_plan(scope_state_get(), NULL);
 }
 
 uint8_t scope_ui_trig_anchor(void)   { return g_place.anchor; }
@@ -559,7 +557,7 @@ uint16_t scope_ui_soft_trigger_offset(const volatile uint8_t *src_buf, int16_t *
                                       uint8_t *anchor, bool *exact)
 {
     const scope_state_t *ss = scope_state_get();
-    const uint8_t L = view_plan(ss, NULL, NULL);
+    const uint8_t L = view_plan(ss, NULL);
     scope_placement_t pl = { .trig_x = -1 };
     const uint16_t off = scope_soft_trigger_offset(ss, src_buf, L ? L : 1u, NULL, &pl);
     *trig_x = pl.trig_x;

@@ -55,7 +55,9 @@ PROP(TRIG_HELD,    0x0408, "trig.held",      PT_BOOL, UNIT_NONE, 0, PG_TRIG, INS
 
 /* ── view ──────────────────────────────────────────────────────────────── */
 /* Released: 0x0501 (view.mode while roll was one of its values; its numbers
- * meant other views). */
+ * meant other views); 0x0509..0x050C (view.curv1/curv2/curh1/curh2: the
+ * time cursors as screen columns and rows, now view.curt / curr / cury in
+ * the units of what they mark). */
 PROP(VIEW_MODE,    0x0500, "view.mode",      PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      4,  1,    0, PF_HW|PF_PERSIST,                     lbl_view_mode,         NULL,          view_mode_get,   view_mode_set,   view_mode_store,   "scope_view_select (tb.roll off first in a view that does not take it)")
 PROP(VIEW_PERSIST, 0x0502, "view.persist",   PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      4,  1,    0, PF_HW|PF_SESSION,                     lbl_view_persist,      NULL,          view_persist_get,view_persist_set,view_persist_store,"scope_apply_persist_on/off (shared pool)")
 PROP(VIEW_MATH,    0x0503, "view.math",      PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      8,  1,    0, PF_PERSIST,                           lbl_view_math,         NULL,          view_math_get,   view_math_set,   view_math_store,   "math_enabled + math_op")
@@ -64,14 +66,16 @@ PROP(VIEW_TRUESCALE,0x0505,"view.truescale", PT_BOOL, UNIT_NONE, 0, PG_VIEW, INS
 PROP(VIEW_MEASHIDE,0x0506, "view.meashide",  PT_BOOL, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      1,  1,    0, PF_SESSION|PF_WRAP,                   NULL,                  NULL,          view_mh_get,     view_mh_set,     view_mh_store,     "scope_state prm_hidden")
 PROP(VIEW_RUN,     0x0507, "view.run",       PT_BOOL, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      1,  1,    1, PF_SESSION|PF_WRAP,                   NULL,                  NULL,          view_run_get,    view_run_set,    view_run_store,    "scope_state running")
 PROP(VIEW_CURSEL,  0x0508, "view.cursel",    PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      3,  1,    0, PF_SESSION,                           lbl_view_cursel,       NULL,          view_cursel_get, view_cursel_set, view_cursel_store, "the cursor the arrows move (a line of view.cursor's pair)")
-PROP(VIEW_CURV1,   0x0509, "view.curv1",     PT_INT,  UNIT_PX,   0, PG_VIEW, INST_SCOPE, 0,   0,    319,  4,  106, PF_SESSION,                           NULL,                  NULL,          view_curpos_get, view_curpos_set, view_curpos_store, "time cursor 1, screen column")
-PROP(VIEW_CURV2,   0x050A, "view.curv2",     PT_INT,  UNIT_PX,   0, PG_VIEW, INST_SCOPE, 1,   0,    319,  4,  213, PF_SESSION,                           NULL,                  NULL,          view_curpos_get, view_curpos_set, view_curpos_store, "time cursor 2, screen column")
-PROP(VIEW_CURH1,   0x050B, "view.curh1",     PT_INT,  UNIT_PX,   0, PG_VIEW, INST_SCOPE, 2,  18,    224,  4,   86, PF_SESSION,                           NULL,                  NULL,          view_curpos_get, view_curpos_set, view_curpos_store, "level cursor 1, screen row")
-PROP(VIEW_CURH2,   0x050C, "view.curh2",     PT_INT,  UNIT_PX,   0, PG_VIEW, INST_SCOPE, 3,  18,    224,  4,  155, PF_SESSION,                           NULL,                  NULL,          view_curpos_get, view_curpos_set, view_curpos_store, "level cursor 2, screen row")
 PROP(VIEW_CURF1,   0x050D, "view.curf1",     PT_INT,  UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   1,   2047,  1,  683, PF_SESSION, NULL,       NULL,          view_scurpos_get, view_scurpos_set, view_scurpos_store, "frequency cursor 1 on a spectrum, bin")
 PROP(VIEW_CURF2,   0x050E, "view.curf2",     PT_INT,  UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 1,   1,   2047,  1, 1365, PF_SESSION, NULL,       NULL,          view_scurpos_get, view_scurpos_set, view_scurpos_store, "frequency cursor 2 on a spectrum, bin")
 PROP(VIEW_CURL1,   0x050F, "view.curl1",     PT_INT,  UNIT_NONE, 1, PG_VIEW, INST_SCOPE, 2,  -2000, 2000,  1,  400, PF_SESSION, NULL,   NULL,          view_scurpos_get, view_scurpos_set, view_scurpos_store, "level cursor 1 on a spectrum, dB")
 PROP(VIEW_CURL2,   0x0510, "view.curl2",     PT_INT,  UNIT_NONE, 1, PG_VIEW, INST_SCOPE, 3,  -2000, 2000,  1,  200, PF_SESSION, NULL,   NULL,          view_scurpos_get, view_scurpos_set, view_scurpos_store, "level cursor 2 on a spectrum, dB")
+PROP(VIEW_CURT1,   0x0511, "view.curt1",     PT_INT,  UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0, -1505000000, 1505000000, 1, -1505000000, PF_SESSION, NULL, NULL,  view_curt_get,  view_curt_set,  view_curt_store,  "Y-T time cursor 1: ticks of 0.4 ns from the trigger point")
+PROP(VIEW_CURT2,   0x0512, "view.curt2",     PT_INT,  UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 1, -1505000000, 1505000000, 1, -1505000000, PF_SESSION, NULL, NULL,  view_curt_get,  view_curt_set,  view_curt_store,  "Y-T time cursor 2: ticks of 0.4 ns from the trigger point")
+PROP(VIEW_CURR1,   0x0513, "view.curr1",     PT_INT,  UNIT_MS,   0, PG_VIEW, INST_SCOPE, 0,  -240800,      0,  1,  -240800, PF_SESSION, NULL,     NULL,          view_curr_get,   view_curr_set,   view_curr_store,   "roll time cursor 1: ms back from the newest point")
+PROP(VIEW_CURR2,   0x0514, "view.curr2",     PT_INT,  UNIT_MS,   0, PG_VIEW, INST_SCOPE, 1,  -240800,      0,  1,  -240800, PF_SESSION, NULL,     NULL,          view_curr_get,   view_curr_set,   view_curr_store,   "roll time cursor 2: ms back from the newest point")
+PROP(VIEW_CURY1,   0x0515, "view.cury1",     PT_INT,  UNIT_V,    6, PG_VIEW, INST_SCOPE, 0, -2048000000, 2048000000, 1, -2048000000, PF_SESSION, NULL, NULL,  view_cury_get,  view_cury_set,  view_cury_store,  "level cursor 1: volts at the active channel's probe tip")
+PROP(VIEW_CURY2,   0x0516, "view.cury2",     PT_INT,  UNIT_V,    6, PG_VIEW, INST_SCOPE, 1, -2048000000, 2048000000, 1, -2048000000, PF_SESSION, NULL, NULL,  view_cury_get,  view_cury_set,  view_cury_store,  "level cursor 2: volts at the active channel's probe tip")
 
 /* ── gen ───────────────────────────────────────────────────────────────── */
 PROP(GEN_WAVE,     0x0601, "gen.wave",       PT_ENUM, UNIT_NONE, 0, PG_GEN,  INST_GEN,   0,   0,     12,  1,    0, PF_HW|PF_PERSIST|PF_WRAP,             lbl_gen_wave,          NULL,          gen_wave_get,    gen_wave_set,    gen_wave_store,    "siggen_set_waveform")

@@ -7,67 +7,36 @@
 #include "scope_ui_parts.h"
 #include "canvas.h"
 
-/* The pane the time view last drew its cursors in (cursor_layer_build):
- * the cursor state keeps its horizontal lines as rows of the full plot, and
- * the lines and the readout put them on this pane's graticule. Before the
- * first frame, the full plot. */
-static plot_pane_t s_cur_pane;
-static bool        s_cur_pane_set;
-
-static const plot_pane_t *cursor_pane(void)
+/* The time axis from the state and the record (view_time_axis: no draw
+ * needed), the active channel's band as the last frame drew it. */
+void scope_ui_cursor_axes(scope_cursor_axes_t *ax)
 {
-    if (!s_cur_pane_set) {
-        s_cur_pane = scope_pane_full(scope_state_get());
-        s_cur_pane_set = true;
-    }
-    return &s_cur_pane;
+    const scope_state_t *ss = scope_state_get();
+    view_time_axis_t ta;
+    view_time_axis(ss, &ta);
+    memset(ax, 0, sizeof(*ax));
+    ax->roll    = ta.roll;
+    ax->per_col = ta.per_col;
+    ax->ref_col = ta.ref_col;
+    ax->t_conf  = ta.conf;
+    ax->cols    = (int16_t)SCOPE_GEOM_COLS;
+    const uint8_t ch = active_channel ? 1u : 0u;
+    const vband_t *b = &g_vband[ch];
+    ax->channel  = (uint8_t)(ch + 1u);
+    ax->level_ok = b->on;
+    if (!b->on) return;
+    ax->map            = b->map;
+    ax->zero_code      = b->zero_code;
+    ax->volts_per_code = b->volts_per_code;
+    ax->v_conf         = b->conf;
+    ax->row_top        = b->map.y_top;
+    ax->row_end        = b->row_end;
 }
 
-/* Cursor row y (a row of the full plot, as the cursor state keeps it) on
- * the pane the cursors are drawn in. */
-static int16_t cursor_row(const plot_pane_t *p, uint16_t y)
+/* The time pair the source on the screen keeps: roll's or Y-T's. */
+static const int32_t *time_pair(const cursor_state_t *c, const scope_cursor_axes_t *ax)
 {
-    const plot_pane_t full = scope_pane_full(scope_state_get());
-    return plot_pane_row_to(&full, p, (int)y);
-}
-
-/* The vertical transform for cursor rows y_a and y_b, as the renderer last
- * drew it: the math trace's scale while math is on, otherwise the band that
- * contains BOTH rows (g_vband). counts_per_pixel 0 when there is none, so a
- * delta that straddles two differently-scaled bands stays in pixels. */
-static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
-{
-    scope_cursor_vmap_t vm;
-    memset(&vm, 0, sizeof(vm));
-    if (math_enabled && g_math_cur.on) {
-        /* Volts (or counts) on the math scale about the graticule centre;
-         * any other math unit leaves counts_per_pixel 0 -> pixels. */
-        vm.channel   = 0u;                 /* named "m" by cursor_readout */
-        vm.mid_known = 1u;
-        vm.mid_row   = cursor_pane()->grid_mid;
-        vm.direct         = g_math_cur.direct;
-        vm.direct_conf    = g_math_cur.conf;
-        vm.unit_per_pixel = g_math_cur.unit_per_px;
-        return vm;
-    }
-    /* Overlaid true-scale bands both contain the cursors: the active
-     * channel's is tried first. */
-    const uint8_t first = (g_vband[1].on &&
-                           g_vband[1].channel == (active_channel ? 2u : 1u)) ? 1u : 0u;
-    for (uint8_t k = 0u; k < 2u; k++) {
-        const vband_t *b = &g_vband[k ^ first];
-        if (!b->on) continue;
-        if ((int16_t)y_a < b->y_top || (int16_t)y_a > b->y_bot) continue;
-        if ((int16_t)y_b < b->y_top || (int16_t)y_b > b->y_bot) continue;
-        vm.counts_per_pixel = b->counts_per_pixel;
-        vm.channel          = b->channel;
-        vm.range_idx        = b->range_idx;
-        vm.mid_known        = b->mid_known ? 1u : 0u;
-        vm.mid_row          = b->mid_row;
-        vm.mid_counts       = b->mid_counts;
-        break;
-    }
-    return vm;
+    return ax->roll ? c->roll_ms : c->t_tick;
 }
 
 /* Shell/bench view of the cursors (`fpga scope cursor`): X1 X2 X1-X2 Y1 Y2
@@ -76,34 +45,25 @@ static scope_cursor_vmap_t cursor_vmap_for(uint16_t y_a, uint16_t y_b)
 void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
                             char y1[16], char y2[16], char dy[16], float *fs_out)
 {
-    const scope_state_t *ss = scope_state_get();
-    const cursor_state_t *c = &ss->cursor;
-    view_time_axis_t ax;
-    view_time_axis(ss, &ax);
-    const sample_rate_t fs = ax.rate;               /* columns, not samples */
-    const scope_cursor_conf_t cf = ax.conf;
-    const int32_t ref = ax.ref_col;
+    const cursor_state_t *c = &scope_state_get()->cursor;
+    scope_cursor_axes_t ax;
+    scope_ui_cursor_axes(&ax);
+    const int32_t *t = time_pair(c, &ax);
+    const microvolts_t l1 = { c->level_uv[0] }, l2 = { c->level_uv[1] };
     /* The readouts carry stock's labels (X1-X2, Y1-Y2), so they are FIRST
-     * minus SECOND: the on-screen dt/dV are second minus first (v2-v1, and
-     * h1-h2 rows = Y2-Y1) and read with the opposite sign. */
+     * minus SECOND: the on-screen dt/dV are second minus first and read
+     * with the opposite sign. */
     const cursor_order_t ord = CUR_FIRST_MINUS_SECOND;
     scope_cursor_reading_t r;
 
-    r = scope_cursor_x_fs(fs, cf, c->v1_x, ref);      scope_cursor_format(&r, x1, 16);
-    r = scope_cursor_x_fs(fs, cf, c->v2_x, ref);      scope_cursor_format(&r, x2, 16);
-    r = scope_cursor_delta_t_fs(fs, cf, c->v1_x, c->v2_x, ord);
-    scope_cursor_format(&r, dx, 16);
-    r = scope_cursor_one_over_dt_fs(fs, cf, c->v1_x, c->v2_x, ord);
-    scope_cursor_format(&r, ix, 16);
-
-    const uint16_t h1 = (uint16_t)cursor_row(cursor_pane(), c->h1_y);
-    const uint16_t h2 = (uint16_t)cursor_row(cursor_pane(), c->h2_y);
-    scope_cursor_vmap_t vm = cursor_vmap_for(h1, h2);
-    r = scope_cursor_y(&vm, h1);                      scope_cursor_format(&r, y1, 16);
-    r = scope_cursor_y(&vm, h2);                      scope_cursor_format(&r, y2, 16);
-    r = scope_cursor_delta_v(&vm, h1, h2, ord);       /* Y1-Y2 */
-    scope_cursor_format(&r, dy, 16);
-    if (fs_out) *fs_out = fs.hz;
+    r = scope_cursor_x(&ax, t[0]);                  scope_cursor_format(&r, x1, 16);
+    r = scope_cursor_x(&ax, t[1]);                  scope_cursor_format(&r, x2, 16);
+    r = scope_cursor_dt(&ax, t[0], t[1], ord);      scope_cursor_format(&r, dx, 16);
+    r = scope_cursor_inv_dt(&ax, t[0], t[1], ord);  scope_cursor_format(&r, ix, 16);
+    r = scope_cursor_y(&ax, l1);                    scope_cursor_format(&r, y1, 16);
+    r = scope_cursor_y(&ax, l2);                    scope_cursor_format(&r, y2, 16);
+    r = scope_cursor_dv(&ax, l1, l2, ord);          scope_cursor_format(&r, dy, 16);
+    if (fs_out) *fs_out = scope_cursor_col_rate(&ax);
 }
 
 /* The line of a cursor that is not selected is dashed: CURSOR_DASH_LEN
@@ -167,17 +127,23 @@ static void cursor_layer_lines(const cursor_state_t *c, const int16_t vx[2], con
     }
 }
 
-/* The cursor layer of the time views in pane p: the vertical lines on the
- * columns the cursor state has, the horizontal ones at the same place on
- * the pane's graticule as on the full plot's. p becomes the pane the readout
- * converts with. */
+/* The cursor layer of the time views in pane p: each line where its time
+ * falls on the time axis of the source on the screen, and where its level
+ * falls on the active channel's band as drawn this frame (vband_note, before
+ * this). A line off the plot, or with no conversion, is not drawn. */
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p, cur_layer_t *L)
 {
-    s_cur_pane = *p;
-    s_cur_pane_set = true;
     const cursor_state_t *c = &ss->cursor;
-    const int16_t vx[2] = { (int16_t)c->v1_x, (int16_t)c->v2_x };
-    const int16_t hy[2] = { cursor_row(p, c->h1_y), cursor_row(p, c->h2_y) };
+    scope_cursor_axes_t ax;
+    scope_ui_cursor_axes(&ax);
+    const int32_t *t = time_pair(c, &ax);
+    int16_t vx[2] = { -1, -1 }, hy[2] = { -1, -1 };
+    for (uint8_t i = 0; i < 2u; i++) {
+        int32_t px;
+        const cursor_sel_t sv = i ? CURSOR_SEL_V2 : CURSOR_SEL_V1, sh = i ? CURSOR_SEL_H2 : CURSOR_SEL_H1;
+        if (scope_cursor_px(&ax, sv, t[i], &px) && scope_cursor_on_plot(&ax, sv, px)) vx[i] = (int16_t)px;
+        if (scope_cursor_px(&ax, sh, c->level_uv[i], &px) && scope_cursor_on_plot(&ax, sh, px)) hy[i] = (int16_t)px;
+    }
     cursor_layer_lines(c, vx, hy, p->top, th, L);
 }
 
@@ -244,13 +210,10 @@ void cursor_layer_paint(const cur_layer_t *L, uint16_t x, const canvas_strip_t *
  * dV, as the mode has them. It is shown on one line in the measurement
  * strip's AUX row (cursor_row_paint), off the trace and off the badges.
  *
- * Nothing here converts anything itself. The pixel deltas are turned into
- * real units by scope_cursor.c, which reads the SAME measured tables the
- * status bar and the measurement badges read (scope_timebase.c for the rate,
- * scope_cal.c for the gain) and refuses to name a unit without an entry.
- *   horizontal: dx columns at the column rate (record rate x zoom);
- *   vertical:   the counts per row the renderer recorded for the band that
- *               holds both cursors (vband_note), or the math trace's scale.
+ * Straight from the stored lines (scope_cursor.c): the times are exact in
+ * ticks or ms, the levels in microvolts of the active channel; no pixel
+ * enters. dV names the channel its levels belong to, and reads "--" while
+ * that channel's band has no volts to put them on.
  */
 static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
 {
@@ -259,37 +222,28 @@ static void cursor_readout(const scope_state_t *ss, char *out, size_t n)
     size_t k = 0;
     out[0] = '\0';
     if (c->mode == CURSOR_OFF) return;
+    scope_cursor_axes_t ax;
+    scope_ui_cursor_axes(&ax);
     k += (size_t)snprintf(out + k, n - k, "%s",
                           c->mode == CURSOR_VERTICAL ? "CUR:T" :
                           c->mode == CURSOR_HORIZONTAL ? "CUR:V" : "CUR:TV");
     if (k < n && (c->mode == CURSOR_VERTICAL || c->mode == CURSOR_BOTH)) {
-        view_time_axis_t ax;
-        view_time_axis(ss, &ax);
-        const sample_rate_t cfs = ax.rate;
-        const scope_cursor_conf_t cconf = ax.conf;
-        scope_cursor_reading_t r = scope_cursor_delta_t_fs(cfs, cconf, c->v1_x, c->v2_x,
-                                                           CUR_SECOND_MINUS_FIRST);
+        const int32_t *t = time_pair(c, &ax);
+        scope_cursor_reading_t r = scope_cursor_dt(&ax, t[0], t[1], CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&r, buf, sizeof(buf));
         k += (size_t)snprintf(out + k, n - k, "  dt=%s", buf);
         if (k < n) {
-            r = scope_cursor_one_over_dt_fs(cfs, cconf, c->v1_x, c->v2_x,
-                                            CUR_SECOND_MINUS_FIRST);
+            r = scope_cursor_inv_dt(&ax, t[0], t[1], CUR_SECOND_MINUS_FIRST);
             scope_cursor_format(&r, buf, sizeof(buf));
             k += (size_t)snprintf(out + k, n - k, "  1/dt=%s", buf);
         }
     }
     if (k < n && (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH)) {
-        /* Second minus first, as dt; screen y grows downward. A delta that
-         * straddles two differently-scaled bands stays in pixels. */
-        const uint16_t h1 = (uint16_t)cursor_row(cursor_pane(), c->h1_y);
-        const uint16_t h2 = (uint16_t)cursor_row(cursor_pane(), c->h2_y);
-        scope_cursor_vmap_t vm = cursor_vmap_for(h1, h2);
-        scope_cursor_reading_t dv = scope_cursor_delta_v(&vm, h1, h2, CUR_SECOND_MINUS_FIRST);
+        const microvolts_t l1 = { c->level_uv[0] }, l2 = { c->level_uv[1] };
+        const scope_cursor_reading_t dv = scope_cursor_dv(&ax, l1, l2, CUR_SECOND_MINUS_FIRST);
         scope_cursor_format(&dv, buf, sizeof(buf));
-        if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS && vm.direct != SCOPE_CURSOR_DIRECT_NONE)
-            (void)snprintf(out + k, n - k, "  dVm=%s", buf);
-        else if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS)
-            (void)snprintf(out + k, n - k, "  dV%u=%s", vm.channel, buf);
+        if (dv.unit == SCOPE_CURSOR_UNIT_VOLTS)
+            (void)snprintf(out + k, n - k, "  dV%u=%s", ax.channel, buf);
         else
             (void)snprintf(out + k, n - k, "  dV=%s", buf);
     }

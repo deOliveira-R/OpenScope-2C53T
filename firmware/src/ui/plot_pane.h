@@ -48,12 +48,4 @@ static inline plot_pane_t plot_pane_make(canvas_id_t canvas, int16_t top, int16_
     };
 }
 
-/* Row `row` of pane `from` at the same place on pane `to`'s graticule (in
- * divisions from the top). The identity when the two have the same top and
- * division. */
-static inline int16_t plot_pane_row_to(const plot_pane_t *from, const plot_pane_t *to, int row)
-{
-    return (int16_t)(to->top + ((row - from->top) * to->div_px) / from->div_px);
-}
-
 #endif /* PLOT_PANE_H */

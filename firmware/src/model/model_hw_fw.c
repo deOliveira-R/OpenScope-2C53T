@@ -238,6 +238,7 @@ static bool op_trigger_level(int16_t level)
 static void op_single_rearm(void)                     { CTX(); fpga_acq_single_rearm(); }
 static bool op_single_done(void)                      { return fpga_acq_single_done(); }
 static void op_paused_latch(void)                     { CTX(); scope_ui_paused_latch(); }
+static void op_cursor_axes(struct scope_cursor_axes *ax) { CTX(); scope_ui_cursor_axes(ax); }
 static uint8_t op_trigger_code(void)                  { return fpga_acq_trig_code_get(); }
 
 /* ═══ views and the shared pool (scope_apply.c) ══════════════════════ */
@@ -445,6 +446,7 @@ static const model_hw_ops_t k_fw_ops = {
     .interleave_active = op_interleave_active, .vpos = op_vpos, .timebase = op_timebase,
     .roll = op_roll, .trigger_source = op_trigger_source, .trigger_level = op_trigger_level,
     .single_rearm = op_single_rearm, .single_done = op_single_done, .paused_latch = op_paused_latch,
+    .cursor_axes = op_cursor_axes,
     .trigger_code = op_trigger_code,
     .view_select = op_view_select, .persist_on = op_persist_on, .persist_off = op_persist_off,
     .persist_mode = op_persist_mode, .fft_settings = op_fft_settings,

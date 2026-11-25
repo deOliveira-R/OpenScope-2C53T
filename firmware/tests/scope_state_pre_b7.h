@@ -130,38 +130,6 @@ static inline void scope_cursor_next_sel(void)
     }
 }
 
-static inline void scope_cursor_move(int16_t delta)
-{
-    cursor_state_t *c = &scope_state_get()->cursor;
-    int16_t pos;
-
-    switch (c->active) {
-    case CURSOR_SEL_V1:
-        pos = (int16_t)c->v1_x + delta;
-        if (pos < (int16_t)CURSOR_SCOPE_LEFT) pos = CURSOR_SCOPE_LEFT;
-        if (pos > (int16_t)CURSOR_SCOPE_RIGHT) pos = CURSOR_SCOPE_RIGHT;
-        c->v1_x = (uint16_t)pos;
-        break;
-    case CURSOR_SEL_V2:
-        pos = (int16_t)c->v2_x + delta;
-        if (pos < (int16_t)CURSOR_SCOPE_LEFT) pos = CURSOR_SCOPE_LEFT;
-        if (pos > (int16_t)CURSOR_SCOPE_RIGHT) pos = CURSOR_SCOPE_RIGHT;
-        c->v2_x = (uint16_t)pos;
-        break;
-    case CURSOR_SEL_H1:
-        pos = (int16_t)c->h1_y + delta;
-        if (pos < (int16_t)CURSOR_SCOPE_TOP) pos = CURSOR_SCOPE_TOP;
-        if (pos > (int16_t)CURSOR_SCOPE_BOT) pos = CURSOR_SCOPE_BOT;
-        c->h1_y = (uint16_t)pos;
-        break;
-    case CURSOR_SEL_H2:
-        pos = (int16_t)c->h2_y + delta;
-        if (pos < (int16_t)CURSOR_SCOPE_TOP) pos = CURSOR_SCOPE_TOP;
-        if (pos > (int16_t)CURSOR_SCOPE_BOT) pos = CURSOR_SCOPE_BOT;
-        c->h2_y = (uint16_t)pos;
-        break;
-    }
-}
 
 
 #if defined(__GNUC__)

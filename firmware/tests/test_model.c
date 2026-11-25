@@ -15,6 +15,7 @@
 #include "model.h"
 #include "scope_state.h"
 #include "scope_state_pre_b7.h"
+#include "scope_cursor.h"
 #include "meas_select.h"
 #include "signal_gen.h"
 #include "sys_prefs.h"
@@ -173,11 +174,13 @@ static bool f_shell_persist(void)                { return g_shell_persist; }
 static void f_note(void)                         { g_notes++; }
 static void f_fft_settings(void)                 { logf_("fft_settings;"); }
 
+static void f_cursor_axes(struct scope_cursor_axes *ax);
 static const model_hw_ops_t k_fake = {
     .vdiv = f_vdiv, .coupling = f_coupling, .channel_enables = f_enables, .trigger_source_follow = f_trig_src,
     .interleave_active = f_il_active, .vpos = f_vpos, .timebase = f_timebase, .roll = f_roll,
     .trigger_source = f_trig_src, .trigger_level = f_trig_lvl, .single_rearm = f_rearm,
     .single_done = f_single_done, .paused_latch = f_latch, .trigger_code = f_trig_code,
+    .cursor_axes = f_cursor_axes,
     .mask_state = f_mask_state, .mask_hold = f_mask_hold, .mask_pending = f_mask_tol_pending,
     .mask_tol_pending = f_mask_tol_pending,
     .view_select = f_view, .persist_on = f_pers_on, .persist_off = f_pers_off,
@@ -1089,6 +1092,9 @@ static void test_display_pane(void)
     CHECK(P(VIEW_MODE)->id == 0x0500 && P(VIEW_MODE)->min == 0 && P(VIEW_MODE)->max == OSC_DISP_VIEW_MODES - 1);
     /* 0x0501 was view.mode while roll was one of its values: released, never reused */
     CHECK(prop_by_id(0x0501) == NULL && prop_find("roll") == NULL);
+    /* 0x0509..0x050C were the time cursors in screen pixels: released, never reused */
+    for (uint16_t id = 0x0509; id <= 0x050C; id++) CHECK(prop_by_id(id) == NULL);
+    CHECK(prop_find("view.curv1") == NULL && prop_find("view.curh2") == NULL);
     CHECK(prop_parse(P(VIEW_MODE), "roll", &(int32_t){ 0 }) != PS_OK);
     unsigned seen = 0;
     for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
@@ -1336,41 +1342,91 @@ static void test_selfcal_origin(void)
     CHECK(prop_set_local(P(CH1_VDIV), 2, ORIGIN_AUTO, &n) == PS_NOT_SET && ss->ch1.vdiv_idx == 7);
 }
 
+/* The plot the cursor lines are put on (the display's, scope_cursor_draw.c):
+ * Y-T 20 ticks a column with the trigger at 150, roll 40 ms a column, a
+ * true-scale band of 25 codes a 26-row division at 40 mV a code. */
+static scope_cursor_axes_t g_caxes_level;
+static void f_cursor_axes(struct scope_cursor_axes *ax)
+{
+    *ax = g_caxes_level;
+    ax->roll = scope_state_get()->roll;
+    ax->per_col = ax->roll ? 40u : 20u;
+    ax->ref_col = ax->roll ? (int32_t)SCOPE_GEOM_COLS - 1 : 150;
+    ax->cols = (int16_t)SCOPE_GEOM_COLS;
+}
+
 static void test_cursor_props(void)
 {
     cursor_state_t *c = &scope_state_get()->cursor;
     prop_note_t n;
     fresh();
-    /* the built-in defaults are scope_state_init()'s */
+    memset(&g_caxes_level, 0, sizeof g_caxes_level);
+    g_caxes_level.level_ok = true;
+    g_caxes_level.channel = 1u;
+    yt_vmap_true(&g_caxes_level.map, 18, 224, 122, 26, 0, 100, 25.0f);
+    g_caxes_level.zero_code = 100.0f;
+    g_caxes_level.volts_per_code = 0.04f;
+    g_caxes_level.row_top = 18;
+    g_caxes_level.row_end = 200;
+    /* the built-in defaults are scope_state_init()'s: each line at the low
+     * end of its range */
     scope_state_t ref;
     scope_state_init(&ref);
-    CHECK(prop_default(P(VIEW_CURV1)) == ref.cursor.v1_x && prop_default(P(VIEW_CURV2)) == ref.cursor.v2_x);
-    CHECK(prop_default(P(VIEW_CURH1)) == ref.cursor.h1_y && prop_default(P(VIEW_CURH2)) == ref.cursor.h2_y);
-    CHECK(prop_get(P(VIEW_CURV1)) == c->v1_x && prop_get(P(VIEW_CURH2)) == c->h2_y);
-    /* each property is its own line; a step is 4 px and saturates like
-     * scope_cursor_move() */
-    static const struct { const prop_desc_t *p; cursor_sel_t sel; int lo, hi; } k[4] = {
-        { P(VIEW_CURV1), CURSOR_SEL_V1, CURSOR_SCOPE_LEFT, CURSOR_SCOPE_RIGHT },
-        { P(VIEW_CURV2), CURSOR_SEL_V2, CURSOR_SCOPE_LEFT, CURSOR_SCOPE_RIGHT },
-        { P(VIEW_CURH1), CURSOR_SEL_H1, CURSOR_SCOPE_TOP,  CURSOR_SCOPE_BOT },
-        { P(VIEW_CURH2), CURSOR_SEL_H2, CURSOR_SCOPE_TOP,  CURSOR_SCOPE_BOT },
+    const struct { const prop_desc_t *p; const int32_t *v; int32_t lo, hi; } k[6] = {
+        { P(VIEW_CURT1), &ref.cursor.t_tick[0],   -SCOPE_CURSOR_TIME_MAX,   SCOPE_CURSOR_TIME_MAX },
+        { P(VIEW_CURT2), &ref.cursor.t_tick[1],   -SCOPE_CURSOR_TIME_MAX,   SCOPE_CURSOR_TIME_MAX },
+        { P(VIEW_CURR1), &ref.cursor.roll_ms[0],  SCOPE_CURSOR_ROLL_MIN_MS, 0 },
+        { P(VIEW_CURR2), &ref.cursor.roll_ms[1],  SCOPE_CURSOR_ROLL_MIN_MS, 0 },
+        { P(VIEW_CURY1), &ref.cursor.level_uv[0], -SCOPE_CURSOR_LEVEL_MAX,  SCOPE_CURSOR_LEVEL_MAX },
+        { P(VIEW_CURY2), &ref.cursor.level_uv[1], -SCOPE_CURSOR_LEVEL_MAX,  SCOPE_CURSOR_LEVEL_MAX },
     };
-    for (unsigned i = 0; i < 4; i++) {
-        for (int dir = -1; dir <= 1; dir += 2) {
-            for (int s = 0; s < 120; s++) {
-                scope_state_t was = *scope_state_get();
-                c->mode = CURSOR_BOTH; was.cursor.mode = CURSOR_BOTH;
-                c->active = k[i].sel;  was.cursor.active = k[i].sel;
-                CHECK(prop_step_local(k[i].p, dir, ORIGIN_KEY, &n) == PS_OK);
-                scope_state_t now = *scope_state_get();
-                *scope_state_get() = was;
-                scope_cursor_move((int16_t)(dir * 4));
-                CHECKF(memcmp(scope_state_get(), &now, sizeof now) == 0, "%s dir %d step %d", k[i].p->name, dir, s);
-            }
-            CHECK(prop_get(k[i].p) == (dir < 0 ? k[i].lo : k[i].hi));
-        }
-        CHECK(prop_set_local(k[i].p, 5000, ORIGIN_SHELL, &n) == PS_CLAMPED && prop_get(k[i].p) == k[i].hi);
+    for (unsigned i = 0; i < 6; i++) {
+        CHECKF(prop_default(k[i].p) == *k[i].v && prop_default(k[i].p) == k[i].lo &&
+               k[i].p->min == k[i].lo && k[i].p->max == k[i].hi && (k[i].p->flags & PF_SESSION),
+               "%s: range and default", k[i].p->name);
+        /* the value is the state: get then set is the identity; a shell set
+         * takes any value in range, on the plot or not, and clamps past it */
+        CHECKF(prop_set_local(k[i].p, prop_get(k[i].p), ORIGIN_SHELL, &n) == PS_OK && prop_get(k[i].p) == *k[i].v,
+               "%s: get then set", k[i].p->name);
+        CHECKF(prop_set_local(k[i].p, k[i].hi - 3, ORIGIN_SHELL, &n) == PS_OK && prop_get(k[i].p) == k[i].hi - 3,
+               "%s: any value in range", k[i].p->name);
+        CHECKF(prop_set_local(k[i].p, INT32_MAX, ORIGIN_SHELL, &n) == PS_CLAMPED && prop_get(k[i].p) == k[i].hi,
+               "%s: clamped", k[i].p->name);
     }
+    CHECK(c->t_tick[1] == SCOPE_CURSOR_TIME_MAX && c->roll_ms[0] == 0 && c->level_uv[1] == SCOPE_CURSOR_LEVEL_MAX);
+
+    /* A pair coming onto the screen puts its lines that are off the plot at
+     * a third and two thirds; a line on the plot keeps its place. */
+    fresh();
+    CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_VERTICAL, ORIGIN_SHELL, &n) == PS_OK);
+    CHECK(prop_get(P(VIEW_CURT1)) == (100 - 150) * 20 && prop_get(P(VIEW_CURT2)) == (200 - 150) * 20);
+    CHECK(prop_get(P(VIEW_CURY1)) == -SCOPE_CURSOR_LEVEL_MAX);    /* the level pair is not shown: not placed */
+    CHECK(prop_set_local(P(VIEW_CURT1), 7, ORIGIN_SHELL, &n) == PS_OK &&
+          prop_set_local(P(VIEW_CURT2), SCOPE_CURSOR_TIME_MAX, ORIGIN_SHELL, &n) == PS_OK);
+    CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_BOTH, ORIGIN_SHELL, &n) == PS_OK);
+    /* the time pair was shown already: its lines stay, on the plot or off */
+    CHECK(prop_get(P(VIEW_CURT1)) == 7 && prop_get(P(VIEW_CURT2)) == SCOPE_CURSOR_TIME_MAX);
+    /* rows 18 + 182/3 = 78 and 18 + 2 x 182/3 = 139: 44 and -17 rows from the centre line */
+    CHECKF(prop_get(P(VIEW_CURY1)) == 1692308 && prop_get(P(VIEW_CURY2)) == -653846,
+           "the level pair comes: %ld %ld uV", (long)prop_get(P(VIEW_CURY1)), (long)prop_get(P(VIEW_CURY2)));
+    CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_OFF, ORIGIN_SHELL, &n) == PS_OK &&
+          prop_set_local(P(VIEW_CURSOR), CURSOR_BOTH, ORIGIN_SHELL, &n) == PS_OK);
+    /* off then on: only the line off the plot moves */
+    CHECK(prop_get(P(VIEW_CURT1)) == 7 && prop_get(P(VIEW_CURT2)) == (200 - 150) * 20 &&
+          prop_get(P(VIEW_CURY1)) == 1692308);
+    /* roll keeps its own time pair: entering it with the time pair shown places roll's */
+    CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_SHELL, &n) == PS_OK);
+    CHECKF(prop_get(P(VIEW_CURR1)) == (100 - 300) * 40 && prop_get(P(VIEW_CURR2)) == (200 - 300) * 40 &&
+           prop_get(P(VIEW_CURT1)) == 7, "roll's pair: %ld %ld ms", (long)prop_get(P(VIEW_CURR1)),
+           (long)prop_get(P(VIEW_CURR2)));
+    CHECK(prop_set_local(P(TB_ROLL), 0, ORIGIN_SHELL, &n) == PS_OK && prop_get(P(VIEW_CURT1)) == 7);
+    /* no level on the screen (the active channel's band not drawn): stays */
+    fresh();
+    g_caxes_level.level_ok = false;
+    CHECK(prop_set_local(P(VIEW_CURSOR), CURSOR_HORIZONTAL, ORIGIN_SHELL, &n) == PS_OK &&
+          prop_get(P(VIEW_CURY1)) == -SCOPE_CURSOR_LEVEL_MAX);
+    g_caxes_level.level_ok = true;
+    (void)prop_set_local(P(VIEW_CURSOR), CURSOR_OFF, ORIGIN_SHELL, &n);
     /* the selection must be a line of the pair shown */
     static const struct { cursor_mode_t m; bool ok[4]; } sel[4] = {
         { CURSOR_OFF,        { false, false, false, false } },

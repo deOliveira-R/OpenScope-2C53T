@@ -38,10 +38,6 @@ void scope_ui_plot_clip_set(uint8_t at_limit, uint8_t off_plot)
 uint8_t scope_ui_plot_at_limit(void) { return s_at_limit; }
 uint8_t scope_ui_off_plot(void)      { return s_off_plot; }
 
-/* The cursor state keeps its horizontal lines as rows of this pane. */
-_Static_assert(CURSOR_SCOPE_TOP == SCOPE_TOP && CURSOR_SCOPE_BOT == SCOPE_BOT,
-               "the cursor rows (view.curh) are rows of the full plot");
-
 plot_pane_t scope_pane_full(const scope_state_t *ss)
 {
     return plot_pane_make(CANVAS_PLOT, SCOPE_TOP, SCOPE_BOT, (int16_t)strip_top(ss));

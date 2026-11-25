@@ -135,14 +135,14 @@ typedef struct {
 /* Build the frame: read the sources once and work out everything that does
  * not depend on the column.
  *   1. With a record: the window (view_build), the mask overlay, the maps
- *      (yt_fits) and their scales for the cursor readout (vband_note).
+ *      (yt_fits) and the bands for the cursor lines (vband_note).
  *      Without one: maps off, so the tags and the trigger line fall back to
  *      the pixel convention; the demo picture only if no record has ever
  *      arrived, so a stall in acquisition never shows a made-up waveform.
  *   2. The edge tags, the cursor layer, the math frame, persistence decay
  *      and colours, the trigger line's row.
- * Changes: yt_cols and the view globals, the cursor readout's scales
- * (vband, g_math_cur), the mask overlay, persistence (decay), the latch that
+ * Changes: yt_cols and the view globals, the cursor lines' bands
+ * (g_vband), the mask overlay, persistence (decay), the latch that
  * says a record has been seen. frame: the display's frame counter, the
  * demo's phase. */
 static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
@@ -156,11 +156,6 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     uint16_t roll_n = 0u;
     if (f->roll) roll_n = view_build_roll();
     f->record = f->roll ? roll_n > 0u : (fpga_data_ready() && b1 != NULL && b2 != NULL);
-
-    /* Forget last frame's vertical scales: a band that is not plotted this
-     * frame must leave the cursors reporting pixels, not converting through
-     * the scale of a trace that is no longer on the screen. */
-    vband_clear();
 
     if (f->roll) {
         mask_overlay_off();
@@ -204,11 +199,19 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
         f->zero[1] = (uint8_t)chan_zero_code(ss, 1u);
         yt_fits_none(&f->a1, &f->a2);
     }
-    /* The bands' scales, for the cursor readout. */
-    if (f->record) {
-        uint8_t slot = 0;
-        if (f->a1.on) vband_note(slot++, 1u, ss->ch1.vdiv_idx, &f->a1, yt_vmap_counts_per_px(&f->a1), f->zero[0]);
-        if (f->a2.on) vband_note(slot, 2u, ss->ch2.vdiv_idx, &f->a2, yt_vmap_counts_per_px(&f->a2), f->zero[1]);
+    /* The bands as drawn, for the cursor lines. A true-scale map draws in
+     * the codes of the scale now selected (a held or earlier record is
+     * rescaled to it, pv_vscale) and roll's points are taken at the settings
+     * now in force: their 0 V and volts per code are the channel's now. A fit
+     * of a record draws the record's own codes: its capture's. Each band is
+     * written once a frame, drawn or not (a map that is off), never cleared
+     * first: the keys and the view.cursor setter read it between frames. */
+    for (uint8_t ch = 0; ch < 2u; ch++) {
+        const autofit_t *a = ch ? &f->a2 : &f->a1;
+        const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
+        const bool now = f->roll || a->fx_ch >= 0;
+        vband_note(ch, p, a, now ? (float)chan_zero_code(ss, ch) : (float)f->zero[ch],
+                   now ? scope_cal_volts_per_count((uint8_t)(ch + 1u), r) : rec_vpc(ss, ch), r);
     }
     f->b1 = yt_cols[0];
     f->b2 = yt_cols[1];
@@ -226,8 +229,7 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     cursor_layer_build(ss, th, p, &f->cl);
     f->curs = f->cl.v || f->cl.h;
 
-    /* Math: one row per column, its label as per-pixel text. After
-     * vband_clear, which also forgets the math scale math_prepare sets. */
+    /* Math: one row per column, its label as per-pixel text. */
     f->mth = math_enabled && !f->roll;
     if (f->mth) math_prepare(ss, p, &f->mf);
     f->mlab_w = f->mth ? (int16_t)font_string_width(f->mf.label, &font_small) : 0;

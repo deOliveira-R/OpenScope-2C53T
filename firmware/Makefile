@@ -837,16 +837,16 @@ test-yt-vmap: $(BUILD_DIR)/test_yt_vmap
 	$<
 
 $(BUILD_DIR)/test_scope_cursor: tests/test_scope_cursor.c src/ui/scope_cursor.c src/ui/scope_cursor.h \
-                                src/ui/scope_cal.c src/ui/scope_timebase.c | $(BUILD_DIR)
+                                src/ui/scope_cal.c src/ui/scope_timebase.c src/ui/scope_roll.c \
+                                src/ui/scope_state.c src/ui/yt_vmap.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -Wall -Wextra -Isrc/ui $< \
-		src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c -lm -o $@
+		src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c src/ui/scope_roll.c \
+		src/ui/scope_state.c -lm -o $@
 
-# Cursor delta readouts. The cursor is the one feature whose whole purpose is
-# measurement, and its units used to come from two floats nothing ever updated.
-# The tests assert the two properties that stop that returning: the answer must
-# MOVE with the measured tables (a constant cannot depend on a code or a range),
-# and where there is no calibration there must be no unit. Includes four
-# negative controls, among them the historical constants transcribed verbatim.
+# The time views' cursors: lines kept in ticks, ms and microvolts, put on the
+# plot at the scale on the screen. A line put on a pixel comes back to it at
+# every timebase code, roll period, range, probe and calibration source; one
+# arrow press is CURSOR_STEP_PX pixels at every scale; the readouts.
 .PHONY: test-scope-cursor
 test-scope-cursor: $(BUILD_DIR)/test_scope_cursor
 	$<
@@ -1411,9 +1411,10 @@ test-sys-prefs: $(BUILD_DIR)/test_sys_prefs
 # ratio 1000/L IS scope_geom_fill (one kernel, sinc_interp.c, for both zooms).
 $(BUILD_DIR)/test_paused_view: tests/test_paused_view.c src/dsp/paused_view.c src/dsp/paused_view.h \
                                src/dsp/sinc_interp.c src/dsp/sinc_interp.h \
-                               src/ui/scope_geom.c src/ui/scope_geom.h | $(BUILD_DIR)
+                               src/ui/scope_geom.c src/ui/scope_geom.h \
+                               src/ui/scope_timebase.c src/ui/scope_timebase.h | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O1 -Wall -Wextra -Werror -Isrc/dsp -Isrc/ui $< src/dsp/paused_view.c \
-		src/dsp/sinc_interp.c src/ui/scope_geom.c -lm -o $@
+		src/dsp/sinc_interp.c src/ui/scope_geom.c src/ui/scope_timebase.c -lm -o $@
 
 .PHONY: test-paused-view
 test-paused-view: $(BUILD_DIR)/test_paused_view

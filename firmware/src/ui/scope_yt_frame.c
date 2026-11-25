@@ -9,47 +9,22 @@
 
 #include "scope_ui_parts.h"
 
-/* The vertical transform of each plotted band as drawn this frame, filled by
- * vband_note(); the cursor readout (scope_cursor_draw.c) converts rows with
- * it. Slot 0 is the first band plotted, slot 1 the second. */
+/* Each channel's band as drawn by the last Y-T frame, filled by
+ * vband_note(): the cursor lines (scope_cursor_draw.c) put the level pair on
+ * the active channel's through it. */
 vband_t g_vband[2];
 
-/* The math trace's own scale, as drawn this frame (math_prepare): the
- * cursors read it instead of the channel bands while the math trace is on,
- * since it spans the whole plot over them. */
-g_math_cur_t g_math_cur;
-
-/* Forget every recorded scale, so a band not plotted this frame leaves the
- * cursors reporting pixels. */
-void vband_clear(void)
+void vband_note(uint8_t ch, const plot_pane_t *p, const autofit_t *a, float zero_code,
+                float volts_per_code, uint8_t range_idx)
 {
-    g_vband[0].on = false;
-    g_vband[1].on = false;
-    g_math_cur.on = false;
-}
-
-/* Record in g_vband[slot] the map a band was drawn with: channel 1/2, its
- * range, the map a, the counts one row is worth (0 = nothing plotted) and
- * the channel's 0 V code in the data drawn (the source's, yt_frame_t).
- * True scale anchors the channel's 0 V code to a row, so absolute Y is known
- * (mid_counts = 0 at the ground tag's row); autofit re-anchors every frame
- * and leaves it unknown. */
-void vband_note(uint8_t slot, uint8_t channel, uint8_t range_idx,
-                const autofit_t *a, float counts_per_pixel, uint8_t zero)
-{
-    if (slot > 1u) return;
-    vband_t *b = &g_vband[slot];
-    b->on               = (counts_per_pixel > 0.0f);
-    b->y_top            = a->y_top;
-    b->y_bot            = a->y_bot;
-    b->counts_per_pixel = counts_per_pixel;
-    b->channel          = channel;
-    b->range_idx        = range_idx;
-    b->mid_known        = b->on && a->fx_ch >= 0;
-    b->mid_row          = b->mid_known
-        ? (int16_t)autofit_y_raw(a, zero)
-        : 0;
-    b->mid_counts       = 0.0f;
+    if (ch > 1u) return;
+    vband_t *b = &g_vband[ch];
+    b->on             = a->on;
+    b->map            = *a;
+    b->zero_code      = zero_code;
+    b->volts_per_code = volts_per_code;
+    b->conf           = scope_cursor_cal_conf((uint8_t)(ch + 1u), range_idx);
+    b->row_end        = (a->y_bot < p->band_bot) ? a->y_bot : p->band_bot;
 }
 
 /*
@@ -367,7 +342,7 @@ bool     g_math_live;    /* a record is drawn this frame (yt_cols is its window)
  *   2. the inputs' scales (rec_zero, rec_vpc) and the result's unit;
  *   3. the peak over the window, the 1-2-5 step that fits it, never finer
  *      than the source channel's own division;
- *   4. the cursors' view of that scale (g_math_cur) and the label. */
+ *   4. the label. */
 void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *mf)
 {
     memset(mf, 0, sizeof(*mf));
@@ -419,24 +394,6 @@ void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *m
     if (scale_idx < floor_idx) scale_idx = floor_idx;
     mf->step = math_scale_value(scale_idx);
 
-    /* The cursors' view of this scale: `step` per division of the pane. */
-    g_math_cur.on = true;
-    g_math_cur.direct = (unit == MATH_UNIT_VOLTS)  ? SCOPE_CURSOR_DIRECT_VOLTS
-                      : (unit == MATH_UNIT_COUNTS) ? SCOPE_CURSOR_DIRECT_COUNTS
-                                                   : SCOPE_CURSOR_DIRECT_NONE;
-    g_math_cur.unit_per_px = mf->step / (float)p->div_px;
-    {
-        scope_cursor_conf_t c = SCOPE_CURSOR_MEASURED;
-        if (math_op_uses_a(op)) {
-            scope_cursor_conf_t ca = scope_cursor_cal_conf(1u, ss->ch1.vdiv_idx);
-            if (ca < c) c = ca;
-        }
-        if (math_op_uses_b(op)) {
-            scope_cursor_conf_t cb = scope_cursor_cal_conf(2u, ss->ch2.vdiv_idx);
-            if (cb < c) c = cb;
-        }
-        g_math_cur.conf = c;
-    }
     char sc[16];
     math_scale_label(scale_idx, unit, sc, sizeof(sc));
     snprintf(mf->label, sizeof(mf->label), "M:%s %s", math_channel_name(op), sc);

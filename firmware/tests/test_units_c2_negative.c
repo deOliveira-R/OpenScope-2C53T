@@ -35,9 +35,12 @@ int ok(scope_roll_fifo_t *f, const uint8_t *rec, interleave_corr_t *c, lcd_healt
     scope_roll_fifo_push(f, code, code);
     const volts_t v = scope_roll_point_volts(code, zero, k);
     const ms_t period = scope_roll_period_ms(0);
-    const scope_cursor_reading_t dt =
-        scope_cursor_delta_t_fs(fs, scope_cursor_tb_conf(tb), 10, 20, CUR_SECOND_MINUS_FIRST);
-    return (int)v.v + (int)period.ms + (int)dt.value + (int)ctx.zero_count.v
+    scope_cursor_axes_t ax = { 0 };
+    ax.t_conf = scope_cursor_tb_conf(tb);
+    const microvolts_t l1 = { 1000 }, l2 = { 2000 };
+    const scope_cursor_reading_t dt = scope_cursor_dt(&ax, 10, 20, CUR_SECOND_MINUS_FIRST);
+    const scope_cursor_reading_t dv = scope_cursor_dv(&ax, l1, l2, CUR_SECOND_MINUS_FIRST);
+    return (int)v.v + (int)period.ms + (int)dt.value + (int)dv.value + (int)ctx.zero_count.v
          + scope_roll_trig_hit(f, 0, 0, level, SCOPE_ROLL_EDGE_RISING)
          + trig_edge_anchor(rec, level, 1)
          + interleave_skew_set(c, skew)
@@ -69,14 +72,14 @@ void bad(scope_prm_ctx_t *ctx) { ctx->volts_per_count = 0.01f; }
 volts_t bad(rec_code_t c, rec_code_t z, volts_t v) { return scope_roll_point_volts(c, z, v); }
 #elif CASE == 13  /* the point period used as a bare number of ms */
 uint32_t bad(void) { uint32_t t = scope_roll_period_ms(0); return t; }
-#elif CASE == 14  /* a bare float as the cursor's sample rate */
-scope_cursor_reading_t bad(void) { return scope_cursor_delta_t_fs(1.0e6f, SCOPE_CURSOR_RAW, 0, 10, CUR_SECOND_MINUS_FIRST); }
+#elif CASE == 14  /* a bare int as a cursor level (microvolts_t) */
+scope_cursor_reading_t bad(const scope_cursor_axes_t *ax) { return scope_cursor_y(ax, 1500000); }
 #elif CASE == 15  /* a sample rate where a timebase code is expected */
 scope_cursor_conf_t bad(sample_rate_t fs) { return scope_cursor_tb_conf(fs); }
-#elif CASE == 16  /* the old form: a difference the caller already took, no order */
-scope_cursor_reading_t bad(sample_rate_t fs) { return scope_cursor_delta_t_fs(fs, SCOPE_CURSOR_RAW, 10); }
-#elif CASE == 17  /* the old vertical form: a row difference, no order */
-scope_cursor_reading_t bad(const scope_cursor_vmap_t *m) { return scope_cursor_delta_v(m, 10); }
+#elif CASE == 16  /* a difference the caller already took, no order */
+scope_cursor_reading_t bad(const scope_cursor_axes_t *ax) { return scope_cursor_dt(ax, 10); }
+#elif CASE == 17  /* a level difference the caller already took, no order */
+scope_cursor_reading_t bad(const scope_cursor_axes_t *ax, microvolts_t d) { return scope_cursor_dv(ax, d); }
 #elif CASE == 18  /* a gain x 1e6 as the interleave skew (ppm of a period) */
 int bad(interleave_corr_t *c, gain_e6_t g) { return interleave_skew_set(c, g); }
 #elif CASE == 19  /* a bare int as the interleave skew */

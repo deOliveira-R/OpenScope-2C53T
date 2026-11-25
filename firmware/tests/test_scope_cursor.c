@@ -1,44 +1,34 @@
 /*
- * Host tests for the cursor delta readouts.
+ * Host tests for the time views' cursors (src/ui/scope_cursor.c): lines
+ * kept in the units of what they mark, put on the screen at the scale on it.
  *
- * The cursor is the one feature whose entire purpose is measurement, and
- * until 2026-09-12 its units came from two floats that nothing ever updated:
- * 10 ms across the screen and 8 V down it, seeded once at init. Every dt and
- * dV the instrument printed was a function of the cursor positions alone.
- *
- * So these tests are not about arithmetic. They are about the two properties
- * that stop that happening again:
- *
- *   1. THE ANSWER MUST MOVE WITH THE MEASURED TABLES. Change the timebase
- *      code and dt must change by exactly the ratio scope_timebase.c says;
- *      change the range and dV must change by exactly the ratio scope_cal.c
- *      says. Any implementation carrying its own constant fails this, because
- *      a constant cannot depend on a code or a range.
- *   2. WHERE THERE IS NO CALIBRATION, THERE MUST BE NO UNIT. An unmeasured
- *      timebase code gives samples, an uncalibrated range gives ADC counts,
- *      an unknown vertical transform gives pixels, and 1/dt with no rate
- *      gives "--". Never a plausible number.
- *
- * NEGATIVE CONTROLS are at the bottom and are the point of the file. This
- * project has repeatedly shipped tests that passed on broken code, so each
- * control transcribes the WRONG implementation — the historical constants —
- * and asserts the suite would reject it. A test that only confirms the
- * expected answer has no evidence value here.
+ *   [1] time: at every timebase code, merged or not, and every trigger
+ *       column, a line put on a column comes back to that column (pixel ->
+ *       ticks -> pixel), and stays on its time when the code changes.
+ *   [2] roll: the same at every roll period, in ms back from the newest.
+ *   [3] level: on every channel x range x probe x calibration source, on a
+ *       true-scale map at any 0 V and on fitted bands, a line put on a row
+ *       comes back to that row, inside the property's range; a range with
+ *       no volts has no conversion.
+ *   [4] one arrow press is CURSOR_STEP_PX pixels at every scale; the plot's
+ *       edges hold it; a line off the plot comes to the edge on its side.
+ *   [5] the defaults (a third, two thirds) and the placement of a pair that
+ *       comes onto the screen; the start values are off the plot at every
+ *       scale, so the first showing places them.
+ *   [6] the readout strings, from the stored values.
+ *   [7] the ranges: the named constants and what they rest on.
  */
 
 #include "../src/ui/scope_cursor.h"
 #include "../src/ui/scope_cal.h"
 #include "../src/ui/scope_timebase.h"
+#include "../src/ui/scope_roll.h"
 
 #include <stdio.h>
 #include <string.h>
 #include <math.h>
 
 static int failures = 0;
-
-/* Typed arguments (units.h): a timebase code and a sample rate. */
-#define TB(x) ((tb_code_t){ (uint8_t)(x) })
-#define FS(x) ((sample_rate_t){ (x) })
 
 #define CHECK(cond, ...)                                                      \
     do {                                                                      \
@@ -50,558 +40,344 @@ static int failures = 0;
         }                                                                     \
     } while (0)
 
-/* The codes and ranges the tables call MEASURED, stated here independently of
- * the tables so that retiering a row without revisiting these tests shows up
- * as a failure rather than as a silently weaker test. */
-static const uint8_t measured_codes[]  = { 0x0Eu, 0x0Fu, 0x10u };
-static const uint8_t measured_ranges[] = { 5u, 6u, 7u };
-static const uint8_t provisional_ranges[] = { 4u, 8u, 9u };
+/* The full plot (scope_ui.c): rows 18..223, the graticule's division 26 and
+ * centre 122; the measurement strip from row 200. */
+#define PLOT_TOP     18
+#define PLOT_BOT     224
+#define PLOT_DIV     26
+#define PLOT_GMID    (PLOT_TOP + 4 * PLOT_DIV)
+#define STRIP_TOP    200
+#define CENTRE_CODE  100                  /* record 0 V at position 0, with the calibration page */
+#define FAST_CODE_LAST 3                  /* 0x00-0x03: the only codes the merge runs at */
 
-/* A believable vertical transform: the fixed ("true volts/div") render path
- * maps 256 counts across the 206-px plot. Autofit produces a different number
- * every frame, which is exactly why the renderer reports it rather than this
- * module assuming it. */
-#define FIXED_COUNTS_PER_PIXEL   (256.0f / 206.0f)
-
-static int close_rel(float a, float b, float tol)
+static scope_cursor_axes_t time_axes(bool roll, uint32_t per_col, int32_t ref)
 {
-    const float m = fabsf(b) > 1e-12f ? fabsf(b) : 1.0f;
-    return fabsf(a - b) / m <= tol;
+    scope_cursor_axes_t a;
+    memset(&a, 0, sizeof a);
+    a.roll = roll;
+    a.per_col = per_col;
+    a.ref_col = ref;
+    a.t_conf = roll ? SCOPE_CURSOR_RAW : SCOPE_CURSOR_MEASURED;
+    a.cols = (int16_t)SCOPE_GEOM_COLS;
+    return a;
 }
 
-static scope_cursor_vmap_t vmap(uint8_t ch, uint8_t range, float cpp)
+static scope_cursor_axes_t level_axes(const yt_vmap_t *m, float zero, float vpc, int16_t row_end)
 {
-    scope_cursor_vmap_t m;
-    memset(&m, 0, sizeof m);
-    m.counts_per_pixel = cpp;
-    m.channel = ch;
-    m.range_idx = range;
-    return m;
+    scope_cursor_axes_t a = time_axes(false, 1u, 0);
+    a.level_ok = true;
+    a.channel = 1u;
+    a.map = *m;
+    a.zero_code = zero;
+    a.volts_per_code = vpc;
+    a.v_conf = SCOPE_CURSOR_MEASURED;
+    a.row_top = m->y_top;
+    a.row_end = row_end;
+    return a;
 }
 
-/* ── 1. calibrated axes derive from the tables ───────────────────────── */
-
-static void test_time_comes_from_the_rate_table(void)
+/* Every pixel of the plot for line sel: the value there, back to the pixel. */
+static int round_trips(const scope_cursor_axes_t *a, cursor_sel_t sel, int lo, int hi, int *clamped)
 {
-    for (unsigned i = 0; i < sizeof(measured_codes); i++) {
-        const uint8_t code = measured_codes[i];
-        const float fs = scope_timebase_sample_rate(code);
-
-        CHECK(fs > 0.0f, "code 0x%02X was supposed to be MEASURED", code);
-        CHECK(scope_timebase_get_tier(code) == SCOPE_TB_MEASURED,
-              "code 0x%02X tier changed — update this test with the evidence",
-              code);
-
-        const scope_cursor_reading_t r = scope_cursor_delta_t(TB(code), 100);
-        CHECK(r.unit == SCOPE_CURSOR_UNIT_SECONDS,
-              "code 0x%02X: a measured rate must yield seconds", code);
-        CHECK(r.confidence == SCOPE_CURSOR_MEASURED,
-              "code 0x%02X: confidence must follow the table tier", code);
-        CHECK(close_rel(r.value, 100.0f / fs, 1e-5f),
-              "code 0x%02X: dt %g != 100 samples / %g S/s",
-              code, (double)r.value, (double)fs);
+    int bad = 0;
+    int32_t vlo, vhi;
+    scope_cursor_range(a, sel, &vlo, &vhi);
+    for (int px = lo; px < hi; px++) {
+        int32_t v, back;
+        if (!scope_cursor_at(a, sel, px, &v) || !scope_cursor_px(a, sel, v, &back) || back != px) bad++;
+        if (clamped && (v == vlo || v == vhi)) (*clamped)++;
     }
+    return bad;
 }
 
-static void test_volts_come_from_the_gain_table(void)
+static void test_time(void)
 {
-    for (uint8_t ch = 1; ch <= 2; ch++) {
-        for (unsigned i = 0; i < sizeof(measured_ranges); i++) {
-            const uint8_t rg = measured_ranges[i];
-            const float k = scope_cal_volts_per_count(ch, rg);
-            const scope_cursor_vmap_t m = vmap(ch, rg, FIXED_COUNTS_PER_PIXEL);
+    printf("[1] Y-T time in ticks\n");
+    static const int32_t refs[] = { 0, 1, 150, 299, 300 };
+    int bad = 0, n = 0, moved = 0;
+    for (uint8_t c = 0; c < SCOPE_TIMEBASE_CODE_COUNT; c++)
+        for (int il = 0; il < 2; il++) {
+            if (il && c > FAST_CODE_LAST) continue;
+            for (size_t r = 0; r < sizeof refs / sizeof refs[0]; r++) {
+                const scope_cursor_axes_t a = time_axes(false, scope_timebase_column_ticks(c, il != 0), refs[r]);
+                bad += round_trips(&a, CURSOR_SEL_V1, 0, SCOPE_GEOM_COLS, NULL);
+                n++;
+            }
+            /* a line put on column 200 at this code, viewed at the next: it
+             * keeps its time, and comes back to 200 */
+            if (c + 1u < SCOPE_TIMEBASE_CODE_COUNT) {
+                const scope_cursor_axes_t a = time_axes(false, scope_timebase_column_ticks(c, il != 0), 150);
+                const scope_cursor_axes_t b = time_axes(false, scope_timebase_column_ticks((uint8_t)(c + 1u), false), 150);
+                int32_t t, px, back;
+                (void)scope_cursor_at(&a, CURSOR_SEL_V2, 200, &t);
+                (void)scope_cursor_px(&b, CURSOR_SEL_V2, t, &px);
+                (void)scope_cursor_px(&a, CURSOR_SEL_V2, t, &back);
+                if (back != 200 || t != 50 * (int32_t)a.per_col) bad++;
+                if (px != 200) moved++;
+            }
+        }
+    CHECK(bad == 0, "time: %d of %d axes lose a column (pixel -> ticks -> pixel)", bad, n);
+    CHECK(moved > 0, "a line keeps its time, so its column moves with the timebase");
+    /* held views: columns the ratio clamp makes (test_paused_view [7]) */
+    static const uint32_t held[] = { 2u, 25u, 50u, 2000u, 500000u };
+    bad = 0;
+    for (size_t i = 0; i < sizeof held / sizeof held[0]; i++) {
+        const scope_cursor_axes_t a = time_axes(false, held[i], 137);
+        bad += round_trips(&a, CURSOR_SEL_V2, 0, SCOPE_GEOM_COLS, NULL);
+    }
+    CHECK(bad == 0, "time: held columns keep their pixels too (%d off)", bad);
+    const scope_cursor_axes_t none = time_axes(false, 0u, 150);
+    int32_t v, px;
+    CHECK(!scope_cursor_at(&none, CURSOR_SEL_V1, 10, &v) && !scope_cursor_px(&none, CURSOR_SEL_V1, 0, &px),
+          "no column: no conversion");
+}
 
-            const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 40, 0, CUR_SECOND_MINUS_FIRST);
-            CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS,
-                  "ch%u r%u: a measured gain must yield volts", ch, rg);
-            CHECK(r.confidence == SCOPE_CURSOR_MEASURED,
-                  "ch%u r%u: confidence must follow the table tier", ch, rg);
-            CHECK(close_rel(r.value, 40.0f * FIXED_COUNTS_PER_PIXEL * k, 1e-5f),
-                  "ch%u r%u: dV %g != 40 px * %g cnt/px * %g V/cnt",
-                  ch, rg, (double)r.value,
-                  (double)FIXED_COUNTS_PER_PIXEL, (double)k);
+static void test_roll(void)
+{
+    printf("[2] roll time in ms\n");
+    int bad = 0, outside = 0;
+    for (uint8_t s = 0; s < SCOPE_ROLL_STEPS; s++) {
+        const scope_cursor_axes_t a = time_axes(true, scope_roll_period_ms(s).ms, (int32_t)SCOPE_GEOM_COLS - 1);
+        bad += round_trips(&a, CURSOR_SEL_V1, 0, SCOPE_GEOM_COLS, NULL);
+        int32_t v;
+        (void)scope_cursor_at(&a, CURSOR_SEL_V1, (int32_t)SCOPE_GEOM_COLS - 1, &v);
+        if (v != 0) bad++;
+        (void)scope_cursor_at(&a, CURSOR_SEL_V1, 0, &v);
+        if (v <= SCOPE_CURSOR_ROLL_MIN_MS) outside++;
+    }
+    CHECK(bad == 0, "roll: every period keeps every column, the newest is 0 ms (%d off)", bad);
+    CHECK(outside == 0, "roll: the oldest column is inside the range at every period");
+}
+
+/* A source of probe factors for scope_cal (the channel's probe setting). */
+static float g_probe = 1.0f;
+static float probe_src(uint8_t ch) { (void)ch; return g_probe; }
+
+static void test_level(void)
+{
+    printf("[3] levels in microvolts\n");
+    static const float gains[] = { 0.0f, 0.8f, 1.2533f };     /* compiled table; calpage m 148 and 216 */
+    static const float zeros[] = { 0.0f, 50.0f, 100.0f, 150.0f, 227.0f };
+    static const struct { uint8_t mn, mx; } fits[] = { { 0, 255 }, { 40, 200 }, { 120, 121 }, { 0, 3 } };
+    int bad = 0, clamped = 0, maps = 0, none_ok = 0, none_n = 0;
+    scope_cal_set_probe_source(probe_src);
+    for (size_t g = 0; g < sizeof gains / sizeof gains[0]; g++)
+        for (uint8_t ch = 1; ch <= 2; ch++)
+            for (uint8_t r = 0; r < SCOPE_CAL_RANGE_COUNT; r++)
+                for (int pr = 0; pr < 2; pr++) {
+                    scope_cal_set_stock_gain(1u, gains[g]);
+                    scope_cal_set_stock_gain(2u, gains[g]);
+                    g_probe = pr ? (float)SCOPE_PROBE_10X_FACTOR : 1.0f;
+                    const float vpc = scope_cal_volts_per_count(ch, r);
+                    yt_vmap_t m[1 + sizeof fits / sizeof fits[0] + 1];
+                    int nm = 0;
+                    if (vpc > 0.0f)
+                        yt_vmap_true(&m[nm++], PLOT_TOP, PLOT_BOT, PLOT_GMID, PLOT_DIV, (int8_t)(ch - 1u),
+                                     CENTRE_CODE, scope_cal_codes_per_div(ch, r));
+                    for (size_t f = 0; f < sizeof fits / sizeof fits[0]; f++)
+                        yt_vmap_autofit(&m[nm++], fits[f].mn, fits[f].mx, PLOT_TOP, STRIP_TOP);
+                    yt_vmap_autofit(&m[nm++], 30, 90, (int16_t)(PLOT_TOP + (STRIP_TOP - PLOT_TOP) / 2 + 1), STRIP_TOP);
+                    for (int i = 0; i < nm; i++)
+                        for (size_t z = 0; z < sizeof zeros / sizeof zeros[0]; z++) {
+                            const int16_t end = m[i].y_bot < STRIP_TOP ? m[i].y_bot : STRIP_TOP;
+                            const scope_cursor_axes_t a = level_axes(&m[i], zeros[z], vpc, end);
+                            if (vpc > 0.0f) {
+                                bad += round_trips(&a, CURSOR_SEL_H1, a.row_top, a.row_end, &clamped);
+                                maps++;
+                            } else {
+                                int32_t v;
+                                none_n++;
+                                none_ok += !scope_cursor_at(&a, CURSOR_SEL_H1, a.row_top, &v);
+                            }
+                        }
+                }
+    scope_cal_set_stock_gain(1u, 0.0f);
+    scope_cal_set_stock_gain(2u, 0.0f);
+    g_probe = 1.0f;
+    printf("  %d maps with volts, %d without\n", maps, none_n);
+    CHECK(bad == 0, "level: %d rows of %d maps lose their row (pixel -> uV -> pixel)", bad, maps);
+    CHECK(clamped == 0, "level: every row of every plot is inside +-%ld uV (%d at the end)",
+          (long)SCOPE_CURSOR_LEVEL_MAX, clamped);
+    CHECK(none_n > 0 && none_ok == none_n, "a range with no volts has no conversion (%d of %d)", none_ok, none_n);
+
+    yt_vmap_t t;
+    yt_vmap_true(&t, PLOT_TOP, PLOT_BOT, PLOT_GMID, PLOT_DIV, 0, CENTRE_CODE, 25.0f);
+    const scope_cursor_axes_t a = level_axes(&t, CENTRE_CODE, 0.04f, STRIP_TOP);
+    int32_t v, px;
+    CHECK(scope_cursor_at(&a, CURSOR_SEL_H1, PLOT_GMID, &v) && v == 0, "0 V on the centre line: %ld uV", (long)v);
+    CHECK(scope_cursor_at(&a, CURSOR_SEL_H2, PLOT_GMID - PLOT_DIV, &v) && v == 1000000,
+          "one division up = 25 codes x 40 mV = 1 V: %ld uV", (long)v);
+    CHECK(scope_cursor_px(&a, CURSOR_SEL_H1, -500000, &px) && px == PLOT_GMID + PLOT_DIV / 2,
+          "-0.5 V half a division down: row %ld", (long)px);
+}
+
+static void test_keys(void)
+{
+    printf("[4] one arrow press\n");
+    int bad = 0;
+    for (uint8_t c = 0; c < SCOPE_TIMEBASE_CODE_COUNT; c++) {
+        const scope_cursor_axes_t a = time_axes(false, scope_timebase_column_ticks(c, false), 150);
+        for (int px = 0; px < (int)SCOPE_GEOM_COLS; px += 7) {
+            int32_t v, w, at;
+            (void)scope_cursor_at(&a, CURSOR_SEL_V1, px, &v);
+            for (int dir = -1; dir <= 1; dir += 2) {
+                (void)scope_cursor_key(&a, CURSOR_SEL_V1, v, dir, &w);
+                (void)scope_cursor_px(&a, CURSOR_SEL_V1, w, &at);
+                int want = px + dir * CURSOR_STEP_PX;
+                if (want < 0) want = 0;
+                if (want > (int)SCOPE_GEOM_COLS - 1) want = (int)SCOPE_GEOM_COLS - 1;
+                if (at != want) bad++;
+            }
         }
     }
-}
-
-static void test_the_vertical_transform_is_the_renderers(void)
-{
-    /*
-     * The same cursor separation over the same range must give a different
-     * voltage when the renderer used a different scale — autofit rescales
-     * every frame. An implementation that assumes 256/SCOPE_H passes every
-     * other test in this file and fails this one.
-     */
-    const scope_cursor_vmap_t fixed  = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL);
-    const scope_cursor_vmap_t zoomed = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL / 4.0f);
-
-    const float a = scope_cursor_delta_v(&fixed, 30, 0, CUR_SECOND_MINUS_FIRST).value;
-    const float b = scope_cursor_delta_v(&zoomed, 30, 0, CUR_SECOND_MINUS_FIRST).value;
-
-    CHECK(close_rel(a, b * 4.0f, 1e-5f),
-          "dV must scale with the renderer's counts/pixel: %g vs %g",
-          (double)a, (double)b);
-}
-
-static void test_one_over_dt(void)
-{
-    const uint8_t code = 0x10u;
-    const float fs = scope_timebase_sample_rate(code);
-
-    scope_cursor_reading_t r = scope_cursor_one_over_dt(TB(code), 100);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_HERTZ, "measured code must give Hz");
-    CHECK(close_rel(r.value, fs / 100.0f, 1e-5f),
-          "1/dt %g != %g / 100", (double)r.value, (double)fs);
-
-    /* Sign must not survive into a frequency. */
-    r = scope_cursor_one_over_dt(TB(code), -100);
-    CHECK(r.value > 0.0f, "1/dt must be positive for a negative dx");
-
-    /* No interval => no frequency, and that is arithmetic, not calibration. */
-    r = scope_cursor_one_over_dt(TB(code), 0);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "dx=0 must refuse");
-
-    /* No rate => no Hz either; 1/samples has no unit to fall back to. */
-    r = scope_cursor_one_over_dt(TB(0x15u), 100);     /* past the table: no rate */
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE,
-          "a code with no rate must not produce a frequency");
-}
-
-/* ── 2. refusal where there is no calibration ────────────────────────── */
-
-static void test_unmeasured_timebase_falls_back_to_samples(void)
-{
-    /* Every table code has a measured rate since 2026-11-14 (0x0B/0x0C were
-     * the last two). A code past the table is what has none. */
-    static const uint8_t none_codes[] = { 0x15u, 0xFFu };
-
-    for (unsigned i = 0; i < sizeof(none_codes); i++) {
-        const uint8_t code = none_codes[i];
-        CHECK(scope_timebase_sample_rate(code) == 0.0f,
-              "code 0x%02X was supposed to have no rate", code);
-
-        const scope_cursor_reading_t r = scope_cursor_delta_t(TB(code), 137);
-        CHECK(r.unit == SCOPE_CURSOR_UNIT_SAMPLES,
-              "code 0x%02X must fall back to samples, not seconds", code);
-        CHECK(r.confidence == SCOPE_CURSOR_RAW, "samples are raw, not tiered");
-        CHECK(r.value == 137.0f,
-              "code 0x%02X: the sample count must be exact, got %g",
-              code, (double)r.value);
-
-        char s[16];
-        scope_cursor_format(&r, s, sizeof(s));
-        CHECK(strcmp(s, "137smp") == 0, "expected 137smp, got %s", s);
+    CHECK(bad == 0, "time: UP / DOWN move the line %d columns at every code, held at the edges (%d off)",
+          CURSOR_STEP_PX, bad);
+    yt_vmap_t f;
+    yt_vmap_autofit(&f, 120, 121, PLOT_TOP, STRIP_TOP);
+    const scope_cursor_axes_t l = level_axes(&f, 100.0f, 0.02f, STRIP_TOP);
+    bad = 0;
+    for (int row = l.row_top; row < l.row_end; row++) {
+        int32_t v, w, at;
+        (void)scope_cursor_at(&l, CURSOR_SEL_H2, row, &v);
+        (void)scope_cursor_key(&l, CURSOR_SEL_H2, v, -1, &w);
+        (void)scope_cursor_px(&l, CURSOR_SEL_H2, w, &at);
+        const int want = row - CURSOR_STEP_PX < l.row_top ? l.row_top : row - CURSOR_STEP_PX;
+        if (at != want) bad++;
     }
+    CHECK(bad == 0, "level: UP moves the line %d rows up on a zoomed fit (%d off)", CURSOR_STEP_PX, bad);
+    /* off the plot: to the edge on its side, whatever the direction */
+    const scope_cursor_axes_t a = time_axes(false, 1000u, 150);
+    int32_t w, at;
+    (void)scope_cursor_key(&a, CURSOR_SEL_V1, -1000000, +1, &w);
+    (void)scope_cursor_px(&a, CURSOR_SEL_V1, w, &at);
+    CHECK(at == 0, "a line off the left comes to column 0 first (%ld)", (long)at);
+    (void)scope_cursor_key(&a, CURSOR_SEL_V1, 1000000, -1, &w);
+    (void)scope_cursor_px(&a, CURSOR_SEL_V1, w, &at);
+    CHECK(at == (int32_t)SCOPE_GEOM_COLS - 1, "a line off the right comes to the last column (%ld)", (long)at);
+    (void)scope_cursor_key(&l, CURSOR_SEL_H1, SCOPE_CURSOR_LEVEL_MAX, +1, &w);
+    (void)scope_cursor_px(&l, CURSOR_SEL_H1, w, &at);
+    CHECK(at == l.row_top, "a level above the band comes to its top row (%ld)", (long)at);
+    scope_cursor_axes_t nolevel = l;
+    nolevel.level_ok = false;
+    CHECK(!scope_cursor_key(&nolevel, CURSOR_SEL_H1, 123, -1, &w) && w == 123, "no conversion: the line stays");
 }
 
-static void test_uncalibrated_range_falls_back_to_counts(void)
+static void test_defaults(void)
 {
-    for (uint8_t ch = 1; ch <= 2; ch++) {
-        for (uint8_t rg = 0; rg <= 3; rg++) {
-            CHECK(scope_cal_volts_per_count(ch, rg) == 0.0f,
-                  "ch%u r%u was supposed to be uncalibrated", ch, rg);
+    printf("[5] defaults and placement\n");
+    const scope_cursor_axes_t a = time_axes(false, 20u, 150);
+    int32_t v[2], px;
+    CHECK(scope_cursor_default(&a, CURSOR_SEL_V1, &v[0]) && scope_cursor_px(&a, CURSOR_SEL_V1, v[0], &px) &&
+          px == (int32_t)SCOPE_GEOM_COLS / 3, "V1 starts a third across (%ld)", (long)px);
+    CHECK(scope_cursor_default(&a, CURSOR_SEL_V2, &v[1]) && scope_cursor_px(&a, CURSOR_SEL_V2, v[1], &px) &&
+          px == 2 * (int32_t)SCOPE_GEOM_COLS / 3, "V2 two thirds across (%ld)", (long)px);
+    yt_vmap_t t;
+    yt_vmap_true(&t, PLOT_TOP, PLOT_BOT, PLOT_GMID, PLOT_DIV, 0, CENTRE_CODE, 25.0f);
+    const scope_cursor_axes_t l = level_axes(&t, CENTRE_CODE, 0.04f, STRIP_TOP);
+    CHECK(scope_cursor_default(&l, CURSOR_SEL_H1, &v[0]) && scope_cursor_px(&l, CURSOR_SEL_H1, v[0], &px) &&
+          px == PLOT_TOP + (STRIP_TOP - PLOT_TOP) / 3, "H1 a third down the band (%ld)", (long)px);
+    CHECK(scope_cursor_default(&l, CURSOR_SEL_H2, &v[1]) && scope_cursor_px(&l, CURSOR_SEL_H2, v[1], &px) &&
+          px == PLOT_TOP + 2 * (STRIP_TOP - PLOT_TOP) / 3, "H2 two thirds down (%ld)", (long)px);
 
-            const scope_cursor_vmap_t m = vmap(ch, rg, 1.0f);
-            const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 50, 0, CUR_SECOND_MINUS_FIRST);
+    /* a pair comes on: a line on the plot keeps its place, one off it moves */
+    int32_t pair[2] = { 40 * 20, SCOPE_CURSOR_TIME_MAX };
+    scope_cursor_place(&a, CURSOR_SEL_V1, pair);
+    CHECK(pair[0] == 40 * 20 && scope_cursor_px(&a, CURSOR_SEL_V2, pair[1], &px) &&
+          px == 2 * (int32_t)SCOPE_GEOM_COLS / 3, "placement: V1 stays at its time, V2 comes to its default");
+    scope_cursor_axes_t nolevel = l;
+    nolevel.level_ok = false;
+    int32_t lv[2] = { 7, -SCOPE_CURSOR_LEVEL_MAX };
+    scope_cursor_place(&nolevel, CURSOR_SEL_H1, lv);
+    CHECK(lv[0] == 7 && lv[1] == -SCOPE_CURSOR_LEVEL_MAX, "no conversion: nothing is placed");
 
-            CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS,
-                  "ch%u r%u must fall back to counts, not volts", ch, rg);
-            CHECK(r.confidence == SCOPE_CURSOR_RAW, "counts are raw");
-            CHECK(r.value == 50.0f, "ch%u r%u: counts must be exact", ch, rg);
-
-            char s[16];
-            scope_cursor_format(&r, s, sizeof(s));
-            CHECK(strcmp(s, "50cnt") == 0, "expected 50cnt, got %s", s);
+    /* the start values are off the plot at every scale */
+    scope_state_t s;
+    scope_state_init(&s);
+    int on = 0;
+    for (uint8_t c = 0; c < SCOPE_TIMEBASE_CODE_COUNT; c++)
+        for (int32_t ref = 0; ref < (int32_t)SCOPE_GEOM_COLS; ref += 50) {
+            const scope_cursor_axes_t x = time_axes(false, scope_timebase_column_ticks(c, false), ref);
+            for (int i = 0; i < 2; i++)
+                on += scope_cursor_px(&x, CURSOR_SEL_V1, s.cursor.t_tick[i], &px) && scope_cursor_on_plot(&x, CURSOR_SEL_V1, px);
         }
+    for (uint8_t st = 0; st < SCOPE_ROLL_STEPS; st++) {
+        const scope_cursor_axes_t x = time_axes(true, scope_roll_period_ms(st).ms, (int32_t)SCOPE_GEOM_COLS - 1);
+        for (int i = 0; i < 2; i++)
+            on += scope_cursor_px(&x, CURSOR_SEL_V1, s.cursor.roll_ms[i], &px) && scope_cursor_on_plot(&x, CURSOR_SEL_V1, px);
     }
-}
-
-static void test_unknown_transform_falls_back_to_pixels(void)
-{
-    /* No trace drawn, the demo waveform, or the cursors straddling two
-     * differently-scaled bands. Pixels are the only exact statement. */
-    const scope_cursor_vmap_t none = vmap(1u, 6u, 0.0f);
-    scope_cursor_reading_t r = scope_cursor_delta_v(&none, 20, 0, CUR_SECOND_MINUS_FIRST);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS,
-          "no renderer transform must give pixels, not counts or volts");
-    CHECK(r.value == 20.0f, "pixel delta must be exact");
-
-    r = scope_cursor_delta_v(NULL, 20, 0, CUR_SECOND_MINUS_FIRST);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS, "NULL map must not crash or convert");
-
-    char s[16];
-    scope_cursor_format(&r, s, sizeof(s));
-    CHECK(strcmp(s, "20px") == 0, "expected 20px, got %s", s);
-}
-
-static void test_out_of_domain_channel_does_not_resolve(void)
-{
-    /* scope_cal returns 0.0f for channel 0 and 3 rather than clamping into a
-     * neighbour; the cursor must inherit that refusal, not paper over it. */
-    for (uint8_t ch = 0; ch <= 4; ch += 3) {
-        const scope_cursor_vmap_t m = vmap(ch, 6u, 1.0f);
-        const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 10, 0, CUR_SECOND_MINUS_FIRST);
-        CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS,
-              "channel %u must not resolve to a calibrated channel", ch);
+    for (uint8_t r = 0; r < SCOPE_CAL_RANGE_COUNT; r++) {
+        const float vpc = scope_cal_volts_per_count(1u, r) * (float)SCOPE_PROBE_10X_FACTOR;
+        if (!(vpc > 0.0f)) continue;
+        yt_vmap_t m;
+        yt_vmap_autofit(&m, 0, 255, PLOT_TOP, STRIP_TOP);
+        const scope_cursor_axes_t x = level_axes(&m, 227.0f, vpc, STRIP_TOP);
+        for (int i = 0; i < 2; i++)
+            on += scope_cursor_px(&x, CURSOR_SEL_H1, s.cursor.level_uv[i], &px) && scope_cursor_on_plot(&x, CURSOR_SEL_H1, px);
     }
+    CHECK(on == 0, "the start values are off the plot at every scale (%d on it)", on);
 }
 
-/* ── 3. provisional entries are marked ───────────────────────────────── */
-
-static void test_provisional_ranges_are_marked(void)
+static void expect(const scope_cursor_reading_t r, const char *want)
 {
-    char s[16];
-
-    for (unsigned i = 0; i < sizeof(provisional_ranges); i++) {
-        const uint8_t rg = provisional_ranges[i];
-        CHECK(scope_cal_get_tier(1u, rg) == SCOPE_CAL_PROVISIONAL,
-              "r%u tier changed — update this test with the evidence", rg);
-
-        const scope_cursor_vmap_t m = vmap(1u, rg, FIXED_COUNTS_PER_PIXEL);
-        const scope_cursor_reading_t r = scope_cursor_delta_v(&m, 20, 0, CUR_SECOND_MINUS_FIRST);
-
-        CHECK(r.confidence == SCOPE_CURSOR_PROVISIONAL,
-              "r%u must be reported as provisional", rg);
-        scope_cursor_format(&r, s, sizeof(s));
-        CHECK(s[0] == '~', "r%u must carry the tilde, got %s", rg, s);
-    }
-
-    /* And a MEASURED one must NOT, or the marker says nothing. */
-    const scope_cursor_vmap_t m6 = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL);
-    const scope_cursor_reading_t r6 = scope_cursor_delta_v(&m6, 20, 0, CUR_SECOND_MINUS_FIRST);
-    scope_cursor_format(&r6, s, sizeof(s));
-    CHECK(s[0] != '~', "a measured range must not be marked provisional: %s", s);
-}
-
-static void test_provisional_timebase_is_marked(void)
-{
-    /* 0x0D was the last provisional timebase (R^2 0.9997 on bins 4-25). On
-     * 2026-11-14 it was re-measured with a 100 kHz tone (first alias,
-     * 124,963 S/s, 0.9997 of 125 k like its neighbours), so no timebase
-     * code is provisional any more and none may carry the tilde. The marker
-     * itself stays tested on the vertical ranges above. */
-    for (uint8_t code = 0; code < SCOPE_TIMEBASE_CODE_COUNT; code++) {
-        CHECK(scope_timebase_get_tier(code) == SCOPE_TB_MEASURED,
-              "code 0x%02X tier changed -- update this test with the evidence", code);
-        const scope_cursor_reading_t r = scope_cursor_delta_t(TB(code), 100);
-        char s[16];
-        scope_cursor_format(&r, s, sizeof(s));
-        CHECK(s[0] != '~', "code 0x%02X must not carry the tilde, got %s", code, s);
-    }
-}
-
-/* ── 4. formatting ──────────────────────────────────────────────────── */
-
-static void test_formatting(void)
-{
-    char s[16];
-
-    /* NONE is the "--" every other part of the scope UI uses. */
-    scope_cursor_reading_t r = scope_cursor_one_over_dt(TB(0x10u), 0);
-    scope_cursor_format(&r, s, sizeof(s));
-    CHECK(strcmp(s, "--") == 0, "a refusal must render as --, got %s", s);
-
-    /* Sign survives into the readout: a cursor dragged backwards reads
-     * negative rather than silently taking an absolute value. */
-    r = scope_cursor_delta_t(TB(0x10u), -100);
-    CHECK(r.value < 0.0f, "negative dx must give negative dt");
-    scope_cursor_format(&r, s, sizeof(s));
-    CHECK(s[0] == '-', "negative dt must print a sign, got %s", s);
-
-    /* 100 samples at 12,500 S/s = 8.00 ms. */
-    r = scope_cursor_delta_t(TB(0x10u), 100);
-    scope_cursor_format(&r, s, sizeof(s));
-    CHECK(strcmp(s, "8.00ms") == 0, "expected 8.00ms, got %s", s);
-
-    /* A tiny buffer must truncate, not overflow. */
-    char tiny[4];
-    scope_cursor_format(&r, tiny, sizeof(tiny));
-    CHECK(tiny[3] == '\0', "format must NUL-terminate within n");
-}
-
-/* ── 5. NEGATIVE CONTROLS ───────────────────────────────────────────── */
-
-/*
- * The implementation this work replaced, transcribed exactly.
- * scope_state_init() seeded cursor.time_per_pixel with 10 ms across a 320-px
- * screen and cursor.volts_per_pixel with 8 V down a 206-px plot, and nothing
- * ever changed either.
- */
-#define OLD_TIME_PER_PIXEL    (10.0e-3f / 320.0f)
-#define OLD_VOLTS_PER_PIXEL   (8.0f / 206.0f)
-
-static void negctl_old_constants_would_be_caught(void)
-{
-    /*
-     * If someone "simplifies" this module back to a fixed scale, the
-     * positive tests above must reject it. Assert that here explicitly, so
-     * the suite's sensitivity is itself tested rather than assumed.
-     */
-    for (unsigned i = 0; i < sizeof(measured_codes); i++) {
-        const uint8_t code = measured_codes[i];
-        const float real = scope_cursor_delta_t(TB(code), 100).value;
-        const float old  = 100.0f * OLD_TIME_PER_PIXEL;
-
-        CHECK(!close_rel(old, real, 0.05f),
-              "code 0x%02X: the old fixed time/pixel (%g s) is within 5%% of "
-              "the measured answer (%g s) — this control can no longer detect "
-              "a regression", code, (double)old, (double)real);
-    }
-
-    for (unsigned i = 0; i < sizeof(measured_ranges); i++) {
-        const uint8_t rg = measured_ranges[i];
-        const scope_cursor_vmap_t m = vmap(1u, rg, FIXED_COUNTS_PER_PIXEL);
-        const float real = scope_cursor_delta_v(&m, 40, 0, CUR_SECOND_MINUS_FIRST).value;
-        const float old  = 40.0f * OLD_VOLTS_PER_PIXEL;
-
-        CHECK(!close_rel(old, real, 0.05f),
-              "r%u: the old fixed volts/pixel (%g V) is within 5%% of the "
-              "measured answer (%g V) — this control can no longer detect a "
-              "regression", rg, (double)old, (double)real);
-    }
-}
-
-static void negctl_answer_must_depend_on_the_code(void)
-{
-    /*
-     * The structural control, and the one that cannot be satisfied by any
-     * hardcoded constant whatsoever: the same pixel delta must produce
-     * DIFFERENT answers on different timebase codes, in exactly the ratio the
-     * rate table gives. A constant produces the same answer for all three.
-     */
-    const float a = scope_cursor_delta_t(TB(0x0Eu), 100).value;
-    const float b = scope_cursor_delta_t(TB(0x0Fu), 100).value;
-    const float c = scope_cursor_delta_t(TB(0x10u), 100).value;
-
-    CHECK(!close_rel(a, b, 0.01f) && !close_rel(b, c, 0.01f),
-          "dt did not change with the timebase code (%g / %g / %g) — the "
-          "readout is not reading the rate table", (double)a, (double)b, (double)c);
-
-    const float fs_e = scope_timebase_sample_rate(0x0Eu);
-    const float fs_f = scope_timebase_sample_rate(0x0Fu);
-    CHECK(close_rel(a / b, fs_f / fs_e, 1e-4f),
-          "dt ratio %g does not match the table's rate ratio %g",
-          (double)(a / b), (double)(fs_f / fs_e));
-}
-
-static void negctl_answer_must_depend_on_the_range(void)
-{
-    /* Same structural control on the vertical axis. Ranges 5/6/7 are a clean
-     * doubling ladder, so a range-independent implementation is obvious. */
-    const scope_cursor_vmap_t m5 = vmap(1u, 5u, FIXED_COUNTS_PER_PIXEL);
-    const scope_cursor_vmap_t m6 = vmap(1u, 6u, FIXED_COUNTS_PER_PIXEL);
-    const scope_cursor_vmap_t m7 = vmap(1u, 7u, FIXED_COUNTS_PER_PIXEL);
-
-    const float a = scope_cursor_delta_v(&m5, 40, 0, CUR_SECOND_MINUS_FIRST).value;
-    const float b = scope_cursor_delta_v(&m6, 40, 0, CUR_SECOND_MINUS_FIRST).value;
-    const float c = scope_cursor_delta_v(&m7, 40, 0, CUR_SECOND_MINUS_FIRST).value;
-
-    CHECK(!close_rel(a, b, 0.01f) && !close_rel(b, c, 0.01f),
-          "dV did not change with the range (%g / %g / %g) — the readout is "
-          "not reading the gain table", (double)a, (double)b, (double)c);
-
-    const float k5 = scope_cal_volts_per_count(1u, 5u);
-    const float k6 = scope_cal_volts_per_count(1u, 6u);
-    CHECK(close_rel(a / b, k5 / k6, 1e-4f),
-          "dV ratio %g does not match the table's gain ratio %g",
-          (double)(a / b), (double)(k5 / k6));
-}
-
-static void negctl_source_scale_reaches_the_cursor(void)
-{
-    /*
-     * The vertical table is recoverable with one constant only if every
-     * consumer goes through scope_cal's lookup. If the cursor ever grew its
-     * own copy of a raw mV/count number, correcting SCOPE_CAL_SOURCE_SCALE
-     * would fix the badges and leave the cursor wrong — a divergence nobody
-     * would see. The raw bench figure is stated here independently of the
-     * table for the same reason test_scope_cal.c states them.
-     */
-    const float raw_ch1_r6_mv_per_count = 42.95f;   /* EXP-08, bench unit #1 */
-    const scope_cursor_vmap_t m = vmap(1u, 6u, 1.0f);
-    const float got = scope_cursor_delta_v(&m, 1, 0, CUR_SECOND_MINUS_FIRST).value;
-
-    CHECK(close_rel(got,
-                    raw_ch1_r6_mv_per_count * SCOPE_CAL_SOURCE_SCALE / 1000.0f,
-                    1e-4f),
-          "cursor dV (%g V/count) does not equal the raw table entry times "
-          "SCOPE_CAL_SOURCE_SCALE — the cursor is not going through "
-          "scope_cal_volts_per_count()", (double)got);
-}
-
-/* ── 4. C7: record-rate forms, X1/X2, absolute Y ─────────────────────── */
-
-static void test_record_rate_doubles_for_an_interleaved_record(void)
-{
-    /* The published record's rate is 2x the table's when interleaved
-     * (fpga_record_sample_rate). The cursor must time off THAT: the same
-     * 100-column span is half the duration, and 1/dt doubles. */
-    const uint8_t code = 0x0Eu;
-    const float fs = scope_timebase_sample_rate(code);
-    const scope_cursor_conf_t cf = scope_cursor_tb_conf(TB(code));
-    CHECK(fs > 0.0f, "code 0x%02X needs a rate", code);
-
-    scope_cursor_reading_t a = scope_cursor_delta_t_fs(FS(fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
-    scope_cursor_reading_t b = scope_cursor_delta_t_fs(FS(2.0f * fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
-    CHECK(a.unit == SCOPE_CURSOR_UNIT_SECONDS && b.unit == SCOPE_CURSOR_UNIT_SECONDS,
-          "both must be seconds");
-    CHECK(close_rel(b.value, a.value / 2.0f, 1e-5f),
-          "doubled record rate must halve dt: %g vs %g", (double)b.value, (double)a.value);
-    CHECK(close_rel(b.value, 100.0f / (2.0f * fs), 1e-5f), "dt = dx / record rate");
-
-    a = scope_cursor_one_over_dt_fs(FS(fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
-    b = scope_cursor_one_over_dt_fs(FS(2.0f * fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
-    CHECK(close_rel(b.value, 2.0f * a.value, 1e-5f), "doubled rate must double 1/dt");
-
-    /* The tb_code forms are exactly the rate forms at the table's rate. */
-    a = scope_cursor_delta_t(TB(code), 100);
-    b = scope_cursor_delta_t_fs(FS(fs), cf, 0, 100, CUR_SECOND_MINUS_FIRST);
-    CHECK(a.value == b.value && a.unit == b.unit && a.confidence == b.confidence,
-          "tb_code form must equal the table-rate form");
-
-    /* No rate: samples for dt, refusal for 1/dt, regardless of confidence. */
-    a = scope_cursor_delta_t_fs(FS(0.0f), SCOPE_CURSOR_MEASURED, 0, 37, CUR_SECOND_MINUS_FIRST);
-    CHECK(a.unit == SCOPE_CURSOR_UNIT_SAMPLES && a.value == 37.0f, "no rate -> samples");
-    a = scope_cursor_one_over_dt_fs(FS(0.0f), SCOPE_CURSOR_MEASURED, 0, 37, CUR_SECOND_MINUS_FIRST);
-    CHECK(a.unit == SCOPE_CURSOR_UNIT_NONE, "no rate -> no 1/dt");
-}
-
-static void test_x_is_relative_to_the_reference_column(void)
-{
-    const float fs = 1.0e6f;
-    scope_cursor_reading_t r = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 260, 160);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_SECONDS && close_rel(r.value, 100e-6f, 1e-5f),
-          "X1 100 columns after the trigger at 1 MS/s is +100 us");
-    r = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 60, 160);
-    CHECK(close_rel(r.value, -100e-6f, 1e-5f), "left of the trigger is negative");
     char s[16];
     scope_cursor_format(&r, s, sizeof s);
-    CHECK(strcmp(s, "-100us") == 0, "expected -100us, got %s", s);
-
-    /* Stock's "X1-X2" is X1 MINUS X2: the shell report feeds delta_t the
-     * column difference v1 - v2, which must equal the two absolute readings'
-     * difference whatever the reference column. */
-    const scope_cursor_reading_t x1 = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 137);
-    const scope_cursor_reading_t x2 = scope_cursor_x_fs(FS(fs), SCOPE_CURSOR_MEASURED, 250, 137);
-    const scope_cursor_reading_t d  = scope_cursor_delta_t_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_FIRST_MINUS_SECOND);
-    CHECK(close_rel(x1.value - x2.value, d.value, 1e-4f) && d.value < 0.0f,
-          "X1-X2 == X1 - X2 (negative when X1 is left of X2)");
-
-    /* The order is an argument, not a subtraction the caller does first: the
-     * same two columns read with opposite signs on the screen (second minus
-     * first) and in the shell report (first minus second), and 1/dt is the
-     * same positive number either way. */
-    const scope_cursor_reading_t scr = scope_cursor_delta_t_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_SECOND_MINUS_FIRST);
-    CHECK(scr.value > 0.0f && close_rel(scr.value, -d.value, 1e-6f),
-          "screen dt = -(shell X1-X2) for the same cursors");
-    const scope_cursor_reading_t i1 = scope_cursor_one_over_dt_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_SECOND_MINUS_FIRST);
-    const scope_cursor_reading_t i2 = scope_cursor_one_over_dt_fs(FS(fs), SCOPE_CURSOR_MEASURED, 90, 250, CUR_FIRST_MINUS_SECOND);
-    CHECK(i1.value > 0.0f && i1.value == i2.value, "1/dt is positive and the same in either order");
+    CHECK(strcmp(s, want) == 0, "readout \"%s\", want \"%s\"", s, want);
 }
 
-static void test_absolute_y(void)
+static void test_readout(void)
 {
-    /* range 6 is MEASURED (see measured_ranges). Mid row 100, centred (0). */
-    scope_cursor_vmap_t m = vmap(1u, 6u, 2.0f);
-    m.mid_known = 1u; m.mid_row = 100; m.mid_counts = 0.0f;
-    const float k = scope_cal_volts_per_count(1u, 6u);
-    CHECK(k > 0.0f, "range 6 must be calibrated");
-
-    scope_cursor_reading_t r = scope_cursor_y(&m, 90);       /* 10 rows above */
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && close_rel(r.value, 10.0f * 2.0f * k, 1e-5f),
-          "10 rows above the middle = +20 counts of volts");
-    r = scope_cursor_y(&m, 110);
-    CHECK(r.value < 0.0f && close_rel(r.value, -20.0f * k, 1e-5f), "below is negative");
-    r = scope_cursor_y(&m, 100);
-    CHECK(r.value == 0.0f, "the middle row is 0 V when centred");
-
-    /* The difference of two absolute readings is the existing delta (second
-     * minus first, = h1_y - h2_y rows: the same sign convention as dt), so
-     * the Y1-Y2 readout and dV can never disagree. */
-    scope_cursor_reading_t y1 = scope_cursor_y(&m, 70), y2 = scope_cursor_y(&m, 120);
-    scope_cursor_reading_t dv = scope_cursor_delta_v(&m, 70, 120, CUR_SECOND_MINUS_FIRST);
-    CHECK(close_rel(y2.value - y1.value, dv.value, 1e-4f), "Y2 - Y1 == dV");
-    /* Stock's "Y1-Y2" (the shell report): the same rows, first minus second. */
-    scope_cursor_reading_t d12 = scope_cursor_delta_v(&m, 70, 120, CUR_FIRST_MINUS_SECOND);
-    CHECK(close_rel(y1.value - y2.value, d12.value, 1e-4f) && d12.value > 0.0f,
-          "Y1-Y2 == Y1 - Y2 (positive when Y1 is above Y2)");
-    CHECK(dv.value == -d12.value && dv.value < 0.0f,
-          "rows grow down: the second cursor BELOW the first is a negative screen dV");
-
-    /* Uncalibrated range: counts. */
-    scope_cursor_vmap_t u = vmap(1u, 0u, 2.0f);
-    u.mid_known = 1u; u.mid_row = 100;
-    r = scope_cursor_y(&u, 90);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS && r.value == 20.0f, "no cal -> counts");
-
-    /* Autofit band (mid unknown) and no transform: refuse, never guess. */
-    scope_cursor_vmap_t a = vmap(1u, 6u, 2.0f);
-    r = scope_cursor_y(&a, 90);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "autofit band has no absolute Y");
-    r = scope_cursor_y(NULL, 90);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "NULL map refuses");
+    printf("[6] readouts from the stored values\n");
+    const scope_cursor_axes_t yt = time_axes(false, 20u, 150);
+    expect(scope_cursor_x(&yt, 2500), "1us");
+    expect(scope_cursor_x(&yt, -25), "-10ns");
+    expect(scope_cursor_dt(&yt, 0, 2500, CUR_SECOND_MINUS_FIRST), "1us");
+    expect(scope_cursor_dt(&yt, 0, 2500, CUR_FIRST_MINUS_SECOND), "-1us");
+    expect(scope_cursor_inv_dt(&yt, 0, 2500, CUR_SECOND_MINUS_FIRST), "1.00MHz");
+    expect(scope_cursor_inv_dt(&yt, 77, 77, CUR_SECOND_MINUS_FIRST), "--");
+    /* the time is the stored one, not its column's: a tick between columns reads */
+    expect(scope_cursor_dt(&yt, 0, 1, CUR_SECOND_MINUS_FIRST), "0ns");
+    expect(scope_cursor_dt(&yt, 0, SCOPE_CURSOR_TIME_MAX, CUR_SECOND_MINUS_FIRST), "602.00ms");
+    const scope_cursor_axes_t roll = time_axes(true, 40u, 300);
+    expect(scope_cursor_x(&roll, -1000), "-1.00s");
+    expect(scope_cursor_dt(&roll, -1000, -500, CUR_SECOND_MINUS_FIRST), "500.00ms");
+    expect(scope_cursor_inv_dt(&roll, -1000, -500, CUR_SECOND_MINUS_FIRST), "2.0Hz");
+    yt_vmap_t t;
+    yt_vmap_true(&t, PLOT_TOP, PLOT_BOT, PLOT_GMID, PLOT_DIV, 0, CENTRE_CODE, 25.0f);
+    scope_cursor_axes_t l = level_axes(&t, CENTRE_CODE, 0.04f, STRIP_TOP);
+    const microvolts_t a = { 1500000 }, b = { -250000 };
+    expect(scope_cursor_y(&l, a), "1.50V");
+    expect(scope_cursor_y(&l, b), "-250mV");
+    expect(scope_cursor_dv(&l, a, b, CUR_SECOND_MINUS_FIRST), "-1.75V");
+    expect(scope_cursor_dv(&l, a, b, CUR_FIRST_MINUS_SECOND), "1.75V");
+    l.v_conf = SCOPE_CURSOR_PROVISIONAL;
+    expect(scope_cursor_y(&l, a), "~1.50V");
+    l.level_ok = false;
+    expect(scope_cursor_y(&l, a), "--");
+    expect(scope_cursor_dv(&l, a, b, CUR_SECOND_MINUS_FIRST), "--");
+    CHECK(fabsf(scope_cursor_col_rate(&yt) - 125e6f) < 1.0f && fabsf(scope_cursor_col_rate(&roll) - 25.0f) < 1e-4f,
+          "the column rate: 20 ticks = 125 MHz, 40 ms = 25 Hz");
 }
 
-/* The math trace (C12) is drawn on its own scale about the graticule centre:
- * `step` per 26 rows. The cursors must read volts on THAT scale, not through a
- * channel's gain, and must not invent a unit for V^2 / ratio results. */
-static void test_math_direct_scale(void)
+static void test_ranges(void)
 {
-    scope_cursor_vmap_t vm;
-    memset(&vm, 0, sizeof(vm));
-    vm.mid_known = 1u;
-    vm.mid_row = 121;
-    vm.direct = SCOPE_CURSOR_DIRECT_VOLTS;
-    vm.direct_conf = SCOPE_CURSOR_MEASURED;
-    vm.unit_per_pixel = 0.5f / 26.0f;            /* 0.5 V per division */
-    scope_cursor_reading_t r = scope_cursor_y(&vm, 121 - 26);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && fabsf(r.value - 0.5f) < 1e-4f,
-          "one division above mid = +0.5 V on the math scale (%g)", (double)r.value);
-    r = scope_cursor_y(&vm, 121 + 52);
-    CHECK(fabsf(r.value + 1.0f) < 1e-4f, "two divisions below = -1 V (%g)", (double)r.value);
-    r = scope_cursor_delta_v(&vm, 13, 0, CUR_SECOND_MINUS_FIRST);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_VOLTS && fabsf(r.value - 0.25f) < 1e-4f,
-          "dV = rows x step/26 (%g)", (double)r.value);
-    CHECK(r.confidence == SCOPE_CURSOR_MEASURED, "tier carried from the sources");
-    vm.direct = SCOPE_CURSOR_DIRECT_COUNTS;
-    r = scope_cursor_delta_v(&vm, 26, 0, CUR_SECOND_MINUS_FIRST);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_COUNTS && r.confidence == SCOPE_CURSOR_RAW,
-          "counts math stays counts, RAW");
-    /* A math unit with no formatter (V^2, ratio): pixels / "--", never volts. */
-    memset(&vm, 0, sizeof(vm));
-    vm.mid_known = 1u; vm.mid_row = 121;
-    r = scope_cursor_delta_v(&vm, 7, 0, CUR_SECOND_MINUS_FIRST);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_PIXELS, "no direct scale -> pixels");
-    r = scope_cursor_y(&vm, 100);
-    CHECK(r.unit == SCOPE_CURSOR_UNIT_NONE, "no direct scale -> --");
+    printf("[7] ranges\n");
+    CHECK(SCOPE_CURSOR_TIME_MAX == 1505000000, "Y-T: 301 columns x 5e6 ticks");
+    CHECK(SCOPE_CURSOR_ROLL_MIN_MS == -240800 && SCOPE_ROLL_SLOWEST_PERIOD_MS == scope_roll_period_ms(SCOPE_ROLL_STEPS - 1u).ms,
+          "roll: 301 points x the slowest period, 800 ms");
+    CHECK(SCOPE_CURSOR_LEVEL_MAX == 2048000000, "level: 2 x 256 codes x 400 mV x 10");
+    CHECK(fabsf(scope_cal_nominal_mv(SCOPE_CAL_RANGE_COUNT - 1u) * 1000.0f - (float)SCOPE_CURSOR_TOP_RANGE_UV_PER_CODE) < 0.5f,
+          "the top range's nominal gain is stock's 400 mV a code");
 }
 
 int main(void)
 {
-    test_math_direct_scale();
-    test_time_comes_from_the_rate_table();
-    test_volts_come_from_the_gain_table();
-    test_the_vertical_transform_is_the_renderers();
-    test_one_over_dt();
-
-    test_unmeasured_timebase_falls_back_to_samples();
-    test_uncalibrated_range_falls_back_to_counts();
-    test_unknown_transform_falls_back_to_pixels();
-    test_out_of_domain_channel_does_not_resolve();
-
-    test_provisional_ranges_are_marked();
-    test_provisional_timebase_is_marked();
-    test_formatting();
-
-    test_record_rate_doubles_for_an_interleaved_record();
-    test_x_is_relative_to_the_reference_column();
-    test_absolute_y();
-
-    negctl_old_constants_would_be_caught();
-    negctl_answer_must_depend_on_the_code();
-    negctl_answer_must_depend_on_the_range();
-    negctl_source_scale_reaches_the_cursor();
-
+    test_time();
+    test_roll();
+    test_level();
+    test_keys();
+    test_defaults();
+    test_readout();
+    test_ranges();
     if (failures == 0) {
         printf("test_scope_cursor: PASS\n");
         return 0;

@@ -17,7 +17,8 @@
  *   UP/DOWN   (channel move)      KA_CHPOS_STEP       chN.pos
  *   LEFT/RIGHT (channel / trigger move)  KA_TRIGCOL_STEP  trig.x
  *   UP/DOWN   (trigger move)      KA_TRIGLVL_STEP     trig.level
- *   UP/DOWN   (cursor)            KA_CURSOR_MOVE      view.curv1 / curv2 / curh1 / curh2 (the selected one)
+ *   UP/DOWN   (cursor)            KA_CURSOR_MOVE      view.curt1/2 (roll: curr1/2) / cury1/2 (the
+ *                                                     selected one, 4 px at the scale on screen)
  *   LEFT/RIGHT (cursor)           KA_CURSOR_NEXT      view.cursel
  *   UP/DOWN, LEFT/RIGHT (mask)    KA_MASK_TOL_V / _H  mask.tolv / mask.tolh
  *   MOVE      (mask)              KA_MASK_STOPFAIL    mask.stopfail
