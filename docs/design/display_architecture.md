@@ -255,7 +255,9 @@ from the screenshot copy after a full redraw and after a live update).
     comes back across a power cycle and an older firmware reads the same
     byte; `tb.roll` is saved in the settings record and in the session
     snapshot. (c) Split as a pair of views in two panes: implemented for Y-T
-    and the spectrum, host-tested, not yet checked on the unit. The user picks
+    and the spectrum, checked on the unit (both pairs, the keys on each half,
+    cursors on; livecheck 0 over both halves; full Y-T, roll, the spectrum,
+    X-Y and the waterfall unchanged otherwise). The user picks
     the two views on the Display pane ("Upper half", "Lower half"; properties
     `view.upper`, `view.lower`, session settings, defaults Y-T over FFT). Which
     views can be a half is a column of the view table (`view_desc_t.half`: a
