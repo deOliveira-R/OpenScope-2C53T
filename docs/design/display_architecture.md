@@ -138,6 +138,20 @@ X-Y is a cloud of points and fits neither; it paints from an intensity buffer
 Holes (a popup over the plot) are the canvas's business: it sends the parts
 of a strip around the hole.
 
+**Base and overlays.** A display type may split its elements into a base
+(what holds still: background, graticule, focus mark) and overlays (what
+moves with the record: traces, trigger line, mask bounds, tags, cursors).
+The canvas paints the base, keeps a copy and its hash, paints the overlays
+over it on the same strip, and notes the rows where the strip differs from
+the base (at most four runs a column; more are joined across the smallest
+gap). A changed column whose base is the one on the glass sends only the
+rows the overlays left and the rows they arrived on, joined where the gap is
+shorter than a window's set-up (11 bus writes). A changed base, `all`, a
+hole that changed, another painter on the rows, or a last frame without a
+base sends the whole column. Y-T (and so roll and split's Y-T half) uses it;
+with persistence on the ghosts change the base every frame, so its columns
+go whole as before. `ui dump` counts the pixels sent.
+
 ### Panel driver
 
 The bus, the address window, a stream of pixels along a row or a column. The

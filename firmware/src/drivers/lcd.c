@@ -782,6 +782,9 @@ volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
  * reads it before and after a frame to know what the sending cost. */
 volatile uint32_t lcd_perf_column_cycles;
 
+/* Pixels sent by lcd_write_column() since boot. */
+volatile uint32_t lcd_perf_column_pixels;
+
 void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count)
 {
     /* A stream into a window one pixel wide. Same pixels on the panel and the
@@ -839,6 +842,7 @@ void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t c
         }
     }
     lcd_perf_column_cycles += DWT->CYCCNT - w0;
+    lcd_perf_column_pixels += count;
 }
 
 void lcd_clear(uint16_t color)

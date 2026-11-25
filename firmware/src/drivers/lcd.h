@@ -249,6 +249,8 @@ void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t c
 /* Cycles spent in lcd_write_column() since boot (wraps): read before and
  * after a frame for what its column writes cost. */
 extern volatile uint32_t lcd_perf_column_cycles;
+/* Pixels sent by lcd_write_column() since boot (wraps), read the same way. */
+extern volatile uint32_t lcd_perf_column_pixels;
 
 /* Text rendering (using embedded 8x16 font) */
 void lcd_draw_char(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg);

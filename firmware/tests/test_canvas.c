@@ -13,7 +13,12 @@
  *   - `all` sends every strip;
  *   - somebody else drawing on the rows, another rectangle, or a hole
  *     opening, closing or moving makes the next frame send every strip;
- *   - an incremental frame leaves the same glass as a full one.
+ *   - an incremental frame leaves the same glass as a full one;
+ *   - with a base layer: a column whose base held still sends only the rows
+ *     its overlays left and arrived on (joined across short gaps), and the
+ *     glass stays right through random frames that move the overlays,
+ *     change the base, open and close holes, draw `all`, draw over the rows
+ *     from elsewhere, overflow the runs and change the rectangle.
  */
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +32,9 @@ static int run, passed;
 /* ── the fake LCD ── */
 #define UNTOUCHED 0xDEADu
 static uint16_t glass[LCD_HEIGHT][LCD_WIDTH];
-static unsigned column_writes;
+static unsigned column_writes, pixel_writes;
+static const canvas_rect_t *write_rect;     /* writes must stay inside it, when set */
+static bool     wrote_outside;
 static uint16_t watch_y0[LCD_WATCH_SLOTS], watch_y1[LCD_WATCH_SLOTS];
 static bool     watch_dirty[LCD_WATCH_SLOTS] = { true, true };
 
@@ -45,6 +52,10 @@ static void watch_mark(uint16_t y, uint32_t h)
 void lcd_write_column(uint16_t x, uint16_t y, const uint16_t *pixels, uint16_t count)
 {
     column_writes++;
+    pixel_writes += count;
+    if (write_rect && (x < write_rect->x || x >= write_rect->x + write_rect->w ||
+                       y < write_rect->y || y + count > write_rect->y + write_rect->h))
+        wrote_outside = true;
     watch_mark(y, count);
     for (uint16_t i = 0; i < count; i++) glass[y + i][x] = pixels[i];
 }
@@ -107,8 +118,250 @@ static void glass_fill(uint16_t c)
 }
 static uint16_t draw(const canvas_frame_t *f)
 {
-    paints = 0; order_ok = true; column_writes = 0;
+    paints = 0; order_ok = true; column_writes = 0; pixel_writes = 0;
     return canvas_draw_columns(f);
+}
+
+/* ── a picture in layers: a base under overlays ── */
+#define RAND_FRAMES     3000u
+#define OV_MAX          12u       /* overlay runs a column may have: more than the canvas keeps */
+#define BASE_COLORS     4u
+static const uint16_t base_color[BASE_COLORS] = { 0x0000u, 0x1082u, 0x39E7u, 0xFFFFu };
+/* Overlay colours: two of the base's, so an overlay pixel sometimes equals
+ * the base under it. */
+static const uint16_t ov_color[] = { 0xF800u, 0x07E0u, 0x1082u, 0x39E7u };
+#define OV_COLORS (sizeof ov_color / sizeof ov_color[0])
+
+typedef struct { int16_t lo, hi; uint16_t color; } ov_run_t;    /* rows [lo, hi) */
+static uint8_t  base_ver[LCD_WIDTH];
+static ov_run_t ov[LCD_WIDTH][OV_MAX];
+static uint8_t  nov[LCD_WIDTH];
+static unsigned base_calls, ov_paints;
+static int      based_index;          /* the strip base painted last, -1: none pending */
+static bool     layer_order_ok;
+
+static uint16_t base_px(uint16_t x, uint16_t y)
+{
+    return base_color[(x * 3u + y / 13u + base_ver[x]) % BASE_COLORS];
+}
+/* What the glass must show at (x, y): the last overlay run over it, else the base. */
+static uint16_t layered_px(uint16_t x, uint16_t y)
+{
+    uint16_t c = base_px(x, y);
+    for (uint8_t i = 0; i < nov[x]; i++)
+        if ((int)y >= ov[x][i].lo && (int)y < ov[x][i].hi) c = ov[x][i].color;
+    return c;
+}
+static void paint_base(void *ctx, uint16_t index, const canvas_strip_t *s)
+{
+    (void)ctx;
+    if (based_index >= 0) layer_order_ok = false;        /* the last base had no paint */
+    based_index = index; base_calls++;
+    for (int y = s->lo; y < s->hi; y++) strip_put(s, y, base_px(index, (uint16_t)y));
+}
+static void paint_overlays(void *ctx, uint16_t index, const canvas_strip_t *s)
+{
+    (void)ctx;
+    if (based_index != (int)index) layer_order_ok = false;
+    based_index = -1; ov_paints++;
+    for (uint8_t i = 0; i < nov[index]; i++)
+        strip_span(s, ov[index][i].lo, ov[index][i].hi - 1, ov[index][i].color);
+}
+static uint16_t draw_layered(const canvas_frame_t *f)
+{
+    base_calls = ov_paints = 0; based_index = -1; layer_order_ok = true;
+    write_rect = &f->rect; wrote_outside = false;
+    const uint16_t n = draw(f);
+    write_rect = NULL;
+    if (based_index >= 0 || base_calls != f->rect.w || ov_paints != f->rect.w) layer_order_ok = false;
+    return n;
+}
+/* The rectangle shows the layered picture outside the holes and the box
+ * colour inside them. */
+static bool layered_ok(const canvas_frame_t *f, uint16_t box)
+{
+    for (uint16_t y = f->rect.y; y < f->rect.y + f->rect.h; y++)
+        for (uint16_t x = f->rect.x; x < f->rect.x + f->rect.w; x++)
+            if (glass[y][x] != (in_hole(f, x, y) ? box : layered_px(x, y))) return false;
+    return true;
+}
+static void ov_set(uint16_t x, uint8_t n, const ov_run_t *runs)
+{
+    nov[x] = n;
+    for (uint8_t i = 0; i < n; i++) ov[x][i] = runs[i];
+}
+static void ov_all(int16_t lo, int16_t hi, uint16_t color)
+{
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) ov_set(x, 1u, &(ov_run_t){ lo, hi, color });
+}
+
+static uint32_t rng = 2463534242u;
+static uint32_t rnd(uint32_t n)
+{
+    rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5;
+    return rng % n;
+}
+
+/* A hole: the box painted by its owner (another painter), then the watch
+ * mark of that taken, as the popup does before the frame that steps around it. */
+static void box_paint(const canvas_rect_t *h, uint8_t slot, uint16_t box)
+{
+    for (uint16_t y = h->y; y < h->y + h->h && y < LCD_HEIGHT; y++)
+        for (uint16_t x = h->x; x < h->x + h->w && x < LCD_WIDTH; x++) glass[y][x] = box;
+    watch_mark(h->y, h->h);
+    (void)lcd_watch_take(slot);
+}
+
+static void layered_tests(void)
+{
+    printf("canvas draw cycle with a base layer\n");
+    const uint16_t BOX = 0x0BB0u;
+    canvas_frame_t f = { .id = CANVAS_SPLIT_UPPER, .rect = { 0, 18, 320, 206 },
+                         .base = paint_base, .paint = paint_overlays };
+    const uint16_t h = f.rect.h;
+    memset(base_ver, 0, sizeof base_ver);
+    ov_all(100, 103, ov_color[0]);
+    glass_fill(UNTOUCHED);
+    uint16_t n = draw_layered(&f);
+    CHECK("the first frame sends whole columns", n == 320 && pixel_writes == 320u * h);
+    CHECK("... base then paint, once each, for every column", layer_order_ok);
+    CHECK("... and the glass shows base and overlays, nothing outside", layered_ok(&f, BOX) && !wrote_outside);
+
+    n = draw_layered(&f);
+    CHECK("an unchanged picture sends nothing", n == 0 && column_writes == 0);
+
+    /* The overlay moves far: the rows it left and the rows it arrived on, two windows. */
+    ov_all(150, 153, ov_color[0]);
+    n = draw_layered(&f);
+    CHECK("an overlay moves far: old rows and new rows, 2 windows of 3",
+          n == 320 && column_writes == 640 && pixel_writes == 320u * 6u && layered_ok(&f, BOX));
+
+    /* Runs closer than the cost of a window are sent as one. */
+    ov_all(163, 166, ov_color[0]);              /* gap from [150,153): 10 rows */
+    n = draw_layered(&f);
+    CHECK("runs 10 rows apart go as one window", column_writes == 320 && pixel_writes == 320u * 16u);
+    ov_all(177, 180, ov_color[0]);              /* gap from [163,166): 11 rows */
+    n = draw_layered(&f);
+    CHECK("runs 11 rows apart go as two windows", column_writes == 640 && pixel_writes == 320u * 6u);
+    ov_all(178, 181, ov_color[0]);              /* overlapping */
+    n = draw_layered(&f);
+    CHECK("overlapping runs go as one window", column_writes == 320 && pixel_writes == 320u * 4u &&
+          layered_ok(&f, BOX));
+
+    /* The base changes in some columns: those go whole. */
+    for (uint16_t x = 40; x < 45; x++) base_ver[x]++;
+    n = draw_layered(&f);
+    CHECK("the base changes in 5 columns: those 5 go whole", n == 5 && pixel_writes == 5u * h &&
+          layered_ok(&f, BOX));
+
+    /* An overlay over the whole strip in a colour the base also has; the base
+     * changes under it (the strip does not: nothing is sent, but the base and
+     * the overlay rows kept for the column change), then the overlay goes. */
+    ov_all((int16_t)f.rect.y, (int16_t)(f.rect.y + h), base_color[1]);
+    (void)draw_layered(&f);
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) base_ver[x] = (uint8_t)(base_ver[x] + 1u);
+    n = draw_layered(&f);
+    CHECK("the base changes under an overlay that covers it: nothing is sent", n == 0 && column_writes == 0);
+    memset(nov, 0, sizeof nov);
+    n = draw_layered(&f);
+    CHECK("... then the overlay goes: the new base shows", n == 320 && layered_ok(&f, BOX));
+
+    /* Many overlay runs in a column: more than the canvas keeps. */
+    for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+        ov_run_t r[OV_MAX];
+        for (uint8_t i = 0; i < OV_MAX; i++)
+            r[i] = (ov_run_t){ (int16_t)(20 + i * 15 + x % 3), (int16_t)(21 + i * 15 + x % 3), ov_color[i % 2] };
+        ov_set(x, OV_MAX, r);
+    }
+    (void)draw_layered(&f);
+    CHECK("12 overlay runs a column: the glass is right", layered_ok(&f, BOX));
+    for (uint16_t x = 0; x < LCD_WIDTH; x++)
+        for (uint8_t i = 0; i < OV_MAX; i++) { ov[x][i].lo += 4; ov[x][i].hi += 4; }
+    (void)draw_layered(&f);
+    CHECK("... and after they all move", layered_ok(&f, BOX));
+
+    /* A frame without a base on the same canvas and rectangle, then the
+     * layered picture again: the runs of before the plain frame are stale. */
+    ov_all(100, 103, ov_color[0]);
+    (void)draw_layered(&f);
+    canvas_frame_t plain = f;
+    plain.base = NULL; plain.paint = paint;
+    (void)draw(&plain);
+    n = draw_layered(&f);
+    CHECK("a frame without a base between: the next layered one is right",
+          n == 320 && layered_ok(&f, BOX));
+
+    /* Random frames. */
+    canvas_rect_t holes[CANVAS_MAX_HOLES];
+    f.holes = holes; f.nholes = 0;
+    int16_t trace[2][LCD_WIDTH];
+    for (uint8_t ch = 0; ch < 2u; ch++)
+        for (uint16_t x = 0; x < LCD_WIDTH; x++) trace[ch][x] = (int16_t)(60 + ch * 80);
+    unsigned bad = 0, outside = 0, order = 0, partial = 0, partial_holes = 0, whole = 0;
+    uint32_t px_steady = 0, cols_steady = 0;
+    for (unsigned fr = 0; fr < RAND_FRAMES; fr++) {
+        bool steady = true;
+        /* The traces drift; a few columns get many runs. */
+        for (uint16_t x = 0; x < LCD_WIDTH; x++) {
+            ov_run_t r[OV_MAX];
+            uint8_t k = 0;
+            for (uint8_t ch = 0; ch < 2u; ch++) {
+                int16_t y = (int16_t)(trace[ch][x] + (int16_t)rnd(9) - 4);
+                if (y < 0) y = 0;
+                if (y > 230) y = 230;
+                trace[ch][x] = y;
+                r[k++] = (ov_run_t){ y, (int16_t)(y + 1 + (int16_t)rnd(6)), ov_color[ch] };
+            }
+            if (rnd(40) == 0)
+                while (k < OV_MAX) {
+                    const int16_t y = (int16_t)rnd(LCD_HEIGHT);
+                    r[k++] = (ov_run_t){ y, (int16_t)(y + 1 + (int16_t)rnd(3)), ov_color[rnd(OV_COLORS)] };
+                }
+            ov_set(x, k, r);
+        }
+        if (rnd(10) == 0) {                 /* the base changes in some columns */
+            const uint16_t x0 = (uint16_t)rnd(LCD_WIDTH), w = (uint16_t)(1u + rnd(40));
+            for (uint16_t x = x0; x < x0 + w && x < LCD_WIDTH; x++) base_ver[x]++;
+            steady = false;
+        }
+        if (rnd(15) == 0) {                 /* a hole opens, moves or closes */
+            f.nholes = (uint8_t)rnd(CANVAS_MAX_HOLES + 1u);
+            for (uint8_t i = 0; i < f.nholes; i++) {
+                holes[i] = (canvas_rect_t){ (uint16_t)rnd(300), (uint16_t)rnd(230),
+                                            (uint16_t)(1u + rnd(120)), (uint16_t)(1u + rnd(60)) };
+                box_paint(&holes[i], f.id, BOX);
+            }
+            steady = false;
+        }
+        f.all = rnd(25) == 0;
+        if (f.all) steady = false;
+        if (rnd(20) == 0) {                 /* somebody else draws on the rows (not in a hole) */
+            const uint16_t x = (uint16_t)rnd(LCD_WIDTH), y = (uint16_t)(f.rect.y + rnd(f.rect.h));
+            foreign_pixel(x, y, in_hole(&f, x, y) ? BOX : 0x0001u);
+            steady = false;
+        }
+        if (rnd(30) == 0) {                 /* another rectangle */
+            f.rect.y = (uint16_t)(rnd(2) ? 18u : 30u);
+            f.rect.h = (uint16_t)(rnd(2) ? 206u : 150u);
+            steady = false;
+        }
+        n = draw_layered(&f);
+        if (!layered_ok(&f, BOX)) bad++;
+        if (wrote_outside) outside++;
+        if (!layer_order_ok) order++;
+        if (column_writes > n) partial++;
+        if (column_writes > n && f.nholes) partial_holes++;
+        if (steady) { px_steady += pixel_writes; cols_steady += n; }
+        else whole++;
+    }
+    char name[96];
+    snprintf(name, sizeof name, "%u random frames: the glass is right after every one", RAND_FRAMES);
+    CHECK(name, bad == 0);
+    CHECK("... nothing written outside the rectangle, layers in order", outside == 0 && order == 0);
+    CHECK("... runs were sent around holes too", partial_holes > 0);
+    snprintf(name, sizeof name, "... a steady base sends %lu pixels a column, not %u",
+             (unsigned long)(cols_steady ? px_steady / cols_steady : 0u), (unsigned)f.rect.h);
+    CHECK(name, cols_steady > 0 && px_steady * 4u < cols_steady * 150u && whole > 0 && partial > 0);
 }
 
 int main(void)
@@ -228,6 +481,8 @@ int main(void)
 
     canvas_frame_t bad = { .rect = { 300, 0, 40, 10 }, .paint = paint };
     CHECK("a rectangle off the screen draws nothing", draw(&bad) == 0 && paints == 0);
+
+    layered_tests();
 
     printf("\n%d/%d passed\n", passed, run);
     return passed == run ? 0 : 1;

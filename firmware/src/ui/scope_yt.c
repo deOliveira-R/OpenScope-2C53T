@@ -3,10 +3,12 @@
  *
  * Voltage against time (docs/design/display_architecture.md). One frame is
  * built once from the sources (yt_prepare) and then painted column by column
- * through the canvas (ui/canvas.h): each element of yt_elements writes the
- * pixels it owns into the column's strip, lowest layer first. A full redraw
- * and a live update are the same frame; the full one sends every column, the
- * live one only the columns that changed.
+ * through the canvas (ui/canvas.h): each element writes the pixels it owns
+ * into the column's strip, lowest layer first; the still ones (yt_base) are
+ * the canvas's base layer, the rest (yt_overlays) are painted over it, so a
+ * column whose base did not change sends only the rows the overlays moved
+ * on. A full redraw and a live update are the same frame; the full one sends
+ * every column, the live one only the columns that changed.
  *
  * What a frame is built from is in scope_view.c (the window of the record)
  * and scope_yt_frame.c (the maps, the tags, the mask overlay, persistence,
@@ -18,8 +20,9 @@
 #include "canvas.h"
 #include "plot_elements.h"
 
-/* Columns sent and skipped by the last frame (`ui dump`). */
+/* Columns sent and skipped by the last frame, and the pixels sent (`ui dump`). */
 volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
+volatile uint32_t ui_scope_live_px_sent;
 
 volatile uint32_t ui_scope_live_send_us;     /* of the frame's time, the part spent sending columns */
 
@@ -339,16 +342,18 @@ static inline uint16_t yt_ghost(uint8_t in, uint16_t y, uint16_t mid, uint16_t b
 
 /* ── The elements ──
  * Each paints what it owns of column x into strip s (rows s->lo up to, not
- * including, s->hi) and leaves every other pixel alone. yt_elements lists
- * them lowest layer first, so a later one covers an earlier one. */
+ * including, s->hi) and leaves every other pixel alone. yt_base and
+ * yt_overlays list them lowest layer first, so a later one covers an earlier
+ * one. The base elements read nothing of the record's column, so they take
+ * no yt_col_t. */
 
+typedef void (*yt_base_fn)(const yt_frame_t *f, uint16_t x, const canvas_strip_t *s);
 typedef void (*yt_element_fn)(const yt_frame_t *f, const yt_col_t *c, uint16_t x,
                               const canvas_strip_t *s);
 
 /* Background and persistence ghosts: every pixel of the strip. */
-static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+static void el_ground(const yt_frame_t *f, uint16_t x, const canvas_strip_t *s)
 {
-    (void)c;
     const uint16_t rows = (uint16_t)(s->hi - s->lo);
     const uint16_t bg = f->th->background;
     uint16_t *const px = s->px;
@@ -365,17 +370,15 @@ static void el_ground(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const 
 }
 
 /* The graticule (plot_elements.h). */
-static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+static void el_grid(const yt_frame_t *f, uint16_t x, const canvas_strip_t *s)
 {
-    (void)c;
     plot_grid_paint(f->th, &f->p, x, s);
 }
 
 /* The focus mark: the frame of the band when the pane is the half of split
  * the keys are on, over the graticule and under everything else. */
-static void el_focus_mark(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+static void el_focus_mark(const yt_frame_t *f, uint16_t x, const canvas_strip_t *s)
 {
-    (void)c;
     if (!f->p.marked) return;
     if (x < FOCUS_MARK_PX || x >= LCD_WIDTH - FOCUS_MARK_PX) {
         strip_span(s, f->p.top, f->p.band_bot - 1, f->th->text_primary);
@@ -520,11 +523,18 @@ static void el_roll_label(const yt_frame_t *f, const yt_col_t *c, uint16_t x, co
         strip_put(s, y, roll_label_px(f, x, y));
 }
 
-/* What Y-T draws, lowest layer first. */
-static const yt_element_fn yt_elements[] = {
+/* What Y-T draws, lowest layer first: the base, which holds still while the
+ * picture runs (persistence's ghosts change it every frame), ... */
+static const yt_base_fn yt_base[] = {
     el_ground,
     el_grid,
     el_focus_mark,
+};
+
+/* ... and the overlays, which move with the record. The trigger line and the
+ * mask's bounds are among them: they are drawn through the channels' maps,
+ * and a fitted map is fitted to the record (yt_fits). */
+static const yt_element_fn yt_overlays[] = {
     el_trigger_line,
     el_mask_bounds,
     el_traces,
@@ -595,14 +605,23 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
 }
 #endif
 
-/* Paint column x of the band into s: the canvas's paint function. */
+/* Paint the base of column x into s: the canvas's base function. */
+static void yt_paint_base(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    const yt_frame_t *const f = ctx;
+    for (unsigned i = 0; i < sizeof(yt_base) / sizeof(yt_base[0]); i++)
+        yt_base[i](f, x, s);
+}
+
+/* Paint the overlays of column x over its base in s: the canvas's paint
+ * function, called right after yt_paint_base for the same column. */
 static void yt_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
 {
     yt_frame_t *const f = ctx;
     yt_col_t c;
     yt_column(f, x, &c);
-    for (unsigned i = 0; i < sizeof(yt_elements) / sizeof(yt_elements[0]); i++)
-        yt_elements[i](f, &c, x, s);
+    for (unsigned i = 0; i < sizeof(yt_overlays) / sizeof(yt_overlays[0]); i++)
+        yt_overlays[i](f, &c, x, s);
 #if FEATURE_BENCHSHELL
     if (live_check_frames && f->record) yt_check_column(f, &c, x, s);
 #endif
@@ -639,9 +658,10 @@ bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
         .rect = { 0, (uint16_t)p->top, LCD_WIDTH, (uint16_t)(p->band_bot - p->top) },
         .holes = &popup, .nholes = hole ? 1u : 0u,
         .all = all,
-        .paint = yt_paint_column, .ctx = &f,
+        .base = yt_paint_base, .paint = yt_paint_column, .ctx = &f,
     };
     const uint32_t send0 = lcd_perf_column_cycles;
+    const uint32_t px0 = lcd_perf_column_pixels;
     const uint16_t cols_sent = canvas_draw_columns(&cf);
 
     uint8_t at_limit = 0;
@@ -651,6 +671,7 @@ bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
     scope_ui_plot_clip_set(at_limit, f.off_plot);
     ui_scope_live_cols_sent = cols_sent;
     ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
+    ui_scope_live_px_sent = lcd_perf_column_pixels - px0;
     ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);
     return hole;
 }
