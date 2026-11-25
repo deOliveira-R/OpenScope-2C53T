@@ -16,6 +16,11 @@ ENTRY(Reset_Handler)
 
 _estack = 0x20037FE0;    /* leave top 32 bytes for DFU magic at 0x20037FE0 */
 
+/* With EOPB0=0xFE (224 KB SRAM) the AT32F403A reads only the first 128 KB of
+ * its flash with no wait states (the zero-wait area, from 0x08000000); code
+ * past it is fetched with wait states. */
+_flash_zw_end = 0x08020000;
+
 _Min_Heap_Size = 0x200;
 _Min_Stack_Size = 0x400;
 
@@ -40,6 +45,18 @@ SECTIONS
   .text :
   {
     . = ALIGN(4);
+    /* The plot's per-column path (it runs for every pixel of every column,
+     * about 66,000 times a frame) first, so it is in the zero-wait area
+     * whatever grows before it. Measured 2026-11-25: canvas_runs.o linked
+     * at 0x08047e18, past that area, made a live Y-T frame 37 ms instead of
+     * 23.6 ms. */
+    */canvas.o(.text .text*)
+    */canvas_runs.o(.text .text*)
+    */plot_elements.o(.text .text*)
+    */scope_yt.o(.text .text*)
+    */scope_yt_frame.o(.text .text*)
+    */lcd.o(.text .text*)
+    _ezw_plot = .;
     *(.text)
     *(.text*)
     *(.glue_7)
@@ -50,6 +67,7 @@ SECTIONS
     . = ALIGN(4);
     _etext = .;
   } >FLASH_APP
+  ASSERT(_ezw_plot <= _flash_zw_end, "the plot's per-column path must be in the zero-wait flash")
 
   .rodata :
   {

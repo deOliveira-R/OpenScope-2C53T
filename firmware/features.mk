@@ -155,6 +155,28 @@ RETOOLS_defs      :=
 RETOOLS_shared    :=
 RETOOLS_bit       := 5
 
+# ── canvas runs ───────────────────────────────────────────────────────
+# The core of the canvas that sends only the rows of a column that changed
+# (src/ui/canvas_runs.c, contract: canvas_runs.h). Per canvas and column it
+# keeps the hash of the base on the glass and the rows the overlays covered;
+# a changed column whose base held still sends only the rows the overlays
+# left and arrived on (Y-T, roll, split's Y-T half). Off: a changed column is
+# sent whole, as before commit 1d52595; the picture is the same, the send slower.
+# On by default and so in every profile; leave it out (make WITHOUT=canvasruns)
+# when the RAM is needed more than the speed.
+# A/B 2026-11-25 (app-coldtrace-meter): 896 B flash, 8,216 B RAM
+# (canvas_runs.o 772 B flash, 8,210 B RAM; canvas.o 120 B flash).
+FEATURE_LIST += CANVASRUNS
+CANVASRUNS_desc      := Plot sends only the rows that changed (about 8 KB RAM)
+CANVASRUNS_default   := 1
+CANVASRUNS_requires  :=
+CANVASRUNS_conflicts :=
+CANVASRUNS_srcs      := src/ui/canvas_runs.c
+CANVASRUNS_incs      :=
+CANVASRUNS_defs      :=
+CANVASRUNS_shared    :=
+CANVASRUNS_bit       := 6
+
 # ── profiles: what a named image contains ─────────────────────────────
 # PROFILE_<name>_with / _without change the defaults above.
 PROFILE_default_with    :=

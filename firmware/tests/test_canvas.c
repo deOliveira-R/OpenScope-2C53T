@@ -14,16 +14,22 @@
  *   - somebody else drawing on the rows, another rectangle, or a hole
  *     opening, closing or moving makes the next frame send every strip;
  *   - an incremental frame leaves the same glass as a full one;
- *   - with a base layer: a column whose base held still sends only the rows
- *     its overlays left and arrived on (joined across short gaps), and the
- *     glass stays right through random frames that move the overlays,
- *     change the base, open and close holes, draw `all`, draw over the rows
- *     from elsewhere, overflow the runs and change the rectangle.
+ *   - with a base layer: the glass stays right through random frames that
+ *     move the overlays, change the base, open and close holes, draw `all`,
+ *     draw over the rows from elsewhere, overflow the runs and change the
+ *     rectangle; with the feature CANVASRUNS (canvas_runs.h) a column whose
+ *     base held still sends only the rows its overlays left and arrived on
+ *     (joined across short gaps), without it every changed column goes whole.
+ *
+ * Built twice by the Makefile (test-canvas), with FEATURE_CANVASRUNS 0 and 1.
  */
 #include <stdio.h>
 #include <string.h>
 #include "canvas.h"
 #include "lcd.h"
+
+/* The build under test: with the canvas runs or without (features.mk). */
+#define RUNS (FEATURE_CANVASRUNS != 0)
 
 static int run, passed;
 #define CHECK(name, cond) do { run++; if (cond) { passed++; printf("  %-66s[PASS]\n", name); } \
@@ -233,20 +239,26 @@ static void layered_tests(void)
     /* The overlay moves far: the rows it left and the rows it arrived on, two windows. */
     ov_all(150, 153, ov_color[0]);
     n = draw_layered(&f);
-    CHECK("an overlay moves far: old rows and new rows, 2 windows of 3",
-          n == 320 && column_writes == 640 && pixel_writes == 320u * 6u && layered_ok(&f, BOX));
+    CHECK(RUNS ? "an overlay moves far: old rows and new rows, 2 windows of 3"
+               : "an overlay moves far: whole columns",
+          n == 320 && layered_ok(&f, BOX) &&
+          (RUNS ? column_writes == 640 && pixel_writes == 320u * 6u
+                : column_writes == 320 && pixel_writes == 320u * h));
 
     /* Runs closer than the cost of a window are sent as one. */
     ov_all(163, 166, ov_color[0]);              /* gap from [150,153): 10 rows */
     n = draw_layered(&f);
-    CHECK("runs 10 rows apart go as one window", column_writes == 320 && pixel_writes == 320u * 16u);
+    CHECK(RUNS ? "runs 10 rows apart go as one window" : "an overlay moves 13 rows: whole columns",
+          column_writes == 320 && pixel_writes == 320u * (RUNS ? 16u : h));
     ov_all(177, 180, ov_color[0]);              /* gap from [163,166): 11 rows */
     n = draw_layered(&f);
-    CHECK("runs 11 rows apart go as two windows", column_writes == 640 && pixel_writes == 320u * 6u);
+    CHECK(RUNS ? "runs 11 rows apart go as two windows" : "an overlay moves 14 rows: whole columns",
+          RUNS ? column_writes == 640 && pixel_writes == 320u * 6u
+               : column_writes == 320 && pixel_writes == 320u * h);
     ov_all(178, 181, ov_color[0]);              /* overlapping */
     n = draw_layered(&f);
-    CHECK("overlapping runs go as one window", column_writes == 320 && pixel_writes == 320u * 4u &&
-          layered_ok(&f, BOX));
+    CHECK(RUNS ? "overlapping runs go as one window" : "an overlay moves 1 row: whole columns",
+          column_writes == 320 && pixel_writes == 320u * (RUNS ? 4u : h) && layered_ok(&f, BOX));
 
     /* The base changes in some columns: those go whole. */
     for (uint16_t x = 40; x < 45; x++) base_ver[x]++;
@@ -297,7 +309,7 @@ static void layered_tests(void)
     int16_t trace[2][LCD_WIDTH];
     for (uint8_t ch = 0; ch < 2u; ch++)
         for (uint16_t x = 0; x < LCD_WIDTH; x++) trace[ch][x] = (int16_t)(60 + ch * 80);
-    unsigned bad = 0, outside = 0, order = 0, partial = 0, partial_holes = 0, whole = 0;
+    unsigned bad = 0, outside = 0, order = 0, partial = 0, partial_holes = 0, whole = 0, cut = 0;
     uint32_t px_steady = 0, cols_steady = 0;
     for (unsigned fr = 0; fr < RAND_FRAMES; fr++) {
         bool steady = true;
@@ -351,6 +363,7 @@ static void layered_tests(void)
         if (!layer_order_ok) order++;
         if (column_writes > n) partial++;
         if (column_writes > n && f.nholes) partial_holes++;
+        if (!f.nholes && pixel_writes != (uint32_t)n * f.rect.h) cut++;     /* a column not sent whole */
         if (steady) { px_steady += pixel_writes; cols_steady += n; }
         else whole++;
     }
@@ -358,10 +371,14 @@ static void layered_tests(void)
     snprintf(name, sizeof name, "%u random frames: the glass is right after every one", RAND_FRAMES);
     CHECK(name, bad == 0);
     CHECK("... nothing written outside the rectangle, layers in order", outside == 0 && order == 0);
-    CHECK("... runs were sent around holes too", partial_holes > 0);
-    snprintf(name, sizeof name, "... a steady base sends %lu pixels a column, not %u",
-             (unsigned long)(cols_steady ? px_steady / cols_steady : 0u), (unsigned)f.rect.h);
-    CHECK(name, cols_steady > 0 && px_steady * 4u < cols_steady * 150u && whole > 0 && partial > 0);
+    if (RUNS) {
+        CHECK("... runs were sent around holes too", partial_holes > 0);
+        snprintf(name, sizeof name, "... a steady base sends %lu pixels a column, not %u",
+                 (unsigned long)(cols_steady ? px_steady / cols_steady : 0u), (unsigned)f.rect.h);
+        CHECK(name, cols_steady > 0 && px_steady * 4u < cols_steady * 150u && whole > 0 && partial > 0);
+    } else {
+        CHECK("... every changed column went whole", cut == 0 && cols_steady > 0 && whole > 0);
+    }
 }
 
 int main(void)

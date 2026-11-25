@@ -5,9 +5,9 @@
  * built once from the sources (yt_prepare) and then painted column by column
  * through the canvas (ui/canvas.h): each element writes the pixels it owns
  * into the column's strip, lowest layer first; the still ones (yt_base) are
- * the canvas's base layer, the rest (yt_overlays) are painted over it, so a
- * column whose base did not change sends only the rows the overlays moved
- * on. A full redraw and a live update are the same frame; the full one sends
+ * the canvas's base layer, the rest (yt_overlays) are painted over it, so
+ * (with the feature CANVASRUNS) a column whose base did not change sends
+ * only the rows the overlays moved on. A full redraw and a live update are the same frame; the full one sends
  * every column, the live one only the columns that changed.
  *
  * What a frame is built from is in scope_view.c (the window of the record)

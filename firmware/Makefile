@@ -817,13 +817,22 @@ test-scope-geom: $(BUILD_DIR)/test_scope_geom
 	$<
 
 # The canvas draw cycle (ui/canvas.c) against a model of the glass: what is
-# sent, what is skipped, holes, and incremental == full.
-$(BUILD_DIR)/test_canvas: tests/test_canvas.c src/ui/canvas.c src/ui/canvas.h src/drivers/lcd.h | $(BUILD_DIR)
-	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Isrc/ui -Isrc/drivers $< src/ui/canvas.c -o $@
+# sent, what is skipped, holes, and incremental == full. Built and run twice,
+# without and with the feature CANVASRUNS (test_canvas_0, test_canvas_1): the
+# glass must be right either way; with it, a changed column sends only the
+# overlays' rows, without it the whole column.
+CANVAS_TEST_SRCS_0 = src/ui/canvas.c
+CANVAS_TEST_SRCS_1 = src/ui/canvas.c src/ui/canvas_runs.c
+CANVAS_TESTS = $(BUILD_DIR)/test_canvas_0 $(BUILD_DIR)/test_canvas_1
+$(CANVAS_TESTS): $(BUILD_DIR)/test_canvas_%: tests/test_canvas.c src/ui/canvas.c src/ui/canvas.h \
+                 src/ui/canvas_runs.c src/ui/canvas_runs.h src/drivers/lcd.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Wundef -DFEATURE_CANVASRUNS=$* -Isrc/ui -Isrc/drivers \
+		$< $(CANVAS_TEST_SRCS_$*) -o $@
 
 .PHONY: test-canvas
-test-canvas: $(BUILD_DIR)/test_canvas
-	$<
+test-canvas: $(CANVAS_TESTS)
+	$(BUILD_DIR)/test_canvas_0
+	$(BUILD_DIR)/test_canvas_1
 
 # The Y-T vertical transform (yt_vmap.h): true scale (stock geometry: 0 V at
 # position 0 on the centre line, one division = the range's nominal volts/div,

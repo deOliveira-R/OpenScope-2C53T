@@ -152,6 +152,18 @@ base sends the whole column. Y-T (and so roll and split's Y-T half) uses it;
 with persistence on the ghosts change the base every frame, so its columns
 go whole as before. `ui dump` counts the pixels sent.
 
+The partial send is a build feature, `canvasruns` (`firmware/features.mk`),
+on in every image. Its core is one file, `firmware/src/ui/canvas_runs.c`: the
+copy of the base strip, the base hash and runs of every column of each
+canvas, and the windows a changed column sends. `canvas.c` calls it through
+`canvas_runs.h` with no `#if`; everything else (the base and the overlays,
+the strip hash, skipping unchanged columns, holes, the trust rule) is the
+same in both builds. It costs 8,216 B of RAM and 896 B of flash (`make features-ab
+FEATURE=canvasruns`, 2026-11-25, bench image). Built
+without it (`make WITHOUT=canvasruns`), a changed column is sent whole: the
+picture is the same, the plot's send is slower (a moving trace sends its
+whole columns instead of the overlays' rows).
+
 ### Panel driver
 
 The bus, the address window, a stream of pixels along a row or a column. The

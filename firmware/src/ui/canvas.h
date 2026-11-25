@@ -11,9 +11,10 @@
  *
  * A frame may come in two layers: a base (the still picture: background,
  * graticule) painted first, and the overlays (the traces, the tags) painted
- * over it. The canvas then keeps, per strip, which rows the overlays covered;
- * when a strip's base is the one already on the glass, only the rows the
- * overlays left and the rows they arrived on are sent.
+ * over it. With the feature CANVASRUNS (canvas_runs.h) the canvas then
+ * keeps, per strip, which rows the overlays covered; when a strip's base is
+ * the one already on the glass, only the rows the overlays left and the rows
+ * they arrived on are sent. Without it a changed strip is sent whole.
  *
  * Strips are columns (canvas_draw_columns); row strips come with the first
  * display type that needs them (the waterfall).
@@ -94,10 +95,11 @@ typedef struct {
  * others were unchanged. Strips are trusted as unchanged only while the
  * rectangle and the holes are the ones of this canvas's last frame and nobody
  * else has drawn on the rectangle's rows since (lcd_watch_rows); otherwise every
- * strip is sent. A hole clipped to nothing by the rectangle is ignored. Of a
- * changed column only the overlays' rows (this frame's and the last one's)
- * are sent when both frames have a base, the column's base did not change and
- * the strips are trusted; otherwise the whole column. */
+ * strip is sent. A hole clipped to nothing by the rectangle is ignored. With
+ * CANVASRUNS, of a changed column only the overlays' rows (this frame's and
+ * the last one's) are sent when both frames have a base, the column's base
+ * did not change and the strips are trusted; otherwise, and always without
+ * it, the whole column. */
 uint16_t canvas_draw_columns(const canvas_frame_t *f);
 
 #endif /* CANVAS_H */
