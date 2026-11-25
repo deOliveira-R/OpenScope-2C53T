@@ -32,6 +32,13 @@ bool popup_live(void)
     return popup_on && (int32_t)(xTaskGetTickCount() - popup_until) < 0;
 }
 
+/* A frame of rows [top, bot) keeps a hole for the box: the popup lives and
+ * the box has rows in the band. */
+bool popup_hole_in(int top, int bot)
+{
+    return popup_live() && POPUP_Y < bot && POPUP_Y + POPUP_H > top;
+}
+
 /* Popups outside the scope. The scope's popup rides on the scope renderer,
  * which is the only place that draws it. Anywhere else (meter, siggen,
  * settings) the popup is a tick-timed overlay that the display task

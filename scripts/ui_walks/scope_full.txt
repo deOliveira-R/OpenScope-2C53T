@@ -363,7 +363,8 @@ f12_set_vdiv   | set ch1.vdiv 7 ; wait 2 ; get ch1.vdiv
 f12_set_vdiv0  | set ch1.vdiv 6 ; wait 2 ; get ch1.vdiv
 
 # ── 13. split ────────────────────────────────────────────────────────────────
-# expect: view=split ; the trace above, the spectrum below
+# expect: view=split ; the trace above, the spectrum below ; the upper half framed (the keys are on
+#         zoom), the channels' strip at the bottom
 f13_set_split  | set view.mode split ; wait 3 ; get view.mode
 # expect: 0 redraw_all/s
 f13_idle       | wait 4
@@ -385,8 +386,15 @@ f13_prm_close  | ui seq PRM ; wait 2
 # expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=split
 f13_trigger    | ui seq TRIGGER ; wait 1
 f13_trig_close | ui seq TRIGGER ; wait 2
-# expect: nothing (long PRM / OK / AUTO mean nothing outside the time view) ; view.meashide = off
-f13_long       | ui seq long:PRM long:OK long:AUTO ; wait 2 ; get view.meashide
+# expect: view.meashide = on, then off (split draws the strip of the keys' half: long PRM hides it)
+f13_long       | ui seq long:PRM ; wait 2 ; get view.meashide ; ui seq long:PRM ; wait 2 ; get view.meashide
+# expect: the spectrum above, the trace below ; view.upper = fft ; view.lower = yt (the pair swaps)
+f13_pair       | set view.upper fft ; wait 3 ; get view.upper ; get view.lower
+# expect: focus=spectrum (chmove -> trigmove -> spectrum): the spectrum half framed, its strip
+#         (Peak, Level) at the bottom
+f13_pair_keys  | ui seq SELECT*2 ; wait 2
+# expect: view.upper = yt: the trace above again
+f13_pair_back  | set view.lower fft ; wait 3 ; get view.upper
 # expect: ch2.enabled = off then on
 f13_ch2_long   | ui seq long:CH2 ; wait 2 ; get ch2.enabled
 f13_ch2_long2  | ui seq long:CH2 ; wait 2 ; get ch2.enabled

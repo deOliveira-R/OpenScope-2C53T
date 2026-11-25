@@ -118,22 +118,22 @@ uint8_t key_scan_tick(key_scan_t *s, uint16_t raw, key_scan_event_t out[KEY_NUM]
  * A job is on offer when the view lists it and what it adjusts exists: the
  * cursor job while cursors are on, the mask job while a mask exists. */
 
-/* The job after cur in view_mode's list, skipping the ones not on offer. */
-key_focus_t key_focus_next(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present);
+/* The job after cur in the view's list, skipping the ones not on offer. */
+key_focus_t key_focus_next(view_sel_t view, key_focus_t cur, bool cursors_on, bool mask_present);
 /* cur if the view offers it now, else the view's first job (the view
  * changed, cursors were turned off, the mask was cleared). */
-key_focus_t key_focus_sanitize(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present);
+key_focus_t key_focus_sanitize(view_sel_t view, key_focus_t cur, bool cursors_on, bool mask_present);
 /* The cursor mode changed: switching the cursors on puts the arrows on the
  * view's cursor job (cur when the view draws no cursors); switching them off
  * takes them off it, to the view's first job. */
-key_focus_t key_focus_after_cursor_change(uint8_t view_mode, key_focus_t cur, bool cursors_on);
+key_focus_t key_focus_after_cursor_change(view_sel_t view, key_focus_t cur, bool cursors_on);
 const char *key_focus_name(key_focus_t f);     /* short shell word */
 const char *key_focus_popup(key_focus_t f);    /* popup text */
 
 /* ── Key -> action ────────────────────────────────────────────────── */
 typedef struct {
     device_mode_t mode;
-    uint8_t       view;              /* scope mode: view.mode (view_mode_t) */
+    view_sel_t    view;              /* scope mode: view.mode and split's pair */
     key_focus_t   focus;
     bool          cursors_on;
     bool          mask_present;
@@ -216,6 +216,7 @@ key_cmd_t key_map_global(const key_ctx_t *c, button_id_t btn, bool is_long);
  * there, the active channel in main.c), not in key_model.c, so the host
  * test links without them. */
 uint8_t key_focus_get(void);             /* key_focus_t: what the arrows adjust */
+view_sel_t scope_view_sel(void);         /* the view on screen: view.mode, view.upper, view.lower */
 uint8_t key_active_channel_get(void);    /* 0 = CH1, 1 = CH2 */
 
 #endif /* KEY_MODEL_H */

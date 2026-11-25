@@ -90,11 +90,17 @@ sense for what it shows (table below).
 | Y-T, Roll | Zoom, Channel move, Trigger move, [Cursor], [Mask] |
 | X-Y | Zoom, Channel move, Trigger move |
 | FFT, Waterfall | Spectrum, Zoom (the timebase sets the spectrum's range, V/div its level) |
-| Split | Zoom, Channel move, Trigger move, Spectrum: one list over both halves |
+| Split | The upper half's stages, then the lower half's: one list over both halves. Y-T over FFT (the default): Zoom, Channel move, Trigger move, [Cursor], [Mask], Spectrum, [Spectrum cursor] |
 
-In Split a thin frame surrounds the half the keys are on: the upper half
-(the traces) in the first three stages, the lower half (the spectrum) in the
-Spectrum stage. AUTO acts on the framed half.
+Split shows two views, one above the other: Y-T and FFT, in either order
+(Oscilloscope Settings page, Display: "Upper half" and "Lower half"). A
+stage belongs to the half that shows what it adjusts (Zoom, the moves, the
+time cursors and the mask to the Y-T half; the spectrum and its cursors to
+the FFT half). A thin frame surrounds the half the keys are on, and that
+half owns the measurement strip at the bottom of the screen (the channels'
+measurements under Y-T, the spectrum's under FFT) and, with cursors on,
+their readout. Each half draws its own cursor lines. AUTO acts on the
+framed half. Roll is off in Split.
 
 Switching cursors on (Settings -> Oscilloscope -> Cursors, or the Oscilloscope
 Settings page) selects the Cursor stage straight away; SELECT leaves it. Channel position moves only the channel's ground-reference marker
@@ -246,7 +252,7 @@ transform's input, the unit of the plot's own scale.
 | **MENU** / **PRM** | Open the Oscilloscope Settings page, as in the time view (the way back to it) |
 | **SELECT** | Next arrow stage of the view (see "What the arrow keys adjust") |
 | **UP/DOWN**, **LEFT/RIGHT** | In the Spectrum stage: reference level and span |
-| **AUTO** | Fit the spectrum's span (FFT, Waterfall; Split while the arrows are in the Spectrum stage, else autoset) |
+| **AUTO** | Fit the spectrum's span (FFT, Waterfall; Split while the arrows are on the spectrum half, else autoset) |
 | Settings page, **Spectrum** row | Window (Rect, Hanning, Hamming, Blackman-Harris, Flat top), averaging (off, x2 to x32), max hold. Saved with the settings |
 | **PRM** | The Measure pane, on the spectrum's own measurements (FFT view; long PRM hides them) |
 
@@ -254,9 +260,9 @@ The spectrum's measurements, shown in a strip under the plot as the time
 views show theirs: **Peak** (frequency of the strongest bin; it is the
 bin's centre, so good to half a bin width), **Level** (that bin's level),
 **H2** and **H3** (the level at twice and three times that frequency,
-relative to the peak, dBc). Peak and Level are on until you choose. The
-spectrum half of Split and the Waterfall do not draw the strip or cursors
-yet.
+relative to the peak, dBc). Peak and Level are on until you choose. In
+Split the spectrum half shows its strip and cursor readout while the keys
+are on it. The Waterfall does not draw the strip or cursors yet.
 
 Note: Entering an FFT view claims the shared memory pool (88KB). Returning to time view releases it.
 
@@ -287,6 +293,14 @@ acquisition keeps running behind it.
 | **MOVE / SELECT / AUTO** (page up) | Nothing |
 | **SAVE** | Screenshot of the page; long SAVE = gallery |
 | long **MENU / MOVE / SELECT / TRIGGER** | Home / meter / scope / generator, as everywhere (the page closes) |
+
+Display pane: the five views (Y-T, X-Y, FFT, Split, Waterfall; OK picks
+one), then Split's two halves, "Upper half: Y-T" and "Lower half: FFT". OK
+on a half changes it to the next view a half can show (Y-T or FFT; X-Y and
+the Waterfall cannot be halves yet) and the other half takes the view it
+had, so the halves never show the same view. It does not change the view on
+screen. The shell's `view.upper` / `view.lower` are the same two settings;
+they come back with the session (Startup on Boot = Last Used).
 
 Measure pane: one panel per source, of the sources the view on screen shows:
 CH1 and CH2 in the views of the time record, FFT in the spectrum views, all

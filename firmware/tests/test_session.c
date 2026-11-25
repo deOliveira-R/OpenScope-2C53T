@@ -568,6 +568,7 @@ static void a_session(void)
     CHECK(set(P(VIEW_CURSEL), 3));
     CHECK(set(P(VIEW_CURT1), -987654321));  /* a five-byte varint */
     CHECK(set(P(VIEW_PERSIST), 2));
+    CHECK(set(P(VIEW_UPPER), 2));          /* split's pair turned over: FFT over Y-T, restored in table order */
     CHECK(set(P(METER_BEEP), 3));
     CHECK(set(P(METER_DEGF), 1));
     CHECK(set(P(MASK_TOLV), 20));
@@ -620,7 +621,8 @@ static void test_membership(void)
         PROP_ID_GEN_FREQ, PROP_ID_METER_FUNC, PROP_ID_METER_DEGF, PROP_ID_MASK_TOLV, PROP_ID_IL_ENABLED,
         PROP_ID_SYS_STARTUP, PROP_ID_SYS_BRIGHTNESS, PROP_ID_TB_ROLL,
         PROP_ID_VIEW_CURT1, PROP_ID_VIEW_CURT2, PROP_ID_VIEW_CURR1, PROP_ID_VIEW_CURR2,
-        PROP_ID_VIEW_CURY1, PROP_ID_VIEW_CURY2 };   /* the time cursors, in their units */
+        PROP_ID_VIEW_CURY1, PROP_ID_VIEW_CURY2,     /* the time cursors, in their units */
+        PROP_ID_VIEW_UPPER, PROP_ID_VIEW_LOWER };   /* split's pair: how the user left split */
     for (unsigned k = 0; k < sizeof in / sizeof in[0]; k++) CHECK(!model_session_excluded(prop_by_id(in[k])));
     printf("  %u properties: %u in the snapshot, %u left out with a reason, %u read only\n",
            (unsigned)NPROP, members, excluded, ro);

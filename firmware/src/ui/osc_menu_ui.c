@@ -50,21 +50,35 @@ static const menu_frame_t k_frame = {
 #define ITEM_X     (RAIL_W + MENU_FRAME_NOTCH_W + 4u)   /* 106: panel left  */
 #define ITEM_W     (LCD_WIDTH - ITEM_X - 4u)            /* 210: panel width */
 
-#define RADIO_PITCH  27u
-#define RADIO_ROWS   6u       /* the longest radio pane: Display */
-_Static_assert(CONTENT_Y + RADIO_ROWS * RADIO_PITCH <= PAGE_Y + PAGE_H - MENU_FRAME_FOOTER_H,
-               "the radio rows end above the footer");
-_Static_assert(OSC_DISP_COUNT <= RADIO_ROWS && OSC_CUR_COUNT <= RADIO_ROWS &&
-               OSC_PERS_COUNT <= RADIO_ROWS, "every radio pane fits");
+/* A radio pane's rows: RADIO_PITCH apart, each RADIO_GAP short of its
+ * pitch, closer when the pane has more rows than fit (Display, with Split's
+ * halves), never under RADIO_ROW_MIN_H (a font_medium line and its box). */
+#define RADIO_PITCH     27u
+#define RADIO_GAP        3u
+#define RADIO_ROW_MIN_H 20u
+#define RADIO_AREA_H    (PAGE_Y + PAGE_H - MENU_FRAME_FOOTER_H - CONTENT_Y)
+_Static_assert(RADIO_AREA_H / OSC_DISP_COUNT >= RADIO_ROW_MIN_H + RADIO_GAP &&
+               RADIO_AREA_H / OSC_CUR_COUNT >= RADIO_ROW_MIN_H + RADIO_GAP &&
+               RADIO_AREA_H / OSC_PERS_COUNT >= RADIO_ROW_MIN_H + RADIO_GAP,
+               "every radio pane fits above the footer");
 
 static void draw_radio(const osc_menu_state_t *s)
 {
     const osc_row_t row = (osc_row_t)s->row;
     const uint8_t n = osc_menu_layout(row)->n_items;
     const uint8_t cur = osc_menu_bind_current(row);
+    const uint16_t pitch = (uint16_t)(RADIO_AREA_H / n < RADIO_PITCH ? RADIO_AREA_H / n : RADIO_PITCH);
+    const uint16_t h = (uint16_t)(pitch - RADIO_GAP);
     for (uint8_t i = 0; i < n; i++) {
-        menu_frame_radio(&k_frame, (uint16_t)(CONTENT_Y + i * RADIO_PITCH), 24, osc_menu_item_label(row, i, 0),
-                         s->in_pane && s->item == i, cur == i, true);
+        const uint16_t y = (uint16_t)(CONTENT_Y + i * pitch);
+        const bool focused = s->in_pane && s->item == i;
+        if (osc_menu_item_is_value(row, i)) {
+            char v[16];
+            osc_menu_bind_text(row, i, v, sizeof v);
+            menu_frame_value_row(&k_frame, y, h, osc_menu_item_label(row, i, 0), v, focused, true);
+        } else {
+            menu_frame_radio(&k_frame, y, h, osc_menu_item_label(row, i, 0), focused, cur == i, true);
+        }
     }
 }
 

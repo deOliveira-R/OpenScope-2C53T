@@ -241,13 +241,26 @@ static void test_radio(void)
 static void test_display(void)
 {
     printf("Display pane (the scope's view; view.mode)\n");
-    static const char *const want[] = { "Y-T", "X-Y", "FFT", "Split", "Waterfall" };
+    static const char *const want[] = { "Y-T", "X-Y", "FFT", "Split", "Waterfall", "Upper half:", "Lower half:" };
     const osc_pane_layout_t *l = osc_menu_layout(OSC_ROW_DISPLAY);
     int ok = (l->kind == OSC_PANE_RADIO);
-    for (uint8_t i = 0; i < 5; i++)
+    for (uint8_t i = 0; i < 7; i++)
         ok &= strcmp(osc_menu_item_label(OSC_ROW_DISPLAY, i, 0), want[i]) == 0;
-    CHECK("five entries, in order: Y-T, X-Y, FFT, Split, Waterfall (roll is the timebase ladder's, not a view)",
-          ok && l->n_items == 5 && OSC_DISP_COUNT == 5 && osc_menu_item_label(OSC_ROW_DISPLAY, 5, 0)[0] == '\0');
+    CHECK("five views, in order: Y-T, X-Y, FFT, Split, Waterfall (roll is the timebase ladder's, not a view), "
+          "then Split's upper and lower half",
+          ok && l->n_items == 7 && OSC_DISP_COUNT == 7 && osc_menu_item_label(OSC_ROW_DISPLAY, 7, 0)[0] == '\0');
+    {
+        bool rows = true;
+        for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
+            const bool is_half = (i == OSC_DISP_UPPER || i == OSC_DISP_LOWER);
+            rows &= osc_menu_item_is_value(OSC_ROW_DISPLAY, i) == is_half;
+            rows &= osc_menu_disp_half(i) == (is_half ? (uint8_t)(i - OSC_DISP_UPPER) : (uint8_t)VIEW_HALF_COUNT);
+        }
+        CHECK("the halves are value rows, upper then lower (view_half_t order); the views radio rows",
+              rows && osc_menu_disp_half(OSC_DISP_UPPER) == VIEW_HALF_UPPER &&
+              osc_menu_disp_half(OSC_DISP_LOWER) == VIEW_HALF_LOWER &&
+              osc_menu_item_is_value(OSC_ROW_CH1, OSC_CH_PROBE) && !osc_menu_item_is_value(OSC_ROW_CURSOR, OSC_CUR_TIME));
+    }
     CHECK("Split is an item of its own, between FFT and Waterfall",
           OSC_DISP_SPLIT == OSC_DISP_FFT + 1 && OSC_DISP_WATERFALL == OSC_DISP_SPLIT + 1);
 
@@ -255,13 +268,15 @@ static void test_display(void)
      * test_model.c checks the same pairs against the property itself. */
     ok = 1;
     unsigned seen = 0;
-    for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
+    for (uint8_t i = 0; i < OSC_DISP_VIEW_MODES; i++) {
         const int8_t vm = osc_menu_disp_view_mode(i);
         ok &= vm >= 0 && vm < OSC_DISP_VIEW_MODES && !(seen & (1u << vm));
         seen |= 1u << vm;
         ok &= osc_menu_disp_item(vm) == i;         /* and back */
     }
-    CHECK("every view.mode value has exactly one item, both ways", ok && seen == 0x1Fu);
+    CHECK("every view.mode value has exactly one item, both ways; the halves are no view",
+          ok && seen == 0x1Fu && osc_menu_disp_view_mode(OSC_DISP_UPPER) == -1 &&
+          osc_menu_disp_view_mode(OSC_DISP_LOWER) == -1);
     CHECK("the named pairs", osc_menu_disp_view_mode(OSC_DISP_YT) == 0 && osc_menu_disp_view_mode(OSC_DISP_XY) == 1 &&
           osc_menu_disp_view_mode(OSC_DISP_FFT) == 2 && osc_menu_disp_view_mode(OSC_DISP_SPLIT) == 3 &&
           osc_menu_disp_view_mode(OSC_DISP_WATERFALL) == 4);

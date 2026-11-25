@@ -33,7 +33,8 @@ static const char *const k_row_title[OSC_ROW_COUNT] = {
     "CH2 Settings", "Trigger Settings", "Persistence", "Mathematics", "Spectrum Settings",
 };
 
-static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "X-Y", "FFT", "Split", "Waterfall" };
+static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "X-Y", "FFT", "Split", "Waterfall",
+                                                     "Upper half:", "Lower half:" };
 /* The lines read the axes of the view they are drawn in: time and volts, or
  * frequency and level on a spectrum. */
 static const char *const k_cur[OSC_CUR_COUNT]    = { "Off", "X1-X2  (time, freq.)", "Y1-Y2  (volts, level)", "Both" };
@@ -84,12 +85,28 @@ const char *osc_menu_row_title(osc_row_t row)
 }
 
 /* view.mode per Display item (props_scope.c: yt xy fft split waterfall);
- * -1 = the item is not a view. test_osc_menu.c checks the pairs against the
- * property's own value names. */
+ * -1 = the item is not a view (Split's halves). test_osc_menu.c checks the
+ * pairs against the property's own value names. */
 static const int8_t k_disp_view_mode[OSC_DISP_COUNT] = {
     [OSC_DISP_YT] = VIEW_MODE_YT, [OSC_DISP_XY] = VIEW_MODE_XY, [OSC_DISP_FFT] = VIEW_MODE_FFT,
     [OSC_DISP_SPLIT] = VIEW_MODE_SPLIT, [OSC_DISP_WATERFALL] = VIEW_MODE_WATERFALL,
+    [OSC_DISP_UPPER] = -1, [OSC_DISP_LOWER] = -1,
 };
+_Static_assert((int)OSC_DISP_UPPER == (int)OSC_DISP_VIEW_MODES && OSC_DISP_LOWER == OSC_DISP_UPPER + 1 &&
+               (int)OSC_DISP_COUNT == (int)OSC_DISP_UPPER + (int)VIEW_HALF_COUNT,
+               "the Display pane: the views, then Split's halves in view_half_t order");
+
+uint8_t osc_menu_disp_half(uint8_t item)
+{
+    return (item >= OSC_DISP_UPPER && item < OSC_DISP_COUNT) ? (uint8_t)(item - OSC_DISP_UPPER)
+                                                              : (uint8_t)VIEW_HALF_COUNT;
+}
+
+bool osc_menu_item_is_value(osc_row_t row, uint8_t item)
+{
+    if (row == OSC_ROW_DISPLAY) return osc_menu_disp_half(item) < VIEW_HALF_COUNT;
+    return (unsigned)row < OSC_ROW_COUNT && osc_menu_layout(row)->kind == OSC_PANE_VALUES;
+}
 
 int8_t osc_menu_disp_view_mode(uint8_t item)
 {

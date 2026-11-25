@@ -11,9 +11,11 @@
  *
  * So the key model, the settings page and the furniture ask this table
  * instead of testing for a particular view. An entry lists only what the
- * view's renderer really draws today: X-Y, split's halves and the waterfall
- * have no strip or cursors yet (docs/design/display_architecture.md, steps 6
- * and 7).
+ * view's renderer really draws today: X-Y and the waterfall have no strip or
+ * cursors yet (docs/design/display_architecture.md, steps 6 and 7). Split is
+ * a pair of views in two panes (view.upper over view.lower): its entry is
+ * composed from theirs (view_desc_of), so a view that can be a half brings
+ * its jobs, strip and cursors with it.
  *
  * Pure: a header, so every host test that links the key model has it.
  */
@@ -65,56 +67,154 @@ typedef struct {
     bool    roll;               /* it takes the roll source (tb.roll): its renderer draws the
                                  * roll FIFO (scope_yt.c, view_build_roll). While the view
                                  * does not, tb.roll is off and cannot be set on. */
+    bool    half;               /* it can be a half of split: it has a drawer for a pane of
+                                 * any height (scope_split.c) */
+    bool    pair;               /* split: its domains and jobs are its two halves' (view_desc_of) */
 } view_desc_t;
 
 #define VIEW_TIME_ONLY  VIEW_DOM_BIT(VIEW_DOM_TIME)
 #define VIEW_FREQ_ONLY  VIEW_DOM_BIT(VIEW_DOM_FREQ)
 
+/* X-Y cannot be a half yet: it has no pane form (it paints its whole band
+ * from the trail). Nor the waterfall: its scratch line shares memory with the
+ * Y-T window (ui_draw_scratch_t), which the other half would be using. */
 static const view_desc_t view_table[VIEW_MODE_COUNT] = {
-    [VIEW_MODE_YT]        = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true, true },
-    [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, false, false },
+    [VIEW_MODE_YT]        = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK },
+                              true, true, true, false },
+    [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, false, false, false, false },
     /* The spectrum's span follows the timebase and its level the range, so
      * the spectrum views offer the input's scales as a second job. */
-    [VIEW_MODE_FFT]       = { VIEW_FREQ_ONLY, 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR }, true, false },
-    /* One ring over both halves: the job says which half the arrows are on. */
-    [VIEW_MODE_SPLIT]     = { VIEW_TIME_ONLY | VIEW_FREQ_ONLY, 4,
-                              { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM }, false, false },
-    [VIEW_MODE_WATERFALL] = { VIEW_FREQ_ONLY, 2, { KF_SPECTRUM, KF_ZOOM }, false, false },
+    [VIEW_MODE_FFT]       = { VIEW_FREQ_ONLY, 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },
+                              true, false, true, false },
+    /* Two views, one above the other (view.upper, view.lower). The strip is
+     * the one of the half the keys are on. It does not take roll: that rule
+     * is kept for now, though a Y-T half could. */
+    [VIEW_MODE_SPLIT]     = { 0u, 0, { 0 }, true, false, false, true },
+    [VIEW_MODE_WATERFALL] = { VIEW_FREQ_ONLY, 2, { KF_SPECTRUM, KF_ZOOM }, false, false, false, false },
 };
 
-/* The entry of a view.mode value; Y-T's for a value out of range. */
-static inline const view_desc_t *view_desc(uint8_t view_mode)
+/* The halves of split, top to bottom. */
+typedef enum { VIEW_HALF_UPPER = 0, VIEW_HALF_LOWER, VIEW_HALF_COUNT } view_half_t;
+
+/* The pair split shows by default: the trace above its spectrum (the split
+ * view before its halves could be chosen). */
+#define VIEW_HALF_UPPER_DEFAULT  VIEW_MODE_YT
+#define VIEW_HALF_LOWER_DEFAULT  VIEW_MODE_FFT
+
+/* What is on screen: view.mode, and the views of split's halves
+ * (view.upper, view.lower; read only when mode is split). */
+typedef struct {
+    uint8_t mode;
+    uint8_t half[VIEW_HALF_COUNT];
+} view_sel_t;
+
+static inline view_sel_t view_sel(uint8_t mode, uint8_t upper, uint8_t lower)
+{
+    return (view_sel_t){ mode, { upper, lower } };
+}
+
+/* view.mode with split's default pair. */
+static inline view_sel_t view_sel_mode(uint8_t mode)
+{
+    return view_sel(mode, VIEW_HALF_UPPER_DEFAULT, VIEW_HALF_LOWER_DEFAULT);
+}
+
+/* The table's entry of a view.mode value; Y-T's for a value out of range. */
+static inline const view_desc_t *view_entry(uint8_t view_mode)
 {
     return &view_table[view_mode < VIEW_MODE_COUNT ? view_mode : VIEW_MODE_YT];
 }
 
-/* The view's cursor job, or KF_COUNT when it draws no cursors. */
-static inline key_focus_t view_cursor_job(uint8_t view_mode)
+/* The view can be a half of split. */
+static inline bool view_is_half(uint8_t view_mode)
 {
-    const view_desc_t *v = view_desc(view_mode);
-    for (uint8_t i = 0; i < v->n_jobs; i++)
-        if (key_focus_is_cursor((key_focus_t)v->jobs[i])) return (key_focus_t)v->jobs[i];
-    return KF_COUNT;
+    return view_mode < VIEW_MODE_COUNT && view_table[view_mode].half;
+}
+
+/* The next view after view_mode that can be a half, round the table (a Display
+ * menu row steps a half through them). */
+static inline uint8_t view_half_next(uint8_t view_mode)
+{
+    for (uint8_t k = 1; k <= VIEW_MODE_COUNT; k++) {
+        const uint8_t v = (uint8_t)((view_mode + k) % VIEW_MODE_COUNT);
+        if (view_table[v].half) return v;
+    }
+    return view_mode;
+}
+
+/* Append to d the jobs of entry h that work on a domain h shows, skipping a
+ * job already listed: a job belongs to the half of its domain (the
+ * spectrum's second job, the input's scales, is the time half's own). */
+static inline void view_desc_take(view_desc_t *d, const view_desc_t *h)
+{
+    for (uint8_t i = 0; i < h->n_jobs; i++) {
+        const key_focus_t f = (key_focus_t)h->jobs[i];
+        bool listed = false;
+        for (uint8_t k = 0; k < d->n_jobs; k++) listed |= d->jobs[k] == (uint8_t)f;
+        if (!listed && (h->domains & VIEW_DOM_BIT(key_focus_domain(f))) != 0u)
+            d->jobs[d->n_jobs++] = (uint8_t)f;
+    }
+    d->domains |= h->domains;
+}
+
+/* The view on screen as the keys and the furniture see it: the table's entry,
+ * and for split the composition of its halves (the upper half's jobs, then
+ * the lower half's). */
+static inline view_desc_t view_desc_of(view_sel_t v)
+{
+    view_desc_t d = *view_entry(v.mode);
+    if (d.pair)
+        for (uint8_t h = 0; h < VIEW_HALF_COUNT; h++) view_desc_take(&d, view_entry(v.half[h]));
+    return d;
+}
+
+/* The view's cursor job, or KF_COUNT when it draws no cursors. In split the
+ * cursor job of the half the keys are on (job's domain), else the first. */
+static inline key_focus_t view_cursor_job(view_sel_t v, key_focus_t job)
+{
+    const view_desc_t d = view_desc_of(v);
+    key_focus_t first = KF_COUNT;
+    for (uint8_t i = 0; i < d.n_jobs; i++) {
+        const key_focus_t f = (key_focus_t)d.jobs[i];
+        if (!key_focus_is_cursor(f)) continue;
+        if (key_focus_domain(f) == key_focus_domain(job)) return f;
+        if (first == KF_COUNT) first = f;
+    }
+    return first;
 }
 
 /* The view takes the roll source (tb.roll may be on). */
 static inline bool view_takes_roll(uint8_t view_mode)
 {
-    return view_desc(view_mode)->roll;
+    return view_entry(view_mode)->roll;
 }
 
-static inline bool view_shows(uint8_t view_mode, view_domain_t d)
+static inline bool view_shows(view_sel_t v, view_domain_t d)
 {
-    return (view_desc(view_mode)->domains & VIEW_DOM_BIT(d)) != 0u;
+    return (view_desc_of(v).domains & VIEW_DOM_BIT(d)) != 0u;
 }
 
 /* The domain a key that has one meaning per domain (AUTO) acts on: the
  * job's, when the view shows it, else the one the view shows. */
-static inline view_domain_t view_key_domain(uint8_t view_mode, key_focus_t job)
+static inline view_domain_t view_key_domain(view_sel_t v, key_focus_t job)
 {
     const view_domain_t d = key_focus_domain(job);
-    if (view_shows(view_mode, d)) return d;
-    return view_shows(view_mode, VIEW_DOM_TIME) ? VIEW_DOM_TIME : VIEW_DOM_FREQ;
+    if (view_shows(v, d)) return d;
+    return view_shows(v, VIEW_DOM_TIME) ? VIEW_DOM_TIME : VIEW_DOM_FREQ;
+}
+
+/* The half of split the keys are on: the one that shows the keys' domain. */
+static inline view_half_t view_key_half(view_sel_t v, key_focus_t job)
+{
+    const view_domain_t d = view_key_domain(v, job);
+    return (view_entry(v.half[VIEW_HALF_UPPER])->domains & VIEW_DOM_BIT(d)) ? VIEW_HALF_UPPER : VIEW_HALF_LOWER;
+}
+
+/* The domain whose measurement strip the view draws (in split, the keyed
+ * half's), or VIEW_DOM_COUNT when it draws none. */
+static inline view_domain_t view_strip_domain(view_sel_t v, key_focus_t job)
+{
+    return view_entry(v.mode)->strip ? view_key_domain(v, job) : VIEW_DOM_COUNT;
 }
 
 /* A view of two domains marks the half the keys are on (the split view's

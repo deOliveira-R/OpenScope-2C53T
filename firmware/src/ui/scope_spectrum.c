@@ -1,13 +1,14 @@
 /*
- * OpenScope 2C53T - oscilloscope screen: spectrum and split views
+ * OpenScope 2C53T - oscilloscope screen: the spectrum
  *
- * The spectrum of a record, its reference level and notes, and the split
- * view (trace above, spectrum below).
+ * The spectrum of a record, its reference level and notes: the FFT view,
+ * and the spectrum as a half of split (scope_split.c), both through
+ * fft_pane_draw.
  */
 
 #include "scope_ui_parts.h"
 #include "canvas.h"
-#include "key_model.h"         /* key_focus_get, the view table */
+#include "view_table.h"         /* the focus mark */
 
 /* ═══════════════════════════════════════════════════════════════════
  * FFT views: the spectrum, its source and reference level
@@ -241,6 +242,17 @@ void fft_note_compose(uint16_t y_top, uint16_t height, const char *msg)
  * bars use cyan, so the bands stay distinct. */
 #define FFT_BAR_LOW_CH2  0x0410u
 
+/* The scale (the dB labels and the axis ends) is drawn on a plot of at least
+ * FFT_SCALE_LINES font_small lines: the header, two dB labels (a scale is
+ * two numbers) and the axis ends. A shorter plot (a half of split over a
+ * tall strip) shows the bars and the grid alone. */
+#define FFT_SCALE_LINES  4u
+
+static bool fft_scale_fits(uint16_t height)
+{
+    return height >= FFT_SCALE_LINES * font_small.height;
+}
+
 /* The dB grid: a row every FFT_GRID_DB, dotted (every 4th column), at most
  * FFT_GRID_ROWS_MAX of them; and at most FFT_CARETS_MAX peak carets. */
 #define FFT_GRID_DB        10.0f
@@ -300,15 +312,14 @@ static void fft_axes_publish(const fft_axes_t *ax)
  * When there is nothing to show the frame holds a message instead. */
 static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height);
 
-/* cursors: the frame draws the cursor lines (the full-screen spectrum).
- * mark: it draws the focus mark (the split view's half the keys are on). */
-static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height, bool cursors, bool mark)
+/* mark: it draws the focus mark (split's half the keys are on). */
+static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height, bool mark)
 {
     fft_frame_build_plot(f, y_top, height);
     f->mark = mark;
     f->mark_c = theme_get()->text_primary;
     fft_axes_publish(&f->ax);
-    f->curs = cursors && f->ax.on && scope_state_get()->cursor.mode != CURSOR_OFF;
+    f->curs = f->ax.on && scope_state_get()->cursor.mode != CURSOR_OFF;
     if (f->curs) cursor_layer_build_spectrum(scope_state_get(), &f->ax, theme_get(), &f->cl);
 }
 
@@ -371,7 +382,7 @@ static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height
         const uint16_t y = (uint16_t)(y_top + (uint16_t)(((ref_db - db) / range_db) * (float)height));
         if (y > y_top && y < y_bot) f->gy[f->ng++] = y;
     }
-    if (height > 80) {
+    if (fft_scale_fits(height)) {
         for (float db = ref_db; db > ref_db - range_db; db -= 20.0f) {
             const uint16_t y = (uint16_t)(y_top + (uint16_t)(((ref_db - db) / range_db) * (float)height));
             if (y > y_top + 8 && y < y_bot - 8) {
@@ -417,7 +428,7 @@ static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height
         ctext_add(&f->T, LCD_WIDTH - 4 - (int)font_string_width(w, &font_small), y_top + 2, w,
                   COLOR_GRAY, COLOR_GRAY, false);
     }
-    if (height > 80) {
+    if (fft_scale_fits(height)) {
         char l[12];
         fft_live_axis_label(fs, FFT_SIZE, zoom_start, l, sizeof l);
         ctext_add(&f->T, FFT_LMARGIN + 2, y_bot - 11, l, COLOR_WHITE, COLOR_BLACK, true);
@@ -520,39 +531,40 @@ static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
 #endif
 }
 
-/* The spectrum in [y_top, y_top + height): one canvas frame in column strips,
- * so nothing is blanked and only the columns that changed are sent. all:
- * send every column. hole: step around the popup box while it lives (the
- * full-screen spectrum; the split view puts the box back over each frame). */
-/* What the furniture of a spectrum needs of the frame that was drawn. */
-typedef struct {
-    fft_meas_t meas[FFT_MEAS_COUNT];
-    bool       ch2;                         /* the spectrum is CH2's */
-    fft_axes_t ax;
-} fft_drawn_t;
-
-static void fft_region_compose(uint16_t y_top, uint16_t height, bool all, bool hole, bool cursors,
-                               bool mark, fft_drawn_t *drawn)
+/* The spectrum in pane p (its rows down to band_bot): one canvas frame in
+ * column strips on the pane's canvas, so nothing is blanked and only the
+ * columns that changed are sent; the focus mark when the pane is marked, the
+ * cursor lines when the cursors are on. all: send every column. The popup
+ * box is a hole of the frame while it has rows in the pane; returns true
+ * when it kept one. drawn: what the spectrum's furniture needs. */
+bool fft_pane_draw(const plot_pane_t *p, bool all, fft_drawn_t *drawn)
 {
+    const uint16_t height = (uint16_t)(p->band_bot - p->top);
     fft_frame_t f;
-    fft_frame_build(&f, y_top, height, cursors, mark);
-    if (drawn) {
-        memcpy(drawn->meas, f.meas, sizeof f.meas);
-        drawn->ch2 = f.ch2;
-        drawn->ax = f.ax;
-    }
+    fft_frame_build(&f, (uint16_t)p->top, height, p->marked);
+    memcpy(drawn->meas, f.meas, sizeof f.meas);
+    drawn->ch2 = f.ch2;
+    drawn->ax = f.ax;
 
+    const bool hole = popup_hole_in(p->top, p->band_bot);
     const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
     const canvas_frame_t cf = {
-        .rect = { 0, y_top, LCD_WIDTH, height },
+        .id = p->canvas,
+        .rect = { 0, (uint16_t)p->top, LCD_WIDTH, height },
         .holes = &popup, .nholes = hole ? 1u : 0u,
         .all = all,
         .paint = fft_paint_column, .ctx = &f,
     };
     (void)canvas_draw_columns(&cf);
-#if FEATURE_BENCHSHELL
-    if (live_check_frames) live_check_frames--;
-#endif
+    return hole;
+}
+
+/* The spectrum's furniture under band_bot: its measurement strip and, with
+ * the cursors on, their readout in the strip's AUX row. refresh: in place. */
+void fft_furniture_draw(const scope_state_t *ss, const fft_drawn_t *d, uint16_t band_bot, bool refresh)
+{
+    draw_fft_strip(ss, theme_get(), d->meas, d->ch2, refresh);
+    if (ss->cursor.mode != CURSOR_OFF) spectrum_cursor_row_paint(ss, &d->ax, band_bot, !refresh);
 }
 
 /* The 2-row margins above and below the full-screen spectrum. */
@@ -570,126 +582,10 @@ void draw_fft_screen(bool full)
         lcd_fill_rect(0, SCOPE_TOP, LCD_WIDTH, FFT_VIEW_MARGIN, COLOR_BLACK);
         lcd_fill_rect(0, bot - FFT_VIEW_MARGIN, LCD_WIDTH, FFT_VIEW_MARGIN, COLOR_BLACK);
     }
-    const bool hole = popup_live();
-    popup_hole_last = hole;
+    const int16_t top = (int16_t)(SCOPE_TOP + FFT_VIEW_MARGIN), end = (int16_t)(bot - FFT_VIEW_MARGIN);
+    const plot_pane_t pane = plot_pane_make(CANVAS_PLOT, top, end, end);
     fft_drawn_t d;
-    fft_region_compose(SCOPE_TOP + FFT_VIEW_MARGIN, (uint16_t)(bot - SCOPE_TOP - 2u * FFT_VIEW_MARGIN),
-                       full, hole, true, false, &d);
-    draw_fft_strip(ss, theme_get(), d.meas, d.ch2, !full);
-    if (ss->cursor.mode != CURSOR_OFF) spectrum_cursor_row_paint(ss, &d.ax, bot, full);
+    popup_hole_last = fft_pane_draw(&pane, full, &d);
+    fft_furniture_draw(ss, &d, bot, !full);
     if (full) draw_popup(theme_get());
-}
-
-/* Height of one division of the split view's Y-T half, in pixels: half the
- * height of a full-view division, one division still being the range's
- * volts/div. */
-#define SPLIT_DIV_PX  13
-
-/* The split view's upper half, as a frame of its canvas: the Y-T window (8
- * divisions of SPLIT_DIV_PX), the divider row under it, the focus mark when
- * the keys are on this half. */
-typedef struct {
-    const theme_t *th;
-    uint16_t top, divider, mid;
-    bool     live, time_focus;
-    bool     on[2];
-    autofit_t m[2];
-    int16_t  prev[2];           /* the last column's row, per channel: columns come in order */
-} split_time_frame_t;
-
-static const char split_nrec[] = "no record";
-
-/* Pixel (x, y) of the upper half, given column x's trace spans lo..hi. */
-static uint16_t split_time_px(const split_time_frame_t *f, uint16_t x, uint16_t y,
-                              const int16_t lo[2], const int16_t hi[2])
-{
-    const theme_t *th = f->th;
-    const bool inwin = (x < SCOPE_GEOM_COLS);
-    if (y == f->divider)
-        return th->grid_center;
-    if (!f->live && x >= 4u && y >= f->top + 2u && y < f->top + 2u + font_small.height &&
-        font_text_px(split_nrec, &font_small, (int)x - 4, (int)y - (int)f->top - 2))
-        return COLOR_ORANGE;
-    if (f->on[1] && (int16_t)y >= lo[1] && (int16_t)y <= hi[1])
-        return th->ch2;
-    if (f->on[0] && (int16_t)y >= lo[0] && (int16_t)y <= hi[0])
-        return th->ch1;
-    if (f->time_focus && focus_mark_px((int)x, (int)y, 0, f->top, LCD_WIDTH, f->divider - f->top))
-        return th->text_primary;
-    if (inwin && (y == f->mid || x == SCOPE_GEOM_CENTER_COL))
-        return th->grid_center;
-    if (inwin && ((scope_geom_vgrid((int)x) && (y & 1u) == 0) ||
-                  (((y - f->top) % SPLIT_DIV_PX) == 0 && (x & 1u) == 0)))
-        return th->grid;
-    return th->background;
-}
-
-/* The canvas's paint function for the upper half. */
-static void split_time_paint(void *ctx, uint16_t x, const canvas_strip_t *s)
-{
-    split_time_frame_t *const f = ctx;
-    const bool tr = f->live && x >= g_view_first && x < g_view_end;
-    int16_t lo[2] = { 1, 1 }, hi[2] = { 0, 0 };
-    for (uint8_t ch = 0; ch < 2u; ch++) {
-        if (!f->on[ch] || !tr) continue;
-        const int16_t y = autofit_y(&f->m[ch], yt_cols[ch][x]);
-        lo[ch] = y; hi[ch] = y;
-        if (x > g_view_first) {
-            if (f->prev[ch] < lo[ch]) lo[ch] = f->prev[ch];
-            if (f->prev[ch] > hi[ch]) hi[ch] = f->prev[ch];
-        }
-        f->prev[ch] = y;
-    }
-    for (int y = s->lo; y < s->hi; y++)
-        s->px[y - s->lo] = split_time_px(f, x, (uint16_t)y, lo, hi);
-}
-
-/* Split view: the Y-T window on top, the spectrum below, each its own canvas,
- * so each sends only the columns that changed; the half the keys are on in a
- * frame (the focus mark, under the traces). The popup box is a hole of both.
- * Needs the live record for the traces ("no record" otherwise). full: every
- * column, the bottom margin row and the popup box. The frame argument is
- * unused. */
-void draw_split_screen(uint32_t frame, bool full)
-{
-    (void)frame;
-    const scope_state_t *ss = scope_state_get();
-    split_time_frame_t f = {
-        .th = theme_get(),
-        .top = SCOPE_TOP, .divider = SCOPE_TOP + SCOPE_H / 2,
-        .mid = (uint16_t)(SCOPE_TOP + 4 * SPLIT_DIV_PX),        /* 8 divisions of 13 px */
-    };
-    const volatile uint8_t *r1 = fpga_get_ch1_buf(), *r2 = fpga_get_ch2_buf();
-    f.live = fpga_data_ready() && r1 != NULL && r2 != NULL;
-    /* The half the keys and AUTO act on wears the focus mark. */
-    f.time_focus = view_key_domain(VIEW_MODE_SPLIT, (key_focus_t)key_focus_get()) == VIEW_DOM_TIME;
-    if (f.live) {
-        view_build(ss, r1, r2);
-        for (uint8_t ch = 0; ch < 2u; ch++) {
-            const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
-            f.on[ch] = ch ? ss->ch2.enabled : ss->ch1.enabled;
-            if (!f.on[ch]) continue;
-            if (ss->true_scale && scope_cal_true_scale_ok((uint8_t)(ch + 1u), r)) {
-                yt_vmap_true(&f.m[ch], (int16_t)f.top, (int16_t)f.divider, (int16_t)f.mid, SPLIT_DIV_PX,
-                             (int8_t)ch, yt_centre_code(), scope_cal_codes_per_div((uint8_t)(ch + 1u), r));
-            } else {
-                autofit_prep(&f.m[ch], yt_cols[ch], (int16_t)f.top, (int16_t)f.divider, (int8_t)ch);
-            }
-        }
-    }
-    const bool hole = popup_live();
-    popup_hole_last = hole;
-    const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
-    const canvas_frame_t cf = {
-        .id = CANVAS_SPLIT_TIME,
-        .rect = { 0, f.top, LCD_WIDTH, (uint16_t)(f.divider - f.top + 1u) },
-        .holes = &popup, .nholes = hole ? 1u : 0u,
-        .all = full,
-        .paint = split_time_paint, .ctx = &f,
-    };
-    (void)canvas_draw_columns(&cf);
-    if (full)
-        lcd_fill_rect(0, SCOPE_TOP + SCOPE_H - 1, LCD_WIDTH, 1, COLOR_BLACK);
-    fft_region_compose((uint16_t)(f.divider + 1), SCOPE_H / 2 - 2, full, hole, false, !f.time_focus, NULL);
-    if (full) draw_popup(f.th);
 }

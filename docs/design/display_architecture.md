@@ -3,8 +3,9 @@
 Status: agreed design (2026-11-20). Steps 1 to 5 of the order of work are
 done (the canvas, and Y-T, roll and the spectrum as display types on it), and
 the view table of step 8 exists (`firmware/src/ui/view_table.h`). Step 7's
-port is done: X-Y and both halves of split draw through canvases. The
-waterfall still has its own renderer.
+port is done: X-Y and both halves of split draw through canvases. Since step
+10 (c) split is a pair of views in two panes, each drawn by its view's own
+drawer. The waterfall still has its own renderer.
 
 ## Why
 
@@ -83,9 +84,11 @@ A view says which domains it shows; `view_table.h` holds that per `view.mode`
 value, with the jobs short SELECT steps through and what the view draws of
 its domain (the measurement strip, cursors). The key model, the settings
 page and the furniture ask the table, never "is this the FFT view". Split
-shows both domains: its job list runs over both halves, and the job the
-arrows are on says which half the keys, AUTO, the strip and the cursors
-belong to. That half is drawn in a frame (the focus mark,
+is a pair of views (`view.upper`, `view.lower`) and shows the domains of
+both: its entry is composed from theirs (`view_desc_of`), its job list the
+upper half's jobs then the lower half's, each job in the half of its domain.
+The job the arrows are on says which half the keys, AUTO, the strip and the
+cursor readout belong to. That half is drawn in a frame (the focus mark,
 `focus_mark_px` in `view_table.h`), under the data: a trace, a label or a
 cursor on the frame's pixels wins.
 
@@ -180,9 +183,8 @@ from the screenshot copy after a full redraw and after a live update).
    and the trace element with Y-T (`firmware/src/ui/plot_elements.c`), which
    gave it the clip colours; its fitted band uses the Y-T map. Since step
    10 (b) it is no longer a type of its own but a source of the Y-T type. The spectrum:
-   done as a frame painted through the canvas, with the popup box as a hole
-   (the split view's halves still send every column until they are two
-   canvases, step 7). Its axes are an interface (`fft_axes_t`,
+   done as a frame painted through the canvas, with the popup box as a hole.
+   Its axes are an interface (`fft_axes_t`,
    `firmware/src/dsp/fft_live.h`): the bars, the carets and the cursors
    convert through it. It has the furniture of its domain: a measurement
    strip (peak, level, harmonics) and cursors on frequency and level, kept
@@ -196,8 +198,9 @@ from the screenshot copy after a full redraw and after a live update).
    arrows are on). The port is done: each canvas has its own memory and its
    own watch of its rows (`canvas_id_t`, `LCD_WATCH_SLOTS`), so split's halves
    each skip what did not change; X-Y paints its whole band (the margins and
-   title too) from the trail; both keep the popup box as a hole. Open: the
-   strips and cursors of the halves and of X-Y, which change the picture.
+   title too) from the trail; both keep the popup box as a hole. The strips
+   and cursors of split's halves came with step 10 (c). Open: the strip and
+   cursors of X-Y, which change the picture.
 8. The view table: done. `view_table.h` holds the domains and jobs per
    `view.mode`, and `main.c` selects the renderer from a table indexed by
    `view.mode`. The FFT build switch (`make WITHOUT=fft`) is gone
@@ -251,4 +254,37 @@ from the screenshot copy after a full redraw and after a live update).
     5 waterfall) as the pair (`view.mode`, `tb.roll`), so roll still
     comes back across a power cycle and an older firmware reads the same
     byte; `tb.roll` is saved in the settings record and in the session
-    snapshot. (c) Split as a pair of views in two panes.
+    snapshot. (c) Split as a pair of views in two panes: implemented for Y-T
+    and the spectrum, host-tested, not yet checked on the unit. The user picks
+    the two views on the Display pane ("Upper half", "Lower half"; properties
+    `view.upper`, `view.lower`, session settings, defaults Y-T over FFT). Which
+    views can be a half is a column of the view table (`view_desc_t.half`: a
+    drawer for a pane of any height); X-Y (no pane form) and the waterfall (its
+    scratch line shares memory with the Y-T window) cannot yet. The two halves
+    never show the same view: a view keeps one set of state for what it drew
+    (the bands the cursors read, the trigger placement, the window, the popup
+    hole), so a half set to the other half's view swaps them, and either pair
+    is one set away. The band from `SCOPE_TOP` to the top of the strip of the
+    keys' domain is split into two panes with a divider row between them
+    (`plot_pane_split`; 103 and 102 rows of a 206-row band, a division of 13
+    rows each), on a canvas per half (`CANVAS_SPLIT_UPPER`; the lower half
+    shares the full plot's memory, `CANVAS_SPLIT_LOWER` = `CANVAS_PLOT`, since
+    they are never on screen together: no third watch slot or 1.3 kB hash
+    table). Each half is drawn by its view's pane drawer (`scope_yt_draw`,
+    `fft_pane_draw`, `firmware/src/ui/scope_split.c`) with its own cursor
+    lines; the keys' half wears the focus mark and owns its domain's strip and,
+    with cursors on, their readout. The divider row is in neither canvas: it is
+    painted with every frame, around the popup box while a pane keeps a hole
+    for it. Moving the keys to the other half is a layout change (a full
+    redraw: the strip, the mark and the panes' heights follow). `main.c` runs
+    the Y-T furniture (strip refresh, cursor row, mask slot, CAN row) when the
+    view's strip is the time record's (`view_strip_domain`), in split when the
+    keys are on the Y-T half. `fpga scope livecheck` is to check both halves
+    against their views' rules (the focus mark is in the Y-T rule) and counts
+    one frame per screen frame (X-Y and waterfall frames count with no pixel
+    compared). Split still does not take roll (`view_desc_t.roll`), though a
+    Y-T half could. With the keys on Y-T and the default selection (two strip
+    rows per channel, 52 rows) the halves are 77 and 76 rows, a division of 10;
+    the spectrum draws its scale on any pane of `FFT_SCALE_LINES` font lines
+    (48 rows) or more, where it took a fixed 81 before (which a half under the
+    strip would have lost).

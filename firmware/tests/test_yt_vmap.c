@@ -11,8 +11,9 @@
  * [4] band layout: split halves only when both channels autofit.
  * [5] fractional codes: the row of a code between codes and back.
  * [6] the draw spans stay on the plot.
- * [7] panes (plot_pane.h): the full plot's numbers, a half pane's
- *     graticule and true scale on it.
+ * [7] panes (plot_pane.h): the full plot's numbers, split's two panes over
+ *     any band (they and the divider cover it), a half pane's graticule and
+ *     true scale on it.
  */
 #include <stdio.h>
 #include <stdint.h>
@@ -238,10 +239,34 @@ int main(void)
         CHECK(full.div_px == DIV && full.grid_mid == GMID && full.mid == MID && full.band_bot == 200,
               "full plot: %d rows a division, centre line %d, middle row %d (the fixed layout)",
               full.div_px, full.grid_mid, full.mid);
-        /* The split view's upper half: rows 18..120, the divider on 121. */
-        const plot_pane_t half = plot_pane_make(CANVAS_SPLIT_TIME, TOP, TOP + H / 2, TOP + H / 2);
-        CHECK(half.div_px == 13 && half.grid_mid == TOP + 4 * 13,
-              "half pane: %d rows a division, centre line %d", half.div_px, half.grid_mid);
+        /* Split's panes over the whole plot (the strip hidden): the upper one
+         * from the top, the divider row, the lower one to the bottom; each a
+         * half, its division half the full plot's (rounded up). */
+        plot_pane_t sp[2];
+        plot_pane_split(TOP, BOT, CANVAS_SPLIT_UPPER, CANVAS_SPLIT_LOWER, 1, sp);
+        const plot_pane_t half = sp[0];
+        CHECK(sp[0].top == TOP && sp[0].bot + PLOT_PANE_DIVIDER_ROWS == sp[1].top && sp[1].bot == BOT &&
+              sp[0].band_bot == sp[0].bot && sp[1].band_bot == sp[1].bot &&
+              sp[0].canvas == CANVAS_SPLIT_UPPER && sp[1].canvas == CANVAS_SPLIT_LOWER,
+              "split panes: [%d, %d) and [%d, %d), the divider on row %d, each to its own bottom",
+              sp[0].top, sp[0].bot, sp[1].top, sp[1].bot, sp[0].bot);
+        CHECK(sp[0].div_px == (DIV + 1) / 2 && sp[1].div_px == (DIV + 1) / 2 &&
+              half.grid_mid == TOP + (PLOT_PANE_DIVS_V / 2) * half.div_px,
+              "half of the %d-row plot: %d and %d rows a division (half of %d), centre line %d",
+              H, sp[0].div_px, sp[1].div_px, DIV, half.grid_mid);
+        CHECK(!sp[0].marked && sp[1].marked, "the keys' half (lower) is marked, the other not");
+        /* Every band the strip can leave: the two panes and the divider
+         * cover it row for row, the upper pane the larger by at most a row. */
+        int gaps = 0;
+        for (int bot = TOP + 2 * PLOT_PANE_DIVS_V; bot <= BOT; bot++) {
+            plot_pane_t q[2];
+            plot_pane_split(TOP, (int16_t)bot, CANVAS_SPLIT_UPPER, CANVAS_SPLIT_LOWER, 0, q);
+            const int up = q[0].bot - q[0].top, lo = q[1].bot - q[1].top;
+            if (q[0].top != TOP || q[1].bot != bot || up + PLOT_PANE_DIVIDER_ROWS + lo != bot - TOP ||
+                up - lo < 0 || up - lo > 1 || !q[0].marked || q[1].marked)
+                gaps++;
+        }
+        CHECK(gaps == 0, "every band down to its strip: upper + divider + lower = the band (%d bands wrong)", gaps);
         yt_vmap_t m;
         yt_vmap_true(&m, half.top, half.bot, half.grid_mid, half.div_px, 0, ZERO, 25.0f);
         int bad = 0;

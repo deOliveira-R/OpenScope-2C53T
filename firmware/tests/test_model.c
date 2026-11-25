@@ -755,6 +755,55 @@ static void test_fail_each_call(void)
     CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_YT && scope_state_get()->roll && strcmp(g_log, "roll;") == 0);
 }
 
+/* Split's pair (view.upper, view.lower): defaults Y-T over FFT; only a view
+ * that can be a half (view_table.h), else refused with nothing moved; a
+ * half set to the other half's view swaps them (so the pair is never one
+ * view twice, and either pair is one set away); view.mode never moves. A
+ * session setting: in the snapshot, not in the settings record. */
+static void test_split_pair_props(void)
+{
+    prop_note_t n;
+    fresh();
+    CHECK(prop_get(P(VIEW_UPPER)) == VIEW_MODE_YT && prop_get(P(VIEW_LOWER)) == VIEW_MODE_FFT);
+    CHECK((P(VIEW_UPPER)->flags & PF_SESSION) && !(P(VIEW_UPPER)->flags & PF_PERSIST) &&
+          (P(VIEW_LOWER)->flags & PF_SESSION) && !(P(VIEW_LOWER)->flags & PF_PERSIST));
+    for (int h = 0; h < 2; h++) {
+        const prop_desc_t *p = h ? P(VIEW_LOWER) : P(VIEW_UPPER);
+        for (int32_t v = 0; v < (int32_t)VIEW_MODE_COUNT; v++) {
+            if (view_is_half((uint8_t)v)) continue;
+            fresh();
+            const uint32_t e = prop_group_epoch(PG_VIEW);
+            CHECKF(prop_set_local(p, v, ORIGIN_KEY, &n) == PS_REFUSED && strcmp(n.text, "not a view for a half") == 0 &&
+                   prop_get(P(VIEW_UPPER)) == VIEW_MODE_YT && prop_get(P(VIEW_LOWER)) == VIEW_MODE_FFT &&
+                   prop_group_epoch(PG_VIEW) == e,
+                   "%s = %ld not refused (%s)", p->name, (long)v, n.text);
+        }
+    }
+    fresh();
+    uint32_t e = prop_group_epoch(PG_VIEW);
+    CHECK(prop_set_local(P(VIEW_UPPER), VIEW_MODE_FFT, ORIGIN_KEY, &n) == PS_OK &&
+          prop_get(P(VIEW_UPPER)) == VIEW_MODE_FFT && prop_get(P(VIEW_LOWER)) == VIEW_MODE_YT &&
+          prop_group_epoch(PG_VIEW) != e && prop_get(P(VIEW_MODE)) == VIEW_MODE_YT);
+    CHECK(prop_set_local(P(VIEW_LOWER), VIEW_MODE_FFT, ORIGIN_KEY, &n) == PS_OK &&
+          prop_get(P(VIEW_UPPER)) == VIEW_MODE_YT && prop_get(P(VIEW_LOWER)) == VIEW_MODE_FFT);
+    e = prop_group_epoch(PG_VIEW);
+    CHECK(prop_set_local(P(VIEW_LOWER), VIEW_MODE_FFT, ORIGIN_KEY, &n) == PS_OK &&
+          prop_group_epoch(PG_VIEW) == e);                       /* the value in force: nothing moves */
+    /* every set from every pair: never one view twice */
+    bool distinct = true;
+    for (int a = 0; a < 2; a++)
+        for (int h = 0; h < 2; h++)
+            for (int32_t v = 0; v < (int32_t)VIEW_MODE_COUNT; v++) {
+                fresh();
+                if (a) (void)prop_set_local(P(VIEW_UPPER), VIEW_MODE_FFT, ORIGIN_KEY, NULL);
+                (void)prop_set_local(h ? P(VIEW_LOWER) : P(VIEW_UPPER), v, ORIGIN_KEY, NULL);
+                distinct &= prop_get(P(VIEW_UPPER)) != prop_get(P(VIEW_LOWER)) &&
+                            view_is_half((uint8_t)prop_get(P(VIEW_UPPER))) &&
+                            view_is_half((uint8_t)prop_get(P(VIEW_LOWER)));
+            }
+    CHECK(distinct);
+}
+
 /* Roll is a source only the Y-T view takes (view_table.h): tb.roll on is
  * refused in every other view, with no write; a view that does not take it
  * switches it off first, and that is tb.roll's change too (its group, a
@@ -1576,6 +1625,7 @@ int main(int argc, char **argv)
     test_fail_each_call();
     test_cross_group();
     test_roll_is_yt_only();
+    test_split_pair_props();
     test_save_forms();
     test_fft_settings();
     test_spectrum_props();

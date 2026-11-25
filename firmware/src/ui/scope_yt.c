@@ -27,11 +27,17 @@ volatile uint32_t ui_scope_live_send_us;     /* of the frame's time, the part sp
 /* `fpga scope livecheck <frames>`: while live_check_frames is not zero each
  * frame of a record also evaluates every pixel with a per-pixel rule (one
  * chain of tests in z-order, yt_check_column) and counts the pixels where
- * the painted column differs from it; the first difference is kept. */
+ * the painted column differs from it; the first difference is kept. A frame
+ * of the screen counts one (scope_live_check_frame_end), whatever panes it
+ * has. */
 volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
 
 volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
 
+void scope_live_check_frame_end(void)
+{
+    if (live_check_frames) live_check_frames--;
+}
 #endif
 /* Time view_build() took in the last frame of a record, microseconds (`ui dump`). */
 volatile uint32_t ui_scope_view_us_last;
@@ -365,6 +371,20 @@ static void el_grid(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const ca
     plot_grid_paint(f->th, &f->p, x, s);
 }
 
+/* The focus mark: the frame of the band when the pane is the half of split
+ * the keys are on, over the graticule and under everything else. */
+static void el_focus_mark(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    if (!f->p.marked) return;
+    if (x < FOCUS_MARK_PX || x >= LCD_WIDTH - FOCUS_MARK_PX) {
+        strip_span(s, f->p.top, f->p.band_bot - 1, f->th->text_primary);
+    } else {
+        strip_span(s, f->p.top, f->p.top + FOCUS_MARK_PX - 1, f->th->text_primary);
+        strip_span(s, f->p.band_bot - FOCUS_MARK_PX, f->p.band_bot - 1, f->th->text_primary);
+    }
+}
+
 /* The trigger level, a dotted line across the plot. */
 static void el_trigger_line(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
@@ -504,6 +524,7 @@ static void el_roll_label(const yt_frame_t *f, const yt_col_t *c, uint16_t x, co
 static const yt_element_fn yt_elements[] = {
     el_ground,
     el_grid,
+    el_focus_mark,
     el_trigger_line,
     el_mask_bounds,
     el_traces,
@@ -556,6 +577,8 @@ static void yt_check_column(const yt_frame_t *f, const yt_col_t *c, uint16_t x, 
             want = th->text_secondary;
         else if ((int16_t)y == f->trig_y && (x & f->trig_dots) == 0 && x < LCD_WIDTH - TRIG_LINE_RIGHT_GAP)
             want = th->trigger;
+        else if (f->p.marked && focus_mark_px((int)x, (int)y, 0, f->p.top, LCD_WIDTH, f->p.band_bot - f->p.top))
+            want = th->text_primary;               /* focus mark */
         else if (plot_grid_px(th, &f->p, x, (int)y, &want))
             ;                                      /* graticule */
         else {
@@ -599,16 +622,17 @@ static void yt_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
  * thing the elements cannot recompute per pixel, so the canvas steps around
  * it, and when the popup ends the hole closes and the next frame paints the
  * band back. Not drawn here: the measurement strip and the popup box itself.
- * Changes: what yt_prepare changes, the persistence buffer (feed),
- * popup_hole_last and the `ui dump` counters. */
-void scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
+ * Returns true when the frame kept a hole for the box (it has rows in the
+ * band): the caller, which knows every pane of the screen, says so in
+ * popup_hole_last. Changes: what yt_prepare changes, the persistence buffer
+ * (feed) and the `ui dump` counters. */
+bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
 {
     yt_frame_t f;
     yt_prepare(&f, p, frame);
 
     const canvas_rect_t popup = { POPUP_X, POPUP_Y, POPUP_W, POPUP_H };
-    const bool hole = popup_live() && POPUP_Y < p->band_bot && POPUP_Y + POPUP_H > p->top;
-    popup_hole_last = hole;         /* the box has rows inside the band and was left alone */
+    const bool hole = popup_hole_in(p->top, p->band_bot);
 
     const canvas_frame_t cf = {
         .id = p->canvas,
@@ -628,8 +652,5 @@ void scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
     ui_scope_live_cols_sent = cols_sent;
     ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
     ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);
-
-#if FEATURE_BENCHSHELL
-    if (live_check_frames) live_check_frames--;
-#endif
+    return hole;
 }

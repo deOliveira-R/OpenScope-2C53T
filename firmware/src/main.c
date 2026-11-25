@@ -532,17 +532,24 @@ static void render_waterfall(uint32_t frame, bool full) { (void)frame; (void)ful
 typedef struct {
     void (*draw)(uint32_t frame, bool full);
     bool popup_hole;    /* the frame steps around the popup box (else the box is put back each frame) */
-    bool time_rows;     /* the Y-T furniture: mask slot, CAN row, cursor row, measurement strip refresh */
     bool animates;      /* the picture moves without new data (X-Y's phosphor decay) */
 } scope_renderer_t;
 
 static const scope_renderer_t k_renderers[VIEW_MODE_COUNT] = {
-    [VIEW_MODE_YT]        = { render_yt,        true,  true,  false },
-    [VIEW_MODE_XY]        = { render_xy,        true,  false, true  },
-    [VIEW_MODE_FFT]       = { render_fft,       true,  false, false },
-    [VIEW_MODE_SPLIT]     = { render_split,     true,  false, false },
-    [VIEW_MODE_WATERFALL] = { render_waterfall, false, false, false },
+    [VIEW_MODE_YT]        = { render_yt,        true,  false },
+    [VIEW_MODE_XY]        = { render_xy,        true,  true  },
+    [VIEW_MODE_FFT]       = { render_fft,       true,  false },
+    [VIEW_MODE_SPLIT]     = { render_split,     true,  false },
+    [VIEW_MODE_WATERFALL] = { render_waterfall, false, false },
 };
+
+/* The screen shows the time record's measurement strip (the view's, or in
+ * split the keys' half's: view_table.h), so the Y-T furniture is on it: the
+ * mask slot, the CAN row, the cursor row and the strip's refresh. */
+static bool scope_time_rows(void)
+{
+    return view_strip_domain(scope_view_sel(), (key_focus_t)key_focus_get()) == VIEW_DOM_TIME;
+}
 
 /* The renderer of the view on screen. */
 static const scope_renderer_t *scope_renderer(void)
@@ -557,6 +564,9 @@ static void scope_render(uint32_t frame, redraw_action_t action)
     const bool full = (action != REDRAW_INCREMENTAL);
     if (full) ui_scope_full_draws++; else ui_scope_live_draws++;
     r->draw(frame, full);
+#if FEATURE_BENCHSHELL
+    scope_live_check_frame_end();
+#endif
     /* A full frame paints the box itself (draw_popup); a live frame that
      * kept the hole paints it once and repaints the band when it ends. */
     if (r->popup_hole) { if (!full) scope_popup_overlay_tick(); }
@@ -616,7 +626,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
     {
         static uint32_t g_mask_slot_epoch;
         uint32_t me = scope_mask_epoch();
-        const bool time_view = scope_renderer()->time_rows;
+        const bool time_view = scope_time_rows();
         if (me != g_mask_slot_epoch && time_view && !page_up) {
             scope_ui_mask_slot_refresh();
             g_mask_slot_epoch = me;
@@ -665,7 +675,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
         else
             scope_render(frame, act);
         if (!page_up) g_scope_seen = now;
-        const bool yt_view = !page_up && scope_renderer()->time_rows;
+        const bool yt_view = !page_up && scope_time_rows();
         if (act != REDRAW_SKIP && yt_view)
             UI_TIMED(UI_PERF_CURSOR_ROW, scope_ui_cursor_row_refresh());   /* only when its text changed */
         /* The badges between full frames (the live frame does not

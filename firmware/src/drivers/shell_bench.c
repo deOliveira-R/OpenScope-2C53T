@@ -564,11 +564,15 @@ void cmd_gpio_set(const char *args)
                      (port->idt & pin) ? 1u : 0u);
 }
 
-/* `fpga scope livecheck [frames]`: for the next frames of the Y-T plot,
- * scope_yt_draw() also works out every pixel with the per-pixel rule and
- * counts the pixels where its painted column differs (scope_yt.c). The
- * frames are whatever the screen shows: set up cursors, math, the mask,
- * persistence or a popup first to cover those layers. */
+/* `fpga scope livecheck [frames]`: for the next frames of the scope view,
+ * the pane drawers also work out every pixel with their per-pixel rule and
+ * count the pixels where the painted column differs: Y-T's (scope_yt.c, a
+ * frame of a record) and the spectrum's (scope_spectrum.c). In split both
+ * halves are checked, each by its own view's rule, the focus mark included;
+ * the divider row and the strip are not in a pane. X-Y and the waterfall
+ * have no rule: their frames count, with no pixel compared. The frames are
+ * whatever the screen shows: set up cursors, math, the mask, persistence or
+ * a popup first to cover those layers. */
 #define LIVECHECK_FRAMES_DEFAULT 20u     /* about 2 s of redraws */
 #define LIVECHECK_FRAMES_MAX     500u
 #define LIVECHECK_POLL_MS        50u     /* one display tick */

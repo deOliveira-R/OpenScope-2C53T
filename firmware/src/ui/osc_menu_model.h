@@ -27,6 +27,7 @@
  *   pane focus, by pane kind:
  *     RADIO  (Display, Cursors, Persist): UP/DOWN move, OK picks, LEFT or
  *            BACK -> rail. RIGHT does nothing (picking applies, so it takes OK).
+ *            Display ends in two value rows, Split's halves: OK steps them.
  *     VALUES (CH1, CH2, Trigger, Spectrum): UP/DOWN pick the row, LEFT/RIGHT change its
  *            value (-1/+1), OK = +1. BACK -> rail (LEFT is taken by the value).
  *     CHIPS  (Measure, Math): a grid. Arrows move, clamped at the edges;
@@ -92,13 +93,17 @@ typedef struct {
 const osc_pane_layout_t *osc_menu_layout(osc_row_t row);
 
 /* Item indices, per pane (the order the pane draws them). */
-/* Display: the one place the scope's view is chosen. The items are the
- * values of the view.mode property, in its order (osc_menu_disp_view_mode).
- * Roll is not a view: the timebase ladder enters it in Y-T (tb.roll).
- * Split is Y-T on top and the spectrum below. The spectrum views (FFT,
- * Split, Waterfall) analyse the ACTIVE channel (MOVE; ui.ach), so there is
- * no per-channel FFT row. */
-enum { OSC_DISP_YT = 0, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_SPLIT, OSC_DISP_WATERFALL, OSC_DISP_COUNT };
+/* Display: the one place the scope's view is chosen. The first items are
+ * the values of the view.mode property, in its order (osc_menu_disp_view_mode):
+ * radio rows, OK picks. Roll is not a view: the timebase ladder enters it in
+ * Y-T (tb.roll). Then the two halves of Split, value rows ("Upper half:
+ * Y-T"): OK steps the half to the next view that can be a half
+ * (view.upper, view.lower; the other half swaps when it showed that view).
+ * Picking a half's view does not change the view on screen. The spectrum
+ * views (FFT, Split, Waterfall) analyse the ACTIVE channel (MOVE; ui.ach),
+ * so there is no per-channel FFT row. */
+enum { OSC_DISP_YT = 0, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_SPLIT, OSC_DISP_WATERFALL,
+       OSC_DISP_UPPER, OSC_DISP_LOWER, OSC_DISP_COUNT };
 enum { OSC_CUR_OFF = 0, OSC_CUR_TIME, OSC_CUR_VOLT, OSC_CUR_BOTH, OSC_CUR_COUNT };
 enum { OSC_CH_ENABLE = 0, OSC_CH_PROBE, OSC_CH_COUPLING, OSC_CH_COUNT };
 enum { OSC_TRIG_MODE = 0, OSC_TRIG_EDGE, OSC_TRIG_SOURCE, OSC_TRIG_COUNT };
@@ -171,6 +176,12 @@ int8_t  osc_menu_disp_view_mode(uint8_t item);
 /* view.mode value -> the Display item that shows it checked;
  * OSC_DISP_COUNT (no item) for a value out of range. */
 uint8_t osc_menu_disp_item(int32_t view_mode);
+/* Display item -> the half of Split it sets (view_half_t), or
+ * VIEW_HALF_COUNT for an item that is a view. */
+uint8_t osc_menu_disp_half(uint8_t item);
+/* The item is a value row (a label and the value in force), not a radio
+ * row: the Display pane's halves. */
+bool    osc_menu_item_is_value(osc_row_t row, uint8_t item);
 
 /* Measure chip `chip` (grid order) of a set's panel -> the measurement's id
  * in the set; 0xFF for a chip the panel has not. The channels' grid is

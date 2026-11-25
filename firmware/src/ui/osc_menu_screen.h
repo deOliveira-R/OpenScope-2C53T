@@ -11,6 +11,7 @@
  *
  *   pane      kind    property                          item -> value
  *   Display   RADIO   view.mode                         item i = value i (yt xy fft split waterfall)
+ *             + two value rows view.upper, view.lower   OK = the next view that can be a half
  *   Cursors   RADIO   view.cursor                       item i = value i (off time volt both)
  *   Persist   RADIO   view.persist                      item i = value i (off 500ms 1s 2s inf)
  *   Math      CHIPS   view.math                         Off = 0, else 1 + math_op_t in stock's 2x4 order
@@ -74,14 +75,17 @@ uint8_t osc_menu_screen_opener(void);          /* BTN_NONE while closed */
 /* ── the binding (any task, read only) ─────────────────────────────── */
 
 /* The property a pane (RADIO, Math, Measure: `item` ignored, Measure's is
- * CH1's) or a VALUES row shows; NULL out of range. */
+ * CH1's), a VALUES row or a value row of a RADIO pane (Display's halves)
+ * shows; NULL out of range. */
 const prop_desc_t *osc_menu_bind_prop(osc_row_t row, uint8_t item);
-/* RADIO / Math: the property value item `item` sets; -1 for no such item. */
+/* RADIO / Math: the property value item `item` sets (a Display half: the
+ * next view that can be a half); -1 for no such item. */
 int32_t osc_menu_bind_value(osc_row_t row, uint8_t item);
 /* RADIO / Math: the item showing the property's value now; the pane's item
  * count when none does. */
 uint8_t osc_menu_bind_current(osc_row_t row);
-/* VALUES: the text of row `item`'s value now ("ON", "10X", "Single"). */
+/* A value row (osc_menu_item_is_value): the text of its value now ("ON",
+ * "10X", "Single"; a Display half: "Y-T", "FFT"). */
 void    osc_menu_bind_text(osc_row_t row, uint8_t item, char *out, size_t n);
 /* The footer note of this visit, "" when there is none. */
 const char *osc_menu_screen_note(void);

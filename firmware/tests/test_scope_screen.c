@@ -287,7 +287,9 @@ static const struct { uint8_t n; key_focus_t j[KF_COUNT]; } o_jobs[VIEW_MODE_COU
     [VIEW_MODE_YT]        = { 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
     [VIEW_MODE_XY]        = { 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE } },
     [VIEW_MODE_FFT]       = { 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR } },
-    [VIEW_MODE_SPLIT]     = { 4, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM } },
+    /* split's default pair, Y-T over the spectrum */
+    [VIEW_MODE_SPLIT]     = { 7, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK, KF_SPECTRUM,
+                                   KF_SPECTRUM_CURSOR } },
     [VIEW_MODE_WATERFALL] = { 2, { KF_SPECTRUM, KF_ZOOM } },
 };
 static bool o_offered(uint8_t view, key_focus_t f, bool cursors, bool mask)
@@ -321,7 +323,8 @@ static key_focus_t o_in_force(void)
 /* AUTO acts on the spectrum: the views of it alone, and split's spectrum job. */
 static bool o_auto_on_spectrum(uint8_t view, key_focus_t f)
 {
-    return view == VIEW_MODE_FFT || view == VIEW_MODE_WATERFALL || (view == VIEW_MODE_SPLIT && f == KF_SPECTRUM);
+    return view == VIEW_MODE_FFT || view == VIEW_MODE_WATERFALL ||
+           (view == VIEW_MODE_SPLIT && (f == KF_SPECTRUM || f == KF_SPECTRUM_CURSOR));
 }
 static void o_popup_and_redraw(const char *t) { scope_show_popup(t); o_cmd = 'F'; }
 static uint32_t o_tol_pending_seq; static uint8_t o_tol_pending_v, o_tol_pending_h;
@@ -354,10 +357,10 @@ static key_ctx_t o_ctx(void)
     key_ctx_t c;
     memset(&c, 0, sizeof c);
     c.mode = MODE_OSCILLOSCOPE;
-    c.view = o_view_mode();
+    c.view = view_sel_mode(o_view_mode());
     c.cursors_on = (ss->cursor.mode != CURSOR_OFF);
     c.mask_present = (scope_mask_state() != MASK_PF_EMPTY);
-    const key_focus_t f = o_sanitize(c.view, o_focus, c.cursors_on, c.mask_present);
+    const key_focus_t f = o_sanitize(o_view_mode(), o_focus, c.cursors_on, c.mask_present);
     if (f != o_focus) o_set_focus(f);
     c.focus = f;
     c.active_channel = active_channel;
@@ -834,9 +837,10 @@ static void test_screen_entry(void)
     CHECK("draw and tick are the paint module's", g_draws[SCR_PAINT_FULL] == 1 && g_ticks == 1);
 }
 
-/* Each (view, job) pair is the start of at least this many random states:
- * the rarest, FFT with its cursor job, is FFT (1/12) with cursors on (3/4)
- * on that job (1/7), about 36 of 4000. */
+/* Each (view, job) pair is the start of at least this many random states
+ * (ORACLE_STATES of them): the rarest, split's mask job, is split (1/12)
+ * with a mask (1/3) on that job (1/7), about 32 of 8000. */
+#define ORACLE_STATES       8000u
 #define ORACLE_MIN_PER_JOB  20u
 
 /* Every key from every random state: the screen = the pre-B7 handlers on the view table's rules. */
@@ -845,7 +849,7 @@ static void test_oracle(void)
     printf("every key against the pre-B7 handlers on the view table's rules (the oracle)\n");
     unsigned cases = 0, bad = 0, by_key[N_KEYS] = {0};
     unsigned seen[VIEW_MODE_COUNT][KF_COUNT] = {{0}};     /* (view, job in force) of the states */
-    for (unsigned it = 0; it < 4000; it++) {
+    for (unsigned it = 0; it < ORACLE_STATES; it++) {
         st_t s;
         st_random(&s);
         for (unsigned k = 0; k < N_KEYS; k++) {
@@ -865,7 +869,8 @@ static void test_oracle(void)
         seen[o_view_mode()][o_in_force()]++;
     }
     printf("    %u cases\n", cases);
-    CHECK("18 keys x 4000 random states: same state, owner calls, popup and repaint", bad == 0 && cases == 72000);
+    CHECK("18 keys x 8000 random states: same state, owner calls, popup and repaint",
+          bad == 0 && cases == N_KEYS * ORACLE_STATES);
     bool all = true;
     unsigned fewest = ~0u;
     for (unsigned v = 0; v < VIEW_MODE_COUNT; v++)
@@ -1283,7 +1288,7 @@ static void test_focus(void)
           env_key(BTN_UP) == SCR_DRAW_FULL && scope_key_focus == KF_ZOOM && env_log_is("vdiv(0,4);"));
     const key_ctx_t c = scope_screen_ctx();
     CHECK("scope_screen_ctx: the scope's context as it stands",
-          c.mode == MODE_OSCILLOSCOPE && c.view == VIEW_MODE_YT && !c.cursors_on && !c.mask_present &&
+          c.mode == MODE_OSCILLOSCOPE && c.view.mode == VIEW_MODE_YT && !c.cursors_on && !c.mask_present &&
           c.focus == KF_ZOOM && c.active_channel == 0 && !c.osc_menu_open);
 
     /* another view: the arrows start on its first job */
@@ -1454,6 +1459,30 @@ static void test_epochs(void)
     const uint32_t e0 = scope_screen.epoch();
     scope_screen_epochs(&l1, &s1);
     CHECK("nothing changed: nothing moves", l0 == l1 && s0 == s1 && scope_screen.epoch() == e0);
+
+    /* Split's pair and the keys' half are layout while split is on screen
+     * (a half's view, the strip, the focus mark and the panes' heights
+     * follow them); the pair is nothing to another view. */
+    boot();
+    scope_screen_epochs(&l0, &s0);
+    (void)prop_set_local(P(VIEW_UPPER), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l1, &s1);
+    const bool yt_still = l0 == l1 && s0 == s1;
+    boot();
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l0, &s0);
+    (void)prop_set_local(P(VIEW_LOWER), VIEW_MODE_YT, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l1, &s1);
+    const bool pair_moves = l0 != l1 && s0 == s1 && G(P(VIEW_UPPER)) == VIEW_MODE_FFT;
+    scope_key_focus = KF_SPECTRUM;
+    scope_screen_epochs(&l0, &s0);
+    scope_key_focus = KF_SPECTRUM_CURSOR;                 /* not on offer: the same half (the first job) */
+    scope_screen_epochs(&l1, &s1);
+    const bool same_half = l0 == l1;
+    scope_key_focus = KF_TRIGMOVE;                        /* the other half */
+    scope_screen_epochs(&l1, &s1);
+    CHECK("split: its pair and the keys' half are layout; in Y-T the pair changes nothing",
+          yt_still && pair_moves && same_half && l0 != l1);
 }
 
 /* What the display task does about a change made on the direct route

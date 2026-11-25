@@ -194,7 +194,7 @@ int main(void)
     /* Two canvases drawn in turn, as the split view's halves: each keeps its
      * own memory, so neither resends what did not change. */
     version = 0; ver_x0 = ver_x1 = 0;
-    canvas_frame_t top = { .id = CANVAS_SPLIT_TIME, .rect = { 0, 18, 320, 104 }, .paint = paint };
+    canvas_frame_t top = { .id = CANVAS_SPLIT_UPPER, .rect = { 0, 18, 320, 104 }, .paint = paint };
     canvas_frame_t bot = { .id = CANVAS_PLOT, .rect = { 0, 122, 320, 101 }, .paint = paint };
     glass_fill(UNTOUCHED);
     (void)draw(&top); (void)draw(&bot);

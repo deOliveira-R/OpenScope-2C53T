@@ -63,32 +63,32 @@ static bool job_offered(const view_desc_t *v, key_focus_t f, bool cursors_on, bo
     return false;
 }
 
-key_focus_t key_focus_sanitize(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present)
+key_focus_t key_focus_sanitize(view_sel_t view, key_focus_t cur, bool cursors_on, bool mask_present)
 {
-    const view_desc_t *v = view_desc(view_mode);
-    return job_offered(v, cur, cursors_on, mask_present) ? cur : (key_focus_t)v->jobs[0];
+    const view_desc_t v = view_desc_of(view);
+    return job_offered(&v, cur, cursors_on, mask_present) ? cur : (key_focus_t)v.jobs[0];
 }
 
-key_focus_t key_focus_next(uint8_t view_mode, key_focus_t cur, bool cursors_on, bool mask_present)
+key_focus_t key_focus_next(view_sel_t view, key_focus_t cur, bool cursors_on, bool mask_present)
 {
-    const view_desc_t *v = view_desc(view_mode);
-    cur = key_focus_sanitize(view_mode, cur, cursors_on, mask_present);
+    const view_desc_t v = view_desc_of(view);
+    cur = key_focus_sanitize(view, cur, cursors_on, mask_present);
     uint8_t at = 0;
-    while (at < v->n_jobs && v->jobs[at] != (uint8_t)cur) at++;
-    for (uint8_t k = 1; k <= v->n_jobs; k++) {
-        const key_focus_t f = (key_focus_t)v->jobs[(at + k) % v->n_jobs];
-        if (job_offered(v, f, cursors_on, mask_present)) return f;
+    while (at < v.n_jobs && v.jobs[at] != (uint8_t)cur) at++;
+    for (uint8_t k = 1; k <= v.n_jobs; k++) {
+        const key_focus_t f = (key_focus_t)v.jobs[(at + k) % v.n_jobs];
+        if (job_offered(&v, f, cursors_on, mask_present)) return f;
     }
     return cur;
 }
 
-key_focus_t key_focus_after_cursor_change(uint8_t view_mode, key_focus_t cur, bool cursors_on)
+key_focus_t key_focus_after_cursor_change(view_sel_t view, key_focus_t cur, bool cursors_on)
 {
     if (cursors_on) {
-        const key_focus_t job = view_cursor_job(view_mode);
+        const key_focus_t job = view_cursor_job(view, cur);
         return (job != KF_COUNT) ? job : cur;
     }
-    return key_focus_is_cursor(cur) ? (key_focus_t)view_desc(view_mode)->jobs[0] : cur;
+    return key_focus_is_cursor(cur) ? (key_focus_t)view_desc_of(view).jobs[0] : cur;
 }
 
 const char *key_focus_name(key_focus_t f)
@@ -148,7 +148,7 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
     switch (b) {
     /* Long MENU/MOVE/SELECT/TRIGGER/SAVE are global (key_map_global). */
     case BTN_PRM:
-        return (c->mode == MODE_OSCILLOSCOPE && view_desc(c->view)->strip)
+        return (c->mode == MODE_OSCILLOSCOPE && view_desc_of(c->view).strip)
                ? cmd(KA_MEAS_HIDE_TOGGLE, 0) : cmd(KA_NONE, 0);
 
     /* Stock has no long CH1/CH2, so this is OURS: the channel enable. */

@@ -43,9 +43,15 @@ static void set_active_channel(uint8_t ch)
 }
 
 /* key_model.h: read-only views for the status bar and ui.focus / ui.ach. */
+view_sel_t scope_view_sel(void)
+{
+    uint8_t half[VIEW_HALF_COUNT];
+    model_view_pair(half);
+    return view_sel((uint8_t)G(P(VIEW_MODE)), half[VIEW_HALF_UPPER], half[VIEW_HALF_LOWER]);
+}
 uint8_t key_focus_get(void)
 {
-    return (uint8_t)key_focus_sanitize((uint8_t)G(P(VIEW_MODE)), scope_key_focus,
+    return (uint8_t)key_focus_sanitize(scope_view_sel(), scope_key_focus,
                                        G(P(VIEW_CURSOR)) != CURSOR_OFF,
                                        G(P(MASK_STATE)) != MASK_PF_EMPTY);
 }
@@ -55,7 +61,7 @@ uint8_t key_active_channel_get(void) { return active_channel; }
  * arrows start on its first job, the one the view is mostly used with. */
 void scope_screen_view_changed(void)
 {
-    set_focus((key_focus_t)view_desc((uint8_t)G(P(VIEW_MODE)))->jobs[0]);
+    set_focus((key_focus_t)view_desc_of(scope_view_sel()).jobs[0]);
 }
 
 /* The Oscilloscope Settings page changed the cursor mode by a key
@@ -65,7 +71,7 @@ void scope_screen_view_changed(void)
  * no longer exists (scope_screen_ctx). */
 void osc_menu_env_cursors(bool on)
 {
-    set_focus(key_focus_after_cursor_change((uint8_t)G(P(VIEW_MODE)), scope_key_focus, on));
+    set_focus(key_focus_after_cursor_change(scope_view_sel(), scope_key_focus, on));
 }
 
 key_ctx_t scope_screen_ctx(void)
@@ -73,7 +79,7 @@ key_ctx_t scope_screen_ctx(void)
     key_ctx_t c;
     memset(&c, 0, sizeof c);
     c.mode            = MODE_OSCILLOSCOPE;
-    c.view            = (uint8_t)G(P(VIEW_MODE));
+    c.view            = scope_view_sel();
     c.cursors_on      = (G(P(VIEW_CURSOR)) != CURSOR_OFF);
     c.mask_present    = (G(P(MASK_STATE)) != MASK_PF_EMPTY);
     c.focus           = (key_focus_t)key_focus_get();
@@ -279,7 +285,7 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
 
     /* -- short presses: UI state --------------------------------------- */
     case KA_FOCUS_NEXT: {
-        const key_focus_t f = key_focus_next((uint8_t)G(P(VIEW_MODE)), scope_key_focus,
+        const key_focus_t f = key_focus_next(scope_view_sel(), scope_key_focus,
                                              G(P(VIEW_CURSOR)) != CURSOR_OFF,
                                              G(P(MASK_STATE)) != MASK_PF_EMPTY);
         set_focus(f);
@@ -484,9 +490,14 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
     h = redraw_epoch_mix(h, scope_view_fft_epoch());
-    /* The domain the keys are on: a view of two domains marks it (it goes
-     * with the view, so it is layout as view.mode is). */
-    h = redraw_epoch_mix(h, (uint32_t)view_key_domain((uint8_t)G(P(VIEW_MODE)), (key_focus_t)key_focus_get()));
+    /* The domain the keys are on: a view of two domains marks it and draws
+     * its strip (it goes with the view, so it is layout as view.mode is). */
+    h = redraw_epoch_mix(h, (uint32_t)view_key_domain(scope_view_sel(), (key_focus_t)key_focus_get()));
+    /* Split's pair, while split is on screen: another view in a half is
+     * another picture. */
+    const view_sel_t vs = scope_view_sel();
+    if (view_entry(vs.mode)->pair)
+        h = redraw_epoch_mix(h, (uint32_t)vs.half[VIEW_HALF_UPPER] | ((uint32_t)vs.half[VIEW_HALF_LOWER] << 8));
     *layout = h;
 
     h = REDRAW_EPOCH_SEED;

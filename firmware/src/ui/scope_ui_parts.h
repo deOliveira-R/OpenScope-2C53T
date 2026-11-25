@@ -225,6 +225,10 @@ extern bool     popup_on;
 extern bool     popup_hole_last;
 /* The plot popup is set and its time has not run out. */
 bool popup_live(void);
+/* A frame of rows [top, bot) keeps a hole for the box (popup_live, and the
+ * box has rows there). The view's renderer, which knows all its panes, sets
+ * popup_hole_last from its panes' answers. */
+bool popup_hole_in(int top, int bot);
 /* Paint the popup box with its text. */
 void draw_popup_box(const theme_t *th);
 /* After a full frame: paint the box if the frame kept its hole, else end
@@ -243,6 +247,20 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
  * measurements (NULL: none). */
 uint16_t fft_strip_top(const scope_state_t *ss);
 void draw_fft_strip(const scope_state_t *ss, const theme_t *th, const fft_meas_t *m, bool ch2, bool refresh);
+
+/* scope_spectrum.c */
+/* What the furniture of a spectrum needs of the frame that was drawn. */
+typedef struct {
+    fft_meas_t meas[FFT_MEAS_COUNT];
+    bool       ch2;                         /* the spectrum is CH2's */
+    fft_axes_t ax;
+} fft_drawn_t;
+/* Draw the spectrum into pane p through its canvas: every column (all) or
+ * only the columns that changed; *drawn for its furniture. Returns true when
+ * it kept a hole for the popup box. */
+bool fft_pane_draw(const plot_pane_t *p, bool all, fft_drawn_t *drawn);
+/* The spectrum's strip and cursor readout under band_bot; refresh: in place. */
+void fft_furniture_draw(const scope_state_t *ss, const fft_drawn_t *d, uint16_t band_bot, bool refresh);
 /* Measure what the time view shows (the record, or the roll points the last
  * frame laid out) and paint the measurement strip. */
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh);
@@ -314,8 +332,9 @@ uint16_t view_build_roll(void);
 
 /* scope_yt.c */
 /* Draw the Y-T plot into pane p through its canvas: every column (all) or
- * only the columns that changed. frame: the display's frame counter. */
-void scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame);
+ * only the columns that changed. frame: the display's frame counter.
+ * Returns true when it kept a hole for the popup box. */
+bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame);
 
 /* scope_yt_frame.c */
 /* Each channel's band as drawn this frame ([0] CH1, [1] CH2), for the cursors. */

@@ -446,6 +446,9 @@ bool    prop_value_in_range(const prop_desc_t *p, int32_t v);
 #define MODEL_VIEW_MODE_MAX    4u   /* view.mode: yt, xy, fft, split, waterfall */
 #define MODEL_VIEW_RECORD_MAX  5u   /* the record's byte: yt, yt with roll, xy, fft, split, waterfall */
 void    model_view_boot_load(uint8_t raw);
+/* Split's pair (view.upper, view.lower) read at once, [0] upper, [1] lower:
+ * the display's read never sees half a swap. Any task. */
+void    model_view_pair(uint8_t half[2]);
 bool    model_view_boot_apply(void);            /* EXECUTOR ONLY */
 void    model_view_boot_forget(void);
 uint8_t model_view_record(void);
@@ -628,7 +631,7 @@ MODEL_PROP_FNS(il_gain)     MODEL_PROP_FNS(il_offset)   MODEL_PROP_FNS(il_skew)
 MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
 MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curt) MODEL_PROP_FNS(view_curr) MODEL_PROP_FNS(view_cury)
-MODEL_PROP_FNS(view_scurpos)
+MODEL_PROP_FNS(view_scurpos) MODEL_PROP_FNS(view_half)
 int32_t trig_code_get(const prop_desc_t *p);
 int32_t trig_held_get(const prop_desc_t *p);
 int32_t mask_state_get(const prop_desc_t *p);

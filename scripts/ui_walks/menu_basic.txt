@@ -62,10 +62,15 @@ m2_fft         | ui seq DOWN OK ; wait 2 ; get view.mode
 m2_split       | ui seq DOWN OK ; wait 2 ; get view.mode
 # expect: view.mode = waterfall
 m2_waterfall   | ui seq DOWN OK ; wait 2 ; get view.mode
+# expect: item=5 ; view.upper = fft ; view.lower = yt ; view.mode = waterfall   (the "Upper half" row:
+#         OK steps it to the next half view, the lower half takes Y-T; the view on screen stays)
+m2_upper       | ui seq DOWN OK ; wait 2 ; get view.upper ; get view.lower ; get view.mode
+# expect: item=6 ; view.upper = yt ; view.lower = fft ; view.mode = waterfall   (the "Lower half" row)
+m2_lower       | ui seq DOWN OK ; wait 2 ; get view.upper ; get view.lower ; get view.mode
 # expect: view.mode = yt ; item=0   (DOWN on the last item wraps to the first)
 m2_yt          | ui seq DOWN OK ; wait 2 ; get view.mode
-# expect: view.mode = split ; item=3   (UP twice from Y-T wraps to Split: the other direction)
-m2_up          | ui seq UP*2 OK ; wait 2 ; get view.mode ; set view.mode yt ; wait 2
+# expect: view.mode = split ; item=3   (UP four times from Y-T wraps past the halves to Split)
+m2_up          | ui seq UP*4 OK ; wait 2 ; get view.mode ; set view.mode yt ; wait 2
 # expect: the page shows FFT checked at once, in place: redraw_all does not move ; view.mode = fft
 m2_shell_set   | set view.mode fft ; wait 2 ; get view.mode
 # expect: view.mode = yt ; Y-T checked again

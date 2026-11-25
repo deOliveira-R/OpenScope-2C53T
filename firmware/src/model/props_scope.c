@@ -518,6 +518,61 @@ prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
     return s;
 }
 
+/* view.upper, view.lower (arg = view_half_t): the views of split's two
+ * halves, values those of view.mode. Only a view that can be a half
+ * (view_table.h: it has a drawer for a pane of any height). The two halves
+ * never show the same view: a view keeps one set of state for what it drew
+ * (the Y-T bands the cursors read, the trigger placement, the window
+ * columns, the popup hole), so a half set to the other half's view swaps
+ * them, and either pair is one set away from the other. Split on screen
+ * redraws when its pair changes (the pair is in the scope's layout epoch). */
+_Static_assert(VIEW_HALF_UPPER_DEFAULT == VIEW_MODE_YT && VIEW_HALF_LOWER_DEFAULT == VIEW_MODE_FFT,
+               "view.upper / view.lower defaults = model_table.h's def column");
+_Static_assert(VIEW_HALF_UPPER == 0 && VIEW_HALF_LOWER == 1, "view.upper arg 0, view.lower arg 1");
+/* The pair in one word, so a reader on another task (the display) never
+ * sees half a swap: a set builds the new pair and stores it once. */
+typedef union {
+    uint16_t word;
+    uint8_t  half[VIEW_HALF_COUNT];
+} view_pair_t;
+_Static_assert(sizeof(view_pair_t) == sizeof(uint16_t), "the pair is one halfword store");
+static volatile view_pair_t g_view_pair = { .half = { VIEW_HALF_UPPER_DEFAULT, VIEW_HALF_LOWER_DEFAULT } };
+
+static view_pair_t view_pair_now(void)
+{
+    return (view_pair_t){ .word = g_view_pair.word };
+}
+
+void model_view_pair(uint8_t half[2])
+{
+    const view_pair_t pr = view_pair_now();
+    half[VIEW_HALF_UPPER] = pr.half[VIEW_HALF_UPPER];
+    half[VIEW_HALF_LOWER] = pr.half[VIEW_HALF_LOWER];
+}
+
+int32_t view_half_get(const prop_desc_t *p) { return view_pair_now().half[p->arg]; }
+void    view_half_store(const prop_desc_t *p, int32_t v)
+{
+    view_pair_t pr = view_pair_now();
+    pr.half[p->arg] = (uint8_t)v;
+    g_view_pair.word = pr.word;
+}
+prop_status_t view_half_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    if (!view_is_half((uint8_t)v)) {
+        model_note(note, "not a view for a half");
+        return PS_REFUSED;
+    }
+    view_pair_t pr = view_pair_now();
+    const uint8_t other = (uint8_t)(VIEW_HALF_COUNT - 1u - p->arg);
+    const bool swap = pr.half[other] == (uint8_t)v;
+    if (swap) pr.half[other] = pr.half[p->arg];
+    pr.half[p->arg] = (uint8_t)v;
+    g_view_pair.word = pr.word;
+    if (swap) model_changed_also(other == VIEW_HALF_UPPER ? P(VIEW_UPPER) : P(VIEW_LOWER), origin);
+    return PS_OK;
+}
+
 const char *const lbl_view_persist[5] = { "off", "500ms", "1s", "2s", "inf" };
 
 int32_t view_persist_get(const prop_desc_t *p)

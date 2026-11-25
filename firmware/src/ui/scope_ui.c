@@ -68,7 +68,7 @@ void draw_scope_screen(uint32_t frame)
     const scope_state_t *ss = scope_state_get();
 
     const plot_pane_t pane = scope_pane_full(ss);
-    scope_yt_draw(&pane, true, frame);
+    popup_hole_last = scope_yt_draw(&pane, true, frame);
 
     /* The measurement strip's rows, between the band and the info bar: its
      * cells and its AUX row (the CAN line, the cursor readout or the mask
@@ -88,5 +88,5 @@ void draw_scope_screen(uint32_t frame)
 void draw_scope_live_frame(uint32_t frame)
 {
     const plot_pane_t pane = scope_pane_full(scope_state_get());
-    scope_yt_draw(&pane, false, frame);
+    popup_hole_last = scope_yt_draw(&pane, false, frame);
 }

@@ -28,13 +28,17 @@ typedef struct {
     uint16_t x, y, w, h;
 } canvas_rect_t;
 
-/* The canvases. A rectangle drawn by two of them (the full plot, then a
- * split half over the same rows) makes each resend everything next time. */
+/* The canvases: one per half of split, whatever view the half shows; the
+ * full plot and split's lower half are never on screen together, so they
+ * share one memory (CANVAS_SPLIT_LOWER). A rectangle drawn by two of them
+ * (the full plot, then a split half over the same rows) makes each resend
+ * everything next time. */
 typedef enum {
-    CANVAS_PLOT = 0,      /* the scope's plot: Y-T, roll, X-Y, the spectrum, split's lower half */
-    CANVAS_SPLIT_TIME,    /* split's upper half */
+    CANVAS_PLOT = 0,      /* the scope's plot: Y-T, X-Y, the spectrum; split's lower half */
+    CANVAS_SPLIT_UPPER,   /* split's upper half */
     CANVAS_COUNT
 } canvas_id_t;
+#define CANVAS_SPLIT_LOWER  CANVAS_PLOT
 
 /* Holes a frame may have: rectangles inside the canvas that belong to
  * somebody else (a popup box) and are stepped around. */

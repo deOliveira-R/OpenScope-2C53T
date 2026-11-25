@@ -303,6 +303,11 @@ void scope_popup_overlay_tick(void);
  * changes only on entry or a setting (margins, titles). */
 void draw_fft_screen(bool full);
 void draw_split_screen(uint32_t frame, bool full);
+#if FEATURE_BENCHSHELL
+/* `fpga scope livecheck` (scope_yt.c): one frame of a scope view is drawn,
+ * one fewer to check (main.c, after each render, whatever panes it has). */
+void scope_live_check_frame_end(void);
+#endif
 void draw_waterfall_screen(void);
 void draw_xy_screen(bool full);
 /* Last waterfall frame: 0 never drawn, 1 drawn, 2 no FFT (not initialised),

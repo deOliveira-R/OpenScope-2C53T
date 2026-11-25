@@ -18,12 +18,13 @@
 
 typedef struct {
     uint8_t prop[3];     /* VALUES: the property of each row. Others: [0] the pane's
-                          * (Measure: the selection of each set, in meas_set_t order).
+                          * (Measure: the selection of each set, in meas_set_t order;
+                          * Display: then Split's halves, its value rows).
                           * PROP_IX_x, B_NONE = none */
 } osc_bind_t;
 
 static const osc_bind_t k_bind[OSC_ROW_COUNT] = {
-    [OSC_ROW_DISPLAY] = { { PROP_IX_VIEW_MODE,    B_NONE,            B_NONE } },
+    [OSC_ROW_DISPLAY] = { { PROP_IX_VIEW_MODE,    PROP_IX_VIEW_UPPER, PROP_IX_VIEW_LOWER } },
     [OSC_ROW_CURSOR]  = { { PROP_IX_VIEW_CURSOR,  B_NONE,            B_NONE } },
     [OSC_ROW_PARAM]   = { { PROP_IX_CH1_MEAS,     PROP_IX_CH2_MEAS,  PROP_IX_FFT_MEAS } },
     [OSC_ROW_CH1]     = { { PROP_IX_CH1_ENABLED,  PROP_IX_CH1_PROBE, PROP_IX_CH1_COUPLING } },
@@ -49,15 +50,27 @@ _Static_assert(SAME(OSC_PERS_OFF, PERSIST_OFF) && SAME(OSC_PERS_500MS, PERSIST_L
                SAME(OSC_PERS_1S, PERSIST_MEDIUM) && SAME(OSC_PERS_2S, PERSIST_HIGH) &&
                SAME(OSC_PERS_INF, PERSIST_INFINITE), "Persist item = view.persist value");
 
+_Static_assert(VIEW_HALF_COUNT + 1u <= 3u, "the Display pane's halves bind prop[1], prop[2]");
+
 static bool is_values(osc_row_t row)
 {
     return (unsigned)row < OSC_ROW_COUNT && osc_menu_layout(row)->kind == OSC_PANE_VALUES;
 }
 
+/* The binding slot of an item: a VALUES pane's row, a Display half's
+ * 1 + view_half_t, else the pane's property. */
+static uint8_t bind_slot(osc_row_t row, uint8_t item)
+{
+    if (is_values(row)) return item;
+    if (row == OSC_ROW_DISPLAY && osc_menu_disp_half(item) < VIEW_HALF_COUNT)
+        return (uint8_t)(1u + osc_menu_disp_half(item));
+    return 0u;
+}
+
 const prop_desc_t *osc_menu_bind_prop(osc_row_t row, uint8_t item)
 {
     if ((unsigned)row >= OSC_ROW_COUNT) return NULL;
-    const uint8_t i = is_values(row) ? item : 0u;
+    const uint8_t i = bind_slot(row, item);
     if (i >= 3u || k_bind[row].prop[i] == B_NONE) return NULL;
     return &prop_table[k_bind[row].prop[i]];
 }
@@ -66,7 +79,12 @@ int32_t osc_menu_bind_value(osc_row_t row, uint8_t item)
 {
     if ((unsigned)row >= OSC_ROW_COUNT || item >= osc_menu_layout(row)->n_items) return -1;
     switch (row) {
-    case OSC_ROW_DISPLAY: return osc_menu_disp_view_mode(item);
+    case OSC_ROW_DISPLAY: {
+        /* A half: the next view that can be a half after the one it shows. */
+        const prop_desc_t *p = osc_menu_bind_prop(row, item);
+        if (bind_slot(row, item) != 0u) return view_half_next((uint8_t)prop_get(p));
+        return osc_menu_disp_view_mode(item);
+    }
     case OSC_ROW_CURSOR:
     case OSC_ROW_PERSIST: return item;
     case OSC_ROW_MATH: {
@@ -85,7 +103,7 @@ uint8_t osc_menu_bind_current(osc_row_t row)
     if (!p) return n;
     const int32_t v = prop_get(p);
     for (uint8_t i = 0; i < n; i++)
-        if (osc_menu_bind_value(row, i) == v) return i;
+        if (bind_slot(row, i) == 0u && osc_menu_bind_value(row, i) == v) return i;
     return n;
 }
 
@@ -93,10 +111,12 @@ void osc_menu_bind_text(osc_row_t row, uint8_t item, char *out, size_t n)
 {
     if (!out || !n) return;
     out[0] = '\0';
-    const prop_desc_t *p = is_values(row) ? osc_menu_bind_prop(row, item) : NULL;
+    const prop_desc_t *p = osc_menu_item_is_value(row, item) ? osc_menu_bind_prop(row, item) : NULL;
     if (!p) return;
     const int32_t v = prop_get(p);
-    if (p->type == PT_BOOL) snprintf(out, n, "%s", v ? "ON" : "OFF");
+    if (row == OSC_ROW_DISPLAY)   /* a half: the view's name as the pane lists it */
+        snprintf(out, n, "%s", osc_menu_item_label(OSC_ROW_DISPLAY, osc_menu_disp_item(v), 0u));
+    else if (p->type == PT_BOOL) snprintf(out, n, "%s", v ? "ON" : "OFF");
     else                    prop_format(p, v, out, n);
 }
 
@@ -132,7 +152,7 @@ static void note(const char *t) { snprintf(s_note, sizeof s_note, "%s", t); }
  * arrows are on. */
 static void meas_sets_of_view(void)
 {
-    const uint8_t view = (uint8_t)prop_get(P(VIEW_MODE));
+    const view_sel_t view = scope_view_sel();
     uint8_t sets = 0u;
     if (view_shows(view, VIEW_DOM_TIME)) sets |= (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2);
     if (view_shows(view, VIEW_DOM_FREQ)) sets |= 1u << MEAS_SET_FFT;

@@ -115,7 +115,7 @@ static key_ctx_t vctx(device_mode_t m, uint8_t view, key_focus_t f)
 {
     key_ctx_t c;
     memset(&c, 0, sizeof c);
-    c.mode = m; c.view = view; c.focus = f;
+    c.mode = m; c.view = view_sel_mode(view); c.focus = f;
     return c;
 }
 /* Y-T, the view a scope boots in. */
@@ -136,7 +136,10 @@ static const struct {
     { VIEW_MODE_YT,        5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true,  true  },
     { VIEW_MODE_XY,        3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE },                     false, true  },
     { VIEW_MODE_FFT,       3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },            true,  false },
-    { VIEW_MODE_SPLIT,     4, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM },        false, true  },
+    /* split's default pair, Y-T over the spectrum: Y-T's jobs, then the
+     * spectrum's own (its second job, the input's scales, is Y-T's zoom) */
+    { VIEW_MODE_SPLIT,     7, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK, KF_SPECTRUM,
+                                KF_SPECTRUM_CURSOR },                                   true,  true  },
     { VIEW_MODE_WATERFALL, 2, { KF_SPECTRUM, KF_ZOOM },                                false, false },
 };
 #define N_VIEWS (sizeof k_views / sizeof k_views[0])
@@ -187,10 +190,10 @@ static void test_long_map(void)
           is(key_map(&sc, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, 0));
     key_ctx_t me = ctx(MODE_MULTIMETER, KF_ZOOM);
     CHECK("long PRM in the meter does nothing", is(key_map(&me, BTN_PRM, true), KA_NONE, 0));
-    key_ctx_t fv = sc; fv.view = VIEW_MODE_FFT;
+    key_ctx_t fv = sc; fv.view = view_sel_mode(VIEW_MODE_FFT);
     CHECK("long PRM in the FFT view hides its measurement strip",
           is(key_map(&fv, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, 0));
-    key_ctx_t wv = sc; wv.view = VIEW_MODE_WATERFALL;
+    key_ctx_t wv = sc; wv.view = view_sel_mode(VIEW_MODE_WATERFALL);
     CHECK("long PRM in the waterfall does nothing (no strip)", is(key_map(&wv, BTN_PRM, true), KA_NONE, 0));
     {
         /* Long PRM where a strip is drawn; long OK / AUTO where the time
@@ -207,7 +210,7 @@ static void test_long_map(void)
                 ok &= is(key_map(&c, BTN_CH1, true), KA_CH_ENABLE_TOGGLE, 0) &&
                       is(key_map(&c, BTN_CH2, true), KA_CH_ENABLE_TOGGLE, 1);
             }
-        CHECK("long PRM: Y-T and FFT (the strip); long OK / AUTO: Y-T, X-Y, split; long CH1/CH2 everywhere", ok);
+        CHECK("long PRM: Y-T, FFT, split (the strip); long OK / AUTO: Y-T, X-Y, split; long CH1/CH2 everywhere", ok);
     }
     key_ctx_t xy = vctx(MODE_OSCILLOSCOPE, VIEW_MODE_XY, KF_ZOOM);
     CHECK("X-Y is a view of the time record: long OK = 50 %, long AUTO = baseline, long PRM nothing (no strip)",
@@ -410,7 +413,7 @@ static void test_short_map(void)
                             for (int lng = 0; lng < 2; lng++) {
                                 const uint8_t view = k_views[v].view;
                                 key_ctx_t c = vctx(MODE_OSCILLOSCOPE, view,
-                                                   key_focus_sanitize(view, (key_focus_t)f, cur, mk));
+                                                   key_focus_sanitize(view_sel_mode(view), (key_focus_t)f, cur, mk));
                                 c.cursors_on = cur; c.mask_present = mk;
                                 claimed &= key_map(&c, all[k], lng).act != KA_LEGACY;
                                 n++;
@@ -452,7 +455,7 @@ static void test_osc_menu(void)
           is(key_map(&z, BTN_MENU, false), KA_OSCMENU_OPEN, OSC_ROW_DISPLAY));
     CHECK("scope short PRM opens the page locked inside Parameter Measurement",
           is(key_map(&z, BTN_PRM, false), KA_OSCMENU_PANE, OSC_ROW_PARAM));
-    key_ctx_t fv = z; fv.view = VIEW_MODE_FFT; fv.focus = KF_SPECTRUM;
+    key_ctx_t fv = z; fv.view = view_sel_mode(VIEW_MODE_FFT); fv.focus = KF_SPECTRUM;
     CHECK("FFT views: MENU opens the page too (the way back to the time view)",
           is(key_map(&fv, BTN_MENU, false), KA_OSCMENU_OPEN, OSC_ROW_DISPLAY));
     CHECK("scope short TRIGGER opens the page locked inside Trigger Settings (no inline panel)",
@@ -531,7 +534,7 @@ static void test_osc_menu(void)
           is(key_map(&o, BTN_AUTO, false), KA_NONE, 0));
     CHECK("open: POWER stays with its own handler",
           key_map(&o, BTN_POWER, false).act == KA_LEGACY);
-    key_ctx_t ofv = o; ofv.view = VIEW_MODE_FFT; ofv.focus = KF_SPECTRUM;
+    key_ctx_t ofv = o; ofv.view = view_sel_mode(VIEW_MODE_FFT); ofv.focus = KF_SPECTRUM;
     CHECK("open over an FFT view: the page still owns the arrows",
           is(key_map(&ofv, BTN_LEFT, false), KA_OSCMENU_KEY, OSC_KEY_LEFT));
 
@@ -565,7 +568,7 @@ static void test_trigger_key(void)
 static void test_focus(void)
 {
     printf("arrow stage cycle (Y-T)\n");
-    const uint8_t yt = VIEW_MODE_YT;
+    const view_sel_t yt = view_sel_mode(VIEW_MODE_YT);
     key_focus_t f = KF_ZOOM;
     f = key_focus_next(yt, f, false, false); int a = f == KF_CHMOVE;
     f = key_focus_next(yt, f, false, false); int b = f == KF_TRIGMOVE;
@@ -601,7 +604,7 @@ static void test_focus(void)
          * mask jobs; a job the view does not offer gives way to its first. */
         int ring = 1, skip = 1, san = 1;
         for (unsigned v = 0; v < N_VIEWS; v++) {
-            const uint8_t view = k_views[v].view;
+            const view_sel_t view = view_sel_mode(k_views[v].view);
             const key_focus_t *r = k_views[v].ring;
             const unsigned n = k_views[v].n;
             for (unsigned i = 0; i < n; i++)
@@ -625,7 +628,8 @@ static void test_focus(void)
         CHECK("every view: without cursors or a mask those jobs are skipped", skip);
         CHECK("every view: a job it does not offer (or no longer) falls back to its first job", san);
     }
-    const uint8_t xy = VIEW_MODE_XY, fft = VIEW_MODE_FFT, sp = VIEW_MODE_SPLIT, wf = VIEW_MODE_WATERFALL;
+    const view_sel_t xy = view_sel_mode(VIEW_MODE_XY), fft = view_sel_mode(VIEW_MODE_FFT),
+                     sp = view_sel_mode(VIEW_MODE_SPLIT), wf = view_sel_mode(VIEW_MODE_WATERFALL);
     CHECK("X-Y: zoom -> channel move -> trigger move -> zoom, cursors and mask not offered",
           key_focus_next(xy, KF_TRIGMOVE, true, true) == KF_ZOOM &&
           key_focus_sanitize(xy, KF_CURSOR, true, true) == KF_ZOOM &&
@@ -640,24 +644,24 @@ static void test_focus(void)
           key_focus_next(fft, KF_SPECTRUM, true, false) == KF_ZOOM &&
           key_focus_next(fft, KF_ZOOM, true, false) == KF_SPECTRUM_CURSOR &&
           key_focus_next(fft, KF_SPECTRUM_CURSOR, true, false) == KF_SPECTRUM);
-    CHECK("the spectrum cursor job: FFT's only; the time cursor job is not FFT's",
+    CHECK("the spectrum cursor job: the spectrum's (FFT, split's spectrum half); the time cursor job is not FFT's",
           key_focus_sanitize(fft, KF_SPECTRUM_CURSOR, true, true) == KF_SPECTRUM_CURSOR &&
           key_focus_sanitize(fft, KF_SPECTRUM_CURSOR, false, true) == KF_SPECTRUM &&
           key_focus_sanitize(fft, KF_CURSOR, true, true) == KF_SPECTRUM &&
           key_focus_sanitize(yt, KF_SPECTRUM_CURSOR, true, true) == KF_ZOOM &&
           key_focus_sanitize(wf, KF_SPECTRUM_CURSOR, true, true) == KF_SPECTRUM &&
-          key_focus_sanitize(sp, KF_SPECTRUM_CURSOR, true, true) == KF_ZOOM);
+          key_focus_sanitize(sp, KF_SPECTRUM_CURSOR, true, true) == KF_SPECTRUM_CURSOR);
     {
         /* Cursors switched on: the view's cursor job (none: the job stays);
          * off: a cursor job gives way to the view's first, another stays. */
         static const struct { uint8_t view; key_focus_t cursor_job, first; } C[] = {
             { VIEW_MODE_YT, KF_CURSOR, KF_ZOOM },
             { VIEW_MODE_XY, KF_COUNT, KF_ZOOM },              { VIEW_MODE_FFT, KF_SPECTRUM_CURSOR, KF_SPECTRUM },
-            { VIEW_MODE_SPLIT, KF_COUNT, KF_ZOOM },           { VIEW_MODE_WATERFALL, KF_COUNT, KF_SPECTRUM },
+            { VIEW_MODE_SPLIT, KF_CURSOR, KF_ZOOM },          { VIEW_MODE_WATERFALL, KF_COUNT, KF_SPECTRUM },
         };
         int ok = 1;
         for (unsigned i = 0; i < sizeof C / sizeof C[0]; i++) {
-            const uint8_t v = C[i].view;
+            const view_sel_t v = view_sel_mode(C[i].view);
             const key_focus_t on = C[i].cursor_job == KF_COUNT ? KF_TRIGMOVE : C[i].cursor_job;
             ok &= key_focus_after_cursor_change(v, KF_TRIGMOVE, true) == on;
             ok &= key_focus_after_cursor_change(v, KF_CURSOR, false) == C[i].first;
@@ -665,7 +669,8 @@ static void test_focus(void)
             ok &= key_focus_after_cursor_change(v, KF_ZOOM, false) == KF_ZOOM;
             ok &= key_focus_after_cursor_change(v, KF_SPECTRUM, false) == KF_SPECTRUM;
         }
-        CHECK("after_cursor_change per view: on -> Y-T cursor, FFT spectrum cursor, else the job stays; "
+        CHECK("after_cursor_change per view: on -> Y-T cursor (split: the keys' half's), FFT spectrum cursor, "
+              "else the job stays; "
               "off -> a cursor job goes to the view's first", ok);
     }
     {
@@ -678,13 +683,15 @@ static void test_focus(void)
               is(key_map(&c, BTN_RIGHT, false), KA_CURSOR_NEXT, 0) &&
               is(key_map(&c, BTN_AUTO, false), KA_FFT_AUTO, 0));
     }
-    CHECK("split: zoom -> channel move -> trigger move -> spectrum -> zoom",
-          key_focus_next(sp, KF_TRIGMOVE, true, true) == KF_SPECTRUM &&
-          key_focus_next(sp, KF_SPECTRUM, true, true) == KF_ZOOM &&
-          key_focus_sanitize(sp, KF_MASK, true, true) == KF_ZOOM);
+    CHECK("split (Y-T over FFT): ... trigger move -> cursor -> mask -> spectrum -> spectrum cursor -> zoom",
+          key_focus_next(sp, KF_TRIGMOVE, true, true) == KF_CURSOR &&
+          key_focus_next(sp, KF_MASK, true, true) == KF_SPECTRUM &&
+          key_focus_next(sp, KF_SPECTRUM_CURSOR, true, true) == KF_ZOOM &&
+          key_focus_next(sp, KF_TRIGMOVE, false, false) == KF_SPECTRUM &&
+          key_focus_sanitize(sp, KF_MASK, true, true) == KF_MASK);
     CHECK("a view.mode out of range is Y-T",
-          key_focus_next(VIEW_MODE_COUNT, KF_TRIGMOVE, true, true) == KF_CURSOR &&
-          key_focus_sanitize(VIEW_MODE_COUNT, KF_SPECTRUM, true, true) == KF_ZOOM);
+          key_focus_next(view_sel_mode(VIEW_MODE_COUNT), KF_TRIGMOVE, true, true) == KF_CURSOR &&
+          key_focus_sanitize(view_sel_mode(VIEW_MODE_COUNT), KF_SPECTRUM, true, true) == KF_ZOOM);
     {
         int named = 1;
         for (int j = KF_ZOOM; j < KF_COUNT; j++) {
@@ -778,7 +785,7 @@ static uint32_t km_grid(key_cmd_t (*fn)(const key_ctx_t *, button_id_t, bool), u
     for (int lng = 0; lng < 2; lng++) {
         key_ctx_t c;
         memset(&c, 0, sizeof c);
-        c.mode = (device_mode_t)mode; c.view = k_grid_views[v];
+        c.mode = (device_mode_t)mode; c.view = view_sel_mode(k_grid_views[v]);
         c.focus = (key_focus_t)f; c.cursors_on = cur; c.mask_present = mk; c.active_channel = (uint8_t)ach;
         c.osc_menu_open = op; c.osc_menu_locked = lk; c.osc_menu_opener = openers[o];
         const key_cmd_t k = fn(&c, (button_id_t)b, lng != 0);
@@ -900,8 +907,9 @@ static void test_focus_mark(void)
     /* The half is the domain AUTO acts on, for every job of every view; and
      * a view of one domain never moves it (so its picture never changes). */
     bool in_view = true, one_fixed = true, split_both = false;
-    for (uint8_t v = 0; v < VIEW_MODE_COUNT; v++) {
-        const view_desc_t *d = view_desc(v);
+    for (uint8_t m = 0; m < VIEW_MODE_COUNT; m++) {
+        const view_sel_t v = view_sel_mode(m);
+        const view_desc_t dd = view_desc_of(v), *d = &dd;
         const bool one = d->domains == VIEW_TIME_ONLY || d->domains == VIEW_FREQ_ONLY;
         const view_domain_t first = view_key_domain(v, (key_focus_t)d->jobs[0]);
         bool seen[VIEW_DOM_COUNT] = { false, false };
@@ -932,9 +940,71 @@ static void test_focus_mark(void)
     CHECK("focus mark: a 1 px frame of 10 x 6 is 28 pixels", FOCUS_MARK_PX != 1 || on == 28);
 }
 
+/* Split as a pair of views: the halves a view can be, the ring composed of
+ * the halves' jobs in order (each job in the half of its domain), the half
+ * the keys are on and the strip it owns, for both pairs today's views make. */
+static void test_split_pair(void)
+{
+    printf("split as a pair of views\n");
+    bool halves = true;
+    for (uint8_t m = 0; m < VIEW_MODE_COUNT; m++)
+        halves &= view_is_half(m) == (m == VIEW_MODE_YT || m == VIEW_MODE_FFT);
+    CHECK("the views that can be a half: Y-T and FFT (not X-Y, split, the waterfall)",
+          halves && !view_is_half(VIEW_MODE_COUNT));
+    CHECK("the next half view, round the table: Y-T -> FFT -> Y-T; from another view the next half view",
+          view_half_next(VIEW_MODE_YT) == VIEW_MODE_FFT && view_half_next(VIEW_MODE_FFT) == VIEW_MODE_YT &&
+          view_half_next(VIEW_MODE_XY) == VIEW_MODE_FFT && view_half_next(VIEW_MODE_WATERFALL) == VIEW_MODE_YT);
+    CHECK("split's default pair: Y-T over FFT",
+          VIEW_HALF_UPPER_DEFAULT == VIEW_MODE_YT && VIEW_HALF_LOWER_DEFAULT == VIEW_MODE_FFT &&
+          view_sel_mode(VIEW_MODE_SPLIT).half[VIEW_HALF_UPPER] == VIEW_MODE_YT &&
+          view_sel_mode(VIEW_MODE_SPLIT).half[VIEW_HALF_LOWER] == VIEW_MODE_FFT);
+
+    /* The rings, written out: the upper half's jobs, then the lower's. */
+    static const struct { uint8_t upper, lower; key_focus_t ring[KF_COUNT]; } P[] = {
+        { VIEW_MODE_YT, VIEW_MODE_FFT,
+          { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK, KF_SPECTRUM, KF_SPECTRUM_CURSOR } },
+        { VIEW_MODE_FFT, VIEW_MODE_YT,
+          { KF_SPECTRUM, KF_SPECTRUM_CURSOR, KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
+    };
+    bool ring = true, desc = true, half = true, strip = true, autok = true, curs = true;
+    for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
+        const view_sel_t v = view_sel(VIEW_MODE_SPLIT, P[i].upper, P[i].lower);
+        const view_desc_t d = view_desc_of(v);
+        desc &= d.n_jobs == KF_COUNT && d.domains == (VIEW_TIME_ONLY | VIEW_FREQ_ONLY) && d.strip && !d.roll;
+        for (unsigned k = 0; k < KF_COUNT; k++) {
+            const key_focus_t f = P[i].ring[k];
+            ring &= d.jobs[k] == (uint8_t)f && key_focus_next(v, f, true, true) == P[i].ring[(k + 1) % KF_COUNT];
+            /* the half of the job's domain has the keys, AUTO and the strip */
+            const uint8_t shows = key_focus_domain(f) == VIEW_DOM_TIME ? VIEW_MODE_YT : VIEW_MODE_FFT;
+            const view_half_t h = view_key_half(v, f);
+            half &= v.half[h] == shows;
+            strip &= view_strip_domain(v, f) == key_focus_domain(f);
+            key_ctx_t c = vctx(MODE_OSCILLOSCOPE, VIEW_MODE_SPLIT, f);
+            c.view = v; c.cursors_on = true; c.mask_present = true;
+            autok &= key_map(&c, BTN_AUTO, false).act ==
+                     (key_focus_domain(f) == VIEW_DOM_FREQ ? KA_FFT_AUTO : KA_AUTOSET);
+        }
+        curs &= key_focus_after_cursor_change(v, KF_SPECTRUM, true) == KF_SPECTRUM_CURSOR &&
+                key_focus_after_cursor_change(v, KF_CHMOVE, true) == KF_CURSOR &&
+                key_focus_after_cursor_change(v, KF_SPECTRUM_CURSOR, false) == P[i].ring[0];
+    }
+    CHECK("each pair: one job per domain's half, upper's first; all seven jobs, both domains, a strip, no roll", desc);
+    CHECK("each pair: SELECT walks the composed ring in order and wraps", ring);
+    CHECK("each pair: the keys' half is the one that shows the job's domain", half);
+    CHECK("each pair: the strip is the keys' half's domain's", strip);
+    CHECK("each pair: AUTO is the keys' half's (span fit on the spectrum, autoset on the trace)", autok);
+    CHECK("each pair: cursors on put the arrows on the keys' half's cursor job; off, on the first job", curs);
+    CHECK("the strip of the single views: Y-T time, FFT frequency, X-Y and the waterfall none",
+          view_strip_domain(view_sel_mode(VIEW_MODE_YT), KF_SPECTRUM) == VIEW_DOM_TIME &&
+          view_strip_domain(view_sel_mode(VIEW_MODE_FFT), KF_ZOOM) == VIEW_DOM_FREQ &&
+          view_strip_domain(view_sel_mode(VIEW_MODE_XY), KF_ZOOM) == VIEW_DOM_COUNT &&
+          view_strip_domain(view_sel_mode(VIEW_MODE_WATERFALL), KF_SPECTRUM) == VIEW_DOM_COUNT);
+}
+
 int main(void)
 {
     test_focus_mark();
+    test_split_pair();
     test_scan();
     test_long_map();
     test_short_map();

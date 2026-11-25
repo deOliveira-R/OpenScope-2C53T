@@ -186,7 +186,8 @@ static void test_table(void)
     static const osc_row_t radio[] = { OSC_ROW_DISPLAY, OSC_ROW_CURSOR, OSC_ROW_PERSIST, OSC_ROW_MATH };
     for (unsigned k = 0; k < 4; k++) {
         const prop_desc_t *p = osc_menu_bind_prop(radio[k], 0);
-        const uint8_t n = osc_menu_layout(radio[k])->n_items;
+        uint8_t n = 0;                     /* the radio items: Display's halves are value rows */
+        while (n < osc_menu_layout(radio[k])->n_items && !osc_menu_item_is_value(radio[k], n)) n++;
         uint32_t seen = 0;
         for (uint8_t i = 0; i < n; i++) {
             const int32_t v = osc_menu_bind_value(radio[k], i);
@@ -194,13 +195,14 @@ static void test_table(void)
             seen |= 1u << v;
         }
         /* every value of the property has an item: the pane can show any state */
-        ok &= (int32_t)n == p->max - p->min + 1 && osc_menu_bind_value(radio[k], n) == -1;
+        ok &= (int32_t)n == p->max - p->min + 1 &&
+              osc_menu_bind_value(radio[k], osc_menu_layout(radio[k])->n_items) == -1;
     }
     CHECK("RADIO / Math: item -> a value of the property, one to one and onto", ok);
 
     char t[24];
     ok = 1;
-    for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
+    for (uint8_t i = 0; i < OSC_DISP_VIEW_MODES; i++) {
         static const char *const tok[] = { "yt", "xy", "fft", "split", "waterfall" };
         prop_format_value(P(VIEW_MODE), osc_menu_bind_value(OSC_ROW_DISPLAY, i), t, sizeof t);
         ok &= strcmp(t, tok[i]) == 0;
@@ -398,8 +400,8 @@ static void test_radio_panes(void)
 {
     printf("RADIO panes and Math: OK on an item is one set of the pane's property\n");
     int ok = 1;
-    for (uint8_t from = 0; from < OSC_DISP_COUNT; from++)
-    for (uint8_t to = 0; to < OSC_DISP_COUNT; to++) {
+    for (uint8_t from = 0; from < OSC_DISP_VIEW_MODES; from++)
+    for (uint8_t to = 0; to < OSC_DISP_VIEW_MODES; to++) {
         boot();
         (void)prop_set_local(P(VIEW_MODE), from, ORIGIN_SHELL, NULL);
         open_page(OSC_ROW_DISPLAY, false, BTN_MENU);
@@ -462,6 +464,44 @@ static void test_radio_panes(void)
         ok &= (to == from) ? g_cursors_calls == 0 : (g_cursors_calls == 1 && g_cursors_on == (to != 0));
     }
     CHECK("Cursors: every mode from every mode (16): view.cursor; a mode closes the page; the focus hook", ok);
+}
+
+/* Display's halves: two value rows bound to view.upper and view.lower; OK
+ * steps the half to the next view that can be a half, the other half swaps
+ * when it showed that one, and the view on screen stays. */
+static void test_display_halves(void)
+{
+    printf("Display pane: Split's upper and lower half\n");
+    boot();
+    CHECK("the rows are bound to view.upper and view.lower",
+          osc_menu_bind_prop(OSC_ROW_DISPLAY, OSC_DISP_UPPER) == P(VIEW_UPPER) &&
+          osc_menu_bind_prop(OSC_ROW_DISPLAY, OSC_DISP_LOWER) == P(VIEW_LOWER));
+    char t[16], u[16];
+    osc_menu_bind_text(OSC_ROW_DISPLAY, OSC_DISP_UPPER, t, sizeof t);
+    osc_menu_bind_text(OSC_ROW_DISPLAY, OSC_DISP_LOWER, u, sizeof u);
+    CHECK("by default they read \"Y-T\" over \"FFT\"; OK would step each to the other view",
+          strcmp(t, "Y-T") == 0 && strcmp(u, "FFT") == 0 &&
+          osc_menu_bind_value(OSC_ROW_DISPLAY, OSC_DISP_UPPER) == VIEW_MODE_FFT &&
+          osc_menu_bind_value(OSC_ROW_DISPLAY, OSC_DISP_LOWER) == VIEW_MODE_YT);
+
+    bool ok = true;
+    for (uint8_t from = 0; from < OSC_DISP_VIEW_MODES; from++) {
+        boot();
+        (void)prop_set_local(P(VIEW_MODE), from, ORIGIN_SHELL, NULL);
+        open_page(OSC_ROW_DISPLAY, false, BTN_MENU);
+        (void)env_key(BTN_OK);
+        ok &= osc_menu_bind_current(OSC_ROW_DISPLAY) == from;     /* the halves are never "checked" */
+        const env_epochs_t e0 = env_epochs();
+        const scr_res_t r = pick(OSC_ROW_DISPLAY, OSC_DISP_UPPER);
+        const env_epochs_t e1 = env_epochs();
+        ok &= r == SCR_DRAW && osc_menu_is_open() && G(P(VIEW_MODE)) == from &&
+              G(P(VIEW_UPPER)) == VIEW_MODE_FFT && G(P(VIEW_LOWER)) == VIEW_MODE_YT &&
+              env_epochs_moved(&e0, &e1) == (1u << PG_VIEW) && note()[0] == '\0';
+        (void)pick(OSC_ROW_DISPLAY, OSC_DISP_LOWER);
+        ok &= G(P(VIEW_MODE)) == from && G(P(VIEW_UPPER)) == VIEW_MODE_YT && G(P(VIEW_LOWER)) == VIEW_MODE_FFT;
+        if (!ok) { printf("    from view %u: upper %ld lower %ld\n", from, (long)G(P(VIEW_UPPER)), (long)G(P(VIEW_LOWER))); break; }
+    }
+    CHECK("OK on a half, from every view: the pair swaps (Y-T/FFT <-> FFT/Y-T), the view stays, the page stays", ok);
 }
 
 /* ── the rules stay in the setters; the footer says what the row cannot ── */
@@ -862,6 +902,7 @@ int main(void)
     test_value_text();
     test_values_rows();
     test_radio_panes();
+    test_display_halves();
     test_rules_and_notes();
     test_measure();
     test_measure_by_view();

@@ -23,6 +23,7 @@
 #include "signal_gen.h"
 #include "sys_prefs.h"
 #include "theme.h"
+#include "view_table.h"
 #include "ui.h"
 
 static int run, passed;
@@ -46,6 +47,12 @@ volatile float          fuse_scan_threshold_mv = 0.1f;
 #ifndef SCREEN_TEST_ENV_REAL_FOCUS      /* test_scope_screen.c links the screen that owns it */
 static uint8_t env_focus;               /* the job the arrows are on, as a test sets it */
 uint8_t key_focus_get(void) { return env_focus; }
+view_sel_t scope_view_sel(void)
+{
+    uint8_t half[VIEW_HALF_COUNT];
+    model_view_pair(half);
+    return view_sel((uint8_t)prop_get(P(VIEW_MODE)), half[VIEW_HALF_UPPER], half[VIEW_HALF_LOWER]);
+}
 #endif
 
 /* ── signal_gen.c's output driver: every call that would reach TMR7 /
