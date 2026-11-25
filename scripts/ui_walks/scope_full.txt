@@ -52,7 +52,7 @@
 # ── 0. a known state ─────────────────────────────────────────────────────────
 # expect: screen=scope instrument=scope overlay=none stack=scope view=yt run=run focus=zoom ach=CH1 lcdforeign=0
 f0_base        | set sys.mode scope ; wait 1 ; set ch1.enabled on ; set ch2.enabled on ; set view.mode yt ; set view.cursor off
-f0_base2       | set view.persist off ; set view.math off ; set view.meashide off ; set trig.mode auto ; set trig.edge rising
+f0_base2       | set view.persist off ; set view.math off ; set view.meashide off ; set view.splithide on ; set trig.mode auto ; set trig.edge rising
 f0_base3       | set trig.source ch1 ; set ch1.probe 1x ; set ch2.probe 1x ; set ch1.coupling dc ; set ch2.coupling dc
 f0_base4       | set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set ch1.pos 0 ; set ch2.pos 0 ; set trig.level 0 ; set trig.x 150
 # expect: 0 scope_full/s, 0 redraw_all/s (a settled Y-T view)
@@ -364,7 +364,7 @@ f12_set_vdiv0  | set ch1.vdiv 6 ; wait 2 ; get ch1.vdiv
 
 # ── 13. split ────────────────────────────────────────────────────────────────
 # expect: view=split ; the trace above, the spectrum below ; the upper half framed (the keys are on
-#         zoom), the channels' strip at the bottom
+#         zoom); split's results hidden (its default): no strip, the halves 103 and 102 rows
 f13_set_split  | set view.mode split ; wait 3 ; get view.mode
 # expect: 0 redraw_all/s
 f13_idle       | wait 4
@@ -386,12 +386,13 @@ f13_prm_close  | ui seq PRM ; wait 2
 # expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=split
 f13_trigger    | ui seq TRIGGER ; wait 1
 f13_trig_close | ui seq TRIGGER ; wait 2
-# expect: view.meashide = on, then off (split draws the strip of the keys' half: long PRM hides it)
-f13_long       | ui seq long:PRM ; wait 2 ; get view.meashide ; ui seq long:PRM ; wait 2 ; get view.meashide
+# expect: view.splithide = off, then on (split's own results, hidden at first: long PRM shows the
+#         keys' half's strip; the panes keep their size) ; view.meashide = off throughout
+f13_long       | ui seq long:PRM ; wait 2 ; get view.splithide ; get view.meashide ; ui seq long:PRM ; wait 2 ; get view.splithide
 # expect: the spectrum above, the trace below ; view.upper = fft ; view.lower = yt (the pair swaps)
 f13_pair       | set view.upper fft ; wait 3 ; get view.upper ; get view.lower
-# expect: focus=spectrum (chmove -> trigmove -> spectrum): the spectrum half framed, its strip
-#         (Peak, Level) at the bottom
+# expect: focus=spectrum (chmove -> trigmove -> spectrum): the spectrum half framed; split's
+#         results hidden (its default), so no strip and the panes the same size as before
 f13_pair_keys  | ui seq SELECT*2 ; wait 2
 # expect: view.upper = yt: the trace above again
 f13_pair_back  | set view.lower fft ; wait 3 ; get view.upper

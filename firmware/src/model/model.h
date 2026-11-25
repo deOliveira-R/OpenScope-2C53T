@@ -631,7 +631,7 @@ MODEL_PROP_FNS(il_gain)     MODEL_PROP_FNS(il_offset)   MODEL_PROP_FNS(il_skew)
 MODEL_PROP_FNS(il_knots)
 MODEL_PROP_FNS(mask_tolv)   MODEL_PROP_FNS(mask_tolh)   MODEL_PROP_FNS(mask_stopfail)
 MODEL_PROP_FNS(view_cursel) MODEL_PROP_FNS(view_curt) MODEL_PROP_FNS(view_curr) MODEL_PROP_FNS(view_cury)
-MODEL_PROP_FNS(view_scurpos) MODEL_PROP_FNS(view_half)
+MODEL_PROP_FNS(view_scurpos) MODEL_PROP_FNS(view_half)   MODEL_PROP_FNS(view_sh)
 int32_t trig_code_get(const prop_desc_t *p);
 int32_t trig_held_get(const prop_desc_t *p);
 int32_t mask_state_get(const prop_desc_t *p);

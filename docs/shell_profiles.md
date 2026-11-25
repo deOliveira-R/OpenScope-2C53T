@@ -185,7 +185,7 @@ be maintained for no gain. They answer `Unknown command`. Labels are matched wit
 | `fpga scope prm [chN] default` | `set chN.meas 0x507` (`describe ch1.meas` gives the default) | |
 | `fpga scope prm [chN] toggle <0-11>` | no step on a mask: `get chN.meas`, flip the bit on the host, `set chN.meas <mask>` | |
 | `fpga scope prm hide\|show` | `set view.meashide on\|off` | `OK view.meashide=on` |
-| `fpga scope prm` (read) | `get ch1.meas ch2.meas view.meashide`; what the strip shows and `(no slot)`: `ui dump` (`prm hidden=..`, `CHn mask=0x... shown: ...`) | |
+| `fpga scope prm` (read) | `get ch1.meas ch2.meas view.meashide`; what the strip shows and `(no slot)`: `ui dump` (`prm hidden=.. split hidden=..`, `CHn mask=0x... shown: ...`) | |
 | `fpga interleave on\|off` | `set il.enabled on\|off` | `OK il.enabled=on` |
 | `fpga interleave corr <gain x1e4> <offset x100>` | `set il.knots=0 il.gain=<gain> il.offset=<offset>`, in the property's units: `corr 10123 -45` is `il.gain=1.0123 il.offset=-0.45`. `il.knots=0` first drops a piecewise map (a new gain or offset is refused while one is active) | three `OK` lines |
 | `fpga interleave skew set <ppm>`, `skew off` | `set il.skew <ppm>`, `set il.skew 0` | `OK il.skew=-49000 ppm`; `get il.*` prints `il.gain=1.012300`, `il.offset=-0.45 counts` |

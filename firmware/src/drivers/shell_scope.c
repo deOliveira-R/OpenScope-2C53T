@@ -963,7 +963,7 @@ void cmd_fpga_scope_measure(const char *args)
 void prm_print_status(void)
 {
     const scope_state_t *ss = scope_state_get();
-    usb_debug_printf("prm hidden=%u\r\n", (unsigned)ss->prm_hidden);
+    usb_debug_printf("prm hidden=%u split hidden=%u\r\n", (unsigned)ss->prm_hidden, (unsigned)ss->split_prm_hidden);
     for (uint8_t c = 0; c < 2u; c++) {
         const uint16_t m = meas_select_get(c);
         usb_debug_printf("CH%u mask=0x%03X shown:", (unsigned)c + 1u, (unsigned)m);

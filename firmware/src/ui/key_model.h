@@ -150,7 +150,7 @@ typedef enum {
     KA_ENTER_METER,       /* long SELECT */
     KA_ENTER_SCOPE,       /* long MOVE */
     KA_ENTER_SIGGEN,      /* long TRIGGER */
-    KA_MEAS_HIDE_TOGGLE,  /* long PRM */
+    KA_MEAS_HIDE_TOGGLE,  /* long PRM: arg = the view's results setting (view_results_t) */
     KA_CH_ENABLE_TOGGLE,  /* long CH1/CH2: arg = channel (0/1) */
     KA_SIGGEN_BOOT_TOGGLE,/* long AUTO in the generator: output-at-boot policy (ours) */
     KA_SIGGEN_RUNSTOP,    /* long OK in the generator: output Run/Stop (manual 2.1) */

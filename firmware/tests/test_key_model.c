@@ -127,20 +127,21 @@ static int is(key_cmd_t k, key_action_t a, int arg)
 }
 
 /* What each view is, written out here (the expectations, not view_table[]):
- * the jobs short SELECT steps through, in order; whether it draws the
- * measurement strip (long PRM); whether it shows the time record (long OK,
- * long AUTO). */
+ * the jobs short SELECT steps through, in order; the setting long PRM toggles
+ * to hide its measurement strip (VIEW_RESULTS_COUNT: it draws none); whether
+ * it shows the time record (long OK, long AUTO). */
+#define NO_STRIP VIEW_RESULTS_COUNT
 static const struct {
-    uint8_t view; uint8_t n; key_focus_t ring[KF_COUNT]; bool strip, time;
+    uint8_t view; uint8_t n; key_focus_t ring[KF_COUNT]; uint8_t results; bool time;
 } k_views[] = {
-    { VIEW_MODE_YT,        5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true,  true  },
-    { VIEW_MODE_XY,        3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE },                     false, true  },
-    { VIEW_MODE_FFT,       3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },            true,  false },
+    { VIEW_MODE_YT,        5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, VIEW_RESULTS_FULL, true  },
+    { VIEW_MODE_XY,        3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE },                     NO_STRIP,  true  },
+    { VIEW_MODE_FFT,       3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },            VIEW_RESULTS_FULL, false },
     /* split's default pair, Y-T over the spectrum: Y-T's jobs, then the
      * spectrum's own (its second job, the input's scales, is Y-T's zoom) */
     { VIEW_MODE_SPLIT,     7, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK, KF_SPECTRUM,
-                                KF_SPECTRUM_CURSOR },                                   true,  true  },
-    { VIEW_MODE_WATERFALL, 2, { KF_SPECTRUM, KF_ZOOM },                                false, false },
+                                KF_SPECTRUM_CURSOR },                                   VIEW_RESULTS_SPLIT, true },
+    { VIEW_MODE_WATERFALL, 2, { KF_SPECTRUM, KF_ZOOM },                                NO_STRIP,  false },
 };
 #define N_VIEWS (sizeof k_views / sizeof k_views[0])
 
@@ -186,13 +187,18 @@ static void test_long_map(void)
     CHECK("long BACK/SELECT/MOVE/TRIGGER = Home/Meter/Scope/Siggen from ANY mode", ok);
 
     key_ctx_t sc = ctx(MODE_OSCILLOSCOPE, KF_ZOOM);
-    CHECK("long PRM in the scope Y-T view = hide measurements",
-          is(key_map(&sc, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, 0));
+    CHECK("long PRM in the scope Y-T view = hide measurements (the full views' setting)",
+          is(key_map(&sc, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, VIEW_RESULTS_FULL));
     key_ctx_t me = ctx(MODE_MULTIMETER, KF_ZOOM);
     CHECK("long PRM in the meter does nothing", is(key_map(&me, BTN_PRM, true), KA_NONE, 0));
     key_ctx_t fv = sc; fv.view = view_sel_mode(VIEW_MODE_FFT);
-    CHECK("long PRM in the FFT view hides its measurement strip",
-          is(key_map(&fv, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, 0));
+    CHECK("long PRM in the FFT view hides its measurement strip (the full views' setting)",
+          is(key_map(&fv, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, VIEW_RESULTS_FULL));
+    key_ctx_t sp = sc; sp.view = view_sel_mode(VIEW_MODE_SPLIT);
+    key_ctx_t sp2 = sp; sp2.view = view_sel(VIEW_MODE_SPLIT, VIEW_MODE_FFT, VIEW_MODE_YT); sp2.focus = KF_SPECTRUM;
+    CHECK("long PRM in split toggles split's own setting, either pair, keys on either half",
+          is(key_map(&sp, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, VIEW_RESULTS_SPLIT) &&
+          is(key_map(&sp2, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, VIEW_RESULTS_SPLIT));
     key_ctx_t wv = sc; wv.view = view_sel_mode(VIEW_MODE_WATERFALL);
     CHECK("long PRM in the waterfall does nothing (no strip)", is(key_map(&wv, BTN_PRM, true), KA_NONE, 0));
     {
@@ -204,7 +210,9 @@ static void test_long_map(void)
                 key_ctx_t c = vctx(MODE_OSCILLOSCOPE, k_views[v].view, (key_focus_t)f);
                 c.cursors_on = true; c.mask_present = true;
                 const bool t = k_views[v].time;
-                ok &= is(key_map(&c, BTN_PRM, true), k_views[v].strip ? KA_MEAS_HIDE_TOGGLE : KA_NONE, 0);
+                const uint8_t r = k_views[v].results;
+                ok &= r == NO_STRIP ? is(key_map(&c, BTN_PRM, true), KA_NONE, 0)
+                                    : is(key_map(&c, BTN_PRM, true), KA_MEAS_HIDE_TOGGLE, (int8_t)r);
                 ok &= is(key_map(&c, BTN_OK, true),  t ? KA_CENTER50 : KA_NONE, 0);
                 ok &= is(key_map(&c, BTN_AUTO, true), t ? KA_BASECAL : KA_NONE, 0);
                 ok &= is(key_map(&c, BTN_CH1, true), KA_CH_ENABLE_TOGGLE, 0) &&
@@ -741,7 +749,8 @@ static void test_state(void)
     scope_trigger_summary(&s, tiny, sizeof tiny);
     int h = strlen(tiny) == 3;
     CHECK("trigger summary: Auto R C1 / Norm F C2 / Sngl F C2, truncates safely", e && f && g && h);
-    CHECK("measurements start shown", s.prm_hidden == false);
+    CHECK("measurements start shown in the full views, hidden in split",
+          !scope_results_hidden(&s, VIEW_RESULTS_FULL) && scope_results_hidden(&s, VIEW_RESULTS_SPLIT));
 }
 
 /* ── key_map_global (ARCH-1 B1): the keys every screen shares ──────── */
@@ -970,7 +979,8 @@ static void test_split_pair(void)
     for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
         const view_sel_t v = view_sel(VIEW_MODE_SPLIT, P[i].upper, P[i].lower);
         const view_desc_t d = view_desc_of(v);
-        desc &= d.n_jobs == KF_COUNT && d.domains == (VIEW_TIME_ONLY | VIEW_FREQ_ONLY) && d.strip && !d.roll;
+        desc &= d.n_jobs == KF_COUNT && d.domains == (VIEW_TIME_ONLY | VIEW_FREQ_ONLY) &&
+                d.results == VIEW_RESULTS_SPLIT && !d.roll;
         for (unsigned k = 0; k < KF_COUNT; k++) {
             const key_focus_t f = P[i].ring[k];
             ring &= d.jobs[k] == (uint8_t)f && key_focus_next(v, f, true, true) == P[i].ring[(k + 1) % KF_COUNT];

@@ -1706,6 +1706,7 @@ test-usercal: $(BUILD_DIR)/test_usercal
 # widest value the real formatter prints, in the real font_small) and the
 # plot-edge marker shapes/placement.
 $(BUILD_DIR)/test_measure_strip: tests/test_measure_strip.c src/ui/measure_strip.c src/ui/measure_strip.h \
+                                 src/ui/view_table.h src/ui/plot_pane.h src/ui/canvas.h src/ui/meas_select.h \
                                  src/ui/plot_markers.c src/ui/plot_markers.h src/ui/scope_measure.c \
                                  src/ui/scope_cursor.c src/ui/scope_cal.c src/ui/scope_timebase.c \
                                  src/fonts/font.c src/fonts/font_small.c | $(BUILD_DIR)

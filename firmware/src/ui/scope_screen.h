@@ -24,7 +24,7 @@
  *   MOVE      (mask)              KA_MASK_STOPFAIL    mask.stopfail
  *   CH1 / CH2                     KA_COUPLING_TOGGLE  chN.coupling (and the active channel)
  *   long CH1 / CH2                KA_CH_ENABLE_TOGGLE chN.enabled
- *   long PRM                      KA_MEAS_HIDE_TOGGLE view.meashide
+ *   long PRM                      KA_MEAS_HIDE_TOGGLE view.meashide (split: view.splithide)
  *   OK                            KA_RUNSTOP          view.run (the setter latches at STOP and
  *                                                     re-arms SINGLE)
  *

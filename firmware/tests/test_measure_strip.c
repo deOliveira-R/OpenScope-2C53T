@@ -32,6 +32,9 @@ void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t c) {
 #include "scope_measure.h"
 #include "measure_strip.h"
 #include "plot_markers.h"
+#include "meas_select.h"
+#include "view_table.h"
+#include "plot_pane.h"
 
 static int run, failed;
 #define CHECK(cond, ...) do { run++; if (!(cond)) { failed++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -387,6 +390,69 @@ static void test_markers(void)
             }
 }
 
+/* ── 4. split's panes ──────────────────────────────────────────────── */
+
+#define PLOT_TOP 18u   /* SCOPE_TOP: under the status bar */
+
+/* The two domains' strip tops as the furniture computes them (strip_top,
+ * fft_strip_top in scope_furniture.c), the default selections, both channels
+ * on, no mask and no CAN line: the AUX rows are the cursor readout's. */
+static void strip_tops(bool hidden, bool cursors, uint16_t top[VIEW_DOM_COUNT])
+{
+    top[VIEW_DOM_TIME] = measure_strip_top(MEAS_SELECT_CH1_DEFAULT, true, MEAS_SELECT_CH2_DEFAULT, true,
+                                           hidden, cursors, BOTTOM);
+    top[VIEW_DOM_FREQ] = measure_strip_top(MEAS_SELECT_FFT_DEFAULT, true, 0u, false, hidden, cursors, BOTTOM);
+}
+
+/* Split's band ends over the taller of its halves' strips whichever half has
+ * the keys (view_band_bot): for every results setting, cursor state, pair
+ * and job, the panes have the same rows; the keys' strip fits under the
+ * band; results hidden leave the cursor readout row only, or the whole band. */
+static void test_split_panes(void)
+{
+    static const uint8_t pairs[2][VIEW_HALF_COUNT] = { { VIEW_MODE_YT, VIEW_MODE_FFT },
+                                                        { VIEW_MODE_FFT, VIEW_MODE_YT } };
+    const unsigned full_div = PLOT_PANE_DIV_PX(BOTTOM - PLOT_TOP);
+    for (int hidden = 0; hidden < 2; hidden++)
+        for (int cursors = 0; cursors < 2; cursors++)
+            for (int p = 0; p < 2; p++) {
+                const view_sel_t v = view_sel(VIEW_MODE_SPLIT, pairs[p][0], pairs[p][1]);
+                uint16_t top[VIEW_DOM_COUNT];
+                strip_tops(hidden, cursors, top);
+                const uint16_t band = view_band_bot(v, top);
+                const unsigned tallest = BOTTOM - (top[VIEW_DOM_TIME] < top[VIEW_DOM_FREQ]
+                                                   ? top[VIEW_DOM_TIME] : top[VIEW_DOM_FREQ]);
+                const view_desc_t d = view_desc_of(v);
+                int up = -1, lo = -1, udiv = -1, ldiv = -1;
+                bool same = true, fits = true;
+                for (unsigned k = 0; k < d.n_jobs; k++) {
+                    const key_focus_t f = (key_focus_t)d.jobs[k];
+                    const view_half_t h = view_key_half(v, f);
+                    plot_pane_t q[VIEW_HALF_COUNT];
+                    plot_pane_split((int16_t)PLOT_TOP, (int16_t)band, CANVAS_SPLIT_UPPER, CANVAS_SPLIT_LOWER,
+                                    (int)h, q);
+                    const int u = q[0].bot - q[0].top, l = q[1].bot - q[1].top;
+                    if (up < 0) { up = u; lo = l; udiv = q[0].div_px; ldiv = q[1].div_px; }
+                    same &= u == up && l == lo && q[0].div_px == udiv && q[1].div_px == ldiv;
+                    fits &= top[view_key_domain(v, f)] >= band && q[h].marked && !q[1 - h].marked;
+                }
+                printf("  results %s, cursors %s, %s over %s: band ends at %u, panes %d + %d rows "
+                       "(divisions %d, %d), keys on either half\n",
+                       hidden ? "hidden" : "shown", cursors ? "on" : "off", p ? "FFT" : "Y-T", p ? "Y-T" : "FFT",
+                       (unsigned)band, up, lo, udiv, ldiv);
+                CHECK(same, "heights move with the keys (hidden %d cursors %d pair %d)", hidden, cursors, p);
+                CHECK(fits, "the keys' strip is not under the band (hidden %d cursors %d pair %d)", hidden, cursors, p);
+                CHECK(band == BOTTOM - tallest && up + (int)PLOT_PANE_DIVIDER_ROWS + lo == (int)(band - PLOT_TOP),
+                      "the band is not the tallest strip's top (hidden %d cursors %d pair %d)", hidden, cursors, p);
+                if (hidden)
+                    CHECK(band == BOTTOM - (cursors ? MSTRIP_ROW_H : 0u),
+                          "results hidden: %u, not the readout row only or the whole band", (unsigned)band);
+                if (hidden && !cursors)
+                    CHECK(udiv == (int)(full_div + 1u) / 2 && ldiv == udiv,
+                          "the whole band: divisions %d %d, not half the full plot's %u", udiv, ldiv, full_div);
+            }
+}
+
 int main(void)
 {
     printf("test_measure_strip\n");
@@ -394,6 +460,7 @@ int main(void)
     test_layout();
     test_dim();
     test_markers();
+    test_split_panes();
     printf("%d checks, %d failed\n", run, failed);
     return failed ? 1 : 0;
 }

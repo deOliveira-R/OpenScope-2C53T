@@ -292,7 +292,7 @@ static void test_table(void)
         "ch2.enabled", "ch2.vdiv", "ch2.coupling", "ch2.probe", "ch2.bwlimit", "ch2.pos", "ch2.meas",
         "tb.code", "tb.roll", "tb.rollstep", "trig.mode", "trig.edge", "trig.source", "trig.level",
         "trig.x", "trig.soft", "view.mode", "view.persist", "view.math", "view.cursor",
-        "view.truescale", "view.meashide", "view.run", "gen.wave", "gen.freq", "gen.amp",
+        "view.truescale", "view.meashide", "view.splithide", "view.run", "gen.wave", "gen.freq", "gen.amp",
         "gen.duty", "gen.out", "gen.bootout", "meter.func", "meter.layout", "sys.mode",
         "sys.instrument", "sys.startup", "sys.brightness", "sys.volume", "sys.autooff",
         "sys.theme", "sys.lang", "fft.window", "fft.avg", "fft.maxhold", "il.enabled",
@@ -802,6 +802,26 @@ static void test_split_pair_props(void)
                             view_is_half((uint8_t)prop_get(P(VIEW_LOWER)));
             }
     CHECK(distinct);
+}
+
+/* Split's own results setting (view.splithide): hidden by default, a
+ * session setting like view.meashide (in the snapshot, not in the settings
+ * record), and the two never move each other: long PRM in split is not the
+ * full views' long PRM. */
+static void test_split_results_prop(void)
+{
+    fresh();
+    const prop_desc_t *s = P(VIEW_SPLITHIDE), *m = P(VIEW_MEASHIDE);
+    CHECK(s->id == 0x0519 && s->type == PT_BOOL && s->group == PG_VIEW && s->flags == m->flags &&
+          (s->flags & PF_SESSION) && !(s->flags & PF_PERSIST) && (s->flags & PF_WRAP));
+    CHECK(prop_get(s) == 1 && s->def == 1 && prop_get(m) == 0 &&
+          scope_results_hidden(scope_state_get(), VIEW_RESULTS_SPLIT) == VIEW_SPLIT_RESULTS_HIDDEN_DEFAULT);
+    CHECK(prop_set_local(s, 0, ORIGIN_KEY, NULL) == PS_OK && prop_get(s) == 0 && prop_get(m) == 0 &&
+          !scope_results_hidden(scope_state_get(), VIEW_RESULTS_SPLIT) &&
+          !scope_results_hidden(scope_state_get(), VIEW_RESULTS_FULL));
+    CHECK(prop_set_local(m, 1, ORIGIN_KEY, NULL) == PS_OK && prop_get(s) == 0 && prop_get(m) == 1 &&
+          scope_results_hidden(scope_state_get(), VIEW_RESULTS_FULL) &&
+          !scope_results_hidden(scope_state_get(), VIEW_RESULTS_SPLIT));
 }
 
 /* Roll is a source only the Y-T view takes (view_table.h): tb.roll on is
@@ -1626,6 +1646,7 @@ int main(int argc, char **argv)
     test_cross_group();
     test_roll_is_yt_only();
     test_split_pair_props();
+    test_split_results_prop();
     test_save_forms();
     test_fft_settings();
     test_spectrum_props();

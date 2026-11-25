@@ -54,6 +54,7 @@ import tempfile
 # Fields that back a property, by struct: field -> the property (the state's name in the reports).
 SCOPE_FIELDS = {'timebase_idx': 'tb.code', 'roll_step': 'tb.rollstep', 'trig_x': 'trig.x',
                 'soft_trigger': 'trig.soft', 'true_scale': 'view.truescale', 'prm_hidden': 'view.meashide',
+                'split_prm_hidden': 'view.splithide',
                 'running': 'view.run', 'roll': 'tb.roll'}
 CHANNEL_FIELDS = {'enabled': 'chN.enabled', 'vdiv_idx': 'chN.vdiv', 'coupling': 'chN.coupling',
                   'probe': 'chN.probe', 'bw_limit': 'chN.bwlimit', 'position': 'chN.pos'}

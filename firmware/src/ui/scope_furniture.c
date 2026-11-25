@@ -6,6 +6,7 @@
  */
 
 #include "scope_ui_parts.h"
+#include "key_model.h"      /* scope_view_sel */
 
 /* Repaint the measurement strip between full frames. The live frame never
  * touches the strip, and plain Y-T has no full frames in a steady state, so
@@ -59,6 +60,14 @@ static bool strip_aux(void)
 
 void cursor_row_paint(const scope_state_t *ss, bool force);
 
+/* The measurement rows are hidden by the results setting of the view on
+ * screen (view_table.h: the full views' view.meashide, split's own
+ * view.splithide); the AUX row is not. */
+static bool rows_hidden(const scope_state_t *ss)
+{
+    return scope_results_hidden(ss, view_desc_of(scope_view_sel()).results);
+}
+
 /* Every user of the strip's geometry (the live band, the roll band, the mask
  * strip, the cursor readout, the AUX row) reads this one function, so they
  * cannot disagree about where the strip starts. */
@@ -66,14 +75,14 @@ uint16_t strip_top(const scope_state_t *ss)
 {
     return measure_strip_top(meas_select_get(MEAS_SET_CH1), ss->ch1.enabled,
                              meas_select_get(MEAS_SET_CH2), ss->ch2.enabled,
-                             ss->prm_hidden, strip_aux(), STRIP_BOTTOM);
+                             rows_hidden(ss), strip_aux(), STRIP_BOTTOM);
 }
 
 void strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
 {
     measure_strip_layout(meas_select_get(MEAS_SET_CH1), ss->ch1.enabled,
                          meas_select_get(MEAS_SET_CH2), ss->ch2.enabled,
-                         ss->prm_hidden, strip_aux(), STRIP_BOTTOM, L);
+                         rows_hidden(ss), strip_aux(), STRIP_BOTTOM, L);
 }
 
 /* The spectrum's strip: the same rows and cells, holding the spectrum's
@@ -88,13 +97,13 @@ _Static_assert(FFT_MEAS_COUNT <= MSTRIP_MAX_PER_CH, "every spectrum measurement 
 static void fft_strip_layout(const scope_state_t *ss, mstrip_layout_t *L)
 {
     measure_strip_layout(meas_select_get(MEAS_SET_FFT), true, 0u, false,
-                         ss->prm_hidden, ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM, L);
+                         rows_hidden(ss), ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM, L);
 }
 
 uint16_t fft_strip_top(const scope_state_t *ss)
 {
     return measure_strip_top(meas_select_get(MEAS_SET_FFT), true, 0u, false,
-                             ss->prm_hidden, ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM);
+                             rows_hidden(ss), ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM);
 }
 
 /* One cell: label left in the dimmed channel colour chc, the value buf right
@@ -322,7 +331,7 @@ void scope_ui_mask_slot_refresh(void)
         const scope_state_t *ss = scope_state_get();
         const uint16_t y = measure_strip_top(meas_select_get(0), ss->ch1.enabled,
                                              meas_select_get(1), ss->ch2.enabled,
-                                             ss->prm_hidden, true, STRIP_BOTTOM);
+                                             rows_hidden(ss), true, STRIP_BOTTOM);
         lcd_fill_rect(0, y, LCD_WIDTH, MSTRIP_ROW_H, theme_get()->background);
     } else {
         draw_mask_slot(theme_get());
@@ -428,7 +437,7 @@ uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
 void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool refresh)
 {
     mstrip_layout_t L;
-    strip_layout(ss, &L);   /* long PRM (prm_hidden) = no rows; the AUX row stays */
+    strip_layout(ss, &L);   /* long PRM (rows_hidden) = no rows; the AUX row stays */
 
     if (L.rows > 0u && ss->roll) {
         draw_roll_cells(ss, &L, th, refresh);

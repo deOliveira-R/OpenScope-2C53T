@@ -686,6 +686,18 @@ prop_status_t view_mh_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_
     return PS_OK;
 }
 
+/* view.splithide: split's own long PRM (view_table.h view_results_t); hidden
+ * by default. */
+_Static_assert(VIEW_SPLIT_RESULTS_HIDDEN_DEFAULT == 1, "view.splithide default = model_table.h's def column");
+int32_t view_sh_get(const prop_desc_t *p) { (void)p; return scope_state_get()->split_prm_hidden ? 1 : 0; }
+void    view_sh_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->split_prm_hidden = (v != 0); }
+prop_status_t view_sh_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
+{
+    (void)origin; (void)note;
+    view_sh_store(p, v);
+    return PS_OK;
+}
+
 int32_t view_run_get(const prop_desc_t *p) { (void)p; return scope_state_get()->running ? 1 : 0; }
 void    view_run_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->running = (v != 0); }
 /* The OK key's RUN/STOP, for every route (`set view.run off` is the key):

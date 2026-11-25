@@ -59,11 +59,23 @@ static inline bool key_focus_is_cursor(key_focus_t f)
     return f == KF_CURSOR || f == KF_SPECTRUM_CURSOR;
 }
 
+/* The settings that hide a view's measurement rows (long PRM; the cursor
+ * readout row stays while the cursors are on). The full views share one,
+ * view.meashide; split has its own, view.splithide, so the results shown or
+ * hidden in split are not the full views' and the other way round.
+ * VIEW_RESULTS_COUNT: the view draws no strip. */
+typedef enum { VIEW_RESULTS_FULL = 0, VIEW_RESULTS_SPLIT, VIEW_RESULTS_COUNT } view_results_t;
+
+/* Split starts with its results hidden: its halves are half the plot each,
+ * so the owner wants them whole until the rows are asked for (2026-11-25). */
+#define VIEW_SPLIT_RESULTS_HIDDEN_DEFAULT  true
+
 typedef struct {
     uint8_t domains;            /* VIEW_DOM_BIT of each domain on screen */
     uint8_t n_jobs;
     uint8_t jobs[KF_COUNT];     /* key_focus_t, in SELECT order; the first is where the view starts */
-    bool    strip;              /* it draws the measurement strip (long PRM hides it) */
+    uint8_t results;            /* view_results_t: the setting long PRM toggles to hide its
+                                 * measurement strip; VIEW_RESULTS_COUNT: it draws none */
     bool    roll;               /* it takes the roll source (tb.roll): its renderer draws the
                                  * roll FIFO (scope_yt.c, view_build_roll). While the view
                                  * does not, tb.roll is off and cannot be set on. */
@@ -80,17 +92,19 @@ typedef struct {
  * Y-T window (ui_draw_scratch_t), which the other half would be using. */
 static const view_desc_t view_table[VIEW_MODE_COUNT] = {
     [VIEW_MODE_YT]        = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK },
-                              true, true, true, false },
-    [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, false, false, false, false },
+                              VIEW_RESULTS_FULL, true, true, false },
+    [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, VIEW_RESULTS_COUNT,
+                              false, false, false },
     /* The spectrum's span follows the timebase and its level the range, so
      * the spectrum views offer the input's scales as a second job. */
     [VIEW_MODE_FFT]       = { VIEW_FREQ_ONLY, 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },
-                              true, false, true, false },
+                              VIEW_RESULTS_FULL, false, true, false },
     /* Two views, one above the other (view.upper, view.lower). The strip is
-     * the one of the half the keys are on. It does not take roll: that rule
-     * is kept for now, though a Y-T half could. */
-    [VIEW_MODE_SPLIT]     = { 0u, 0, { 0 }, true, false, false, true },
-    [VIEW_MODE_WATERFALL] = { VIEW_FREQ_ONLY, 2, { KF_SPECTRUM, KF_ZOOM }, false, false, false, false },
+     * the one of the half the keys are on, hidden by split's own setting. It
+     * does not take roll: that rule is kept for now, though a Y-T half could. */
+    [VIEW_MODE_SPLIT]     = { 0u, 0, { 0 }, VIEW_RESULTS_SPLIT, false, false, true },
+    [VIEW_MODE_WATERFALL] = { VIEW_FREQ_ONLY, 2, { KF_SPECTRUM, KF_ZOOM }, VIEW_RESULTS_COUNT,
+                              false, false, false },
 };
 
 /* The halves of split, top to bottom. */
@@ -214,7 +228,22 @@ static inline view_half_t view_key_half(view_sel_t v, key_focus_t job)
  * half's), or VIEW_DOM_COUNT when it draws none. */
 static inline view_domain_t view_strip_domain(view_sel_t v, key_focus_t job)
 {
-    return view_entry(v.mode)->strip ? view_key_domain(v, job) : VIEW_DOM_COUNT;
+    return view_entry(v.mode)->results != VIEW_RESULTS_COUNT ? view_key_domain(v, job) : VIEW_DOM_COUNT;
+}
+
+/* Where the band of the view's plot ends: the top of the tallest of the
+ * strips of the domains it shows (top[d]: domain d's strip top as its
+ * results setting and the cursors leave it). A view of one domain ends at
+ * its strip. Split reserves the taller of its halves' strips whichever half
+ * has the keys, so the panes keep their size when the keys move; the keys'
+ * half's strip sits at the bottom of that space. */
+static inline uint16_t view_band_bot(view_sel_t v, const uint16_t top[VIEW_DOM_COUNT])
+{
+    const uint8_t shows = view_desc_of(v).domains;
+    uint16_t bot = UINT16_MAX;
+    for (uint8_t d = 0; d < VIEW_DOM_COUNT; d++)
+        if ((shows & VIEW_DOM_BIT(d)) != 0u && top[d] < bot) bot = top[d];
+    return bot;
 }
 
 /* A view of two domains marks the half the keys are on (the split view's

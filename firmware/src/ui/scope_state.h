@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "view_table.h"     /* view_results_t: which setting hides a view's strip */
 
 /* ═══════════════════════════════════════════════════════════════════
  * Enums
@@ -189,10 +190,12 @@ typedef struct {
 
     /* Parameter selection (C6): which of stock's 12 measurements the CH1 badge
      * slots show (bit i = scope_prm_id_t i, see scope_measure.h), and whether
-     * they are hidden altogether (stock: long PRM). Not persisted. Changed via
-     * `fpga scope prm` until the PRM key grows a menu / long-press. */
+     * they are hidden altogether (stock: long PRM): prm_hidden in the full
+     * views (view.meashide), split_prm_hidden in split (view.splithide; read
+     * both through scope_results_hidden). Not persisted. */
     uint16_t        prm_mask;
     bool            prm_hidden;
+    bool            split_prm_hidden;
 
     /* Roll mode (C11, scope_roll.h): stock's slow timebases 0x14..0x1C
      * (50 ms..20 s/div) are MCU-paced points, not FPGA records. Kept beside
@@ -205,6 +208,13 @@ typedef struct {
     bool            roll;
     uint8_t         roll_step;
 } scope_state_t;
+
+/* The value of results setting r (view_results_t, view_table.h): true when
+ * the measurement rows of a view that uses it are hidden. */
+static inline bool scope_results_hidden(const scope_state_t *s, uint8_t r)
+{
+    return (r == VIEW_RESULTS_SPLIT) ? s->split_prm_hidden : s->prm_hidden;
+}
 
 /* ═══════════════════════════════════════════════════════════════════
  * Lookup tables (defined in scope_state.c)

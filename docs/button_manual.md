@@ -99,7 +99,10 @@ time cursors and the mask to the Y-T half; the spectrum and its cursors to
 the FFT half). A thin frame surrounds the half the keys are on, and that
 half owns the measurement strip at the bottom of the screen (the channels'
 measurements under Y-T, the spectrum's under FFT) and, with cursors on,
-their readout. Each half draws its own cursor lines. AUTO acts on the
+their readout. Split's measurement rows are hidden at first: long PRM shows
+them (Split's own setting, not Y-T's or FFT's). The space under the halves
+is that of the taller of the two strips whichever half has the keys, so the
+halves keep their size when the keys move. Each half draws its own cursor lines. AUTO acts on the
 framed half. Roll is off in Split.
 
 Switching cursors on (Settings -> Oscilloscope -> Cursors, or the Oscilloscope
@@ -180,7 +183,7 @@ where they have no long action. POWER is unchanged (its own countdown).
 | **MOVE** | Multimeter (from any mode) |
 | **SELECT** | Oscilloscope (from any mode) |
 | **TRIGGER** | Signal generator (from any mode) |
-| **PRM** (scope time view) | Hide / show the measurement badges |
+| **PRM** (scope views with a measurement strip: Y-T, FFT, Split) | Hide / show the measurement rows. Y-T and FFT share one setting (`view.meashide`); Split has its own (`view.splithide`), hidden at first. The cursor readout row stays while the cursors are on |
 | **CH1 / CH2** (scope) | Channel on/off (see above; stock has no long CH1/CH2) |
 | **AUTO** (scope views of the time record: Y-T, with roll too, X-Y, Split) | Baseline correction (stock) |
 | **OK** (the same views) | 50 % centre (stock) |
@@ -261,8 +264,9 @@ views show theirs: **Peak** (frequency of the strongest bin; it is the
 bin's centre, so good to half a bin width), **Level** (that bin's level),
 **H2** and **H3** (the level at twice and three times that frequency,
 relative to the peak, dBc). Peak and Level are on until you choose. In
-Split the spectrum half shows its strip and cursor readout while the keys
-are on it. The Waterfall does not draw the strip or cursors yet.
+Split the spectrum half shows its strip (once long PRM has shown Split's
+results) and cursor readout while the keys are on it; the halves keep their
+size when the keys move. The Waterfall does not draw the strip or cursors yet.
 
 Note: Entering an FFT view claims the shared memory pool (88KB). Returning to time view releases it.
 

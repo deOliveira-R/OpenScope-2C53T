@@ -434,10 +434,13 @@ static void o_exec(key_cmd_t k, button_id_t btn)
     const int dir = k.arg;
 
     switch (k.act) {
-    case KA_MEAS_HIDE_TOGGLE:
-        ss->prm_hidden = !ss->prm_hidden;
-        o_popup_and_redraw(ss->prm_hidden ? "Measurements hidden" : "Measurements shown");
+    case KA_MEAS_HIDE_TOGGLE: {
+        /* the view's own results setting (view_table.h): split has its own */
+        bool *hidden = (dir == VIEW_RESULTS_SPLIT) ? &ss->split_prm_hidden : &ss->prm_hidden;
+        *hidden = !*hidden;
+        o_popup_and_redraw(*hidden ? "Measurements hidden" : "Measurements shown");
         break;
+    }
     case KA_CH_ENABLE_TOGGLE: {
         channel_state_t *c = (dir == 0) ? &ss->ch1 : &ss->ch2;
         const bool was = c->enabled;
@@ -689,6 +692,7 @@ static void st_random(st_t *s)
     s->ss.trigger.level = rnd(5) == 0 ? (rnd(2) ? -100 : 100) : (int16_t)((int)rnd(41) * 5 - 100);
     s->ss.trig_x = rnd(5) == 0 ? (rnd(2) ? 0 : 300) : (int16_t)rnd(301);
     s->ss.running = rnd(3) != 0; s->ss.prm_hidden = rnd(4) == 0;
+    s->ss.split_prm_hidden = rnd(4) != 0;
     s->ss.cursor.mode = (cursor_mode_t)rnd(4);
     s->ss.cursor.active = s->ss.cursor.mode == CURSOR_HORIZONTAL ? (cursor_sel_t)(2 + rnd(2))
                         : s->ss.cursor.mode == CURSOR_BOTH ? (cursor_sel_t)rnd(4) : (cursor_sel_t)rnd(2);
@@ -931,6 +935,27 @@ static void test_key_table(void)
         if (!ok) printf("    res %d log [%s] popup [%s] value %ld groups 0x%x notes %u\n", res, env_log, g_popup,
                         r->p ? (long)G(r->p) : 0L, env_epochs_moved(&e0, &e1), env_notes);
         CHECK(r->name, ok);
+    }
+
+    /* long PRM in split: split's own setting (shown from its default,
+     * hidden); the full views' view.meashide does not move */
+    {
+        bool ok = true;
+        for (int pair = 0; pair < 2; pair++)
+            for (int half = 0; half < 2; half++) {
+                boot();
+                (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_SHELL, NULL);
+                if (pair) (void)prop_set_local(P(VIEW_UPPER), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
+                scope_key_focus = half ? KF_SPECTRUM : KF_ZOOM;
+                const bool pre = G(P(VIEW_SPLITHIDE)) == 1 && G(P(VIEW_MEASHIDE)) == 0;
+                const scr_res_t res = env_key(LONG(BTN_PRM));
+                ok &= pre && res == SCR_DRAW_FULL && G(P(VIEW_SPLITHIDE)) == 0 && G(P(VIEW_MEASHIDE)) == 0 &&
+                      strcmp(g_popup, "Measurements shown") == 0;
+                (void)env_key(LONG(BTN_PRM));
+                ok &= G(P(VIEW_SPLITHIDE)) == 1 && G(P(VIEW_MEASHIDE)) == 0 &&
+                      strcmp(g_popup, "Measurements hidden") == 0;
+            }
+        CHECK("long PRM in split: view.splithide shown then hidden, view.meashide untouched (both pairs, both halves)", ok);
     }
 
     /* the arrows act on the ACTIVE channel */
@@ -1483,6 +1508,24 @@ static void test_epochs(void)
     scope_screen_epochs(&l1, &s1);
     CHECK("split: its pair and the keys' half are layout; in Y-T the pair changes nothing",
           yt_still && pair_moves && same_half && l0 != l1);
+
+    /* The results setting of the view on screen is layout; the other one is
+     * nothing to it (view.meashide in split, view.splithide in Y-T). */
+    boot();
+    scope_screen_epochs(&l0, &s0);
+    (void)prop_set_local(P(VIEW_SPLITHIDE), 0, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l1, &s1);
+    const bool yt_split_still = l0 == l1 && s0 == s1;
+    boot();
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l0, &s0);
+    (void)prop_set_local(P(VIEW_MEASHIDE), 1, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l1, &s1);
+    const bool split_full_still = l0 == l1 && s0 == s1;
+    (void)prop_set_local(P(VIEW_SPLITHIDE), 0, ORIGIN_SHELL, NULL);
+    scope_screen_epochs(&l1, &s1);
+    CHECK("results: the setting of the view on screen is layout, the other view's moves nothing",
+          yt_split_still && split_full_still && l0 != l1 && s0 == s1);
 }
 
 /* What the display task does about a change made on the direct route

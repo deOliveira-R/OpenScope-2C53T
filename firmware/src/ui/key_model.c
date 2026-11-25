@@ -147,9 +147,12 @@ static key_cmd_t map_long(const key_ctx_t *c, button_id_t b)
 
     switch (b) {
     /* Long MENU/MOVE/SELECT/TRIGGER/SAVE are global (key_map_global). */
-    case BTN_PRM:
-        return (c->mode == MODE_OSCILLOSCOPE && view_desc_of(c->view).strip)
-               ? cmd(KA_MEAS_HIDE_TOGGLE, 0) : cmd(KA_NONE, 0);
+    /* The setting that hides the view's strip (view_table.h). */
+    case BTN_PRM: {
+        const uint8_t r = view_desc_of(c->view).results;
+        return (c->mode == MODE_OSCILLOSCOPE && r != VIEW_RESULTS_COUNT)
+               ? cmd(KA_MEAS_HIDE_TOGGLE, (int8_t)r) : cmd(KA_NONE, 0);
+    }
 
     /* Stock has no long CH1/CH2, so this is OURS: the channel enable. */
     case BTN_CH1:

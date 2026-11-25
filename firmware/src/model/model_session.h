@@ -52,10 +52,13 @@
 #define MODEL_SESSION_VERSION    1u
 #define MODEL_SESSION_F_CLEARED  0x01u
 #define MODEL_SESSION_HDR_BYTES  12u
-/* The buffer a snapshot is built in and read into. An encode that does not
- * fit fails (nothing is written); tests/test_session.c holds that today's
- * table fits with every value at its widest. */
-#define MODEL_SESSION_MAX_BYTES  512u
+/* The widest entry: the u16 id and a 5-byte varint (FORMAT above). */
+#define MODEL_SESSION_ENTRY_MAX_BYTES  7u
+/* The buffer a snapshot is built in and read into: the header, every
+ * property of the table at its widest, the CRC. Derived from the table, so a
+ * new property never outgrows it (an encode that does not fit fails, nothing
+ * written; tests/test_session.c holds the bound). */
+#define MODEL_SESSION_MAX_BYTES  (MODEL_SESSION_HDR_BYTES + PROP_IX_COUNT * MODEL_SESSION_ENTRY_MAX_BYTES + 4u)
 
 /* Why a settable property is NOT in the snapshot. */
 typedef struct { uint16_t id; const char *why; } model_session_exclusion_t;

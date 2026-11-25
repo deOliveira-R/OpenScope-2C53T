@@ -266,27 +266,40 @@ from the screenshot copy after a full redraw and after a live update).
     never show the same view: a view keeps one set of state for what it drew
     (the bands the cursors read, the trigger placement, the window, the popup
     hole), so a half set to the other half's view swaps them, and either pair
-    is one set away. The band from `SCOPE_TOP` to the top of the strip of the
-    keys' domain is split into two panes with a divider row between them
-    (`plot_pane_split`; 103 and 102 rows of a 206-row band, a division of 13
-    rows each), on a canvas per half (`CANVAS_SPLIT_UPPER`; the lower half
+    is one set away. The band from `SCOPE_TOP` to the top of the taller of the
+    two halves' strips (`view_band_bot`), whichever half has the keys, is
+    split into two panes with a divider row between them
+    (`plot_pane_split`; with the results hidden and the cursors off, 103 and
+    102 rows of a 206-row band, a division of 13 rows each), on a canvas per half (`CANVAS_SPLIT_UPPER`; the lower half
     shares the full plot's memory, `CANVAS_SPLIT_LOWER` = `CANVAS_PLOT`, since
     they are never on screen together: no third watch slot or 1.3 kB hash
     table). Each half is drawn by its view's pane drawer (`scope_yt_draw`,
     `fft_pane_draw`, `firmware/src/ui/scope_split.c`) with its own cursor
     lines; the keys' half wears the focus mark and owns its domain's strip and,
-    with cursors on, their readout. The divider row is in neither canvas: it is
+    with cursors on, their readout, at the bottom of the reserved space (the
+    rest of it is background). Split has its own results setting,
+    `view.splithide` (0x0519, session, hidden by default): long PRM in split
+    toggles it, and `view.meashide` stays the full views' (the view table says
+    which one a view uses, `view_desc_t.results`). With the results hidden the
+    cursor readout row stays while the cursors are on, so the band ends one
+    strip row (13) above the info bar: 96 and 96 rows, a division of 12. A mask
+    or the CAN line keeps the time strip's AUX row too, so then the band ends
+    there whichever half has the keys. The divider row is in neither canvas: it is
     painted with every frame, around the popup box while a pane keeps a hole
-    for it. Moving the keys to the other half is a layout change (a full
-    redraw: the strip, the mark and the panes' heights follow). `main.c` runs
+    for it. Moving the keys to the other half is a layout change: a full
+    frame of the panes at the size they had (the focus mark crosses every
+    column), with the strip and the readout of the other domain; the panes'
+    heights do not move. `main.c` runs
     the Y-T furniture (strip refresh, cursor row, mask slot, CAN row) when the
     view's strip is the time record's (`view_strip_domain`), in split when the
     keys are on the Y-T half. `fpga scope livecheck` is to check both halves
     against their views' rules (the focus mark is in the Y-T rule) and counts
     one frame per screen frame (X-Y and waterfall frames count with no pixel
     compared). Split still does not take roll (`view_desc_t.roll`), though a
-    Y-T half could. With the keys on Y-T and the default selection (two strip
-    rows per channel, 52 rows) the halves are 77 and 76 rows, a division of 10;
+    Y-T half could. With the results shown and the default selection (two strip
+    rows per channel, 52 rows; the spectrum's one row) the halves are 77 and 76
+    rows, a division of 10, the keys on either half (70 and 70, a division of
+    9, with the cursors on);
     the spectrum draws its scale on any pane of `FFT_SCALE_LINES` font lines
     (48 rows) or more, where it took a fixed 81 before (which a half under the
     strip would have lost).

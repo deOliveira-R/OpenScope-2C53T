@@ -510,6 +510,7 @@ static void random_state(void)
     ss->trigger.source = (trigger_source_t)R(TRIG_SRC_COUNT);
     ss->trigger.level  = (int16_t)((int)R(207) - 103);
     ss->running = R(2); ss->true_scale = R(2); ss->soft_trigger = R(2); ss->prm_hidden = R(2);
+    ss->split_prm_hidden = R(2);
     ss->roll = R(2); ss->roll_step = (uint8_t)R(9); ss->trig_x = (int16_t)R(300);
     ss->cursor.mode = (cursor_mode_t)R(CURSOR_MODE_COUNT);
     meas_select_set(0, (uint16_t)rnd());

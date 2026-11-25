@@ -248,6 +248,12 @@ static scr_res_t mask_tol(const prop_desc_t *p, int delta)
     return popup_full(pb);
 }
 
+/* The property of each results setting (view_table.h view_results_t). */
+static const prop_desc_t *const k_results_prop[VIEW_RESULTS_COUNT] = {
+    [VIEW_RESULTS_FULL]  = P(VIEW_MEASHIDE),
+    [VIEW_RESULTS_SPLIT] = P(VIEW_SPLITHIDE),
+};
+
 static scr_res_t exec(key_cmd_t k, button_id_t btn)
 {
     char pb[24];
@@ -257,9 +263,11 @@ static scr_res_t exec(key_cmd_t k, button_id_t btn)
 
     switch (k.act) {
     /* -- long presses -------------------------------------------------- */
-    case KA_MEAS_HIDE_TOGGLE:
-        (void)prop_step_local(P(VIEW_MEASHIDE), +1, ORIGIN_KEY, NULL);
-        return popup_full(G(P(VIEW_MEASHIDE)) ? "Measurements hidden" : "Measurements shown");
+    case KA_MEAS_HIDE_TOGGLE: {
+        const prop_desc_t *p = k_results_prop[dir];
+        (void)prop_step_local(p, +1, ORIGIN_KEY, NULL);
+        return popup_full(G(p) ? "Measurements hidden" : "Measurements shown");
+    }
 
     case KA_CH_ENABLE_TOGGLE: {
         /* The setter routes the converters and refuses both off; when the
@@ -478,20 +486,25 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
     h = redraw_epoch_mix(h, ((uint32_t)s->running << 8) | ((uint32_t)s->roll << 9)
                             | ((uint32_t)s->roll_step << 12));
     h = redraw_epoch_mix(h, (uint32_t)s->ch1.enabled | ((uint32_t)s->ch2.enabled << 1));
-    /* The measurement selection, every set; long PRM hides the rows. */
+    /* The measurement selection, every set; long PRM hides the rows (the
+     * setting of the view on screen: the other one changes nothing here). */
     h = redraw_epoch_mix(h, (uint32_t)meas_select_get(MEAS_SET_CH1) |
                             ((uint32_t)meas_select_get(MEAS_SET_CH2) << 16));
     h = redraw_epoch_mix(h, (uint32_t)meas_select_get(MEAS_SET_FFT));
-    h = redraw_epoch_mix(h, (uint32_t)s->prm_hidden);
-    /* Cursor mode only: it moves the strip (the AUX row). */
-    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode);
+    h = redraw_epoch_mix(h, (uint32_t)scope_results_hidden(s, view_desc_of(scope_view_sel()).results));
+    /* Cursor mode only, and whether a mask exists: they reserve the strip's
+     * AUX row (in split, the band's end whichever half has the keys). */
+    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode | ((uint32_t)(G(P(MASK_STATE)) != MASK_PF_EMPTY) << 8));
     h = redraw_epoch_mix(h, (uint32_t)math_enabled | ((uint32_t)math_op << 1)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
     h = redraw_epoch_mix(h, scope_view_fft_epoch());
     /* The domain the keys are on: a view of two domains marks it and draws
-     * its strip (it goes with the view, so it is layout as view.mode is). */
+     * its strip and cursor readout (it goes with the view, so it is layout as
+     * view.mode is). The focus mark crosses every column of both panes, so
+     * this is a full frame of the panes at the size they had: split's band
+     * does not depend on the keys (view_band_bot). */
     h = redraw_epoch_mix(h, (uint32_t)view_key_domain(scope_view_sel(), (key_focus_t)key_focus_get()));
     /* Split's pair, while split is on screen: another view in a half is
      * another picture. */

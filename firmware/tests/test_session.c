@@ -622,7 +622,8 @@ static void test_membership(void)
         PROP_ID_SYS_STARTUP, PROP_ID_SYS_BRIGHTNESS, PROP_ID_TB_ROLL,
         PROP_ID_VIEW_CURT1, PROP_ID_VIEW_CURT2, PROP_ID_VIEW_CURR1, PROP_ID_VIEW_CURR2,
         PROP_ID_VIEW_CURY1, PROP_ID_VIEW_CURY2,     /* the time cursors, in their units */
-        PROP_ID_VIEW_UPPER, PROP_ID_VIEW_LOWER };   /* split's pair: how the user left split */
+        PROP_ID_VIEW_UPPER, PROP_ID_VIEW_LOWER,     /* split's pair: how the user left split */
+        PROP_ID_VIEW_MEASHIDE, PROP_ID_VIEW_SPLITHIDE };   /* the results, full views' and split's */
     for (unsigned k = 0; k < sizeof in / sizeof in[0]; k++) CHECK(!model_session_excluded(prop_by_id(in[k])));
     printf("  %u properties: %u in the snapshot, %u left out with a reason, %u read only\n",
            (unsigned)NPROP, members, excluded, ro);
@@ -630,7 +631,7 @@ static void test_membership(void)
     model_shell_session_members(emit);
     CHECK(strstr(g_out, "gen.out") && strstr(g_out, "boot policy gen.bootout") && strstr(g_out, "ch2.enabled"));
     /* the widest snapshot this table can make fits the buffer and a log record */
-    CHECK(MODEL_SESSION_HDR_BYTES + members * 7u + 4u <= MODEL_SESSION_MAX_BYTES);
+    CHECK(MODEL_SESSION_HDR_BYTES + members * MODEL_SESSION_ENTRY_MAX_BYTES + 4u <= MODEL_SESSION_MAX_BYTES);
     CHECK(MODEL_SESSION_MAX_BYTES <= FLASH_REGION_RECORD_MAX);
 }
 

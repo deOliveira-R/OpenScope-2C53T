@@ -93,6 +93,7 @@ void scope_state_init(scope_state_t *s)
     s->trig_x = SCOPE_GEOM_CENTER_COL;   /* stock hpos 0 (scope_geom.h) */
     s->prm_mask = SCOPE_PRM_DEFAULT_MASK;
     s->prm_hidden = false;
+    s->split_prm_hidden = VIEW_SPLIT_RESULTS_HIDDEN_DEFAULT;
     s->roll = false;          /* boot is Y-T; a saved Roll is set by the input task (model_boot_apply) */
     s->roll_step = 0;
 
