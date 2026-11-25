@@ -1760,6 +1760,242 @@ void cmd_lcd(const char *args)
     usb_debug_printf("\r\n");
 }
 
+/* `lcd scroll TFA VSA BFA SSA` | `lcd scroll off` — an EXPERIMENT, in no
+ * automatic path. The ST7789V's vertical scroll (VSCRDEF 0x33: top fixed
+ * area, scroll area, bottom fixed area, in gate lines, summing to the
+ * panel's LCD_SCROLL_LINES; VSCSAD 0x37: the line shown first in the scroll
+ * area). It moves the panel's scan over its frame memory, not the memory, so
+ * neither the screenshot shadow nor `lcd readback` sees it: only the glass
+ * does. To see on the glass which way the panel scrolls in our landscape
+ * mapping (MADCTL MV=1) and whether it tears. `off` sets the start back
+ * to 0 and NORON (0x13) leaves the scroll mode. Display task, between two
+ * of its frames (display_call_sync). */
+#define LCD_SCROLL_LINES  320u      /* the ST7789V's gate lines (the panel's long side) */
+#define ST7789_VSCRDEF    0x33u
+#define ST7789_VSCSAD     0x37u
+typedef struct { uint32_t tfa, vsa, bfa, ssa; bool off; uint32_t step, period_ms, turns; } lcd_scroll_ctx_t;
+
+static void lcd_data16(uint32_t v)
+{
+    lcd_write_data8((uint8_t)(v >> 8));
+    lcd_write_data8((uint8_t)v);
+}
+
+static void lcd_scroll_run(void *vc)
+{
+    const lcd_scroll_ctx_t *c = (const lcd_scroll_ctx_t *)vc;
+    if (!c->off) {
+        lcd_write_cmd(ST7789_VSCRDEF);
+        lcd_data16(c->tfa); lcd_data16(c->vsa); lcd_data16(c->bfa);
+    }
+    lcd_write_cmd(ST7789_VSCSAD);
+    lcd_data16(c->ssa);
+    if (c->off) lcd_write_cmd(ST7789_NORON);
+}
+
+/* `lcd scroll sweep STEP MS TURNS`: the whole glass scrolled by STEP lines
+ * every MS ms for TURNS turns, then back to normal, all on the display task
+ * (the picture holds still meanwhile): the scroll at the pace a display
+ * would use it, to watch for tearing. */
+static void lcd_scroll_sweep_run(void *vc)
+{
+    const lcd_scroll_ctx_t *c = (const lcd_scroll_ctx_t *)vc;
+    lcd_write_cmd(ST7789_VSCRDEF);
+    lcd_data16(0u); lcd_data16(LCD_SCROLL_LINES); lcd_data16(0u);
+    for (uint32_t s = 0; s < c->turns * LCD_SCROLL_LINES; s += c->step) {
+        lcd_write_cmd(ST7789_VSCSAD);
+        lcd_data16(s % LCD_SCROLL_LINES);
+        health_checkin_self();
+        vTaskDelay(pdMS_TO_TICKS(c->period_ms));
+    }
+    lcd_write_cmd(ST7789_VSCSAD);
+    lcd_data16(0u);
+    lcd_write_cmd(ST7789_NORON);
+}
+
+void cmd_lcd_scroll(const char *args)
+{
+    static const char usage[] = "usage: lcd scroll TFA VSA BFA SSA (TFA+VSA+BFA = 320) | lcd scroll sweep STEP MS TURNS | lcd scroll off\r\n";
+    lcd_scroll_ctx_t c = { 0, LCD_SCROLL_LINES, 0, 0, false, 0, 0, 0 };
+    while (*args == ' ') args++;
+    if (strncmp(args, "sweep", 5) == 0) {
+        static lcd_scroll_ctx_t sw;         /* outlives a wait that times out */
+        unsigned long st, ms, tu;
+        if (sscanf(args + 5, "%lu %lu %lu", &st, &ms, &tu) != 3 || st == 0u || st >= LCD_SCROLL_LINES ||
+            ms == 0u || tu == 0u) {
+            usb_send_str("usage: lcd scroll sweep STEP MS TURNS\r\n");
+            return;
+        }
+        sw.step = st; sw.period_ms = ms; sw.turns = tu;
+        const uint32_t steps = (uint32_t)((tu * LCD_SCROLL_LINES + st - 1u) / st);
+        if (!display_call_sync(lcd_scroll_sweep_run, &sw, steps * (uint32_t)ms + 1000u)) {
+            usb_send_str("lcd scroll sweep: the display task did not finish in time\r\n");
+            return;
+        }
+        usb_debug_printf("lcd scroll sweep: %lu steps of %lu lines every %lu ms, done\r\n",
+                         (unsigned long)steps, st, ms);
+        return;
+    }
+    if (strncmp(args, "off", 3) == 0) {
+        c.off = true;
+    } else {
+        uint32_t v[4];
+        char buf[48], *save = NULL, *tok;
+        unsigned k = 0;
+        if (strlen(args) >= sizeof buf) { usb_send_str(usage); return; }
+        strcpy(buf, args);
+        for (tok = strtok_r(buf, " \t", &save); tok; tok = strtok_r(NULL, " \t", &save)) {
+            if (k >= 4u || parse_int(tok, &v[k]) != 0) { usb_send_str(usage); return; }
+            k++;
+        }
+        if (k != 4u || v[0] + v[1] + v[2] != LCD_SCROLL_LINES || v[3] < v[0] || v[3] >= v[0] + v[1]) {
+            usb_send_str(usage);
+            return;
+        }
+        c.tfa = v[0]; c.vsa = v[1]; c.bfa = v[2]; c.ssa = v[3];
+    }
+    if (!display_call_sync(lcd_scroll_run, &c, 500u)) {
+        usb_send_str("lcd scroll: the display task did not take it in 500 ms; nothing sent\r\n");
+        return;
+    }
+    if (c.off) usb_send_str("lcd scroll: off\r\n");
+    else usb_debug_printf("lcd scroll: TFA %lu VSA %lu BFA %lu, start %lu\r\n", (unsigned long)c.tfa,
+                          (unsigned long)c.vsa, (unsigned long)c.bfa, (unsigned long)c.ssa);
+}
+
+/* `lcd te scan MS` — an EXPERIMENT, in no automatic path: is the ST7789V's
+ * tearing-effect output (TE, a pulse in each frame's blanking) wired to a
+ * pin of the MCU? Counts the level changes of every pin of ports A..E over
+ * MS ms with TE off (TEOFF 0x34), then with TE on, blanking only (TEON 0x35
+ * mode 0), then turns it off again. A pin that changes about twice per
+ * panel frame with TE on and not with it off is TE. Reads only (the ports'
+ * input registers); display task, so nothing draws meanwhile. */
+#define ST7789_TEOFF      0x34u
+#define ST7789_TEON       0x35u
+#define TE_SCAN_PORTS     5u                                  /* GPIOA..GPIOE */
+#define TE_SCAN_PORT0     0x40010800u                         /* GPIOA (GD32F30x / STM32F1 map) */
+#define TE_SCAN_PORT_STEP 0x400u
+#define TE_SCAN_IDR       0x08u                               /* input data register */
+#define TE_SCAN_PINS      16u
+typedef struct { uint32_t ms; uint16_t n[2][TE_SCAN_PORTS][TE_SCAN_PINS]; uint32_t samples[2]; } te_scan_ctx_t;
+
+static void te_count(te_scan_ctx_t *c, unsigned pass)
+{
+    uint16_t prev[TE_SCAN_PORTS];
+    for (unsigned p = 0; p < TE_SCAN_PORTS; p++)
+        prev[p] = (uint16_t)*(volatile uint32_t *)(TE_SCAN_PORT0 + p * TE_SCAN_PORT_STEP + TE_SCAN_IDR);
+    const TickType_t t0 = xTaskGetTickCount();
+    while ((xTaskGetTickCount() - t0) < pdMS_TO_TICKS(c->ms)) {
+        for (unsigned p = 0; p < TE_SCAN_PORTS; p++) {
+            const uint16_t v = (uint16_t)*(volatile uint32_t *)(TE_SCAN_PORT0 + p * TE_SCAN_PORT_STEP + TE_SCAN_IDR);
+            uint16_t d = (uint16_t)(v ^ prev[p]);
+            prev[p] = v;
+            for (unsigned b = 0; d; b++, d >>= 1)
+                if (d & 1u) c->n[pass][p][b]++;
+        }
+        c->samples[pass]++;
+    }
+}
+
+static void te_scan_run(void *vc)
+{
+    te_scan_ctx_t *c = (te_scan_ctx_t *)vc;
+    lcd_write_cmd(ST7789_TEOFF);
+    te_count(c, 0u);
+    health_checkin_self();
+    lcd_write_cmd(ST7789_TEON);
+    lcd_write_data8(0u);                    /* mode 0: V-blanking only */
+    te_count(c, 1u);
+    lcd_write_cmd(ST7789_TEOFF);
+}
+
+void cmd_lcd_te_scan(const char *args)
+{
+    static te_scan_ctx_t c;                 /* outlives a wait that times out */
+    unsigned long ms = 0;
+    if (sscanf(args, "%lu", &ms) != 1 || ms == 0u || ms > 2000u) {
+        usb_send_str("usage: lcd te scan MS (1..2000)\r\n");
+        return;
+    }
+    memset(&c, 0, sizeof c);
+    c.ms = ms;
+    if (!display_call_sync(te_scan_run, &c, 2u * ms + 1000u)) {
+        usb_send_str("lcd te scan: the display task did not finish in time\r\n");
+        return;
+    }
+    usb_debug_printf("lcd te scan: %lu ms each, %lu / %lu samples (TE off / on); pins that changed:\r\n",
+                     ms, (unsigned long)c.samples[0], (unsigned long)c.samples[1]);
+    for (unsigned p = 0; p < TE_SCAN_PORTS; p++)
+        for (unsigned b = 0; b < TE_SCAN_PINS; b++)
+            if (c.n[0][p][b] || c.n[1][p][b])
+                usb_debug_printf("  P%c%u: off %u, on %u\r\n", (char)('A' + p), b,
+                                 (unsigned)c.n[0][p][b], (unsigned)c.n[1][p][b]);
+    usb_send_str("lcd te scan: done\r\n");
+}
+
+/* `lcd scanline` — an EXPERIMENT, in no automatic path: the ST7789V's
+ * Read Scan Line (RDSCL 0x45: a dummy read, then bits 9:8 and 7:0 of the
+ * gate line being scanned), read SCANLINE_READS times in a row, timed by
+ * the cycle counter: the range of lines, how long a frame takes (between
+ * two wraps of the line), and how long one read takes. With no TE pin wired
+ * (`lcd te scan`), this is how a scroll could be timed to the panel's scan.
+ * Display task. */
+#define ST7789_RDSCL      0x45u
+#define SCANLINE_READS    4000u
+typedef struct { uint32_t lo, hi, wraps, first_wrap, last_wrap, t_end; uint16_t s[8]; } scanline_ctx_t;
+
+static uint16_t lcd_scanline(void)
+{
+    lcd_write_cmd(ST7789_RDSCL);
+    (void)*LCD_DATA_ADDR;
+    const uint16_t h = (uint16_t)(*LCD_DATA_ADDR & 0xFFu);
+    const uint16_t l = (uint16_t)(*LCD_DATA_ADDR & 0xFFu);
+    return (uint16_t)((h << 8) | l);
+}
+
+static void scanline_run(void *vc)
+{
+    scanline_ctx_t *c = (scanline_ctx_t *)vc;
+    c->lo = UINT32_MAX;
+    uint16_t prev = 0;
+    const uint32_t t0 = DWT->CYCCNT;
+    for (uint32_t i = 0; i < SCANLINE_READS; i++) {
+        const uint16_t v = lcd_scanline();
+        const uint32_t t = DWT->CYCCNT - t0;
+        if (i < 8u) c->s[i] = v;
+        if (v < c->lo) c->lo = v;
+        if (v > c->hi) c->hi = v;
+        if (i > 0u && v + 64u < prev) {             /* the line went back to the top: a new frame */
+            if (c->wraps == 0u) c->first_wrap = t;
+            c->last_wrap = t;
+            c->wraps++;
+        }
+        prev = v;
+    }
+    c->t_end = DWT->CYCCNT - t0;
+}
+
+void cmd_lcd_scanline(const char *args)
+{
+    (void)args;
+    static scanline_ctx_t c;                /* outlives a wait that times out */
+    memset(&c, 0, sizeof c);
+    if (!display_call_sync(scanline_run, &c, 1000u)) {
+        usb_send_str("lcd scanline: the display task did not finish in time\r\n");
+        return;
+    }
+    const uint32_t mhz = system_core_clock / 1000000u;
+    usb_debug_printf("lcd scanline: %u reads in %lu us (%lu ns a read); lines %lu..%lu; first: %u %u %u %u %u %u %u %u\r\n",
+                     (unsigned)SCANLINE_READS, (unsigned long)(c.t_end / mhz),
+                     (unsigned long)(c.t_end * 1000u / mhz / SCANLINE_READS), (unsigned long)c.lo,
+                     (unsigned long)c.hi, c.s[0], c.s[1], c.s[2], c.s[3], c.s[4], c.s[5], c.s[6], c.s[7]);
+    if (c.wraps >= 2u)
+        usb_debug_printf("lcd scanline: %lu wraps, a frame every %lu us\r\n", (unsigned long)c.wraps,
+                         (unsigned long)((c.last_wrap - c.first_wrap) / mhz / (c.wraps - 1u)));
+    else
+        usb_debug_printf("lcd scanline: %lu wraps (too few to time a frame)\r\n", (unsigned long)c.wraps);
+}
+
 /* `lcd readback [x y w h] [w565]` — an EXPERIMENT, in no automatic path.
  * Reads the window back from the panel's frame memory (lcd_readback_row:
  * RAMRD, 18-bit packed by default, `w565` for one word per pixel), CRC32s

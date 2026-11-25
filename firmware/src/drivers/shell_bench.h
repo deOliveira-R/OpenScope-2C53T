@@ -77,6 +77,9 @@ void cmd_spi3_read(const char *args);
 void cmd_spi3_frame(void);
 void cmd_lcd(const char *args);
 void cmd_lcd_readback(const char *args);
+void cmd_lcd_scroll(const char *args);
+void cmd_lcd_te_scan(const char *args);
+void cmd_lcd_scanline(const char *args);
 void cmd_lcd_colcheck(void);
 void cmd_spi3_xfer(const char *args);
 void cmd_spi3_acqread(void);
@@ -145,6 +148,12 @@ void cmd_spi3_seq(const char *args);
           "fpga meter reinit [submode]     Re-apply meter frontend + FPGA cfg\r\n"), \
     CMD_V("lcd colcheck", cmd_lcd_colcheck, SC_EXACT, \
           "lcd colcheck                    Column write against the general stream: same screenshot shadow?\r\n"), \
+    CMD_A("lcd scanline", cmd_lcd_scanline, 0, \
+          "lcd scanline                    EXPERIMENT: read the panel's scan line, time its frame\r\n"), \
+    CMD_A("lcd te scan", cmd_lcd_te_scan, 0, \
+          "lcd te scan MS                  EXPERIMENT: is the panel's TE output wired to an MCU pin?\r\n"), \
+    CMD_A("lcd scroll", cmd_lcd_scroll, 0, \
+          "lcd scroll TFA VSA BFA SSA|off  EXPERIMENT: the panel's hardware scroll (glass only)\r\n"), \
     CMD_A("lcd readback", cmd_lcd_readback, 0, \
           "lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n"), \
     CMD_A("lcd", cmd_lcd, 0, \

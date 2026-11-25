@@ -17,6 +17,7 @@ cal user	cmd_cal_user	0x00	cal user [show|save|clear]      Save/clear OpenScope'
 can decode	cmd_can_decode	0x01	can decode                      Decode CAN in the record (CH1=CAN_H, CH2=CAN_L)\r\n
 can screen	cmd_can_screen	0x00	can screen [on|off]             CAN readout on the scope screen\r\n
 can stats	cmd_can_stats	0x00	can stats [n]                   CAN over n records: IDs, ACK/NAK, CRC\r\n
+crash	cmd_crash	0x00	crash [test task|irq|assert|heap|boot|hang|timer CONFIRM]  Last crash; crash on purpose\r\n
 describe	cmd_model_describe	0x02	describe <prop>                 Range/labels, built-in default, unit, saved where, reset, owner\r\n
 features	cmd_features	0x01	features                        Features of this build: name, on/off, HELLO bit\r\n
 fft auto	cmd_fft_auto	0x01	fft auto                        Fit the spectrum's span, as AUTO in a spectrum view\r\n
@@ -63,10 +64,16 @@ gpio mode	cmd_gpio_mode	0x02	gpio mode <port><pin> <out|in>  Set pin direction (
 gpio read	cmd_gpio_read	0x02	gpio read <port><pin>           Read GPIO pin\r\n
 gpio scan	cmd_gpio_scan	0x01	gpio scan                       Scan FPGA-related pins\r\n
 gpio set	cmd_gpio_set	0x02	gpio set <port><pin> <0|1>      Drive GPIO pin (REFUSES if pin is an input)\r\n  e.g.: gpio set B11 1\r\n
+health	cmd_health	0x01	health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n
+health clear	cmd_health_clear	0x01	health clear                    Clear the recorded gaps\r\n
+health wdtclock	cmd_health_wdtclock	0x01	health wdtclock                 Measure the watchdog clock and real timeout\r\n
 help	cmd_help	0x01	help                            Show this help\r\n
 lcd	cmd_lcd	0x00	lcd [selftest]                  Panel health; selftest resets the ST7789 to test recovery\r\n
 lcd colcheck	cmd_lcd_colcheck	0x01	lcd colcheck                    Column write against the general stream: same screenshot shadow?\r\n
 lcd readback	cmd_lcd_readback	0x00	lcd readback [x y w h] [w565]   EXPERIMENT: read the panel's RAM back, CRC vs the shadow\r\n
+lcd scanline	cmd_lcd_scanline	0x00	lcd scanline                    EXPERIMENT: read the panel's scan line, time its frame\r\n
+lcd scroll	cmd_lcd_scroll	0x00	lcd scroll TFA VSA BFA SSA|off  EXPERIMENT: the panel's hardware scroll (glass only)\r\n
+lcd te scan	cmd_lcd_te_scan	0x00	lcd te scan MS                  EXPERIMENT: is the panel's TE output wired to an MCU pin?\r\n
 list	cmd_model_list	0x00	list [prefix|glob]              Properties: name, type, range, value, flags\r\nlist changed [prefix|glob]      Values that differ from the built-in defaults, with the default\r\n
 logo	cmd_logo	0x00	logo [info]                     Boot logo status (CRC-checked)\r\nlogo put <len> <crc>|blk <off> <n> <crc>|end  Upload 320x240 RGB565 (scripts/logo_put.py)\r\nlogo pos|data <off> <hex>       Upload position / legacy 48-byte hex chunk\r\nlogo show [ms]|clear            Preview now / remove (built-in splash)\r\n
 mask	cmd_mask	0x00	mask [status]                   Waveform pass/fail: state, counts, last verdict\r\nmask teach [n] [ch1|ch2|both]   Teach from the next n good records (default 8)\r\nmask clear|reset|run            Drop mask | zero counts | release a fail hold\r\nmask dump                       Bounds per column (bench scripts)\r\n
@@ -110,10 +117,6 @@ spi3 xfer	cmd_spi3_xfer	0x04	spi3 xfer <hex...>              Send arbitrary MOSI
 status	cmd_status	0x01	status                          FPGA & system status, the timebase in force\r\n
 stream	cmd_stream	0x00	stream on [scope] [meter] [props] [fast] | off | status   Binary frames on this channel (docs/stream_protocol.md)\r\n
 tasks	cmd_tasks	0x01	tasks                           FreeRTOS tasks: priority, state, stack size and least free (words); heap\r\n
-health wdtclock	cmd_health_wdtclock	0x01	health wdtclock                 Measure the watchdog clock and real timeout\r\n
-health clear	cmd_health_clear	0x01	health clear                    Clear the recorded gaps\r\n
-health	cmd_health	0x01	health                          Watchdog dry run: longest quiet gap per task, boot feed gap\r\n
-crash	cmd_crash	0x00	crash [test task|irq|assert|heap|boot|hang|timer CONFIRM]  Last crash; crash on purpose\r\n
 trig	cmd_scope_trig	0x02	trig raw <0-4095>               Write DAC1 (PA4) directly + sw trigger\r\ntrig <range> <level>            Scope trigger DAC: range 0-9, level -100..100\r\n
 trig2	cmd_scope_trig2	0x02	trig2 raw <0-4095>              Write CH2 ref: TMR13 CH1 PWM-DAC (PA6)\r\ntrig2 <range> <level>           CH2 vertical-offset ref via the CH1 cal formula\r\n
 ui dump	cmd_ui_dump	0x01	ui dump                         UI state: mode, redraws, meter page, measurement strip, graticule, key timing\r\n
