@@ -118,15 +118,16 @@ typedef struct {
                                   * it had a name (the zero-init invariant above), so an old
                                   * record loads as "none" and the layout, the size and
                                   * CONFIG_VERSION are unchanged. */
-    uint8_t  view_mode;          /* view.mode, the scope's display view: 0 = yt, 1 = roll, 2 = xy,
-                                  * 3 = fft, 4 = split, 5 = waterfall. The second of those two
+    uint8_t  view_mode;          /* the scope's display view, the pair (view.mode, tb.roll):
+                                  * 0 = yt, 1 = yt with roll, 2 = xy, 3 = fft, 4 = split,
+                                  * 5 = waterfall (model_view_record_of). The second of those two
                                   * padding bytes: offset 23, zero in every record written before
                                   * it had a name (the zero-init invariant above), so an old
                                   * record loads as 0 = yt (the default) and the layout, the size
                                   * and CONFIG_VERSION are unchanged. An older firmware carries
                                   * the byte untouched. A load only keeps it: the view is put in
-                                  * force through its setter once the scheduler runs
-                                  * (model_view_boot_apply, model.h). */
+                                  * force through the setters once the scheduler runs
+                                  * (model_boot_apply, model.h). */
     float    siggen_frequency;   /* Hz, integer-valued 0..50000 (v4 reads it) */
     float    siggen_amplitude;   /* volts, 0.1 V steps (dV / 10) */
     uint8_t  siggen_duty;        /* v4 (was the unused float siggen_offset): 0..100 % */

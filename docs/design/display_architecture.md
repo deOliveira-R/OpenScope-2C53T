@@ -62,10 +62,11 @@ A prototype type can sit in the table beside a stable one.
 
 ### Domains
 
-The Display menu mixes three kinds of choice: how the data is taken (roll),
+The scope's choices are of three kinds: how the data is taken (roll, a
+source of the time-base: `tb.roll`, which only a view that takes it draws),
 what is analysed (the time record, or the spectrum computed from it) and how
 it is drawn (Y-T or X-Y of the record; spectrum or waterfall of the FFT;
-split as a layout of two). The second kind is the **domain**: time or
+split as a layout of two; the Display menu's choice). The second kind is the **domain**: time or
 frequency. Measurements, cursors and keys belong to the domain, not to the
 picture:
 
@@ -232,4 +233,17 @@ from the screenshot copy after a full redraw and after a live update).
     otherwise). Not in roll, by the source: the trigger pointer and the mask
     (no placement on a trigger), persistence (roll moves every point along
     the screen columns the ghosts are kept in), math (its inputs are the
-    record's own scale; to do). Still to come: roll out of `view.mode`. (c) Split as a pair of views in two panes.
+    record's own scale; to do). Roll is out of `view.mode` (2026-11-24): the
+    views are yt, xy, fft, split and waterfall, and roll is only the
+    time-base property `tb.roll` (with `tb.rollstep`), a source the views
+    that take it draw (`view_desc_t.roll` in `view_table.h`: Y-T only).
+    `tb.roll` on is refused in another view, a change to another view
+    switches it off first, and the timebase ladder stops at the last FPGA
+    code there. The Display menu has no Roll row and `main.c` no roll
+    renderer. `view.mode` took a new id (0x0500; 0x0501 is released, so a
+    snapshot written before is read without its view). The settings record's
+    byte 23 keeps its encoding (0 yt, 1 yt with roll, 2 xy, 3 fft, 4 split,
+    5 waterfall) as the pair (`view.mode`, `tb.roll`), so roll still
+    comes back across a power cycle and an older firmware reads the same
+    byte; `tb.roll` is saved in the settings record and in the session
+    snapshot. (c) Split as a pair of views in two panes.

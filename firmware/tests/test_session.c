@@ -47,6 +47,7 @@
 #include "settings_store.h"
 #include "session_store.h"
 #include "model_session.h"
+#include "view_table.h"
 #include "model_shell.h"
 #include "flash_regions.h"
 #include "scope_state.h"
@@ -450,7 +451,6 @@ static unsigned check_restored(const int32_t *was, const char *what)
         case PROP_ID_METER_HOLD:
         case PROP_ID_METER_REL:   want = 0; break;
         case PROP_ID_GEN_OUT:     want = (was[PROP_IX_GEN_OUT] && was[PROP_IX_GEN_BOOTOUT]) ? 1 : 0; break;
-        case PROP_ID_TB_ROLL:     want = (was[PROP_IX_VIEW_MODE] == 1) ? 1 : 0; break;
         default: continue;       /* calibration and the screen binding: not the snapshot's */
         }
         if (now != want) {
@@ -613,12 +613,12 @@ static void test_membership(void)
     /* the ones the design names */
     static const uint16_t out[] = { PROP_ID_IL_GAIN, PROP_ID_IL_OFFSET, PROP_ID_IL_SKEW, PROP_ID_IL_KNOTS,
         PROP_ID_GEN_OUT, PROP_ID_METER_HOLD, PROP_ID_METER_REL, PROP_ID_VIEW_RUN, PROP_ID_SYS_INSTRUMENT,
-        PROP_ID_SYS_MODE, PROP_ID_TB_ROLL };
+        PROP_ID_SYS_MODE };
     for (unsigned k = 0; k < sizeof out / sizeof out[0]; k++) CHECK(model_session_excluded(prop_by_id(out[k])));
     static const uint16_t in[] = { PROP_ID_CH1_ENABLED, PROP_ID_CH2_ENABLED, PROP_ID_CH1_POS, PROP_ID_VIEW_MODE,
         PROP_ID_VIEW_PERSIST, PROP_ID_TB_ROLLSTEP, PROP_ID_TRIG_X, PROP_ID_VIEW_CURSOR, PROP_ID_GEN_BOOTOUT,
         PROP_ID_GEN_FREQ, PROP_ID_METER_FUNC, PROP_ID_METER_DEGF, PROP_ID_MASK_TOLV, PROP_ID_IL_ENABLED,
-        PROP_ID_SYS_STARTUP, PROP_ID_SYS_BRIGHTNESS };
+        PROP_ID_SYS_STARTUP, PROP_ID_SYS_BRIGHTNESS, PROP_ID_TB_ROLL };
     for (unsigned k = 0; k < sizeof in / sizeof in[0]; k++) CHECK(!model_session_excluded(prop_by_id(in[k])));
     printf("  %u properties: %u in the snapshot, %u left out with a reason, %u read only\n",
            (unsigned)NPROP, members, excluded, ro);
@@ -718,7 +718,7 @@ static void test_fallbacks(void)
 
     fresh_device();
     a_session();
-    CHECK(set(P(VIEW_MODE), 2));
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_XY));
     CHECK(power_off());
     logs_keep();
     const uint16_t good_len = newest(&info);
@@ -731,7 +731,7 @@ static void test_fallbacks(void)
     take(base);
     CHECK(session_snapshot_status()->load == SESSION_LOAD_NONE);
     const uint8_t base_kept = model_boot_report()->kept;
-    CHECK(base_kept == 1 && prop_get(P(VIEW_MODE)) == 2);       /* the record's view, as before */
+    CHECK(base_kept == 2 && prop_get(P(VIEW_MODE)) == VIEW_MODE_XY);   /* the record's view byte (view.mode, tb.roll), as before */
     CHECK(prop_get(P(CH2_ENABLED)) == 1 && prop_get(P(CH1_POS)) == 0 && prop_get(P(CH1_VDIV)) == 6);
 
     /* the snapshot itself does something (or the cases below prove nothing) */
@@ -929,6 +929,40 @@ static void test_other_tables(void)
     CHECK(session_snapshot_status()->load == SESSION_LOAD_BAD && session_snapshot_status()->kept == 0);
 }
 
+/* A snapshot an older firmware wrote: view.mode under 0x0501, the id it had
+ * while roll was one of its values (its 3 was fft, here split), and no tb.roll
+ * (it was left out then). The retired id is skipped as unknown, so the view
+ * is the settings record's, whose byte means the same to both firmwares. */
+static void test_retired_view_id(void)
+{
+    printf("a snapshot with view.mode's retired id\n");
+    static uint8_t rec[1024];
+    static ent_t e[NPROP + 16];
+    model_session_info_t info;
+
+    CHECK(prop_by_id(0x0501) == NULL && PROP_ID_VIEW_MODE != 0x0501);
+    fresh_device();
+    a_session();
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_XY) && power_off());       /* the record: byte 2, xy */
+    (void)newest(&info);
+    uint16_t n = live_entries(e), m = 0;
+    for (uint16_t i = 0; i < n; i++)
+        if (e[i].id != PROP_ID_TB_ROLL) e[m++] = e[i];
+    n = m;
+    ent_t *vm = ent_find(e, n, PROP_ID_VIEW_MODE);
+    CHECK(vm != NULL);
+    if (!vm) return;
+    *vm = (ent_t){ 0x0501, 3 };
+    append_raw(rec, craft(rec, 1, 0, (uint16_t)(info.seq + 1u), info.stamp, e, n));
+    boot();
+    const session_status_t *st = session_snapshot_status();
+    CHECKF(st->load == SESSION_LOAD_OK && st->unknown == 1 && st->excluded == 0 && st->out_of_range == 0,
+           "load %u unknown %u excluded %u", st->load, st->unknown, st->excluded);
+    CHECK(model_boot_report()->refused == 0);
+    CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_XY && prop_get(P(TB_ROLL)) == 0);   /* the record's pair */
+    CHECK(model_view_record() == 2u);
+}
+
 /* A boot with owners that never answer stays bounded: once more than the
  * limit of hardware properties were refused (here 1: ch2.enabled, then
  * view.mode), the remaining hardware ones (view.persist) are not tried and
@@ -938,7 +972,7 @@ static void test_refused_bound(void)
     puts("a dead owner does not stretch the boot");
     fresh_device();
     a_session();
-    CHECK(set(P(VIEW_MODE), 5));
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_WATERFALL));
     CHECK(power_off());
     g_fail_enables = -1; g_fail_pers = true; g_fail_view = true;
     model_boot_hw_refused_max = 1;                  /* the firmware's is MODEL_BOOT_HW_REFUSED_MAX */
@@ -965,7 +999,7 @@ static void test_refused(void)
 
     fresh_device();
     a_session();
-    CHECK(set(P(VIEW_MODE), 5));                    /* waterfall: in the record and in the snapshot */
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_WATERFALL));  /* in the record and in the snapshot */
     take(was);
     CHECK(power_off());
 
@@ -983,7 +1017,7 @@ static void test_refused(void)
     /* each was tried twice, and the others went on */
     CHECK(logged_times("enables;") == 2 && logged_times("pers_on(2);") == 2);
     /* the refused ones are where the settings record / the default has them */
-    CHECK(prop_get(P(CH2_ENABLED)) == 1 && prop_get(P(VIEW_PERSIST)) == 0 && prop_get(P(VIEW_MODE)) == 0);
+    CHECK(prop_get(P(CH2_ENABLED)) == 1 && prop_get(P(VIEW_PERSIST)) == 0 && prop_get(P(VIEW_MODE)) == VIEW_MODE_YT);
     /* everything else is back */
     unsigned other = 0;
     for (uint16_t i = 0; i < NPROP; i++) {
@@ -997,20 +1031,20 @@ static void test_refused(void)
      * settings record's view is (sticky): record and snapshot keep the view the boot could not show */
     int32_t kv = -1;
     CHECK(!model_boot_kept(P(CH2_ENABLED), NULL) && !model_boot_kept(P(VIEW_PERSIST), NULL));
-    CHECK(model_boot_kept(P(VIEW_MODE), &kv) && kv == 5 && model_view_record() == 5u);
+    CHECK(model_boot_kept(P(VIEW_MODE), &kv) && kv == VIEW_MODE_WATERFALL && model_view_record() == 5u);
     g_fail_enables = 0; g_fail_pers = false; g_fail_view = false;
     CHECK(power_off());
     boot();
     CHECK(model_boot_report()->refused == 0);
-    CHECK(prop_get(P(CH2_ENABLED)) == 1 && prop_get(P(VIEW_PERSIST)) == 0 && prop_get(P(VIEW_MODE)) == 5);
+    CHECK(prop_get(P(CH2_ENABLED)) == 1 && prop_get(P(VIEW_PERSIST)) == 0 && prop_get(P(VIEW_MODE)) == VIEW_MODE_WATERFALL);
     /* the user's own change ends a keep, and the refusal stays in the report */
     g_fail_view = true;
     boot();
     CHECK(prop_get(P(VIEW_MODE)) == 0 && model_boot_kept(P(VIEW_MODE), NULL));
     g_fail_view = false;
-    CHECK(set(P(VIEW_MODE), 2) && !model_boot_kept(P(VIEW_MODE), NULL) &&
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_XY) && !model_boot_kept(P(VIEW_MODE), NULL) &&
           model_boot_state(P(VIEW_MODE)) == BOOT_KEEP_REFUSED);
-    CHECK(set(P(VIEW_MODE), 0));
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_YT));
 
     /* a refusal that passes: tried again after the others, in force, not reported */
     CHECK(set(P(CH2_ENABLED), 0) && power_off());
@@ -1050,7 +1084,7 @@ static void test_order(void)
     CHECK(set(P(CH1_ENABLED), 1));
 
     /* CH1 off with the trigger on CH2; Roll at step 3; both cursor pairs with h2 selected */
-    CHECK(set(P(CH1_ENABLED), 0) && set(P(TB_ROLLSTEP), 3) && set(P(VIEW_MODE), 1));
+    CHECK(set(P(CH1_ENABLED), 0) && set(P(TB_ROLLSTEP), 3) && set(P(TB_ROLL), 1));
     CHECK(set(P(VIEW_CURSOR), 3) && set(P(VIEW_CURSEL), 3));
     CHECK(prop_get(P(TB_ROLL)) == 1);
     take(was);
@@ -1058,13 +1092,14 @@ static void test_order(void)
     boot();
     CHECK(model_boot_report()->refused == 0 && check_restored(was, "order") == 0);
     CHECK(scope_state_get()->roll && scope_state_get()->roll_step == 3);
-    /* tb.rollstep went in while Roll was off, so Roll is ONE FPGA write that carries it */
-    CHECKF(logged_times("roll;") == 1, "roll written %u times: %s", logged_times("roll;"), g_log);
+    /* table order: tb.roll (0x0302) goes in at the step in RAM, then tb.rollstep (0x0303)
+     * re-enters Roll at the saved one: TWO FPGA writes (model.h, the boot apply's order) */
+    CHECKF(logged_times("roll;") == 2, "roll written %u times: %s", logged_times("roll;"), g_log);
     /* the routing before anything of the trigger; the cursor pair before the selected line */
     CHECK(logged("enables;") && !logged("trigsrc;"));
 
     /* The same snapshot with its entries in REVERSE order (another writer): the apply is table
-     * order whatever the record's order is, so nothing is refused and Roll is still one write. */
+     * order whatever the record's order is, so nothing is refused and Roll is still two writes. */
     (void)newest(&info);
     boot();
     const uint16_t n = live_entries(e);
@@ -1072,10 +1107,10 @@ static void test_order(void)
     append_raw(rec, craft(rec, 1, 0, (uint16_t)(info.seq + 1u), info.stamp, rev, n));
     boot();
     CHECK(session_snapshot_status()->load == SESSION_LOAD_OK && model_boot_report()->refused == 0);
-    CHECK(check_restored(was, "reverse order") == 0 && logged_times("roll;") == 1);
+    CHECK(check_restored(was, "reverse order") == 0 && logged_times("roll;") == 2);
 
     /* a spectrum view, then persistence on top of X-Y: the view first, the pool claim after */
-    CHECK(set(P(VIEW_MODE), 2) && set(P(VIEW_PERSIST), 4) && set(P(CH1_ENABLED), 1));
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_XY) && set(P(VIEW_PERSIST), 4) && set(P(CH1_ENABLED), 1));
     take(was);
     CHECK(power_off());
     boot();
@@ -1093,7 +1128,7 @@ static void test_order(void)
     CHECK(prop_get(P(VIEW_PERSIST)) == 0 && model_boot_state(P(VIEW_PERSIST)) == BOOT_KEEP_PENDING);
     CHECK(session_snapshot_save());
     boot();
-    CHECK(prop_get(P(VIEW_PERSIST)) == 4 && prop_get(P(MASK_TOLV)) == 30 && prop_get(P(VIEW_MODE)) == 2);
+    CHECK(prop_get(P(VIEW_PERSIST)) == 4 && prop_get(P(MASK_TOLV)) == 30 && prop_get(P(VIEW_MODE)) == VIEW_MODE_XY);
 }
 
 static void test_not_restore(void)
@@ -1114,7 +1149,7 @@ static void test_not_restore(void)
         boot(); take(v);
         CHECK(session_snapshot_status()->load == SESSION_LOAD_NOT_RESTORE);
         CHECK(nor_session_reads == 0);                   /* not even read */
-        CHECK(differ(v, base, true) == 0 && model_boot_report()->kept == 1);
+        CHECK(differ(v, base, true) == 0 && model_boot_report()->kept == 2);   /* the record's view byte */
         CHECK(prop_get(P(CH2_ENABLED)) == 1 && prop_get(P(VIEW_CURSOR)) == 0 && prop_get(P(CH1_VDIV)) == 6);
         CHECK(strstr(status_text(), "not read (sys.startup is not restore)"));
         /* back to Restore: the power-off that follows is the one a Restore boot shows */
@@ -1183,7 +1218,11 @@ static void test_reset(void)
     const uint16_t clears = session_snapshot_status()->clears;
     r = settings_store_reset_to_defaults(g_now, between);
     CHECK(r.status == PS_OK && r.left == 0);
-    CHECK(session_snapshot_status()->clears == clears + 1u && nor_programs[1] == p1 + 2u && nor_erases[1] == 0);
+    /* the tombstone: header + payload (+ a page crossing, as at line ~1268) */
+    CHECKF(session_snapshot_status()->clears == clears + 1u && nor_programs[1] >= p1 + 2u &&
+           nor_programs[1] <= p1 + 3u && nor_erases[1] == 0,
+           "clears %u->%u programs %u->%u erases %u", clears, session_snapshot_status()->clears, (unsigned)p1,
+           (unsigned)nor_programs[1], (unsigned)nor_erases[1]);
     /* the next Restore boot does not undo the reset */
     boot();
     CHECK(session_snapshot_status()->load == SESSION_LOAD_CLEARED && session_snapshot_status()->kept == 0);
@@ -1202,7 +1241,7 @@ static void test_reset(void)
     CHECK(session_snapshot_status()->load == SESSION_LOAD_OK && prop_get(P(CH1_POS)) == 10);
 
     /* a reset with a keep the boot could not put in force: gone too (it is not saved back) */
-    CHECK(set(P(VIEW_MODE), 5) && set(P(VIEW_CURSOR), 1) && power_off());
+    CHECK(set(P(VIEW_MODE), VIEW_MODE_WATERFALL) && set(P(VIEW_CURSOR), 1) && power_off());
     g_fail_view = true;
     boot();
     g_fail_view = false;
@@ -1366,6 +1405,7 @@ int main(void)
     test_round_trip();
     test_fallbacks();
     test_other_tables();
+    test_retired_view_id();
     test_refused();
     test_refused_bound();
     test_order();

@@ -274,8 +274,9 @@ bool          model_prop_batches(const prop_desc_t *p);
  * fpga.c, mask.* in scope_mask.c) the store IS that owner's setter through
  * model_hw(), and does nothing while the ops are unbound. view.persist's is
  * a no-op: a load never claims the shared pool (settings_store.c's rule).
- * view.mode's store is not called by a load either (the record's view is
- * kept and set through the setter later: model_boot_keep below).
+ * view.mode's and tb.roll's stores are not called by a load either (the
+ * record's view byte is kept and set through the setters later:
+ * model_boot_keep below).
  * So a store is a boot / start-up tool, not a runtime apply: at run time
  * "Reset to defaults" goes through the setters (model_reset_to_defaults).
  *
@@ -349,8 +350,8 @@ uint8_t model_last_screen_record(void);
  * state moved) and put in force later through the property's normal setter,
  * ORIGIN_BOOT (no settings note, not refused by a self-cal run), on the
  * executor once the ops are bound (model_fw_start -> model_boot_apply). Two
- * loads keep values: the settings record's view.mode (model_persist_v5.c
- * V5_VIEW) and, with Startup on Boot = Restore, every value of the session
+ * loads keep values: the settings record's view byte, view.mode and tb.roll
+ * (model_persist_v5.c V5_VIEW) and, with Startup on Boot = Restore, every value of the session
  * snapshot (model_session.h). The later keep of a property replaces the
  * earlier one.
  *
@@ -358,9 +359,13 @@ uint8_t model_last_screen_record(void);
  *   - TABLE ORDER (= id order), the order "Reset to defaults" and
  *     model_load_defaults use and the one the setters' rules need: the
  *     channel enables before trig.source (a source on a channel that is off
- *     is refused), tb.rollstep before view.mode (stored while Roll is off,
- *     so the one Roll write carries it), view.mode before view.persist
- *     (persistence evicts a spectrum view), view.cursor before view.cursel;
+ *     is refused), tb.roll before view.mode (a boot is in Y-T, the view
+ *     that takes roll, until view.mode is applied; the record and the
+ *     snapshot never hold roll with another view), view.mode before
+ *     view.persist (persistence evicts a spectrum view), view.cursor before
+ *     view.cursel. tb.roll comes before tb.rollstep: a Restore boot with
+ *     roll on and a step other than 0 writes Roll twice (tb.roll at the step
+ *     in RAM, 0, then tb.rollstep at the saved one);
  *   - only a value that is not already in force is set (the settings record
  *     put the persisted ones there: no relay, no park for those);
  *   - one request (model_batch_begin / end): the two mask tolerances post
@@ -374,7 +379,7 @@ uint8_t model_last_screen_record(void);
  *   between (may be NULL) runs before each set after the first: the health
  *   check-in, so one acquisition park is the longest gap.
  *
- * A keep is STICKY (the settings record's view.mode) or not (the snapshot's
+ * A keep is STICKY (the settings record's view byte: view.mode, tb.roll) or not (the snapshot's
  * values). A refused sticky keep stays kept: model_boot_kept() still names
  * it, every capture writes it instead of the live value (the record keeps a
  * view the boot could not show), and a later model_boot_apply_one() may put
@@ -420,24 +425,31 @@ const model_boot_report_t *model_boot_report(void);  /* of the last model_boot_a
  * (not clamped: a load drops a value out of range). */
 bool    prop_value_in_range(const prop_desc_t *p, int32_t v);
 
-/* view.mode across a power cycle: the single-property case of the above,
- * and a sticky one. The settings record holds the display view (offset 23,
- * model_persist_v5.c V5_VIEW); model_view_boot_load is the codec's (above
- * MODEL_VIEW_MODE_MAX -> yt) and keeps it; model_view_boot_apply() is
- * model_boot_apply_one(view.mode): true when the kept view is the one in
- * force. model_view_record() is the value every capture writes into the
- * record: the kept one until it is in force, then the live view.mode. A
- * boot whose apply was refused (no pool, the Roll write failed) therefore comes up
- * in yt and still saves the view it could not show, whatever else is saved
- * in that session, until the view changes: a set of view.mode that succeeds
- * (the value in force included), tb.roll changing, view.persist evicting a
- * spectrum view, and Reset to defaults (the reset loop skips a property
- * already at its default, and yt is where a refused boot left it). */
-#define MODEL_VIEW_MODE_MAX  5u     /* view.mode: yt, roll, xy, fft, split, waterfall */
+/* The settings record's view byte across a power cycle: the case of the
+ * above with two properties, both sticky. The byte (offset 23,
+ * model_persist_v5.c V5_VIEW) is the pair (view.mode, tb.roll): 0 yt, 1 yt
+ * with roll, 2 xy, 3 fft, 4 split, 5 waterfall (model_view_record_of; roll
+ * counts only in a view that takes it, view_table.h). Older firmware reads
+ * the same byte with the same meaning. model_view_boot_load is the
+ * codec's (above MODEL_VIEW_RECORD_MAX -> yt) and keeps both;
+ * model_view_boot_apply() is model_boot_apply_one() of each: true when both
+ * kept values are the ones in force. model_view_record() is the byte every
+ * capture writes: of each property the kept value until it is in force,
+ * then the live one. A boot whose apply was refused (no pool, the Roll write
+ * failed) therefore comes up in yt without roll and still saves the view it
+ * could not show, whatever else is saved in that session, until the view
+ * changes: a set of view.mode or tb.roll that succeeds (the value in force
+ * included; the byte is one field, so either drops the keeps of both:
+ * model_view_boot_forget), view.persist evicting a spectrum view, and Reset
+ * to defaults (the reset loop skips a property already at its default, and
+ * yt without roll is where a refused boot left it). */
+#define MODEL_VIEW_MODE_MAX    4u   /* view.mode: yt, xy, fft, split, waterfall */
+#define MODEL_VIEW_RECORD_MAX  5u   /* the record's byte: yt, yt with roll, xy, fft, split, waterfall */
 void    model_view_boot_load(uint8_t raw);
 bool    model_view_boot_apply(void);            /* EXECUTOR ONLY */
 void    model_view_boot_forget(void);
 uint8_t model_view_record(void);
+uint8_t model_view_record_of(int32_t view, int32_t roll);   /* the byte of a (view.mode, tb.roll) pair */
 
 /* meter.hold / meter.rel / meter.degf: model_hw_ops_t.meter_flag_get/set. */
 enum { METER_FLAG_HOLD = 0, METER_FLAG_REL, METER_FLAG_DEGF };
@@ -450,7 +462,7 @@ extern volatile uint32_t prop_epoch[PG_COUNT];   /* bumped by the executor on a 
 uint32_t prop_group_epoch(uint8_t g);
 /* Bump group g's epoch (executor only). prop_set_local bumps the property's
  * own group; a setter calls this for what it changes in another group
- * (ch.enabled moves ui.ach, Single sets view.run, Roll is in tb and view),
+ * (ch.enabled moves ui.ach, Single sets view.run, Roll redraws the view),
  * and an owner that lands a POSTED change later (the mode switch, a mask
  * request) calls it when the change is in force. */
 void     model_touch(uint8_t g);

@@ -44,6 +44,7 @@
  */
 #define MODEL_INTERNAL
 #include "model.h"
+#include "view_table.h"
 #include "model_persist_v5.h"
 #include "config.h"
 #include "settings_store.h"
@@ -510,7 +511,7 @@ static void test_reset_everything(void)
     /* the hardware followed (what the owners were told) */
     static const char *const k_ops[] = {
         "vdiv(0,3);", "vdiv(1,5);", "coupling(0,0);", "coupling(1,0);", "enables;",
-        "vpos(0,0);", "vpos(1,0);", "roll;", "triglvl(0);",
+        "vpos(0,0);", "vpos(1,0);", "triglvl(0);",
         "gen_wave(0);", "gen_freq(1000);", "gen_amp(30);", "gen_duty(50);", "gen_out(0);",
         "gen_boot(0);", "meter(0,0);", "backlight(100);", "autooff(0);", "il_en(1);",
         "mask_tol(8,2);", "mask_sf(1);", "pers_off;", "layout(0);",
@@ -632,11 +633,11 @@ static void test_view_goes_back(void)
 
     /* in force */
     fresh_device();
-    CHECK(prop_set_local(P(VIEW_MODE), 5, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_WATERFALL, ORIGIN_KEY, NULL) == PS_OK);
     g_now += 5000u; key_pressed(); g_now += 5000u; key_pressed();
     CHECK(record_in_flash(&now) && now.view_mode == 5u);
     boot();                                         /* a power cycle: it comes back */
-    CHECK(prop_get(P(VIEW_MODE)) == 5 && scope_view == SCOPE_VIEW_WATERFALL);
+    CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_WATERFALL && scope_view == SCOPE_VIEW_WATERFALL);
     CHECK(g_notes == 0);
     g_now += 5000u; key_pressed(); g_now += 5000u; key_pressed();
     CHECK(record_in_flash(&rec) && memcmp(&rec, &now, sizeof rec) == 0);    /* and wrote nothing */

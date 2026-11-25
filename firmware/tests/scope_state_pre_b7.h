@@ -62,12 +62,13 @@ static inline void scope_adjust_vdiv(channel_state_t *ch, int direction)
     ch->vdiv_idx = (uint8_t)idx;
 }
 
-static inline bool scope_adjust_timebase(scope_state_t *s, int direction)
+static inline bool scope_adjust_timebase(scope_state_t *s, int direction, bool roll_offered)
 {
     /* Stock's ladder continues past the last FPGA record into roll
-     * (ms[0x2D] 0x14..0x1C); ours continues past code TIMEBASE_COUNT-1. */
+     * (ms[0x2D] 0x14..0x1C); ours continues past code TIMEBASE_COUNT-1, in
+     * a view that takes the roll source. */
     return scope_roll_tb_step(&s->timebase_idx, &s->roll, &s->roll_step,
-                              direction, TIMEBASE_COUNT);
+                              direction, TIMEBASE_COUNT, roll_offered);
 }
 
 static inline void scope_adjust_trigger_level(scope_state_t *s, int direction)

@@ -49,10 +49,11 @@ static void stamp(device_config_t *cfg)
  * generator output comes back ON only when the user opted in (gen.bootout)
  * and it was on at the last save.
  *
- * The display view (view.mode: Roll, X-Y and the spectrum views) IS saved,
- * but a load only keeps it: its owners need the scheduler, so the input task
- * sets it through the property's setter when it starts (model.h, "view.mode
- * across a power cycle"), and a view it could not show stays in the record.
+ * The display view (view.mode: X-Y and the spectrum views, and tb.roll in
+ * Y-T: one byte) IS saved, but a load only keeps it: its owners need the
+ * scheduler, so the input task sets it through the properties' setters when
+ * it starts (model.h, "the settings record's view byte across a power
+ * cycle"), and a view it could not show stays in the record.
  *
  * What this list leaves out is in the SESSION SNAPSHOT instead
  * (session_store.h), which only Startup on Boot = Restore reads: the channel

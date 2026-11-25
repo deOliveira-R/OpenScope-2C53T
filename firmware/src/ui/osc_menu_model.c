@@ -33,7 +33,7 @@ static const char *const k_row_title[OSC_ROW_COUNT] = {
     "CH2 Settings", "Trigger Settings", "Persistence", "Mathematics", "Spectrum Settings",
 };
 
-static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "Roll", "X-Y", "FFT", "Split", "Waterfall" };
+static const char *const k_disp[OSC_DISP_COUNT]  = { "Y-T", "X-Y", "FFT", "Split", "Waterfall" };
 /* The lines read the axes of the view they are drawn in: time and volts, or
  * frequency and level on a spectrum. */
 static const char *const k_cur[OSC_CUR_COUNT]    = { "Off", "X1-X2  (time, freq.)", "Y1-Y2  (volts, level)", "Both" };
@@ -83,12 +83,12 @@ const char *osc_menu_row_title(osc_row_t row)
     return ((unsigned)row < OSC_ROW_COUNT) ? k_row_title[row] : "";
 }
 
-/* view.mode per Display item (props_scope.c: yt roll xy fft split
- * waterfall); -1 = the item is not a view. test_osc_menu.c checks the pairs
- * against the property's own value names. */
+/* view.mode per Display item (props_scope.c: yt xy fft split waterfall);
+ * -1 = the item is not a view. test_osc_menu.c checks the pairs against the
+ * property's own value names. */
 static const int8_t k_disp_view_mode[OSC_DISP_COUNT] = {
-    [OSC_DISP_YT] = 0, [OSC_DISP_ROLL] = 1, [OSC_DISP_XY] = 2,
-    [OSC_DISP_FFT] = 3, [OSC_DISP_SPLIT] = 4, [OSC_DISP_WATERFALL] = 5,
+    [OSC_DISP_YT] = VIEW_MODE_YT, [OSC_DISP_XY] = VIEW_MODE_XY, [OSC_DISP_FFT] = VIEW_MODE_FFT,
+    [OSC_DISP_SPLIT] = VIEW_MODE_SPLIT, [OSC_DISP_WATERFALL] = VIEW_MODE_WATERFALL,
 };
 
 int8_t osc_menu_disp_view_mode(uint8_t item)

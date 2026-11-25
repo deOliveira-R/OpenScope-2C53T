@@ -61,7 +61,7 @@ w2_math         | set view.math A+B
 w2_math_off     | set view.math off
 w2_persist      | set view.persist 1s
 w2_persist_off  | set view.persist off
-w2_roll         | set view.mode roll
+w2_roll         | set tb.roll on
 w2_roll_up      | ui seq UP ; wait 3
 w2_xy           | set view.mode xy
 w2_fft          | set view.mode fft
@@ -122,7 +122,7 @@ w4_math_off     | set view.math off
 w4_persist      | set view.persist 1s
 w4_persist_stop | ui seq OK
 w4_persist_off  | ui seq OK ; set view.persist off
-w4_roll         | set view.mode roll
+w4_roll         | set tb.roll on
 w4_xy           | set view.mode xy
 w4_fft          | set view.mode fft
 w4_split        | set view.mode split

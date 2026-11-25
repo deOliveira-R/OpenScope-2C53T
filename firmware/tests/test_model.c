@@ -559,12 +559,12 @@ static void test_rules(void)
     CHECK(prop_set_local(P(VIEW_MATH), 0, ORIGIN_KEY, &n) == PS_OK);
     CHECK(!math_enabled && math_op == MATH_MUL && prop_get(P(VIEW_MATH)) == 0);
 
-    /* view.mode: split needs Roll off first, then the view */
-    CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, &n) == PS_OK && scope_state_get()->roll);
+    /* view.mode: split does not take roll: Roll off first, then the view */
+    CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, &n) == PS_OK && scope_state_get()->roll);
     log_clear();
-    CHECK(prop_set_local(P(VIEW_MODE), 4, ORIGIN_KEY, &n) == PS_OK);
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_KEY, &n) == PS_OK);
     CHECK(strcmp(g_log, "roll;view(2);") == 0);
-    CHECK(!scope_state_get()->roll && scope_view == SCOPE_VIEW_SPLIT && prop_get(P(VIEW_MODE)) == 4);
+    CHECK(!scope_state_get()->roll && scope_view == SCOPE_VIEW_SPLIT && prop_get(P(VIEW_MODE)) == VIEW_MODE_SPLIT);
 
     /* meter.func from meter_auto keeps the autoselect running */
     CHECK(prop_set_local(P(METER_FUNC), 3, ORIGIN_AUTO, &n) == PS_OK && g_keep_auto);
@@ -733,23 +733,58 @@ static void test_fail_each_call(void)
     }
     CHECK(cases > 200);
 
-    /* the two-step view changes, by hand: fft -> roll with Roll refused,
-     * roll -> split with the view refused */
+    /* the two-step view change, by hand: Y-T with roll -> split with the
+     * view refused (roll was switched off first, and comes back) */
     prop_note_t n;
     fresh();
-    CHECK(prop_set_local(P(VIEW_MODE), 3, ORIGIN_KEY, &n) == PS_OK && scope_view == SCOPE_VIEW_FFT);
-    g_fail_at = 2; g_calls = 0;                       /* view(0) ok, roll refused */
-    CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, &n) == PS_NOT_SET);
-    g_fail_at = 0;
-    CHECK(prop_get(P(VIEW_MODE)) == 3 && scope_view == SCOPE_VIEW_FFT && !scope_state_get()->roll);
-    fresh();
-    CHECK(prop_set_local(P(VIEW_MODE), 1, ORIGIN_KEY, &n) == PS_OK && scope_state_get()->roll);
+    CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, &n) == PS_OK && scope_state_get()->roll);
     log_clear();
     g_fail_at = 2; g_calls = 0;                       /* roll off ok, view refused */
-    CHECK(prop_set_local(P(VIEW_MODE), 4, ORIGIN_KEY, &n) == PS_NOT_SET);
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_KEY, &n) == PS_NOT_SET);
     g_fail_at = 0;
-    CHECK(prop_get(P(VIEW_MODE)) == 1 && scope_state_get()->roll && scope_view == SCOPE_VIEW_TIME);
-    CHECK(strcmp(g_log, "roll;view(2);roll;") == 0);
+    CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_YT && scope_state_get()->roll && scope_view == SCOPE_VIEW_TIME);
+    CHECK(strcmp(g_log, "roll;view(2);roll;") == 0 && prop_get(P(TB_ROLL)) == 1);
+    /* ... and Roll refused on the way out: nothing moves */
+    log_clear();
+    g_fail_at = 1; g_calls = 0;
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_XY, ORIGIN_KEY, &n) == PS_NOT_SET);
+    g_fail_at = 0;
+    CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_YT && scope_state_get()->roll && strcmp(g_log, "roll;") == 0);
+}
+
+/* Roll is a source only the Y-T view takes (view_table.h): tb.roll on is
+ * refused in every other view, with no write; a view that does not take it
+ * switches it off first, and that is tb.roll's change too (its group, a
+ * settings note: it is in the record's view byte). */
+static void test_roll_is_yt_only(void)
+{
+    static const uint8_t others[] = { VIEW_MODE_XY, VIEW_MODE_FFT, VIEW_MODE_SPLIT, VIEW_MODE_WATERFALL };
+    prop_note_t n;
+    CHECK(view_takes_roll(VIEW_MODE_YT));
+    for (unsigned i = 0; i < sizeof others / sizeof others[0]; i++) {
+        fresh();
+        CHECK(!view_takes_roll(others[i]));
+        CHECK(prop_set_local(P(VIEW_MODE), others[i], ORIGIN_KEY, &n) == PS_OK);
+        log_clear();
+        const unsigned notes = g_notes;
+        CHECKF(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, &n) == PS_REFUSED && strcmp(n.text, "Roll: Y-T only") == 0,
+               "view %u: tb.roll on not refused (%s)", others[i], n.text);
+        CHECK(g_log[0] == '\0' && !scope_state_get()->roll && g_notes == notes);
+        CHECK(prop_set_local(P(TB_ROLL), 0, ORIGIN_KEY, &n) == PS_OK);      /* off is always fine */
+    }
+    /* Y-T with roll -> X-Y: roll off first (one write), then the view */
+    fresh();
+    CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, &n) == PS_OK);
+    log_clear();
+    const unsigned notes = g_notes;
+    const uint32_t t = prop_group_epoch(PG_TB);
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_XY, ORIGIN_KEY, &n) == PS_OK);
+    CHECK(strncmp(g_log, "roll;view(", 10) == 0 && !scope_state_get()->roll && prop_get(P(TB_ROLL)) == 0);
+    CHECK(prop_group_epoch(PG_TB) > t && g_notes > notes);
+    /* Y-T keeps it: the view in force, and roll stays */
+    fresh();
+    CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, &n) == PS_OK);
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_YT, ORIGIN_KEY, &n) == PS_OK && prop_get(P(TB_ROLL)) == 1);
 }
 
 /* A setter's change in another group bumps that group too. */
@@ -767,10 +802,10 @@ static void test_cross_group(void)
     e = prop_group_epoch(PG_VIEW);
     uint32_t t = prop_group_epoch(PG_TB);
     CHECK(prop_set_local(P(TB_ROLL), 1, ORIGIN_KEY, NULL) == PS_OK);
-    CHECK(prop_group_epoch(PG_VIEW) > e && prop_group_epoch(PG_TB) > t);       /* view.mode = roll */
-    CHECK(prop_get(P(VIEW_MODE)) == 1);
+    CHECK(prop_group_epoch(PG_VIEW) > e && prop_group_epoch(PG_TB) > t);       /* another source: the view redraws */
+    CHECK(prop_get(P(VIEW_MODE)) == VIEW_MODE_YT);
     t = prop_group_epoch(PG_TB);
-    CHECK(prop_set_local(P(VIEW_MODE), 0, ORIGIN_KEY, NULL) == PS_OK);
+    CHECK(prop_set_local(P(VIEW_MODE), VIEW_MODE_XY, ORIGIN_KEY, NULL) == PS_OK);
     CHECK(prop_group_epoch(PG_TB) > t && prop_get(P(TB_ROLL)) == 0);           /* tb.roll */
     /* a posted change lands later: the owner bumps (model_touch) */
     e = prop_group_epoch(PG_SYS);
@@ -1050,8 +1085,11 @@ static void test_meter_link(void)
 #include "osc_menu_model.h"
 static void test_display_pane(void)
 {
-    static const char *const name[OSC_DISP_VIEW_MODES] = { "yt", "roll", "xy", "fft", "split", "waterfall" };
-    CHECK(P(VIEW_MODE)->id == 0x0501 && P(VIEW_MODE)->min == 0 && P(VIEW_MODE)->max == OSC_DISP_VIEW_MODES - 1);
+    static const char *const name[OSC_DISP_VIEW_MODES] = { "yt", "xy", "fft", "split", "waterfall" };
+    CHECK(P(VIEW_MODE)->id == 0x0500 && P(VIEW_MODE)->min == 0 && P(VIEW_MODE)->max == OSC_DISP_VIEW_MODES - 1);
+    /* 0x0501 was view.mode while roll was one of its values: released, never reused */
+    CHECK(prop_by_id(0x0501) == NULL && prop_find("roll") == NULL);
+    CHECK(prop_parse(P(VIEW_MODE), "roll", &(int32_t){ 0 }) != PS_OK);
     unsigned seen = 0;
     for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
         const int8_t vm = osc_menu_disp_view_mode(i);
@@ -1481,6 +1519,7 @@ int main(int argc, char **argv)
     test_not_set_keeps_old();
     test_fail_each_call();
     test_cross_group();
+    test_roll_is_yt_only();
     test_save_forms();
     test_fft_settings();
     test_spectrum_props();

@@ -61,13 +61,16 @@ typedef enum {
                      * model_last_screen_load(), out of range -> none; a capture
                      * writes model_last_screen_record(): that loaded value,
                      * until a power-off names the screen shown then            */
-    V5_VIEW,        /* uint8_t = view.mode, but a load moves no live state: it
-                     * hands the value (out of range -> yt) to
-                     * model_view_boot_load(), and the view is put in force
-                     * through its setter once the scheduler runs
+    V5_VIEW,        /* uint8_t = the pair (view.mode, tb.roll), the record's
+                     * encoding (model_view_record_of; decode gives that byte).
+                     * view.mode's row owns the byte, tb.roll's row names it
+                     * with no bytes of its own. A load moves no live state:
+                     * it hands the byte (out of range -> yt) to
+                     * model_view_boot_load(), and both are put in force
+                     * through their setters once the scheduler runs
                      * (model_view_boot_apply). A capture writes
-                     * model_view_record(): that loaded value until the view
-                     * is in force or the user changes it, then the live one   */
+                     * model_view_record(): the loaded pair until it is in
+                     * force or the user changes it, then the live one          */
 } v5_codec_t;
 
 /* What a load does with a value outside lo..hi (record units). */
@@ -102,8 +105,9 @@ extern const unsigned   model_persist_v5_field_count;
 const v5_field_t *model_persist_v5_find(uint16_t prop_id);
 
 /* The property value a load gives row f from *cfg (the out-of-range policy
- * and the sys_prefs_mark rule applied). Not for V5_MATH_PAIR / V5_CARRY /
- * rows without a property (returns 0). */
+ * and the sys_prefs_mark rule applied); for V5_VIEW the record's byte, which
+ * model_view_boot_load() splits into the pair. Not for V5_MATH_PAIR /
+ * V5_CARRY / rows without a property (returns 0). */
 int32_t model_persist_v5_decode(const v5_field_t *f, const device_config_t *cfg);
 
 /* Built-in defaults (prop_default) into every field; the caller has zeroed

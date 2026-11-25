@@ -53,6 +53,7 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#include "view_table.h"   /* view_mode_t: the Display items' values */
 
 /* ── Fixed interface (research/ui/ROUND1_BRIEF.md) ─────────────────── */
 typedef enum { OSC_ROW_DISPLAY, OSC_ROW_CURSOR, OSC_ROW_PARAM, OSC_ROW_CH1, OSC_ROW_CH2,
@@ -91,13 +92,13 @@ typedef struct {
 const osc_pane_layout_t *osc_menu_layout(osc_row_t row);
 
 /* Item indices, per pane (the order the pane draws them). */
-/* Display: the one place the scope's view is chosen. The first six are the
+/* Display: the one place the scope's view is chosen. The items are the
  * values of the view.mode property, in its order (osc_menu_disp_view_mode).
+ * Roll is not a view: the timebase ladder enters it in Y-T (tb.roll).
  * Split is Y-T on top and the spectrum below. The spectrum views (FFT,
  * Split, Waterfall) analyse the ACTIVE channel (MOVE; ui.ach), so there is
  * no per-channel FFT row. */
-enum { OSC_DISP_YT = 0, OSC_DISP_ROLL, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_SPLIT, OSC_DISP_WATERFALL,
-       OSC_DISP_COUNT };
+enum { OSC_DISP_YT = 0, OSC_DISP_XY, OSC_DISP_FFT, OSC_DISP_SPLIT, OSC_DISP_WATERFALL, OSC_DISP_COUNT };
 enum { OSC_CUR_OFF = 0, OSC_CUR_TIME, OSC_CUR_VOLT, OSC_CUR_BOTH, OSC_CUR_COUNT };
 enum { OSC_CH_ENABLE = 0, OSC_CH_PROBE, OSC_CH_COUPLING, OSC_CH_COUNT };
 enum { OSC_TRIG_MODE = 0, OSC_TRIG_EDGE, OSC_TRIG_SOURCE, OSC_TRIG_COUNT };
@@ -163,9 +164,9 @@ const char *osc_menu_row_title(osc_row_t row);    /* "Display Mode" ... (pane ti
  * its chips. "" out of range. */
 const char *osc_menu_item_label(osc_row_t row, uint8_t item, uint8_t set);
 
-/* Display item -> the view.mode value it sets (0 yt, 1 roll, 2 xy, 3 fft,
- * 4 split, 5 waterfall: model_table.h), or -1 for an item that is no view. */
-#define OSC_DISP_VIEW_MODES 6
+/* Display item -> the view.mode value it sets (view_mode_t: yt, xy, fft,
+ * split, waterfall), or -1 for an item that is no view. */
+#define OSC_DISP_VIEW_MODES VIEW_MODE_COUNT
 int8_t  osc_menu_disp_view_mode(uint8_t item);
 /* view.mode value -> the Display item that shows it checked;
  * OSC_DISP_COUNT (no item) for a value out of range. */

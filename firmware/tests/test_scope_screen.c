@@ -260,7 +260,7 @@ static char o_cmd;
 static key_focus_t o_focus;                 /* scope_key_focus of the old code */
 static void o_set_focus(key_focus_t f) { o_focus = f; }
 
-/* view.mode from the scope's state: the view, and roll in the time view. */
+/* view.mode from the scope's state: the view (roll is a source of Y-T). */
 static uint8_t o_view_mode(void)
 {
     switch (scope_view) {
@@ -268,14 +268,13 @@ static uint8_t o_view_mode(void)
     case SCOPE_VIEW_FFT:       return VIEW_MODE_FFT;
     case SCOPE_VIEW_SPLIT:     return VIEW_MODE_SPLIT;
     case SCOPE_VIEW_WATERFALL: return VIEW_MODE_WATERFALL;
-    default:                   return scope_state_get()->roll ? VIEW_MODE_ROLL : VIEW_MODE_YT;
+    default:                   return VIEW_MODE_YT;
     }
 }
 
 /* The jobs SELECT steps through in each view, the first where it starts. */
 static const struct { uint8_t n; key_focus_t j[KF_COUNT]; } o_jobs[VIEW_MODE_COUNT] = {
     [VIEW_MODE_YT]        = { 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
-    [VIEW_MODE_ROLL]      = { 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
     [VIEW_MODE_XY]        = { 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE } },
     [VIEW_MODE_FFT]       = { 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR } },
     [VIEW_MODE_SPLIT]     = { 4, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM } },
@@ -445,7 +444,7 @@ static void o_exec(key_cmd_t k, button_id_t btn)
     case KA_TB_STEP: {
         const bool was_roll = ss->roll;
         const uint8_t was_step = ss->roll_step;
-        const bool roll_changed = scope_adjust_timebase(ss, dir);
+        const bool roll_changed = scope_adjust_timebase(ss, dir, view_takes_roll(o_view_mode()));
         const bool tb_ok = roll_changed ? d_roll() : (was_roll ? true : d_timebase(ss->timebase_idx));
         if (roll_changed && !tb_ok) { ss->roll = was_roll; ss->roll_step = was_step; }
         if (tb_ok) { o_cmd = 'F'; break; }
@@ -962,6 +961,28 @@ static void test_limits_and_failures(void)
     CHECK("entering roll again starts at step 0 whatever tb.rollstep held",
           (env_key(BTN_RIGHT), G(P(TB_ROLL)) == 1) && G(P(TB_ROLLSTEP)) == 0 && env_log_is("roll(1,0);"));
 
+    /* Roll is a source of the Y-T view only: in the other views the ladder
+     * stops at the last FPGA code and nothing is written for roll */
+    {
+        static const struct { uint8_t view; const char *name; } nv[] = {
+            { VIEW_MODE_XY, "xy" }, { VIEW_MODE_FFT, "fft" }, { VIEW_MODE_SPLIT, "split" },
+            { VIEW_MODE_WATERFALL, "waterfall" },
+        };
+        for (unsigned i = 0; i < sizeof nv / sizeof nv[0]; i++) {
+            boot();
+            (void)prop_set_local(P(VIEW_MODE), nv[i].view, ORIGIN_SHELL, NULL);
+            (void)prop_set_local(P(TB_CODE), 20, ORIGIN_SHELL, NULL);
+            scope_key_focus = KF_ZOOM; env_log_clear();
+            const scr_res_t r = env_key(BTN_RIGHT);
+            const bool good = r == SCR_DRAW_FULL && G(P(TB_ROLL)) == 0 && G(P(TB_CODE)) == 20 &&
+                              G(P(VIEW_MODE)) == nv[i].view && env_log_is("tb(20);");
+            if (!good) printf("    %s: tb.roll=%ld tb.code=%ld log '%s'\n", nv[i].name,
+                              (long)G(P(TB_ROLL)), (long)G(P(TB_CODE)), env_log);
+            CHECK("not Y-T: RIGHT at the last code re-applies it (as at any end of the ladder), no roll",
+                  good);
+        }
+    }
+
     /* a failed write: the old value is kept (the fix of ARCH 2.12); popup as before */
     boot(); t_fail = true;
     CHECK("V/div relay write fails: ch1.vdiv keeps 3, popup names the range asked for",
@@ -1194,9 +1215,9 @@ static void test_focus(void)
     }
     CHECK("a new view puts the arrows on its first job (spectrum in FFT and waterfall, zoom elsewhere)", first);
     scope_key_focus = KF_CHMOVE;
-    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_ROLL, ORIGIN_SHELL, NULL);
-    CHECK("Y-T -> roll is the same view of the time record: the job stays",
-          G(P(VIEW_MODE)) == VIEW_MODE_ROLL && scope_key_focus == KF_CHMOVE);
+    (void)prop_set_local(P(TB_ROLL), 1, ORIGIN_SHELL, NULL);
+    CHECK("Y-T -> roll is another source of the same view: the view and the job stay",
+          G(P(TB_ROLL)) == 1 && G(P(VIEW_MODE)) == VIEW_MODE_YT && scope_key_focus == KF_CHMOVE);
     boot();
     scope_view = SCOPE_VIEW_FFT;              /* a view the setter did not choose: no hook ran */
     scope_key_focus = KF_TRIGMOVE;
@@ -1315,7 +1336,7 @@ static void test_epochs(void)
         { "fft.meas", P(FFT_MEAS), 0x5, true, false },
         { "view.math", P(VIEW_MATH), 2, true, false },   { "view.persist", P(VIEW_PERSIST), 2, true, false },
         { "view.run", P(VIEW_RUN), 0, true, false },     { "tb.roll", P(TB_ROLL), 1, true, false },
-        { "view.mode", P(VIEW_MODE), 3, true, false },
+        { "view.mode", P(VIEW_MODE), VIEW_MODE_FFT, true, false },
         { "view.curv1", P(VIEW_CURV1), 10, false, false }, { "view.curh2", P(VIEW_CURH2), 200, false, false },
     };
     bool ok = true;
@@ -1367,8 +1388,8 @@ static void test_direct_route_paint(void)
         { "fft.meas", P(FFT_MEAS), 0x5, LAYOUT },
         { "view.math", P(VIEW_MATH), 2, LAYOUT },     { "view.persist", P(VIEW_PERSIST), 2, LAYOUT },
         { "view.run", P(VIEW_RUN), 0, LAYOUT },
-        { "tb.roll", P(TB_ROLL), 1, WHOLE },          { "view.mode fft", P(VIEW_MODE), 3, WHOLE },
-        { "view.mode xy", P(VIEW_MODE), 2, WHOLE },
+        { "tb.roll", P(TB_ROLL), 1, WHOLE },          { "view.mode fft", P(VIEW_MODE), VIEW_MODE_FFT, WHOLE },
+        { "view.mode xy", P(VIEW_MODE), VIEW_MODE_XY, WHOLE },
         { "view.curv1", P(VIEW_CURV1), 10, CURSOR },  { "view.curh2", P(VIEW_CURH2), 200, CURSOR },
     };
     bool ok = true;
@@ -1405,14 +1426,14 @@ static void test_direct_route_paint(void)
 
     /* a soft change in another view: that view in full (never a live frame of the Y-T band) */
     boot();
-    (void)prop_set_local(P(VIEW_MODE), 3, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_FFT, ORIGIN_SHELL, NULL);
     scope_shown_t seen, now;
     scope_screen_shown(&seen);
     (void)prop_set_local(P(CH1_VDIV), 6, ORIGIN_SHELL, NULL);
     scope_screen_shown(&now);
     scope_change_t c = scope_screen_changed(&seen, &now, true);
     CHECK("FFT view: a range change repaints the view in full", c.force && !c.live && !c.whole);
-    (void)prop_set_local(P(VIEW_MODE), 0, ORIGIN_SHELL, NULL);
+    (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_YT, ORIGIN_SHELL, NULL);
     (void)prop_set_local(P(TB_ROLL), 1, ORIGIN_SHELL, NULL);
     scope_screen_shown(&seen);
     (void)prop_set_local(P(CH1_VDIV), 7, ORIGIN_SHELL, NULL);

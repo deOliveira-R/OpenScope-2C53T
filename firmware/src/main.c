@@ -538,7 +538,6 @@ typedef struct {
 
 static const scope_renderer_t k_renderers[VIEW_MODE_COUNT] = {
     [VIEW_MODE_YT]        = { render_yt,        true,  true,  false },
-    [VIEW_MODE_ROLL]      = { render_yt,        true,  true,  false },   /* Y-T on the roll source */
     [VIEW_MODE_XY]        = { render_xy,        true,  false, true  },
     [VIEW_MODE_FFT]       = { render_fft,       true,  false, false },
     [VIEW_MODE_SPLIT]     = { render_split,     true,  false, false },

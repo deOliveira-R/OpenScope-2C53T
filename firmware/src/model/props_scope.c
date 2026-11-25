@@ -22,6 +22,7 @@
 #include "math_channel.h"
 #include "interleave.h"       /* IL_KNOTS_MAX */
 #include "ui.h"
+#include "view_table.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -241,20 +242,27 @@ static prop_status_t roll_apply(bool want, uint8_t step, prop_note_t *note)
         model_note(note, "Roll NOT SET");
         return PS_NOT_SET;
     }
-    if (want != was) { model_touch(PG_TB); model_touch(PG_VIEW); }   /* tb.roll and view.mode */
+    /* tb.roll, and PG_VIEW for the picture: another source is a whole
+     * redraw of the view (main.c scope_view_tick, chg.whole). */
+    if (want != was) { model_touch(PG_TB); model_touch(PG_VIEW); }
     return PS_OK;
 }
 
 int32_t tb_roll_get(const prop_desc_t *p) { (void)p; return scope_state_get()->roll ? 1 : 0; }
 void    tb_roll_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->roll = (v != 0); }
-static void view_moved(uint8_t origin);
+static void view_record_moved(uint8_t origin);
+/* Roll is a source only some views take (view_table.h): on is refused
+ * while the view on screen does not take it. */
 prop_status_t tb_roll_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)p;
     const scope_state_t *ss = scope_state_get();
-    if ((v != 0) == ss->roll) return PS_OK;
-    const prop_status_t s = roll_apply(v != 0, ss->roll_step, note);
-    if (s == PS_OK) view_moved(origin);         /* Roll is a value of view.mode, which is saved */
+    if (v && !view_takes_roll((uint8_t)view_mode_get(P(VIEW_MODE)))) {
+        model_note(note, "Roll: Y-T only");
+        return PS_REFUSED;
+    }
+    const prop_status_t s = ((v != 0) == ss->roll) ? PS_OK : roll_apply(v != 0, ss->roll_step, note);
+    if (s == PS_OK) view_record_moved(origin);
     return s;
 }
 
@@ -375,58 +383,92 @@ prop_status_t trig_soft_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
 
 /* ═══ view ═══════════════════════════════════════════════════════════ */
 
-/* view.mode: one composite of the scope view and Roll (what the Display
- * pane sets), values yt, roll, xy, fft, split, waterfall. */
-enum { VM_YT, VM_ROLL, VM_XY, VM_FFT, VM_SPLIT, VM_WATERFALL, VM_COUNT };
-const char *const lbl_view_mode[VM_COUNT] = { "yt", "roll", "xy", "fft", "split", "waterfall" };
+/* view.mode: the scope's view (what the Display pane sets), values yt, xy,
+ * fft, split, waterfall (view_mode_t, view_table.h). Roll is not one of
+ * them: it is tb.roll, a source the views that take it draw. */
+_Static_assert(VIEW_MODE_COUNT == MODEL_VIEW_MODE_MAX + 1u, "view.mode values = view_mode_t");
+const char *const lbl_view_mode[VIEW_MODE_COUNT] = { "yt", "xy", "fft", "split", "waterfall" };
 
 int32_t view_mode_get(const prop_desc_t *p)
 {
     (void)p;
     switch (scope_view) {
-    case SCOPE_VIEW_XY:        return VM_XY;
-    case SCOPE_VIEW_FFT:       return VM_FFT;
-    case SCOPE_VIEW_SPLIT:     return VM_SPLIT;
-    case SCOPE_VIEW_WATERFALL: return VM_WATERFALL;
-    default: break;
+    case SCOPE_VIEW_XY:        return VIEW_MODE_XY;
+    case SCOPE_VIEW_FFT:       return VIEW_MODE_FFT;
+    case SCOPE_VIEW_SPLIT:     return VIEW_MODE_SPLIT;
+    case SCOPE_VIEW_WATERFALL: return VIEW_MODE_WATERFALL;
+    default:                   return VIEW_MODE_YT;
     }
-    return scope_state_get()->roll ? VM_ROLL : VM_YT;
 }
 
 /* view.mode -> scope_view_t. */
-static const uint8_t k_view_of[VM_COUNT] = {
-    SCOPE_VIEW_TIME, SCOPE_VIEW_TIME, SCOPE_VIEW_XY, SCOPE_VIEW_FFT, SCOPE_VIEW_SPLIT,
-    SCOPE_VIEW_WATERFALL,
+static const uint8_t k_view_of[VIEW_MODE_COUNT] = {
+    SCOPE_VIEW_TIME, SCOPE_VIEW_XY, SCOPE_VIEW_FFT, SCOPE_VIEW_SPLIT, SCOPE_VIEW_WATERFALL,
 };
 
-/* view.mode across a power cycle (model.h): the settings record's view is a
- * sticky keep of the general boot apply (model_boot_keep). */
-void    model_view_boot_load(uint8_t raw)
+/* The settings record's view byte (offset 23, config.h) is the pair
+ * (view.mode, tb.roll): 0 yt, 1 yt with roll, 2 xy, 3 fft, 4 split,
+ * 5 waterfall. Older firmware reads the same byte with the same meaning (its
+ * view.mode had roll as value 1), so a record means the same to both. */
+#define VIEW_RECORD_YT_ROLL  1u     /* the byte of Y-T with the roll source */
+static const uint8_t k_record_of_view[VIEW_MODE_COUNT] = {
+    [VIEW_MODE_YT] = 0u, [VIEW_MODE_XY] = 2u, [VIEW_MODE_FFT] = 3u, [VIEW_MODE_SPLIT] = 4u,
+    [VIEW_MODE_WATERFALL] = 5u,
+};
+static const uint8_t k_view_of_record[MODEL_VIEW_RECORD_MAX + 1u] = {
+    [0] = VIEW_MODE_YT, [VIEW_RECORD_YT_ROLL] = VIEW_MODE_YT, [2] = VIEW_MODE_XY, [3] = VIEW_MODE_FFT,
+    [4] = VIEW_MODE_SPLIT, [5] = VIEW_MODE_WATERFALL,
+};
+_Static_assert(sizeof k_view_of_record == MODEL_VIEW_RECORD_MAX + 1u, "one view per record byte");
+
+uint8_t model_view_record_of(int32_t view, int32_t roll)
 {
-    model_boot_keep(P(VIEW_MODE), (raw < (uint8_t)VM_COUNT) ? raw : (uint8_t)VM_YT, true);
+    if (view < 0 || view >= (int32_t)VIEW_MODE_COUNT) view = VIEW_MODE_YT;
+    return (roll && view_takes_roll((uint8_t)view)) ? (uint8_t)VIEW_RECORD_YT_ROLL : k_record_of_view[view];
 }
-void    model_view_boot_forget(void) { model_boot_forget(P(VIEW_MODE)); }
+
+/* The record's view across a power cycle (model.h): both properties of the
+ * byte are sticky keeps of the general boot apply (model_boot_keep). */
+void model_view_boot_load(uint8_t raw)
+{
+    if (raw > MODEL_VIEW_RECORD_MAX) raw = 0u;
+    model_boot_keep(P(TB_ROLL), raw == VIEW_RECORD_YT_ROLL, true);
+    model_boot_keep(P(VIEW_MODE), k_view_of_record[raw], true);
+}
+void model_view_boot_forget(void)
+{
+    model_boot_forget(P(TB_ROLL));
+    model_boot_forget(P(VIEW_MODE));
+}
 uint8_t model_view_record(void)
 {
-    int32_t v;
-    return (uint8_t)(model_boot_kept(P(VIEW_MODE), &v) ? v : view_mode_get(P(VIEW_MODE)));
+    int32_t v, r;
+    if (!model_boot_kept(P(VIEW_MODE), &v)) v = view_mode_get(P(VIEW_MODE));
+    if (!model_boot_kept(P(TB_ROLL), &r))   r = tb_roll_get(P(TB_ROLL));
+    return model_view_record_of(v, r);
 }
-bool model_view_boot_apply(void) { return model_boot_apply_one(P(VIEW_MODE)); }
-
-/* view.mode moved through another property's setter (tb.roll, view.persist
- * evicting a spectrum view): its epoch, the settings note its own set would
- * have made, and the boot's kept view is no longer what the user has
- * (model_changed_also drops the keep, except during the boot apply). */
-static void view_moved(uint8_t origin)
+/* In table order, as model_boot_apply: tb.roll, then view.mode. */
+bool model_view_boot_apply(void)
 {
-    model_changed_also(P(VIEW_MODE), origin);
+    const bool roll = model_boot_apply_one(P(TB_ROLL));
+    const bool view = model_boot_apply_one(P(VIEW_MODE));
+    return roll && view;
+}
+
+/* The record's view byte is one field of two properties: a change of
+ * either (by its own setter, or by another setter moving view.mode) is the
+ * user's view from then on, and drops the boot's keep of both
+ * (model_view_boot_forget; not during the boot apply, whose verdict is read
+ * at the end). */
+static void view_record_moved(uint8_t origin)
+{
+    if (origin != ORIGIN_BOOT) model_view_boot_forget();
 }
 
 void view_mode_store(const prop_desc_t *p, int32_t v)
 {
     (void)p;
     scope_view = (scope_view_t)k_view_of[v];
-    scope_state_get()->roll = (v == VM_ROLL);
 }
 
 /* The scope view through its owner (scope_view_select claims or releases
@@ -439,37 +481,33 @@ static bool view_switch(uint8_t view)
 }
 
 /* The Display pane's selection (osc_menu_ui.c display_select calls this
- * setter; split was the CH1 pane's FFT row before), in three steps, each
- * undone if a later one is refused, so a failure leaves the old view:
- * Roll off first when the target is not Roll (split needs it off, as
- * channel_change does), then the view, then Roll on for Roll. */
-static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, prop_note_t *note)
+ * setter), in two steps, the first undone if the second is refused, so a
+ * failure leaves the old view: roll off first when the new view does not
+ * take it (split needs it off, as channel_change does), then the view. */
+static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     scope_state_t *ss = scope_state_get();
     const int32_t was = view_mode_get(p);
     if (v == was) return PS_OK;
-    const bool was_roll = ss->roll, want_roll = (v == VM_ROLL);
-    const uint8_t was_view = k_view_of[was], want_view = k_view_of[v];
+    const bool roll_off = ss->roll && !view_takes_roll((uint8_t)v);
 
-    if (was_roll && !want_roll && roll_apply(false, ss->roll_step, note) != PS_OK)
+    if (roll_off && roll_apply(false, ss->roll_step, note) != PS_OK)
         return PS_NOT_SET;
-    if (want_view != was_view && !view_switch(want_view)) {
-        if (was_roll && !want_roll) (void)roll_apply(true, ss->roll_step, NULL);
+    if (!view_switch(k_view_of[v])) {
+        if (roll_off) (void)roll_apply(true, ss->roll_step, NULL);
         model_note(note, "view NOT SET");
         return PS_NOT_SET;
     }
-    if (want_roll && !ss->roll && roll_apply(true, ss->roll_step, note) != PS_OK) {
-        if (want_view != was_view) (void)view_switch(was_view);
-        return PS_NOT_SET;
-    }
+    if (roll_off) model_changed_also(P(TB_ROLL), origin);
     return PS_OK;
 }
 prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     /* The user's own choice (the view in force included) replaces a view the
-     * boot kept but could not show: prop_set_local drops the keep. */
-    (void)origin;
-    return view_mode_apply(p, v, note);
+     * boot kept but could not show. */
+    const prop_status_t s = view_mode_apply(p, v, origin, note);
+    if (s == PS_OK) view_record_moved(origin);
+    return s;
 }
 
 const char *const lbl_view_persist[5] = { "off", "500ms", "1s", "2s", "inf" };
@@ -498,7 +536,10 @@ prop_status_t view_persist_set(const prop_desc_t *p, int32_t v, uint8_t origin, 
     }
     const int32_t view_was = view_mode_get(P(VIEW_MODE));
     const bool on = HW->persist_on && HW->persist_on((uint8_t)v);
-    if (view_mode_get(P(VIEW_MODE)) != view_was) view_moved(origin);   /* a spectrum view went back to Y-T */
+    if (view_mode_get(P(VIEW_MODE)) != view_was) {               /* a spectrum view went back to Y-T */
+        model_changed_also(P(VIEW_MODE), origin);
+        view_record_moved(origin);
+    }
     if (!on) {
         model_note(note, "No memory for persistence");
         return PS_NOT_SET;

@@ -201,11 +201,11 @@ static void test_table(void)
     char t[24];
     ok = 1;
     for (uint8_t i = 0; i < OSC_DISP_COUNT; i++) {
-        static const char *const tok[] = { "yt", "roll", "xy", "fft", "split", "waterfall" };
+        static const char *const tok[] = { "yt", "xy", "fft", "split", "waterfall" };
         prop_format_value(P(VIEW_MODE), osc_menu_bind_value(OSC_ROW_DISPLAY, i), t, sizeof t);
         ok &= strcmp(t, tok[i]) == 0;
     }
-    CHECK("Display items in order are view.mode yt roll xy fft split waterfall", ok);
+    CHECK("Display items in order are view.mode yt xy fft split waterfall", ok);
     ok = 1;
     for (uint8_t i = 1; i < OSC_MATH_COUNT; i++)
         ok &= osc_menu_bind_value(OSC_ROW_MATH, i) == 1 + (int32_t)osc_menu_math_op(i);
@@ -410,7 +410,7 @@ static void test_radio_panes(void)
               note()[0] == '\0' && osc_menu_is_open();
         if (!ok) { printf("    display %u -> %u: view.mode %ld\n", from, to, (long)G(P(VIEW_MODE))); break; }
     }
-    CHECK("Display: every view from every view (36), the cursor entering on the view in force", ok);
+    CHECK("Display: every view from every view (25), the cursor entering on the view in force", ok);
 
     ok = 1;
     for (uint8_t from = 0; from < OSC_PERS_COUNT; from++)
@@ -599,7 +599,6 @@ static void test_measure_by_view(void)
     printf("Measure pane: the panels of the view on screen\n");
     static const struct { uint8_t view; uint8_t job; uint8_t sets, first; } V[] = {
         { VIEW_MODE_YT, KF_ZOOM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_CH1 },
-        { VIEW_MODE_ROLL, KF_ZOOM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_CH1 },
         { VIEW_MODE_XY, KF_ZOOM, (1u << MEAS_SET_CH1) | (1u << MEAS_SET_CH2), MEAS_SET_CH1 },
         { VIEW_MODE_FFT, KF_SPECTRUM, 1u << MEAS_SET_FFT, MEAS_SET_FFT },
         { VIEW_MODE_FFT, KF_ZOOM, 1u << MEAS_SET_FFT, MEAS_SET_FFT },

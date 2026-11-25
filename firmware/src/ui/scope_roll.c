@@ -127,12 +127,12 @@ rec_code_t scope_roll_record_code(adc_raw_t raw)
 }
 
 bool scope_roll_tb_step(uint8_t *yt_idx, bool *roll, uint8_t *step, int dir,
-                        uint8_t yt_count)
+                        uint8_t yt_count, bool roll_offered)
 {
     if (yt_idx == NULL || roll == NULL || step == NULL || yt_count == 0u || dir == 0)
         return false;
     if (!*roll) {
-        if (dir > 0 && *yt_idx >= yt_count - 1u) {
+        if (dir > 0 && *yt_idx >= yt_count - 1u && roll_offered) {
             *yt_idx = (uint8_t)(yt_count - 1u);
             *roll = true;
             *step = 0u;

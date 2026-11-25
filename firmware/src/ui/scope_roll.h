@@ -183,12 +183,13 @@ scope_roll_trig_act_t scope_roll_trig_step(scope_roll_fifo_t *f, uint8_t mode,
 
 /* One timebase key press. `dir` > 0 is slower. In Y-T the index steps as
  * before; slower from the last FPGA code (yt_count - 1) enters roll at step
- * 0. In roll the step moves; faster from step 0 leaves roll (the Y-T index is
- * left at yt_count - 1). Clamped at the slowest step. Returns true when the
- * roll flag or the step changed (the caller must re-apply roll), false when
- * only the Y-T index moved (or nothing did). */
+ * 0 when `roll_offered` (the view takes the roll source, view_table.h), else
+ * it stays on that code. In roll the step moves; faster from step 0 leaves
+ * roll (the Y-T index is left at yt_count - 1). Clamped at the slowest step.
+ * Returns true when the roll flag or the step changed (the caller must
+ * re-apply roll), false when only the Y-T index moved (or nothing did). */
 bool scope_roll_tb_step(uint8_t *yt_idx, bool *roll, uint8_t *step, int dir,
-                        uint8_t yt_count);
+                        uint8_t yt_count, bool roll_offered);
 
 
 /* ── Screen geometry ────────────────────────────────────────────────── */

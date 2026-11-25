@@ -15,7 +15,6 @@ const model_session_exclusion_t model_session_exclusions[] = {
     { PROP_ID_IL_KNOTS,       "user calibration: its only set drops the level map" },
     /* Another name for state the snapshot already holds, or does not want. */
     { PROP_ID_SYS_MODE,       "alias of sys.instrument" },
-    { PROP_ID_TB_ROLL,        "a value of view.mode (roll), restored through view.mode" },
     /* The screen: the settings record's last-screen byte brings it back, before the scheduler. */
     { PROP_ID_SYS_INSTRUMENT, "the screen binding: the record's last screen restores it" },
     /* A restore never turns a signal on unasked: the output keeps its own boot policy. */

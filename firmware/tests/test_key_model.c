@@ -134,7 +134,6 @@ static const struct {
     uint8_t view; uint8_t n; key_focus_t ring[KF_COUNT]; bool strip, time;
 } k_views[] = {
     { VIEW_MODE_YT,        5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true,  true  },
-    { VIEW_MODE_ROLL,      5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true,  true  },
     { VIEW_MODE_XY,        3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE },                     false, true  },
     { VIEW_MODE_FFT,       3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },            true,  false },
     { VIEW_MODE_SPLIT,     4, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM },        false, true  },
@@ -208,7 +207,7 @@ static void test_long_map(void)
                 ok &= is(key_map(&c, BTN_CH1, true), KA_CH_ENABLE_TOGGLE, 0) &&
                       is(key_map(&c, BTN_CH2, true), KA_CH_ENABLE_TOGGLE, 1);
             }
-        CHECK("long PRM: Y-T, roll and FFT (the strip); long OK / AUTO: Y-T, roll, X-Y, split; long CH1/CH2 everywhere", ok);
+        CHECK("long PRM: Y-T and FFT (the strip); long OK / AUTO: Y-T, X-Y, split; long CH1/CH2 everywhere", ok);
     }
     key_ctx_t xy = vctx(MODE_OSCILLOSCOPE, VIEW_MODE_XY, KF_ZOOM);
     CHECK("X-Y is a view of the time record: long OK = 50 %, long AUTO = baseline, long PRM nothing (no strip)",
@@ -346,7 +345,7 @@ static void test_short_map(void)
             }
         CHECK("every view: the arrows go by the job (zoom, chmove, trigmove, cursor, mask, spectrum)", arrows);
         CHECK("every view: SELECT = next job, OK = RUN/STOP, CH1/CH2 = coupling", rest);
-        CHECK("AUTO: autoset in Y-T, roll, X-Y; fit the span in FFT and waterfall; split by the job", aut);
+        CHECK("AUTO: autoset in Y-T, X-Y; fit the span in FFT and waterfall; split by the job", aut);
     }
     {
         key_ctx_t sp = vctx(MODE_OSCILLOSCOPE, VIEW_MODE_SPLIT, KF_SPECTRUM);
@@ -652,7 +651,7 @@ static void test_focus(void)
         /* Cursors switched on: the view's cursor job (none: the job stays);
          * off: a cursor job gives way to the view's first, another stays. */
         static const struct { uint8_t view; key_focus_t cursor_job, first; } C[] = {
-            { VIEW_MODE_YT, KF_CURSOR, KF_ZOOM },             { VIEW_MODE_ROLL, KF_CURSOR, KF_ZOOM },
+            { VIEW_MODE_YT, KF_CURSOR, KF_ZOOM },
             { VIEW_MODE_XY, KF_COUNT, KF_ZOOM },              { VIEW_MODE_FFT, KF_SPECTRUM_CURSOR, KF_SPECTRUM },
             { VIEW_MODE_SPLIT, KF_COUNT, KF_ZOOM },           { VIEW_MODE_WATERFALL, KF_COUNT, KF_SPECTRUM },
         };
@@ -666,7 +665,7 @@ static void test_focus(void)
             ok &= key_focus_after_cursor_change(v, KF_ZOOM, false) == KF_ZOOM;
             ok &= key_focus_after_cursor_change(v, KF_SPECTRUM, false) == KF_SPECTRUM;
         }
-        CHECK("after_cursor_change per view: on -> Y-T/roll cursor, FFT spectrum cursor, else the job stays; "
+        CHECK("after_cursor_change per view: on -> Y-T cursor, FFT spectrum cursor, else the job stays; "
               "off -> a cursor job goes to the view's first", ok);
     }
     {
@@ -742,8 +741,10 @@ static void test_state(void)
 
 /* The grid below covers the views of the time record the pre-B1 key map
  * knew (its "time view") and the jobs it knew: the time-domain jobs, which
- * come first in key_focus_t. */
-static const uint8_t k_grid_views[] = { VIEW_MODE_YT, VIEW_MODE_ROLL };
+ * come first in key_focus_t. Those views were Y-T and roll, and the
+ * reference below was taken over both; roll is Y-T on the roll source now
+ * (tb.roll, which no key context holds), so the grid runs Y-T twice. */
+static const uint8_t k_grid_views[] = { VIEW_MODE_YT, VIEW_MODE_YT };
 #define KM_GRID_TIME_JOBS  KF_SPECTRUM      /* KF_ZOOM .. KF_MASK */
 
 /* The actions as numbered at 6a8c2ba: KA_SPECTRUM_CURSOR_MOVE was added
@@ -827,7 +828,7 @@ static void test_global(void)
     int time_jobs = 1;
     for (int f = 0; f < KM_GRID_TIME_JOBS; f++) time_jobs &= key_focus_domain((key_focus_t)f) == VIEW_DOM_TIME;
     CHECK("the grid's jobs are the time-domain ones", time_jobs && key_focus_domain(KM_GRID_TIME_JOBS) != VIEW_DOM_TIME);
-    CHECK("key_map: every answer over the Y-T / roll grid as before the split (B7 names read as legacy)",
+    CHECK("key_map: every answer over the Y-T grid as before the split (B7 names read as legacy)",
           h == KM_GRID_PRE_B1_HASH && n == KM_GRID_PRE_B1_COUNT && !g_grid_saw_added);
     {
         /* ... and a B7 action is only ever answered for a short key of the

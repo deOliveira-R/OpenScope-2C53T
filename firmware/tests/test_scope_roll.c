@@ -115,25 +115,32 @@ static void test_tb_step(void)
 {
     uint8_t tb = 0x13, step = 5;
     bool roll = false;
-    bool ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21);
+    bool ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21, true);
     CHECK("Y-T 0x13 slower -> 0x14, still Y-T", !ch && tb == 0x14 && !roll);
-    ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21);
+    ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21, true);
     CHECK("Y-T 0x14 slower -> roll step 0 (stock 0x14, 50ms)", ch && roll && step == 0 && tb == 0x14);
     for (int i = 0; i < 8; i++)
-        scope_roll_tb_step(&tb, &roll, &step, +1, 21);
+        scope_roll_tb_step(&tb, &roll, &step, +1, 21, true);
     CHECK("eight more -> step 8 (20 s/div)", roll && step == 8);
-    ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21);
+    ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21, true);
     CHECK("slowest holds, reports no change", !ch && roll && step == 8);
-    ch = scope_roll_tb_step(&tb, &roll, &step, -1, 21);
+    ch = scope_roll_tb_step(&tb, &roll, &step, -1, 21, true);
     CHECK("faster in roll -> step 7", ch && step == 7);
     step = 0;
-    ch = scope_roll_tb_step(&tb, &roll, &step, -1, 21);
+    ch = scope_roll_tb_step(&tb, &roll, &step, -1, 21, true);
     CHECK("faster from step 0 -> Y-T at 0x14", ch && !roll && tb == 0x14);
     tb = 0;
-    ch = scope_roll_tb_step(&tb, &roll, &step, -1, 21);
+    ch = scope_roll_tb_step(&tb, &roll, &step, -1, 21, true);
     CHECK("fastest Y-T holds at 0", !ch && tb == 0 && !roll);
-    CHECK("NULL / dir 0 refused", !scope_roll_tb_step(NULL, &roll, &step, 1, 21) &&
-                                  !scope_roll_tb_step(&tb, &roll, &step, 0, 21));
+    CHECK("NULL / dir 0 refused", !scope_roll_tb_step(NULL, &roll, &step, 1, 21, true) &&
+                                  !scope_roll_tb_step(&tb, &roll, &step, 0, 21, true));
+    /* a view that does not take the roll source: the last code holds */
+    tb = 0x14; roll = false; step = 3;
+    ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21, false);
+    CHECK("roll not offered: slower from the last code holds there, no roll", !ch && tb == 0x14 && !roll && step == 3);
+    tb = 0x13;
+    ch = scope_roll_tb_step(&tb, &roll, &step, +1, 21, false);
+    CHECK("roll not offered: below the last code the ladder steps as before", !ch && tb == 0x14 && !roll);
 }
 
 

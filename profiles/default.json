@@ -14,6 +14,7 @@
     "ch2.bwlimit": "off",
     "ch2.meas": "Freq,Peri,Duty+,Vp-p,Vrms",
     "tb.code": "10",
+    "tb.roll": "off",
     "trig.mode": "Auto",
     "trig.edge": "Rising",
     "trig.source": "CH1",

@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "osc_menu_model.h"
+#include "view_table.h"
 #include "meas_select.h"
 #include "menu_frame.h"
 #include "scope_state.h"
@@ -240,17 +241,17 @@ static void test_radio(void)
 static void test_display(void)
 {
     printf("Display pane (the scope's view; view.mode)\n");
-    static const char *const want[] = { "Y-T", "Roll", "X-Y", "FFT", "Split", "Waterfall" };
+    static const char *const want[] = { "Y-T", "X-Y", "FFT", "Split", "Waterfall" };
     const osc_pane_layout_t *l = osc_menu_layout(OSC_ROW_DISPLAY);
     int ok = (l->kind == OSC_PANE_RADIO);
-    for (uint8_t i = 0; i < 6; i++)
+    for (uint8_t i = 0; i < 5; i++)
         ok &= strcmp(osc_menu_item_label(OSC_ROW_DISPLAY, i, 0), want[i]) == 0;
-    CHECK("six entries, in order: Y-T, Roll, X-Y, FFT, Split, Waterfall", ok && l->n_items == 6 &&
-          OSC_DISP_COUNT == 6);
+    CHECK("five entries, in order: Y-T, X-Y, FFT, Split, Waterfall (roll is the timebase ladder's, not a view)",
+          ok && l->n_items == 5 && OSC_DISP_COUNT == 5 && osc_menu_item_label(OSC_ROW_DISPLAY, 5, 0)[0] == '\0');
     CHECK("Split is an item of its own, between FFT and Waterfall",
           OSC_DISP_SPLIT == OSC_DISP_FFT + 1 && OSC_DISP_WATERFALL == OSC_DISP_SPLIT + 1);
 
-    /* item <-> view.mode (0 yt, 1 roll, 2 xy, 3 fft, 4 split, 5 waterfall);
+    /* item <-> view.mode (0 yt, 1 xy, 2 fft, 3 split, 4 waterfall);
      * test_model.c checks the same pairs against the property itself. */
     ok = 1;
     unsigned seen = 0;
@@ -260,18 +261,18 @@ static void test_display(void)
         seen |= 1u << vm;
         ok &= osc_menu_disp_item(vm) == i;         /* and back */
     }
-    CHECK("every view.mode value has exactly one item, both ways", ok && seen == 0x3Fu);
-    CHECK("the named pairs", osc_menu_disp_view_mode(OSC_DISP_YT) == 0 && osc_menu_disp_view_mode(OSC_DISP_ROLL) == 1 &&
-          osc_menu_disp_view_mode(OSC_DISP_XY) == 2 && osc_menu_disp_view_mode(OSC_DISP_FFT) == 3 &&
-          osc_menu_disp_view_mode(OSC_DISP_SPLIT) == 4 && osc_menu_disp_view_mode(OSC_DISP_WATERFALL) == 5);
+    CHECK("every view.mode value has exactly one item, both ways", ok && seen == 0x1Fu);
+    CHECK("the named pairs", osc_menu_disp_view_mode(OSC_DISP_YT) == 0 && osc_menu_disp_view_mode(OSC_DISP_XY) == 1 &&
+          osc_menu_disp_view_mode(OSC_DISP_FFT) == 2 && osc_menu_disp_view_mode(OSC_DISP_SPLIT) == 3 &&
+          osc_menu_disp_view_mode(OSC_DISP_WATERFALL) == 4);
     CHECK("out of range: no view, no item", osc_menu_disp_view_mode(OSC_DISP_COUNT) == -1 &&
-          osc_menu_disp_view_mode(0xFF) == -1 && osc_menu_disp_item(6) == OSC_DISP_COUNT &&
+          osc_menu_disp_view_mode(0xFF) == -1 && osc_menu_disp_item(5) == OSC_DISP_COUNT &&
           osc_menu_disp_item(-1) == OSC_DISP_COUNT);
 
     fresh();
     osc_menu_open(OSC_ROW_DISPLAY);
     key(OSC_KEY_OK);
-    osc_menu_set_item(osc_menu_disp_item(4));
+    osc_menu_set_item(osc_menu_disp_item(VIEW_MODE_SPLIT));
     CHECK("the cursor starts on the view in force (split)", S()->item == OSC_DISP_SPLIT);
     CHECK("OK picks Split and the page stays", key(OSC_KEY_OK) == OSC_RES_REDRAW && osc_menu_is_open() &&
           A.kind == OSC_ACT_SELECT && A.row == OSC_ROW_DISPLAY && A.item == OSC_DISP_SPLIT);

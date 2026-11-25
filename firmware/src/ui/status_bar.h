@@ -17,7 +17,8 @@
  *              "< v" trigger (trigger green), "X1 Y1" cursors, "M" mask.
  *   dot        trigger state: green triggered, amber Auto free-run, grey
  *              waiting, armed or stopped (S11).
- *   view word  the scope view (Y-T / ROLL / X-Y / FFT / SPLIT / WFALL).
+ *   view word  the scope view (Y-T / X-Y / FFT / SPLIT / WFALL), ROLL for
+ *              Y-T on the roll source (tb.roll).
  *   battery    22x10 glyph with 4 bars + "%" (B1); bolt while charging;
  *              red blinking + "LOW" when critical.
  *

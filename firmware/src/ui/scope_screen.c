@@ -113,7 +113,9 @@ static scr_res_t popup_full(const char *text)
 }
 
 /* LEFT / RIGHT in the zoom stage. Past the last FPGA code the ladder
- * continues into roll (C11, stock 0x14..0x1C): scope_roll_tb_step() says
+ * continues into roll (C11, stock 0x14..0x1C) in a view that takes the roll
+ * source (view_table.h), and stops at that code in the others:
+ * scope_roll_tb_step() says
  * where a step lands, and the one property that moved is set: tb.code in
  * Y-T, tb.roll on the way in or out of roll, tb.rollstep inside it. Holding
  * at the slowest roll step changes nothing. The status bar's H= shows the
@@ -124,7 +126,8 @@ static scr_res_t tb_step(int dir)
     bool roll = G(P(TB_ROLL)) != 0;
     const bool was_roll = roll;
     const uint8_t was_step = step;
-    const bool roll_changed = scope_roll_tb_step(&tb, &roll, &step, dir, (uint8_t)(P(TB_CODE)->max + 1));
+    const bool roll_changed = scope_roll_tb_step(&tb, &roll, &step, dir, (uint8_t)(P(TB_CODE)->max + 1),
+                                                 view_takes_roll((uint8_t)G(P(VIEW_MODE))));
     prop_status_t st = PS_OK;
     int32_t want_code = tb;
 

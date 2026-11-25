@@ -40,7 +40,7 @@ PROP(CH2_MEAS,     0x0207, "ch2.meas",       PT_MASK, UNIT_NONE, 0, PG_CH2, INST
 
 /* ── tb ────────────────────────────────────────────────────────────────── */
 PROP(TB_CODE,      0x0301, "tb.code",        PT_ENUM, UNIT_NONE, 0, PG_TB,   INST_SCOPE, 0,   0,     20,  1,   10, PF_HW|PF_PERSIST,                     NULL,                  tb_label,      tb_code_get,     tb_code_set,     tb_code_store,     "fpga_apply_timebase")
-PROP(TB_ROLL,      0x0302, "tb.roll",        PT_BOOL, UNIT_NONE, 0, PG_TB,   INST_SCOPE, 0,   0,      1,  1,    0, PF_HW|PF_SESSION|PF_WRAP,             NULL,                  NULL,          tb_roll_get,     tb_roll_set,     tb_roll_store,     "fpga_apply_roll (revert on refusal)")
+PROP(TB_ROLL,      0x0302, "tb.roll",        PT_BOOL, UNIT_NONE, 0, PG_TB,   INST_SCOPE, 0,   0,      1,  1,    0, PF_HW|PF_PERSIST|PF_WRAP,             NULL,                  NULL,          tb_roll_get,     tb_roll_set,     tb_roll_store,     "fpga_apply_roll (revert on refusal)")
 PROP(TB_ROLLSTEP,  0x0303, "tb.rollstep",    PT_INT,  UNIT_NONE, 0, PG_TB,   INST_SCOPE, 0,   0,      8,  1,    0, PF_HW|PF_SESSION,                     NULL,                  NULL,          tb_rollstep_get, tb_rollstep_set, tb_rollstep_store, "fpga_apply_roll (revert on refusal)")
 
 /* ── trig ──────────────────────────────────────────────────────────────── */
@@ -54,7 +54,9 @@ PROP(TRIG_CODE,    0x0407, "trig.code",      PT_INT,  UNIT_NONE, 0, PG_TRIG, INS
 PROP(TRIG_HELD,    0x0408, "trig.held",      PT_BOOL, UNIT_NONE, 0, PG_TRIG, INST_SCOPE, 0,   0,      1,  1,    0, PF_RO,                                NULL,                  NULL,          trig_held_get,   NULL,            NULL,              "SINGLE has taken its record and holds it: view.run on (the OK key) re-arms")
 
 /* ── view ──────────────────────────────────────────────────────────────── */
-PROP(VIEW_MODE,    0x0501, "view.mode",      PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      5,  1,    0, PF_HW|PF_PERSIST,                     lbl_view_mode,         NULL,          view_mode_get,   view_mode_set,   view_mode_store,   "scope_view_select + fpga_apply_roll")
+/* Released: 0x0501 (view.mode while roll was one of its values; its numbers
+ * meant other views). */
+PROP(VIEW_MODE,    0x0500, "view.mode",      PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      4,  1,    0, PF_HW|PF_PERSIST,                     lbl_view_mode,         NULL,          view_mode_get,   view_mode_set,   view_mode_store,   "scope_view_select (tb.roll off first in a view that does not take it)")
 PROP(VIEW_PERSIST, 0x0502, "view.persist",   PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      4,  1,    0, PF_HW|PF_SESSION,                     lbl_view_persist,      NULL,          view_persist_get,view_persist_set,view_persist_store,"scope_apply_persist_on/off (shared pool)")
 PROP(VIEW_MATH,    0x0503, "view.math",      PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      8,  1,    0, PF_PERSIST,                           lbl_view_math,         NULL,          view_math_get,   view_math_set,   view_math_store,   "math_enabled + math_op")
 PROP(VIEW_CURSOR,  0x0504, "view.cursor",    PT_ENUM, UNIT_NONE, 0, PG_VIEW, INST_SCOPE, 0,   0,      3,  1,    0, PF_SESSION|PF_WRAP,                   lbl_view_cursor,       NULL,          view_cursor_get, view_cursor_set, view_cursor_store, "scope_state cursor")

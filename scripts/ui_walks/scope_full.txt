@@ -243,7 +243,7 @@ f9_to_zoom     | ui seq SELECT SELECT
 # ── 10. roll: by the timebase ladder (keys) and by a set ─────────────────────
 # expect: tb.code = 20 (the slowest Y-T code)
 f10_slowest    | set tb.code 20 ; wait 3 ; get tb.code
-# expect: view=roll ; tb.roll = on ; tb.rollstep = 0 (RIGHT past the last code enters roll)
+# expect: view=yt ; tb.roll = on ; tb.rollstep = 0 (RIGHT past the last code enters roll, a source of Y-T)
 f10_into_roll  | ui seq RIGHT ; wait 3 ; get tb.roll
 # expect: tb.rollstep = 1
 f10_roll_right | ui seq RIGHT ; wait 3 ; get tb.rollstep
@@ -260,13 +260,13 @@ f10_roll_stop  | ui seq OK ; wait 2
 f10_roll_run   | ui seq OK ; wait 3
 # expect: ach=CH2 then CH1 ; ch1.coupling = DC after two presses
 f10_roll_keys  | ui seq MOVE MOVE CH1 CH1 ; wait 2 ; get ch1.coupling
-# expect: overlay=osc_menu, then overlay=none view=roll
+# expect: overlay=osc_menu, then overlay=none view=yt
 f10_roll_menu  | ui seq MENU ; wait 1
 f10_roll_menu2 | ui seq MENU ; wait 2
-# expect: overlay=osc_menu row=param pane=locked, then overlay=none view=roll
+# expect: overlay=osc_menu row=param pane=locked, then overlay=none view=yt
 f10_roll_prm   | ui seq PRM ; wait 1
 f10_roll_prm2  | ui seq PRM ; wait 2
-# expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=roll
+# expect: overlay=osc_menu row=trigger pane=locked, then overlay=none view=yt
 f10_roll_trig  | ui seq TRIGGER ; wait 1
 f10_roll_trig2 | ui seq TRIGGER ; wait 2
 # expect: view.meashide = on then off (roll is a time view: long PRM works)
@@ -291,8 +291,12 @@ f10_roll_left  | ui seq LEFT ; wait 3 ; get tb.rollstep
 f10_out        | ui seq LEFT ; wait 3 ; get tb.roll
 # expect: tb.code = 8
 f10_tb_back    | set tb.code 8 ; wait 3 ; get tb.code
-# expect: view=roll ; view.mode = roll (one redraw_all: another view)
-f10_set_roll   | set view.mode roll ; wait 3 ; get view.mode
+# expect: view=yt ; tb.roll = on (one redraw_all: another source)
+f10_set_roll   | set tb.roll on ; wait 3 ; get tb.roll
+# expect: view=xy ; view.mode = xy ; tb.roll = off (X-Y does not take roll: off first)
+f10_set_xy     | set view.mode xy ; wait 3 ; get tb.roll
+# expect: tb.roll on refused ("Roll: Y-T only") ; tb.roll = off
+f10_roll_xy    | set tb.roll on ; wait 1 ; get tb.roll
 # expect: view=yt ; view.mode = yt
 f10_set_yt     | set view.mode yt ; wait 3 ; get view.mode
 
@@ -467,11 +471,11 @@ f16_ok_level   | get trig.level
 # AUTO in roll. Roll is a time view, so AUTO is autoset there too. THE IMAGES MAY DIFFER HERE: an autoset
 # steps tb.code, and in roll the B7 image stores the code without writing reg 0x01 (tb.code's rule for every
 # route), where the image before wrote the Y-T code under the roll flag. Compare what each does; neither
-# is a designed behaviour. Expect on both: view=roll and run=run afterwards, tb.roll = on.
-f16_roll       | set view.mode roll ; wait 3 ; get view.mode
+# is a designed behaviour. Expect on both: view=yt and run=run afterwards, tb.roll = on.
+f16_roll       | set tb.roll on ; wait 3 ; get tb.roll
 f16_roll_auto  | ui seq AUTO ; wait 12 ; get tb.roll
 f16_roll_tb    | get tb.code
-f16_roll_out   | set view.mode yt ; wait 3 ; get view.mode
+f16_roll_out   | set tb.roll off ; wait 3 ; get tb.roll
 
 # ── 17. the known state again ────────────────────────────────────────────────
 f17_base       | set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set ch1.pos 0 ; set ch2.pos 0 ; set trig.level 0 ; set trig.x 150
@@ -487,10 +491,10 @@ f18_auto_long  | ui seq long:AUTO ; wait 12 ; get tb.code
 f18_after      | wait 4 ; get ch1.vdiv
 # The same from roll (THE IMAGES MAY DIFFER, as for AUTO in roll above: the run's timebase steps are
 # stored, not written, in roll on the B7 image). Expect a refusal or "No records: stopped" and the
-# settings as before: view=roll, tb.roll = on, ch1.vdiv = 6.
-f19_roll       | set view.mode roll ; wait 3 ; get view.mode
+# settings as before: view=yt, tb.roll = on, ch1.vdiv = 6.
+f19_roll       | set tb.roll on ; wait 3 ; get tb.roll
 f19_roll_lauto | ui seq long:AUTO ; wait 14 ; get tb.roll
 f19_roll_after | get ch1.vdiv
 # expect: view=yt ; the known state ; screen=scope overlay=none run=run focus=zoom ach=CH1
-f20_base       | set view.mode yt ; wait 3 ; set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set trig.level 0 ; set trig.x 150
+f20_base       | set tb.roll off ; wait 3 ; set tb.code 8 ; set ch1.vdiv 6 ; set ch2.vdiv 6 ; set trig.level 0 ; set trig.x 150
 f20_base2      | set ch1.pos 0 ; set ch2.pos 0 ; set trig.mode auto ; set trig.source ch1 ; wait 3 ; get view.mode

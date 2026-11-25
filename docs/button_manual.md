@@ -176,7 +176,7 @@ where they have no long action. POWER is unchanged (its own countdown).
 | **TRIGGER** | Signal generator (from any mode) |
 | **PRM** (scope time view) | Hide / show the measurement badges |
 | **CH1 / CH2** (scope) | Channel on/off (see above; stock has no long CH1/CH2) |
-| **AUTO** (scope views of the time record: Y-T, Roll, X-Y, Split) | Baseline correction (stock) |
+| **AUTO** (scope views of the time record: Y-T, with roll too, X-Y, Split) | Baseline correction (stock) |
 | **OK** (the same views) | 50 % centre (stock) |
 | **SAVE** (every mode) | Screenshot gallery (stock: scope only) |
 

@@ -54,9 +54,7 @@ m1_close       | ui seq MENU
 # ── 2. Display: view.mode, one item per view ─────────────────────────────────
 # expect: overlay=osc_menu row=display pane=pane item=0   (the cursor enters on the view in force)
 m2_enter       | ui seq MENU OK
-# expect: view.mode = roll ; view=roll ; the page stays open
-m2_roll        | ui seq DOWN OK ; wait 2 ; get view.mode
-# expect: view.mode = xy
+# expect: view.mode = xy ; the page stays open   (no Roll item: roll is the timebase ladder's, tb.roll)
 m2_xy          | ui seq DOWN OK ; wait 2 ; get view.mode
 # expect: view.mode = fft
 m2_fft         | ui seq DOWN OK ; wait 2 ; get view.mode
@@ -66,13 +64,13 @@ m2_split       | ui seq DOWN OK ; wait 2 ; get view.mode
 m2_waterfall   | ui seq DOWN OK ; wait 2 ; get view.mode
 # expect: view.mode = yt ; item=0   (DOWN on the last item wraps to the first)
 m2_yt          | ui seq DOWN OK ; wait 2 ; get view.mode
-# expect: view.mode = split ; item=4   (UP twice from Y-T wraps to Split: the other direction)
+# expect: view.mode = split ; item=3   (UP twice from Y-T wraps to Split: the other direction)
 m2_up          | ui seq UP*2 OK ; wait 2 ; get view.mode ; set view.mode yt ; wait 2
 # expect: the page shows FFT checked at once, in place: redraw_all does not move ; view.mode = fft
 m2_shell_set   | set view.mode fft ; wait 2 ; get view.mode
 # expect: view.mode = yt ; Y-T checked again
 m2_shell_back  | set view.mode yt ; wait 2 ; get view.mode
-# expect: pane=rail row=display item=4   (MENU in a pane goes back to the rail; RIGHT in a RADIO pane does nothing)
+# expect: pane=rail row=display item=3   (MENU in a pane goes back to the rail; RIGHT in a RADIO pane does nothing)
 m2_rail        | ui seq RIGHT MENU
 
 # ── 3. Cursors: view.cursor; a cursor mode closes the page ───────────────────

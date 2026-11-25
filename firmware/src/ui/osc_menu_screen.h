@@ -10,7 +10,7 @@
  * reach, and what the page shows is what `get` answers.
  *
  *   pane      kind    property                          item -> value
- *   Display   RADIO   view.mode                         item i = value i (yt roll xy fft split waterfall)
+ *   Display   RADIO   view.mode                         item i = value i (yt xy fft split waterfall)
  *   Cursors   RADIO   view.cursor                       item i = value i (off time volt both)
  *   Persist   RADIO   view.persist                      item i = value i (off 500ms 1s 2s inf)
  *   Math      CHIPS   view.math                         Off = 0, else 1 + math_op_t in stock's 2x4 order

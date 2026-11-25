@@ -2,8 +2,9 @@
  * OpenScope 2C53T - the scope's views, as a table
  *
  * A view (the Display setting, view.mode) draws one or two DOMAINS: the time
- * record (Y-T, roll, X-Y) or the spectrum computed from it (FFT, waterfall);
- * split draws both. What the keys, the measurements and the cursors mean
+ * record (Y-T, X-Y) or the spectrum computed from it (FFT, waterfall); split
+ * draws both. Roll is not a view: it is a source of the time record (the
+ * time-base property tb.roll), and only a view that says so takes it. What the keys, the measurements and the cursors mean
  * belongs to the domain, not to the picture: the arrows scale volts and time
  * or level and span, a cursor reads seconds and volts or hertz and dB. The
  * view only says which domains it shows and what it draws of them.
@@ -24,8 +25,8 @@
 
 /* The values of view.mode, in the property's order (lbl_view_mode). */
 typedef enum {
-    VIEW_MODE_YT = 0, VIEW_MODE_ROLL, VIEW_MODE_XY, VIEW_MODE_FFT, VIEW_MODE_SPLIT,
-    VIEW_MODE_WATERFALL, VIEW_MODE_COUNT
+    VIEW_MODE_YT = 0, VIEW_MODE_XY, VIEW_MODE_FFT, VIEW_MODE_SPLIT, VIEW_MODE_WATERFALL,
+    VIEW_MODE_COUNT
 } view_mode_t;
 
 typedef enum { VIEW_DOM_TIME = 0, VIEW_DOM_FREQ, VIEW_DOM_COUNT } view_domain_t;
@@ -61,22 +62,24 @@ typedef struct {
     uint8_t n_jobs;
     uint8_t jobs[KF_COUNT];     /* key_focus_t, in SELECT order; the first is where the view starts */
     bool    strip;              /* it draws the measurement strip (long PRM hides it) */
+    bool    roll;               /* it takes the roll source (tb.roll): its renderer draws the
+                                 * roll FIFO (scope_yt.c, view_build_roll). While the view
+                                 * does not, tb.roll is off and cannot be set on. */
 } view_desc_t;
 
 #define VIEW_TIME_ONLY  VIEW_DOM_BIT(VIEW_DOM_TIME)
 #define VIEW_FREQ_ONLY  VIEW_DOM_BIT(VIEW_DOM_FREQ)
 
 static const view_desc_t view_table[VIEW_MODE_COUNT] = {
-    [VIEW_MODE_YT]        = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true },
-    [VIEW_MODE_ROLL]      = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true },
-    [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, false },
+    [VIEW_MODE_YT]        = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK }, true, true },
+    [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, false, false },
     /* The spectrum's span follows the timebase and its level the range, so
      * the spectrum views offer the input's scales as a second job. */
-    [VIEW_MODE_FFT]       = { VIEW_FREQ_ONLY, 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR }, true },
+    [VIEW_MODE_FFT]       = { VIEW_FREQ_ONLY, 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR }, true, false },
     /* One ring over both halves: the job says which half the arrows are on. */
     [VIEW_MODE_SPLIT]     = { VIEW_TIME_ONLY | VIEW_FREQ_ONLY, 4,
-                              { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM }, false },
-    [VIEW_MODE_WATERFALL] = { VIEW_FREQ_ONLY, 2, { KF_SPECTRUM, KF_ZOOM }, false },
+                              { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM }, false, false },
+    [VIEW_MODE_WATERFALL] = { VIEW_FREQ_ONLY, 2, { KF_SPECTRUM, KF_ZOOM }, false, false },
 };
 
 /* The entry of a view.mode value; Y-T's for a value out of range. */
@@ -92,6 +95,12 @@ static inline key_focus_t view_cursor_job(uint8_t view_mode)
     for (uint8_t i = 0; i < v->n_jobs; i++)
         if (key_focus_is_cursor((key_focus_t)v->jobs[i])) return (key_focus_t)v->jobs[i];
     return KF_COUNT;
+}
+
+/* The view takes the roll source (tb.roll may be on). */
+static inline bool view_takes_roll(uint8_t view_mode)
+{
+    return view_desc(view_mode)->roll;
 }
 
 static inline bool view_shows(uint8_t view_mode, view_domain_t d)

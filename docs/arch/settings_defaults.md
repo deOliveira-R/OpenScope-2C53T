@@ -16,7 +16,7 @@ value of every settable property (the `P` ones again and the `S` ones) to a log 
 (`session`, two sectors, 0xF20000 and 0xF6F000; `firmware/src/util/session_store.h`), and the next boot, if Startup is
 Restore, sets those values through the normal setters once the input task runs. Left out, each with a reason
 (`session list` prints them): calibration, the generator's output enable (it keeps `gen.bootout`), hold and
-relative, `view.run` (the scope always comes back running), `tb.roll` (it is `view.mode = roll`) and the
+relative, `view.run` (the scope always comes back running) and the
 screen binding (the record's last screen). With any other Startup choice, or with no usable snapshot (none
 yet, cleared, damaged, another format, or older than the settings record), the boot is the settings record
 alone, as before. "Reset to defaults" invalidates the snapshot. `session status` says what the boot found and
