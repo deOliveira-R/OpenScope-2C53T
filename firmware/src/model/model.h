@@ -363,9 +363,9 @@ uint8_t model_last_screen_record(void);
  *     that takes roll, until view.mode is applied; the record and the
  *     snapshot never hold roll with another view), view.mode before
  *     view.persist (persistence evicts a spectrum view), view.cursor before
- *     view.cursel. tb.roll comes before tb.rollstep: a Restore boot with
- *     roll on and a step other than 0 writes Roll twice (tb.roll at the step
- *     in RAM, 0, then tb.rollstep at the saved one);
+ *     view.cursel. tb.roll comes before tb.rollstep and comes on at the
+ *     step kept for tb.rollstep (tb_roll_set), so a Restore boot with roll
+ *     on writes Roll once, at the saved step;
  *   - only a value that is not already in force is set (the settings record
  *     put the persisted ones there: no relay, no park for those);
  *   - one request (model_batch_begin / end): the two mask tolerances post

@@ -19,15 +19,28 @@ void ctext_add(ctext_set_t *T, int x, int y, const char *s,
                       uint16_t fg, uint16_t bg, bool opaque)
 {
     if (T->n >= CTEXT_MAX || s == NULL || s[0] == '\0') return;
-    typeof(T->t[0]) *e = &T->t[T->n++];
+    typeof(T->t[0]) *e = &T->t[T->n];
     strncpy(e->s, s, CTEXT_LEN - 1);
     e->s[CTEXT_LEN - 1] = '\0';
-    e->x = (int16_t)x;
-    e->y = (int16_t)y;
-    e->w = (int16_t)font_string_width(e->s, &font_small);
+    T->box[T->n] = (label_box_t){ (int16_t)x, (int16_t)y,
+                                  (int16_t)font_string_width(e->s, &font_small), (int16_t)font_small.height };
     e->fg = fg;
     e->bg = bg;
     e->opaque = opaque;
+    T->n++;
+}
+
+/* The label goes in only where its box is free (label_place.h): the labels
+ * added before it are the ones it gives way to. */
+bool ctext_place(ctext_set_t *T, const label_box_t *area, int x, int y, const char *s,
+                 uint16_t fg, uint16_t bg, bool opaque)
+{
+    const uint8_t n = T->n;
+    ctext_add(T, x, y, s, fg, bg, opaque);
+    if (T->n == n) return false;                         /* empty, or the set is full */
+    if (label_place(area, &T->box[n], 1u, T->box, n) == 0) return true;
+    T->n = n;                                            /* its box is taken: left out */
+    return false;
 }
 
 /* The colour of the text pixel at (x, y), written to *c; false when no string
@@ -35,8 +48,8 @@ void ctext_add(ctext_set_t *T, int x, int y, const char *s,
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c)
 {
     for (uint8_t k = 0; k < T->n; k++) {
-        const int dx = x - T->t[k].x, dy = y - T->t[k].y;
-        if (dx < 0 || dx >= T->t[k].w || dy < 0 || dy >= (int)font_small.height) continue;
+        const int dx = x - T->box[k].x, dy = y - T->box[k].y;
+        if (dx < 0 || dx >= T->box[k].w || dy < 0 || dy >= T->box[k].h) continue;
         if (font_text_px(T->t[k].s, &font_small, dx, dy)) { *c = T->t[k].fg; return true; }
         if (T->t[k].opaque) { *c = T->t[k].bg; return true; }
     }
@@ -252,6 +265,32 @@ float fft_display_ref(const fft_config_t *cfg, const float *data,
  * the bars. */
 #define FFT_LMARGIN  22u
 
+/* Where the spectrum's labels sit (fft_frame_build_plot). The header row:
+ * FFT_HEADER_DOWN rows under the pane's top, FFT_TEXT_INSET columns in from
+ * either edge, FFT_HEADER_GAP clear rows under it before a peak tag. The dB
+ * scale: a number every FFT_DB_LABEL_STEP dB at column FFT_DB_LABEL_X, its
+ * top FFT_DB_LABEL_UP rows over its grid row (the 12-row font's middle). The
+ * axis ends: FFT_AXIS_LABEL_UP rows over the plot's bottom (the font and one
+ * clear row under it), FFT_AXIS_LABEL_INSET columns in from the bars' ends.
+ * A peak tag starts FFT_TAG_LEFT columns left of its caret, so a two-letter
+ * tag (12 columns) sits over it. */
+#define FFT_HEADER_DOWN       2u
+#define FFT_TEXT_INSET        4
+#define FFT_HEADER_GAP        1u
+#define FFT_DB_LABEL_STEP     20.0f
+#define FFT_DB_LABEL_X        1
+#define FFT_DB_LABEL_UP       5u
+#define FFT_AXIS_LABEL_UP     11u
+#define FFT_AXIS_LABEL_INSET  2
+#define FFT_TAG_LEFT          8u
+
+/* The first row under the header of a spectrum whose pane starts at y_top:
+ * the highest a peak tag goes, and the cursor labels' clear row. */
+static int16_t fft_under_header(uint16_t y_top)
+{
+    return (int16_t)(y_top + FFT_HEADER_DOWN + font_small.height + FFT_HEADER_GAP);
+}
+
 /* A one-line message (msg) in [y_top, y_top + height) over black: every pixel
  * is composed per column and streamed, never blanked first, so the region
  * does not flash. */
@@ -353,7 +392,8 @@ static void fft_frame_build(fft_frame_t *f, uint16_t y_top, uint16_t height, boo
     f->mark_c = theme_get()->text_primary;
     fft_axes_publish(&f->ax);
     f->curs = f->ax.on && scope_state_get()->cursor.mode != CURSOR_OFF;
-    if (f->curs) cursor_layer_build_spectrum(scope_state_get(), &f->ax, theme_get(), &f->cl);
+    if (f->curs) cursor_layer_build_spectrum(scope_state_get(), &f->ax, &f->T, fft_under_header(y_top),
+                                             theme_get(), &f->cl);
 }
 
 static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height)
@@ -380,7 +420,7 @@ static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height
     if (cfg == NULL || src == FFT_SRC_NONE || nsamp == 0) {
         /* An engine that failed its init says so; never a spectrum from it.
          * A channel that is off (or has no record yet) is named. */
-        ctext_add(&f->T, 4, y_top + 2,
+        ctext_add(&f->T, FFT_TEXT_INSET, y_top + FFT_HEADER_DOWN,
                   (fft_is_initialized() && !fft_engine_ok()) ? "FFT: init failed"
                   : sel.note[0] ? sel.note : "FFT: waiting", COLOR_GRAY, COLOR_BLACK, false);
         return;
@@ -415,19 +455,46 @@ static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height
         const uint16_t y = (uint16_t)(y_top + (uint16_t)(((ref_db - db) / range_db) * (float)height));
         if (y > y_top && y < y_bot) f->gy[f->ng++] = y;
     }
+    /* The labels, the most important first; each later one goes in only
+     * where it meets none placed before it (ctext_place), and the cursor
+     * labels give way to all of them (cursor_layer_build_spectrum).
+     * The header: the source on the left (the peak is a measurement, in the
+     * strip), the window on the right. */
+    {
+        char hdr[16];
+        const uint16_t col = live ? COLOR_WHITE : COLOR_ORANGE;
+        if (live) snprintf(hdr, sizeof hdr, "LIVE %s", sel.label);
+        else      snprintf(hdr, sizeof hdr, "DEMO SIGNAL");
+        ctext_add(&f->T, FFT_TEXT_INSET, y_top + FFT_HEADER_DOWN, hdr, col, col, false);
+        static const char *const wn[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
+        const char *w = (cfg->window < FFT_WINDOW_COUNT) ? wn[cfg->window] : "?";
+        ctext_add(&f->T, LCD_WIDTH - FFT_TEXT_INSET - (int)font_string_width(w, &font_small),
+                  y_top + FFT_HEADER_DOWN, w, COLOR_GRAY, COLOR_GRAY, false);
+    }
+    const label_box_t pane = { 0, (int16_t)y_top, (int16_t)LCD_WIDTH, (int16_t)height };
     if (fft_scale_fits(height)) {
-        for (float db = ref_db; db > ref_db - range_db; db -= 20.0f) {
-            const uint16_t y = (uint16_t)(y_top + (uint16_t)(((ref_db - db) / range_db) * (float)height));
-            if (y > y_top + 8 && y < y_bot - 8) {
-                char l[8];
-                snprintf(l, sizeof l, "%d", (int)db);
-                ctext_add(&f->T, 1, y - 5, l, COLOR_GRAY, COLOR_BLACK, true);
-            }
+        /* The axis ends, then the dB scale in the left margin. */
+        char l[12];
+        const int axis_y = (int)y_bot - (int)FFT_AXIS_LABEL_UP;
+        fft_live_axis_label(fs, FFT_SIZE, zoom_start, l, sizeof l);
+        ctext_add(&f->T, FFT_LMARGIN + FFT_AXIS_LABEL_INSET, axis_y, l, COLOR_WHITE, COLOR_BLACK, true);
+        fft_live_axis_label(fs, FFT_SIZE, zoom_end, l, sizeof l);
+        ctext_add(&f->T, LCD_WIDTH - FFT_AXIS_LABEL_INSET - (int)font_string_width(l, &font_small), axis_y, l,
+                  COLOR_WHITE, COLOR_BLACK, true);
+        for (float db = ref_db; db > ref_db - range_db; db -= FFT_DB_LABEL_STEP) {
+            const int y = (int)y_top + (int)(((ref_db - db) / range_db) * (float)height);
+            char d[8];
+            snprintf(d, sizeof d, "%d", (int)db);
+            (void)ctext_place(&f->T, &pane, FFT_DB_LABEL_X, y - (int)FFT_DB_LABEL_UP, d,
+                              COLOR_GRAY, COLOR_BLACK, true);
         }
     }
 
-    /* Peaks: a red caret and the harmonic tag (ratios between bins, true
-     * whatever the rate). The tag stays under the header line. */
+    /* Peaks, strongest first: a red caret and the harmonic tag (ratios
+     * between bins, true whatever the rate) over the caret, under the header
+     * line, on the plot right of the dB scale. */
+    const label_box_t plot = { (int16_t)FFT_LMARGIN, (int16_t)y_top, (int16_t)W, (int16_t)height };
+    const int tag_min = fft_under_header(y_top);
     for (uint8_t p = 0; p < fft_result.num_peaks && p < FFT_CARETS_MAX; p++) {
         const uint16_t pb = fft_result.peaks[p].bin;
         const int px = fft_axes_x(&f->ax, pb);
@@ -440,36 +507,11 @@ static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height
             f->pky[f->np] = (int16_t)py;
             f->np++;
         }
-        if (fft_result.peaks[p].label[0] != '\0' && px > (int)FFT_LMARGIN + 8 && px < LCD_WIDTH - 30) {
-            int tag_y = py - 12;
-            const int tag_min = (int)y_top + 2 + (int)font_small.height + 1;
-            if (tag_y < tag_min) tag_y = tag_min;
-            ctext_add(&f->T, px - 8, tag_y, fft_result.peaks[p].label, COLOR_ORANGE, COLOR_ORANGE, false);
-        }
+        int tag_y = py - (int)font_small.height;
+        if (tag_y < tag_min) tag_y = tag_min;
+        (void)ctext_place(&f->T, &plot, px - (int)FFT_TAG_LEFT, tag_y, fft_result.peaks[p].label,
+                          COLOR_ORANGE, COLOR_ORANGE, false);
     }
-
-    /* The header: the source on the left (the peak is a measurement, in the
-     * strip), the window on the right. */
-    {
-        char hdr[16];
-        const uint16_t col = live ? COLOR_WHITE : COLOR_ORANGE;
-        if (live) snprintf(hdr, sizeof hdr, "LIVE %s", sel.label);
-        else      snprintf(hdr, sizeof hdr, "DEMO SIGNAL");
-        ctext_add(&f->T, 4, y_top + 2, hdr, col, col, false);
-        static const char *const wn[] = { "Rect", "Hann", "Hamm", "BHar", "Flat" };
-        const char *w = (cfg->window < FFT_WINDOW_COUNT) ? wn[cfg->window] : "?";
-        ctext_add(&f->T, LCD_WIDTH - 4 - (int)font_string_width(w, &font_small), y_top + 2, w,
-                  COLOR_GRAY, COLOR_GRAY, false);
-    }
-    if (fft_scale_fits(height)) {
-        char l[12];
-        fft_live_axis_label(fs, FFT_SIZE, zoom_start, l, sizeof l);
-        ctext_add(&f->T, FFT_LMARGIN + 2, y_bot - 11, l, COLOR_WHITE, COLOR_BLACK, true);
-        fft_live_axis_label(fs, FFT_SIZE, zoom_end, l, sizeof l);
-        ctext_add(&f->T, LCD_WIDTH - 2 - (int)font_string_width(l, &font_small), y_bot - 11, l,
-                  COLOR_WHITE, COLOR_BLACK, true);
-    }
-
 }
 
 /* Work out column x: the bin it shows, its bar and its max-hold dot. */

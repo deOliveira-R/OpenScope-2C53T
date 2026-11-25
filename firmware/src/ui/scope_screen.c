@@ -17,6 +17,7 @@
 #include "fft_live.h"        /* the spectrum's axes: what a cursor step is worth */
 #include "scope_cursor.h"    /* the time cursors' axes: what a cursor step is worth */
 void scope_ui_fft_axes(fft_axes_t *out);     /* scope_spectrum.c: the axes on screen */
+bool can_scope_screen_on(void);              /* can_scope.h: the CAN line holds the strip's AUX row */
 
 #include <stdio.h>
 #include <string.h>
@@ -492,9 +493,11 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
                             ((uint32_t)meas_select_get(MEAS_SET_CH2) << 16));
     h = redraw_epoch_mix(h, (uint32_t)meas_select_get(MEAS_SET_FFT));
     h = redraw_epoch_mix(h, (uint32_t)scope_results_hidden(s, view_desc_of(scope_view_sel()).results));
-    /* Cursor mode only, and whether a mask exists: they reserve the strip's
-     * AUX row (in split, the band's end whichever half has the keys). */
-    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode | ((uint32_t)(G(P(MASK_STATE)) != MASK_PF_EMPTY) << 8));
+    /* Cursor mode only, whether a mask exists and the CAN line: they reserve
+     * the strip's AUX row (strip_aux, scope_furniture.c), so they move the
+     * band's end (in split, whichever half has the keys). */
+    h = redraw_epoch_mix(h, (uint32_t)s->cursor.mode | ((uint32_t)(G(P(MASK_STATE)) != MASK_PF_EMPTY) << 8)
+                            | ((uint32_t)can_scope_screen_on() << 9));
     h = redraw_epoch_mix(h, (uint32_t)math_enabled | ((uint32_t)math_op << 1)
                             | ((uint32_t)persist_enabled << 8)
                             | ((uint32_t)persist_get_mode() << 9));

@@ -837,6 +837,16 @@ $(BUILD_DIR)/test_yt_vmap: tests/test_yt_vmap.c src/ui/yt_vmap.h src/ui/plot_pan
 test-yt-vmap: $(BUILD_DIR)/test_yt_vmap
 	$<
 
+# Where a plot's label may go (label_place.h): the first candidate inside the
+# plot that meets no label placed before it; the spectrum's header, cursor
+# labels and harmonic tags.
+$(BUILD_DIR)/test_label_place: tests/test_label_place.c src/ui/label_place.h | $(BUILD_DIR)
+	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui $< -o $@
+
+.PHONY: test-label-place
+test-label-place: $(BUILD_DIR)/test_label_place
+	$<
+
 $(BUILD_DIR)/test_scope_cursor: tests/test_scope_cursor.c src/ui/scope_cursor.c src/ui/scope_cursor.h \
                                 src/ui/scope_cal.c src/ui/scope_timebase.c src/ui/scope_roll.c \
                                 src/ui/scope_state.c src/ui/yt_vmap.h | $(BUILD_DIR)

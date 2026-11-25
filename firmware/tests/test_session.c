@@ -1126,14 +1126,14 @@ static void test_order(void)
     boot();
     CHECK(model_boot_report()->refused == 0 && check_restored(was, "order") == 0);
     CHECK(scope_state_get()->roll && scope_state_get()->roll_step == 3);
-    /* table order: tb.roll (0x0302) goes in at the step in RAM, then tb.rollstep (0x0303)
-     * re-enters Roll at the saved one: TWO FPGA writes (model.h, the boot apply's order) */
-    CHECKF(logged_times("roll;") == 2, "roll written %u times: %s", logged_times("roll;"), g_log);
+    /* table order: tb.roll (0x0302) comes on at the step kept for tb.rollstep (0x0303),
+     * which then finds its value in force: ONE FPGA write (model.h, the boot apply's order) */
+    CHECKF(logged_times("roll;") == 1, "roll written %u times: %s", logged_times("roll;"), g_log);
     /* the routing before anything of the trigger; the cursor pair before the selected line */
     CHECK(logged("enables;") && !logged("trigsrc;"));
 
     /* The same snapshot with its entries in REVERSE order (another writer): the apply is table
-     * order whatever the record's order is, so nothing is refused and Roll is still two writes. */
+     * order whatever the record's order is, so nothing is refused and Roll is still one write. */
     (void)newest(&info);
     boot();
     const uint16_t n = live_entries(e);
@@ -1141,7 +1141,7 @@ static void test_order(void)
     append_raw(rec, craft(rec, 1, 0, (uint16_t)(info.seq + 1u), info.stamp, rev, n));
     boot();
     CHECK(session_snapshot_status()->load == SESSION_LOAD_OK && model_boot_report()->refused == 0);
-    CHECK(check_restored(was, "reverse order") == 0 && logged_times("roll;") == 2);
+    CHECK(check_restored(was, "reverse order") == 0 && logged_times("roll;") == 1);
 
     /* a spectrum view, then persistence on top of X-Y: the view first, the pool claim after */
     CHECK(set(P(VIEW_MODE), VIEW_MODE_XY) && set(P(VIEW_PERSIST), 4) && set(P(CH1_ENABLED), 1));

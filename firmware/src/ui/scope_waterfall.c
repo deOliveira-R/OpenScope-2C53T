@@ -45,7 +45,7 @@ static bool wf_text_line(const void *text, int y)
 {
     const ctext_set_t *T = (const ctext_set_t *)text;
     for (uint8_t k = 0; k < T->n; k++)
-        if (y >= T->t[k].y && y < T->t[k].y + (int)font_small.height) return true;
+        if (y >= T->box[k].y && y < T->box[k].y + T->box[k].h) return true;
     return false;
 }
 

@@ -21,16 +21,17 @@ void scope_ui_cursor_axes(scope_cursor_axes_t *ax)
     ax->t_conf  = ta.conf;
     ax->cols    = (int16_t)SCOPE_GEOM_COLS;
     const uint8_t ch = active_channel ? 1u : 0u;
-    const vband_t *b = &g_vband[ch];
+    vband_t b;
+    vband_get(ch, &b);
     ax->channel  = (uint8_t)(ch + 1u);
-    ax->level_ok = b->on;
-    if (!b->on) return;
-    ax->map            = b->map;
-    ax->zero_code      = b->zero_code;
-    ax->volts_per_code = b->volts_per_code;
-    ax->v_conf         = b->conf;
-    ax->row_top        = b->map.y_top;
-    ax->row_end        = b->row_end;
+    ax->level_ok = b.on;
+    if (!b.on) return;
+    ax->map            = b.map;
+    ax->zero_code      = b.zero_code;
+    ax->volts_per_code = b.volts_per_code;
+    ax->v_conf         = b.conf;
+    ax->row_top        = b.map.y_top;
+    ax->row_end        = b.row_end;
 }
 
 /* The time pair the source on the screen keeps: roll's or Y-T's. */
@@ -71,24 +72,62 @@ void scope_ui_cursor_report(char x1[16], char x2[16], char dx[16], char ix[16],
 #define CURSOR_DASH_LEN     4
 #define CURSOR_DASH_ON(at)  (((at) & (2 * CURSOR_DASH_LEN - 1)) < CURSOR_DASH_LEN)
 
-/* Where a cursor's label sits. V1/V2: at the top of the plot, starting
+/* Where a cursor's label may sit, in order of preference (label_place.h:
+ * the first place on the plot that meets no label placed before it, else
+ * the label is left out and the line stays). V1/V2: starting
  * CURSOR_VLABEL_LEFT columns left of the line, or at column 0 when the line
- * is within CURSOR_VLABEL_MIN_X of the left edge. H1/H2: against the right
- * edge, its top CURSOR_HLABEL_ABOVE rows above the line (the font's 12 rows
- * and one clear), or CURSOR_HLABEL_BELOW under it when the line is within
- * CURSOR_HLABEL_BELOW rows of the plot's top. */
+ * is within CURSOR_VLABEL_MIN_X of the left edge, kept on the plot at the
+ * right edge; on the plot's top row, else on the plot's clear row. H1/H2:
+ * CURSOR_HLABEL_INSET column in from the right edge, its top
+ * CURSOR_HLABEL_ABOVE rows above the line
+ * (the font's 12 rows and one clear), else CURSOR_HLABEL_BELOW under it,
+ * else on the clear row. The clear row is the first under the plot's own
+ * top text: under the spectrum's header (its peak tags' top row), and in
+ * the time views CURSOR_VLABEL_DROP rows under the top (the font's 12 rows
+ * and one clear: under the top row's labels). */
 #define CURSOR_VLABEL_LEFT   10
 #define CURSOR_VLABEL_MIN_X  12
+#define CURSOR_VLABEL_DROP   13
 #define CURSOR_HLABEL_ABOVE  13
 #define CURSOR_HLABEL_BELOW  2
+#define CURSOR_HLABEL_INSET  1
+#define CURSOR_LABEL_PLACES  3   /* the most places a label may take */
 
-/* Build the cursor layer L: the vertical lines at columns vx with V1/V2
- * labels at the plot's top row `top`, the horizontal lines at rows hy with
- * H1/H2 labels at the right edge. A line whose position is negative is not
- * on the plot and is left out. The selected cursor is solid and highlighted,
- * the other dashed. Empty when cursors are off. */
+/* Put label a + i ("V1") in layer L at column x and the first of the rows
+ * ys[0..n) where it lies on the plot (area) and meets none of
+ * placed[0..*np); the label is then one of the placed (placed has room for
+ * it). Not placed: left out. */
+static void cursor_label(cur_layer_t *L, char a, uint8_t i, uint16_t color, int16_t x,
+                         const int16_t *ys, uint8_t n, const label_box_t *area,
+                         label_box_t *placed, uint8_t *np)
+{
+    const char s[3] = { a, (char)('1' + i), '\0' };
+    const int16_t w = (int16_t)font_string_width(s, &font_small), h = (int16_t)font_small.height;
+    x = label_x_within(x, w, area);
+    label_box_t cand[CURSOR_LABEL_PLACES];
+    for (uint8_t k = 0; k < n; k++) cand[k] = (label_box_t){ x, ys[k], w, h };
+    const int pick = label_place(area, cand, n, placed, *np);
+    if (pick < 0) return;
+    placed[(*np)++] = cand[pick];
+    typeof(L->lab[0]) *t = &L->lab[L->nlab++];
+    memcpy(t->s, s, sizeof t->s);
+    t->w = w;
+    t->x = cand[pick].x;
+    t->y = cand[pick].y;
+    t->c = color;
+}
+
+/* Build the cursor layer L on the plot area: the vertical lines at columns
+ * vx with V1/V2 labels at the plot's top, the horizontal lines at rows hy
+ * with H1/H2 labels at the right edge, each label where it meets none of the
+ * np labels already on the plot (placed, with room for CUR_LABELS_MAX more)
+ * nor another cursor label; clear: the plot's clear row. A line whose
+ * position is negative is not on the plot and is left out. The selected
+ * cursor is solid and highlighted, the other dashed. Empty when cursors are
+ * off. */
 static void cursor_layer_lines(const cursor_state_t *c, const int16_t vx[2], const int16_t hy[2],
-                               int16_t top, const theme_t *th, cur_layer_t *L)
+                               const label_box_t *area, int16_t clear, label_box_t *placed, uint8_t np,
+                               const theme_t *th, cur_layer_t *L)
 {
     memset(L, 0, sizeof(*L));
     if (c->mode == CURSOR_OFF) return;
@@ -100,12 +139,9 @@ static void cursor_layer_lines(const cursor_state_t *c, const int16_t vx[2], con
             L->vc[i] = act ? th->highlight : th->text_secondary;
             L->vsolid[i] = act;
             if (vx[i] < 0) continue;
-            typeof(L->lab[0]) *t = &L->lab[L->nlab++];
-            t->s[0] = 'V'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
-            t->w = (int16_t)font_string_width(t->s, &font_small);
-            t->x = (int16_t)(L->vx[i] > CURSOR_VLABEL_MIN_X ? L->vx[i] - CURSOR_VLABEL_LEFT : 0);
-            t->y = top;
-            t->c = L->vc[i];
+            const int16_t x = (int16_t)(vx[i] > CURSOR_VLABEL_MIN_X ? vx[i] - CURSOR_VLABEL_LEFT : 0);
+            const int16_t ys[] = { area->y, clear };
+            cursor_label(L, 'V', i, L->vc[i], x, ys, (uint8_t)(sizeof ys / sizeof ys[0]), area, placed, &np);
         }
     }
     if (c->mode == CURSOR_HORIZONTAL || c->mode == CURSOR_BOTH) {
@@ -116,13 +152,11 @@ static void cursor_layer_lines(const cursor_state_t *c, const int16_t vx[2], con
             L->hc[i] = act ? th->highlight : th->text_secondary;
             L->hsolid[i] = act;
             if (hy[i] < 0) continue;
-            typeof(L->lab[0]) *t = &L->lab[L->nlab++];
-            t->s[0] = 'H'; t->s[1] = (char)('1' + i); t->s[2] = '\0';
-            t->w = (int16_t)font_string_width(t->s, &font_small);
-            t->x = (int16_t)(LCD_WIDTH - 1 - t->w);
-            t->y = (int16_t)(L->hy[i] > top + CURSOR_HLABEL_BELOW ? L->hy[i] - CURSOR_HLABEL_ABOVE
-                                                                  : L->hy[i] + CURSOR_HLABEL_BELOW);
-            t->c = L->hc[i];
+            const int16_t ys[] = { (int16_t)(hy[i] - CURSOR_HLABEL_ABOVE), (int16_t)(hy[i] + CURSOR_HLABEL_BELOW),
+                                   clear };
+            const char s[3] = { 'H', (char)('1' + i), '\0' };
+            const int16_t x = (int16_t)(LCD_WIDTH - CURSOR_HLABEL_INSET - font_string_width(s, &font_small));
+            cursor_label(L, 'H', i, L->hc[i], x, ys, (uint8_t)(sizeof ys / sizeof ys[0]), area, placed, &np);
         }
     }
 }
@@ -144,13 +178,17 @@ void cursor_layer_build(const scope_state_t *ss, const theme_t *th, const plot_p
         if (scope_cursor_px(&ax, sv, t[i], &px) && scope_cursor_on_plot(&ax, sv, px)) vx[i] = (int16_t)px;
         if (scope_cursor_px(&ax, sh, c->level_uv[i], &px) && scope_cursor_on_plot(&ax, sh, px)) hy[i] = (int16_t)px;
     }
-    cursor_layer_lines(c, vx, hy, p->top, th, L);
+    const label_box_t area = { 0, p->top, (int16_t)LCD_WIDTH, (int16_t)(p->band_bot - p->top) };
+    label_box_t placed[CUR_LABELS_MAX];
+    cursor_layer_lines(c, vx, hy, &area, (int16_t)(p->top + CURSOR_VLABEL_DROP), placed, 0u, th, L);
 }
 
 /* The cursor layer of a spectrum: the lines where their bins and levels fall
- * on the axes ax; a line outside the span or the level range is not drawn. */
-void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,
-                                 cur_layer_t *L)
+ * on the axes ax; a line outside the span or the level range is not drawn.
+ * The labels give way to the spectrum's own (T: its header, scale and tags);
+ * clear: the first row under its header. */
+void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const ctext_set_t *T,
+                                 int16_t clear, const theme_t *th, cur_layer_t *L)
 {
     const spectrum_cursor_t *sc = &ss->spectrum_cursor;
     int16_t vx[2] = { -1, -1 }, hy[2] = { -1, -1 };
@@ -159,7 +197,10 @@ void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, 
             vx[i] = (int16_t)fft_axes_x(ax, sc->bin[i]);
             hy[i] = (int16_t)fft_axes_y(ax, (float)sc->level[i] / (float)SPECTRUM_CURSOR_LEVEL_UNIT);
         }
-    cursor_layer_lines(&ss->cursor, vx, hy, (int16_t)ax->y_top, th, L);
+    const label_box_t area = { 0, (int16_t)ax->y_top, (int16_t)LCD_WIDTH, (int16_t)ax->height };
+    label_box_t placed[CTEXT_MAX + CUR_LABELS_MAX];
+    memcpy(placed, T->box, T->n * sizeof placed[0]);
+    cursor_layer_lines(&ss->cursor, vx, hy, &area, clear, placed, T->n, th, L);
 }
 
 /* The layer's colour at pixel (x, y) into *c, or false. Labels win over

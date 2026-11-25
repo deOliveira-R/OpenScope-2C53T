@@ -26,6 +26,7 @@
 #include "scope_geom.h"
 #include "yt_vmap.h"
 #include "plot_pane.h"
+#include "label_place.h"
 #include "math_channel.h"
 #include "paused_view.h"
 #include "persistence.h"
@@ -152,13 +153,14 @@ typedef struct { pm_tag_t t[3]; } pm_set_t;
 /* The cursor layer: dashed lines over the band (the selected one solid) and
  * their V1/V2/H1/H2 labels, transparent text. Built once per frame
  * (cursor_layer_build) and read per pixel (cursor_layer_px). */
+#define CUR_LABELS_MAX  4       /* V1, V2, H1, H2 */
 typedef struct {
     bool     v, h;
     int16_t  vx[2], hy[2];
     uint16_t vc[2], hc[2];
     bool     vsolid[2], hsolid[2];
     uint8_t  nlab;
-    struct { int16_t x, y, w; char s[3]; uint16_t c; } lab[4];
+    struct { int16_t x, y, w; char s[3]; uint16_t c; } lab[CUR_LABELS_MAX];
 } cur_layer_t;
 
 /* ── Math trace (stock's 8 ops on the records; scope_yt_frame.c) ── */
@@ -185,9 +187,9 @@ typedef struct {
 #define CTEXT_LEN  24           /* bytes per label with the NUL; longer ones are cut */
 
 typedef struct {
-    uint8_t n;
+    uint8_t     n;
+    label_box_t box[CTEXT_MAX];     /* each label's box: the ones a later label must not meet */
     struct {
-        int16_t  x, y, w;
         uint16_t fg, bg;
         bool     opaque;
         char     s[CTEXT_LEN];
@@ -343,13 +345,14 @@ bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame);
 bool xy_half_draw(const plot_pane_t *p, bool all);
 
 /* scope_yt_frame.c */
-/* Each channel's band as drawn this frame ([0] CH1, [1] CH2), for the cursors. */
-extern vband_t g_vband[2];
-/* Record channel ch's (0/1) band in pane p, once a frame, drawn or not: its
+/* Publish channel ch's (0/1) band in pane p, once a frame, drawn or not: its
  * map a (off: not drawn), its 0 V code and volts per code in a's codes, the
- * range whose gain they come from. */
+ * range whose gain they come from. Display task. */
 void vband_note(uint8_t ch, const plot_pane_t *p, const autofit_t *a, float zero_code,
                 float volts_per_code, uint8_t range_idx);
+/* A copy of channel ch's (0/1) band as the last frame published it, for the
+ * cursors. Any task. */
+void vband_get(uint8_t ch, vband_t *out);
 /* Row of the hardware trigger level through map a, in pane p. */
 int16_t trigger_marker_y(const scope_state_t *ss, const plot_pane_t *p, const autofit_t *a);
 /* The two Y-T maps for the window in yt_cols, in pane p. */
@@ -393,9 +396,10 @@ int16_t math_row(const math_frame_t *mf, uint16_t x);
 /* Build the cursor layer L from the cursor state, in pane p: each line
  * where its time and level fall on the plot as drawn this frame. */
 void cursor_layer_build(const scope_state_t *ss, const theme_t *th, const plot_pane_t *p, cur_layer_t *L);
-/* The cursor layer of a spectrum drawn on the axes ax. */
-void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const theme_t *th,
-                                 cur_layer_t *L);
+/* The cursor layer of a spectrum drawn on the axes ax, its labels clear of
+ * the spectrum's own (T); clear: the first row under its header. */
+void cursor_layer_build_spectrum(const scope_state_t *ss, const fft_axes_t *ax, const ctext_set_t *T,
+                                 int16_t clear, const theme_t *th, cur_layer_t *L);
 /* The spectrum strip's AUX row at row y: the cursor readout. */
 void spectrum_cursor_row_paint(const scope_state_t *ss, const fft_axes_t *ax, uint16_t y, bool force);
 /* The axes of the spectrum the screen shows (on false: none), for the keys
@@ -420,6 +424,10 @@ extern volatile uint16_t live_check_first_x, live_check_first_y, live_check_firs
 /* Add label s at (x, y) to text set T. */
 void ctext_add(ctext_set_t *T, int x, int y, const char *s,
                       uint16_t fg, uint16_t bg, bool opaque);
+/* Add label s at (x, y) to T only where it lies inside area and meets no
+ * label already in T (label_place); false: left out. */
+bool ctext_place(ctext_set_t *T, const label_box_t *area, int x, int y, const char *s,
+                 uint16_t fg, uint16_t bg, bool opaque);
 /* Colour of text set T at pixel (x, y), or false. */
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c);
 

@@ -9,22 +9,36 @@
 
 #include "scope_ui_parts.h"
 
-/* Each channel's band as drawn by the last Y-T frame, filled by
+/* Each channel's band as drawn by the last Y-T frame, published by
  * vband_note(): the cursor lines (scope_cursor_draw.c) put the level pair on
- * the active channel's through it. */
-vband_t g_vband[2];
+ * the active channel's through it. The display task writes it every frame;
+ * the key task and the model task read it (scope_ui_cursor_axes), so it is
+ * built aside and copied in and out whole in a critical section (vband_get),
+ * as the spectrum's axes are: a read never mixes two frames' scales. */
+static vband_t g_vband[2];
 
 void vband_note(uint8_t ch, const plot_pane_t *p, const autofit_t *a, float zero_code,
                 float volts_per_code, uint8_t range_idx)
 {
     if (ch > 1u) return;
-    vband_t *b = &g_vband[ch];
-    b->on             = a->on;
-    b->map            = *a;
-    b->zero_code      = zero_code;
-    b->volts_per_code = volts_per_code;
-    b->conf           = scope_cursor_cal_conf((uint8_t)(ch + 1u), range_idx);
-    b->row_end        = (a->y_bot < p->band_bot) ? a->y_bot : p->band_bot;
+    const vband_t b = {
+        .on             = a->on,
+        .map            = *a,
+        .zero_code      = zero_code,
+        .volts_per_code = volts_per_code,
+        .conf           = scope_cursor_cal_conf((uint8_t)(ch + 1u), range_idx),
+        .row_end        = (a->y_bot < p->band_bot) ? a->y_bot : p->band_bot,
+    };
+    taskENTER_CRITICAL();
+    g_vband[ch] = b;
+    taskEXIT_CRITICAL();
+}
+
+void vband_get(uint8_t ch, vband_t *out)
+{
+    taskENTER_CRITICAL();
+    *out = g_vband[ch];
+    taskEXIT_CRITICAL();
 }
 
 /*

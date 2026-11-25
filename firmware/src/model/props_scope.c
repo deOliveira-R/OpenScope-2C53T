@@ -260,7 +260,12 @@ int32_t tb_roll_get(const prop_desc_t *p) { (void)p; return scope_state_get()->r
 void    tb_roll_store(const prop_desc_t *p, int32_t v) { (void)p; scope_state_get()->roll = (v != 0); }
 static void view_record_moved(uint8_t origin);
 /* Roll is a source only some views take (view_table.h): on is refused
- * while the view on screen does not take it. */
+ * while the view on screen does not take it. Roll comes on at the step a
+ * load kept for tb.rollstep until that is in force (model_boot_kept), else at
+ * the one in RAM: a Restore boot puts tb.roll and tb.rollstep in with one
+ * Roll write (tb.roll is first in table order; tb.rollstep then finds its
+ * value in force), as the timebase keys do (tb.rollstep first while roll is
+ * off, then tb.roll). */
 prop_status_t tb_roll_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
 {
     (void)p;
@@ -269,9 +274,16 @@ prop_status_t tb_roll_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_
         model_note(note, "Roll: Y-T only");
         return PS_REFUSED;
     }
-    const prop_status_t s = ((v != 0) == ss->roll) ? PS_OK : roll_apply(v != 0, ss->roll_step, note);
-    if (s == PS_OK) view_record_moved(origin);
-    return s;
+    int32_t step = ss->roll_step;
+    if (v) (void)model_boot_kept(P(TB_ROLLSTEP), &step);
+    const uint8_t was_step = ss->roll_step;
+    if ((v != 0) != ss->roll) {
+        const prop_status_t s = roll_apply(v != 0, (uint8_t)step, note);
+        if (s != PS_OK) return s;
+    }
+    view_record_moved(origin);
+    if (ss->roll_step != was_step) model_changed_also(P(TB_ROLLSTEP), origin);
+    return PS_OK;
 }
 
 int32_t tb_rollstep_get(const prop_desc_t *p) { (void)p; return scope_state_get()->roll_step; }

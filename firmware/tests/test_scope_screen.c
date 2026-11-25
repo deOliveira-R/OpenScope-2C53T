@@ -134,6 +134,9 @@ void scope_ui_fft_axes(fft_axes_t *out)    { *out = g_axes; }
 /* scope_cursor_draw.c: the plot the time cursors are on, as a test sets it;
  * the time source follows the state, as view_time_axis's does */
 static scope_cursor_axes_t g_caxes;
+/* can_scope.c: the CAN line (`can screen on`), as a test sets it */
+static bool t_can_line;
+bool can_scope_screen_on(void)             { return t_can_line; }
 void scope_ui_cursor_axes(struct scope_cursor_axes *out)
 {
     *out = g_caxes;
@@ -242,7 +245,7 @@ static void boot(void)
     t_fail = t_il = t_single_done = t_busy_req = false;
     t_mask_slow = t_mask_hold = false; t_mask_state = MASK_PF_EMPTY; t_tolv = 8; t_tolh = 2; t_sf = true;
     t_seq = t_applied_seq = t_tol_seq = t_pending_seq = 0; t_mbox.full = false;
-    t_persist_mode = 0; g_fft_epoch = 0;
+    t_persist_mode = 0; g_fft_epoch = 0; t_can_line = false;
     memset(&g_axes, 0, sizeof g_axes);                 /* no spectrum drawn */
     model_bind_hw(&t_ops);
     (void)model_load_defaults(PF_SESSION, NULL, false);
@@ -1479,6 +1482,22 @@ static void test_epochs(void)
     g_fft_epoch = 99;
     scope_screen_epochs(&l1, &s0);
     CHECK("the live FFT configuration is layout (the spectrum views redraw their titles)", l0 != l1);
+
+    /* The CAN line (`can screen on`) reserves the time strip's AUX row as
+     * the cursors and a mask do: the band's end moves, in Y-T and in split. */
+    bool can_ok = true;
+    for (int split = 0; split < 2; split++) {
+        boot();
+        if (split) (void)prop_set_local(P(VIEW_MODE), VIEW_MODE_SPLIT, ORIGIN_SHELL, NULL);
+        scope_screen_epochs(&l0, &s0);
+        t_can_line = true;
+        scope_screen_epochs(&l1, &s1);
+        can_ok &= l0 != l1 && s0 == s1;
+        t_can_line = false;
+        scope_screen_epochs(&l1, &s1);
+        can_ok &= l0 == l1 && s0 == s1;
+    }
+    CHECK("the CAN line on and off is layout, in Y-T and in split", can_ok);
     boot();
     scope_screen_epochs(&l0, &s0);
     const uint32_t e0 = scope_screen.epoch();
