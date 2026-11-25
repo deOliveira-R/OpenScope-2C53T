@@ -57,6 +57,10 @@ static inline plot_pane_t plot_pane_make(canvas_id_t canvas, int16_t top, int16_
 /* Rows between split's two panes: the divider line. */
 #define PLOT_PANE_DIVIDER_ROWS  1
 
+/* The rows of split's upper pane in a band of `rows`: half of what the
+ * divider leaves, the odd row included, so never fewer than the lower's. */
+#define PLOT_PANE_UPPER_ROWS(rows)  (((rows) - PLOT_PANE_DIVIDER_ROWS + 1) / 2)
+
 /* Split's two panes in the band [top, bot): the upper one from top, the
  * lower one down to bot, the divider row between them; the upper pane takes
  * the odd row. Each pane's traces end at its own bottom; marked: the half
@@ -64,7 +68,7 @@ static inline plot_pane_t plot_pane_make(canvas_id_t canvas, int16_t top, int16_
 static inline void plot_pane_split(int16_t top, int16_t bot, canvas_id_t upper, canvas_id_t lower,
                                    int marked, plot_pane_t out[2])
 {
-    const int16_t up_bot = (int16_t)(top + (bot - top - PLOT_PANE_DIVIDER_ROWS + 1) / 2);
+    const int16_t up_bot = (int16_t)(top + PLOT_PANE_UPPER_ROWS(bot - top));
     const int16_t lo_top = (int16_t)(up_bot + PLOT_PANE_DIVIDER_ROWS);
     out[0] = plot_pane_make(upper, top, up_bot, up_bot);
     out[1] = plot_pane_make(lower, lo_top, bot, bot);

@@ -479,6 +479,37 @@ void view_mode_store(const prop_desc_t *p, int32_t v)
     scope_view = (scope_view_t)k_view_of[v];
 }
 
+/* The pair in one word, so a reader on another task (the display) never
+ * sees half a swap: a set builds the new pair and stores it once. */
+typedef union {
+    uint16_t word;
+    uint8_t  half[VIEW_HALF_COUNT];
+} view_pair_t;
+_Static_assert(sizeof(view_pair_t) == sizeof(uint16_t), "the pair is one halfword store");
+static volatile view_pair_t g_view_pair = { .half = { VIEW_HALF_UPPER_DEFAULT, VIEW_HALF_LOWER_DEFAULT } };
+
+static view_pair_t view_pair_now(void)
+{
+    return (view_pair_t){ .word = g_view_pair.word };
+}
+
+/* The halves of split that came onto the screen with a change of view.mode
+ * or of the pair (was_split, was: what was on screen before): each one's
+ * bring-up beyond the pool split holds (HW->view_half_enter: X-Y's offset
+ * outputs), on the input task as every view change. The one path of both
+ * ways a half arrives: split coming on (view_mode_apply) and a half set to
+ * another view while split is on (view_half_set). */
+static void view_halves_arrive(bool was_split, view_pair_t was)
+{
+    if (!view_entry((uint8_t)view_mode_get(P(VIEW_MODE)))->pair || !HW->view_half_enter) return;
+    const view_pair_t now = view_pair_now();
+    for (uint8_t h = 0; h < VIEW_HALF_COUNT; h++) {
+        const uint8_t v = now.half[h];
+        const bool shown = was_split && (was.half[VIEW_HALF_UPPER] == v || was.half[VIEW_HALF_LOWER] == v);
+        if (!shown) HW->view_half_enter(v);
+    }
+}
+
 /* The scope view through its owner (scope_view_select claims or releases
  * the shared pool); with no owner bound, the pure part. */
 static bool view_switch(uint8_t view)
@@ -498,6 +529,7 @@ static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, uint8_t or
     const int32_t was = view_mode_get(p);
     if (v == was) return PS_OK;
     const bool roll_off = ss->roll && !view_takes_roll((uint8_t)v);
+    const view_pair_t pair = view_pair_now();
 
     if (roll_off && roll_apply(false, ss->roll_step, note) != PS_OK)
         return PS_NOT_SET;
@@ -507,6 +539,7 @@ static prop_status_t view_mode_apply(const prop_desc_t *p, int32_t v, uint8_t or
         return PS_NOT_SET;
     }
     if (roll_off) model_changed_also(P(TB_ROLL), origin);
+    view_halves_arrive(view_entry((uint8_t)was)->pair, pair);
     return PS_OK;
 }
 prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, prop_note_t *note)
@@ -529,20 +562,6 @@ prop_status_t view_mode_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
 _Static_assert(VIEW_HALF_UPPER_DEFAULT == VIEW_MODE_YT && VIEW_HALF_LOWER_DEFAULT == VIEW_MODE_FFT,
                "view.upper / view.lower defaults = model_table.h's def column");
 _Static_assert(VIEW_HALF_UPPER == 0 && VIEW_HALF_LOWER == 1, "view.upper arg 0, view.lower arg 1");
-/* The pair in one word, so a reader on another task (the display) never
- * sees half a swap: a set builds the new pair and stores it once. */
-typedef union {
-    uint16_t word;
-    uint8_t  half[VIEW_HALF_COUNT];
-} view_pair_t;
-_Static_assert(sizeof(view_pair_t) == sizeof(uint16_t), "the pair is one halfword store");
-static volatile view_pair_t g_view_pair = { .half = { VIEW_HALF_UPPER_DEFAULT, VIEW_HALF_LOWER_DEFAULT } };
-
-static view_pair_t view_pair_now(void)
-{
-    return (view_pair_t){ .word = g_view_pair.word };
-}
-
 void model_view_pair(uint8_t half[2])
 {
     const view_pair_t pr = view_pair_now();
@@ -563,13 +582,15 @@ prop_status_t view_half_set(const prop_desc_t *p, int32_t v, uint8_t origin, pro
         model_note(note, "not a view for a half");
         return PS_REFUSED;
     }
-    view_pair_t pr = view_pair_now();
+    const view_pair_t was = view_pair_now();
+    view_pair_t pr = was;
     const uint8_t other = (uint8_t)(VIEW_HALF_COUNT - 1u - p->arg);
     const bool swap = pr.half[other] == (uint8_t)v;
     if (swap) pr.half[other] = pr.half[p->arg];
     pr.half[p->arg] = (uint8_t)v;
     g_view_pair.word = pr.word;
     if (swap) model_changed_also(other == VIEW_HALF_UPPER ? P(VIEW_UPPER) : P(VIEW_LOWER), origin);
+    view_halves_arrive(view_entry((uint8_t)view_mode_get(P(VIEW_MODE)))->pair, was);
     return PS_OK;
 }
 

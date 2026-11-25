@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "key_model.h"
+#include "split_halves.h"
 #include "scope_state.h"
 #include "scope_state_pre_b7.h"
 
@@ -757,10 +758,10 @@ static void test_state(void)
 
 /* The grid below covers the views of the time record the pre-B1 key map
  * knew (its "time view") and the jobs it knew: the time-domain jobs, which
- * come first in key_focus_t. Those views were Y-T and roll, and the
- * reference below was taken over both; roll is Y-T on the roll source now
- * (tb.roll, which no key context holds), so the grid runs Y-T twice. */
-static const uint8_t k_grid_views[] = { VIEW_MODE_YT, VIEW_MODE_YT };
+ * come first in key_focus_t. Those views were Y-T and roll; roll is Y-T on
+ * the roll source now (tb.roll, which no key context holds), so the grid
+ * runs over Y-T alone. */
+static const uint8_t k_grid_views[] = { VIEW_MODE_YT };
 #define KM_GRID_TIME_JOBS  KF_SPECTRUM      /* KF_ZOOM .. KF_MASK */
 
 /* The actions as numbered at 6a8c2ba: KA_SPECTRUM_CURSOR_MOVE was added
@@ -807,15 +808,17 @@ static uint32_t km_grid(key_cmd_t (*fn)(const key_ctx_t *, button_id_t, bool), u
 }
 
 /* The same grid run over key_map() as it was before key_map_global was split
- * out of it (base 6a8c2ba, the tree the router was wired on): compiled from
- * that commit's key_model.c with this very km_grid(), each of the two views
- * here read as its scope_time_view ("scope mode and the time-domain view":
- * true in the scope, false in every other mode). key_map's answers in the
- * views of the time record must not move. (The spectrum views' keys are the
- * job's since the view table: tested by name in test_short_map and
- * test_long_map.) */
-#define KM_GRID_PRE_B1_HASH   0xC772DF85u
-#define KM_GRID_PRE_B1_COUNT  864000u
+ * out of it (base 6a8c2ba, the tree the router was wired on). The reference
+ * was first taken from that commit's key_model.c over Y-T and roll
+ * (0xC772DF85, 864000 answers), each read as its scope_time_view ("scope
+ * mode and the time-domain view": true in the scope, false in every other
+ * mode). It was re-pinned over Y-T alone on 2026-11-25, on the tree cbfcb04,
+ * where the grid over Y-T twice still gave that reference: so this pin is
+ * the same answers. key_map's answers in the views of the time record must
+ * not move. (The spectrum views' keys are the job's since the view table:
+ * tested by name in test_short_map and test_long_map.) */
+#define KM_GRID_PRE_B1_HASH   0xB3998FA5u
+#define KM_GRID_PRE_B1_COUNT  432000u
 
 /* B7 gave the scope's last per-key cases names (KA_COUPLING_TOGGLE ..
  * KA_FFT_ZOOM), where key_map answered KA_LEGACY. key_map with those answers
@@ -949,61 +952,108 @@ static void test_focus_mark(void)
     CHECK("focus mark: a 1 px frame of 10 x 6 is 28 pixels", FOCUS_MARK_PX != 1 || on == 28);
 }
 
-/* Split as a pair of views: the halves a view can be, the ring composed of
- * the halves' jobs in order (each job in the half of its domain), the half
- * the keys are on and the strip it owns, for both pairs today's views make. */
+/* Split as a pair of views: the halves a view can be, each with a drawer;
+ * the ring composed of the halves' jobs in order (each job in the half that
+ * has it); the half the keys are on and the strip of their domain, for the
+ * six pairs today's half views make. */
+#define HAS_DRAWER(view, fn)  [view] = true,
+static const bool k_has_drawer[VIEW_MODE_COUNT] = { SPLIT_HALF_DRAWERS(HAS_DRAWER) };
+#undef HAS_DRAWER
+
 static void test_split_pair(void)
 {
     printf("split as a pair of views\n");
-    bool halves = true;
-    for (uint8_t m = 0; m < VIEW_MODE_COUNT; m++)
-        halves &= view_is_half(m) == (m == VIEW_MODE_YT || m == VIEW_MODE_FFT);
-    CHECK("the views that can be a half: Y-T and FFT (not X-Y, split, the waterfall)",
+    bool halves = true, drawers = true;
+    for (uint8_t m = 0; m < VIEW_MODE_COUNT; m++) {
+        halves &= view_is_half(m) == (m == VIEW_MODE_YT || m == VIEW_MODE_XY || m == VIEW_MODE_FFT);
+        drawers &= k_has_drawer[m] == view_is_half(m);
+    }
+    CHECK("the views that can be a half: Y-T, X-Y and FFT (not split, the waterfall)",
           halves && !view_is_half(VIEW_MODE_COUNT));
-    CHECK("the next half view, round the table: Y-T -> FFT -> Y-T; from another view the next half view",
-          view_half_next(VIEW_MODE_YT) == VIEW_MODE_FFT && view_half_next(VIEW_MODE_FFT) == VIEW_MODE_YT &&
-          view_half_next(VIEW_MODE_XY) == VIEW_MODE_FFT && view_half_next(VIEW_MODE_WATERFALL) == VIEW_MODE_YT);
+    CHECK("every view the table lets be a half has a drawer in split (split_halves.h), no other view",
+          drawers);
+    CHECK("the next half view, round the table: Y-T -> X-Y -> FFT -> Y-T; from another view the next half view",
+          view_half_next(VIEW_MODE_YT) == VIEW_MODE_XY && view_half_next(VIEW_MODE_XY) == VIEW_MODE_FFT &&
+          view_half_next(VIEW_MODE_FFT) == VIEW_MODE_YT && view_half_next(VIEW_MODE_SPLIT) == VIEW_MODE_YT &&
+          view_half_next(VIEW_MODE_WATERFALL) == VIEW_MODE_YT);
     CHECK("split's default pair: Y-T over FFT",
           VIEW_HALF_UPPER_DEFAULT == VIEW_MODE_YT && VIEW_HALF_LOWER_DEFAULT == VIEW_MODE_FFT &&
           view_sel_mode(VIEW_MODE_SPLIT).half[VIEW_HALF_UPPER] == VIEW_MODE_YT &&
           view_sel_mode(VIEW_MODE_SPLIT).half[VIEW_HALF_LOWER] == VIEW_MODE_FFT);
 
-    /* The rings, written out: the upper half's jobs, then the lower's. */
-    static const struct { uint8_t upper, lower; key_focus_t ring[KF_COUNT]; } P[] = {
-        { VIEW_MODE_YT, VIEW_MODE_FFT,
-          { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK, KF_SPECTRUM, KF_SPECTRUM_CURSOR } },
-        { VIEW_MODE_FFT, VIEW_MODE_YT,
-          { KF_SPECTRUM, KF_SPECTRUM_CURSOR, KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK } },
+    /* The pairs, written out: the ring (the upper half's jobs, then the
+     * lower's that the upper does not have), the half each job's keys are on
+     * (U upper, L lower: the half that has the job; both Y-T and X-Y have the
+     * zoom, channel and trigger moves, and then the upper one has the keys),
+     * the strip each job shows (T time, F frequency, N none: X-Y draws no
+     * strip, so beside the spectrum the time jobs show none), and the cursor
+     * job that cursors switched on from the channel move go to. */
+    enum { U = VIEW_HALF_UPPER, L = VIEW_HALF_LOWER, T = VIEW_DOM_TIME, F = VIEW_DOM_FREQ, N = VIEW_DOM_COUNT };
+    static const struct {
+        uint8_t upper, lower, n, domains;
+        key_focus_t ring[KF_COUNT];
+        uint8_t half[KF_COUNT], strip[KF_COUNT];
+        key_focus_t cur_from_chmove;
+    } P[] = {
+        { VIEW_MODE_YT, VIEW_MODE_FFT, 7, VIEW_TIME_ONLY | VIEW_FREQ_ONLY,
+          { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK, KF_SPECTRUM, KF_SPECTRUM_CURSOR },
+          { U, U, U, U, U, L, L }, { T, T, T, T, T, F, F }, KF_CURSOR },
+        { VIEW_MODE_FFT, VIEW_MODE_YT, 7, VIEW_TIME_ONLY | VIEW_FREQ_ONLY,
+          { KF_SPECTRUM, KF_SPECTRUM_CURSOR, KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK },
+          { U, U, L, L, L, L, L }, { F, F, T, T, T, T, T }, KF_CURSOR },
+        { VIEW_MODE_YT, VIEW_MODE_XY, 5, VIEW_TIME_ONLY,
+          { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK },
+          { U, U, U, U, U }, { T, T, T, T, T }, KF_CURSOR },
+        { VIEW_MODE_XY, VIEW_MODE_YT, 5, VIEW_TIME_ONLY,
+          { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK },
+          { U, U, U, L, L }, { T, T, T, T, T }, KF_CURSOR },
+        { VIEW_MODE_FFT, VIEW_MODE_XY, 5, VIEW_TIME_ONLY | VIEW_FREQ_ONLY,
+          { KF_SPECTRUM, KF_SPECTRUM_CURSOR, KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE },
+          { U, U, L, L, L }, { F, F, N, N, N }, KF_SPECTRUM_CURSOR },
+        { VIEW_MODE_XY, VIEW_MODE_FFT, 5, VIEW_TIME_ONLY | VIEW_FREQ_ONLY,
+          { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_SPECTRUM, KF_SPECTRUM_CURSOR },
+          { U, U, U, L, L }, { N, N, N, F, F }, KF_SPECTRUM_CURSOR },
     };
-    bool ring = true, desc = true, half = true, strip = true, autok = true, curs = true;
+    bool ring = true, desc = true, half = true, strip = true, autok = true, curs = true, fallback = true;
     for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
         const view_sel_t v = view_sel(VIEW_MODE_SPLIT, P[i].upper, P[i].lower);
         const view_desc_t d = view_desc_of(v);
-        desc &= d.n_jobs == KF_COUNT && d.domains == (VIEW_TIME_ONLY | VIEW_FREQ_ONLY) &&
-                d.results == VIEW_RESULTS_SPLIT && !d.roll;
-        for (unsigned k = 0; k < KF_COUNT; k++) {
+        const unsigned n = P[i].n;
+        desc &= d.n_jobs == n && d.domains == P[i].domains && d.results == VIEW_RESULTS_SPLIT && !d.roll;
+        for (unsigned k = 0; k < n; k++) {
             const key_focus_t f = P[i].ring[k];
-            ring &= d.jobs[k] == (uint8_t)f && key_focus_next(v, f, true, true) == P[i].ring[(k + 1) % KF_COUNT];
-            /* the half of the job's domain has the keys, AUTO and the strip */
-            const uint8_t shows = key_focus_domain(f) == VIEW_DOM_TIME ? VIEW_MODE_YT : VIEW_MODE_FFT;
-            const view_half_t h = view_key_half(v, f);
-            half &= v.half[h] == shows;
-            strip &= view_strip_domain(v, f) == key_focus_domain(f);
+            ring &= d.jobs[k] == (uint8_t)f && key_focus_next(v, f, true, true) == P[i].ring[(k + 1) % n];
+            half &= view_key_half(v, f) == (view_half_t)P[i].half[k];
+            strip &= view_strip_domain(v, f) == (view_domain_t)P[i].strip[k];
             key_ctx_t c = vctx(MODE_OSCILLOSCOPE, VIEW_MODE_SPLIT, f);
             c.view = v; c.cursors_on = true; c.mask_present = true;
             autok &= key_map(&c, BTN_AUTO, false).act ==
                      (key_focus_domain(f) == VIEW_DOM_FREQ ? KA_FFT_AUTO : KA_AUTOSET);
         }
-        curs &= key_focus_after_cursor_change(v, KF_SPECTRUM, true) == KF_SPECTRUM_CURSOR &&
-                key_focus_after_cursor_change(v, KF_CHMOVE, true) == KF_CURSOR &&
-                key_focus_after_cursor_change(v, KF_SPECTRUM_CURSOR, false) == P[i].ring[0];
+        /* A job neither half has: the half of its domain (the upper when both
+         * show it), or of the domain the pair shows. */
+        for (int f = 0; f < KF_COUNT; f++) {
+            bool listed = false;
+            for (unsigned k = 0; k < n; k++) listed |= P[i].ring[k] == (key_focus_t)f;
+            if (listed) continue;
+            const view_domain_t dom = view_key_domain(v, (key_focus_t)f);
+            const view_half_t h = view_key_half(v, (key_focus_t)f);
+            fallback &= (view_entry(v.half[h])->domains & VIEW_DOM_BIT(dom)) != 0u &&
+                        (h == VIEW_HALF_UPPER || (view_entry(v.half[VIEW_HALF_UPPER])->domains & VIEW_DOM_BIT(dom)) == 0u);
+        }
+        curs &= key_focus_after_cursor_change(v, KF_CHMOVE, true) == P[i].cur_from_chmove &&
+                key_focus_after_cursor_change(v, P[i].cur_from_chmove, false) == P[i].ring[0];
+        if (d.domains & VIEW_FREQ_ONLY)
+            curs &= key_focus_after_cursor_change(v, KF_SPECTRUM, true) == KF_SPECTRUM_CURSOR;
     }
-    CHECK("each pair: one job per domain's half, upper's first; all seven jobs, both domains, a strip, no roll", desc);
+    CHECK("each pair: the jobs of both halves once each, upper's first; the domains it shows, a strip, no roll", desc);
     CHECK("each pair: SELECT walks the composed ring in order and wraps", ring);
-    CHECK("each pair: the keys' half is the one that shows the job's domain", half);
-    CHECK("each pair: the strip is the keys' half's domain's", strip);
-    CHECK("each pair: AUTO is the keys' half's (span fit on the spectrum, autoset on the trace)", autok);
-    CHECK("each pair: cursors on put the arrows on the keys' half's cursor job; off, on the first job", curs);
+    CHECK("each pair: the keys are on the half that has the job, the upper one when both have it", half);
+    CHECK("each pair: a job neither half has goes by its domain", fallback);
+    CHECK("each pair: the strip is the keys' domain's when a half draws it with a strip, else none", strip);
+    CHECK("each pair: AUTO is the keys' domain's (span fit on the spectrum, autoset on the time record)", autok);
+    CHECK("each pair: cursors on put the arrows on the keys' half's cursor job, else the pair's; off, on the first job",
+          curs);
     CHECK("the strip of the single views: Y-T time, FFT frequency, X-Y and the waterfall none",
           view_strip_domain(view_sel_mode(VIEW_MODE_YT), KF_SPECTRUM) == VIEW_DOM_TIME &&
           view_strip_domain(view_sel_mode(VIEW_MODE_FFT), KF_ZOOM) == VIEW_DOM_FREQ &&

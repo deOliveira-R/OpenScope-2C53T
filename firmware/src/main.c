@@ -558,6 +558,19 @@ static const scope_renderer_t *scope_renderer(void)
     return &k_renderers[(v >= 0 && v < (int32_t)VIEW_MODE_COUNT) ? v : VIEW_MODE_YT];
 }
 
+/* The picture on screen moves without new data: its view's renderer
+ * animates, or in split the renderer of a view in one of its halves (an X-Y
+ * half's trail fades as full X-Y's does). The halves are views that can be
+ * a half (view.upper / view.lower admit no other). */
+static bool scope_view_animates(void)
+{
+    const view_sel_t v = scope_view_sel();
+    bool anim = scope_renderer()->animates;
+    if (view_entry(v.mode)->pair)
+        for (uint8_t h = 0; h < VIEW_HALF_COUNT; h++) anim |= k_renderers[v.half[h]].animates;
+    return anim;
+}
+
 static void scope_render(uint32_t frame, redraw_action_t action)
 {
     const scope_renderer_t *const r = scope_renderer();
@@ -660,7 +673,7 @@ redraw_action_t scope_view_tick(uint32_t frame)
         /* Pictures that move without new data: the demo before the first
          * record (a function of `frame`), persistence ghosts (they fade on
          * wall time) and X-Y's phosphor decay. */
-        const bool view_anim = scope_renderer()->animates;
+        const bool view_anim = scope_view_animates();
         q.animating        = !scope_acquisition_ready() || persist_enabled || view_anim;
         q.anim_tick_frames = (view_anim || persist_enabled)
                              ? SCOPE_ANIM_FAST_FRAMES

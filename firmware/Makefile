@@ -1463,6 +1463,7 @@ test-calpage: $(BUILD_DIR)/test_calpage
 # Key model: the long-press state machine the TMR3 ISR runs, and the
 # key -> action map the input task asks (src/ui/key_model.h). Both are pure.
 $(BUILD_DIR)/test_key_model: tests/test_key_model.c src/ui/key_model.c src/ui/key_model.h \
+                             src/ui/view_table.h src/ui/split_halves.h \
                              src/ui/scope_state.c src/ui/scope_state.h src/ui/scope_roll.c | $(BUILD_DIR)
 	$(HOST_CC) -std=gnu11 -O2 -Wall -Wextra -Werror -Isrc/ui -Isrc/dsp $< \
 		src/ui/key_model.c src/ui/scope_state.c src/ui/scope_roll.c -o $@

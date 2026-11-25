@@ -10,6 +10,39 @@
 #include "canvas.h"
 #include "view_table.h"         /* the focus mark */
 
+/* Text laid out in column order: ctext_add records a string with its
+ * position and colours (used by the spectrum and waterfall views), and
+ * ctext_px answers which pixel a streamed column takes from it. Strings that
+ * are empty or that do not fit in the set (CTEXT_MAX, CTEXT_LEN) are dropped.
+ * opaque: the glyph box is filled with bg, else only the glyph pixels count. */
+void ctext_add(ctext_set_t *T, int x, int y, const char *s,
+                      uint16_t fg, uint16_t bg, bool opaque)
+{
+    if (T->n >= CTEXT_MAX || s == NULL || s[0] == '\0') return;
+    typeof(T->t[0]) *e = &T->t[T->n++];
+    strncpy(e->s, s, CTEXT_LEN - 1);
+    e->s[CTEXT_LEN - 1] = '\0';
+    e->x = (int16_t)x;
+    e->y = (int16_t)y;
+    e->w = (int16_t)font_string_width(e->s, &font_small);
+    e->fg = fg;
+    e->bg = bg;
+    e->opaque = opaque;
+}
+
+/* The colour of the text pixel at (x, y), written to *c; false when no string
+ * covers that pixel (the caller then draws its own background). */
+bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c)
+{
+    for (uint8_t k = 0; k < T->n; k++) {
+        const int dx = x - T->t[k].x, dy = y - T->t[k].y;
+        if (dx < 0 || dx >= T->t[k].w || dy < 0 || dy >= (int)font_small.height) continue;
+        if (font_text_px(T->t[k].s, &font_small, dx, dy)) { *c = T->t[k].fg; return true; }
+        if (T->t[k].opaque) { *c = T->t[k].bg; return true; }
+    }
+    return false;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  * FFT views: the spectrum, its source and reference level
  * ═══════════════════════════════════════════════════════════════════ */

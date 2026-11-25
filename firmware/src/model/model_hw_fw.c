@@ -252,6 +252,7 @@ static bool op_view_select(uint8_t view)
     if (scope_view != was) scope_screen_view_changed();
     return scope_view == (scope_view_t)view;
 }
+static void    op_view_half_enter(uint8_t view) { CTX(); scope_view_half_enter(view); }
 static bool    op_persist_on(uint8_t mode) { CTX(); return scope_apply_persist_on((persist_mode_t)mode); }
 static void    op_persist_off(void)        { CTX(); scope_apply_persist_off(); }
 static uint8_t op_persist_mode(void)       { return (uint8_t)persist_get_mode(); }
@@ -448,7 +449,7 @@ static const model_hw_ops_t k_fw_ops = {
     .single_rearm = op_single_rearm, .single_done = op_single_done, .paused_latch = op_paused_latch,
     .cursor_axes = op_cursor_axes,
     .trigger_code = op_trigger_code,
-    .view_select = op_view_select, .persist_on = op_persist_on, .persist_off = op_persist_off,
+    .view_select = op_view_select, .view_half_enter = op_view_half_enter, .persist_on = op_persist_on, .persist_off = op_persist_off,
     .persist_mode = op_persist_mode, .fft_settings = op_fft_settings,
     .mask_present = op_mask_present, .mask_get = op_mask_get, .mask_tol = op_mask_tol,
     .mask_stopfail = op_mask_stopfail, .mask_state = op_mask_state, .mask_hold = op_mask_hold,

@@ -336,6 +336,12 @@ uint16_t view_build_roll(void);
  * Returns true when it kept a hole for the popup box. */
 bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame);
 
+/* scope_xy.c */
+/* Draw X-Y as a half of split into pane p through its canvas, its trail in
+ * the FFT pool's slot: every column (all) or only the columns that changed.
+ * Returns true when it kept a hole for the popup box. */
+bool xy_half_draw(const plot_pane_t *p, bool all);
+
 /* scope_yt_frame.c */
 /* Each channel's band as drawn this frame ([0] CH1, [1] CH2), for the cursors. */
 extern vband_t g_vband[2];
@@ -410,7 +416,7 @@ extern volatile uint32_t live_check_frames, live_check_pixels, live_check_diffs;
 extern volatile uint16_t live_check_first_x, live_check_first_y, live_check_first_want, live_check_first_got;
 #endif
 
-/* scope_xy.c */
+/* scope_spectrum.c (the spectrum and the waterfall compose their text) */
 /* Add label s at (x, y) to text set T. */
 void ctext_add(ctext_set_t *T, int x, int y, const char *s,
                       uint16_t fg, uint16_t bg, bool opaque);

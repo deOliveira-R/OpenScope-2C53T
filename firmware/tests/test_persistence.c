@@ -77,11 +77,11 @@ static void test_add_trace(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* Test 3: Decay LOW clears pixels within 20 frames                    */
+/* Test 3: Decay LOW clears pixels within its 500 ms                   */
 /* ------------------------------------------------------------------ */
 static void test_decay_low(void)
 {
-    printf("Test 3: Decay LOW clears pixels within 20 frames\n");
+    printf("Test 3: Decay LOW clears pixels within its 500 ms\n");
     persist_init();
     persist_set_mode(PERSIST_LOW);
 
@@ -91,14 +91,14 @@ static void test_decay_low(void)
     }
     persist_add_trace(y_values, 0);
 
-    /* Decay 20 times (255 / 16 = ~16 needed, 20 gives margin) */
-    for (int i = 0; i < 20; i++) {
-        persist_decay();
+    /* 25 frames of 20 ms: the mode's 500 ms */
+    for (int i = 0; i < 25; i++) {
+        persist_decay_ms(20);
     }
 
     for (int x = 0; x < PERSIST_WIDTH; x++) {
-        ASSERT_EQ(persist_get_intensity(x, 100), 0, "pixel should be 0 after 20 LOW decays");
-        ASSERT_EQ(persist_get_intensity(x, 99), 0, "neighbor should be 0 after 20 LOW decays");
+        ASSERT_EQ(persist_get_intensity(x, 100), 0, "pixel should be 0 after 500 ms in LOW");
+        ASSERT_EQ(persist_get_intensity(x, 99), 0, "neighbor should be 0 after 500 ms in LOW");
     }
 
     tests_passed++;
@@ -121,7 +121,7 @@ static void test_decay_infinite(void)
     persist_add_trace(y_values, 0);
 
     for (int i = 0; i < 100; i++) {
-        persist_decay();
+        persist_decay_ms(20);
     }
 
     for (int x = 0; x < PERSIST_WIDTH; x++) {
@@ -263,7 +263,7 @@ static void test_decay_ms_500(void)
     for (unsigned k = 0; k < sizeof(dts) / sizeof(dts[0]); k++) {
         persist_init();
         persist_set_mode(PERSIST_LOW);
-        persist_add_point(10, 10);
+        persist_add_column(10, -1, 10);
         ASSERT_EQ(persist_get_intensity(10, 10), 255, "starts at 255");
         int t = 0;
         /* just under tau: still lit, and monotonically dimmer */
@@ -278,7 +278,7 @@ static void test_decay_ms_500(void)
         ASSERT(last > 0 && last < 255, "partly faded just before tau");
         /* half way is about half intensity (frame-rate independent) */
         persist_clear();
-        persist_add_point(10, 10);
+        persist_add_column(10, -1, 10);
         for (int e = 0; e < 250; e += dts[k]) persist_decay_ms((uint32_t)dts[k]);
         int mid = persist_get_intensity(10, 10);
         ASSERT(mid > 110 && mid < 145, "about half at tau/2");
@@ -294,7 +294,7 @@ static void test_decay_ms_modes(void)
     printf("Test 10: 1 s is half as fast as 500 ms; infinite never fades; off clears\n");
     persist_init();
     persist_set_mode(PERSIST_MEDIUM);
-    persist_add_point(3, 3);
+    persist_add_column(3, -1, 3);
     for (int i = 0; i < 25; i++) persist_decay_ms(20);      /* 500 ms */
     ASSERT(persist_get_intensity(3, 3) > 100, "1 s mode still about half at 500 ms");
     for (int i = 0; i < 30; i++) persist_decay_ms(20);      /* 1.1 s */
@@ -302,7 +302,7 @@ static void test_decay_ms_modes(void)
 
     persist_clear();
     persist_set_mode(PERSIST_INFINITE);
-    persist_add_point(3, 3);
+    persist_add_column(3, -1, 3);
     for (int i = 0; i < 1000; i++) persist_decay_ms(1000);
     ASSERT_EQ(persist_get_intensity(3, 3), 255, "infinite holds");
 
@@ -311,6 +311,37 @@ static void test_decay_ms_modes(void)
     ASSERT_EQ(persist_get_intensity(3, 3), 0, "off clears at once");
     ASSERT_EQ((int)persist_mode_tau_ms(PERSIST_LOW), 500, "tau low");
     ASSERT_EQ((int)persist_mode_tau_ms(PERSIST_MEDIUM), 1000, "tau medium");
+    tests_passed++;
+    printf("  PASS\n");
+}
+
+static void test_fade_any_buffer(void)
+{
+    printf("Test 10b: the fade over another buffer, with its own remainder, is the persistence buffer's\n");
+    enum { N = 64 };
+    uint8_t other[N];
+    uint32_t rem = 0;
+    persist_init();
+    persist_set_mode(PERSIST_LOW);
+    for (int i = 0; i < N; i++) {
+        persist_add_column((uint16_t)i, -1, 7);
+        other[i] = 255;
+    }
+    static const uint32_t dts[] = { 7, 13, 1, 40, 3, 19, 26, 5, 11, 33 };
+    for (unsigned k = 0; k < sizeof dts / sizeof dts[0]; k++) {
+        persist_decay_ms(dts[k]);
+        persist_fade(other, N, PERSIST_LOW, dts[k], &rem);
+        for (int i = 0; i < N; i++)
+            ASSERT_EQ(other[i], persist_get_intensity((uint16_t)i, 7), "same fade step by step");
+    }
+    ASSERT(other[0] > 0 && other[0] < 255, "partly faded");
+    persist_fade(other, N, PERSIST_LOW, 2u * persist_mode_tau_ms(PERSIST_LOW), &rem);
+    ASSERT_EQ(other[N - 1], 0, "gone after more than tau");
+    other[0] = 200u;
+    persist_fade(other, N, PERSIST_INFINITE, 1000u, &rem);
+    ASSERT_EQ(other[0], 200, "infinite keeps");
+    persist_fade(other, N, PERSIST_OFF, 1u, &rem);
+    ASSERT_EQ(other[0], 0, "off clears");
     tests_passed++;
     printf("  PASS\n");
 }
@@ -440,6 +471,7 @@ int main(void)
     test_clear();
     test_decay_ms_500();
     test_decay_ms_modes();
+    test_fade_any_buffer();
     test_add_rows();
     test_scale_rgb();
     test_geometry_guard();

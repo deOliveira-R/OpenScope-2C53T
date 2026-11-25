@@ -5,7 +5,7 @@ done (the canvas, and Y-T, roll and the spectrum as display types on it), and
 the view table of step 8 exists (`firmware/src/ui/view_table.h`). Step 7's
 port is done: X-Y and both halves of split draw through canvases. Since step
 10 (c) split is a pair of views in two panes, each drawn by its view's own
-drawer. The waterfall still has its own renderer.
+drawer: any two of Y-T, X-Y and the spectrum. The waterfall still has its own renderer.
 
 ## Why
 
@@ -261,8 +261,10 @@ from the screenshot copy after a full redraw and after a live update).
     the two views on the Display pane ("Upper half", "Lower half"; properties
     `view.upper`, `view.lower`, session settings, defaults Y-T over FFT). Which
     views can be a half is a column of the view table (`view_desc_t.half`: a
-    drawer for a pane of any height); X-Y (no pane form) and the waterfall (its
-    scratch line shares memory with the Y-T window) cannot yet. The two halves
+    drawer for a pane of any height, listed in `firmware/src/ui/split_halves.h`,
+    which a host test holds against the table); the waterfall cannot be one
+    (its scratch line shares memory with the Y-T window, and its history is
+    the memory an X-Y half's trail takes). The two halves
     never show the same view: a view keeps one set of state for what it drew
     (the bands the cursors read, the trigger placement, the window, the popup
     hole), so a half set to the other half's view swaps them, and either pair
@@ -303,3 +305,42 @@ from the screenshot copy after a full redraw and after a live update).
     the spectrum draws its scale on any pane of `FFT_SCALE_LINES` font lines
     (48 rows) or more, where it took a fixed 81 before (which a half under the
     strip would have lost).
+    (d) X-Y as a half (implemented 2026-11-25, to be checked on the unit).
+    One drawer for a pane of any height (`xy_pane_draw` in
+    `firmware/src/ui/scope_xy.c`): a square as tall as the pane, centred,
+    the graticule at the pane's division (26 rows full, 13 on a half with
+    the results hidden), the title in the left margin (a line that does not
+    fit the pane is left out), the focus mark under the trail when the half
+    has the keys. Full X-Y is that drawer on the whole band with its trail in
+    the persistence buffer, as before. A half's trail cannot be on the heap
+    (31,744 bytes) or in the persistence buffer (claiming it would take the
+    pool from split's spectrum): it is the FFT pool's slot
+    (`SHMEM_FFT_SLOT_OFFSET`, 20,480 bytes above the FFT layout), a slot with
+    tenants (the waterfall's history, the X-Y half's trail) that are never on
+    screen together; a tenant takes it every frame and starts it afresh when
+    the take reports that the bytes are not its own (another tenant, another
+    pool owner, or its hold released). The tallest half is split's upper
+    pane on the whole band, 103 rows: 103 x 103 = 10,609 bytes, checked at
+    build time. The half's trail starts afresh when the half enters split
+    and when its pane's height changes (the strips shown or hidden, the
+    cursors on or off). Both trails fade on wall time (`persist_fade`, the persistence
+    fade over any buffer with its own remainder) at the 500 ms step X-Y
+    enters with, so the tail is as long in a half as full; full X-Y still
+    follows `view.persist` while persistence is on in it. Full X-Y used to
+    fade 16 steps a frame: about 0.8 s at 20 frames a second running, 3.2 s
+    at the 5 a second of the animation when stopped. Entering a half does X-Y's bring-up that is not
+    about the trail (the offset outputs without the calibration page,
+    `scope_view_half_enter`), on the input task, from the one path both
+    ways a half arrives share (`view.mode` to split, and `view.upper` /
+    `view.lower` while split is on). The keys: a job is on the half that has
+    it (the job listed and its domain shown); with Y-T and X-Y both halves of
+    the time record, the zoom, channel and trigger moves are on the upper
+    half, the cursor and mask jobs on Y-T's. The strip is the keys' domain's
+    when a half draws that domain with a strip (`view_strip_domains`): X-Y
+    has none, so beside Y-T the time strip is Y-T's whichever time half has
+    the keys, and beside the spectrum the time jobs show no strip and the
+    band reserves only the spectrum's (panes of 96 rows with the results
+    shown and the cursors off). The keys' half is in the layout epoch with
+    the pair, so moving the keys between two time halves moves the focus
+    mark. Split animates when a half's view does (an X-Y half's trail fades
+    without new data).

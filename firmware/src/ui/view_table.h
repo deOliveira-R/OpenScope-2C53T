@@ -13,9 +13,10 @@
  * instead of testing for a particular view. An entry lists only what the
  * view's renderer really draws today: X-Y and the waterfall have no strip or
  * cursors yet (docs/design/display_architecture.md, steps 6 and 7). Split is
- * a pair of views in two panes (view.upper over view.lower): its entry is
- * composed from theirs (view_desc_of), so a view that can be a half brings
- * its jobs, strip and cursors with it.
+ * a pair of views in two panes (view.upper over view.lower), any two of the
+ * views that can be a half (Y-T, X-Y, FFT): its entry is composed from
+ * theirs (view_desc_of), so a view that can be a half brings its jobs, strip
+ * and cursors with it.
  *
  * Pure: a header, so every host test that links the key model has it.
  */
@@ -87,14 +88,15 @@ typedef struct {
 #define VIEW_TIME_ONLY  VIEW_DOM_BIT(VIEW_DOM_TIME)
 #define VIEW_FREQ_ONLY  VIEW_DOM_BIT(VIEW_DOM_FREQ)
 
-/* X-Y cannot be a half yet: it has no pane form (it paints its whole band
- * from the trail). Nor the waterfall: its scratch line shares memory with the
- * Y-T window (ui_draw_scratch_t), which the other half would be using. */
+/* X-Y is a half with its trail in the FFT pool's slot (scope_xy.c). The
+ * waterfall cannot be one: its scratch line shares memory with the Y-T window
+ * (ui_draw_scratch_t), which the other half would be using, and its history
+ * is the slot the X-Y half's trail takes. */
 static const view_desc_t view_table[VIEW_MODE_COUNT] = {
     [VIEW_MODE_YT]        = { VIEW_TIME_ONLY, 5, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE, KF_CURSOR, KF_MASK },
                               VIEW_RESULTS_FULL, true, true, false },
     [VIEW_MODE_XY]        = { VIEW_TIME_ONLY, 3, { KF_ZOOM, KF_CHMOVE, KF_TRIGMOVE }, VIEW_RESULTS_COUNT,
-                              false, false, false },
+                              false, true, false },
     /* The spectrum's span follows the timebase and its level the range, so
      * the spectrum views offer the input's scales as a second job. */
     [VIEW_MODE_FFT]       = { VIEW_FREQ_ONLY, 3, { KF_SPECTRUM, KF_ZOOM, KF_SPECTRUM_CURSOR },
@@ -156,17 +158,25 @@ static inline uint8_t view_half_next(uint8_t view_mode)
     return view_mode;
 }
 
-/* Append to d the jobs of entry h that work on a domain h shows, skipping a
- * job already listed: a job belongs to the half of its domain (the
+/* Entry h has job f as a half: it lists f and shows f's domain (the
  * spectrum's second job, the input's scales, is the time half's own). */
+static inline bool view_half_has_job(const view_desc_t *h, key_focus_t f)
+{
+    if ((h->domains & VIEW_DOM_BIT(key_focus_domain(f))) == 0u) return false;
+    for (uint8_t i = 0; i < h->n_jobs; i++)
+        if (h->jobs[i] == (uint8_t)f) return true;
+    return false;
+}
+
+/* Append to d the jobs entry h has as a half (view_half_has_job), skipping a
+ * job already listed. */
 static inline void view_desc_take(view_desc_t *d, const view_desc_t *h)
 {
     for (uint8_t i = 0; i < h->n_jobs; i++) {
         const key_focus_t f = (key_focus_t)h->jobs[i];
         bool listed = false;
         for (uint8_t k = 0; k < d->n_jobs; k++) listed |= d->jobs[k] == (uint8_t)f;
-        if (!listed && (h->domains & VIEW_DOM_BIT(key_focus_domain(f))) != 0u)
-            d->jobs[d->n_jobs++] = (uint8_t)f;
+        if (!listed && view_half_has_job(h, f)) d->jobs[d->n_jobs++] = (uint8_t)f;
     }
     d->domains |= h->domains;
 }
@@ -217,32 +227,59 @@ static inline view_domain_t view_key_domain(view_sel_t v, key_focus_t job)
     return view_shows(v, VIEW_DOM_TIME) ? VIEW_DOM_TIME : VIEW_DOM_FREQ;
 }
 
-/* The half of split the keys are on: the one that shows the keys' domain. */
+/* The half of split the keys are on: the half that has the job
+ * (view_half_has_job); when both have it (two halves of the time record,
+ * Y-T and X-Y: zoom, channel and trigger moves), the upper one; when neither
+ * does, the half that shows the keys' domain. */
 static inline view_half_t view_key_half(view_sel_t v, key_focus_t job)
 {
+    if (view_half_has_job(view_entry(v.half[VIEW_HALF_UPPER]), job)) return VIEW_HALF_UPPER;
+    if (view_half_has_job(view_entry(v.half[VIEW_HALF_LOWER]), job)) return VIEW_HALF_LOWER;
     const view_domain_t d = view_key_domain(v, job);
     return (view_entry(v.half[VIEW_HALF_UPPER])->domains & VIEW_DOM_BIT(d)) ? VIEW_HALF_UPPER : VIEW_HALF_LOWER;
 }
 
-/* The domain whose measurement strip the view draws (in split, the keyed
- * half's), or VIEW_DOM_COUNT when it draws none. */
+/* The domains whose measurement strip the view draws: a view's own when it
+ * has a strip (view_desc_t.results); in split, those of its halves that
+ * have one. A strip belongs to its domain, drawn by the view that shows it
+ * with one: X-Y has none, so in split beside Y-T the time strip is Y-T's,
+ * and beside the spectrum there is no time strip. */
+static inline uint8_t view_strip_domains(view_sel_t v)
+{
+    const view_desc_t *e = view_entry(v.mode);
+    if (!e->pair) return e->results != VIEW_RESULTS_COUNT ? e->domains : 0u;
+    uint8_t s = 0u;
+    for (uint8_t h = 0; h < VIEW_HALF_COUNT; h++) {
+        const view_desc_t *x = view_entry(v.half[h]);
+        if (x->results != VIEW_RESULTS_COUNT) s |= x->domains;
+    }
+    return s;
+}
+
+/* The domain whose measurement strip the view draws: the keys' domain when
+ * the view has its strip (view_strip_domains), else VIEW_DOM_COUNT. In split
+ * the keys on X-Y beside Y-T keep the time strip (it is the record's, and
+ * the same whichever time half has the keys); beside the spectrum, none. */
 static inline view_domain_t view_strip_domain(view_sel_t v, key_focus_t job)
 {
-    return view_entry(v.mode)->results != VIEW_RESULTS_COUNT ? view_key_domain(v, job) : VIEW_DOM_COUNT;
+    const view_domain_t d = view_key_domain(v, job);
+    return (view_strip_domains(v) & VIEW_DOM_BIT(d)) != 0u ? d : VIEW_DOM_COUNT;
 }
 
 /* Where the band of the view's plot ends: the top of the tallest of the
- * strips of the domains it shows (top[d]: domain d's strip top as its
- * results setting and the cursors leave it). A view of one domain ends at
- * its strip. Split reserves the taller of its halves' strips whichever half
- * has the keys, so the panes keep their size when the keys move; the keys'
- * half's strip sits at the bottom of that space. */
+ * strips it draws (view_strip_domains; top[d]: domain d's strip top as its
+ * results setting and the cursors leave it), UINT16_MAX when it draws none.
+ * A view of one domain ends at its strip. Split reserves the taller of its
+ * halves' strips whichever half has the keys, so the panes keep their size
+ * when the keys move; the keys' strip sits at the bottom of that space. Two
+ * halves are never the same view, and only X-Y of the half views has no
+ * strip, so split always has one. */
 static inline uint16_t view_band_bot(view_sel_t v, const uint16_t top[VIEW_DOM_COUNT])
 {
-    const uint8_t shows = view_desc_of(v).domains;
+    const uint8_t strips = view_strip_domains(v);
     uint16_t bot = UINT16_MAX;
     for (uint8_t d = 0; d < VIEW_DOM_COUNT; d++)
-        if ((shows & VIEW_DOM_BIT(d)) != 0u && top[d] < bot) bot = top[d];
+        if ((strips & VIEW_DOM_BIT(d)) != 0u && top[d] < bot) bot = top[d];
     return bot;
 }
 

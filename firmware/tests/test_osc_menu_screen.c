@@ -467,8 +467,17 @@ static void test_radio_panes(void)
 }
 
 /* Display's halves: two value rows bound to view.upper and view.lower; OK
- * steps the half to the next view that can be a half, the other half swaps
- * when it showed that one, and the view on screen stays. */
+ * steps the half to the next view that can be a half (Y-T, X-Y, FFT), the
+ * other half swaps when it showed that one, and the view on screen stays.
+ * While split is on screen each view that comes into a half gets its
+ * bring-up (the view_half_enter op), and split coming on brings both. */
+static uint8_t g_arrived[8], g_n_arrived;
+static void f_half_enter(uint8_t view)
+{
+    if (g_n_arrived < sizeof g_arrived) g_arrived[g_n_arrived] = view;
+    g_n_arrived++;
+}
+
 static void test_display_halves(void)
 {
     printf("Display pane: Split's upper and lower half\n");
@@ -479,29 +488,56 @@ static void test_display_halves(void)
     char t[16], u[16];
     osc_menu_bind_text(OSC_ROW_DISPLAY, OSC_DISP_UPPER, t, sizeof t);
     osc_menu_bind_text(OSC_ROW_DISPLAY, OSC_DISP_LOWER, u, sizeof u);
-    CHECK("by default they read \"Y-T\" over \"FFT\"; OK would step each to the other view",
+    CHECK("by default they read \"Y-T\" over \"FFT\"; OK would step the upper to X-Y, the lower to Y-T",
           strcmp(t, "Y-T") == 0 && strcmp(u, "FFT") == 0 &&
-          osc_menu_bind_value(OSC_ROW_DISPLAY, OSC_DISP_UPPER) == VIEW_MODE_FFT &&
+          osc_menu_bind_value(OSC_ROW_DISPLAY, OSC_DISP_UPPER) == VIEW_MODE_XY &&
           osc_menu_bind_value(OSC_ROW_DISPLAY, OSC_DISP_LOWER) == VIEW_MODE_YT);
 
-    bool ok = true;
+    /* OK on a half, round the pairs and back to the default: the pair after
+     * each, and the view that came into a half (COUNT: none, a swap). */
+    static const struct { uint8_t row, upper, lower, arrives; } STEP[] = {
+        { OSC_DISP_UPPER, VIEW_MODE_XY,  VIEW_MODE_FFT, VIEW_MODE_XY },
+        { OSC_DISP_UPPER, VIEW_MODE_FFT, VIEW_MODE_XY,  VIEW_MODE_COUNT },
+        { OSC_DISP_LOWER, VIEW_MODE_XY,  VIEW_MODE_FFT, VIEW_MODE_COUNT },
+        { OSC_DISP_LOWER, VIEW_MODE_XY,  VIEW_MODE_YT,  VIEW_MODE_YT },
+        { OSC_DISP_UPPER, VIEW_MODE_FFT, VIEW_MODE_YT,  VIEW_MODE_FFT },
+        { OSC_DISP_UPPER, VIEW_MODE_YT,  VIEW_MODE_FFT, VIEW_MODE_COUNT },
+    };
+    bool ok = true, arrive = true;
     for (uint8_t from = 0; from < OSC_DISP_VIEW_MODES; from++) {
         boot();
+        t_ops.view_half_enter = f_half_enter;
+        g_n_arrived = 0;
         (void)prop_set_local(P(VIEW_MODE), from, ORIGIN_SHELL, NULL);
+        const bool split = view_entry(from)->pair;
+        /* split coming on: both halves arrive, upper first */
+        arrive &= split ? (g_n_arrived == 2u && g_arrived[0] == VIEW_MODE_YT && g_arrived[1] == VIEW_MODE_FFT)
+                        : g_n_arrived == 0u;
         open_page(OSC_ROW_DISPLAY, false, BTN_MENU);
         (void)env_key(BTN_OK);
         ok &= osc_menu_bind_current(OSC_ROW_DISPLAY) == from;     /* the halves are never "checked" */
-        const env_epochs_t e0 = env_epochs();
-        const scr_res_t r = pick(OSC_ROW_DISPLAY, OSC_DISP_UPPER);
-        const env_epochs_t e1 = env_epochs();
-        ok &= r == SCR_DRAW && osc_menu_is_open() && G(P(VIEW_MODE)) == from &&
-              G(P(VIEW_UPPER)) == VIEW_MODE_FFT && G(P(VIEW_LOWER)) == VIEW_MODE_YT &&
-              env_epochs_moved(&e0, &e1) == (1u << PG_VIEW) && note()[0] == '\0';
-        (void)pick(OSC_ROW_DISPLAY, OSC_DISP_LOWER);
-        ok &= G(P(VIEW_MODE)) == from && G(P(VIEW_UPPER)) == VIEW_MODE_YT && G(P(VIEW_LOWER)) == VIEW_MODE_FFT;
-        if (!ok) { printf("    from view %u: upper %ld lower %ld\n", from, (long)G(P(VIEW_UPPER)), (long)G(P(VIEW_LOWER))); break; }
+        for (unsigned k = 0; k < sizeof STEP / sizeof STEP[0]; k++) {
+            g_n_arrived = 0;
+            const env_epochs_t e0 = env_epochs();
+            const scr_res_t r = pick(OSC_ROW_DISPLAY, STEP[k].row);
+            const env_epochs_t e1 = env_epochs();
+            ok &= r == SCR_DRAW && osc_menu_is_open() && G(P(VIEW_MODE)) == from &&
+                  G(P(VIEW_UPPER)) == STEP[k].upper && G(P(VIEW_LOWER)) == STEP[k].lower &&
+                  env_epochs_moved(&e0, &e1) == (1u << PG_VIEW) && note()[0] == '\0';
+            arrive &= (split && STEP[k].arrives != VIEW_MODE_COUNT)
+                      ? (g_n_arrived == 1u && g_arrived[0] == STEP[k].arrives) : g_n_arrived == 0u;
+            if (!ok) {
+                printf("    from view %u step %u: upper %ld lower %ld\n", from, k,
+                       (long)G(P(VIEW_UPPER)), (long)G(P(VIEW_LOWER)));
+                break;
+            }
+        }
+        if (!ok) break;
     }
-    CHECK("OK on a half, from every view: the pair swaps (Y-T/FFT <-> FFT/Y-T), the view stays, the page stays", ok);
+    CHECK("OK on a half, from every view: the half steps, the other swaps when it showed that view; "
+          "the view stays, the page stays", ok);
+    CHECK("in split, each view that comes into a half is brought up (both when split comes on); "
+          "a swap brings none, nor any change outside split", arrive);
 }
 
 /* ── the rules stay in the setters; the footer says what the row cannot ── */

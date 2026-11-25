@@ -1,8 +1,9 @@
 /*
  * Shared pool layout (src/dsp/shared_mem.h) — RAM diet, 2026-11-11.
  *
- * The pool is now sized to exactly the FFT owner's footprint and the waterfall
- * sub-tenant starts where the FFT layout ends. Built twice by `make
+ * The pool is now sized to exactly the FFT owner's footprint and its slot
+ * (the waterfall history, an X-Y half's trail) starts where the FFT layout
+ * ends. Built twice by `make
  * test-shmem-layout`: once as the host (radix-2) layout and once with
  * -DUSE_CMSIS_DSP, which is what every firmware image compiles, so the
  * numbers the target actually links are pinned here, not only the host ones.
@@ -27,8 +28,8 @@ int main(void)
 #endif
     /* The waterfall sits directly above the FFT layout, and ends at the top
      * of the pool: no slack, no overlap. */
-    CHECK(SHMEM_FFT_WATERFALL_OFFSET == SHMEM_NEED_FFT, "waterfall starts at FFT layout end");
-    CHECK(SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE == shared_mem_size(),
+    CHECK(SHMEM_FFT_SLOT_OFFSET == SHMEM_NEED_FFT, "waterfall starts at FFT layout end");
+    CHECK(SHMEM_FFT_SLOT_OFFSET + SHMEM_FFT_SLOT_SIZE == shared_mem_size(),
           "waterfall ends at the top of the pool");
     CHECK(SHMEM_NEED_PERSISTENCE <= shared_mem_size(), "persistence fits");
 
@@ -48,20 +49,50 @@ int main(void)
         uint8_t *q = shared_mem_acquire(SHMEM_OWNER_FFT);
         uint8_t *wf = shared_mem_get(SHMEM_OWNER_FFT);
         CHECK(wf != NULL, "waterfall: the FFT-owned pool is available");
-        CHECK(SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE <= shared_mem_size(),
+        CHECK(SHMEM_FFT_SLOT_OFFSET + SHMEM_FFT_SLOT_SIZE <= shared_mem_size(),
               "waterfall history fits the pool");
-        memset(q, 0x11, SHMEM_FFT_WATERFALL_OFFSET);
-        if (wf) memset(wf + SHMEM_FFT_WATERFALL_OFFSET, 0xFF, SHMEM_FFT_WATERFALL_SIZE);
-        CHECK(q[SHMEM_FFT_WATERFALL_OFFSET - 1u] == 0x11, "history leaves the FFT layout alone");
+        memset(q, 0x11, SHMEM_FFT_SLOT_OFFSET);
+        if (wf) memset(wf + SHMEM_FFT_SLOT_OFFSET, 0xFF, SHMEM_FFT_SLOT_SIZE);
+        CHECK(q[SHMEM_FFT_SLOT_OFFSET - 1u] == 0x11, "history leaves the FFT layout alone");
         printf("  %s: pool %lu B, FFT layout 0..%lu, waterfall %u x %u at %lu..%lu\n", name,
                (unsigned long)shared_mem_size(), (unsigned long)SHMEM_NEED_FFT,
                (unsigned)SHMEM_FFT_WATERFALL_ROWS, (unsigned)SHMEM_FFT_WATERFALL_COLS,
-               (unsigned long)SHMEM_FFT_WATERFALL_OFFSET,
-               (unsigned long)(SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE));
+               (unsigned long)SHMEM_FFT_SLOT_OFFSET,
+               (unsigned long)(SHMEM_FFT_SLOT_OFFSET + SHMEM_FFT_SLOT_SIZE));
         /* X-Y / persistence take the pool: the waterfall must see it is gone
          * (its "pool not FFT's" status), not draw from another owner's data. */
         (void)shared_mem_acquire(SHMEM_OWNER_PERSISTENCE);
         CHECK(shared_mem_get(SHMEM_OWNER_FFT) == NULL, "after X-Y/persistence, no waterfall pool");
+        shared_mem_release();
+    }
+
+    /* The slot's tenants: a take reports a change when another tenant had
+     * it, after an owner change, and after the holder's release; a release by
+     * a tenant that does not hold it changes nothing; no slot without the
+     * FFT. */
+    {
+        bool ch = false;
+        (void)shared_mem_acquire(SHMEM_OWNER_PERSISTENCE);
+        CHECK(shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch) == NULL, "no slot while the FFT is not the owner");
+        uint8_t *q = shared_mem_acquire(SHMEM_OWNER_FFT);
+        uint8_t *s = shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch);
+        CHECK(s == q + SHMEM_FFT_SLOT_OFFSET && ch, "first take: the slot, changed");
+        (void)shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch);
+        CHECK(!ch, "the same tenant again: unchanged");
+        (void)shared_mem_fft_slot(SHMEM_SLOT_XY_HALF, &ch);
+        CHECK(ch, "another tenant: changed");
+        (void)shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch);
+        CHECK(ch, "back to the first: changed");
+        shared_mem_fft_slot_release(SHMEM_SLOT_XY_HALF);
+        (void)shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch);
+        CHECK(!ch, "a release by a tenant not holding it: unchanged");
+        shared_mem_fft_slot_release(SHMEM_SLOT_WATERFALL);
+        (void)shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch);
+        CHECK(ch, "after its own release: changed");
+        (void)shared_mem_acquire(SHMEM_OWNER_PERSISTENCE);
+        (void)shared_mem_acquire(SHMEM_OWNER_FFT);
+        (void)shared_mem_fft_slot(SHMEM_SLOT_WATERFALL, &ch);
+        CHECK(ch, "after an owner change: changed");
         shared_mem_release();
     }
 

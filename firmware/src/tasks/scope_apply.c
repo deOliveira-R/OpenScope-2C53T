@@ -21,27 +21,39 @@
 #include "model.h"           /* the fft.* properties */
 #include "scope_vpos.h"
 #include "scope_trigger.h"
+#include "shared_mem.h"      /* the FFT pool's slot: an X-Y half's trail */
+#include "view_table.h"      /* view.mode values: the views of split's halves */
 #include <stdio.h>
 
-/* X-Y: what its view needs before it is drawn. The phosphor trail lives in
- * the shared persistence buffer (X-Y and the time-domain persistence overlay
- * never run at once): claimed here with a short tail and cleared. Without
- * the calibration page the old bring-up of the offset outputs still runs;
- * with it, the page's offset codes (scope_vpos) are left alone. On the first
- * entry, and whenever the buffer is not there (another owner had the pool).
- * Until ARCH-1 B7 the X-Y renderer did this itself on its first frame, from
- * the display task; draw_xy_screen() now only draws ("no signal" without a
- * buffer). Input task, as every view change. */
-static void xy_prepare(void)
+/* X-Y, full or a half of split: the bring-up of the offset outputs. Without
+ * the calibration page the old bring-up still runs; with it, the page's
+ * offset codes (scope_vpos) are left alone. Input task, as every view
+ * change. */
+static void xy_offsets_init(void)
 {
-    static bool done;
-    if (done && persist_is_initialized()) return;
     if (!scope_vpos_active()) {
         scope_trigger_dac_init();
         scope_trigger_ch2_init();
     }
+}
+
+/* Full X-Y: what its view needs before it is drawn. The phosphor trail lives
+ * in the shared persistence buffer (X-Y and the time-domain persistence
+ * overlay never run at once): claimed here with X-Y's trail mode and
+ * cleared, with the offset outputs' bring-up. On the first entry, and whenever the buffer is not
+ * there (another owner had the pool). Until ARCH-1 B7 the X-Y renderer did
+ * this itself on its first frame, from the display task; draw_xy_screen()
+ * now only draws ("no signal" without a buffer). Never in split: claiming
+ * the persistence buffer would take the pool from split's spectrum (an X-Y
+ * half's trail is the FFT pool's slot, scope_view_half_enter). Input task,
+ * as every view change. */
+static void xy_prepare(void)
+{
+    static bool done;
+    if (done && persist_is_initialized()) return;
+    xy_offsets_init();
     if (!persist_is_initialized()) persist_init();
-    persist_set_mode(PERSIST_LOW);             /* short phosphor tail */
+    persist_set_mode(PERSIST_XY_TRAIL_MODE);
     persist_clear();
     done = true;
 }
@@ -89,6 +101,13 @@ void scope_view_select(scope_view_t v)
         fft_init(&c);
     }
     scope_view = v;
+}
+
+void scope_view_half_enter(uint8_t view)
+{
+    if (view != VIEW_MODE_XY) return;
+    xy_offsets_init();
+    shared_mem_fft_slot_release(SHMEM_SLOT_XY_HALF);    /* its trail starts afresh */
 }
 
 void scope_apply_persist_off(void)

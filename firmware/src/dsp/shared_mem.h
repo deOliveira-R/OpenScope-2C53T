@@ -78,15 +78,24 @@ typedef enum {
 #define SHMEM_NEED_BODE         4096    /* 4 KB */
 #define SHMEM_NEED_DISPLAY      44400   /* Meter waveform panel: 300 * 74 * RGB565 */
 
-/* ── FFT sub-tenants ────────────────────────────────────────────────
+/* ── The FFT pool's slot ────────────────────────────────────────────
  *
- * The waterfall is not a pool owner in its own right: draw_waterfall_screen()
- * calls fft_process(), so it can only ever run while SHMEM_OWNER_FFT holds
- * the pool. Claiming it separately would evict the very FFT it depends on.
- * Instead its history buffer is a sub-tenant of the FFT region, placed above
- * everything fft_setup_pointers() lays down.
+ * Above everything fft_setup_pointers() lays down, the FFT owner's pool has
+ * one free slot, SHMEM_FFT_SLOT_SIZE bytes. Its tenants are pictures drawn
+ * while the FFT holds the pool that are never on screen together:
+ *   - the waterfall's history (SHMEM_FFT_WATERFALL_ROWS x _COLS intensities);
+ *   - the trail of an X-Y half of split (split always holds the pool for its
+ *     spectrum, scope_view_uses_fft; the waterfall is never a half).
+ * Neither can be a pool owner in its own right: the waterfall calls
+ * fft_process() and split draws the spectrum, so claiming the pool
+ * separately would evict the very FFT they run beside.
  *
- * The offset is SHMEM_NEED_FFT: the waterfall starts where the FFT layout
+ * The slot is sized by its largest tenant, the waterfall's history. A tenant
+ * takes it with shared_mem_fft_slot() every frame; the answer says when the
+ * bytes are not its own (another tenant had the slot, the pool changed owner,
+ * or the tenant's hold was released), and the tenant then starts it afresh.
+ *
+ * The offset is SHMEM_NEED_FFT: the slot starts where the FFT layout
  * ends (81920 under USE_CMSIS_DSP, 98304 radix-2). It used to be a FIXED 98304
  * so the address "would not change with the DSP backend", which bought 16 KB
  * of permanently unused slack in every CMSIS build. That reason does not hold:
@@ -98,27 +107,35 @@ typedef enum {
  * <= the offset), so raising FFT_SIZE still breaks the build instead of
  * overlapping the sample buffer with the waterfall (RAM diet, 2026-11-11).
  *
- * Lifetime rules for a sub-tenant:
- *   - only valid while the pool's owner is SHMEM_OWNER_FFT;
- *   - shared_mem_acquire() zeroes the pool on an owner *change*, so history
- *     is wiped automatically after an eviction — callers must notice via
- *     shared_mem_transition_count() and reset their own indices.
+ * Lifetime rules for a tenant:
+ *   - only valid while the pool's owner is SHMEM_OWNER_FFT (the slot is NULL
+ *     otherwise);
+ *   - shared_mem_acquire() zeroes the pool on an owner *change* and empties
+ *     the slot, so the next take reports it changed.
  */
-#define SHMEM_FFT_WATERFALL_OFFSET  SHMEM_NEED_FFT
+#define SHMEM_FFT_SLOT_OFFSET       SHMEM_NEED_FFT
 #define SHMEM_FFT_WATERFALL_ROWS    64
 #define SHMEM_FFT_WATERFALL_COLS    320
-#define SHMEM_FFT_WATERFALL_SIZE    (SHMEM_FFT_WATERFALL_ROWS * SHMEM_FFT_WATERFALL_COLS)
+#define SHMEM_FFT_SLOT_SIZE         (SHMEM_FFT_WATERFALL_ROWS * SHMEM_FFT_WATERFALL_COLS)
 
-/* Total pool FOOTPRINT of the FFT owner, including the waterfall sub-tenant:
- * 102400 under CMSIS, 118784 radix-2. This is the figure the About/health
- * screens report. */
+/* The slot's tenants. */
+typedef enum {
+    SHMEM_SLOT_NONE = 0,
+    SHMEM_SLOT_WATERFALL,       /* the waterfall's history */
+    SHMEM_SLOT_XY_HALF,         /* the trail of split's X-Y half */
+    SHMEM_SLOT_COUNT
+} shmem_slot_tenant_t;
+
+/* Total pool FOOTPRINT of the FFT owner, including the slot: 102400 under
+ * CMSIS, 118784 radix-2. This is the figure the About/health screens
+ * report. */
 #define SHMEM_NEED_FFT_TOTAL \
-    (SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE)
+    (SHMEM_FFT_SLOT_OFFSET + SHMEM_FFT_SLOT_SIZE)
 
 _Static_assert(SHMEM_NEED_FFT_TOTAL <= SHMEM_POOL_SIZE,
-               "FFT region + waterfall sub-tenant overflows the shared pool");
-_Static_assert((SHMEM_FFT_WATERFALL_OFFSET % 4) == 0,
-               "waterfall sub-tenant must stay word-aligned in the pool");
+               "FFT region + its slot overflows the shared pool");
+_Static_assert((SHMEM_FFT_SLOT_OFFSET % 4) == 0,
+               "the FFT pool's slot must stay word-aligned in the pool");
 /* The other claimants must fit too, now that the pool is no bigger than FFT
  * needs. */
 _Static_assert(SHMEM_NEED_PERSISTENCE <= SHMEM_POOL_SIZE,
@@ -144,6 +161,17 @@ uint8_t *shared_mem_get(shmem_owner_t expected_owner);
 
 /* Total pool size */
 uint32_t shared_mem_size(void);
+
+/* The FFT pool's slot for tenant t (display task): SHMEM_FFT_SLOT_SIZE bytes,
+ * or NULL while the FFT does not own the pool. *changed: the bytes are not
+ * t's (another tenant had the slot, the pool changed owner, or t's hold was
+ * released since its last take): t starts them afresh. t holds the slot from
+ * here on. */
+uint8_t *shared_mem_fft_slot(shmem_slot_tenant_t t, bool *changed);
+
+/* t lets the slot go if it holds it, so its next take reports a change (its
+ * picture restarts). Any task: a take never undoes it. */
+void shared_mem_fft_slot_release(shmem_slot_tenant_t t);
 
 /* ═══════════════════════════════════════════════════════════════════
  * Lifecycle helpers

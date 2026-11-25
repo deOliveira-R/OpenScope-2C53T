@@ -509,6 +509,8 @@ typedef struct {
     uint8_t (*trigger_code)(void);                     /* fpga_acq_trig_code_get (trig.code)    */
     /* views and the shared pool (scope_apply.c) */
     bool    (*view_select)(uint8_t view);              /* scope_view_select; false = not in build */
+    void    (*view_half_enter)(uint8_t view);          /* scope_view_half_enter: a view.mode value
+                                                        * comes on screen as a half of split  */
     bool    (*persist_on)(uint8_t mode);               /* scope_apply_persist_on                */
     void    (*persist_off)(void);                      /* scope_apply_persist_off               */
     uint8_t (*persist_mode)(void);                     /* persist_get_mode                      */

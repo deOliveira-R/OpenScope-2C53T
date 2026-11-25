@@ -2,33 +2,38 @@
 #include "shared_mem.h"
 #include <string.h>
 
-/* Persistence buffer uses shared memory pool (64KB of 150KB available) */
-static uint8_t *persist_buf = 0;
+/* The buffer is the shared pool while persistence owns it, and nothing
+ * otherwise: another owner (the FFT of a spectrum view or of split) taking
+ * the pool takes the buffer with it, so no reader keeps a pointer into
+ * memory that is no longer persistence's. */
+static uint8_t *persist_mem(void)
+{
+    return shared_mem_get(SHMEM_OWNER_PERSISTENCE);
+}
 static persist_mode_t current_mode = PERSIST_OFF;
 static uint32_t decay_rem;     /* persist_decay_ms: fade carried between calls */
 
 void persist_init(void)
 {
-    persist_buf = shared_mem_acquire(SHMEM_OWNER_PERSISTENCE);
-    memset(persist_buf, 0, PERSIST_WIDTH * PERSIST_HEIGHT);
+    memset(shared_mem_acquire(SHMEM_OWNER_PERSISTENCE), 0, PERSIST_WIDTH * PERSIST_HEIGHT);
     current_mode = PERSIST_OFF;
     decay_rem = 0;
 }
 
 void persist_deinit(void)
 {
-    persist_buf = 0;
     current_mode = PERSIST_OFF;
-    shared_mem_release();
+    if (persist_mem()) shared_mem_release();       /* only the pool it holds */
 }
 
 bool persist_is_initialized(void)
 {
-    return persist_buf != 0;
+    return persist_mem() != 0;
 }
 
 void persist_clear(void)
 {
+    uint8_t *const persist_buf = persist_mem();
     if (persist_buf)
         memset(persist_buf, 0, PERSIST_WIDTH * PERSIST_HEIGHT);
 }
@@ -50,6 +55,8 @@ void persist_add_trace(const uint16_t *y_values, uint8_t color_index)
 {
     uint16_t x, y;
     (void)color_index; /* Color is applied at render time, not stored in buffer */
+    uint8_t *const persist_buf = persist_mem();
+    if (!persist_buf) return;
 
     for (x = 0; x < PERSIST_WIDTH; x++) {
         y = y_values[x];
@@ -76,49 +83,6 @@ void persist_add_trace(const uint16_t *y_values, uint8_t color_index)
     }
 }
 
-void persist_add_point(uint16_t x, uint16_t y)
-{
-    if (!persist_buf || x >= PERSIST_WIDTH || y >= PERSIST_HEIGHT)
-        return;
-    persist_buf[y * PERSIST_WIDTH + x] = 255;
-}
-
-void persist_decay(void)
-{
-    uint8_t decay;
-    uint32_t i;
-    uint32_t total = PERSIST_WIDTH * PERSIST_HEIGHT;
-
-    switch (current_mode) {
-    case PERSIST_OFF:
-        /* Clear everything each frame */
-        memset(persist_buf, 0, PERSIST_WIDTH * PERSIST_HEIGHT);
-        return;
-    case PERSIST_LOW:
-        decay = 16;
-        break;
-    case PERSIST_MEDIUM:
-        decay = 4;
-        break;
-    case PERSIST_HIGH:
-        decay = 1;
-        break;
-    case PERSIST_INFINITE:
-        /* No decay */
-        return;
-    default:
-        return;
-    }
-
-    for (i = 0; i < total; i++) {
-        if (persist_buf[i] > decay) {
-            persist_buf[i] -= decay;
-        } else {
-            persist_buf[i] = 0;
-        }
-    }
-}
-
 uint32_t persist_mode_tau_ms(persist_mode_t mode)
 {
     switch (mode) {
@@ -129,35 +93,40 @@ uint32_t persist_mode_tau_ms(persist_mode_t mode)
     }
 }
 
-void persist_decay_ms(uint32_t dt_ms)
+void persist_fade(uint8_t *buf, uint32_t n, persist_mode_t mode, uint32_t dt_ms, uint32_t *rem)
 {
-    const uint32_t tau = persist_mode_tau_ms(current_mode);
-    if (!persist_buf) return;
-    if (current_mode == PERSIST_OFF) {
-        memset(persist_buf, 0, PERSIST_WIDTH * PERSIST_HEIGHT);
+    const uint32_t tau_ms = persist_mode_tau_ms(mode);
+    if (mode == PERSIST_OFF) {
+        memset(buf, 0, n);
         return;
     }
-    if (tau == 0u) return;                          /* INFINITE */
+    if (tau_ms == 0u) return;                       /* INFINITE */
 
     /* 255 * dt / tau, with the remainder kept. dt is capped at one tau, which
      * already fades everything, so the product cannot overflow. */
-    if (dt_ms > tau) dt_ms = tau;
-    uint32_t acc = decay_rem + 255u * dt_ms;
-    uint32_t dec = acc / tau;
-    decay_rem = acc % tau;
+    if (dt_ms > tau_ms) dt_ms = tau_ms;
+    const uint32_t acc = *rem + 255u * dt_ms;
+    const uint32_t dec = acc / tau_ms;
+    *rem = acc % tau_ms;
     if (dec == 0u) return;
-
-    const uint32_t total = PERSIST_WIDTH * PERSIST_HEIGHT;
     if (dec >= 255u) {
-        memset(persist_buf, 0, total);
+        memset(buf, 0, n);
         return;
     }
-    for (uint32_t i = 0; i < total; i++)
-        persist_buf[i] = (persist_buf[i] > dec) ? (uint8_t)(persist_buf[i] - dec) : 0u;
+    for (uint32_t i = 0; i < n; i++)
+        buf[i] = (buf[i] > dec) ? (uint8_t)(buf[i] - dec) : 0u;
+}
+
+void persist_decay_ms(uint32_t dt_ms)
+{
+    uint8_t *const persist_buf = persist_mem();
+    if (!persist_buf) return;
+    persist_fade(persist_buf, PERSIST_WIDTH * PERSIST_HEIGHT, current_mode, dt_ms, &decay_rem);
 }
 
 void persist_add_column(uint16_t x, int y_prev, int y)
 {
+    uint8_t *const persist_buf = persist_mem();
     if (!persist_buf || x >= PERSIST_WIDTH) return;
     if (y < 0 || y >= PERSIST_HEIGHT) return;
     int lo = y, hi = y;
@@ -193,15 +162,16 @@ uint16_t persist_scale_rgb565(uint16_t color, uint8_t intensity)
 
 uint8_t persist_get_intensity(uint16_t x, uint16_t y)
 {
-    if (x >= PERSIST_WIDTH || y >= PERSIST_HEIGHT) {
+    const uint8_t *const persist_buf = persist_mem();
+    if (!persist_buf || x >= PERSIST_WIDTH || y >= PERSIST_HEIGHT) {
         return 0;
     }
     return persist_buf[y * PERSIST_WIDTH + x];
 }
 
-const uint8_t *persist_get_buffer(void)
+uint8_t *persist_get_buffer(void)
 {
-    return persist_buf;
+    return persist_mem();
 }
 
 uint16_t persist_intensity_to_color_ch1(uint8_t intensity)

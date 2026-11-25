@@ -3,25 +3,29 @@
  *
  * The band over the measurement strip is split into two panes, one above the
  * other with a divider row between them (plot_pane_split). Each is drawn by
- * the view the pair puts there (view.upper, view.lower: a view that can be a
- * half, view_table.h) through that view's own pane drawer, on the canvas of
- * its half, so each half sends only the columns that changed. Each half
- * draws its own cursor lines. The half the keys are on (the job's domain,
- * view_key_half) is framed (the focus mark, under the data) and owns the
- * furniture: its domain's measurement strip at the bottom and, while the
- * cursors are on, their readout in that strip's AUX row. The measurement
- * rows are split's own setting (view.splithide, hidden by default); the
- * readout row stays while the cursors are on. The band ends over the taller
- * of the two halves' strips (view_band_bot), whichever half has the keys,
- * and the space the keys' strip leaves above it is background: the panes
- * never change size when the keys move. The keys' domain is layout
- * (scope_screen_epochs), so moving the keys is a full frame of the panes at
- * the same size: the focus mark, the strip and the readout follow it.
+ * the view the pair puts there (view.upper, view.lower: any two of Y-T, X-Y
+ * and the spectrum, view_table.h) through that view's own pane drawer
+ * (split_halves.h), on the canvas of its half, so each half sends only the
+ * columns that changed. Each half draws its own cursor lines. The half the
+ * keys are on (the half that has the job, view_key_half) is framed (the
+ * focus mark, under the data); the furniture is that of the keys' domain:
+ * its measurement strip at the bottom when a half draws that domain with a
+ * strip (view_strip_domain: X-Y has none, so beside Y-T the time strip is
+ * Y-T's and beside the spectrum there is none) and, while the cursors are
+ * on, their readout in that strip's AUX row. The measurement rows are
+ * split's own setting (view.splithide, hidden by default); the readout row
+ * stays while the cursors are on. The band ends over the taller of the
+ * halves' strips (view_band_bot), whichever half has the keys, and the space
+ * the keys' strip leaves above it is background: the panes never change
+ * size when the keys move. The keys' half is layout (scope_screen_epochs),
+ * so moving the keys is a full frame of the panes at the same size: the
+ * focus mark, the strip and the readout follow it.
  */
 
 #include "scope_ui_parts.h"
 #include "canvas.h"
 #include "key_model.h"      /* scope_view_sel, key_focus_get */
+#include "split_halves.h"
 
 /* What the halves drew, for the furniture of the keys' half. */
 typedef struct {
@@ -44,12 +48,18 @@ static bool half_fft(const plot_pane_t *p, bool all, uint32_t frame, split_drawn
     return fft_pane_draw(p, all, &d->fft);
 }
 
-/* The pane drawer of every view that can be a half (view_desc_t.half): the
+static bool half_xy(const plot_pane_t *p, bool all, uint32_t frame, split_drawn_t *d)
+{
+    (void)frame; (void)d;
+    return xy_half_draw(p, all);
+}
+
+/* The pane drawer of every view that can be a half (view_desc_t.half; the
+ * list is split_halves.h, which a host test holds against the table): the
  * setter of view.upper / view.lower admits no other view. */
-static const split_half_fn k_half_draw[VIEW_MODE_COUNT] = {
-    [VIEW_MODE_YT]  = half_yt,
-    [VIEW_MODE_FFT] = half_fft,
-};
+#define SPLIT_HALF_ENTRY(view, fn)  [view] = fn,
+static const split_half_fn k_half_draw[VIEW_MODE_COUNT] = { SPLIT_HALF_DRAWERS(SPLIT_HALF_ENTRY) };
+#undef SPLIT_HALF_ENTRY
 
 /* The top of each domain's measurement strip (its rows, as split's results
  * setting leaves them, and its AUX row). */
@@ -83,7 +93,7 @@ void draw_split_screen(uint32_t frame, bool full)
     const theme_t *th = theme_get();
     const view_sel_t v = scope_view_sel();
     const key_focus_t job = (key_focus_t)key_focus_get();
-    const view_domain_t dom = view_key_domain(v, job);
+    const view_domain_t strip = view_strip_domain(v, job);
     uint16_t top[VIEW_DOM_COUNT];
     split_strip_tops(ss, top);
     const uint16_t band_bot = view_band_bot(v, top);
@@ -101,9 +111,9 @@ void draw_split_screen(uint32_t frame, bool full)
     /* The reserved space, then the keys' strip at its bottom. */
     if (full && band_bot < STRIP_BOTTOM)
         lcd_fill_rect(0, band_bot, LCD_WIDTH, (uint16_t)(STRIP_BOTTOM - band_bot), th->background);
-    if (dom == VIEW_DOM_FREQ)
+    if (strip == VIEW_DOM_FREQ)
         fft_furniture_draw(ss, &d.fft, top[VIEW_DOM_FREQ], !full);
-    else if (full)
+    else if (strip == VIEW_DOM_TIME && full)
         draw_measurement_badges(ss, th, false);
     if (full) draw_popup(th);
 }

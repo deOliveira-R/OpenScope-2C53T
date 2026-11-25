@@ -566,9 +566,9 @@ void cmd_ui_dump(void)
                          (unsigned long)shared_mem_size(), shared_mem_owner_name(),
                          (unsigned long)shared_mem_transition_count(),
                          (unsigned)SHMEM_FFT_WATERFALL_ROWS, (unsigned)SHMEM_FFT_WATERFALL_COLS,
-                         (unsigned long)SHMEM_FFT_WATERFALL_OFFSET,
-                         (unsigned long)(SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE),
-                         (SHMEM_FFT_WATERFALL_OFFSET + SHMEM_FFT_WATERFALL_SIZE <= shared_mem_size())
+                         (unsigned long)SHMEM_FFT_SLOT_OFFSET,
+                         (unsigned long)(SHMEM_FFT_SLOT_OFFSET + SHMEM_FFT_SLOT_SIZE),
+                         (SHMEM_FFT_SLOT_OFFSET + SHMEM_FFT_SLOT_SIZE <= shared_mem_size())
                              ? "fits" : "DOES NOT FIT",
                          (w < 5u) ? wfs[w] : "?", (unsigned)scope_ui_waterfall_row());
         /* The transform's own setup (the CMSIS tables are selected at build

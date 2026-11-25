@@ -500,17 +500,21 @@ void scope_screen_epochs(uint32_t *layout, uint32_t *soft)
                             | ((uint32_t)persist_get_mode() << 9));
     h = redraw_epoch_mix(h, (uint32_t)scope_view);
     h = redraw_epoch_mix(h, scope_view_fft_epoch());
-    /* The domain the keys are on: a view of two domains marks it and draws
-     * its strip and cursor readout (it goes with the view, so it is layout as
-     * view.mode is). The focus mark crosses every column of both panes, so
-     * this is a full frame of the panes at the size they had: split's band
-     * does not depend on the keys (view_band_bot). */
-    h = redraw_epoch_mix(h, (uint32_t)view_key_domain(scope_view_sel(), (key_focus_t)key_focus_get()));
-    /* Split's pair, while split is on screen: another view in a half is
-     * another picture. */
+    /* The domain the keys are on, and in split their half: split marks that
+     * half and draws the strip and cursor readout of that domain (they go
+     * with the view, so they are layout as view.mode is). The half, not only
+     * the domain: Y-T and X-Y are two halves of one domain. The focus mark
+     * crosses every column of both panes, so this is a full frame of the
+     * panes at the size they had: split's band does not depend on the keys
+     * (view_band_bot). */
     const view_sel_t vs = scope_view_sel();
+    const key_focus_t job = (key_focus_t)key_focus_get();
+    h = redraw_epoch_mix(h, (uint32_t)view_key_domain(vs, job));
+    /* Split's pair and the keys' half, while split is on screen: another
+     * view in a half is another picture. */
     if (view_entry(vs.mode)->pair)
-        h = redraw_epoch_mix(h, (uint32_t)vs.half[VIEW_HALF_UPPER] | ((uint32_t)vs.half[VIEW_HALF_LOWER] << 8));
+        h = redraw_epoch_mix(h, (uint32_t)vs.half[VIEW_HALF_UPPER] | ((uint32_t)vs.half[VIEW_HALF_LOWER] << 8) |
+                                ((uint32_t)view_key_half(vs, job) << 16));
     *layout = h;
 
     h = REDRAW_EPOCH_SEED;

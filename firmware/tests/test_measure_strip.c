@@ -406,22 +406,39 @@ static void strip_tops(bool hidden, bool cursors, uint16_t top[VIEW_DOM_COUNT])
 
 /* Split's band ends over the taller of its halves' strips whichever half has
  * the keys (view_band_bot): for every results setting, cursor state, pair
- * and job, the panes have the same rows; the keys' strip fits under the
- * band; results hidden leave the cursor readout row only, or the whole band. */
+ * and job, the panes have the same rows; the keys' strip, when there is one,
+ * fits under the band; results hidden leave the cursor readout row only, or
+ * the whole band. X-Y draws no strip, so a pair with it reserves only its
+ * other half's. */
+static const char *view_name(uint8_t v)
+{
+    return v == VIEW_MODE_YT ? "Y-T" : v == VIEW_MODE_XY ? "X-Y" : "FFT";
+}
+
 static void test_split_panes(void)
 {
-    static const uint8_t pairs[2][VIEW_HALF_COUNT] = { { VIEW_MODE_YT, VIEW_MODE_FFT },
-                                                        { VIEW_MODE_FFT, VIEW_MODE_YT } };
+    static const uint8_t pairs[][VIEW_HALF_COUNT] = {
+        { VIEW_MODE_YT, VIEW_MODE_FFT }, { VIEW_MODE_FFT, VIEW_MODE_YT },
+        { VIEW_MODE_YT, VIEW_MODE_XY },  { VIEW_MODE_XY, VIEW_MODE_YT },
+        { VIEW_MODE_FFT, VIEW_MODE_XY }, { VIEW_MODE_XY, VIEW_MODE_FFT },
+    };
+    const int npairs = (int)(sizeof pairs / sizeof pairs[0]);
     const unsigned full_div = PLOT_PANE_DIV_PX(BOTTOM - PLOT_TOP);
     for (int hidden = 0; hidden < 2; hidden++)
         for (int cursors = 0; cursors < 2; cursors++)
-            for (int p = 0; p < 2; p++) {
+            for (int p = 0; p < npairs; p++) {
                 const view_sel_t v = view_sel(VIEW_MODE_SPLIT, pairs[p][0], pairs[p][1]);
                 uint16_t top[VIEW_DOM_COUNT];
                 strip_tops(hidden, cursors, top);
                 const uint16_t band = view_band_bot(v, top);
-                const unsigned tallest = BOTTOM - (top[VIEW_DOM_TIME] < top[VIEW_DOM_FREQ]
-                                                   ? top[VIEW_DOM_TIME] : top[VIEW_DOM_FREQ]);
+                /* The strips the pair's halves draw: Y-T time, FFT frequency. */
+                unsigned tallest = 0u;
+                for (int h = 0; h < VIEW_HALF_COUNT; h++) {
+                    const uint8_t hv = pairs[p][h];
+                    const uint16_t t = hv == VIEW_MODE_YT ? top[VIEW_DOM_TIME]
+                                     : hv == VIEW_MODE_FFT ? top[VIEW_DOM_FREQ] : BOTTOM;
+                    if (BOTTOM - t > tallest) tallest = BOTTOM - t;
+                }
                 const view_desc_t d = view_desc_of(v);
                 int up = -1, lo = -1, udiv = -1, ldiv = -1;
                 bool same = true, fits = true;
@@ -434,11 +451,12 @@ static void test_split_panes(void)
                     const int u = q[0].bot - q[0].top, l = q[1].bot - q[1].top;
                     if (up < 0) { up = u; lo = l; udiv = q[0].div_px; ldiv = q[1].div_px; }
                     same &= u == up && l == lo && q[0].div_px == udiv && q[1].div_px == ldiv;
-                    fits &= top[view_key_domain(v, f)] >= band && q[h].marked && !q[1 - h].marked;
+                    const view_domain_t sd = view_strip_domain(v, f);
+                    fits &= (sd == VIEW_DOM_COUNT || top[sd] >= band) && q[h].marked && !q[1 - h].marked;
                 }
                 printf("  results %s, cursors %s, %s over %s: band ends at %u, panes %d + %d rows "
                        "(divisions %d, %d), keys on either half\n",
-                       hidden ? "hidden" : "shown", cursors ? "on" : "off", p ? "FFT" : "Y-T", p ? "Y-T" : "FFT",
+                       hidden ? "hidden" : "shown", cursors ? "on" : "off", view_name(pairs[p][0]), view_name(pairs[p][1]),
                        (unsigned)band, up, lo, udiv, ldiv);
                 CHECK(same, "heights move with the keys (hidden %d cursors %d pair %d)", hidden, cursors, p);
                 CHECK(fits, "the keys' strip is not under the band (hidden %d cursors %d pair %d)", hidden, cursors, p);
