@@ -305,7 +305,7 @@ static bool xy_pane_draw(const plot_pane_t *p, bool all, const xy_trail_t *t)
         .all = all,
         .paint = xy_paint, .ctx = &f,
     };
-    (void)canvas_draw_columns(&cf);
+    (void)plot_canvas_draw(&cf);
     return hole;
 }
 

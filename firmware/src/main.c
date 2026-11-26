@@ -221,6 +221,8 @@ const char *const ui_perf_name[UI_PERF_COUNT] = {
     [UI_PERF_SPLIT]         = "split frame",
     [UI_PERF_WATERFALL]     = "waterfall frame",
     [UI_PERF_FFT_TRANSFORM] = "FFT transform (fft_process)",
+    [UI_PERF_FFT_BUILD]     = "spectrum build (transform, labels)",
+    [UI_PERF_FFT_FURNITURE] = "spectrum strip and readout",
 };
 volatile uint32_t ui_scope_live_draws  = 0;
 volatile uint32_t ui_redraw_all_count  = 0;   /* DCMD_REDRAW_ALL handled (any mode) */

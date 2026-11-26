@@ -6,6 +6,7 @@
 
 #include "shell_parts.h"
 #include "ui_perf.h"
+#include "../ui/plot_pane.h"   /* `ui dump`: each canvas's last frame */
 
 /* `screen dump [shadow] [x y w h]`: the LCD shadow (4-bit palette indices)
  * as text, one hex digit per pixel, a "ROW n" line per row after a
@@ -540,16 +541,18 @@ void cmd_ui_dump(void)
             usb_debug_printf("scope live frame: last %lu us (view_build %lu us), longest %lu us\r\n",
                              (unsigned long)ui_scope_live_us_last, (unsigned long)ui_scope_view_us_last,
                              (unsigned long)ui_scope_live_us_max);
-            extern volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
-            extern volatile uint32_t ui_scope_live_send_us, ui_scope_live_px_sent;
             extern volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
             usb_debug_printf("lcd column writes since boot: window set-up %lu ms, palette searches %lu\r\n",
                              (unsigned long)(lcd_perf_window_cycles / (system_core_clock / 1000u)),
                              (unsigned long)lcd_perf_palette_searches);
-            usb_debug_printf("scope live frame columns: %u sent, %u unchanged and skipped; %lu pixels; "
-                             "sending took %lu us\r\n",
-                             (unsigned)ui_scope_live_cols_sent, (unsigned)ui_scope_live_cols_skipped,
-                             (unsigned long)ui_scope_live_px_sent, (unsigned long)ui_scope_live_send_us);
+            static const char *const canvas_name[CANVAS_COUNT] = {
+                [CANVAS_PLOT] = "plot", [CANVAS_SPLIT_UPPER] = "split upper",
+            };
+            for (uint8_t i = 0; i < CANVAS_COUNT; i++)
+                usb_debug_printf("canvas %s, last frame: %u columns sent, %lu pixels; took %lu us, "
+                                 "sending %lu us\r\n", canvas_name[i], (unsigned)plot_canvas_stats[i].cols,
+                                 (unsigned long)plot_canvas_stats[i].px, (unsigned long)plot_canvas_stats[i].us,
+                                 (unsigned long)plot_canvas_stats[i].send_us);
             for (uint8_t i = 0; i < UI_PERF_COUNT; i++)
                 usb_debug_printf("scope %s: %lu times, last %lu us, longest %lu us\r\n", ui_perf_name[i],
                                  (unsigned long)ui_perf[i].n, (unsigned long)ui_perf[i].last_us,

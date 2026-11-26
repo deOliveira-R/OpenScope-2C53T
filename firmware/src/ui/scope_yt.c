@@ -20,12 +20,6 @@
 #include "canvas.h"
 #include "plot_elements.h"
 
-/* Columns sent and skipped by the last frame, and the pixels sent (`ui dump`). */
-volatile uint16_t ui_scope_live_cols_sent, ui_scope_live_cols_skipped;
-volatile uint32_t ui_scope_live_px_sent;
-
-volatile uint32_t ui_scope_live_send_us;     /* of the frame's time, the part spent sending columns */
-
 #if FEATURE_BENCHSHELL
 /* `fpga scope livecheck <frames>`: while live_check_frames is not zero each
  * frame of a record also evaluates every pixel with a per-pixel rule (one
@@ -660,18 +654,12 @@ bool scope_yt_draw(const plot_pane_t *p, bool all, uint32_t frame)
         .all = all,
         .base = yt_paint_base, .paint = yt_paint_column, .ctx = &f,
     };
-    const uint32_t send0 = lcd_perf_column_cycles;
-    const uint32_t px0 = lcd_perf_column_pixels;
-    const uint16_t cols_sent = canvas_draw_columns(&cf);
+    (void)plot_canvas_draw(&cf);
 
     uint8_t at_limit = 0;
     for (uint8_t ch = 0; ch < 2u; ch++)
         for (unsigned i = 0; f.record && i < PLOT_RAIL_BYTES; i++)
             if (f.rail[ch][i]) at_limit |= (uint8_t)(1u << ch);
     scope_ui_plot_clip_set(at_limit, f.off_plot);
-    ui_scope_live_cols_sent = cols_sent;
-    ui_scope_live_send_us = (lcd_perf_column_cycles - send0) / (system_core_clock / 1000000u);
-    ui_scope_live_px_sent = lcd_perf_column_pixels - px0;
-    ui_scope_live_cols_skipped = (uint16_t)(LCD_WIDTH - cols_sent);
     return hole;
 }

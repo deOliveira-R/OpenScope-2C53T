@@ -616,7 +616,7 @@ bool fft_pane_draw(const plot_pane_t *p, bool all, fft_drawn_t *drawn)
 {
     const uint16_t height = (uint16_t)(p->band_bot - p->top);
     fft_frame_t f;
-    fft_frame_build(&f, (uint16_t)p->top, height, p->marked);
+    UI_TIMED(UI_PERF_FFT_BUILD, fft_frame_build(&f, (uint16_t)p->top, height, p->marked));
     memcpy(drawn->meas, f.meas, sizeof f.meas);
     drawn->ch2 = f.ch2;
     drawn->ax = f.ax;
@@ -630,7 +630,7 @@ bool fft_pane_draw(const plot_pane_t *p, bool all, fft_drawn_t *drawn)
         .all = all,
         .paint = fft_paint_column, .ctx = &f,
     };
-    (void)canvas_draw_columns(&cf);
+    (void)plot_canvas_draw(&cf);
     return hole;
 }
 
@@ -661,6 +661,6 @@ void draw_fft_screen(bool full)
     const plot_pane_t pane = plot_pane_make(CANVAS_PLOT, top, end, end);
     fft_drawn_t d;
     popup_hole_last = fft_pane_draw(&pane, full, &d);
-    fft_furniture_draw(ss, &d, bot, !full);
+    UI_TIMED(UI_PERF_FFT_FURNITURE, fft_furniture_draw(ss, &d, bot, !full));
     if (full) draw_popup(theme_get());
 }

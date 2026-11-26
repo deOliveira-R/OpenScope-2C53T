@@ -27,6 +27,8 @@ enum {
     UI_PERF_SPLIT,          /* the split view's frame, both halves */
     UI_PERF_WATERFALL,      /* the waterfall view's frame, the transform included */
     UI_PERF_FFT_TRANSFORM,  /* fft_process alone, in whichever view runs it */
+    UI_PERF_FFT_BUILD,      /* a spectrum pane's frame build: transform, scale, labels */
+    UI_PERF_FFT_FURNITURE,  /* the spectrum's strip and cursor readout under the pane */
     UI_PERF_COUNT
 };
 

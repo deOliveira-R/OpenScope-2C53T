@@ -38,6 +38,23 @@ void scope_ui_plot_clip_set(uint8_t at_limit, uint8_t off_plot)
 uint8_t scope_ui_plot_at_limit(void) { return s_at_limit; }
 uint8_t scope_ui_off_plot(void)      { return s_off_plot; }
 
+volatile plot_canvas_stats_t plot_canvas_stats[CANVAS_COUNT];
+
+uint16_t plot_canvas_draw(const canvas_frame_t *f)
+{
+    const uint32_t c0 = DWT->CYCCNT, send0 = lcd_perf_column_cycles, px0 = lcd_perf_column_pixels;
+    const uint16_t cols = canvas_draw_columns(f);
+    const uint32_t per_us = system_core_clock / 1000000u;
+    if (f->id < CANVAS_COUNT) {
+        volatile plot_canvas_stats_t *const st = &plot_canvas_stats[f->id];
+        st->cols = cols;
+        st->px = lcd_perf_column_pixels - px0;
+        st->us = (DWT->CYCCNT - c0) / per_us;
+        st->send_us = (lcd_perf_column_cycles - send0) / per_us;
+    }
+    return cols;
+}
+
 plot_pane_t scope_pane_full(const scope_state_t *ss)
 {
     return plot_pane_make(CANVAS_PLOT, SCOPE_TOP, SCOPE_BOT, (int16_t)strip_top(ss));

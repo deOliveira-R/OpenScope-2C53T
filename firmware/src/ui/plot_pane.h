@@ -26,6 +26,17 @@
 #include <stdint.h>
 #include "canvas.h"
 
+/* What a canvas's last frame cost (`ui dump`): columns sent, pixels sent,
+ * the whole frame and, of it, the time spent sending. */
+typedef struct {
+    uint16_t cols;
+    uint32_t px, us, send_us;
+} plot_canvas_stats_t;
+extern volatile plot_canvas_stats_t plot_canvas_stats[CANVAS_COUNT];
+/* canvas_draw_columns, with its cost kept in plot_canvas_stats[f->id]
+ * (scope_ui.c). */
+uint16_t plot_canvas_draw(const canvas_frame_t *f);
+
 /* Divisions of the graticule down a pane (stock: 8). */
 #define PLOT_PANE_DIVS_V  8
 
