@@ -77,7 +77,10 @@ static inline void strip_span(const canvas_strip_t *s, int first, int last, uint
  * once per strip, in increasing index order. Without a base function, paint
  * must write every pixel of the strip; with one, base must, and paint is
  * called right after it on the same strip and paints the overlays over the
- * base (it must not paint the base again). */
+ * base. The overlays' rows are the ones where the strip ends up different
+ * from its base, so an overlay may paint a base element again above itself
+ * (the spectrum's grid over its bars): where that leaves the base's pixel,
+ * the row is not an overlay row. */
 typedef void (*canvas_paint_fn)(void *ctx, uint16_t index, const canvas_strip_t *s);
 
 typedef struct {

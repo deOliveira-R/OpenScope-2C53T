@@ -590,17 +590,12 @@ static void fft_check_column(const fft_frame_t *f, const fft_col_t *c, uint16_t 
 }
 #endif
 
-/* Paint column x of the spectrum into s: the canvas's paint function. The
- * elements, lowest first: black, the bar, the dB grid, the focus mark, the
- * max-hold dot, the peak carets, the labels, the cursors. */
-static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
+/* The still part of the spectrum, which holds while the bars move: the dB
+ * grid's dots and the focus mark. The base paints them on black; the bars
+ * cover them, so the overlays paint them again over the bars (an overlay
+ * pixel equal to the base's is not an overlay row, canvas.h). */
+static void fft_grid_mark(const fft_frame_t *f, uint16_t x, const canvas_strip_t *s)
 {
-    const fft_frame_t *const f = ctx;
-    fft_col_t c;
-    fft_column(f, x, &c);
-
-    for (int i = 0; i < s->hi - s->lo; i++) s->px[i] = COLOR_BLACK;
-    strip_span(s, c.bar_top, s->hi - 1, c.bar_c);
     if (f->bars && x >= FFT_LMARGIN && FFT_GRID_DOT(x))
         for (uint8_t k = 0; k < f->ng; k++) strip_put(s, f->gy[k], COLOR_GRID);
     if (f->mark) {
@@ -611,6 +606,30 @@ static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
             strip_span(s, f->y_bot - FOCUS_MARK_PX, f->y_bot - 1, f->mark_c);
         }
     }
+}
+
+/* Paint the base of column x into s: the canvas's base function. Black,
+ * then the grid and the focus mark. */
+static void fft_paint_base(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    const fft_frame_t *const f = ctx;
+    for (int i = 0; i < s->hi - s->lo; i++) s->px[i] = COLOR_BLACK;
+    fft_grid_mark(f, x, s);
+}
+
+/* Paint the overlays of column x over its base in s: the canvas's paint
+ * function, called right after fft_paint_base for the same column. The
+ * elements, lowest first (the base under them): the bar, the dB grid and
+ * the focus mark again, the max-hold dot, the peak carets, the labels, the
+ * cursors. */
+static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    const fft_frame_t *const f = ctx;
+    fft_col_t c;
+    fft_column(f, x, &c);
+
+    strip_span(s, c.bar_top, s->hi - 1, c.bar_c);
+    if (c.bar_top < s->hi) fft_grid_mark(f, x, s);
     strip_put(s, c.mh_y, COLOR_RED);
     for (int k = (int)f->np - 1; k >= 0; k--)
         for (int dy = -3; dy <= -2; dy++)
@@ -644,7 +663,7 @@ bool fft_pane_draw(const plot_pane_t *p, bool all, fft_drawn_t *drawn)
         .rect = { 0, (uint16_t)p->top, LCD_WIDTH, height },
         .holes = &popup, .nholes = hole ? 1u : 0u,
         .all = all,
-        .paint = fft_paint_column, .ctx = &f,
+        .base = fft_paint_base, .paint = fft_paint_column, .ctx = &f,
     };
     (void)plot_canvas_draw(&cf);
     return hole;

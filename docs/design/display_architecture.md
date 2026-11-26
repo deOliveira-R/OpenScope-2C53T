@@ -150,7 +150,17 @@ shorter than a window's set-up (11 bus writes). A changed base, `all`, a
 hole that changed, another painter on the rows, or a last frame without a
 base sends the whole column. Y-T (and so roll and split's Y-T half) uses it;
 with persistence on the ghosts change the base every frame, so its columns
-go whole as before. `ui dump` counts the pixels sent.
+go whole as before. The spectrum uses it too: its base is black, the dB
+grid's dots and the focus mark, and since the bars cover the grid, its
+overlays paint the grid and the mark again over the bars (a row the
+overlays leave equal to the base is not an overlay row); only the bars and
+what is over them are sent, not the black above them. `ui dump` gives each
+canvas's last frame: columns and pixels sent, its time and its sending time.
+
+Labels are painted a column at a time (`ctext_paint_column`,
+`font_text_column`): each label whose box covers the column, over its rows
+only. The per-pixel rule (`ctext_px`) stays as what `fpga scope livecheck`
+compares the painted pixels against.
 
 The partial send is a build feature, `canvasruns` (`firmware/features.mk`),
 on in every image. Its core is one file, `firmware/src/ui/canvas_runs.c`: the
