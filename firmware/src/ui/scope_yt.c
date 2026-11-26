@@ -110,6 +110,7 @@ typedef struct {
     bool         mth;                       /* math is on */
     int16_t      mlab_w;                    /* width of its label, pixels */
     const uint8_t *pbuf;                    /* persistence intensities, or NULL */
+    bool         ghosts_fade;               /* the ghosts fade (a fade time): an overlay (el_ghosts) */
     uint16_t     pbase_top, pbase_bot;      /* ghost colours above and below pbase_mid */
     uint16_t     pbase_mid;                 /* the row that splits the fitted bands */
     /* Columns where a trace sits on a converter rail: one bit per column,
@@ -243,6 +244,7 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
      * the column's ghosts were read (yt_paint_column). */
     f->pbuf = (!f->roll && persist_enabled && persist_is_initialized()) ? persist_get_buffer() : NULL;
     if (f->pbuf) persist_frame_decay(p);
+    f->ghosts_fade = f->pbuf && persist_mode_tau_ms(persist_get_mode()) != 0u;
     f->pbase_top = persist_base(ss, th, false);
     f->pbase_bot = persist_base(ss, th, true);
     f->pbase_mid = (uint16_t)yt_vmap_band_mid(p->top, p->band_bot);
@@ -345,13 +347,15 @@ typedef void (*yt_base_fn)(const yt_frame_t *f, uint16_t x, const canvas_strip_t
 typedef void (*yt_element_fn)(const yt_frame_t *f, const yt_col_t *c, uint16_t x,
                               const canvas_strip_t *s);
 
-/* Background and persistence ghosts: every pixel of the strip. */
+/* Background, and the persistence ghosts while they hold still (infinite
+ * persistence): every pixel of the strip. Ghosts that fade change every
+ * frame, so they are an overlay instead (el_ghosts). */
 static void el_ground(const yt_frame_t *f, uint16_t x, const canvas_strip_t *s)
 {
     const uint16_t rows = (uint16_t)(s->hi - s->lo);
     const uint16_t bg = f->th->background;
     uint16_t *const px = s->px;
-    if (!f->pbuf) {
+    if (!f->pbuf || f->ghosts_fade) {
         for (uint16_t i = 0; i < rows; i++) px[i] = bg;
         return;
     }
@@ -383,6 +387,30 @@ static void el_focus_mark(const yt_frame_t *f, uint16_t x, const canvas_strip_t 
 }
 
 /* The trigger level, a dotted line across the plot. */
+/* Fading persistence ghosts: the lowest overlay, since they change every
+ * frame; only the rows with a ghost then differ from the base and are sent.
+ * The graticule and the focus mark are over the ghosts, so they are painted
+ * again in a column that has one (where they meet no ghost they repaint the
+ * base as it is). */
+static void el_ghosts(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
+{
+    (void)c;
+    if (!f->ghosts_fade) return;
+    const uint16_t bg = f->th->background;
+    const uint16_t base_top = f->pbase_top, base_bot = f->pbase_bot, mid = f->pbase_mid;
+    const uint8_t *in = &f->pbuf[(s->lo - f->p.top) * PERSIST_WIDTH + x];
+    bool any = false;
+    for (int y = s->lo; y < s->hi; y++, in += PERSIST_WIDTH) {
+        if (*in == 0u) continue;
+        s->px[y - s->lo] = yt_ghost(*in, (uint16_t)y, mid, base_top, base_bot, bg);
+        any = true;
+    }
+    if (any) {
+        el_grid(f, x, s);
+        el_focus_mark(f, x, s);
+    }
+}
+
 static void el_trigger_line(const yt_frame_t *f, const yt_col_t *c, uint16_t x, const canvas_strip_t *s)
 {
     (void)c;
@@ -518,7 +546,7 @@ static void el_roll_label(const yt_frame_t *f, const yt_col_t *c, uint16_t x, co
 }
 
 /* What Y-T draws, lowest layer first: the base, which holds still while the
- * picture runs (persistence's ghosts change it every frame), ... */
+ * picture runs (with infinite persistence the ghosts are in it), ... */
 static const yt_base_fn yt_base[] = {
     el_ground,
     el_grid,
@@ -529,6 +557,7 @@ static const yt_base_fn yt_base[] = {
  * mask's bounds are among them: they are drawn through the channels' maps,
  * and a fitted map is fitted to the record (yt_fits). */
 static const yt_element_fn yt_overlays[] = {
+    el_ghosts,
     el_trigger_line,
     el_mask_bounds,
     el_traces,

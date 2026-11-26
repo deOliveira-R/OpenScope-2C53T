@@ -1,6 +1,9 @@
 #include "persistence.h"
 #include "shared_mem.h"
 #include <string.h>
+#if defined(__ARM_FEATURE_SIMD32)
+#include <arm_acle.h>   /* __uqsub8: four saturating byte subtractions in one instruction */
+#endif
 
 /* The buffer is the shared pool while persistence owns it, and nothing
  * otherwise: another owner (the FFT of a spectrum view or of split) taking
@@ -93,6 +96,27 @@ uint32_t persist_mode_tau_ms(persist_mode_t mode)
     }
 }
 
+/* Take dec off each of n intensities, stopping at 0. On the Cortex-M4 four
+ * at a time (UQSUB8, a saturating subtract of four bytes); the host build
+ * (the tests) and the ends of the buffer go a byte at a time. */
+static void fade_sub(uint8_t *buf, uint32_t n, uint8_t dec)
+{
+    uint32_t i = 0;
+#if defined(__ARM_FEATURE_SIMD32)
+    for (; i < n && ((uintptr_t)&buf[i] & 3u) != 0u; i++)
+        buf[i] = (buf[i] > dec) ? (uint8_t)(buf[i] - dec) : 0u;
+    const uint8x4_t dec4 = (uint8x4_t)(dec * 0x01010101u);
+    for (; i + 4u <= n; i += 4u) {
+        uint8x4_t w;
+        memcpy(&w, &buf[i], sizeof w);
+        w = __uqsub8(w, dec4);
+        memcpy(&buf[i], &w, sizeof w);
+    }
+#endif
+    for (; i < n; i++)
+        buf[i] = (buf[i] > dec) ? (uint8_t)(buf[i] - dec) : 0u;
+}
+
 void persist_fade(uint8_t *buf, uint32_t n, persist_mode_t mode, uint32_t dt_ms, uint32_t *rem)
 {
     const uint32_t tau_ms = persist_mode_tau_ms(mode);
@@ -113,8 +137,7 @@ void persist_fade(uint8_t *buf, uint32_t n, persist_mode_t mode, uint32_t dt_ms,
         memset(buf, 0, n);
         return;
     }
-    for (uint32_t i = 0; i < n; i++)
-        buf[i] = (buf[i] > dec) ? (uint8_t)(buf[i] - dec) : 0u;
+    fade_sub(buf, n, (uint8_t)dec);
 }
 
 void persist_decay_ms(uint32_t dt_ms)
