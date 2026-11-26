@@ -43,6 +43,9 @@ SECTIONS
   .text :
   {
     . = ALIGN(4);
+    /* The application's hot-first order (ld/zero_wait_groups.ld); a guest
+     * image is diagnostic, so its groups are not ASSERTed. */
+    INCLUDE ld/zero_wait_groups.ld
     *(.text)
     *(.text*)
     *(.glue_7)

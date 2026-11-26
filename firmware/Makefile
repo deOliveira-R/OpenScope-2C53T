@@ -501,7 +501,7 @@ $(BUILD_DIR)/%.o: %.S Makefile features.mk | $(BUILD_DIR)
 $(BUILD_DIR)/%.o: %.s Makefile features.mk | $(BUILD_DIR)
 	$(AS) -c $(ASFLAGS) $< -o $@
 
-$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile features.mk $(LDSCRIPT)
+$(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) Makefile features.mk $(LDSCRIPT) ld/zero_wait_groups.ld
 	$(CC) $(OBJECTS) $(LDFLAGS) -o $@
 	$(SZ) $@
 	@{ printf 'profile\t%s\n' '$(PROFILE)'; $(foreach f,$(FEATURE_LIST),printf 'feature\t%s\t%s\t%s\t%s\t%s\t%s\n' '$($(f)_name)' '$(FEATURE_$(f))' '$($(f)_bit)' '$(strip $(notdir $(patsubst %.c,%.o,$($(f)_srcs))))' '$(strip $($(f)_shared))' '$(strip $($(f)_desc))';) } > $(BUILD_DIR)/features.built
@@ -1855,6 +1855,16 @@ check-adc-offset:
 	cd .. && python3 -I scripts/check_adc_offset.py --src firmware/src
 
 test-adc-offset-ratchet: check-adc-offset
+
+# The hot code is in the zero-wait flash (ld/zero_wait_groups.ld): the groups'
+# ends, every function the call graph reaches from the per-pixel, per-record/ISR
+# and per-frame roots, and the data they read, against _flash_zw_end in the
+# built image. Prints the margin left. Part of the gate.
+.PHONY: check-zw
+check-zw: $(BUILD_DIR)/$(TARGET).elf
+	cd .. && python3 -I scripts/check_zero_wait.py --elf firmware/$(BUILD_DIR)/$(TARGET).elf \
+		--map firmware/$(BUILD_DIR)/firmware.map --groups firmware/ld/zero_wait_groups.ld \
+		--objdump $(OBJDUMP)
 
 .PHONY: check-owners
 check-owners:

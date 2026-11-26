@@ -23,6 +23,7 @@ extern void system_clock_config(void);
 #include "lcd.h"
 #include "lcd_health.h"
 #include "ui.h"
+#include "ui_perf.h"
 #include "signal_gen.h"
 #include "ui/scope_freq.h"
 #include "watchdog.h"
@@ -207,20 +208,20 @@ volatile uint32_t ui_scope_full_draws  = 0;
 /* Time of the last live trace redraw and the longest one, microseconds (DWT
  * cycle counter, started by fault.c at boot); `ui dump` prints them. */
 volatile uint32_t ui_scope_live_us_last, ui_scope_live_us_max;
-/* The same for the other paints of the scope screen (`ui dump`): how often
- * each ran, how long the last and the longest took. */
-typedef struct { uint32_t n, last_us, max_us; } ui_perf_t;
-enum { UI_PERF_FULL, UI_PERF_STRIP, UI_PERF_CURSOR_ROW, UI_PERF_COUNT };
+/* The same for the other paints of the scope screen and its other views
+ * (ui_perf.h, `ui dump`): how often each ran, how long the last and the
+ * longest took. */
 volatile ui_perf_t ui_perf[UI_PERF_COUNT];
-const char *const ui_perf_name[UI_PERF_COUNT] = { "full redraw", "measurement strip", "cursor row" };
-const uint8_t ui_perf_count = UI_PERF_COUNT;
-#define UI_TIMED(slot, call) do { \
-        const uint32_t c0_ = DWT->CYCCNT; \
-        call; \
-        const uint32_t us_ = (DWT->CYCCNT - c0_) / (system_core_clock / 1000000u); \
-        ui_perf[slot].n++; ui_perf[slot].last_us = us_; \
-        if (us_ > ui_perf[slot].max_us) ui_perf[slot].max_us = us_; \
-    } while (0)
+const char *const ui_perf_name[UI_PERF_COUNT] = {
+    [UI_PERF_FULL]          = "full redraw",
+    [UI_PERF_STRIP]         = "measurement strip",
+    [UI_PERF_CURSOR_ROW]    = "cursor row",
+    [UI_PERF_XY]            = "X-Y frame",
+    [UI_PERF_FFT]           = "spectrum frame",
+    [UI_PERF_SPLIT]         = "split frame",
+    [UI_PERF_WATERFALL]     = "waterfall frame",
+    [UI_PERF_FFT_TRANSFORM] = "FFT transform (fft_process)",
+};
 volatile uint32_t ui_scope_live_draws  = 0;
 volatile uint32_t ui_redraw_all_count  = 0;   /* DCMD_REDRAW_ALL handled (any mode) */
 volatile uint32_t ui_scope_skipped     = 0;
@@ -524,10 +525,15 @@ static void render_yt(uint32_t frame, bool full)
     if (us > ui_scope_live_us_max) ui_scope_live_us_max = us;
 }
 
-static void render_xy(uint32_t frame, bool full)    { (void)frame; draw_xy_screen(full); }
-static void render_fft(uint32_t frame, bool full)   { (void)frame; draw_fft_screen(full); }
-static void render_split(uint32_t frame, bool full) { draw_split_screen(frame, full); }
-static void render_waterfall(uint32_t frame, bool full) { (void)frame; (void)full; draw_waterfall_screen(); }
+/* The other views: each frame, full or live, timed for `ui dump`. */
+static void render_xy(uint32_t frame, bool full)    { (void)frame; UI_TIMED(UI_PERF_XY, draw_xy_screen(full)); }
+static void render_fft(uint32_t frame, bool full)   { (void)frame; UI_TIMED(UI_PERF_FFT, draw_fft_screen(full)); }
+static void render_split(uint32_t frame, bool full) { UI_TIMED(UI_PERF_SPLIT, draw_split_screen(frame, full)); }
+static void render_waterfall(uint32_t frame, bool full)
+{
+    (void)frame; (void)full;
+    UI_TIMED(UI_PERF_WATERFALL, draw_waterfall_screen());
+}
 
 typedef struct {
     void (*draw)(uint32_t frame, bool full);

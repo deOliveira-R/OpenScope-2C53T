@@ -92,7 +92,7 @@ void draw_waterfall_screen(void)
         return;
     }
     bool live = (src == FFT_SRC_LIVE);
-    fft_process(sbuf, nsamp, &fft_result);
+    UI_TIMED(UI_PERF_FFT_TRANSFORM, fft_process(sbuf, nsamp, &fft_result));
 
     /* Take the history buffer, the FFT pool's slot. NULL if FFT does not own
      * the pool, in which case there is nothing valid to draw into: return

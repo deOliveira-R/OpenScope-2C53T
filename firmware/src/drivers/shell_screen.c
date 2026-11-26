@@ -5,6 +5,7 @@
  */
 
 #include "shell_parts.h"
+#include "ui_perf.h"
 
 /* `screen dump [shadow] [x y w h]`: the LCD shadow (4-bit palette indices)
  * as text, one hex digit per pixel, a "ROW n" line per row after a
@@ -549,11 +550,7 @@ void cmd_ui_dump(void)
                              "sending took %lu us\r\n",
                              (unsigned)ui_scope_live_cols_sent, (unsigned)ui_scope_live_cols_skipped,
                              (unsigned long)ui_scope_live_px_sent, (unsigned long)ui_scope_live_send_us);
-            typedef struct { uint32_t n, last_us, max_us; } ui_perf_t;
-            extern volatile ui_perf_t ui_perf[];
-            extern const char *const ui_perf_name[];
-            extern const uint8_t ui_perf_count;
-            for (uint8_t i = 0; i < ui_perf_count; i++)
+            for (uint8_t i = 0; i < UI_PERF_COUNT; i++)
                 usb_debug_printf("scope %s: %lu times, last %lu us, longest %lu us\r\n", ui_perf_name[i],
                                  (unsigned long)ui_perf[i].n, (unsigned long)ui_perf[i].last_us,
                                  (unsigned long)ui_perf[i].max_us);

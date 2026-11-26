@@ -35,6 +35,7 @@
 #include "scope_roll_meas.h"
 #include "FreeRTOS.h"   /* pvPortMalloc: the X-Y snapshot buffers */
 #include "at32f403a_407.h"  /* the cycle counter (DWT) and system_core_clock, for the frame timing */
+#include "ui_perf.h"       /* UI_TIMED: the transform's time for `ui dump` */
 #include "task.h"       /* xTaskGetTickCount: popup timeouts, persistence fade */
 #include "scope_trigger.h"
 #include "trig_edge.h"

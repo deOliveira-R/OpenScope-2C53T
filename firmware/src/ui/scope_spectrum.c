@@ -430,7 +430,7 @@ static void fft_frame_build_plot(fft_frame_t *f, uint16_t y_top, uint16_t height
     const bool ch2 = f->ch2 = live && sel.ch == 1u;
     f->bar_hot = ch2 ? COLOR_CH2 : COLOR_CH1;
     f->bar_low = ch2 ? FFT_BAR_LOW_CH2 : COLOR_CYAN;
-    fft_process(sbuf, nsamp, &fft_result);
+    UI_TIMED(UI_PERF_FFT_TRANSFORM, fft_process(sbuf, nsamp, &fft_result));
     const float *draw_data = (fft_result.avg_db != NULL) ? fft_result.avg_db
                                                          : fft_result.level_db;
     fft_live_measure(draw_data, FFT_BINS, fft_result.num_peaks ? fft_result.peaks[0].bin : 0u,

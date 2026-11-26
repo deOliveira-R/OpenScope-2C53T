@@ -45,18 +45,10 @@ SECTIONS
   .text :
   {
     . = ALIGN(4);
-    /* The plot's per-column path (it runs for every pixel of every column,
-     * about 66,000 times a frame) first, so it is in the zero-wait area
-     * whatever grows before it. Measured 2026-11-25: canvas_runs.o linked
-     * at 0x08047e18, past that area, made a live Y-T frame 37 ms instead of
-     * 23.6 ms. */
-    */canvas.o(.text .text*)
-    */canvas_runs.o(.text .text*)
-    */plot_elements.o(.text .text*)
-    */scope_yt.o(.text .text*)
-    */scope_yt_frame.o(.text .text*)
-    */lcd.o(.text .text*)
-    _ezw_plot = .;
+    /* The hot code and its data first, in three groups (per pixel; per
+     * record and ISR; per frame), so they are in the zero-wait area
+     * whatever grows after them. */
+    INCLUDE ld/zero_wait_groups.ld
     *(.text)
     *(.text*)
     *(.glue_7)
@@ -67,7 +59,9 @@ SECTIONS
     . = ALIGN(4);
     _etext = .;
   } >FLASH_APP
-  ASSERT(_ezw_plot <= _flash_zw_end, "the plot's per-column path must be in the zero-wait flash")
+  ASSERT(_ezw_pixel <= _flash_zw_end, "the per-pixel group (ld/zero_wait_groups.ld) must end in the zero-wait flash")
+  ASSERT(_ezw_record <= _flash_zw_end, "the per-record and ISR group (ld/zero_wait_groups.ld) must end in the zero-wait flash")
+  ASSERT(_ezw_frame <= _flash_zw_end, "the per-frame group (ld/zero_wait_groups.ld) must end in the zero-wait flash")
 
   .rodata :
   {
