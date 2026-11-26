@@ -43,6 +43,25 @@ bool ctext_place(ctext_set_t *T, const label_box_t *area, int x, int y, const ch
     return false;
 }
 
+/* Paint the labels' pixels in column x into s, the same picture ctext_px
+ * gives pixel by pixel: ctext_px takes the first label that claims a pixel,
+ * so the labels are painted last first. Only the columns and rows of each
+ * label's box are visited. */
+void ctext_paint_column(const ctext_set_t *T, int x, const canvas_strip_t *s)
+{
+    for (int k = (int)T->n - 1; k >= 0; k--) {
+        const int dx = x - T->box[k].x;
+        if (dx < 0 || dx >= T->box[k].w) continue;
+        uint8_t mask = 0, stride = 0;
+        const uint8_t *p = font_text_column(T->t[k].s, &font_small, dx, &mask, &stride);
+        const int y0 = T->box[k].y, h = T->box[k].h;
+        for (int dy = 0; dy < h; dy++, p = p ? p + stride : p) {
+            if (p && (*p & mask)) strip_put(s, y0 + dy, T->t[k].fg);
+            else if (T->t[k].opaque) strip_put(s, y0 + dy, T->t[k].bg);
+        }
+    }
+}
+
 /* The colour of the text pixel at (x, y), written to *c; false when no string
  * covers that pixel (the caller then draws its own background). */
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c)
@@ -596,10 +615,7 @@ static void fft_paint_column(void *ctx, uint16_t x, const canvas_strip_t *s)
     for (int k = (int)f->np - 1; k >= 0; k--)
         for (int dy = -3; dy <= -2; dy++)
             if (fft_caret_px((int)x - f->pkx[k], dy)) strip_put(s, f->pky[k] + dy, COLOR_RED);
-    for (int y = s->lo; y < s->hi; y++) {
-        uint16_t color;
-        if (ctext_px(&f->T, x, y, &color)) s->px[y - s->lo] = color;
-    }
+    ctext_paint_column(&f->T, (int)x, s);
     if (f->curs) cursor_layer_paint(&f->cl, x, s);
 #if FEATURE_BENCHSHELL
     if (live_check_frames) fft_check_column(f, &c, x, s);

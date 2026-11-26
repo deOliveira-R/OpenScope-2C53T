@@ -63,6 +63,15 @@ uint16_t font_draw_string(uint16_t x, uint16_t y, const char *str,
 int font_text_px(const char *str, const font_t *font, int dx, int dy);
 
 /*
+ * Column dx of `str` (top-left at (0, 0)), for painting text a column at a
+ * time: the glyph pixel at row dy is (p[dy * *stride] & *mask) != 0, for
+ * 0 <= dy < font->height, where p is the returned pointer. Returns NULL when
+ * no glyph has a pixel column at dx (a gap, past the end, or dx < 0).
+ */
+const uint8_t *font_text_column(const char *str, const font_t *font, int dx,
+                                uint8_t *mask, uint8_t *stride);
+
+/*
  * Measure string width without drawing (for centering, alignment).
  */
 uint16_t font_string_width(const char *str, const font_t *font);

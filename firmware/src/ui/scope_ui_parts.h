@@ -431,6 +431,8 @@ bool ctext_place(ctext_set_t *T, const label_box_t *area, int x, int y, const ch
                  uint16_t fg, uint16_t bg, bool opaque);
 /* Colour of text set T at pixel (x, y), or false. */
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c);
+/* Paint column x of the labels into s (the picture ctext_px gives). */
+void ctext_paint_column(const ctext_set_t *T, int x, const canvas_strip_t *s);
 
 /* scope_spectrum.c */
 /* The FFT source changed: the waterfall starts again. */

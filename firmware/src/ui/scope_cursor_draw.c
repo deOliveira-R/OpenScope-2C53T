@@ -240,9 +240,10 @@ void cursor_layer_paint(const cur_layer_t *L, uint16_t x, const canvas_strip_t *
     for (int k = (int)L->nlab - 1; k >= 0; k--) {
         const int dx = (int)x - L->lab[k].x;
         if (dx < 0 || dx >= L->lab[k].w) continue;
-        for (int dy = 0; dy < (int)font_small.height; dy++)
-            if (font_text_px(L->lab[k].s, &font_small, dx, dy))
-                strip_put(s, L->lab[k].y + dy, L->lab[k].c);
+        uint8_t mask = 0, stride = 0;
+        const uint8_t *p = font_text_column(L->lab[k].s, &font_small, dx, &mask, &stride);
+        for (int dy = 0; p && dy < (int)font_small.height; dy++, p += stride)
+            if (*p & mask) strip_put(s, L->lab[k].y + dy, L->lab[k].c);
     }
 }
 
