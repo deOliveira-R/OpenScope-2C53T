@@ -186,7 +186,7 @@ void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
  * it again when it has finished to discard the marks of its own windows.
  * Another painter's windows, another slot's included, mark every slot whose
  * rows they touch. Changing a slot's rows marks it too. Display task only. */
-#define LCD_WATCH_SLOTS  2u
+#define LCD_WATCH_SLOTS  3u    /* the canvases (canvas.h), the measurement strip */
 void lcd_watch_rows(uint8_t slot, uint16_t y0, uint16_t y1);
 bool lcd_watch_take(uint8_t slot);  /* drawn on since the last call? (clears the mark) */
 
@@ -226,6 +226,13 @@ void lcd_readback_row(uint16_t x, uint16_t y, uint16_t w, uint8_t fmt, lcd_readb
 /* Drawing primitives */
 void lcd_set_pixel(uint16_t x, uint16_t y, uint16_t color);
 void lcd_blit_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_t *pixels);
+/* A rectangle sent a row at a time, for a painter that composes one row of
+ * it in RAM while the panel takes the last: lcd_rect_begin() sets the window
+ * (on the glass: x + w <= LCD_WIDTH, y + h <= LCD_HEIGHT), then lcd_rect_row()
+ * sends each of its h rows, top to bottom, w pixels each. lcd_blit_rect() is
+ * the two for a whole buffer. The screenshot shadow is kept a row at a time. */
+void lcd_rect_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
+void lcd_rect_row(const uint16_t *pixels);
 void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
 void lcd_clear(uint16_t color);
 

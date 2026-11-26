@@ -132,7 +132,8 @@ _ezw_record = .;
     */scope_screen.o(.text.key_active_channel_get .text.key_focus_get .text.scope_screen_changed
                      .text.scope_screen_cursor_epoch .text.scope_screen_epochs .text.scope_screen_shown
                      .text.scope_view_sel .text.view_desc_of .text.view_half_has_job .text.view_key_domain)
-    */lcd.o(.text.lcd_blit_rect .text.lcd_fill_rect .text.lcd_set_pixel .text.lcd_write_data)
+    */lcd.o(.text.lcd_blit_rect .text.lcd_fill_rect .text.lcd_rect_begin .text.lcd_rect_row
+            .text.lcd_set_pixel .text.lcd_write_data)
     */scope_cursor.o(.text.converts .text.converts.* .text.scope_cursor_cal_conf .text.scope_cursor_dt
                      .text.scope_cursor_dv .text.scope_cursor_format .text.scope_cursor_inv_dt
                      .text.scope_cursor_on_plot .text.scope_cursor_px .text.scope_cursor_tb_conf)

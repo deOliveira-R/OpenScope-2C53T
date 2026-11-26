@@ -723,6 +723,55 @@ void lcd_set_pixel(uint16_t x, uint16_t y, uint16_t color)
     lcd_write_data(color);
 }
 
+/* The rectangle being streamed by lcd_rect_row(): its left column, width
+ * and the screen row the next row goes to. */
+static uint16_t lcd_rect_x, lcd_rect_w, lcd_rect_y;
+
+void lcd_rect_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+{
+    /* The window as lcd_write_column() sets it: the set-up writes follow one
+     * another without lcd_bus_delay() (the bus timing gives the panel its
+     * write cycle, lcd_bus_timing_spec). The shadow is kept by lcd_rect_row(),
+     * a row at a time, not by the per-pixel cursor. */
+    lcd_note_drawer();
+    lcd_watch_mark(y, h);
+    const uint16_t x_end = (uint16_t)(x + w - 1u), y_end = (uint16_t)(y + h - 1u);
+    *LCD_CMD_ADDR  = ST7789_CASET;
+    *LCD_DATA_ADDR = (uint16_t)(x >> 8);
+    *LCD_DATA_ADDR = (uint16_t)(x & 0xFF);
+    *LCD_DATA_ADDR = (uint16_t)(x_end >> 8);
+    *LCD_DATA_ADDR = (uint16_t)(x_end & 0xFF);
+    *LCD_CMD_ADDR  = ST7789_RASET;
+    *LCD_DATA_ADDR = (uint16_t)(y >> 8);
+    *LCD_DATA_ADDR = (uint16_t)(y & 0xFF);
+    *LCD_DATA_ADDR = (uint16_t)(y_end >> 8);
+    *LCD_DATA_ADDR = (uint16_t)(y_end & 0xFF);
+    lcd_rows_y0 = y;
+    lcd_rows_y1 = y_end;
+    *LCD_CMD_ADDR = ST7789_RAMWR;
+    lcd_shadow_pos = 0;
+    lcd_rect_x = x;
+    lcd_rect_w = w;
+    lcd_rect_y = y;
+}
+
+void lcd_rect_row(const uint16_t *pixels)
+{
+    const uint16_t y = lcd_rect_y++;
+    uint8_t *const row = (y >= lcd_shadow_page && y < (uint16_t)(lcd_shadow_page + LCD_SHADOW_HEIGHT))
+                       ? lcd_shadow[y - lcd_shadow_page] : 0;
+    for (uint16_t i = 0; i < lcd_rect_w; i++) {
+        const uint16_t p = pixels[i];
+        const uint16_t x = (uint16_t)(lcd_rect_x + i);
+        *LCD_DATA_ADDR = p;
+        if (row && x < LCD_WIDTH) {
+            uint8_t *cell = &row[x >> 1];
+            const uint8_t idx = lcd_shadow_palette_index(p);
+            *cell = (x & 1U) ? (uint8_t)((*cell & 0xF0U) | idx) : (uint8_t)((*cell & 0x0FU) | (idx << 4));
+        }
+    }
+}
+
 void lcd_blit_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_t *pixels)
 {
     if (pixels == 0) return;
@@ -733,14 +782,9 @@ void lcd_blit_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const uint16_
     if (h > LCD_HEIGHT - y) h = LCD_HEIGHT - y;
     if (w == 0 || h == 0) return;
 
-    lcd_set_window(x, y, w, h);
-
-    for (uint16_t row = 0; row < h; row++) {
-        const uint16_t *src = pixels + (uint32_t)row * src_w;
-        for (uint16_t col = 0; col < w; col++) {
-            lcd_write_data(src[col]);
-        }
-    }
+    lcd_rect_begin(x, y, w, h);
+    for (uint16_t row = 0; row < h; row++)
+        lcd_rect_row(pixels + (uint32_t)row * src_w);
 }
 
 void lcd_fill_rect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color)

@@ -21,6 +21,8 @@ typedef struct { uint32_t n, last_us, max_us; } ui_perf_t;
 enum {
     UI_PERF_FULL,           /* Y-T full render */
     UI_PERF_STRIP,          /* the measurement strip's refresh */
+    UI_PERF_STRIP_MEASURE,  /* of it: measuring the record (both channels, frequency, the twelve values) */
+    UI_PERF_STRIP_DRAW,     /* of it: painting the cells */
     UI_PERF_CURSOR_ROW,     /* the cursor readout row */
     UI_PERF_XY,             /* the X-Y view's frame, its trail's fade included */
     UI_PERF_FFT,            /* the spectrum view's frame, the transform included */

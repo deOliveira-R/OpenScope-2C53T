@@ -133,6 +133,42 @@ const uint8_t *font_text_column(const char *str, const font_t *font, int dx,
     return 0;
 }
 
+uint16_t font_fit_width(const char *str, const font_t *font, uint16_t w)
+{
+    uint16_t tw = 0;
+    for (; *str; str++) {
+        const uint8_t idx = font_glyph_index(*str, font);
+        const uint16_t adv = (idx != 0xFF && idx < font->num_glyphs)
+                           ? font->advances[idx] : (uint16_t)(font->height / 3);
+        if (tw + adv > w) break;
+        tw += adv;
+    }
+    return tw;
+}
+
+void font_text_row(const char *str, const font_t *font, int dy, uint16_t *line, int x, int limit,
+                   uint16_t fg, uint16_t bg)
+{
+    if (dy < 0 || dy >= font->height)
+        return;
+    for (; *str; str++) {
+        const uint8_t idx = font_glyph_index(*str, font);
+        if (idx == 0xFF || idx >= font->num_glyphs) {
+            x += font->height / 3;
+            continue;
+        }
+        const int adv = font->advances[idx];
+        if (x + adv > limit)
+            return;
+        const uint8_t gw = font->widths[idx];
+        const uint8_t *row = &font->data[font->offsets[idx] + (unsigned)dy * (unsigned)((gw + 7) / 8)];
+        for (int col = 0; col < gw; col++)
+            if (x + col >= 0)
+                line[x + col] = (row[col / 8] & (0x80 >> (col % 8))) ? fg : bg;
+        x += adv;
+    }
+}
+
 uint16_t font_string_width(const char *str, const font_t *font)
 {
     uint16_t width = 0;

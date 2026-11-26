@@ -215,6 +215,8 @@ volatile ui_perf_t ui_perf[UI_PERF_COUNT];
 const char *const ui_perf_name[UI_PERF_COUNT] = {
     [UI_PERF_FULL]          = "full redraw",
     [UI_PERF_STRIP]         = "measurement strip",
+    [UI_PERF_STRIP_MEASURE] = "strip: measuring",
+    [UI_PERF_STRIP_DRAW]    = "strip: painting the cells",
     [UI_PERF_CURSOR_ROW]    = "cursor row",
     [UI_PERF_XY]            = "X-Y frame",
     [UI_PERF_FFT]           = "spectrum frame",

@@ -106,34 +106,81 @@ uint16_t fft_strip_top(const scope_state_t *ss)
                              rows_hidden(ss), ss->cursor.mode != CURSOR_OFF, STRIP_BOTTOM);
 }
 
-/* One cell: label left in the dimmed channel colour chc, the value buf right
- * in chc (text_secondary when it is not a measured value: "--").
- * measure_strip_place() guarantees the two never overlap; when they would
- * not fit it keeps the value only (the host test shows no label/value pair
- * of the measurement sets gets there). */
-static void strip_cell_paint(const mstrip_cell_t *c, const char *label, const char *buf,
-                             bool measured, uint16_t chc, const theme_t *th, bool boxed)
+/* The strip's cells as last sent, by place in the layout: a cell painted
+ * with the same inputs as these is not sent again while the glass still
+ * holds it, which the strip's LCD watch slot tells (another painter on the
+ * rows clears them all, as does a full paint). Display task only. */
+#define STRIP_WATCH_SLOT  ((uint8_t)CANVAS_COUNT)
+_Static_assert(STRIP_WATCH_SLOT < LCD_WATCH_SLOTS, "a watch slot for the measurement strip");
+
+typedef struct {
+    bool        valid;
+    uint16_t    x, y, lc, vc, bg;
+    const char *label;          /* NULL: the value alone */
+    char        value[16];      /* NUL-padded (strncpy) */
+} strip_sent_t;
+
+static strip_sent_t s_strip_sent[MSTRIP_MAX_CELLS];
+
+/* Before the cells of rows [y0, y1): forget them all after a full paint
+ * (refresh false) or when somebody else drew on the rows. */
+static void strip_sent_begin(uint16_t y0, uint16_t y1, bool refresh)
 {
+    lcd_watch_rows(STRIP_WATCH_SLOT, y0, y1);
+    if (lcd_watch_take(STRIP_WATCH_SLOT) || !refresh)
+        for (unsigned k = 0; k < MSTRIP_MAX_CELLS; k++) s_strip_sent[k].valid = false;
+}
+
+/* After them: the marks of the strip's own windows are not news. */
+static void strip_sent_end(void)
+{
+    (void)lcd_watch_take(STRIP_WATCH_SLOT);
+}
+
+/* Cell k at c: the label left in the dimmed channel colour chc, the value
+ * buf in chc (text_secondary when it is not a measured value: "--").
+ * measure_strip_place() keeps the two apart; when they would not both fit,
+ * the value alone, right-aligned (the host test shows no label/value pair of
+ * the measurement sets gets there). The value keeps the whole glyphs that
+ * fit its box. The cell's MSTRIP_CELL_W columns by font_small's rows (under
+ * its spacer row) are composed a row at a time and sent as one window, never
+ * blanked first; a cell with the inputs it was last sent with is skipped. */
+static void strip_cell_paint(unsigned k, const mstrip_cell_t *c, const char *label, const char *buf,
+                             bool measured, uint16_t chc, const theme_t *th)
+{
+    static uint16_t line[MSTRIP_CELL_W];
+    const uint16_t bg = th->background;
     const uint16_t vc = measured ? chc : th->text_secondary;
+    const uint16_t lc = measure_strip_dim(chc, bg);
     uint16_t lx, vx;
     const bool both = measure_strip_place(c->x, font_string_width(label, &font_small),
                                           font_string_width(buf, &font_small), &lx, &vx);
-    if (both)
-        font_draw_string(lx, (uint16_t)(c->y + 1), label,
-                         measure_strip_dim(chc, th->background), th->background, &font_small);
-    if (!boxed) {
-        font_draw_string(vx, (uint16_t)(c->y + 1), buf, vc, th->background, &font_small);
-        return;
-    }
-    /* In-place update: the value's whole box is painted (glyphs, gaps and
-     * the rest of the box), so a shorter value leaves nothing behind and the
-     * row is never blanked first. */
     const uint16_t end = (uint16_t)(c->x + MSTRIP_CELL_W - MSTRIP_PAD);
     const uint16_t bx = both ? vx : (uint16_t)(c->x + MSTRIP_PAD);
-    if (end > bx)
-        font_draw_string_box(bx, (uint16_t)(c->y + 1), (uint16_t)(end - bx), buf, vc,
-                             th->background, &font_small,
-                             both ? FONT_ALIGN_LEFT : FONT_ALIGN_RIGHT);
+    const uint16_t tx = both ? bx : (uint16_t)(end - font_fit_width(buf, &font_small, (uint16_t)(end - bx)));
+    const uint16_t y = (uint16_t)(c->y + 1);
+
+    strip_sent_t *const sent = &s_strip_sent[k];
+    const char *const shown_label = both ? label : NULL;
+    char value[sizeof sent->value];
+    strncpy(value, buf, sizeof value - 1u);
+    value[sizeof value - 1u] = '\0';
+    bool same = sent->valid && sent->x == c->x && sent->y == y && sent->lc == lc && sent->vc == vc &&
+                sent->bg == bg && sent->label == shown_label;
+    for (unsigned i = 0; same && i < sizeof value; i++) same = sent->value[i] == value[i];
+    if (same) return;
+
+    lcd_rect_begin(c->x, y, MSTRIP_CELL_W, font_small.height);
+    for (int dy = 0; dy < (int)font_small.height; dy++) {
+        for (unsigned i = 0; i < MSTRIP_CELL_W; i++) line[i] = bg;
+        if (both)
+            font_text_row(label, &font_small, dy, line, (int)lx - (int)c->x, (int)MSTRIP_CELL_W, lc, bg);
+        font_text_row(buf, &font_small, dy, line, (int)tx - (int)c->x, (int)end - (int)c->x, vc, bg);
+        lcd_rect_row(line);
+    }
+    *sent = (strip_sent_t){ .valid = true, .x = c->x, .y = y, .lc = lc, .vc = vc, .bg = bg,
+                            .label = shown_label };
+    for (unsigned i = 0; i < sizeof value; i++) sent->value[i] = value[i];
 }
 
 /* Paint the measurement rows. refresh false: clear them first (full width,
@@ -148,15 +195,17 @@ void draw_strip_cells(const mstrip_layout_t *L, const scope_params_t *p1,
     const uint16_t y0 = (uint16_t)(L->bottom - L->rows * MSTRIP_ROW_H);
     if (!refresh)
         lcd_fill_rect(0, y0, LCD_WIDTH, (uint16_t)(L->rows * MSTRIP_ROW_H), th->background);
+    strip_sent_begin(y0, L->bottom, refresh);
     for (unsigned k = 0; k < L->n; k++) {
         const mstrip_cell_t *c = &L->cell[k];
         const scope_params_t *pp = c->ch ? p2 : p1;
         const scope_prm_t *p = pp ? &pp->v[c->prm] : NULL;
         char buf[16];
         scope_prm_format(p, buf, sizeof(buf));          /* "--" when it cannot be measured */
-        strip_cell_paint(c, scope_prm_label(c->prm), buf, p != NULL && p->unit != SCOPE_PRM_UNIT_NONE,
-                         c->ch ? th->ch2 : th->ch1, th, refresh);
+        strip_cell_paint(k, c, scope_prm_label(c->prm), buf, p != NULL && p->unit != SCOPE_PRM_UNIT_NONE,
+                         c->ch ? th->ch2 : th->ch1, th);
     }
+    strip_sent_end();
 }
 
 /* The spectrum's strip: m holds the spectrum's measurements (fft_live_measure),
@@ -168,14 +217,16 @@ void draw_fft_strip(const scope_state_t *ss, const theme_t *th, const fft_meas_t
     fft_strip_layout(ss, &L);
     if (!refresh && L.top < L.bottom)
         lcd_fill_rect(0, L.top, LCD_WIDTH, (uint16_t)(L.bottom - L.top), th->background);
+    strip_sent_begin((uint16_t)(L.bottom - L.rows * MSTRIP_ROW_H), L.bottom, refresh);
     for (unsigned k = 0; k < L.n; k++) {
         const mstrip_cell_t *c = &L.cell[k];
         const fft_meas_t *v = m ? &m[c->prm] : NULL;
         char buf[16];
         fft_meas_format(v, buf, sizeof(buf));
-        strip_cell_paint(c, meas_select_label(MEAS_SET_FFT, c->prm), buf,
-                         v != NULL && v->unit != FFT_MEAS_UNIT_NONE, ch2 ? th->ch2 : th->ch1, th, refresh);
+        strip_cell_paint(k, c, meas_select_label(MEAS_SET_FFT, c->prm), buf,
+                         v != NULL && v->unit != FFT_MEAS_UNIT_NONE, ch2 ? th->ch2 : th->ch1, th);
     }
+    strip_sent_end();
 }
 
 /*
@@ -404,6 +455,45 @@ float   rec_vpc(const scope_state_t *ss, uint8_t ch);
 
 uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
 
+/* The twelve values of each channel from the live record into p1, p2 (L:
+ * which cells are shown, so which channels and whether Freq or Peri need the
+ * spectral estimate). */
+static void strip_measure(const scope_state_t *ss, const mstrip_layout_t *L, scope_params_t *p1,
+                          scope_params_t *p2)
+{
+    bool cells[2] = { false, false }, need_f[2] = { false, false };
+    for (unsigned k = 0; k < L->n; k++) {
+        cells[L->cell[k].ch] = true;
+        if (L->cell[k].prm == SCOPE_PRM_FREQ || L->cell[k].prm == SCOPE_PRM_PERI)
+            need_f[L->cell[k].ch] = true;
+    }
+    scope_measure_t m1, m2;
+    const volatile uint8_t *b1 = fpga_get_ch1_buf(), *b2 = fpga_get_ch2_buf();
+    const bool have1 = cells[0] && fpga_acq_record_has_ch(0u) && measure_live_channel(b1, &m1);
+    const bool have2 = cells[1] && fpga_acq_record_has_ch(1u) && measure_live_channel(b2, &m2);
+
+    /* The 12 measurements, per channel. All arithmetic is in
+     * scope_params_compute(): time uses the PUBLISHED record's rate
+     * (doubled when interleaved), volts the scope_cal gain with k == 0
+     * meaning counts, 0 V the channel's scope_measure_zero_for(). Freq/Per
+     * come from the spectral estimate above, with its hold; below four
+     * periods from the checked crossing period of a whole record, else
+     * "--" (scope_params_compute). A channel with no record refuses
+     * all twelve ("--"). */
+    const float rec_fs = record_rate_for_display(ss);
+    scope_prm_ctx_t ctx;
+    ctx.sample_rate.hz  = rec_fs;
+    ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
+    ctx.volts_per_count.vpc = rec_vpc(ss, 0u);
+    ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
+    ctx.zero_count.v    = rec_zero(ss, 0u);
+    scope_params_compute(have1 ? &m1 : NULL, &ctx, p1);
+    ctx.volts_per_count.vpc = rec_vpc(ss, 1u);
+    ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
+    ctx.zero_count.v    = rec_zero(ss, 1u);
+    scope_params_compute(have2 ? &m2 : NULL, &ctx, p2);
+}
+
 /*
  * Draw the measurement strip and the AUX row from the live record.
  *
@@ -444,40 +534,9 @@ void draw_measurement_badges(const scope_state_t *ss, const theme_t *th, bool re
     } else if (L.rows > 0u) {
         /* Which channels have cells, and whether any of them is time-based on
          * the spectral estimate (Freq, Peri). */
-        bool cells[2] = { false, false }, need_f[2] = { false, false };
-        for (unsigned k = 0; k < L.n; k++) {
-            cells[L.cell[k].ch] = true;
-            if (L.cell[k].prm == SCOPE_PRM_FREQ || L.cell[k].prm == SCOPE_PRM_PERI)
-                need_f[L.cell[k].ch] = true;
-        }
-        scope_measure_t m1, m2;
-        const volatile uint8_t *b1 = fpga_get_ch1_buf(), *b2 = fpga_get_ch2_buf();
-        const bool have1 = cells[0] && fpga_acq_record_has_ch(0u) && measure_live_channel(b1, &m1);
-        const bool have2 = cells[1] && fpga_acq_record_has_ch(1u) && measure_live_channel(b2, &m2);
-
-        /* The 12 measurements, per channel. All arithmetic is in
-         * scope_params_compute(): time uses the PUBLISHED record's rate
-         * (doubled when interleaved), volts the scope_cal gain with k == 0
-         * meaning counts, 0 V the channel's scope_measure_zero_for(). Freq/Per
-         * come from the spectral estimate above, with its hold; below four
-         * periods from the checked crossing period of a whole record, else
-         * "--" (scope_params_compute). A channel with no record refuses
-         * all twelve ("--"). */
-        const float rec_fs = record_rate_for_display(ss);
         scope_params_t p1, p2;
-        scope_prm_ctx_t ctx;
-        ctx.sample_rate.hz  = rec_fs;
-        ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
-        ctx.volts_per_count.vpc = rec_vpc(ss, 0u);
-        ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
-        ctx.zero_count.v    = rec_zero(ss, 0u);
-        scope_params_compute(have1 ? &m1 : NULL, &ctx, &p1);
-        ctx.volts_per_count.vpc = rec_vpc(ss, 1u);
-        ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
-        ctx.zero_count.v    = rec_zero(ss, 1u);
-        scope_params_compute(have2 ? &m2 : NULL, &ctx, &p2);
-
-        draw_strip_cells(&L, &p1, &p2, th, refresh);
+        UI_TIMED(UI_PERF_STRIP_MEASURE, strip_measure(ss, &L, &p1, &p2));
+        UI_TIMED(UI_PERF_STRIP_DRAW, draw_strip_cells(&L, &p1, &p2, th, refresh));
     }
 
     /* The AUX row: the CAN analyser's line, else the cursor readout, else
