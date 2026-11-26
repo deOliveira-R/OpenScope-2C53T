@@ -148,9 +148,10 @@ gap). A changed column whose base is the one on the glass sends only the
 rows the overlays left and the rows they arrived on, joined where the gap is
 shorter than a window's set-up (11 bus writes). A changed base, `all`, a
 hole that changed, another painter on the rows, or a last frame without a
-base sends the whole column. Y-T (and so roll and split's Y-T half) uses it;
-with persistence on the ghosts change the base every frame, so its columns
-go whole as before. The spectrum uses it too: its base is black, the dB
+base sends the whole column. Y-T (and so roll and split's Y-T half) uses it.
+Persistence ghosts that fade change every frame, so they are Y-T's lowest
+overlay, with the graticule and focus mark painted again over them; with
+infinite persistence they hold still and are part of the base. The spectrum uses it too: its base is black, the dB
 grid's dots and the focus mark, and since the bars cover the grid, its
 overlays paint the grid and the mark again over the bars (a row the
 overlays leave equal to the base is not an overlay row); only the bars and
