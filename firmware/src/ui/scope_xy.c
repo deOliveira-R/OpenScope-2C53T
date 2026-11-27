@@ -191,18 +191,100 @@ static uint16_t xy_margin_px(const xy_frame_t *f, int x, int ry)
     return xy_mark_px(f, x, f->top + ry) ? f->th->text_primary : f->th->background;
 }
 
-/* The canvas's paint function: column x of the screen, the margins with
- * their title included, so nothing in the pane is left to another painter.
- * The strip is the pane's whole column (canvas.c steps around a hole when it
+/* The base of column x (the canvas's base function): background, the
+ * graticule in the square, the focus mark over them, the title in the left
+ * margin; what holds still while the trail moves. The same pixels as
+ * xy_px and xy_margin_px give with no trail and no note, a column at a
+ * time: the graticule's rows are counted, not divided out per pixel. The
+ * strip is the pane's whole column (canvas.c steps around a hole when it
  * sends), so its row y is row y - top of the square. */
+static void xy_paint_base(void *ctx, uint16_t x, const canvas_strip_t *s)
+{
+    const xy_frame_t *const f = ctx;
+    const theme_t *const th = f->th;
+    uint16_t *const px = s->px;
+    const int rows = s->hi - s->lo;
+    const bool square = x >= f->x0 && x < f->x0 + (uint16_t)f->rows;
+    if (!square) {
+        for (int i = 0; i < rows; i++) px[i] = th->background;
+    } else {
+        const int rx = (int)x - (int)f->x0, dxc = rx - f->cxr;
+        if (dxc == 0) {
+            for (int i = 0; i < rows; i++) px[i] = th->grid_center;
+        } else {
+            const bool vline = (dxc % f->div) == 0, hdot = (rx & 1) == 0;
+            int m = (-(int)f->cyr) % f->div;          /* (ry - cyr) mod div, kept as ry counts */
+            if (m < 0) m += f->div;
+            for (int ry = 0; ry < rows; ry++) {
+                px[ry] = (ry == f->cyr) ? th->grid_center
+                       : ((m == 0 && hdot) || (vline && (ry & 1) == 0)) ? th->grid : th->background;
+                if (++m == f->div) m = 0;
+            }
+        }
+    }
+    if (f->mark) {
+        if (x < FOCUS_MARK_PX || x >= LCD_WIDTH - FOCUS_MARK_PX) {
+            strip_span(s, f->top, f->top + f->rows - 1, th->text_primary);
+        } else {
+            strip_span(s, f->top, f->top + FOCUS_MARK_PX - 1, th->text_primary);
+            strip_span(s, f->top + f->rows - FOCUS_MARK_PX, f->top + f->rows - 1, th->text_primary);
+        }
+    }
+    if (!square && x >= XY_TITLE_LEFT_PX && (int)x < f->text_x1) {
+        const int pitch = (int)font_small.height + XY_TITLE_GAP_PX;
+        for (uint8_t k = 0; k < f->title_lines; k++) {
+            uint8_t mask = 0, stride = 0;
+            const uint8_t *p = font_text_column(xy_title[k], &font_small, (int)x - XY_TITLE_LEFT_PX, &mask, &stride);
+            const int y0 = f->top + XY_TITLE_TOP_PX + k * pitch;
+            for (int dy = 0; p && dy < (int)font_small.height; dy++, p += stride)
+                if (*p & mask) strip_put(s, y0 + dy, f->title_c[k]);
+        }
+    }
+}
+
+#if FEATURE_BENCHSHELL
+/* `fpga scope livecheck` in X-Y: every pixel of column x against the
+ * per-pixel rule (xy_px, xy_margin_px), counted as Y-T's are. */
+static void xy_check_column(const xy_frame_t *f, uint16_t x, const canvas_strip_t *s)
+{
+    const bool square = x >= f->x0 && x < f->x0 + (uint16_t)f->rows;
+    for (int y = s->lo; y < s->hi; y++) {
+        const int ry = y - f->top;
+        const uint16_t want = square ? xy_px(f, (int)x, (int)x - (int)f->x0, ry) : xy_margin_px(f, (int)x, ry);
+        const uint16_t got = s->px[y - s->lo];
+        live_check_pixels++;
+        if (want != got && live_check_diffs++ == 0) {
+            live_check_first_x = x; live_check_first_y = (uint16_t)y;
+            live_check_first_want = want; live_check_first_got = got;
+        }
+    }
+}
+#endif
+
+/* The overlays of column x over its base (the canvas's paint function): the
+ * trail, which fades every frame, and over it the "no signal" note. */
 static void xy_paint(void *ctx, uint16_t x, const canvas_strip_t *s)
 {
     const xy_frame_t *const f = ctx;
     const bool square = x >= f->x0 && x < f->x0 + (uint16_t)f->rows;
-    for (int y = s->lo; y < s->hi; y++) {
-        const int ry = y - f->top;
-        s->px[y - s->lo] = square ? xy_px(f, (int)x, (int)x - (int)f->x0, ry) : xy_margin_px(f, (int)x, ry);
+    if (square) {
+        const int rx = (int)x - (int)f->x0;
+        if (f->tb) {
+            const uint8_t *in = &f->tb[rx];
+            for (int ry = 0; ry < f->rows; ry++, in += f->stride)
+                if (*in) strip_put(s, f->top + ry, persist_intensity_to_color_ch1(*in));
+        }
+        if (!f->have) {
+            const int nsx = f->cxr - XY_NOSIG_LEFT_PX, nsy = f->cyr - XY_NOSIG_UP_PX;
+            uint8_t mask = 0, stride = 0;
+            const uint8_t *p = font_text_column(xy_nosig, &font_small, rx - nsx, &mask, &stride);
+            for (int dy = 0; p && dy < (int)font_small.height; dy++, p += stride)
+                if (*p & mask) strip_put(s, f->top + nsy + dy, f->th->warning);
+        }
     }
+#if FEATURE_BENCHSHELL
+    if (live_check_frames) xy_check_column(f, x, s);
+#endif
 }
 
 /* The square's first screen column: centred on the glass. */
@@ -303,7 +385,7 @@ static bool xy_pane_draw(const plot_pane_t *p, bool all, const xy_trail_t *t)
         .rect = { 0, (uint16_t)p->top, LCD_WIDTH, side },
         .holes = &popup, .nholes = hole ? 1u : 0u,
         .all = all,
-        .paint = xy_paint, .ctx = &f,
+        .base = xy_paint_base, .paint = xy_paint, .ctx = &f,
     };
     (void)plot_canvas_draw(&cf);
     return hole;
