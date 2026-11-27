@@ -92,9 +92,9 @@ typedef struct {
     plot_pane_t  p;                         /* the pane it is drawn in */
     /* The source: the record, or the roll points (scope_roll.h). It says
      * what the frame has. Roll has no placement on a trigger (no trigger
-     * pointer, no mask overlay), no demo, no persistence (the ghosts would
-     * be screen columns, and roll moves every point along them) and no math
-     * yet (the math inputs are the record's own scale). */
+     * pointer, no mask overlay), no demo and no persistence (the ghosts
+     * would be screen columns, and roll moves every point along them). Math
+     * reads either the same way (view_vpc, view_zero, view_has_ch). */
     bool         roll;
     uint8_t      zero[2];                   /* each channel's 0 V code in the data drawn */
     char         roll_label[24];            /* its fill counter */
@@ -231,7 +231,7 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
     f->curs = f->cl.v || f->cl.h;
 
     /* Math: one row per column, its label as per-pixel text. */
-    f->mth = math_enabled && !f->roll;
+    f->mth = math_enabled;
     if (f->mth) math_prepare(ss, p, f->record, &f->mf);
     f->mlab_w = f->mth ? (int16_t)font_string_width(f->mf.label, &font_small) : 0;
 
