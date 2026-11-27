@@ -47,7 +47,7 @@ static canvas_runs_mem_t s_runs[CANVAS_COUNT];
 static canvas_runs_mem_t *s_mem;
 static bool     s_based;
 static bool     s_known;
-static uint16_t s_base[LCD_HEIGHT];
+static uint16_t s_base[LCD_HEIGHT] __attribute__((aligned(CANVAS_STRIP_ALIGN)));
 static uint32_t s_base_hash;
 static canvas_window_t s_windows[CANVAS_WINDOWS_MAX];
 
@@ -60,10 +60,22 @@ void canvas_runs_begin(uint8_t id, bool based, bool trusted)
     s_mem->based = based;
 }
 
+/* The copy and the hash in one pass, two pixels a word (canvas_hash). */
 void canvas_runs_take_base(const uint16_t *strip, uint16_t h)
 {
-    for (uint16_t i = 0; i < h; i++) s_base[i] = strip[i];
-    s_base_hash = canvas_hash(strip, h);
+    uint32_t hash = CANVAS_HASH_SEED;
+    uint16_t i = 0;
+    for (; (uint16_t)(i + 1u) < h; i = (uint16_t)(i + 2u)) {
+        uint32_t w;
+        memcpy(&w, &strip[i], sizeof w);
+        memcpy(&s_base[i], &w, sizeof w);
+        hash = canvas_hash_step(hash, w);
+    }
+    if (i < h) {
+        s_base[i] = strip[i];
+        hash = (hash ^ strip[i]) * CANVAS_HASH_PRIME;
+    }
+    s_base_hash = hash;
 }
 
 /* The rows of the strip (h rows from row y0) that differ from its base, as
@@ -75,6 +87,14 @@ static void overlay_runs(const uint16_t *strip, uint16_t y0, uint16_t h, canvas_
     canvas_run_t r[CANVAS_RUNS_MAX + 1u];
     uint8_t n = 0;
     for (uint16_t i = 0; i < h;) {
+        /* Equal pairs skipped a word at a time (both buffers aligned, i even
+         * there): most of a column is its base. */
+        if ((i & 1u) == 0u && (uint16_t)(i + 1u) < h) {
+            uint32_t a, b;
+            memcpy(&a, &strip[i], sizeof a);
+            memcpy(&b, &s_base[i], sizeof b);
+            if (a == b) { i = (uint16_t)(i + 2u); continue; }
+        }
         if (strip[i] == s_base[i]) { i++; continue; }
         const uint16_t lo = i;
         while (i < h && strip[i] != s_base[i]) i++;
@@ -116,13 +136,31 @@ static uint8_t run_windows(const canvas_run_t *a, const canvas_run_t *b)
     return n;
 }
 
+/* What a layered column shows, as one hash: its base's hash, its runs and
+ * the pixels in them (the rest of the column is the base). Equal for two
+ * columns exactly when the glass would be (but for a hash collision). */
+static uint32_t layered_hash(const uint16_t *strip, uint16_t y0, const canvas_run_t runs[CANVAS_RUNS_MAX])
+{
+    uint32_t hash = s_base_hash;
+    for (uint8_t j = 0; j < CANVAS_RUNS_MAX && runs[j].lo < runs[j].hi; j++) {
+        hash = (hash ^ (uint32_t)(runs[j].lo | (runs[j].hi << 8))) * CANVAS_HASH_PRIME;
+        for (uint16_t y = runs[j].lo; y < runs[j].hi; y++)
+            hash = (hash ^ strip[y - y0]) * CANVAS_HASH_PRIME;
+    }
+    return hash;
+}
+
 uint8_t canvas_runs_windows(uint16_t x, const uint16_t *strip, uint16_t y0, uint16_t h,
-                            const canvas_window_t **windows)
+                            const canvas_window_t **windows, uint32_t *hash)
 {
     *windows = s_windows;
-    if (!s_based) return 0;
+    if (!s_based) {
+        *hash = canvas_hash(strip, h);
+        return 0;
+    }
     canvas_run_t runs[CANVAS_RUNS_MAX];
     overlay_runs(strip, y0, h, runs);
+    *hash = layered_hash(strip, y0, runs);
     /* The windows come from the runs the glass holds now, before they are
      * replaced by this column's. */
     const uint8_t n = (s_known && s_base_hash == s_mem->base_hash[x])

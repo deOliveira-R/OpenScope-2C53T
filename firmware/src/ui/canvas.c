@@ -8,10 +8,12 @@
 #include "lcd.h"
 
 /* The strip being painted, before it is sent. */
-static uint16_t s_strip[LCD_HEIGHT];
+static uint16_t s_strip[LCD_HEIGHT] __attribute__((aligned(CANVAS_STRIP_ALIGN)));
 
 /* One canvas's memory: what each strip held when it was last sent (its
- * hash, canvas_hash, indexed by screen column) and the rectangle and holes
+ * hash, canvas_runs_windows: canvas_hash, or for a layered column with the
+ * feature CANVASRUNS its base's hash with its runs and their pixels; indexed
+ * by screen column) and the rectangle and holes
  * that describes. Not valid before its first frame. A strip whose new pixels
  * hash the same is not sent again; with a steady picture that is most of
  * them. Two different strips hashing alike would leave the old one on the
@@ -102,9 +104,9 @@ uint16_t canvas_draw_columns(const canvas_frame_t *f)
         }
         f->paint(f->ctx, x, &strip);
 
-        const uint32_t hash = canvas_hash(s_strip, r->h);
         const canvas_window_t *w;
-        const uint8_t nw = canvas_runs_windows(x, s_strip, r->y, r->h, &w);
+        uint32_t hash;
+        const uint8_t nw = canvas_runs_windows(x, s_strip, r->y, r->h, &w, &hash);
         if (!same || hash != m->hash[x]) {
             m->hash[x] = hash;
             sent++;

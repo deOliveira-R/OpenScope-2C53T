@@ -267,13 +267,18 @@ static void layered_tests(void)
           layered_ok(&f, BOX));
 
     /* An overlay over the whole strip in a colour the base also has; the base
-     * changes under it (the strip does not: nothing is sent, but the base and
-     * the overlay rows kept for the column change), then the overlay goes. */
+     * changes under it, the strip does not. Without the runs nothing is
+     * sent; with them a layered column is judged by its base's hash, its runs
+     * and their pixels (no pass over the whole strip), so the columns go
+     * whole once. Either way the base and the overlay rows kept for the
+     * column change, which the overlay leaving shows. */
     ov_all((int16_t)f.rect.y, (int16_t)(f.rect.y + h), base_color[1]);
     (void)draw_layered(&f);
     for (uint16_t x = 0; x < LCD_WIDTH; x++) base_ver[x] = (uint8_t)(base_ver[x] + 1u);
     n = draw_layered(&f);
-    CHECK("the base changes under an overlay that covers it: nothing is sent", n == 0 && column_writes == 0);
+    CHECK(RUNS ? "the base changes under an overlay that covers it: whole columns, glass right"
+               : "the base changes under an overlay that covers it: nothing is sent",
+          RUNS ? (n == 320 && pixel_writes == 320u * h && layered_ok(&f, BOX)) : (n == 0 && column_writes == 0));
     memset(nov, 0, sizeof nov);
     n = draw_layered(&f);
     CHECK("... then the overlay goes: the new base shows", n == 320 && layered_ok(&f, BOX));
