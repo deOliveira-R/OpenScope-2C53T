@@ -150,47 +150,6 @@ typedef struct {
 #define XY_FRAME_MAX_BYTES  40u
 _Static_assert(sizeof(xy_frame_t) <= XY_FRAME_MAX_BYTES, "the X-Y frame grew on the display task's stack");
 
-/* The focus mark covers screen pixel (x, y) of the pane. */
-static bool xy_mark_px(const xy_frame_t *f, int x, int y)
-{
-    return f->mark && focus_mark_px(x, y, 0, f->top, LCD_WIDTH, f->rows);
-}
-
-/* Pixel (rx, ry) of the square, screen column x. */
-static uint16_t xy_px(const xy_frame_t *f, int x, int rx, int ry)
-{
-    const theme_t *th = f->th;
-    const int nsx = f->cxr - XY_NOSIG_LEFT_PX, nsy = f->cyr - XY_NOSIG_UP_PX;
-    const int dxc = rx - f->cxr, dyc = ry - f->cyr;
-    const bool vline = (dxc % f->div) == 0;
-    const uint8_t inten = f->tb ? f->tb[(uint32_t)ry * f->stride + (uint32_t)rx] : 0u;
-    if (!f->have && rx >= nsx && ry >= nsy && ry < nsy + (int)font_small.height &&
-        font_text_px(xy_nosig, &font_small, rx - nsx, ry - nsy))
-        return th->warning;
-    if (inten)
-        return persist_intensity_to_color_ch1(inten);
-    if (xy_mark_px(f, x, f->top + ry))
-        return th->text_primary;
-    if (dxc == 0 || dyc == 0)
-        return th->grid_center;
-    if ((vline && (ry & 1) == 0) || ((dyc % f->div) == 0 && (rx & 1) == 0))
-        return th->grid;
-    return th->background;
-}
-
-/* Pixel (x, ry) of the left margin: the title, the focus mark, background. */
-static uint16_t xy_margin_px(const xy_frame_t *f, int x, int ry)
-{
-    const int pitch = (int)font_small.height + XY_TITLE_GAP_PX;
-    if (x >= XY_TITLE_LEFT_PX && x < f->text_x1 && ry >= XY_TITLE_TOP_PX) {
-        const int k = (ry - XY_TITLE_TOP_PX) / pitch, dy = (ry - XY_TITLE_TOP_PX) % pitch;
-        if (k < (int)f->title_lines && dy < (int)font_small.height &&
-            font_text_px(xy_title[k], &font_small, x - XY_TITLE_LEFT_PX, dy))
-            return f->title_c[k];
-    }
-    return xy_mark_px(f, x, f->top + ry) ? f->th->text_primary : f->th->background;
-}
-
 /* The base of column x (the canvas's base function): background, the
  * graticule in the square, the focus mark over them, the title in the left
  * margin; what holds still while the trail moves. The same pixels as
@@ -243,6 +202,48 @@ static void xy_paint_base(void *ctx, uint16_t x, const canvas_strip_t *s)
 }
 
 #if FEATURE_BENCHSHELL
+/* The per-pixel rule of the X-Y picture, for the check below. */
+/* The focus mark covers screen pixel (x, y) of the pane. */
+static bool xy_mark_px(const xy_frame_t *f, int x, int y)
+{
+    return f->mark && focus_mark_px(x, y, 0, f->top, LCD_WIDTH, f->rows);
+}
+
+/* Pixel (rx, ry) of the square, screen column x. */
+static uint16_t xy_px(const xy_frame_t *f, int x, int rx, int ry)
+{
+    const theme_t *th = f->th;
+    const int nsx = f->cxr - XY_NOSIG_LEFT_PX, nsy = f->cyr - XY_NOSIG_UP_PX;
+    const int dxc = rx - f->cxr, dyc = ry - f->cyr;
+    const bool vline = (dxc % f->div) == 0;
+    const uint8_t inten = f->tb ? f->tb[(uint32_t)ry * f->stride + (uint32_t)rx] : 0u;
+    if (!f->have && rx >= nsx && ry >= nsy && ry < nsy + (int)font_small.height &&
+        font_text_px(xy_nosig, &font_small, rx - nsx, ry - nsy))
+        return th->warning;
+    if (inten)
+        return persist_intensity_to_color_ch1(inten);
+    if (xy_mark_px(f, x, f->top + ry))
+        return th->text_primary;
+    if (dxc == 0 || dyc == 0)
+        return th->grid_center;
+    if ((vline && (ry & 1) == 0) || ((dyc % f->div) == 0 && (rx & 1) == 0))
+        return th->grid;
+    return th->background;
+}
+
+/* Pixel (x, ry) of the left margin: the title, the focus mark, background. */
+static uint16_t xy_margin_px(const xy_frame_t *f, int x, int ry)
+{
+    const int pitch = (int)font_small.height + XY_TITLE_GAP_PX;
+    if (x >= XY_TITLE_LEFT_PX && x < f->text_x1 && ry >= XY_TITLE_TOP_PX) {
+        const int k = (ry - XY_TITLE_TOP_PX) / pitch, dy = (ry - XY_TITLE_TOP_PX) % pitch;
+        if (k < (int)f->title_lines && dy < (int)font_small.height &&
+            font_text_px(xy_title[k], &font_small, x - XY_TITLE_LEFT_PX, dy))
+            return f->title_c[k];
+    }
+    return xy_mark_px(f, x, f->top + ry) ? f->th->text_primary : f->th->background;
+}
+
 /* `fpga scope livecheck` in X-Y: every pixel of column x against the
  * per-pixel rule (xy_px, xy_margin_px), counted as Y-T's are. */
 static void xy_check_column(const xy_frame_t *f, uint16_t x, const canvas_strip_t *s)
