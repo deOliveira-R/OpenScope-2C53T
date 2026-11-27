@@ -162,9 +162,11 @@ void font_text_row(const char *str, const font_t *font, int dy, uint16_t *line, 
             return;
         const uint8_t gw = font->widths[idx];
         const uint8_t *row = &font->data[font->offsets[idx] + (unsigned)dy * (unsigned)((gw + 7) / 8)];
-        for (int col = 0; col < gw; col++)
-            if (x + col >= 0)
-                line[x + col] = (row[col / 8] & (0x80 >> (col % 8))) ? fg : bg;
+        for (int col = 0; col < gw; col++) {
+            if (x + col < 0) continue;
+            if (row[col / 8] & (0x80 >> (col % 8))) line[x + col] = fg;
+            else if (fg != bg)                      line[x + col] = bg;
+        }
         x += adv;
     }
 }

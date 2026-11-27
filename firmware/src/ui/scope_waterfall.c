@@ -49,9 +49,9 @@ static bool wf_text_line(const void *text, int y)
     return false;
 }
 
-static bool wf_text_px(const void *text, int x, int y, uint16_t *c)
+static void wf_text_row(const void *text, int y, uint16_t *line)
 {
-    return ctext_px((const ctext_set_t *)text, x, y, c);
+    ctext_paint_row((const ctext_set_t *)text, y, line);
 }
 
 /* What the last waterfall frame did, for the shell screen diagnostic
@@ -176,7 +176,7 @@ void draw_waterfall_screen(void)
         .rows = WATERFALL_ROWS, .newest = newest_row,
         .top = SCOPE_TOP, .height = SCOPE_H,
         .line = waterfall_line,
-        .text = &T, .text_line = wf_text_line, .text_px = wf_text_px,
+        .text = &T, .text_line = wf_text_line, .text_row = wf_text_row,
     };
     waterfall_blit(&frame);
 }

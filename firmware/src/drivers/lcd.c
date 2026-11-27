@@ -147,14 +147,17 @@ static uint16_t lcd_shadow_x;
 static uint16_t lcd_shadow_w;
 static uint32_t lcd_shadow_pos;      /* pixels left in the window */
 static uint16_t lcd_shadow_cx, lcd_shadow_cy;   /* where the next one lands */
-/* Palette indices already worked out, by colour. A screen uses a handful of
- * colours, and a column of the scope's plot alternates between a few of them
- * (background, grid dots, traces): with one remembered colour the search ran
- * about 4,000 times a live frame (measured 2026-11-20). Direct-mapped. */
-#define LCD_SHADOW_CACHE_SLOTS 16u            /* a power of two; the palette has 16 colours */
+/* Palette indices already worked out, by colour. A column of the scope's
+ * plot alternates between a few colours (background, grid dots, traces):
+ * with one remembered colour the search ran about 4,000 times a live frame
+ * (measured 2026-11-20). The waterfall's ramp has about 200 colours: with 16
+ * slots it searched 37,700 times a frame (2026-11-27), hence 256.
+ * Direct-mapped. */
+#define LCD_SHADOW_CACHE_SLOTS 256u           /* a power of two */
+#define LCD_SHADOW_CACHE_MIX   40503u         /* Fibonacci hashing: 2^16 / golden ratio, odd */
 static uint16_t lcd_shadow_cache_color[LCD_SHADOW_CACHE_SLOTS];
 static uint8_t  lcd_shadow_cache_index[LCD_SHADOW_CACHE_SLOTS];
-static uint16_t lcd_shadow_cache_valid;       /* one bit per slot */
+static uint32_t lcd_shadow_cache_valid[LCD_SHADOW_CACHE_SLOTS / 32u];   /* one bit per slot */
 
 static const uint16_t lcd_shadow_palette[16] = {
     COLOR_BLACK,
@@ -182,10 +185,11 @@ extern volatile uint32_t lcd_perf_window_cycles, lcd_perf_palette_searches;
 volatile uint32_t lcd_perf_column_cycles;
 static uint8_t lcd_shadow_palette_index(uint16_t color)
 {
-    /* RGB565: fold the three fields so that colours differing in any of them
-     * tend to land in different slots. */
-    const uint8_t slot = (uint8_t)((color ^ (color >> 5) ^ (color >> 11)) & (LCD_SHADOW_CACHE_SLOTS - 1u));
-    if ((lcd_shadow_cache_valid & (1u << slot)) && color == lcd_shadow_cache_color[slot]) {
+    /* The top bits of the 16-bit product: every field of the colour reaches
+     * them, so near colours (a ramp) spread over the slots. */
+    const uint32_t slot = (((uint32_t)color * LCD_SHADOW_CACHE_MIX) >> 8) & (LCD_SHADOW_CACHE_SLOTS - 1u);
+    const uint32_t bit = 1u << (slot & 31u);
+    if ((lcd_shadow_cache_valid[slot >> 5] & bit) && color == lcd_shadow_cache_color[slot]) {
         return lcd_shadow_cache_index[slot];
     }
 
@@ -214,7 +218,7 @@ static uint8_t lcd_shadow_palette_index(uint16_t color)
     }
     lcd_shadow_cache_color[slot] = color;
     lcd_shadow_cache_index[slot] = best;
-    lcd_shadow_cache_valid |= (uint16_t)(1u << slot);
+    lcd_shadow_cache_valid[slot >> 5] |= bit;
     return best;
 }
 
@@ -259,7 +263,7 @@ void lcd_shadow_clear(void)
             lcd_shadow[y][x] = 0;
         }
     }
-    lcd_shadow_cache_valid = 0;
+    for (uint32_t i = 0; i < LCD_SHADOW_CACHE_SLOTS / 32u; i++) lcd_shadow_cache_valid[i] = 0;
 }
 
 void lcd_shadow_set_page(uint16_t y)

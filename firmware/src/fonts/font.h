@@ -80,7 +80,8 @@ uint16_t font_fit_width(const char *str, const font_t *font, uint16_t w);
 /*
  * Row dy of `str` into line[], its left edge at line[x]: each glyph's cell
  * (its width, the font's rows) in fg on bg, as font_draw_char() draws it
- * opaque; the gaps between glyphs are left alone. Whole glyphs only: the
+ * opaque, or with fg == bg its glyph pixels only, as font_draw_char() draws
+ * it transparent; the gaps between glyphs are left alone. Whole glyphs only: the
  * first glyph whose advance would pass line[limit - 1] ends the string.
  */
 void font_text_row(const char *str, const font_t *font, int dy, uint16_t *line, int x, int limit,

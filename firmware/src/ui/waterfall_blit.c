@@ -27,8 +27,9 @@ uint16_t waterfall_color(uint8_t intensity)
 /*
  * The plot is not cleared first. Every screen line of the plot is written
  * once: a history row is converted once into waterfall_line and streamed
- * row_height times, one window and one lcd_write_pixels() call per screen
- * line. The residual lines under the block (the plot height is not a multiple
+ * row_height times, one window per screen line (lcd_rect_begin: set up with
+ * no bus delays) and its pixels (lcd_rect_row: the screenshot shadow kept a
+ * line at a time). The residual lines under the block (the plot height is not a multiple
  * of the rows: 14 lines at 206/64) are written black, or with the axis
  * labels.
  *
@@ -68,14 +69,12 @@ void waterfall_blit(const waterfall_frame_t *f)
         const bool row_first = in_block && (sy % row_height) == 0u;
         const bool text_line = f->text_line(f->text, y);
         if (row_first || text_line || !in_block) {
-            for (uint16_t x = 0; x < WATERFALL_BLIT_COLS; x++) {
-                uint16_t c = src ? waterfall_color(src[x]) : COLOR_BLACK;
-                if (text_line) (void)f->text_px(f->text, x, y, &c);
-                f->line[x] = c;
-            }
+            for (uint16_t x = 0; x < WATERFALL_BLIT_COLS; x++)
+                f->line[x] = src ? waterfall_color(src[x]) : COLOR_BLACK;
+            if (text_line) f->text_row(f->text, y, f->line);
         }
-        lcd_set_window(0, y, WATERFALL_BLIT_COLS, 1);
-        lcd_write_pixels(f->line, WATERFALL_BLIT_COLS);
+        lcd_rect_begin(0, y, WATERFALL_BLIT_COLS, 1);
+        lcd_rect_row(f->line);
         if (text_line && in_block && (sy + 1u) % row_height != 0u) {
             /* the next line of this row has no text: rebuild it plain */
             for (uint16_t x = 0; x < WATERFALL_BLIT_COLS; x++)

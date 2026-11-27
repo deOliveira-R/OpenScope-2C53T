@@ -1,6 +1,6 @@
 /*
  * The waterfall's real drawing code (src/ui/waterfall_blit.c) on a model LCD:
- * lcd_set_window() latches a rectangle, lcd_write_pixels() streams into it.
+ * lcd_rect_begin() latches a rectangle, lcd_rect_row() streams a row into it.
  *
  * Build and run: make test-waterfall-blit
  */
@@ -20,16 +20,16 @@ static uint16_t fb[LCD_HEIGHT][LCD_WIDTH];
 static uint16_t win_x, win_y, win_w, win_h;
 static uint32_t win_cursor, windows, streams, overruns;
 
-void lcd_set_window(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
+void lcd_rect_begin(uint16_t x, uint16_t y, uint16_t w, uint16_t h)
 {
     win_x = x; win_y = y; win_w = w; win_h = h; win_cursor = 0;
     windows++;
 }
 
-void lcd_write_pixels(const uint16_t *pixels, uint32_t count)
+void lcd_rect_row(const uint16_t *pixels)
 {
     streams++;
-    for (uint32_t i = 0; i < count; i++, win_cursor++) {
+    for (uint32_t i = 0; i < win_w; i++, win_cursor++) {
         if (win_cursor >= (uint32_t)win_w * win_h) { overruns++; return; }
         const uint32_t px = win_x + win_cursor % win_w, py = win_y + win_cursor / win_w;
         if (px < LCD_WIDTH && py < LCD_HEIGHT) fb[py][px] = pixels[i];
@@ -44,6 +44,10 @@ static bool text_px(const void *t, int x, int y, uint16_t *c)
     if (!text_line(t, y) || x >= TEXT_COLS) return false;
     *c = TEXT_COLOR;
     return true;
+}
+static void text_row(const void *t, int y, uint16_t *ln)
+{
+    for (int x = 0; x < WATERFALL_BLIT_COLS; x++) (void)text_px(t, x, y, &ln[x]);
 }
 
 static uint8_t history[MAX_ROWS][WATERFALL_BLIT_COLS];
@@ -67,7 +71,7 @@ static void draw(uint16_t rows, uint16_t newest, uint16_t top, uint16_t height)
     windows = streams = overruns = 0;
     const waterfall_frame_t f = {
         .history = history, .rows = rows, .newest = newest, .top = top, .height = height,
-        .line = line, .text = NULL, .text_line = text_line, .text_px = text_px,
+        .line = line, .text = NULL, .text_line = text_line, .text_row = text_row,
     };
     waterfall_blit(&f);
 }

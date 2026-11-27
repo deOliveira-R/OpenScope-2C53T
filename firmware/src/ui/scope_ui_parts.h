@@ -433,6 +433,8 @@ bool ctext_place(ctext_set_t *T, const label_box_t *area, int x, int y, const ch
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c);
 /* Paint column x of the labels into s (the picture ctext_px gives). */
 void ctext_paint_column(const ctext_set_t *T, int x, const canvas_strip_t *s);
+/* Paint row y of the labels into line[] (LCD_WIDTH pixels; the same picture). */
+void ctext_paint_row(const ctext_set_t *T, int y, uint16_t *line);
 
 /* scope_spectrum.c */
 /* The FFT source changed: the waterfall starts again. */

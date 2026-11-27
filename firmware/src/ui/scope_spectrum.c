@@ -62,6 +62,23 @@ void ctext_paint_column(const ctext_set_t *T, int x, const canvas_strip_t *s)
     }
 }
 
+/* Paint the labels' pixels on screen row y into line[] (LCD_WIDTH pixels),
+ * the same picture ctext_px gives pixel by pixel: last label first, an
+ * opaque label's whole box in its background under its glyphs. */
+void ctext_paint_row(const ctext_set_t *T, int y, uint16_t *line)
+{
+    for (int k = (int)T->n - 1; k >= 0; k--) {
+        const label_box_t *b = &T->box[k];
+        const int dy = y - b->y;
+        if (dy < 0 || dy >= b->h) continue;
+        if (T->t[k].opaque)
+            for (int x = b->x; x < b->x + b->w; x++)
+                if (x >= 0 && x < LCD_WIDTH) line[x] = T->t[k].bg;
+        font_text_row(T->t[k].s, &font_small, dy, line, b->x, LCD_WIDTH, T->t[k].fg,
+                      T->t[k].opaque ? T->t[k].bg : T->t[k].fg);
+    }
+}
+
 /* The colour of the text pixel at (x, y), written to *c; false when no string
  * covers that pixel (the caller then draws its own background). */
 bool ctext_px(const ctext_set_t *T, int x, int y, uint16_t *c)

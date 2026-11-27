@@ -17,7 +17,9 @@
 
 /* Text composed into the lines it crosses. */
 typedef bool (*waterfall_text_line_fn)(const void *text, int y);
-typedef bool (*waterfall_text_px_fn)(const void *text, int x, int y, uint16_t *c);
+/* Paint the text's pixels on screen line y into line[] (WATERFALL_BLIT_COLS
+ * pixels), over what is there. */
+typedef void (*waterfall_text_row_fn)(const void *text, int y, uint16_t *line);
 
 typedef struct {
     const uint8_t (*history)[WATERFALL_BLIT_COLS]; /* intensities: 0 = reference, 255 = floor */
@@ -27,7 +29,7 @@ typedef struct {
     uint16_t *line;                 /* one assembled line, WATERFALL_BLIT_COLS pixels */
     const void *text;
     waterfall_text_line_fn text_line;
-    waterfall_text_px_fn   text_px;
+    waterfall_text_row_fn  text_row;
 } waterfall_frame_t;
 
 uint16_t waterfall_color(uint8_t intensity);
