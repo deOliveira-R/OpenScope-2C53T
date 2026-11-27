@@ -27,23 +27,21 @@ void scope_ui_strip_refresh(void)
 /* The 12 measurements over the roll points the time view shows (yt_cols from
  * g_view_first, oldest first; scope_roll_meas.h) into the cells of L: the
  * same slots, order and units as the record's, the time base being the roll
- * point rate. Zero and scale are per channel, the settings in force (the
- * points were taken with them): chan_zero_code() and the scope_cal gain.
- * refresh: repaint the cells in place. */
+ * point rate. Zero and scale are the window's (view_zero, view_vpc: the
+ * settings in force, the points were taken with them). refresh: repaint the
+ * cells in place. */
 static void draw_roll_cells(const scope_state_t *ss, const mstrip_layout_t *L, const theme_t *th, bool refresh)
 {
     const uint16_t n = (uint16_t)(g_view_end - g_view_first);
     scope_params_t p1, p2;
-    const uint8_t z1 = (uint8_t)chan_zero_code(ss, 0u);   /* the one zero (chan_zero_code) */
-    const uint8_t z2 = (uint8_t)chan_zero_code(ss, 1u);
     const bool have1 = ss->ch1.enabled &&
         scope_roll_measure(&yt_cols[0][g_view_first], n, ss->roll_step,
-                           (volts_per_count_t){ scope_cal_volts_per_count(1u, ss->ch1.vdiv_idx) },
-                           (rec_code_t){ z1 }, &p1, NULL);
+                           (volts_per_count_t){ view_vpc(ss, 0u) },
+                           (rec_code_t){ view_zero(ss, 0u) }, &p1, NULL);
     const bool have2 = ss->ch2.enabled &&
         scope_roll_measure(&yt_cols[1][g_view_first], n, ss->roll_step,
-                           (volts_per_count_t){ scope_cal_volts_per_count(2u, ss->ch2.vdiv_idx) },
-                           (rec_code_t){ z2 }, &p2, NULL);
+                           (volts_per_count_t){ view_vpc(ss, 1u) },
+                           (rec_code_t){ view_zero(ss, 1u) }, &p2, NULL);
     draw_strip_cells(L, have1 ? &p1 : NULL, have2 ? &p2 : NULL, th, refresh);
 }
 
@@ -451,10 +449,6 @@ static float freq_held(uint8_t ch, bool need, bool have,
     return freq_hz[ch];
 }
 
-float   rec_vpc(const scope_state_t *ss, uint8_t ch);
-
-uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
-
 /* The twelve values of each channel from the live record into p1, p2 (L:
  * which cells are shown, so which channels and whether Freq or Peri need the
  * spectral estimate). */
@@ -484,13 +478,13 @@ static void strip_measure(const scope_state_t *ss, const mstrip_layout_t *L, sco
     scope_prm_ctx_t ctx;
     ctx.sample_rate.hz  = rec_fs;
     ctx.record_whole    = fpga_acq_record_time_ordered();   /* un-rotated: one stretch */
-    ctx.volts_per_count.vpc = rec_vpc(ss, 0u);
+    ctx.volts_per_count.vpc = view_vpc(ss, 0u);
     ctx.freq_hz         = freq_held(0u, need_f[0], have1, b1, rec_fs);
-    ctx.zero_count.v    = rec_zero(ss, 0u);
+    ctx.zero_count.v    = view_zero(ss, 0u);
     scope_params_compute(have1 ? &m1 : NULL, &ctx, p1);
-    ctx.volts_per_count.vpc = rec_vpc(ss, 1u);
+    ctx.volts_per_count.vpc = view_vpc(ss, 1u);
     ctx.freq_hz         = freq_held(1u, need_f[1], have2, b2, rec_fs);
-    ctx.zero_count.v    = rec_zero(ss, 1u);
+    ctx.zero_count.v    = view_zero(ss, 1u);
     scope_params_compute(have2 ? &m2 : NULL, &ctx, p2);
 }
 

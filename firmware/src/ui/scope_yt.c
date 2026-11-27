@@ -163,11 +163,10 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
 
     if (f->roll) {
         mask_overlay_off();
-        g_math_live = false;
         /* Roll points are taken at the settings now in force (a change
          * empties the FIFO's meaning only as the points scroll out). */
-        f->zero[0] = (uint8_t)chan_zero_code(ss, 0u);
-        f->zero[1] = (uint8_t)chan_zero_code(ss, 1u);
+        f->zero[0] = view_zero(ss, 0u);
+        f->zero[1] = view_zero(ss, 1u);
         if (f->record) {
             yt_fits_roll(ss, p, &f->a1, &f->a2);
             plot_rail_columns(yt_cols[0], g_view_first, g_view_end, f->rail[0]);
@@ -178,8 +177,8 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
         snprintf(f->roll_label, sizeof f->roll_label, "ROLL %3u/%u", (unsigned)roll_n,
                  (unsigned)SCOPE_ROLL_POINTS);
     } else if (f->record) {
-        f->zero[0] = rec_zero(ss, 0u);
-        f->zero[1] = rec_zero(ss, 1u);
+        f->zero[0] = view_zero(ss, 0u);
+        f->zero[1] = view_zero(ss, 1u);
         scope_mark_acquisition_ready();
         /* The window: placed on the trigger source's crossing and filled into
          * yt_cols for both channels, so the trace holds still and the
@@ -189,7 +188,6 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
         view_build(ss, b1, b2);
         ui_scope_view_us_last = (DWT->CYCCNT - vb0) / (system_core_clock / 1000000u);
         mask_overlay_begin();
-        g_math_live = true;            /* yt_cols is this frame's window */
         /* A fitted trace is stretched over the pane's rows above
          * band_bot; a true-scale one keeps the graticule, and anything under
          * band_bot (the measurement strip) covers its last rows. */
@@ -198,24 +196,23 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
         plot_rail_columns(yt_cols[1], g_view_first, g_view_end, f->rail[1]);
     } else {
         mask_overlay_off();
-        g_math_live = false;
         f->zero[0] = (uint8_t)chan_zero_code(ss, 0u);
         f->zero[1] = (uint8_t)chan_zero_code(ss, 1u);
         yt_fits_none(&f->a1, &f->a2);
     }
     /* The bands as drawn, for the cursor lines. A true-scale map draws in
      * the codes of the scale now selected (a held or earlier record is
-     * rescaled to it, pv_vscale) and roll's points are taken at the settings
-     * now in force: their 0 V and volts per code are the channel's now. A fit
-     * of a record draws the record's own codes: its capture's. Each band is
+     * rescaled to it, pv_vscale). A fit draws the window's own codes, whose
+     * scale view_vpc / view_zero give (roll's points: the settings now in
+     * force; a record: its capture's). Each band is
      * written once a frame, drawn or not (a map that is off), never cleared
      * first: the keys and the view.cursor setter read it between frames. */
     for (uint8_t ch = 0; ch < 2u; ch++) {
         const autofit_t *a = ch ? &f->a2 : &f->a1;
         const uint8_t r = ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx;
-        const bool now = f->roll || a->fx_ch >= 0;
+        const bool now = a->fx_ch >= 0;
         vband_note(ch, p, a, now ? (float)chan_zero_code(ss, ch) : (float)f->zero[ch],
-                   now ? scope_cal_volts_per_count((uint8_t)(ch + 1u), r) : rec_vpc(ss, ch), r);
+                   now ? scope_cal_volts_per_count((uint8_t)(ch + 1u), r) : view_vpc(ss, ch), r);
     }
     f->b1 = yt_cols[0];
     f->b2 = yt_cols[1];
@@ -235,7 +232,7 @@ static void yt_prepare(yt_frame_t *f, const plot_pane_t *p, uint32_t frame)
 
     /* Math: one row per column, its label as per-pixel text. */
     f->mth = math_enabled && !f->roll;
-    if (f->mth) math_prepare(ss, p, &f->mf);
+    if (f->mth) math_prepare(ss, p, f->record, &f->mf);
     f->mlab_w = f->mth ? (int16_t)font_string_width(f->mf.label, &font_small) : 0;
 
     /* Persistence: the ghosts are read from the shared-pool buffer

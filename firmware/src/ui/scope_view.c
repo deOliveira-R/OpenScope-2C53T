@@ -87,7 +87,7 @@ static uint8_t view_factor(const scope_state_t *ss)
  * k = volts/count at capture over volts/count now (pv_vscale; stock's map at
  * 0x080212BC), so it reads true at the range and position now selected. The
  * position enters through the two 0 V codes. Measurements of a held record
- * use the capture's volts/count and 0 V (rec_vpc / rec_zero).
+ * use the capture's volts/count and 0 V (view_vpc / view_zero).
  *
  * Rates: the cursors read the column (view_time_axis: 1000 fs_rec / R, in
  * whole ticks); the measurements read the record's own
@@ -202,27 +202,46 @@ static bool rec_held_cap(const scope_state_t *ss)
     return g_cap.valid && !ss->running && !ss->roll && fpga_data_ready();
 }
 
-/* Volts per count (rec_vpc) and 0 V code (rec_zero) of channel ch's record:
- * the latched capture tuple for a held record (it does not change with the
- * range or position now selected); else the published record's own capture
- * configuration; else, before the first record that has one, the current
- * settings. */
-float rec_vpc(const scope_state_t *ss, uint8_t ch)
+/* What the codes in the window (yt_cols) mean: volts per count (view_vpc)
+ * and the 0 V code (view_zero) of channel ch. The one answer for everything
+ * that reads the window (the traces' bands, the measurements, math):
+ *   roll      the settings in force: the points are taken with them (the
+ *             published record's configuration is the last Y-T record's);
+ *   held      the latched capture tuple (it does not change with the range or
+ *             position now selected);
+ *   running   the published record's own capture configuration; before the
+ *             first record that has one, the current settings. */
+float view_vpc(const scope_state_t *ss, uint8_t ch)
 {
     float k;
     int z;
-    if (rec_held_cap(ss)) return g_cap.vpc[ch];
-    if (rec_own_scale(ch, &k, &z)) return k;
+    if (!ss->roll) {
+        if (rec_held_cap(ss)) return g_cap.vpc[ch];
+        if (rec_own_scale(ch, &k, &z)) return k;
+    }
     return scope_cal_volts_per_count((uint8_t)(ch + 1u), ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
 }
 
-uint8_t rec_zero(const scope_state_t *ss, uint8_t ch)
+uint8_t view_zero(const scope_state_t *ss, uint8_t ch)
 {
     float k;
     int z;
-    if (rec_held_cap(ss)) return g_cap.zero[ch];
-    if (rec_own_scale(ch, &k, &z)) return (uint8_t)z;
+    if (!ss->roll) {
+        if (rec_held_cap(ss)) return g_cap.zero[ch];
+        if (rec_own_scale(ch, &k, &z)) return (uint8_t)z;
+    }
     return (uint8_t)chan_zero_code(ss, ch);
+}
+
+/* Does the window hold channel ch (0/1)? Roll: every point carries both
+ * channels (one op-03 read). A record: the channels it was captured with,
+ * and a buffer to read. */
+bool view_has_ch(const scope_state_t *ss, uint8_t ch)
+{
+    if (ch > 1u) return false;
+    if (ss->roll) return true;
+    return fpga_acq_record_has_ch(ch) &&
+           (ch ? fpga_get_ch2_buf() : fpga_get_ch1_buf()) != NULL;
 }
 
 /* The lowest position (record codes, -100..0) of channel ch that keeps its
@@ -254,24 +273,19 @@ uint32_t scope_ui_view_ratio(void)
 
 /* The true-scale rescale of a record captured at another range or position
  * (stock's map at 0x080212BC): zero_now + k (v - zero_cap), k = volts/count
- * at capture / now. Channel ch is 0/1; anything else, or roll, is identity.
- * A held record uses the latched tuple; a running one its own capture
- * configuration, so the record still on the glass in the cycle after a range
- * or position change is drawn at its true volts. Identity when range and
- * position are the capture's (every steady running frame). */
+ * at capture / now, the capture's from view_vpc / view_zero. Channel ch is
+ * 0/1; anything else is identity. A held record uses the latched tuple; a
+ * running one its own capture configuration, so the record still on the
+ * glass in the cycle after a range or position change is drawn at its true
+ * volts. Identity when range and position are the capture's (every steady
+ * running frame, and roll: its points are the settings now). */
 static inline uint8_t pv_vscale(uint8_t v, int8_t ch)
 {
     const scope_state_t *ss = scope_state_get();
     if (ch < 0 || ch > 1)
         return v;
-    float kc;
-    int zc;
-    if (rec_held_cap(ss)) {
-        kc = g_cap.vpc[ch];
-        zc = g_cap.zero[ch];
-    } else if (ss->roll || !rec_own_scale((uint8_t)ch, &kc, &zc)) {
-        return v;
-    }
+    const float kc = view_vpc(ss, (uint8_t)ch);
+    const int zc = view_zero(ss, (uint8_t)ch);
     const float kn = scope_cal_volts_per_count((uint8_t)(ch + 1),
                                                ch ? ss->ch2.vdiv_idx : ss->ch1.vdiv_idx);
     const int zn = chan_zero_code(ss, (uint8_t)ch);

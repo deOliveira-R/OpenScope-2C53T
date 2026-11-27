@@ -288,10 +288,12 @@ typedef struct {
     int32_t             ref_col;
 } view_time_axis_t;
 void view_time_axis(const scope_state_t *ss, view_time_axis_t *ax);
-/* Volts per count of channel ch's record (the capture's when held). */
-float rec_vpc(const scope_state_t *ss, uint8_t ch);
-/* 0 V code of channel ch's record (the capture's when held). */
-uint8_t rec_zero(const scope_state_t *ss, uint8_t ch);
+/* What the window's codes mean for channel ch (scope_view.c): volts per
+ * count and 0 V code (roll: the settings now; a held record: its capture's),
+ * and whether the window holds the channel at all. */
+float   view_vpc(const scope_state_t *ss, uint8_t ch);
+uint8_t view_zero(const scope_state_t *ss, uint8_t ch);
+bool    view_has_ch(const scope_state_t *ss, uint8_t ch);
 /* Fill autofit map a for buf over the band [y_top, y_bot). */
 void autofit_prep(autofit_t *a, const volatile uint8_t *buf,
                          int16_t y_top, int16_t y_bot, int8_t mask_ch);
@@ -378,8 +380,6 @@ void mask_overlay_off(void);
 bool mask_px_fail(int8_t ch, int x);
 /* Mask strip colour of column x, or 0; *dotted for every other pixel. */
 uint16_t mask_strip_color(int x, const theme_t *th, bool *dotted);
-/* A record is drawn this frame, so yt_cols is valid for the math trace. */
-extern bool     g_math_live;
 /* Add trace rows prev_y..y (screen rows of pane p) at column x to the
  * persistence buffer. */
 void persist_note(const plot_pane_t *p, uint16_t x, int16_t prev_y, int16_t y);
@@ -388,8 +388,9 @@ void persist_note(const plot_pane_t *p, uint16_t x, int16_t prev_y, int16_t y);
 void persist_frame_decay(const plot_pane_t *p);
 /* A ghost's base colour at screen row y. */
 uint16_t persist_base(const scope_state_t *ss, const theme_t *th, bool lower);
-/* Prepare this frame's math trace in pane p: inputs, scale, label, cursor scale. */
-void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *mf);
+/* Prepare this frame's math trace in pane p: inputs, scale, label, cursor
+ * scale. live: data is drawn this frame (yt_cols is its window). */
+void math_prepare(const scope_state_t *ss, const plot_pane_t *p, bool live, math_frame_t *mf);
 /* Row of the math trace at column x. */
 int16_t math_row(const math_frame_t *mf, uint16_t x);
 

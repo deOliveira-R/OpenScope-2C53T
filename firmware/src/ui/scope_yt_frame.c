@@ -348,35 +348,32 @@ uint16_t persist_base(const scope_state_t *ss, const theme_t *th, bool lower)
  * the result, shown in the label): A*B and A/B share no graticule with A
  * and B. */
 
-bool     g_math_live;    /* a record is drawn this frame (yt_cols is its window) */
-
 /* Prepare one frame of the math trace into mf:
- *   1. ok only with a record drawn this frame and the op's inputs on;
- *      otherwise only the "--" label.
- *   2. the inputs' scales (rec_zero, rec_vpc) and the result's unit;
+ *   1. ok only when data is drawn this frame (live: yt_cols is its window)
+ *      and the window holds the op's inputs, on; otherwise only the "--"
+ *      label.
+ *   2. the inputs' scales (view_zero, view_vpc) and the result's unit;
  *   3. the peak over the window, the 1-2-5 step that fits it, never finer
  *      than the source channel's own division;
  *   4. the label. */
-void math_prepare(const scope_state_t *ss, const plot_pane_t *p, math_frame_t *mf)
+void math_prepare(const scope_state_t *ss, const plot_pane_t *p, bool live, math_frame_t *mf)
 {
     memset(mf, 0, sizeof(*mf));
     mf->pane = *p;
     mf->op = ((math_op_t)math_op < MATH_COUNT) ? (math_op_t)math_op : MATH_ADD;
     const math_op_t op = mf->op;
-    const volatile uint8_t *s1 = fpga_get_ch1_buf();
-    const volatile uint8_t *s2 = fpga_get_ch2_buf();
-    mf->ok = g_math_live
-        && (!math_op_uses_a(op) || (ss->ch1.enabled && s1 != NULL))
-        && (!math_op_uses_b(op) || (ss->ch2.enabled && fpga_acq_record_has_ch(1u) && s2 != NULL));
+    mf->ok = live
+        && (!math_op_uses_a(op) || (ss->ch1.enabled && view_has_ch(ss, 0u)))
+        && (!math_op_uses_b(op) || (ss->ch2.enabled && view_has_ch(ss, 1u)));
     if (!mf->ok) {
         /* No record, or a channel the op reads is off: say so, draw nothing. */
         snprintf(mf->label, sizeof(mf->label), "M:%s --", math_channel_name(op));
         return;
     }
-    mf->in.zero_a = rec_zero(ss, 0u);
-    mf->in.zero_b = rec_zero(ss, 1u);
-    mf->in.k_a = rec_vpc(ss, 0u);
-    mf->in.k_b = rec_vpc(ss, 1u);
+    mf->in.zero_a = view_zero(ss, 0u);
+    mf->in.zero_b = view_zero(ss, 1u);
+    mf->in.k_a = view_vpc(ss, 0u);
+    mf->in.k_b = view_vpc(ss, 1u);
     const math_unit_t unit = math_unit_for(op, &mf->in);
 
     /* The peak over the window, in 64-column chunks (no 301-float scratch). */
