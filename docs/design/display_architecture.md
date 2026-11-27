@@ -166,10 +166,21 @@ compares the painted pixels against.
 The partial send is a build feature, `canvasruns` (`firmware/features.mk`),
 on in every image. Its core is one file, `firmware/src/ui/canvas_runs.c`: the
 copy of the base strip, the base hash and runs of every column of each
-canvas, and the windows a changed column sends. `canvas.c` calls it through
-`canvas_runs.h` with no `#if`; everything else (the base and the overlays,
-the strip hash, skipping unchanged columns, holes, the trust rule) is the
-same in both builds. It costs 8,216 B of RAM and 896 B of flash (`make features-ab
+canvas, the windows a changed column sends, and the column's hash: in a
+layered frame its base's hash with its runs and their pixels (so no pass
+over the whole strip; a base change under an overlay that covers a whole
+column sends that column once although its pixels held), otherwise the
+strip hash. `canvas.c` calls it through `canvas_runs.h` with no `#if`;
+everything else (the base and the overlays, skipping unchanged columns,
+holes, the trust rule) is the same in both builds. The per-pixel passes
+(the base's copy and hash, the comparison, the strip hash) read and write
+two pixels per 32-bit word; the strip buffers are word-aligned.
+
+Layered today: Y-T (with roll and split's Y-T half), the spectrum, and X-Y
+(base: background, graticule, focus mark, title; overlays: the fading
+trail and the "no signal" note). The waterfall is not a canvas: its picture
+scrolls a row every frame, so every line is sent, each through
+`lcd_rect_begin`/`lcd_rect_row` with its labels painted a row at a time. It costs 8,216 B of RAM and 896 B of flash (`make features-ab
 FEATURE=canvasruns`, 2026-11-25, bench image). Built
 without it (`make WITHOUT=canvasruns`), a changed column is sent whole: the
 picture is the same, the plot's send is slower (a moving trace sends its

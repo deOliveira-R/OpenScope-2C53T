@@ -33,12 +33,9 @@ uint16_t waterfall_color(uint8_t intensity)
  * of the rows: 14 lines at 206/64) are written black, or with the axis
  * labels.
  *
- * One window for the WHOLE block would need far fewer set_windows, but the
- * window is global driver state and vInputTask runs at priority 4 against
- * the display task's 1: its power-off countdown overlay (the POWER loop in
- * tasks/input_handler.c) calls lcd_fill_rect() and so re-points the window
- * from under a stream in progress. A window per line bounds that to one
- * corrupted line for one frame.
+ * A window per line costs lcd_rect_begin's eleven bus writes (about 1 us)
+ * against 320 pixels, so the block is not sent as one window: a line is the
+ * unit the history and the labels are composed in anyway.
  *
  * Why not scroll-and-append, which would be O(1 row)? The history scrolls
  * by exactly one row per frame, so 63 of 64 rows are unchanged in content,

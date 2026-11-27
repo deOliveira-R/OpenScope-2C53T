@@ -8,8 +8,10 @@
  * What must hold:
  *   - after any frame the glass shows the picture everywhere inside the
  *     rectangle and outside the holes, and nothing outside it was written;
- *   - an unchanged picture sends no strip; a change in some columns sends
- *     those columns only;
+ *   - an unchanged picture sends no strip (with CANVASRUNS a layered
+ *     column whose base changed under an overlay covering all of it is the
+ *     one exception: it goes once); a change in some columns sends those
+ *     columns only;
  *   - `all` sends every strip;
  *   - somebody else drawing on the rows, another rectangle, or a hole
  *     opening, closing or moving makes the next frame send every strip;
