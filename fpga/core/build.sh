@@ -5,8 +5,8 @@
 #   sh build.sh cells      check our simulation models of the vendor cells against the vendor's library
 #   sh build.sh lockstep   this core against core D4, pin for pin (a few minutes per seed)
 # Tools are taken from PATH unless YOSYS, NEXTPNR, GOWIN_PACK or IVERILOG say otherwise. FREQ = the target in MHz.
-# SEED = nextpnr's placement seed. The result varies a lot with it (clk 128..168 MHz over seeds 1..8, SCLK
-# 66..79 MHz); the default is the best of those. A build that misses 125 / 62.5 MHz fails.
+# SEED = nextpnr's placement seed. The result varies a lot with it (clk 127..153 MHz over seeds 1..16, SCLK
+# 67..77 MHz); the default has the largest margin on the tighter of the two. A build that misses 125 / 62.5 MHz fails.
 cd "$(dirname "$0")" || exit 1
 mkdir -p build
 if [ "$1" = sim ]; then
@@ -35,10 +35,18 @@ if [ "$1" = lockstep ]; then
 fi
 # nextpnr's constraint reader wants one statement per line and no comments
 python3 -c "import re; t=re.sub(r'//[^\n]*','',open('pins.cst').read()); print('\n'.join(x.strip()+';' for x in t.split(';') if x.strip()))" > build/pins_open.cst
-${YOSYS:-yosys} -p "read_verilog -lib rtl/pllo_bb.v; read_verilog -sv $(tr "\n" " " < rtl/files.f); synth_gowin -top top -json build/top.json" > build/yosys.log 2>&1 \
+# synth_gowin, with its LUT mapping step (map_luts, as in Yosys 0.71) run with abc9's wire delay estimate at
+# ABC9_WIRE_PS instead of synth_gowin's 500, and with -dff: abc9 maps across flip-flops and merges those that always
+# hold the same value (one on this core, in the trigger). Measured on this core (nextpnr with ff_sel, seeds 1..16,
+# both clocks met): -W 500: 12 of 16; -W 900, 1000, 1100: 15, 16, 15 of 16; -W 1000 -dff: 16 of 16, 693 LUT4
+# instead of 777. Holds for this RTL; recheck when it changes.
+ABC9_WIRE_PS=1000
+SYNTH="synth_gowin -top top"
+MAP_LUTS="sort; read_verilog -icells -lib -specify +/abc9_model.v; abc9 -maxlut 8 -W $ABC9_WIRE_PS -dff; clean"
+${YOSYS:-yosys} -p "read_verilog -lib rtl/pllo_bb.v; read_verilog -sv $(tr "\n" " " < rtl/files.f); $SYNTH -run begin:map_luts; $MAP_LUTS; $SYNTH -run map_cells: -json build/top.json" > build/yosys.log 2>&1 \
   || { echo "FAIL yosys"; tail -5 build/yosys.log; exit 1; }
-${NEXTPNR:-nextpnr-himbaechel} --device GW1N-UV2QN48C7/I6 --vopt family=GW1N-2 --vopt cst=build/pins_open.cst \
-  --freq ${FREQ:-125} --seed ${SEED:-7} --sdc clocks.sdc --json build/top.json --write build/pnr.json > build/pnr.log 2>&1 \
+${NEXTPNR:-nextpnr-himbaechel} --device GW1N-UV2QN48C7/I6 --vopt family=GW1N-2 --vopt cst=build/pins_open.cst --vopt ff_sel \
+  --freq ${FREQ:-125} --seed ${SEED:-5} --sdc clocks.sdc --json build/top.json --write build/pnr.json > build/pnr.log 2>&1 \
   || { echo "FAIL nextpnr"; grep -iE 'error' build/pnr.log | head -5; exit 1; }
 # a constraint that names a net which no longer exists is silently dropped: refuse that
 if grep -q "matched no objects" build/pnr.log; then echo "FAIL clocks.sdc names a net that does not exist:"; grep "matched no objects" build/pnr.log; exit 1; fi

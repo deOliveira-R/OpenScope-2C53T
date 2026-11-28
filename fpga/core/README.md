@@ -74,12 +74,13 @@ that is in the firmware was made with:
 | Tool | Version |
 |---|---|
 | Yosys | 0.71 (stock release; `rtl/pllo_bb.v` supplies the PLL declaration) |
-| nextpnr | `deOliveira-R/nextpnr`, branch `gw1n2-pllo`, commit `3b8ebf91` |
-| Apicula | `deOliveira-R/apicula`, branch `gw1n2-clocks-pllo`, commit `7b483c4` |
+| nextpnr | `deOliveira-R/nextpnr`, branch `gw1n2-alusel`, commit `52c8e5fb` (`--vopt ff_sel`: a flip-flop may take its D over the slice's SEL wire; the flip-flop on an ALU's sum is placed beside that ALU) |
+| Apicula | `deOliveira-R/apicula`, branch `gw1n2-dff6`, commit `2bd7915` (packs the SEL input, `REGn_SD`) |
 
-With those and seed 7, `build/top.fs` has sha256 `808b1b248d34758b05af1a93801e6a4aa73ae31592aeb92ab65f71214cc6648d`
-(clk 136.4 MHz, SCLK 76.6 MHz after routing; the vendor tool gives 135.1 and 75.1). nextpnr's result depends
-strongly on the seed (clk 128..168 MHz over eight seeds), which is why it is pinned; a build that misses
+With those and seed 5, `build/top.fs` has sha256 `26d9c3001a4cea704ffcd90550826114ed43a3e38c8b0c0b2efdde8faa7970ee`
+(693 LUT4; clk 153.6 MHz, SCLK 76.9 MHz after routing; the vendor tool gives 135.1 and 75.1). Synthesis maps LUTs with
+`abc9 -W 1000 -dff` instead of `synth_gowin`'s `-W 500` (see `build.sh`). nextpnr's result depends strongly on the
+seed (clk 127..153 MHz over sixteen seeds, all of them above 125 / 62.5), which is why it is pinned; a build that misses
 125 / 62.5 MHz fails. `build.sh` also refuses a clock constraint that matches no net (nextpnr only warns).
 
 To put a build into the firmware:

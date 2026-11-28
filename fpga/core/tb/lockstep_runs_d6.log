@@ -1,5 +1,6 @@
 # Core D6 against D4 (ref/capcore_d4.v with its two 'always @*' made always_comb, simulation only), D4 aligned once at the start (see tb/lockstep.sv).
 # Op 09 is new since D4: it is left out of the traffic, except in the '+force' runs, where only the netlist is compared with the source.
+# Netlist runs: the build.sh synthesis (abc9 -W 1000 -dff) with TAG D4 for the comparison; the shipped netlist (TAG D6) equals its source on seeds 1-3 and +force 4.
 source, our cell models: lockstep seed 1: 400 frames, 108 record reads, 8 held pairs, 3504868 comparisons, 0 mismatches
 source, our cell models: LOCKSTEP PASS
 source, our cell models: lockstep seed 2: 400 frames, 117 record reads, 15 held pairs, 4718929 comparisons, 0 mismatches
